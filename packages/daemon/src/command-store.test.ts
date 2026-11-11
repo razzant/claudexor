@@ -11,9 +11,11 @@ import { publicJobRecord, type JobRecord } from "./job-record.js";
 const roots: string[] = [];
 const journals: DurableJournal[] = [];
 afterEach(() => {
+  // This test's folders, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const journal of journals.splice(0)) journal.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+  for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function openJournal(root?: string): { root: string; journal: DurableJournal } {
   const dir = root ?? realpathSync.native(mkdtempSync(join(tmpdir(), "claudexor-command-store-")));

@@ -1,3 +1,4 @@
+import { GROK_MANAGED_LOGIN, createGrokAdapter } from "@claudexor/harness-grok";
 import {
   chmodSync,
   mkdirSync,
@@ -51,7 +52,7 @@ describe("native login specs", () => {
     if (previousNativeHome === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
     else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previousNativeHome;
     rmSync(nativeHome, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("uses the exact allowlisted vendor commands and absolute resolved binaries", () => {
     const names = [
@@ -157,12 +158,14 @@ describe("native login specs", () => {
       claude: createClaudeAdapter().capabilityProfile?.auth.managed_login,
       cursor: createCursorAdapter().capabilityProfile?.auth.managed_login,
       agy: createAgyAdapter().capabilityProfile?.auth.managed_login,
+      grok: createGrokAdapter().capabilityProfile?.auth.managed_login,
     } as const;
     const exportedDeclarations = {
       codex: CODEX_MANAGED_LOGIN,
       claude: CLAUDE_MANAGED_LOGIN,
       cursor: CURSOR_MANAGED_LOGIN,
       agy: AGY_MANAGED_LOGIN,
+      grok: GROK_MANAGED_LOGIN,
     } as const;
 
     expect(Object.keys(NATIVE_LOGIN_INPUTS).sort()).toEqual(
@@ -211,7 +214,7 @@ describe("native login specs", () => {
         else process.env[key] = value;
       }
       for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-    });
+    }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
     // Resolution only: no case here runs a fixture, so its bytes are inert.
     const exe = (path: string): string => {
       mkdirSync(dirname(path), { recursive: true });
@@ -416,6 +419,47 @@ describe("native login specs", () => {
         expect(env[key]).toBeUndefined();
       }
       expect(env.PATH).toContain("/custom/bin");
+    } finally {
+      rmSync(profileHome, { recursive: true, force: true });
+    }
+  });
+
+  it("pins Grok login to a named profile and disables its updater", () => {
+    expect(() => nativeLoginEnv("grok", { GROK_HOME: "/host/.grok" })).toThrow(
+      /no default credential store/,
+    );
+    const profiles = join(userConfigDir(), "profiles");
+    mkdirSync(profiles, { recursive: true });
+    const profileHome = realpathSync(mkdtempSync(join(profiles, "grok-login-")));
+    try {
+      const env = nativeLoginEnv(
+        "grok",
+        {
+          GROK_HOME: "/host/.grok",
+          GROK_DISABLE_AUTOUPDATER: "0",
+          GROK_CONFIG: '{"cli":{"auto_update":true}}',
+          GROK_CODE_XAI_API_KEY: "must-scrub",
+          GROK_XAI_API_BASE_URL: "https://redirect.invalid",
+          GROK_MODELS_BASE_URL: "https://redirect.invalid",
+          GROK_MODELS_LIST_URL: "https://redirect.invalid/models",
+        },
+        profileHome,
+      );
+      expect(env).toMatchObject({
+        HOME: profileHome,
+        USERPROFILE: profileHome,
+        GROK_HOME: join(profileHome, ".grok"),
+        GROK_DISABLE_AUTOUPDATER: "1",
+      });
+      for (const key of [
+        "GROK_CONFIG",
+        "GROK_CONFIG_PATH",
+        "GROK_CODE_XAI_API_KEY",
+        "GROK_XAI_API_BASE_URL",
+        "GROK_MODELS_BASE_URL",
+        "GROK_MODELS_LIST_URL",
+      ])
+        expect(env[key], key).toBeUndefined();
     } finally {
       rmSync(profileHome, { recursive: true, force: true });
     }

@@ -13,11 +13,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { BlobFiles, sha256Hex } from "./blob-files.js";
 import { MaintenanceController } from "./maintenance.js";
 import { Obligations } from "./obligations.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
 const sqliteAvailable = await import("node:sqlite").then(
@@ -38,10 +39,14 @@ const controllers: MaintenanceController[] = [];
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cx-maintenance-"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's stores, taken before its closes: a late close never takes the next test's.
+  const ownedStores = stores.splice(0);
   for (const controller of controllers.splice(0)) await controller.stop();
-  for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  for (const store of ownedStores) await store.close();
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 async function openStore(
   manualTick = false,

@@ -1,6 +1,12 @@
 import {
+  ControlRetainedEnvelope,
+  DeferredMessageProjection,
+  Id,
   isTerminalLifecycle,
+  RunContinuityReceipt,
   RunFactsInvalidError,
+  RunResumable,
+  ObjectResultDisclosure,
   SecretLikeDisclosure,
   type RunOutcomeFacts,
 } from "@claudexor/schema";
@@ -15,6 +21,7 @@ import {
   projectRunLineage,
   projectRunPrimaryOutput,
   projectRunSpendUsd,
+  projectRunControllableSpendUsd,
 } from "./run-detail-projections.js";
 import { projectRunOutcomeFacts } from "./daemon-outcome.js";
 import { projectRunFacts, type ExpectedRunFactsIdentity } from "./run-facts-projection.js";
@@ -25,10 +32,14 @@ export function projectImmediateRunDetail(
 ) {
   return {
     attemptExecution: detail?.["attemptExecution"],
+    deferredMessage: DeferredMessageProjection.nullable().parse(
+      detail?.["deferredMessage"] ?? null,
+    ),
     runFacts: projectRunFacts(detail, expected),
     outcomeFacts: projectRunOutcomeFacts(detail),
     applyEligibility: projectApplyEligibility(detail),
     spendUsd: projectRunSpendUsd(detail),
+    controllableSpendUsd: projectRunControllableSpendUsd(detail),
     council: projectRunCouncil(detail),
     outcomeBanner: projectOutcomeBanner(detail),
     planReadiness:
@@ -41,10 +52,10 @@ export function projectImmediateRunDetail(
 }
 
 /**
- * INV-062 disclosure as a consumable fact. `run_result` answers with the
- * primary output first, so the summary.md disclosure line never reaches an MCP
- * host; this projects the same record from `workProduct.meta`. Null when the
- * run hid nothing (or the record is absent/malformed).
+ * Historical disclosure as a consumable fact: runs written under the retired
+ * INV-062 masked their saved copies and recorded what they hid in
+ * `workProduct.meta.secret_like`. Current runs save exact bytes (INV-146) and
+ * record nothing, so this is null for them (and for an absent/malformed record).
  */
 export function projectSecretLikeDisclosure(
   detail: Record<string, unknown> | null,
@@ -66,20 +77,70 @@ export function projectSecretLikeDisclosure(
   return parsed.success ? parsed.data : null;
 }
 
+/** #535 object result as a consumable fact (from `workProduct.meta`); null without one. */
+export function projectObjectResultDisclosure(
+  detail: Record<string, unknown> | null,
+): ObjectResultDisclosure | null {
+  const meta = (detail?.["workProduct"] as { meta?: Record<string, unknown> } | null | undefined)
+    ?.meta;
+  const result = meta?.["git_result"] as { digest?: unknown } | undefined;
+  if (!result) return null;
+  const view = meta?.["patch_view"] as Record<string, unknown> | undefined;
+  const inventory = meta?.["change_inventory"] as { changedFiles?: unknown } | undefined;
+  const unavailable = view?.["available"] === false;
+  const parsed = ObjectResultDisclosure.safeParse({
+    digest: result.digest,
+    patchView: unavailable ? "unavailable" : "rendered",
+    reason: unavailable ? (view?.["reason"] ?? null) : null,
+    estimatedBytes: unavailable ? (view?.["estimatedBytes"] ?? null) : null,
+    changedFiles: unavailable ? (inventory?.changedFiles ?? null) : null,
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * The canonical run id of an addressed detail. A job handle remains usable
+ * after the daemon binds its run, and then converges on that run id; any
+ * other identity is a service fault, never a silent substitution.
+ */
+export function canonicalRunId(requested: string, rawSummary: unknown): string {
+  const summary = (rawSummary ?? {}) as Record<string, unknown>;
+  if (summary["runId"] === requested) return requested;
+  if (summary["jobId"] === requested && typeof summary["runId"] === "string")
+    return summary["runId"];
+  throw new CliError(
+    "operational",
+    `run detail identity does not match requested run ${requested}`,
+    {
+      code: "invalid_service_response",
+      retryable: true,
+    },
+  );
+}
+
+/** Continuation facts verbatim; a key the detail does not carry stays unknown (omitted). */
+function projectContinuationFacts(summary: Record<string, unknown>): Record<string, unknown> {
+  const facts: Record<string, unknown> = {};
+  const continueFrom = Id.nullable().safeParse(summary["continueFrom"]);
+  if ("continueFrom" in summary && continueFrom.success) facts["continueFrom"] = continueFrom.data;
+  const resumable = RunResumable.nullable().safeParse(summary["resumable"]);
+  if ("resumable" in summary && resumable.success) facts["resumable"] = resumable.data;
+  const continuity = RunContinuityReceipt.array().safeParse(summary["continuity"]);
+  if (continuity.success) facts["continuity"] = continuity.data;
+  const retained = ControlRetainedEnvelope.nullable().safeParse(summary["retainedEnvelope"]);
+  if ("retainedEnvelope" in summary && retained.success) facts["retainedEnvelope"] = retained.data;
+  return facts;
+}
+
 /** One typed read projection for inspect/status/result from a single detail snapshot. */
 export function projectRecoveryRunDetail(
   mode: string,
-  runId: string,
+  requestedRunId: string,
   detail: Record<string, unknown>,
   delegationParentRunId?: string,
 ): Record<string, unknown> {
   const summary = (detail["summary"] ?? {}) as Record<string, unknown>;
-  if (summary["runId"] !== runId) {
-    throw new CliError("operational", `run detail identity does not match requested run ${runId}`, {
-      code: "invalid_service_response",
-      retryable: true,
-    });
-  }
+  const runId = canonicalRunId(requestedRunId, summary);
   if (
     delegationParentRunId !== undefined &&
     summary["delegatedFromRunId"] !== delegationParentRunId
@@ -127,7 +188,10 @@ export function projectRecoveryRunDetail(
       summary["delegation"] && typeof summary["delegation"] === "object"
         ? summary["delegation"]
         : null,
+    ...projectContinuationFacts(summary),
     secretLike: projectSecretLikeDisclosure(detail),
+    objectResult: projectObjectResultDisclosure(detail),
+    deferredMessage: DeferredMessageProjection.nullable().parse(detail["deferredMessage"] ?? null),
   };
   if (mode !== "__run_result") {
     return {
@@ -190,6 +254,7 @@ export function projectDegradedRecoveryRunDetail(
     delegatedFromRunId: null,
     delegation: null,
     secretLike: null,
+    objectResult: null,
     detailProblem: describeRunDetailProblem(error),
   };
 }

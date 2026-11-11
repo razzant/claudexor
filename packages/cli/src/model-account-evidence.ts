@@ -68,7 +68,11 @@ export function bindModelAccountEvidence(args: {
       const category =
         problem?.code === "auth_required"
           ? "authentication_failed"
-          : dispatched && args.model !== null && problem?.code === "model_unavailable"
+          : dispatched &&
+              args.model !== null &&
+              (problem?.code === "model_unavailable" ||
+                (problem?.code === "model_capability_refused" &&
+                  problem.context.vendorCode === "model_not_found"))
             ? "model_not_found"
             : null;
       if (category) {

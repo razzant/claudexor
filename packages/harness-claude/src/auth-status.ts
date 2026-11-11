@@ -1,6 +1,13 @@
+import { observeHarnessProgram } from "@claudexor/core";
+import { CLAUDE_PROGRAM } from "./program.js";
 import type { CaptureResult } from "@claudexor/core";
 import type { AuthSourceReadiness, HarnessEvent } from "@claudexor/schema";
-import { credentialMutationWindowOpen, labelStreams, runCapture } from "@claudexor/core";
+import {
+  credentialMutationWindowOpen,
+  isExecutableFormatError,
+  labelStreams,
+  runCapture,
+} from "@claudexor/core";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
 /**
@@ -126,6 +133,7 @@ interface ProbeAttempt {
   detail: string;
 }
 
+let generation = 0;
 const cache = new Map<string, CachedAuthStatus>();
 interface PendingProbe {
   promise: Promise<ClaudeAuthStatusProbe>;
@@ -135,6 +143,7 @@ const pending = new Map<string, PendingProbe>();
 
 /** Test seam for isolating the process-local cache between focused cases. */
 export function clearClaudeAuthStatusCache(): void {
+  generation += 1;
   cache.clear();
   // An explicit credential mutation must also stop an in-flight probe from
   // repopulating the just-invalidated LKG with a pre-mutation verdict.
@@ -223,7 +232,10 @@ async function attempt(
       detail: probeErrorDetail(result),
     };
   } catch (err) {
-    return { transportFailure: true, detail: thrownErrorDetail(err) };
+    // A file the OS cannot execute in its format (or a launch refused for that
+    // reason) is structural: the retry would hit the same bytes, and the LKG
+    // would hide a broken install behind an old verdict.
+    return { transportFailure: !isExecutableFormatError(err), detail: thrownErrorDetail(err) };
   }
 }
 
@@ -312,7 +324,10 @@ export async function probeClaudeAuthStatus(
       probeError: "claude auth status probe aborted",
     };
   }
-  const key = cacheKey(bin, options.configDir);
+  const startedGeneration = generation;
+  const program = await observeHarnessProgram(CLAUDE_PROGRAM, options.env, bin);
+  if (generation !== startedGeneration) return abortedProbe();
+  const key = JSON.stringify([cacheKey(bin, options.configDir), program.key]);
   const inFlight = pending.get(key);
   if (inFlight !== undefined) return awaitProbe(inFlight.promise, options.abortSignal);
   // The underlying operation uses its own signal.  A caller cancelling its

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelAdapter } from "@claudexor/core";
 import {
   CredentialUnusableLedger,
@@ -31,11 +31,18 @@ import {
 import { codexRateLimitEvents } from "../../harness-codex/src/quota.js";
 import { accountObservations } from "./account-observations.js";
 import { createModelServices } from "./model-services.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const cleanups: Array<() => Promise<void>> = [];
+const removals: Array<() => void> = [];
 beforeEach(() => accountObservations.invalidate());
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const dispose of cleanups.splice(0).reverse()) await dispose();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 async function fixture(imageDeps?: Parameters<typeof createCodexModelAdapter>[0]) {
@@ -71,6 +78,7 @@ async function fixture(imageDeps?: Parameters<typeof createCodexModelAdapter>[0]
     accountFingerprint: profile.profile_id,
     observedAt: new Date().toISOString(),
     provenance: "fixture",
+    sourceProgram: null,
     clientVersion: null,
     clientVersionSource: null,
     models: [
@@ -200,11 +208,11 @@ async function fixture(imageDeps?: Parameters<typeof createCodexModelAdapter>[0]
     onCommandTerminal: (record) => services.operations.onCommandTerminal(record),
   });
   await server.start();
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   cleanups.push(async () => {
     services.close();
     await server.stop();
     await sql.close();
-    rmSync(root, { recursive: true, force: true });
   });
   const run = async (kind: "image" | "text", account: ModelAccountChoice = { mode: "auto" }) => {
     const request =

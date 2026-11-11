@@ -3,6 +3,7 @@ import type { HarnessAdapter } from "@claudexor/core";
 import type { CredentialUnusableObservation, HarnessRunSpec } from "@claudexor/schema";
 import {
   OrchestratorCredentials,
+  reviewerProfileResolver,
   type CredentialResolutionHost,
 } from "./orchestrator-credentials.js";
 import {
@@ -114,7 +115,7 @@ describe("OrchestratorCredentials differential verdict fence (#363)", () => {
       attemptId: "a01",
       policy: { limit_action: "rotate", rotation_eligible: [], headroom_threshold: 1 },
       registry: [],
-      snapshots: [],
+      quotaSnapshots: () => [],
       probeReadyProfiles: async () => new Set(),
       ...observations,
       triedProfiles: new Set(),
@@ -240,5 +241,84 @@ describe("OrchestratorCredentials differential verdict fence (#363)", () => {
     // The rotation decision still sees the verdict; only the memory refuses it.
     expect(await probe(after)).toMatchObject({ code: "auth_revoked" });
     expect(f.recorded).toEqual([]);
+  });
+});
+
+describe("reviewer seat account preflight (#532)", () => {
+  const row = (profileId: string) => ({
+    profile_id: profileId,
+    harness_id: "stub",
+    display_name: profileId,
+    credential_kind: "config_dir_login" as const,
+    isolation_locator: `/tmp/stub-${profileId}`,
+    secret_ref: null,
+    enabled: true,
+    created_at: null,
+  });
+  function seats(ready: boolean) {
+    const probes: Array<{ profileId: string; signal: AbortSignal | undefined; options: unknown }> =
+      [];
+    const adapter = {
+      id: "stub",
+      async probeCredentialProfile(
+        profile: { profile_id: string },
+        signal?: AbortSignal,
+        options?: unknown,
+      ) {
+        probes.push({ profileId: profile.profile_id, signal, options });
+        return {
+          profile_id: profile.profile_id,
+          harness_id: "stub",
+          availability: ready ? "available" : "unknown",
+          verification: ready ? "passed" : "not_run",
+          verification_source: "local_store",
+          detail: ready ? "login verified" : "Cursor did not confirm sign-in within 120s",
+          last_verified_at: null,
+        };
+      },
+    } as unknown as HarnessAdapter;
+    const host = {
+      config: () => ({ global: { credential_profiles: [row("a"), row("b")], harnesses: {} } }),
+      registry: () => new Map([["stub", adapter]]),
+      quotaSnapshots: () => [],
+      quotaAbsences: () => [],
+      credentialUnusable: () => [],
+      recordCredentialUnusable: () => {},
+      preProgressRefusals: () => undefined,
+      authPreferenceForHarness: () => "auto",
+    } as unknown as CredentialResolutionHost;
+    return { probes, credentials: new OrchestratorCredentials(host) };
+  }
+  const seat = (credentialProfileId: string | null) => ({
+    harnessId: "stub",
+    model: null,
+    authPreference: "auto" as const,
+    credentialProfileId,
+  });
+
+  it("an explicit seat's pin is checked with the pin fact under the run's cancellation", async () => {
+    const { probes, credentials } = seats(true);
+    const run = new AbortController();
+    const profile = await reviewerProfileResolver(credentials, "/repo", run.signal)(seat("a"));
+    expect(profile?.profile_id).toBe("a");
+    expect(probes[0]).toEqual({ profileId: "a", signal: run.signal, options: { pinned: true } });
+  });
+
+  it("an explicit seat whose sign-in is not confirmed refuses with that reason", async () => {
+    const { credentials } = seats(false);
+    await expect(
+      reviewerProfileResolver(credentials, "/repo", new AbortController().signal)(seat("a")),
+    ).rejects.toThrow(
+      'reviewer credential profile "a" (stub) is not ready: Cursor did not confirm sign-in within 120s',
+    );
+  });
+
+  it("an automatic seat keeps the ordinary probe, without the pin fact", async () => {
+    const { probes, credentials } = seats(true);
+    const run = new AbortController();
+    const profile = await reviewerProfileResolver(credentials, "/repo", run.signal)(seat(null));
+    expect(["a", "b"]).toContain(profile?.profile_id);
+    expect(probes.length).toBeGreaterThan(0);
+    expect(probes.every((probe) => probe.options === undefined)).toBe(true);
   });
 });

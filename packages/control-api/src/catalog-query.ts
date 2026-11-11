@@ -29,12 +29,14 @@ export function parseHarnessListQuery(url: URL): HarnessListQuery {
 }
 
 export function parseCredentialProfilesSnapshotQuery(url: URL) {
-  assertOnlyQueryParams(url, ["snapshot", "view"]);
+  assertOnlyQueryParams(url, ["snapshot", "view", "includeApiKeys"]);
   const snapshot = optionalBooleanQuery(url, "snapshot") ?? false;
   const view = resourceViewQuery(url);
+  const includeApiKeys = optionalBooleanQuery(url, "includeApiKeys") === true;
   if (view && !snapshot) throw new Error("view=resources requires snapshot=true");
+  if (includeApiKeys && !view) throw new Error("includeApiKeys requires view=resources");
   return {
-    input: { snapshot, ...(view ? { view } : {}) },
+    input: { snapshot, ...(view ? { view } : {}), ...(includeApiKeys ? { includeApiKeys } : {}) },
     schema: view
       ? ControlCredentialProfilesResourcesResponse
       : snapshot
@@ -61,7 +63,12 @@ export function resourceViewQuery(url: URL): "resources" | undefined {
 /** GET-only quota read selector; POST refresh keeps resourceViewQuery. */
 export function quotaReadViewQuery(url: URL): ControlQuotaReadRequest["view"] {
   const view = singleQuery(url, "view");
-  if (view !== undefined && view !== "resources" && view !== "constraint_freshness")
-    throw new Error("view must be resources or constraint_freshness");
+  if (
+    view !== undefined &&
+    view !== "resources" &&
+    view !== "constraint_freshness" &&
+    view !== "resources_freshness"
+  )
+    throw new Error("view must be resources, constraint_freshness or resources_freshness");
   return view;
 }

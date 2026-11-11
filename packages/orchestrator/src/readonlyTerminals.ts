@@ -5,14 +5,24 @@ import type { EventLog } from "@claudexor/event-log";
 import { makeOutcomeFacts, type ModeKind } from "@claudexor/schema";
 import type { OrchestratorResult } from "./orchestrator.js";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
-import { readOnlyNoSuccessTerminal } from "./attemptFinalize.js";
+import {
+  attemptInterruption,
+  readOnlyNoSuccessTerminal,
+  type AttemptInterruption,
+} from "./attemptFinalize.js";
 import { budgetFailureRecord, classifyBudgetFailure, type BudgetDenial } from "./budgetFailure.js";
 import { unanimousDeclaredFailure } from "./candidateEvidence.js";
-import { resumableTerminal, type ContinuityTerminalFacts } from "./continuity-terminal.js";
 import {
+  carryingAttempts,
+  resumableTerminal,
+  type ContinuityTerminalFacts,
+} from "./continuity-terminal.js";
+import {
+  attemptCauseLines,
   attemptVendorFailure,
   dominantHarnessFailureCategory,
   harnessFailureNextActions,
+  withVendorCause,
 } from "./harnessFailure.js";
 import { poolFailure } from "./pool-attempt-evidence.js";
 import { writeFailure, type declaredFailure } from "./runTerminalResults.js";
@@ -23,16 +33,12 @@ export interface ReadonlyAttempt extends ContinuityTerminalFacts {
   harnessId: string;
   status: "success" | "failed" | "blocked";
   report: string;
-  answerMatches?: number;
   error: string | null;
   telemetry: AttemptTelemetry;
   /** QA-019: this scout was refused BEFORE spawn by the budget gate — it
    * belongs in the denominator/omissions but never ran the harness, so the
    * all-denied terminal still routes through the QA-050 budget classifier. */
   budgetDenied?: boolean;
-  /** D-16 r8: scout ran out of context — a failed omission, never reducer
-   * input; ALL-interrupted terminalizes interrupted. */
-  interrupted?: boolean;
   /** A5: the typed refusal (exhausted credential pool / spent window) this
    * attempt died on, so the chain terminal can speak it machine-readably. */
   declaredFailure?: ReturnType<typeof declaredFailure>;
@@ -68,9 +74,13 @@ export function readOnlyChainFailureResult(
     budgetStopped && !webBlocked
       ? classifyBudgetFailure({ denial: budgetDenial, terminal: ledger.terminal() })
       : null;
+  // A typed limit that ended the last attempt is its outcome (#299), below budget and web.
+  const interruption = budgetMapping || webBlocked ? null : attemptInterruption(last?.telemetry);
+  // The last attempt speaks, with the vendor's own failure for its last try (#633).
+  const vendor = attemptVendorFailure(attemptTelemetries, last?.attemptId);
   const { message: singleError, poolAttempts } = poolFailure(
     budgetMapping?.safeMessage ??
-      last?.error ??
+      (last?.error != null ? withVendorCause(last.error, vendor) : null) ??
       (budgetStopped ? "budget exhausted before any attempt" : "harness failed"),
     attempts,
   );
@@ -86,7 +96,7 @@ export function readOnlyChainFailureResult(
   input.writeTelemetry();
   store.writeText(
     join(paths.contextDir, "context_error.md"),
-    `# ${budgetMapping ? "Budget Denied" : "Harness Error"}\n\n${singleError}\n`,
+    `# ${budgetMapping ? "Budget Denied" : interruption ? "Interrupted" : "Harness Error"}\n\n${singleError}\n`,
   );
   const roEventRefs = attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`);
   if (budgetMapping) {
@@ -115,9 +125,12 @@ export function readOnlyChainFailureResult(
       runDir: paths.root,
       resetsAt: roDeclared?.resetsAt ?? null,
       requestRefusal: roDeclared?.requestRefusal,
-      vendorFailure: attemptVendorFailure(attemptTelemetries, last?.attemptId),
+      quotaRefusal: roDeclared?.quotaRefusal,
+      vendorFailure: vendor,
       poolAttempts,
-      nextActions: harnessFailureNextActions(roCategory),
+      nextActions: interruption
+        ? interruptionNextActions(interruption)
+        : harnessFailureNextActions(roCategory),
     });
   }
   // QA-036: re-check the DELIVERABLE through the shared finalizer helper —
@@ -129,10 +142,12 @@ export function readOnlyChainFailureResult(
     budgetStopped,
     attemptsCount: attempts.length,
   });
-  const terminalFacts = makeOutcomeFacts(roTerminal.lifecycle, {
-    ...(roTerminal.review ? { review: roTerminal.review } : {}),
-    reason: budgetMapping?.reason ?? roTerminal.reason,
-  });
+  const terminalFacts = interruption
+    ? makeOutcomeFacts("interrupted", { reason: interruption })
+    : makeOutcomeFacts(roTerminal.lifecycle, {
+        ...(roTerminal.review ? { review: roTerminal.review } : {}),
+        reason: budgetMapping?.reason ?? roTerminal.reason,
+      });
   const terminalHarnessId = budgetMapping?.harnessId ?? last?.harnessId;
   store.writeText(
     join(paths.finalDir, "summary.md"),
@@ -147,7 +162,7 @@ export function readOnlyChainFailureResult(
       error: singleError,
       pool_attempts: poolAttempts,
       failure_ref: "final/failure.yaml",
-      ...resumableTerminal(store, paths, attempts, true),
+      ...resumableTerminal(store, paths, carryingAttempts(attempts, paths.root), true),
     });
   } else {
     log.emit("run.failed", {
@@ -159,7 +174,7 @@ export function readOnlyChainFailureResult(
       error: singleError,
       pool_attempts: poolAttempts,
       failure_ref: "final/failure.yaml",
-      ...resumableTerminal(store, paths, attempts, true),
+      ...resumableTerminal(store, paths, carryingAttempts(attempts, paths.root), true),
     });
   }
   return {
@@ -190,17 +205,19 @@ export function deepScanFailureResult(input: ReadonlyTerminalContext): Orchestra
     budgetStopped && !blocked && attempts.every((a) => a.budgetDenied === true)
       ? classifyBudgetFailure({ denial: budgetDenial, terminal: ledger.terminal() })
       : null;
-  // D-16 r8: ALL scouts out of context → the aggregate is interrupted.
-  const allInterrupted = attempts.length > 0 && attempts.every((a) => a.interrupted === true);
+  // D-16 r8: ALL scouts stopped by a typed limit (context or the max-turns cap,
+  // also when the vendor then exited non-zero) → the aggregate is interrupted.
+  const limits = attempts.map((a) => attemptInterruption(a.telemetry));
+  const allInterrupted = attempts.length > 0 && limits.every((limit) => limit !== null);
   const scanFailFacts = allInterrupted
-    ? makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted" })
+    ? makeOutcomeFacts("interrupted", { reason: limits[0]! })
     : makeOutcomeFacts("failed", {
         reason: scanBudgetMapping ? scanBudgetMapping.reason : "harness_failed",
       });
   const { message, poolAttempts } = poolFailure(
     scanBudgetMapping
       ? scanBudgetMapping.safeMessage
-      : attempts.map((a) => `${a.attemptId}/${a.harnessId}: ${a.error ?? "failed"}`).join("\n"),
+      : attemptCauseLines(attempts, attemptTelemetries).join("\n"),
     attempts,
   );
   input.writeTelemetry();
@@ -225,6 +242,7 @@ export function deepScanFailureResult(input: ReadonlyTerminalContext): Orchestra
       code: declared?.code,
       resetsAt: declared?.resetsAt,
       requestRefusal: declared?.requestRefusal,
+      quotaRefusal: declared?.quotaRefusal,
       safeMessage: message || "all explorers failed",
       eventRefs: attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`),
       runDir: paths.root,
@@ -268,4 +286,17 @@ export function deepScanFailureResult(input: ReadonlyTerminalContext): Orchestra
       status: a.status,
     })),
   };
+}
+
+/** Remediation of a run a typed limit stopped: its partial output is evidence, never an answer. */
+function interruptionNextActions(interruption: AttemptInterruption): string[] {
+  return interruption === "turn_limit_reached"
+    ? [
+        "Inspect the retained partial output (final/retained-output.md)",
+        "Continue this run (continueFrom) for more turns, or re-run without a max-turns limit",
+      ]
+    : [
+        "Inspect the retained partial output (final/retained-output.md)",
+        "Re-run with a narrower scope",
+      ];
 }

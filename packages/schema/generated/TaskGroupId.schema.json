@@ -1,0 +1,11 @@
+{
+  "$ref": "#/definitions/TaskGroupId",
+  "definitions": {
+    "TaskGroupId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Caller-generated UUID saved before launching the first member. Each job still needs its own idempotency key; the group grants no execution authority."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

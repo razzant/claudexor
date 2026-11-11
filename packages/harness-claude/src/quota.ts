@@ -1,6 +1,6 @@
 import type { HarnessEvent, QuotaConstraint } from "@claudexor/schema";
+import { claudeQuotaFamilyScope } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
-import { claudeQuotaModelAliases } from "./capability-profile.js";
 
 type ObjectValue = Record<string, unknown>;
 
@@ -44,9 +44,7 @@ export function claudeQuotaEvents(value: unknown, sessionId: string, ts: string)
         window_seconds: definition.seconds,
         resets_at: resetsAt,
         cooldown_until: null,
-        ...(definition.family
-          ? { applies_to_models: claudeQuotaModelAliases(definition.family) }
-          : {}),
+        ...(definition.family ? claudeQuotaFamilyScope(definition.family) : {}),
       };
       event.quota = {
         source: "claude_rate_limit_event",

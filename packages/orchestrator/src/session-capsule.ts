@@ -10,7 +10,7 @@
  * session has one holder at a time. Readers: the in-run continuation loop,
  * the `continueFrom` run chain and the thread store's projection.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { SessionCapsule, type CredentialProfile } from "@claudexor/schema";
 import {
@@ -33,16 +33,7 @@ export function writeSessionCapsule(attemptDir: string, capsule: SessionCapsule)
   writeFileSync(path, JSON.stringify(SessionCapsule.parse(capsule), null, 2) + "\n");
 }
 
-/** The attempt's capsule, or null when none was written or it does not parse. */
-export function readSessionCapsule(attemptDir: string): SessionCapsule | null {
-  const path = sessionCapsulePath(attemptDir);
-  if (!existsSync(path)) return null;
-  try {
-    return SessionCapsule.parse(JSON.parse(readFileSync(path, "utf8")));
-  } catch {
-    return null;
-  }
-}
+export { readSessionCapsule } from "@claudexor/workspace";
 
 /**
  * The EnvMap the adapter's `locate`/`move` resolve a store from: the child's

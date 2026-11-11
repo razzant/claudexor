@@ -47,7 +47,7 @@ function initRepo(): string {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("transient Git revert cleanup", () => {
   it("marks cleanup-only failure after a successful reverse without denying the rollback", async () => {

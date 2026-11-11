@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { RunEvent } from "@claudexor/schema";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { JOURNALED_RUN_EVENT_TYPES, journaledRunEventCopy } from "../journaled-run-events.js";
 import type { EventLedger } from "../store-contracts.js";
 import { BlobFiles, INLINE_BODY_MAX_BYTES } from "./blob-files.js";
@@ -14,6 +14,7 @@ import { createPartition } from "./partitions.js";
 import { insertEventInTx, restoreEventSequenceInTx } from "./retention.js";
 import { ensureSchema } from "./schema.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const TIME = "2026-10-10T02:03:04.000Z";
 let root: string;
@@ -21,10 +22,12 @@ const stores: EngineStore[] = [];
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cx-sql-events-"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   vi.restoreAllMocks();
   for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 async function fixture() {
   const store = await EngineStore.open({
@@ -199,7 +202,7 @@ describe("SQL EventLedger body and fold contract", () => {
     expect(ledger.records(0, ["thread.entities_upserted"])).toEqual([]);
   });
 
-  it("stores all eleven typed run-event copies with the existing producer's redaction", async () => {
+  it("stores every journaled run-event type with the existing producer's redaction", async () => {
     const { ledger } = await fixture();
     const expected = [...JOURNALED_RUN_EVENT_TYPES].map((type, index) => {
       const source = RunEvent.parse({
@@ -220,7 +223,7 @@ describe("SQL EventLedger body and fold contract", () => {
     for (const event of expected) ledger.append("run.event", event);
     const actual = ledger.records<RunEvent>(0, ["run.event"]).map((record) => record.payload);
     expect(actual).toEqual(expected);
-    expect(actual).toHaveLength(11);
+    expect(actual).toHaveLength(JOURNALED_RUN_EVENT_TYPES.size);
     expect(actual.find((event) => event.type === "run.created")?.payload).toMatchObject({
       prompt_bytes: 14,
     });
@@ -239,7 +242,7 @@ describe("SQL EventLedger body and fold contract", () => {
       }),
     );
     expect(ledger.records<RunEvent>(0, ["run.event"]).map((record) => record.payload)).toHaveLength(
-      11,
+      JOURNALED_RUN_EVENT_TYPES.size,
     );
   });
 

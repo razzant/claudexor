@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { BlobFiles } from "./blob-files.js";
 import { readJournalEvents, encodeJournalCursor } from "./cursors.js";
 import {
@@ -20,6 +20,7 @@ import { createPartition, currentGeneration } from "./partitions.js";
 import { SqlProjectRouter } from "./project-router.js";
 import { SqlProjectStore } from "./projects.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 let root: string,
   store: EngineStore,
@@ -40,10 +41,12 @@ beforeEach(async () => {
   projects = new SqlProjectStore(store, blobs, obligations);
   router = new SqlProjectRouter(projects);
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   obligations?.close();
   await store?.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 function project(name: string) {
   const path = join(root, name);

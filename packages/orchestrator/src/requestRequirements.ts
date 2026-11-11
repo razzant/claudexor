@@ -8,6 +8,9 @@ import type {
   RequestRequirementResolution,
 } from "@claudexor/schema";
 import { HarnessUnavailableError } from "@claudexor/core";
+import { noProjectRepoRoot } from "@claudexor/util";
+
+const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 export interface BrowserLaneRequirementInput {
   harnessId: string;
@@ -83,6 +86,35 @@ export class RequestRequirementsResolver {
       : requestedAccess;
   }
 
+  /** Project-scoped Ask and Plan are answered by the harness reading the project
+   * itself: their prompt carries a path atlas, never file contents (#133, #137). A
+   * lane that may play them but cannot read files is refused before dispatch, which
+   * holds a Council's drafts and its merge too; work without a project needs no
+   * file access. Null = admitted, or another check speaks. */
+  projectReadRefusal(
+    intent: Intent,
+    input: { repoRoot: string },
+    status: {
+      id: string;
+      enabledIntents: Intent[];
+      manifest: { capabilities: { read_files: boolean } } | null;
+    },
+  ): string | null {
+    return (intent === "explain" || intent === "plan" || intent === "spec") &&
+      input.repoRoot !== NO_PROJECT_ROOT &&
+      status.enabledIntents.includes(intent) &&
+      status.manifest?.capabilities.read_files === false
+      ? `${status.id} (cannot read project files: ask without a project or choose a harness that reads files)`
+      : null;
+  }
+
+  /** Explicit auxiliary writable roots need the lane's OWN workspace_write
+   * access plus a native per-turn mechanism; patch producers and read-only
+   * lanes never receive them. */
+  auxiliaryWritableRootsCapable(laneAccess: AccessProfile, declared: boolean): boolean {
+    return laneAccess === "workspace_write" && declared;
+  }
+
   assertConvergenceWorkspace(
     inPlace: boolean,
     routes: { implementationTransport: ImplementationTransport }[],
@@ -92,6 +124,18 @@ export class RequestRequirementsResolver {
         "in-place convergence is unavailable for git_patch_envelope adapters; use an isolated run or a single agent attempt",
       );
     }
+  }
+
+  /** The intent a convergence round dispatches. A `git_patch_envelope`
+   * producer is admitted for the run's candidate intent and plays no `repair`
+   * (raw-api's doctor disables it): sent `repair`, it answers without its
+   * packet, the project's mandatory files or the patch protocol (#147), so it
+   * gets the candidate intent, as one agent attempt does. */
+  convergenceIntent(
+    route: { implementationTransport: ImplementationTransport },
+    candidate: Intent,
+  ): Intent {
+    return route.implementationTransport === "git_patch_envelope" ? candidate : "repair";
   }
 
   /** Typed finite-descriptor admission for one selected harness lane. */
@@ -217,6 +261,25 @@ export class RequestRequirementsResolver {
     outputDir: string,
   ): { output_dir: string; headless: boolean } | null {
     return resolution.effective ? { output_dir: outputDir, headless: false } : null;
+  }
+
+  /** Project only ordinary single-candidate Auto selection. Explicit and mixed
+   * strategies keep their per-lane receipts and the final existential check. */
+  resolveBrowserPool(
+    requested: boolean,
+    singleAuto: boolean,
+    resolutions: RequestRequirementResolution[],
+  ): { admittedHarnessIds: string[]; rejected: RequestRequirementResolution[] } {
+    if (!requested || !singleAuto) {
+      return { admittedHarnessIds: resolutions.map((lane) => lane.harness_id), rejected: [] };
+    }
+    this.requireEffectiveBrowser(true, resolutions);
+    return {
+      admittedHarnessIds: resolutions
+        .filter((lane) => lane.effective)
+        .map((lane) => lane.harness_id),
+      rejected: resolutions.filter((lane) => !lane.effective),
+    };
   }
 
   resolveBrowser(input: BrowserLaneRequirementInput): RequestRequirementResolution {

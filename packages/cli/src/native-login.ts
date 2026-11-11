@@ -1,3 +1,6 @@
+import { resolveCodexBin } from "@claudexor/harness-codex";
+import { resolveClaudeBin } from "@claudexor/harness-claude";
+import { AGY_BIN } from "@claudexor/harness-agy";
 import {
   WINDOWS_RUNTIME_ENV_KEYS,
   harnessRuntimeEnv,
@@ -21,6 +24,7 @@ import {
   resolveCursorBin,
 } from "@claudexor/harness-cursor";
 import { AGY_MANAGED_LOGIN, canonicalAgyProfileHome } from "@claudexor/harness-agy";
+import { GROK_MANAGED_LOGIN, grokProfileEnv, resolveGrokBin } from "@claudexor/harness-grok";
 import type { ManagedLogin } from "@claudexor/schema";
 import { ensureDir } from "@claudexor/util";
 import { basename, isAbsolute } from "node:path";
@@ -65,8 +69,13 @@ export type CodexLoginFlow = "device_auth" | "browser_callback" | "browser_redir
 export const AGY_LOGIN_WINDOW_MS = 60_000;
 
 const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
+  grok: {
+    binaryName: (resolver) => resolveGrokBin(process.env, resolver),
+    args: ["login", "--device-auth"],
+    displayCommand: "grok login --device-auth",
+  },
   codex: {
-    binaryName: () => process.env.CLAUDEXOR_CODEX_BIN || "codex",
+    binaryName: resolveCodexBin,
     // D-17: device-code auth is the DEFAULT flow, now driven over the codex
     // app-server (`account/login/start {chatgptDeviceCode}`) with NO Terminal.
     // Completed in an ISOLATED browser context it avoids the
@@ -79,7 +88,7 @@ const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
     displayCommand: "codex app-server device-code login (isolated Claudexor profile)",
   },
   claude: {
-    binaryName: () => process.env.CLAUDEXOR_CLAUDE_BIN || "claude",
+    binaryName: resolveClaudeBin,
     // No --claudeai flag: it is version-varying (absent on older CLIs, #17)
     // while plain `auth login` already defaults to the claude.ai subscription
     // route; the scoped CLAUDE_CONFIG_DIR isolates us from any user setting
@@ -98,7 +107,7 @@ const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
       basename(binary) === "agent" ? "agent login" : "cursor-agent login",
   },
   agy: {
-    binaryName: () => process.env.CLAUDEXOR_AGY_BIN || "agy",
+    binaryName: AGY_BIN,
     // agy has no login subcommand. BARE `agy` is the interactive TUI, which
     // OPENS THE BROWSER ITSELF and stays resident after authenticating — on a
     // daemon host that hijacks a browser nobody is watching and the runner
@@ -125,6 +134,7 @@ export const NATIVE_LOGIN_INPUTS: Record<string, ManagedLogin> = {
   claude: CLAUDE_MANAGED_LOGIN,
   cursor: CURSOR_MANAGED_LOGIN,
   agy: AGY_MANAGED_LOGIN,
+  grok: GROK_MANAGED_LOGIN,
 };
 
 /**
@@ -280,6 +290,14 @@ export function nativeLoginEnv(
     // Default and profile Claude stores are both Claudexor-owned (INV-067 /
     // INV-135); ordinary ~/.claude is never created, read, or mutated here.
     ensureDir(env.CLAUDE_CONFIG_DIR);
+  } else if (harness === "grok") {
+    if (!configDirOverride)
+      throw new Error(
+        "Grok has no default credential store; use claudexor profiles add grok <id> and claudexor profiles login grok <id>",
+      );
+    const scoped = grokProfileEnv(configDirOverride);
+    for (const [key, value] of Object.entries(scoped)) if (value) env[key] = value;
+    ensureDir(env.GROK_HOME!);
   } else if (harness === "agy") {
     // agy takes its whole state root from $HOME; the profile HOME is the named
     // binding's isolation locator. There is NO default agy binding store (owner

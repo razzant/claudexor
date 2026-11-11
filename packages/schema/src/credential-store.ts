@@ -12,10 +12,11 @@
  * `$HOME` and exposes no config-dir variable, so adopting a default store
  * would mean adopting the operator's real home directory as a credential
  * store (owner decision Л-4). A harness that answers false can only sign in
- * INTO a named account row.
+ * INTO a named account row. Grok is also named-only: its ordinary host
+ * `~/.grok` store must never become a managed credential identity (INV-135).
  */
 export function harnessHasDefaultCredentialStore(harness: string): boolean {
-  return harness !== "agy" && harness !== "cursor";
+  return harness !== "agy" && harness !== "cursor" && harness !== "grok";
 }
 
 /**
@@ -23,8 +24,8 @@ export function harnessHasDefaultCredentialStore(harness: string): boolean {
  * sugar (unified account model): the login lands in an auto-created
  * `<harness>-default` row — claude/codex on their Claudexor-owned native dir,
  * cursor on an isolated file-store dir. The bootstrap row has no routing
- * privilege; it is an ordinary pool row. agy stays named-only (Л-4).
+ * privilege; it is an ordinary pool row. agy and grok stay named-only.
  */
 export function harnessSupportsBootstrapLogin(harness: string): boolean {
-  return harness !== "agy";
+  return harness !== "agy" && harness !== "grok";
 }

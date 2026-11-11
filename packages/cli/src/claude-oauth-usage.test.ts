@@ -39,7 +39,7 @@ const oauthCredential = (
   ...overrides,
 });
 
-describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
+describe("claude oauth/usage quota source (W5.3, INV-146)", () => {
   // The source remembers proven vendor rejections per token in process
   // memory (#263); every test starts with an empty memory.
   beforeEach(() => forgetClaudeOauthRejections());
@@ -77,15 +77,18 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     expect(byId.get("weekly_scoped:Fable")).toMatchObject({
       used_ratio: 0.17,
       label: "7 day (Fable)",
-      applies_to_models: ["fable", "claude-fable-5-1", "claude-fable-5", "best"],
+      applies_to_models: ["fable"],
+      applies_to_model_prefixes: ["claude-fable-"],
     });
   });
 
   it.each([undefined, "", "   "])(
-    "keeps an unknown weekly model scope account-wide (display_name=%j)",
+    "keeps an unknown weekly model scope diagnostic, never account-wide (display_name=%j)",
     (displayName) => {
+      const unknown: unknown[] = [];
       const snapshot = parseClaudeOauthUsage(
         {
+          five_hour: { utilization: 10 },
           limits: [
             {
               kind: "weekly_scoped",
@@ -98,10 +101,11 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
         },
         null,
         "max",
+        new Date(),
+        (window) => unknown.push(window),
       );
-      const constraint = snapshot?.constraints.find((item) => item.id === "weekly_scoped:scoped");
-      expect(constraint?.used_ratio).toBe(1);
-      expect(constraint).not.toHaveProperty("applies_to_models");
+      expect(snapshot?.constraints.map((item) => item.id)).toEqual(["five_hour"]);
+      expect(unknown).toEqual([{ id: "weekly_scoped:scoped", used_ratio: 1, resets_at: null }]);
     },
   );
 
@@ -173,6 +177,41 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     expect(nativeAbsence?.reason).toBe("not_logged_in");
     expect(result.absences?.every((a) => a.reason === "not_logged_in")).toBe(true);
   });
+
+  it.each([true, false])(
+    "keeps an unknown-scope window's identity, usage and reset in the receipt (known window=%s)",
+    async (known) => {
+      const receipts: Array<{ stage: string; outcome: string; reason?: string }> = [];
+      const result = await refreshClaudeOauthUsageQuota({
+        readCredential: async () => oauthCredential(),
+        fetchUsage: async () => ({
+          ...(known ? { five_hour: { utilization: 10 } } : {}),
+          limits: [
+            {
+              kind: "weekly_scoped",
+              percent: 95,
+              resets_at: "2026-07-20T00:00:00Z",
+              scope: { model: { display_name: "Opus 4.6" } },
+            },
+          ],
+        }),
+        now: () => new Date("2026-07-18T00:00:00Z"),
+        diagnostic: (record) => receipts.push(record),
+      });
+      const receipt = receipts.find((r) => r.stage === "usage_http" && r.outcome !== "started");
+      expect(receipt?.reason).toBe(
+        `${known ? "windows_observed" : "no_parseable_windows"}; unknown_scope=weekly_scoped:Opus 4.6 used=95% resets=2026-07-20T00:00:00Z`,
+      );
+      // Never an account-wide window, and never a fresh limit-free reading.
+      const windows = result.snapshots.flatMap((row) => row.constraints.map((c) => c.id));
+      expect(windows).toEqual(known ? ["five_hour"] : []);
+      if (!known)
+        expect(result.absences?.find((a) => a.subject.subject_id === null)).toMatchObject({
+          reason: "refresh_failed",
+          detail: expect.stringContaining("unknown model scope"),
+        });
+    },
+  );
 
   it("claims a refresh_failed absence when the usage endpoint refuses", async () => {
     const result = await refreshClaudeOauthUsageQuota({
@@ -655,9 +694,9 @@ describe("claude credential-file store off macOS (Linux quota parity)", () => {
   };
   afterAll(() => {
     for (const dir of __reapDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
   // Redaction bait is assembled at runtime so no token-like literal ever
-  // lands in the source tree (secret-scan CI step, INV-062).
+  // lands in the source tree (secret-scan CI step, INV-146).
   const bait = ["sk", "ant", "oat01", "b".repeat(24)].join("-");
 
   it("reads both vendor credential shapes from .credentials.json", async () => {

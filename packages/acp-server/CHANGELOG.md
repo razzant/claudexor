@@ -1,5 +1,268 @@
 # @claudexor/acp-server
 
+## 6.0.0
+
+### Patch Changes
+
+- f4f8caf: Questions now say whether the agent waits for the answer (#628). Each pending
+  question carries `delivery`: `blocking` (every question so far, and the
+  meaning of a stored question without the field) or `async`, a question the
+  agent asks while it keeps working. An async question is still attention: it
+  sets `waitingOnUser`, wakes `claudexor_run_wait`, and can be answered through
+  the same routes. It does not pause the inactivity watchdog or refuse live
+  messages, and the new run-summary flag `asyncQuestionsOnly` is true only while
+  every pending question is async, so a blocking question is never hidden behind
+  one. `claudexor follow`, ACP and the macOS app no longer call such a run paused
+  or waiting: they keep it working, say that silence or expiry sends nothing,
+  and a blocking question is asked before an open async prompt. ACP and MCP
+  answer prompts for an async question no longer hold the run's terminal; they
+  close when the question is answered elsewhere or the run ends. In the macOS app a
+  run that has ended no longer shows a question card, a Send button or a question
+  state while its last snapshot still lists the question; a late answer the engine
+  refuses reads as a sentence saying it was not sent, instead of a raw HTTP error;
+  the deadline label keeps counting down; and an async question between the last
+  message and the final answer no longer leaves a copy of that answer in Activity.
+
+  A failed answer surface is no longer reported as the user's decline. When the
+  engine cannot register or keep a question, the run's interaction channel now
+  rejects with the cause instead of returning "no answer"; a question that was
+  never registered is not announced. A Codex approval or access request whose
+  answer channel failed stays declined and records `interaction_answer_unavailable`
+  instead of failing the run. A failed read of a run's pending questions is no
+  longer reported as having none: `GET /v2/runs/:id` for a live run answers with
+  the typed problem, so an open prompt stays open and a kept answer is retried,
+  while a finished run's detail, a run list and a child card still render.
+
+  A Codex app-server run now raises Codex's `request_user_input_async` as such a
+  question: one async interaction per native item, with Codex's own question ids
+  and options. Its text stays visible as an agent message but is never taken as
+  the run's answer, even when the turn produced no other text. A committed answer
+  goes to the turn that asked, once, as Codex's reply envelope (`turn/steer` with
+  client message id `interaction-answer:<id>`), and each send leaves an
+  `interaction_answer_steer` receipt. The end of that turn,
+  Stop and the run's end withdraw an open question and send nothing. A sub-agent's
+  question cannot be answered, and a question Claudexor cannot read, a run without
+  an answer channel and a failing channel are recorded as
+  `interaction_answer_unavailable`. This follows the Codex 0.162.1 source; it was
+  not checked against a live Codex run.
+
+- f4f8caf: An ACP prompt for a blocking question no longer holds the turn. `session/cancel`
+  now reaches a run that is parked on a question, and a prompt whose question was
+  answered elsewhere, expired or outlived its run closes without the editor
+  replying. The agent stays parked until its question is settled, a turn that was
+  cancelled no longer reports a run still paused, and a prompt that fails still
+  fails the turn.
+- b9e88de: Interaction text reaches callers exactly (#651). The Codex access question
+  now quotes the worker's complete final output instead of silently cutting it
+  at 32,000 characters. A Codex approval refused for details over the
+  32,000-character review limit now says so, with the measured size, instead of
+  the generic "cannot grant" reason; readonly and workspace_write command refusals
+  keep their priority. The bounded display labels (a harness event's timeline
+  `title` and a Claude question's preview text) end in a visible "…" and never
+  split a character; the complete text still rides beside them.
+  `claudexor_run_wait` reports `wakeReason: "interactions"` when the next event is
+  a question too large for any page. Each ACP multi-select include/skip round
+  shows every option of the question with its description.
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/util@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- 8de1106: A Cursor command handed to a background shell no longer reads as running forever. The handoff now says "Handed off to background; completion not observed" (after its timeout when the 30-second shell timeout moved it) instead of "still running". When Cursor later reports, in a `system/task_notification` frame, that this shell ended with `success`, `error` or `aborted`, Claudexor updates the same command instead of dropping the frame as unrecognized: a `status` event with `payload.code: command_outcome_refined` names the original tool call and carries the refined `command_outcome` (`completion_reported` with that word, the handoff facts kept), and the complete native frame is kept as evidence. The exit code stays unknown, because the frame has no typed one and free-text detail is not parsed, so the command reads "Completion reported; exit code unknown" or "Completion reported (error); exit code unknown". It is never shown as a success, a passing test or a recovery from an earlier failure. The run's telemetry keeps each report as a command fact (`reported_command_outcomes`) that `claudexor inspect` lists apart from tool errors: the tool call itself stays `ok`, and a reported `error` or `aborted` is no tool warning, failed attempt or ranking penalty, since a deliberately stopped dev server may simply have finished correctly. The macOS transcript updates that command's row in place (found by its exact tool-use id, never by name, and never to green), the run timeline shows the update as a warning row, and the continuation packet carries the refined outcome. ACP sends one more `tool_call_update` for the already closed call with its new text and `_meta`, leaving `status` out so the terminal `failed` stands. `claudexor acp serve` now actually streams tool activity: its run event feed, which carried only timer notices, also delivers each tool call, its result and these refinements (never narration or thinking), and each ACP call id names the run and try that issued it, so tries or turns that reuse a native id stay separate calls. The macOS transcript pairs a result only with its own try's call of the same tool-use id; a result whose call never arrived gets its own row instead of closing another open command, and an id-less result closes only the one open id-less call of its exact name in its try when the name fits the existing tool-field limit; longer names remain separate rows. `claudexor inspect` says how many reported outcomes it shows of the total. A notification that names no pending handoff of the same session (an unknown or progress id, a duplicate, a shell id shared by two pending handoffs) or carries any other status changes nothing and stays counted as an unrecognized frame. The frame shape follows one native cursor-agent 2026.08.11 run and that build's stream writer; no sanitized recording exists yet (razzant/claudexor#546).
+- 2be1a9c: Questions Claude Code asks through `AskUserQuestion` now reach every answering surface without the former length cuts (2,000 characters for a question, 100 for a header, 500 for an option label and 1,000 for a description), and a selected long label goes back unchanged (#560). Non-blank free text is sent as written; `claudexor follow` and the macOS card take one line per question. The daemon refuses an answer row that names a question the interaction does not list, repeats a question, or carries neither a label nor non-blank text (`rejected`), and the question stays pending; partial answers, the empty-set decline and selected labels are handled as before. A pending question that no live session holds is answered `not_found` instead of `delivered`, and `delivered` does not prove that the Claude process read the answer. In ACP, each permission prompt now also shows the question's header and option descriptions, a multi-select question with every option skipped is left out instead of sent as an empty row, and a turn-text message names every question left without an answer: with nothing chosen the run stays paused on the set until it is answered elsewhere or expires, and otherwise the message says the chosen answers will be submitted as a partial answer that closes the set once it is accepted. The macOS question card wraps long option labels and scrolls long questions inside a bounded area. No live Claude CLI was run for this change, and the cause of the incident reported in #560 is not established.
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+  - @claudexor/schema@5.0.2
+  - @claudexor/util@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/schema@5.0.1
+- @claudexor/util@5.0.1
+
+## 5.0.0
+
+### Patch Changes
+
+- d16170f: A Cursor shell command that is still running is no longer reported as a finished success. When Cursor moves a command to a background shell (for example after its 30-second shell timeout) or its timeout elapses, the tool result keeps its ordinary tool status but now carries typed `command_outcome` facts (`backgrounded` with the shell handle, process id and reason, `timed_out`, an observed `exited` with its exit code and signal, or `unknown` for an unrecognized shape), and the complete native result is kept in the durable `harness.event` payload. Such a result never recovers an earlier failure of the same command and never discards a delivered answer; the run timeline shows it as a warning, ACP closes it as `failed` with the state as text instead of `completed`, and the macOS transcript shows a caution row that never joins a group of finished calls. A shell spawn error is now an error instead of ok. The timeout and background shapes follow the `agent.v1` shell protocol of cursor-agent 2026.08.11; no such frame has been recorded live yet. Motivation: two reviewer runs reported a 30-second `find` as a successful command while it was still running, and the journal could not tell a timeout from a background handoff (razzant/claudexor#450).
+- 8bae6ae: Credential-shaped text in your own work is no longer refused or masked (#555, INV-146 retires INV-062). A review brief, prompt, instruction, output schema, test command, live or deferred message, interaction answer or attachment that contains a bearer header, an `sk-`/`ghp_`/`AKIA` key, a JWT or a PEM block now reaches the selected harness exactly; the typed `inline_secret_rejected` error is gone from the CLI, `POST /v2/runs`, thread turns, MCP and ACP. The task contract, command journal, served job params, thread history, events, SSE frames, answers, plans, reports, retained output, saved `patch.diff` copies, reviewer packets, reviewer workspaces, context packs and served artifacts keep the exact bytes, so Exact Retry, Run Again, continuation and later turns read back what was sent, and reviewers judge the same patch apply uses. Files named `.env`, `credentials.json`, `*.pem`, `*.key`, `secrets/…`, `.ssh/…` or `.claude/…` inside the project are ordinary project files for context, review, directory results, uploads and served outputs; Codex approval requests for them are offered instead of declined, and `review --diff` no longer refuses a diff. Claude `AskUserQuestion` text is shown exactly and answered by its native question text. Tool calls keep unmasked targets (command, path, query, URL) within each adapter's existing bounds, and tool results keep unmasked summaries of their output (`content_summary`, and a failed tool's own `error_summary`, within each adapter's existing bound and whitespace normalization) for every adapter, a Cursor shell command whose end is unconfirmed keeps its complete native result (`native_result`) exactly, a failed raw-API completion keeps the model's bounded partial output (`partial_output`) exact in its error event while it stays a failure, never becomes the answer and the provider's error report stays masked, a Copilot ACP answer keeps credential-shaped text exact (only the managed token Claudexor injected is removed), a work report's required inputs stay exact in telemetry and run facts, a planner's own `plans/<harness>.md` copy is its exact text, and the gate argv disclosed to a candidate is the argv the gate runner executes. Images are no longer withheld from `produced/` or from served outputs for their bytes; an image Claudexor did not save (over the per-image or total size cap, unreadable, a link, not a regular file or an unsafe path) is listed in the attempt's `produced_omitted` with its size and reason, and the run summary names it. Credentials Claudexor itself owns stay in their stores, outside every worktree, behind daemon authentication, grants, read-only and trust policy, root and symlink containment and digest checks; engine diagnostics (errors, stderr tails, probe output, vendor failure reports, also inside the run, attempt and reviewer event journals, which all pass through one masking step) are still masked. Claudexor never places its engine credentials into prompts, events or artifacts; a harness process can read the credential the engine hands it, and whatever the harness prints is ordinary output kept exactly in local run records, as in the vendor's own transcript. Importing an arbitrary host file still refuses credential-store paths, and review risk still rates credential-named paths critical. The historical release-attestation sealer no longer refuses a reviewer report or metadata file for credential-shaped text: it still requires strict UTF-8, the digest and exact-key bindings and its other checks, and the attestation carries digests and validated fields, never report text. A real key you put in working content is ordinary task material: it reaches the selected model and stays in local run records. Runs written by earlier versions keep their masked copies; their `persisted_patch: redacted` patches still apply only from the private exact object (`patch_exact_bytes_unavailable` when it is missing), and the MCP read tools still project their `secretLike` disclosure, which is `null` for new runs.
+
+  **Breaking:** `pr` delivery now needs the pinned open-source scanner Betterleaks 1.9.0 and checks what would leave the machine with it instead of Claudexor's own patterns; an npm-installed CLI bundles no scanner, so its `pr` refuses with `publication_scan_unavailable` until one is provided (below). Before any branch, index or ref changes, the exact outgoing commit, every earlier commit that a URL `git push origin` sends to (its push URL when one is set) does not already advertise, read with `git ls-remote` (a secret added and later deleted included, and a commit only the fetch URL or another remote holds still counts), what each merge in that range itself changed (Git's remerge view, Git 2.36 or newer: a conflict resolution or an "evil" merge, never content its parents already carried; an octopus merge has no such view and is scanned for what it adds over its first parent, which can re-flag content a non-first parent already published), the commit messages of that range, the branch name and the PR title and body are scanned with live validation off; the PR body `gh` reads is the scanned copy, and the push sends exactly the scanned commit object. A finding refuses typed (`publication_scan_findings`, rule and place only, never the matched text; a file name or label the scanner itself flags is shown as `withheld location (sha256 …)`, and every place is withheld when that check cannot run); a missing or unpinned scanner (`publication_scan_unavailable`) and a scan that fails, times out, writes no valid report or reads a Git history that Git's own trace2 record does not prove complete (every `git log` it ran exited 0 without a signal; a `git log` killed mid-stream otherwise looks clean) (`publication_scan_failed`) also refuse, and local apply, branch and commit stay available. The outgoing repository's own `.gitleaksignore`/`.betterleaksignore`, inline allow comments and scanner environment variables cannot suppress a finding. The macOS app and its update closure now bundle the darwin-arm64 and darwin-x64 builds and each SSH runtime archive bundles its own target's build, with the MIT license and provenance (the SBOMs list them). npm installs, and hosts on other platforms embedding the closure, bundle none for their platform: point `CLAUDEXOR_BETTERLEAKS_PATH` at the pinned build or provision it with `node scripts/provision-betterleaks.mjs`. Delivery never downloads it. Betterleaks skips some binary, archive and lockfile content by design, so a clean scan is not proof that nothing sensitive is present. Repository CI and release use the same adapter in place of the old `git grep` step, over the range's commits, merges and messages and the tracked tree; a release being published also scans its annotated tag's message.
+
+- Updated dependencies [f428c0a]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [d16170f]
+- Updated dependencies [8bae6ae]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [f428c0a]
+- Updated dependencies [d9e7977]
+- Updated dependencies [2d83b87]
+- Updated dependencies [f428c0a]
+- Updated dependencies [28dfe1a]
+  - @claudexor/schema@5.0.0
+  - @claudexor/util@5.0.0
+
+## 4.8.2
+
+### Patch Changes
+
+- Updated dependencies [97e2f17]
+- Updated dependencies [67b8833]
+- Updated dependencies [f88a561]
+  - @claudexor/schema@4.8.2
+  - @claudexor/util@4.8.2
+
+## 4.8.1
+
+### Patch Changes
+
+- @claudexor/schema@4.8.1
+- @claudexor/util@4.8.1
+
+## 4.8.0
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies [6c31c44]
+- Updated dependencies [7dfbc42]
+- Updated dependencies
+  - @claudexor/schema@4.8.0
+  - @claudexor/util@4.8.0
+
+## 4.7.1
+
+### Patch Changes
+
+- Updated dependencies [880081d]
+- Updated dependencies [30f8195]
+  - @claudexor/schema@4.7.1
+  - @claudexor/util@4.7.1
+
+## 4.7.0
+
+### Patch Changes
+
+- Updated dependencies [74fb275]
+  - @claudexor/schema@4.7.0
+  - @claudexor/util@4.7.0
+
+## 4.6.2
+
+### Patch Changes
+
+- @claudexor/schema@4.6.2
+- @claudexor/util@4.6.2
+
+## 4.6.1
+
+### Patch Changes
+
+- @claudexor/schema@4.6.1
+- @claudexor/util@4.6.1
+
+## 4.6.0
+
+### Patch Changes
+
+- Updated dependencies [a81897c]
+  - @claudexor/schema@4.6.0
+  - @claudexor/util@4.6.0
+
+## 4.5.0
+
+### Patch Changes
+
+- Updated dependencies [032b44b]
+  - @claudexor/schema@4.5.0
+  - @claudexor/util@4.5.0
+
+## 4.4.0
+
+### Patch Changes
+
+- Updated dependencies
+  - @claudexor/util@4.4.0
+  - @claudexor/schema@4.4.0
+
+## 4.3.1
+
+### Patch Changes
+
+- @claudexor/schema@4.3.1
+- @claudexor/util@4.3.1
+
+## 4.3.0
+
+### Minor Changes
+
+- Ordinary Codex Fast (`fast`/`priority`) on a verified ChatGPT subscription is included service under no-paid routing and every cash cap, including `finite(0)`; verified Codex subscription work now reports its cash as unknown (`spendUsd` and `budget_summary.spend_usd` null, cost basis `debit: "unobserved"`) beside the cap-governed `controllableSpendUsd` instead of exact zero, and without a preference keeps the first account's chosen speed across retries, Exact Retry, rotation and continuation (#468, thanks @IlidanNaga). Codex catalogs keep a declared `inputModalities` list only when it is wholly valid and non-empty, as metadata that gates no request (#435, thanks @josephsteuerjr). The opt-in `GET /v2/quota?view=resources_freshness` view adds a required `availability_scope` echo, Cursor accounts report dated display-only monetary resources from Cursor's internal dashboard through the existing refresh cycle, and Antigravity's native headless permission auto-denial becomes typed `permission_denial` evidence without retry or access elevation (#467).
+
+  Codex workspace-write uses native on-request with auto_review by default and an explicit one-action retry handback; HTTP/MCP can revise the existing live soft/hard timer, and configuration can disable only inactivity timing with null (#466, thanks @IlidanNaga). This adds no session-wide grant, readonly bypass, automatic retry authorization by Claudexor, per-run idle field or installed CLI update; timers are not restored after daemon loss and native UI/vendor qualification remains limited.
+
+### Patch Changes
+
+- 23a74cb: Let any controlling MCP agent inspect and answer native worker approvals through
+  the existing interaction tools. Codex workspace-write runs use native automatic
+  review and can hand back one exact denied action for an explicitly authorized
+  same-session retry, without changing managed policy or granting session-wide access.
+  A request the worker withdraws itself emits `interaction.withdrawn`, closing the
+  obsolete follow prompt or app card instead of blocking the next approval.
+
+  A completed Codex turn's answer, including a structured WorkReport envelope,
+  is kept before any handback; a denial that cannot be presented exactly is
+  disclosed and stands natively instead of failing the run. A thread that settles
+  in systemError never hands a denial back, authorizes it or starts another turn.
+
+  The verified Codex pin moves from codex-cli 0.156.1 to 0.162.1. Its captured
+  model snapshot makes `gpt-6.1-sol` the fallback default and a known model. An
+  installed 0.156.1 no longer matches the snapshot provenance: without a live
+  `model/list`, its effort snapshot is not trusted (no effort flag is sent) and
+  no turn-input bound is published for it.
+
+  Add revision-guarded live run time-limit read, set, extend and disable controls,
+  soft warnings and optional inactivity-watchdog disabling. Existing explicit
+  maxSeconds limits remain hard by default; omitting a limit adds no deadline, and
+  `set` keeps the timer's current mode unless one is named. Inactivity windows
+  longer than one Node timer delay are honored instead of firing immediately.
+
+- Updated dependencies
+- Updated dependencies [23a74cb]
+  - @claudexor/schema@4.3.0
+  - @claudexor/util@4.3.0
+
 ## 4.2.0
 
 ### Patch Changes

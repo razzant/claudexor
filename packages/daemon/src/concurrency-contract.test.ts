@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ModelAdapter } from "@claudexor/core";
 import { loadRuntimeConcurrencyCaps } from "../../config/src/index.js";
 import {
@@ -25,11 +25,18 @@ import { EngineStore } from "./store/store.js";
 import { createSqlDaemonServices } from "./store/sql-daemon-services.js";
 import { createPartition } from "./store/partitions.js";
 import { setGlobalGenerationInTx } from "./store/generations.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const disposers: Array<() => Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const dispose of disposers.splice(0).reverse()) await dispose();
-  vi.unstubAllEnvs();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+    vi.unstubAllEnvs();
+  };
 });
 function barrier() {
   let release!: () => void;
@@ -38,6 +45,11 @@ function barrier() {
   });
   return { promise, release };
 }
+/** Completion is awaited, not timed: a dispatch first waits for a real flusher
+ * barrier (200 ms cadence, much slower under disk contention, #441). The bound
+ * only turns a real hang into a failure that names its phase before the 30 s
+ * test timeout. */
+const SETTLE_MS = 10_000;
 const route = {
   source: "fixture",
   credentialProfileId: "fixture",
@@ -64,8 +76,14 @@ async function createFixture(
     maxConcurrent?: DaemonOptions["maxConcurrent"];
     holdModel?: boolean;
     holdPreparation?: boolean;
+    /** Hold dispatch's own request read, which follows the create's validation read. */
+    holdDispatchRead?: boolean;
     delegation?: boolean;
     fromConfig?: boolean;
+    /** The flusher's own seam: every automatic pass sleeps before its barrier. */
+    passDelayMs?: number;
+    /** Hold the store barrier the dispatch awaits until the test releases it. */
+    holdDispatchBarrier?: boolean;
   } = {},
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-admission-")));
@@ -89,6 +107,7 @@ async function createFixture(
   const sql = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../dist/store/flusher-worker.js"),
+    ...(options.passDelayMs ? { flusherHooks: { passDelayMs: options.passDelayMs } } : {}),
   });
   sql.transaction(() => setGlobalGenerationInTx(sql, createPartition(sql, "global").pid));
   const graph = createSqlDaemonServices(sql, { purgeFiles: async () => [root] });
@@ -98,13 +117,31 @@ async function createFixture(
   const commands = graph.commands;
   const resources = graph.resources;
   const preparation = barrier(),
-    modelResult = barrier();
+    modelResult = barrier(),
+    dispatchBarrier = barrier(),
+    dispatchRead = barrier();
   if (!options.holdPreparation) preparation.release();
   if (!options.holdModel) modelResult.release();
+  if (options.holdDispatchRead) {
+    const read = resources.readModelAsync.bind(resources);
+    let reads = 0;
+    vi.spyOn(resources, "readModelAsync").mockImplementation(async (ref) => {
+      if (++reads === 2) await dispatchRead.promise;
+      return read(ref);
+    });
+  } else dispatchRead.release();
+  if (options.holdDispatchBarrier) {
+    const flushed = sql.flushed.bind(sql);
+    vi.spyOn(sql, "flushed").mockImplementation(async () => {
+      await dispatchBarrier.promise;
+      return flushed();
+    });
+  } else dispatchBarrier.release();
   const agents = new Map<string, () => void>();
   const startedAgents: string[] = [];
   let completedAgents = 0;
   let sends = 0;
+  let preparations = 0;
   let server!: DaemonServer;
   const client = new DaemonLocalClient(() => server);
   const profile = CredentialProfile.parse({
@@ -130,6 +167,7 @@ async function createFixture(
     enqueue: (envelope) => client.call("claudexor.enqueue", envelope),
     cancel: (id, reason) => client.cancel(id, reason),
     resolve: async () => {
+      preparations++;
       await preparation.promise;
       return { adapter, profile };
     },
@@ -241,13 +279,38 @@ async function createFixture(
     );
   const detail = async (id: string) =>
     ControlModelOperationDetail.parse(await call(`/model-operations/${id}`));
-  const done = async (id: string) => {
-    await vi.waitFor(() =>
-      expect(["queued", "running"]).not.toContain(operations.inspect(id).state),
+  /** Where an unfinished operation stands: before dispatch, at the dispatch
+   * barrier with no send yet, or after its single send. `sends` counts only
+   * sends the adapter made after `onDispatch` returned. */
+  const phase = (id: string) => {
+    const operation = operations.inspect(id);
+    const flusher = sql.facts().flusher;
+    return (
+      `model operation ${id}: state=${operation.state} dispatch=${operation.dispatch.state} ` +
+      `response=${operation.response.state} sends after the dispatch barrier=${sends}; ` +
+      `flusher ${flusher.state} generation=${flusher.generation} ` +
+      `acknowledged=${flusher.acknowledged_generation} pending_waiters=${flusher.pending_waiters} ` +
+      `flush_lag_ms=${flusher.flush_lag_ms}`
+    );
+  };
+  /** Any terminal state ends the wait; callers assert which one they expect. */
+  const done = async (id: string, timeout = SETTLE_MS) => {
+    await vi.waitFor(
+      () => expect(["queued", "running"], phase(id)).not.toContain(operations.inspect(id).state),
+      { timeout },
     );
     return detail(id);
   };
+  const sent = (id: string) =>
+    vi.waitFor(() => expect(sends, phase(id)).toBe(1), { timeout: SETTLE_MS });
+  /** A running operation may still be reading its request off the request thread;
+   * preparation begins only once that read returns. */
+  const preparing = (id: string) =>
+    vi.waitFor(() => expect(preparations, phase(id)).toBe(1), { timeout: SETTLE_MS });
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   disposers.push(async () => {
+    dispatchBarrier.release();
+    dispatchRead.release();
     preparation.release();
     modelResult.release();
     for (const release of agents.values()) release();
@@ -256,7 +319,6 @@ async function createFixture(
     operations.close();
     if (graph) await graph.close();
     if (sql) await sql.close();
-    rmSync(root, { recursive: true, force: true });
   });
   return {
     root,
@@ -271,13 +333,21 @@ async function createFixture(
     createModel,
     detail,
     done,
+    sent,
+    preparing,
     upload,
+    sql,
     preparation,
     modelResult,
+    dispatchBarrier,
+    dispatchRead,
     agents,
     startedAgents,
     get sends() {
       return sends;
+    },
+    get preparations() {
+      return preparations;
     },
     get completedAgents() {
       return completedAgents;
@@ -374,7 +444,12 @@ describe.each(["sql"] as const)(
           capacity: { maxConcurrent: 24 },
         });
         f.agents.values().next().value!();
-        await f.done(raw.id);
+        expect(await f.done(raw.id)).toMatchObject({
+          state: "succeeded",
+          dispatch: { state: "response_received" },
+          response: { state: "ready" },
+          admission: null,
+        });
         expect(f.sends).toBe(1);
         expect(f.completedAgents).toBe(1);
       },
@@ -383,7 +458,7 @@ describe.each(["sql"] as const)(
     it("a saturated model class lets an Agent pass and cancels queued raw with zero send", async () => {
       const f = await fixture({ caps: { max_concurrent_model_operations: 1 }, holdModel: true });
       const first = await f.createModel("one");
-      await vi.waitFor(() => expect(f.sends).toBe(1));
+      await f.sent(first.id);
       const second = await f.createModel("two");
       expect(second).toMatchObject({
         state: "queued",
@@ -406,8 +481,75 @@ describe.each(["sql"] as const)(
         admission: { active: { model: 1, non_model: 1 } },
       });
       f.modelResult.release();
-      await f.done(first.id);
+      expect(await f.done(first.id)).toMatchObject({ state: "succeeded" });
     });
+
+    it("completes through a dispatch barrier the automatic flusher holds 1.2 s (#441)", async () => {
+      const f = await fixture({ passDelayMs: 1_200 });
+      const raw = await f.createModel("held-barrier");
+      expect(await f.done(raw.id)).toMatchObject({
+        state: "succeeded",
+        dispatch: { state: "response_received" },
+        response: { state: "ready" },
+        admission: null,
+      });
+      expect(f.sends).toBe(1);
+      expect(await f.health()).toMatchObject({ active: 0, queue: 0 });
+    });
+
+    it("waits for a model result held 1.2 s after its single send (#441)", async () => {
+      const f = await fixture({ holdModel: true });
+      const raw = await f.createModel("held-result");
+      await f.sent(raw.id);
+      expect(await f.detail(raw.id)).toMatchObject({
+        state: "running",
+        dispatch: { state: "started" },
+        response: { state: "absent" },
+      });
+      const release = setTimeout(() => f.modelResult.release(), 1_200);
+      try {
+        expect(await f.done(raw.id)).toMatchObject({
+          state: "succeeded",
+          dispatch: { state: "response_received" },
+          response: { state: "ready" },
+        });
+      } finally {
+        clearTimeout(release);
+      }
+      expect(f.sends).toBe(1);
+    });
+
+    it.each([
+      { hold: "dispatch barrier", sends: 0 },
+      { hold: "model result", sends: 1 },
+    ] as const)(
+      "a never-released $hold fails the bounded wait with its phase and keeps the slot (#441)",
+      async ({ hold, sends }) => {
+        const f = await fixture(
+          hold === "dispatch barrier" ? { holdDispatchBarrier: true } : { holdModel: true },
+        );
+        const raw = await f.createModel(`never-released-${sends}`);
+        if (hold === "model result") await f.sent(raw.id);
+        else
+          await vi.waitFor(() => expect(f.sql.flushed).toHaveBeenCalled(), {
+            timeout: SETTLE_MS,
+          });
+        await expect(f.done(raw.id, 300)).rejects.toThrow(
+          `state=running dispatch=started response=absent sends after the dispatch barrier=${sends};`,
+        );
+        expect(f.sends).toBe(sends);
+        expect(await f.health()).toMatchObject({
+          active: 1,
+          admission: { active: { model: 1, non_model: 0 } },
+        });
+        (hold === "dispatch barrier" ? f.dispatchBarrier : f.modelResult).release();
+        expect(await f.done(raw.id)).toMatchObject({
+          state: "succeeded",
+          response: { state: "ready" },
+        });
+        expect(f.sends).toBe(1);
+      },
+    );
 
     it("same-thread serialization remains while independent eligible work passes", async () => {
       const f = await fixture({ caps: { max_concurrent_non_model_jobs: 2 } });
@@ -442,7 +584,7 @@ describe.each(["sql"] as const)(
       });
       await f.createAgent("three");
       const model = await f.createModel("still-unlimited-global");
-      await f.done(model.id);
+      expect(await f.done(model.id)).toMatchObject({ state: "succeeded" });
       expect(f.startedAgents).toEqual(["one"]);
       expect(f.completedAgents).toBe(0);
       expect(f.sends).toBe(1);
@@ -461,6 +603,7 @@ describe.each(["sql"] as const)(
         dispatch: { state: "not_started" },
         admission: { phase: "active" },
       });
+      await f.preparing(raw.id);
       await f.call(`/model-operations/${raw.id}/control`, "POST", { action: "cancel" });
       expect((await f.health()).active).toBe(1);
       expect(f.sends).toBe(0);
@@ -475,10 +618,32 @@ describe.each(["sql"] as const)(
       expect(f.sends).toBe(0);
     });
 
+    it("cancel during the request read never prepares or sends and keeps lifetime until the read returns", async () => {
+      const f = await fixture({ holdDispatchRead: true });
+      const raw = await f.createModel("reading");
+      expect(raw).toMatchObject({
+        state: "running",
+        dispatch: { state: "not_started" },
+        admission: { phase: "active" },
+      });
+      await f.call(`/model-operations/${raw.id}/control`, "POST", { action: "cancel" });
+      expect((await f.health()).active).toBe(1);
+      await expect(
+        f.client.call("claudexor.shutdownForRuntimeReplacement", f.target),
+      ).rejects.toMatchObject({ code: "runtime_replacement_busy" });
+      f.dispatchRead.release();
+      expect(await f.done(raw.id)).toMatchObject({
+        state: "cancelled",
+        dispatch: { state: "not_started" },
+      });
+      expect(f.preparations).toBe(0);
+      expect(f.sends).toBe(0);
+    });
+
     it("running model cancel and shutdown retain active ownership until result settlement", async () => {
       const f = await fixture({ holdModel: true });
       const raw = await f.createModel("settlement");
-      await vi.waitFor(() => expect(f.sends).toBe(1));
+      await f.sent(raw.id);
       await f.call(`/model-operations/${raw.id}/control`, "POST", { action: "cancel" });
       expect(await f.health()).toMatchObject({
         active: 1,
@@ -528,7 +693,7 @@ describe.each(["sql"] as const)(
       all.mockClear();
       await f.health();
       const model = await f.createModel("raw");
-      await f.done(model.id);
+      expect(await f.done(model.id)).toMatchObject({ state: "succeeded" });
       // Admission and status cannot hydrate unrelated history.
       all.mockClear();
       await f.createAgent("three");

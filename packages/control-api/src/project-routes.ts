@@ -6,10 +6,11 @@ import {
   ControlProjectRegisterResponse,
   ControlProjectRelinkRequest,
   ControlProjectRemoveReceipt,
+  ControlProjectRemoveTrashedThreads,
   ControlDirectoryListing,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues } from "@claudexor/util";
 import type { DaemonRunRecord } from "./daemon-server.js";
+import { singleQuery } from "./query.js";
 import { requiredIdempotencyKey } from "./run-start.js";
 import { routeValue, serviceResponse } from "./route-stages.js";
 import { runWorkspaceBinding, type RunWorkspaceBinding } from "./run-execution-root.js";
@@ -22,7 +23,11 @@ export interface ProjectRouteServices {
     clientId: string;
   }) => Promise<unknown>;
   relinkProject?: (id: string, root: string) => Promise<unknown>;
-  removeProject?: (id: string) => Promise<unknown>;
+  /** `trashedThreads` is present only on the explicit #333 opt-in. */
+  removeProject?: (
+    id: string,
+    options?: { trashedThreads: ControlProjectRemoveTrashedThreads },
+  ) => Promise<unknown>;
   listDirectory?: (path?: string) => Promise<unknown>;
   /** `binding` (from `runId`) verifies the run belongs to the project and reads
    *  its caller-owned workspace when it recorded an override. */
@@ -98,7 +103,6 @@ export async function handleProjectRoute(
     const input = await routeValue(ctx, res, 400, async () => {
       const idempotencyKey = requiredIdempotencyKey(req);
       const raw = await ctx.readBody(req);
-      assertNoInlineSecretValues(raw);
       const body = ControlProjectRegisterRequest.parse(raw);
       return { root: body.root, idempotencyKey, clientId: "control-api" };
     });
@@ -124,7 +128,6 @@ export async function handleProjectRoute(
     const input = await routeValue(ctx, res, 400, async () => {
       const projectId = decodeURIComponent(projectRelinkMatch[1] as string);
       const raw = await ctx.readBody(req);
-      assertNoInlineSecretValues(raw);
       return { projectId, root: ControlProjectRelinkRequest.parse(raw).root };
     });
     if (!input.ok) return true;
@@ -177,16 +180,28 @@ export async function handleProjectRoute(
 
   // QA-049: DELETE /projects/:id — retire a durable project (registry entry +
   // journal-partition archival), typed-fenced against non-purged threads and
-  // live/queued runs. Not a relink match, so it lives after that branch.
+  // live/queued runs. Not a relink match, so it lives after that branch. Only
+  // the #333 opt-in is read: `trashedThreads` must be exactly `purge`, once.
+  // Other query parameters stay ignored, so a misspelled name gets the default.
   const projectDeleteMatch = /^\/projects\/([^/]+)$/.exec(path);
   if (method === "DELETE" && projectDeleteMatch) {
     const service = ctx.services?.removeProject;
     if (!service) return unsupported(ctx, res);
-    const projectId = await routeValue(ctx, res, 400, () =>
-      decodeURIComponent(projectDeleteMatch[1] as string),
+    const input = await routeValue(ctx, res, 400, () => {
+      const url = new URL(req.url ?? "", "http://localhost");
+      const trashedThreads = singleQuery(url, "trashedThreads");
+      if (
+        trashedThreads !== undefined &&
+        trashedThreads !== ControlProjectRemoveTrashedThreads.enum.purge
+      )
+        throw new Error("trashedThreads must be exactly purge");
+      return { projectId: decodeURIComponent(projectDeleteMatch[1] as string), trashedThreads };
+    });
+    if (!input.ok) return true;
+    const { projectId, trashedThreads } = input.value;
+    const receipt = await routeValue(ctx, res, 500, () =>
+      trashedThreads ? service(projectId, { trashedThreads }) : service(projectId),
     );
-    if (!projectId.ok) return true;
-    const receipt = await routeValue(ctx, res, 500, () => service(projectId.value));
     if (!receipt.ok) return true;
     return serviceResponse(ctx, res, "removeProject", () =>
       ctx.json(res, 200, ControlProjectRemoveReceipt.parse(receipt.value)),

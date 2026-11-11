@@ -3,13 +3,7 @@ import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { TextDecoder } from "node:util";
 import { parseUnifiedDiff } from "@claudexor/core";
-import {
-  containsSecretLikeToken,
-  readTextSafe,
-  redactSecrets,
-  sha256,
-  writeText,
-} from "@claudexor/util";
+import { readTextSafe, sha256, writeText } from "@claudexor/util";
 
 /**
  * The `.adversarial-review/` evidence packet that bridges clean-context
@@ -110,82 +104,52 @@ export function writeEvidencePacket(dir: string, packet: EvidencePacket): void {
     throw new Error("FILES_TO_READ_WHOLE.txt requires unique non-empty path strings");
   }
   const filesToReadWholeJson = `${JSON.stringify(filesToReadWhole, null, 2)}\n`;
-  if (containsSecretLikeToken(filesToReadWholeJson)) {
-    throw new Error(
-      "FILES_TO_READ_WHOLE.txt contains a secret-like path; refusing to alter exact path evidence",
-    );
-  }
-  writeText(join(dir, "USER_INTENT.md"), evidenceProse("USER_INTENT.md", packet.userIntent));
+  writeText(join(dir, "USER_INTENT.md"), evidenceProse(packet.userIntent));
   writeText(
     join(dir, "FORBIDDEN_FINDINGS.md"),
-    evidenceProse(
-      "FORBIDDEN_FINDINGS.md",
-      packet.forbiddenFindings,
-      "(none — no approaches explicitly rejected)",
-    ),
+    evidenceProse(packet.forbiddenFindings, "(none — no approaches explicitly rejected)"),
   );
   writeText(
     join(dir, "PLAN_ACCEPTED.md"),
-    evidenceProse(
-      "PLAN_ACCEPTED.md",
-      packet.planAccepted,
-      "(no formal plan — see USER_INTENT.md for requirements)",
-    ),
+    evidenceProse(packet.planAccepted, "(no formal plan — see USER_INTENT.md for requirements)"),
   );
   writeDiffEvidence(dir, packet.diff);
   writeText(join(dir, "FILES_TO_READ_WHOLE.txt"), filesToReadWholeJson);
-  writeText(join(dir, "TESTS.txt"), evidenceProse("TESTS.txt", packet.tests, "(tests not run)"));
-  writeText(
-    join(dir, "DECIDED_TRADEOFFS.md"),
-    evidenceProse("DECIDED_TRADEOFFS.md", packet.decidedTradeoffs, "(none)"),
-  );
+  writeText(join(dir, "TESTS.txt"), evidenceProse(packet.tests, "(tests not run)"));
+  writeText(join(dir, "DECIDED_TRADEOFFS.md"), evidenceProse(packet.decidedTradeoffs, "(none)"));
   if (packet.runtime !== undefined)
-    writeText(join(dir, "RUNTIME.md"), evidenceProse("RUNTIME.md", packet.runtime));
+    writeText(join(dir, "RUNTIME.md"), evidenceProse(packet.runtime));
 }
 
-function evidenceProse(fileName: string, value: string | undefined, fallback = ""): string {
-  const raw = (value ?? fallback).trim();
-  const redacted = redactSecrets(raw);
-  if (containsSecretLikeToken(redacted)) {
-    throw new Error(
-      `${fileName} evidence contains a secret-like token after redaction; refusing to persist evidence packet`,
-    );
-  }
-  return `${redacted}\n`;
+function evidenceProse(value: string | undefined, fallback = ""): string {
+  return `${(value ?? fallback).trim()}\n`;
 }
 
 export function writeDiffEvidence(dir: string, diff: string): DiffEvidence {
   const normalizedDiff = diff || "(empty diff)\n";
   const diffText = normalizedDiff.endsWith("\n") ? normalizedDiff : `${normalizedDiff}\n`;
-  if (containsSecretLikeToken(diffText)) {
-    throw new Error(
-      "diff evidence contains a secret-like token; refusing to persist raw DIFF.patch",
-    );
-  }
   const diffPath = join(dir, "DIFF.patch");
   const summaryPath = join(dir, "DIFF_SUMMARY.md");
   const diffSha256 = sha256(diffText);
-  const summary = summarizeDiff(diffText, redactSecrets(diffText));
+  const summary = summarizeDiff(diffText);
   writeText(diffPath, diffText);
   writeText(summaryPath, `# Diff Summary\n\nDigest: ${diffSha256}\n\n${summary}\n`);
   writeText(join(dir, "DIFF_SHA256.txt"), `${diffSha256}\n`);
   return { diffPath, summaryPath, diffSha256, summary };
 }
 
-function summarizeDiff(diff: string, displayDiff = diff): string {
+function summarizeDiff(diff: string): string {
   // ONE parser owns diff structure (git-anchored AND plain GNU documents):
   // counts come from the shared parseUnifiedDiff, never from local line
   // scans — a `diff -ruN` patch must not summarize as "Files: 0" while the
   // gates see its files.
   const parsed = parseUnifiedDiff(diff);
-  const display = parseUnifiedDiff(displayDiff);
   const fileLabel = (f: { oldPath: string | null; newPath: string | null }): string =>
     `${f.oldPath ?? "/dev/null"} -> ${f.newPath ?? "/dev/null"}`;
   const allFiles = parsed.files.filter((f) => f.oldPath || f.newPath);
-  const displayFiles = display.files.filter((f) => f.oldPath || f.newPath).map(fileLabel);
-  const files = displayFiles.slice(0, 80);
+  const files = allFiles.map(fileLabel).slice(0, 80);
   const lines = diff.split(/\r?\n/);
-  const fallbackHeaders = displayDiff
+  const fallbackHeaders = diff
     .split(/\r?\n/)
     .filter(
       (line) => /^#{1,6}\s+\S/.test(line) || line.startsWith("### ") || line.startsWith("## "),
@@ -303,13 +267,10 @@ export function verifySealedEvidencePacket(input: SealedEvidencePacketInput): Se
   );
   if (!manifest.ok) throw new Error(`packet manifest failed: ${manifest.reasons.join("; ")}`);
   for (const file of actualFiles) {
-    const text = decodeEvidenceUtf8(
+    decodeEvidenceUtf8(
       readFileSync(join(evidenceDir, file.path)),
       `sealed packet file ${file.path}`,
     );
-    if (containsSecretLikeToken(file.path) || containsSecretLikeToken(text)) {
-      throw new Error(`sealed packet contains a secret-like token: ${file.path}`);
-    }
   }
   const missing = FROZEN_REVIEW_EVIDENCE_FILES.filter((file) => !manifest.files.includes(file));
   if (missing.length > 0) throw new Error(`sealed packet is missing: ${missing.join(", ")}`);

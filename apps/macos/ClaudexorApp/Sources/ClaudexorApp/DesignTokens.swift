@@ -111,14 +111,32 @@ enum Theme {
     /// Accent tuned as a SOLID fill behind WHITE text (the Send button). The plain
     /// `accent` is calibrated as a tint/stroke/link color and only reaches ~3.1:1
     /// against white in Dark Mode (below WCAG AA 4.5:1); this deeper variant clears
-    /// 4.5:1 in BOTH themes for white-on-accent prominent buttons. Never used as a tint.
+    /// 4.5:1 in BOTH themes for white-on-accent prominent buttons. A fill, never text.
     static let accentSolid = Color(dark: (0.30, 0.45, 0.78), light: (0.20, 0.36, 0.70))
 
     // MARK: Per-harness family colors — used ONLY in harness UI (candidate chips, dots,
     // race lanes, per-harness budget, route proof). Aligned to each brand's identity color
     // and tuned to differ from each other AND from the status palette below.
 
+    /// A harness's TEXT colour. Its chip tints, strokes and dots use `harnessFill`;
+    /// the two differ only for a harness without its own hue (OpenRouter, GitHub
+    /// Copilot, a future id). Its text is the brand steel-blue, lifted in Dark Mode
+    /// and deepened in Light Mode past AA on `surfaceRaised` and inside its 13–18%
+    /// chips there, with room for the translucent card: on the glass of a blue
+    /// wallpaper the receipt capsule read 4.2:1 (dark) and 4.5:1 (light) at the
+    /// earlier values (#545).
     static func harness(_ id: String) -> Color {
+        harnessColor(id, withoutOwnHue: Color(dark: (0.55, 0.75, 1.00), light: (0.17, 0.32, 0.64)))
+    }
+
+    /// A harness as a tint, stroke or solid fill, never text. Without its own hue
+    /// it keeps `accentSolid`, which reads 2.6:1 as Dark text but keeps the chip
+    /// behind that text dark enough for it.
+    static func harnessFill(_ id: String) -> Color {
+        harnessColor(id, withoutOwnHue: accentSolid)
+    }
+
+    private static func harnessColor(_ id: String, withoutOwnHue fallback: Color) -> Color {
         switch HarnessFamily(rawValue: id) {
         case .codex: return Color(dark: (0.22, 0.72, 0.60), light: (0.05, 0.55, 0.45))   // OpenAI teal-green
         case .claude: return Color(dark: (0.87, 0.49, 0.36), light: (0.78, 0.40, 0.26))  // Anthropic coral
@@ -132,7 +150,7 @@ enum Theme {
         case .agy: return Color(dark: (0.38, 0.80, 0.92), light: (0.05, 0.47, 0.58))     // cyan
         case .raw: return Color(dark: (0.86, 0.46, 0.78), light: (0.64, 0.30, 0.58))     // magenta
         case .fake: return Color.secondary
-        default: return accentSolid
+        default: return fallback
         }
     }
 
@@ -141,13 +159,18 @@ enum Theme {
     // retired `RunStatus` presentation enum no longer owns it. Lifecycle
     // (`RunPhase`), review/checks/severity states, and the plan/activity kinds
     // all MAP INTO these tones, so the palette survives one central switch.
+    // `status(_:)` is the tone's FOREGROUND: label text, glyphs and the tinted
+    // chips that carry that text. Solid dots and severity bars use `statusFill`.
 
     static func status(_ tone: StatusTone) -> Color {
         switch tone {
         case .info: return Color(dark: (0.36, 0.67, 0.95), light: (0.14, 0.47, 0.86))       // active blue
         case .positive: return Color(dark: (0.34, 0.81, 0.53), light: (0.11, 0.61, 0.35))   // success green
         case .attention: return Color(dark: (0.64, 0.74, 0.99), light: (0.28, 0.45, 0.88))  // review lavender
-        case .caution: return Color(dark: (0.97, 0.74, 0.33), light: (0.80, 0.56, 0.10))    // blocked amber
+        // Light caution is a deeper amber INK: the vivid fill amber read 2.8:1
+        // as text on white (#545). This clears 4.5:1 on every light surface
+        // token and inside its own 10–14% chip tint; dark is unchanged.
+        case .caution: return Color(dark: cautionDark, light: (0.53, 0.345, 0.00))          // blocked amber
         case .negative: return Color(dark: (0.94, 0.44, 0.44), light: (0.80, 0.22, 0.22))   // failure red
         case .warn: return Color(dark: (0.97, 0.60, 0.30), light: (0.82, 0.38, 0.12))       // overshoot orange
         case .interrupted: return Color(dark: (0.80, 0.66, 0.42), light: (0.60, 0.46, 0.20))// interrupted tan
@@ -155,6 +178,15 @@ enum Theme {
         case .queued: return Color.secondary.opacity(0.85)
         }
     }
+
+    /// A tone as a SOLID indicator fill (status dots, severity bars), never
+    /// text. Identical to `status(_:)` except light caution, which keeps the
+    /// vivid amber that reads as a dot or bar but not as text.
+    static func statusFill(_ tone: StatusTone) -> Color {
+        tone == .caution ? Color(dark: cautionDark, light: (0.80, 0.56, 0.10)) : status(tone)
+    }
+
+    private static let cautionDark: (Double, Double, Double) = (0.97, 0.74, 0.33)
 
     // MARK: Spacing scale (pt).
 

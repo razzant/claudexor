@@ -15,9 +15,7 @@ import {
   rotateToken,
 } from "@claudexor/daemon";
 import { atRiskNodeAdvisory, harnessRuntimeEnv } from "@claudexor/core";
-import { CLAUDEXOR_VERSION, claudexorOwnedRoot } from "@claudexor/util";
 import {
-  ControlGcReceipt,
   ControlHarnessListResponse,
   ControlHarnessModelsResponse,
   ControlHarnessSetupHarness,
@@ -29,17 +27,20 @@ import {
   ControlSetupJob,
   GitCapability,
 } from "@claudexor/schema";
-import { type ParsedArgs, flagBool, flagStr } from "./args.js";
-import { GC_LOCKSTEP_REPORTS, gcReceiptNotes } from "./gc-receipt-notes.js";
+import { type ParsedArgs, flagStr } from "./args.js";
+import { gcCommand } from "./gc-command.js";
+export { gcCommand } from "./gc-command.js";
 import { harnessListPath, requestedHarnesses, unknownHarnesses } from "./ops-harness-selection.js";
 import { CliError, controlProblemError, renderCliFailure, usageError } from "./cli-error.js";
 import { accountsCommand, profilesCommand, secretsCommand } from "./credential-commands.js";
 import { CLI_DAEMON_LAUNCH_SOURCES, launchDetachedDaemon } from "./daemon-launch.js";
 import { reportDaemonStartReady } from "./daemon-start-report.js";
 import { daemonLoopLine, daemonStoreLine } from "./daemon-status-report.js";
+import { readRouteHealthSection, routeHealthLines } from "./doctor-route-health.js";
 import {
   authSourceAvailability,
   checksSummary,
+  noModelListLine,
   print,
   printJson,
   printUsageError,
@@ -57,6 +58,7 @@ import {
 import { controlApiFetch } from "./live.js";
 import { streamDurableLogin } from "./setup-login-inline.js";
 import { terminalLoginFallback } from "./setup-login-fallback.js";
+import { scannerCommand } from "./scanner-command.js";
 import { readDaemonDiagnosticTail } from "./startup-diagnostics.js";
 import {
   assertOperatorDaemonLifecycle,
@@ -88,6 +90,8 @@ export function dispatchOpsCommand(
       return profilesCommand(args, json);
     case "accounts":
       return accountsCommand(args, json);
+    case "scanner":
+      return scannerCommand(args, json);
     default:
       return undefined;
   }
@@ -271,9 +275,7 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
 
 export async function daemonGet(path: string): Promise<unknown> {
   const { addr } = await ensureDaemon();
-  const response = await controlApiFetch(addr, path, {
-    headers: { Authorization: `Bearer ${addr.token}` },
-  });
+  const response = await controlApiFetch(addr, path);
   if (!response.ok) {
     // The status stays typed so an additive read can tell an older daemon (404).
     throw Object.assign(
@@ -307,8 +309,17 @@ export async function doctorCommand(args: ParsedArgs, json: boolean): Promise<nu
     );
   const git = parsedGit.success ? (parsedGit.data ?? null) : null;
   const advisory = atRiskNodeAdvisory();
+  // Additive like `git`: an older engine (404) reports null, not a failure; any
+  // other failure is named and never costs the sections above (#569).
+  const routeHealth = await readRouteHealthSection(daemonGet);
   if (json) {
-    printJson({ harnesses: response.harnesses, git, node_advisory: advisory });
+    printJson({
+      harnesses: response.harnesses,
+      git,
+      node_advisory: advisory,
+      route_health: routeHealth.health,
+      route_health_problem: routeHealth.problem,
+    });
     return 0;
   }
   print(
@@ -322,10 +333,10 @@ export async function doctorCommand(args: ParsedArgs, json: boolean): Promise<nu
     const version = status.manifest?.version ? ` ${status.manifest.version}` : "";
     print(`${statusGlyph(status.status)} ${status.id}${version}`);
     if (status.enabledIntents.length) print(`    intents: ${status.enabledIntents.join(", ")}`);
-    // The doctor-gated availability truth: what this harness can ACTUALLY be
-    // routed for right now (empty on degraded/unauth — nothing routes).
+    // `intents` is what an explicit selection may run; the Auto pool routes
+    // only a doctor-ok harness (empty on degraded/unavailable, #133).
     print(
-      `    routable: ${status.routableIntents.length ? status.routableIntents.join(", ") : "(none)"}`,
+      `    auto-routable: ${status.routableIntents.length ? status.routableIntents.join(", ") : "(none)"}`,
     );
     print(`    auth sources: ${authSourceAvailability(status)}`);
     print(`    checks: ${checksSummary(status)}`);
@@ -338,6 +349,7 @@ export async function doctorCommand(args: ParsedArgs, json: boolean): Promise<nu
       print(`    model: ${status.configuredModel ?? ""} — ${status.configuredModelCheck.message}`);
     }
   }
+  for (const line of routeHealthLines(routeHealth.health, routeHealth.problem)) print(line);
   if (advisory) print(`advisory: ${advisory}`);
   return 0;
 }
@@ -377,7 +389,14 @@ export async function modelsCommand(args: ParsedArgs, json: boolean): Promise<nu
   }
   for (const r of results) {
     if (r.source === "none") {
-      print(`${r.harnessId}: no model enumeration (adapter cannot list models)`);
+      print(noModelListLine(r.harnessId, statuses.harnesses, route));
+      continue;
+    }
+    // A failed read is not an empty catalog (#393): say what failed.
+    if (r.problem) {
+      print(
+        `${r.harnessId}: model catalog unavailable [source=${r.source}] — ${r.problem.message}`,
+      );
       continue;
     }
     print(`${r.harnessId}: ${r.models.length} model(s) [source=${r.source}]`);
@@ -455,7 +474,6 @@ export async function authCommand(
     const response = await controlApiFetch(addr, "/setup/jobs", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${addr.token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -505,41 +523,6 @@ export async function authCommand(
     return accepted ? 0 : 1;
   }
   return printUsageError(json, "usage: claudexor auth status|login");
-}
-
-/** Thin client of the daemon-owned retention service (W3.6). */
-export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number> {
-  const dryRun = flagBool(args, "dry-run") === true;
-  const { addr, engine } = await ensureDaemon();
-  // Capability negotiation over the handshake's validated engine identity:
-  // request the opt-in receipt reports (data-root scan, thread purges)
-  // ONLY from a lockstep daemon (same engine version as this CLI). Any skew —
-  // older daemon, newer daemon, or a malformed identity — omits the flags, so
-  // both sides exchange the exact pre-feature request/receipt shapes and a
-  // strict old schema never rejects the receipt of a mutating verb the daemon
-  // already executed.
-  const lockstep = engine.engineVersion === CLAUDEXOR_VERSION;
-  const response = await controlApiFetch(addr, "/maintenance/gc", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ dry_run: dryRun, ...(lockstep ? GC_LOCKSTEP_REPORTS : {}) }),
-  });
-  if (!response.ok) throw new Error(`gc failed (${response.status}): ${await response.text()}`);
-  const receipt = ControlGcReceipt.parse(await response.json());
-  if (json) {
-    printJson(receipt);
-    return 0;
-  }
-  const verb = receipt.dry_run ? "would free" : "freed";
-  const mb = (receipt.freed_bytes / (1024 * 1024)).toFixed(1);
-  print(
-    `${verb} ${mb} MiB: ${receipt.deleted_runs.length} run tree(s), ${receipt.deleted_reviews.length} review tree(s) ` +
-      `(examined ${receipt.examined_runs}; kept active=${receipt.kept.active} recent=${receipt.kept.recent} young=${receipt.kept.young} ` +
-      `referenced=${receipt.kept.referenced} actionable=${receipt.kept.actionable} unknown=${receipt.kept.unknown_state})`,
-  );
-  for (const note of gcReceiptNotes(receipt, claudexorOwnedRoot())) print(note);
-  for (const error of receipt.errors) print(`warning: ${error}`);
-  return 0;
 }
 
 export async function recoveryCommand(args: ParsedArgs, json: boolean): Promise<number> {

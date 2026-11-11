@@ -1,0 +1,23 @@
+{
+  "cliVersion": "2.1.316",
+  "platform": "darwin-arm64",
+  "storeKind": "profile",
+  "capturedAt": "2026-11-02",
+  "source": "one finished Claude Code session recorded on disk by the vendor CLI",
+  "recordTypes": [
+    "queue-operation",
+    "user",
+    "attachment",
+    "atis-latch",
+    "api-request-shape",
+    "api-request-blob",
+    "api-request",
+    "last-prompt",
+    "tools-used",
+    "assistant",
+    "cost-state"
+  ],
+  "sanitization": "Every value replaced. Kept: relative layout with session id and cwd replaced, record types, key sets, nesting, enum-like type discriminators, the vendor version.",
+  "proves": "the transcript and spilled tool output of this version, and the export of them, byte-exact",
+  "doesNotProve": "any other vendor version, or subagents, file history, todos, debug logs, task state or non-empty session-env"
+}

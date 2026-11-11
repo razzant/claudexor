@@ -28,6 +28,7 @@ export class MutationPostCommitError extends AggregateError {
 export class MutationDelta {
   private readonly owners = new Set<OwnerKey>();
   private readonly callbacks: Array<() => void> = [];
+  private readonly observed = new Set<string>();
 
   blobChanged(...digests: Array<string | null | undefined>): void {
     for (const digest of digests) if (digest != null) this.owners.add(`blob:${digest}`);
@@ -41,6 +42,11 @@ export class MutationDelta {
     this.callbacks.push(callback);
   }
 
+  /** Job and run ids whose command or interaction rows this mutation writes. */
+  observationChanged(...ids: Array<string | null | undefined>): void {
+    for (const id of ids) if (id != null) this.observed.add(id);
+  }
+
   /** Run once after all row writers, before COMMIT. A later writer in the same
    * mutation may still acquire a reference, so cleanup must not run earlier. */
   clearUnownedInline(sql: SqlWriteContext): void {
@@ -51,6 +57,7 @@ export class MutationDelta {
   /** Used by runMutation only, after EngineStore.transaction returned. */
   publish(store: EngineStore): void {
     for (const key of this.owners) store.owners.noteChange(key);
+    if (this.observed.size > 0) store.observations.publish(this.observed);
     const errors: unknown[] = [];
     for (const callback of this.callbacks) {
       try {
@@ -88,6 +95,11 @@ export function runMutation<T>(store: EngineStore, body: (tx: MutationContext) =
   }
   changes.publish(store);
   return result;
+}
+
+/** A reducer's mutation, or none for an importer's bare connection (no observers). */
+export function mutationOf(sql: SqlWriteContext): MutationDelta | undefined {
+  return (sql as Partial<MutationContext>).changes;
 }
 
 export function requireTransaction(sql: SqlWriteContext): void {

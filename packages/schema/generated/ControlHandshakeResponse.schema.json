@@ -16,6 +16,11 @@
           "type": "string",
           "const": "/v2/operations"
         },
+        "storeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Immutable UUID of the durable engine store, stable across restarts; a run 404 is meaningful only with the same storeId. Returned only to a request sending `X-Claudexor-Store-Identity: 1` (older strict clients keep the legacy shape); absent when the store is unavailable or the daemon predates this field."
+        },
         "engine": {
           "type": "object",
           "properties": {

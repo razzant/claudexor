@@ -65,6 +65,15 @@ export class CliError extends Error {
   }
 }
 
+/** A failure after the daemon accepted a job keeps that job's handle and receipt. */
+export function withAcceptedReceipt(err: unknown, receipt: Record<string, unknown>): CliError {
+  const problem = normalizeThrowable(err, "operational");
+  return new CliError(problem.category, problem.message, {
+    ...problem,
+    context: { ...problem.context, ...receipt },
+  });
+}
+
 /** A usage/validation failure (exit 2). An operational failure (exit 1) is
  * `new CliError("operational", ...)` — most operational failures reach the
  * projector as native throwables (Node errors, ControlProblem-derived errors)
@@ -214,10 +223,7 @@ export function normalizeThrowable(
     const code = typeof anyErr["code"] === "string" ? (anyErr["code"] as string) : undefined;
     const status = typeof anyErr["status"] === "number" ? (anyErr["status"] as number) : undefined;
     const category: CliErrorCategory =
-      status === 400 ||
-      status === 422 ||
-      code === "inline_secret_rejected" ||
-      code === "invalid_argument"
+      status === 400 || status === 422 || code === "invalid_argument"
         ? "usage"
         : code && ERRNO_RE.test(code)
           ? "operational"

@@ -2,12 +2,14 @@ import type { Thread } from "@claudexor/schema";
 import { Thread as ThreadSchema } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
 
-export type ThreadLifecycleAction = "trash" | "restore" | "purge";
+/** `retire` is the conditional path: its caller proved the exact closure
+ * finished and exported, so it needs no Trash window in between. */
+export type ThreadLifecycleAction = "trash" | "restore" | "purge" | "retire";
 
 /** Pure lifecycle reducer; ThreadStore remains the sole journal writer. */
 export function reduceThreadLifecycle(thread: Thread, action: ThreadLifecycleAction): Thread {
   if (thread.state === "purged") {
-    if (action === "purge") return thread;
+    if (action === "purge" || action === "retire") return thread;
     throw Object.assign(new Error(`thread ${thread.id} was purged`), {
       status: 410,
       code: "thread_purged",
@@ -42,7 +44,7 @@ export function reduceThreadLifecycle(thread: Thread, action: ThreadLifecycleAct
       updated_at: nowIso(),
     });
   }
-  if (thread.state !== "trashed") {
+  if (action === "purge" && thread.state !== "trashed") {
     throw Object.assign(new Error(`thread ${thread.id} must be trashed before purge`), {
       status: 409,
       code: "thread_not_trashed",

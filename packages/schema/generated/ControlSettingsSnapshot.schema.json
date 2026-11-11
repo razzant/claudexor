@@ -202,10 +202,17 @@
               "description": "Wall-clock timeout for a reviewer run, in milliseconds."
             },
             "harnessInactivityTimeoutMs": {
-              "type": "integer",
-              "exclusiveMinimum": 0,
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "default": 3600000,
-              "description": "Inactivity watchdog for harness streams, in milliseconds."
+              "description": "Inactivity watchdog in milliseconds; null disables inactivity timing, not cancellation or cleanup."
             },
             "concurrency": {
               "type": "object",

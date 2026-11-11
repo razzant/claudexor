@@ -1,3 +1,4 @@
+import { CODEX_PROGRAM } from "./program.js";
 import {
   CODEX_MODEL_INVENTORY,
   codexProcessingMethods,
@@ -15,7 +16,6 @@ import { resolveSecret } from "@claudexor/secrets";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  type AccessProfile,
   type AuthSourceReadiness,
   type ConformanceReport,
   type CredentialProfile,
@@ -59,10 +59,11 @@ import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseCodexEvent, parseCodexStderrFailure, type CodexParseState } from "./parse.js";
 // prettier-ignore
 import { CODEX_ACCESS_PROFILES, probeCodexCredentialProfile, resolveCodexProfileRoute } from "./profile.js";
-import { codexContinuity } from "./continuity.js";
+import { codexPersistence } from "./native-home-retention.js";
 import { smokeIsolatedApiKey } from "./smoke.js";
 export { canonicalCodexProfileHome, codexAccountIdentity } from "./profile.js";
-import { codexImageArgs } from "./attachments.js";
+import { codexExecInput, codexImageArgs, verifyCodexAttachments } from "./attachments.js";
+import { assertCodexExecSpec, codexExecSandboxArgs, codexNativeAccess } from "./sandbox.js";
 import {
   CodexAppServerController,
   runCodexAppServer,
@@ -71,14 +72,14 @@ import {
 import { decorateCodexEvent, type CodexEventDecoration } from "./event-decoration.js";
 
 import {
-  BIN,
+  resolveCodexBin,
   detectVersion,
   installedCliCheck,
   missingCliError,
   missingCliReport,
   probeEnv,
 } from "./missing-cli.js";
-export { BIN } from "./missing-cli.js";
+export { resolveCodexBin } from "./missing-cli.js";
 
 export const selectCodexRunAuthRoute = selectStrictAuthRoute;
 
@@ -106,24 +107,6 @@ import {
   probeLogin,
   type CodexLoginProbe,
 } from "./auth.js";
-
-function sandboxMode(access: AccessProfile): string | null {
-  switch (access) {
-    case "readonly":
-      return "read-only";
-    case "workspace_write":
-      return "workspace-write";
-    case "full":
-      return "danger-full-access";
-    case "inherit_native":
-      return null;
-  }
-}
-
-function sandboxArgs(access: AccessProfile): string[] {
-  const mode = sandboxMode(access);
-  return mode ? ["--sandbox", mode] : [];
-}
 
 export function codexNativeEnv(
   base?: Record<string, string | null | undefined>,
@@ -251,7 +234,7 @@ export function codexExecArgs(
       ...processingArgs,
       ...CODEX_FILE_AUTH_ARGS,
       ...CODEX_PROJECT_DOC_FALLBACK_ARGS,
-      ...sandboxConfigArgs(spec.access),
+      ...codexExecSandboxArgs(spec),
       "--skip-git-repo-check",
     ];
     if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
@@ -282,7 +265,7 @@ export function codexExecArgs(
     ...CODEX_FILE_AUTH_ARGS,
     ...CODEX_PROJECT_DOC_FALLBACK_ARGS,
   ];
-  args.push(...sandboxArgs(spec.access), "--skip-git-repo-check");
+  args.push(...codexExecSandboxArgs(spec), "--skip-git-repo-check");
   if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
   if (spec.model_hint) args.push("-m", spec.model_hint);
   if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
@@ -301,12 +284,6 @@ export function codexExecArgs(
   if (imageArgs.length > 0) args.push("--");
   args.push("-");
   return args;
-}
-
-/** Sandbox as `-c sandbox_mode=...` config (the only spelling `exec resume` accepts). */
-function sandboxConfigArgs(access: AccessProfile): string[] {
-  const mode = sandboxMode(access);
-  return mode ? ["-c", `sandbox_mode="${mode}"`] : [];
 }
 
 function codexWebArgs(policy: HarnessRunSpec["external_context_policy"]): string[] {
@@ -360,18 +337,20 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
   };
   return {
     id: "codex",
+    program: CODEX_PROGRAM,
     effortParameter: "model_reasoning_effort",
     capabilityProfile: CODEX_CAPABILITY_PROFILE,
+    nativeAccess: (spec) => codexNativeAccess(spec, Boolean(runtime.runAppServer)),
     ...codexProcessingMethods(runtime, codexNativeEnv),
 
     async discover(): Promise<HarnessManifest> {
       const version = await runtime.detectVersion();
       if (version === null) {
-        const advisory = runtime.brokenInstallAdvisory(BIN);
+        const advisory = runtime.brokenInstallAdvisory(resolveCodexBin());
         throw missingCliError(advisory && redactCodexDoctorDetail(advisory));
       }
       const apiKey = runtime.hasApiKey();
-      const login = await runtime.probeLogin(BIN, { env: codexNativeEnv() });
+      const login = await runtime.probeLogin(resolveCodexBin(), { env: codexNativeEnv() });
       const nativeSessionAvailable = login.method === "chatgpt";
       // Per-model effort vocabulary from the vendor, probed in the SAME native env
       // the login probe used (the catalog belongs to that CODEX_HOME's account). A
@@ -393,6 +372,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           ...CODEX_MODEL_INVENTORY,
           plan: true,
           implement: true,
+          interactive: Boolean(runtime.runAppServer),
           create_from_scratch: true,
           review: true,
           verify: true,
@@ -404,15 +384,14 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           work_report_transport: "constrained",
           structured_output_channel: "final_message",
           web_policy: "native",
-          // Effort is per MODEL (`model/list` → supportedReasoningEfforts): the harness-wide
-          // list is the UNION; `model_effort_levels` holds the truth a model is held to.
+          // Per-model effort comes from model/list; the harness-wide list is its union.
           effort_levels: unionEffortLevels(efforts.catalog.models),
           model_effort_levels: efforts.catalog.models,
           effort_levels_verified_against: efforts.live
             ? version
             : CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
-          // Manifest truth for routes the live probe does not answer; no hidden models.
           known_models: [
+            "gpt-6.1-sol",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
@@ -452,14 +431,14 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
       // diagnosis always describes the exact env the probe failed in.
       const version = await runtime.detectVersion(_spec.abortSignal, _spec.env);
       if (version === null) {
-        const advisory = runtime.brokenInstallAdvisory(BIN, probeEnv(_spec.env));
+        const advisory = runtime.brokenInstallAdvisory(resolveCodexBin(), probeEnv(_spec.env));
         return missingCliReport(advisory && redactCodexDoctorDetail(advisory));
       }
       const requestedSource = _spec.authSource;
       const probeNative = requestedSource === undefined || requestedSource === "native_session";
       const probeApi = requestedSource === undefined || requestedSource === "provider_auth_file";
       const login: CodexLoginProbe = probeNative
-        ? await runtime.probeLogin(BIN, {
+        ? await runtime.probeLogin(resolveCodexBin(), {
             env: codexNativeEnv(_spec.env),
             abortSignal: _spec.abortSignal,
           })
@@ -502,8 +481,8 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
         "explain",
         "audit",
       ];
-      const binPath = resolveHarnessBinary(BIN, probeEnv(_spec.env));
-      const installAdvisory = runtime.brokenInstallAdvisory(BIN, probeEnv(_spec.env));
+      const binPath = resolveHarnessBinary(resolveCodexBin(), probeEnv(_spec.env));
+      const installAdvisory = runtime.brokenInstallAdvisory(resolveCodexBin(), probeEnv(_spec.env));
       const apiSource: AuthSourceReadiness = {
         source: "provider_auth_file",
         availability: apiKey ? "available" : "unavailable",
@@ -600,7 +579,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
     review(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
       return controlledRun(spec);
     },
-    continuity: codexContinuity,
+    ...codexPersistence,
     async cancel(sessionId: string): Promise<void> {
       await controllers.get(sessionId)?.cancel();
     },
@@ -637,6 +616,7 @@ async function* runCodex(
   runtime: CodexRuntimeDeps,
   controller?: CodexAppServerController,
 ): AsyncIterable<HarnessEvent> {
+  verifyCodexAttachments(spec.attachments);
   const profile = spec.credential_profile;
   const authPreference = spec.auth_preference ?? "auto";
   let nativeEnv = codexNativeEnv(spec.env);
@@ -665,7 +645,7 @@ async function* runCodex(
       const nativeLogin: CodexLoginProbe =
         authPreference === "api_key"
           ? { authed: false, method: "logged_out", probeError: null }
-          : await runtime.probeLogin(BIN, {
+          : await runtime.probeLogin(resolveCodexBin(), {
               env: nativeEnv,
               abortSignal: abortSignalFromSpec(spec),
             });
@@ -758,6 +738,9 @@ async function* runCodex(
     // DROP/CLAMP disclosure describes (preflight only saw the DEFAULT account).
     const effort = await codexRunEffortResolution(spec, runtime, env, abortSignalFromSpec(spec));
     yield effort.event;
+    // A consumer that keeps reading after Stop must not resume this preamble
+    // into a native process the run was stopped before starting.
+    if (abortSignalFromSpec(spec)?.aborted) return;
     throwIfEffortRejected(effort.resolution);
     spec = applyCodexRunProcessing(
       spec,
@@ -766,6 +749,7 @@ async function* runCodex(
       authRoute === "subscription",
     );
     const suppressNodeRepl = codexConfigHasNodeRepl(env["CODEX_HOME"]);
+    if (!runtime.runAppServer) assertCodexExecSpec(spec);
     const args = runtime.runAppServer
       ? [
           ...CODEX_FILE_AUTH_ARGS,
@@ -805,7 +789,7 @@ async function* runCodex(
 
     if (runtime.runAppServer) {
       const native = runtime.runAppServer({
-        bin: BIN,
+        bin: resolveCodexBin(),
         args,
         spec,
         env,
@@ -819,10 +803,11 @@ async function* runCodex(
       return;
     }
     const stream = runtime.runCliHarness({
-      bin: BIN,
+      program: CODEX_PROGRAM,
+      bin: resolveCodexBin(),
       args,
       spec,
-      input: spec.prompt,
+      input: codexExecInput(spec),
       env,
       label: "codex",
       redact: redactSecrets,

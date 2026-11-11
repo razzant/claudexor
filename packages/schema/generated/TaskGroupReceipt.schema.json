@@ -1,0 +1,26 @@
+{
+  "$ref": "#/definitions/TaskGroupReceipt",
+  "definitions": {
+    "TaskGroupReceipt": {
+      "type": "object",
+      "properties": {
+        "taskGroupId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Caller-generated UUID saved before launching the first member. Each job still needs its own idempotency key; the group grants no execution authority."
+        },
+        "storeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identity of the durable engine store that accepted this command, stable across restarts. A group member always carries it; an ordinary receipt carries it only for a request sending `X-Claudexor-Store-Identity: 1`, and it stays absent, meaning unknown, when the store has no identity to give."
+        }
+      },
+      "required": [
+        "taskGroupId",
+        "storeId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

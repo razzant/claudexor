@@ -106,7 +106,8 @@ extension AppModel {
                     evidenceRead, client: requestClient, at: locationID, capabilities: capabilities,
                     isCurrent: { [weak self] in self?.isCurrentGateway(requestClient, at: locationID) == true })
             }
-            let response = try await requestClient.credentialProfilesSnapshot(resources: capabilities?.accountsSnapshot == true)
+            let response = try await requestClient.credentialProfilesSnapshot(
+                resources: capabilities?.accountsSnapshot == true, apiKeys: capabilities?.apiKeys == true)
             guard accountsRefreshIsCurrent(generation, client: requestClient, at: locationID)
             else {
                 return finish(nil, false, accountsRefreshRetirementMessage(

@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import {
+  capturedNoGitChange,
+  capturedNoGitChangeValue,
   convergenceOutcomeFacts,
   isWorkingCandidate,
+  needsPostTurnFence,
   partitionCandidates,
 } from "./candidateEvidence.js";
 import type { CandidateRun } from "./candidateEvidence.js";
@@ -65,20 +68,78 @@ describe("partitionCandidates (D-16 veto owner)", () => {
     expect(working).toEqual([clean]);
   });
 
-  it("a candidate whose patch holds secret-like strings is an ordinary working candidate (INV-062)", () => {
+  it("a candidate whose patch holds credential-shaped strings is an ordinary working candidate", () => {
     const flagged = candidate({
       diff: "diff --git a/LEAK.txt b/LEAK.txt\n+exact bytes\n",
-      persistedDiff: "# Claudexor: saved copy\ndiff --git a/LEAK.txt b/LEAK.txt\n+[redacted]\n",
-      secretLike: {
-        files: [{ path: "LEAK.txt", matches: 1, kinds: ["openai_compatible_api_key"] }],
-        binary_paths: [],
-        media_withheld: [],
-        answer_matches: 0,
-        total_matches: 1,
-      },
     });
     expect(isWorkingCandidate(flagged)).toBe(true);
     expect(partitionCandidates([flagged]).working).toEqual([flagged]);
+  });
+});
+
+describe("capturedNoGitChange (#502: the post-turn fence's only skip)", () => {
+  const result = (base: string, candidate: string) =>
+    ({ base_tree: base, candidate_tree: candidate }) as CandidateRun["result"];
+  const refusal = { disposition: "discarded", detail: "fixture" } as CandidateRun["captureRefusal"];
+
+  it("is true only for a complete Git capture whose trees agree", () => {
+    expect(capturedNoGitChange(candidate({ result: result("t1", "t1") }))).toBe(true);
+    expect(capturedNoGitChange(candidate({ result: result("t1", "t2") }))).toBe(false);
+    expect(capturedNoGitChangeValue(candidate({ result: result("t1", "t1") }))).toBe(true);
+    expect(capturedNoGitChangeValue(candidate({ result: result("t1", "t2") }))).toBe(false);
+  });
+
+  it("an unknown capture is never unchanged: no result, a refusal, a refused continuation, files", () => {
+    // The per-slot failure shape: an empty patch text and no capture at all.
+    expect(capturedNoGitChange(candidate({ diff: "", errored: true }))).toBe(false);
+    expect(
+      capturedNoGitChange(candidate({ result: result("t1", "t1"), captureRefusal: refusal })),
+    ).toBe(false);
+    expect(
+      capturedNoGitChange(
+        candidate({
+          result: result("t1", "t1"),
+          continuationRefusal: { attemptId: "a2", refusal: refusal! },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      capturedNoGitChange(
+        candidate({
+          result: result("t1", "t1"),
+          files: { noChanges: true } as CandidateRun["files"],
+        }),
+      ),
+    ).toBe(false);
+    expect(capturedNoGitChangeValue(candidate({ diff: "", errored: true }))).toBeNull();
+    expect(
+      capturedNoGitChangeValue(candidate({ result: result("t1", "t1"), captureRefusal: refusal })),
+    ).toBeNull();
+    expect(
+      capturedNoGitChangeValue(
+        candidate({
+          result: result("t1", "t1"),
+          files: { noChanges: true } as CandidateRun["files"],
+        }),
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("needsPostTurnFence (#502)", () => {
+  const result = (base: string, candidate: string) =>
+    ({ base_tree: base, candidate_tree: candidate }) as CandidateRun["result"];
+  const refusal = { disposition: "discarded", detail: "fixture" } as CandidateRun["captureRefusal"];
+
+  it("fences a changed or never-captured turn, and an empty roster as before", () => {
+    expect(needsPostTurnFence([candidate({ result: result("t1", "t2") })])).toBe(true);
+    expect(needsPostTurnFence([candidate({ diff: "", errored: true })])).toBe(true);
+    expect(needsPostTurnFence([])).toBe(true);
+  });
+
+  it("takes no fence for a refused capture or a complete unchanged one", () => {
+    expect(needsPostTurnFence([candidate({ captureRefusal: refusal })])).toBe(false);
+    expect(needsPostTurnFence([candidate({ result: result("t1", "t1") })])).toBe(false);
   });
 });
 
@@ -88,7 +149,7 @@ describe("convergenceOutcomeFacts precedence", () => {
     const facts = convergenceOutcomeFacts(
       {
         converged: false,
-        interrupted: true,
+        interrupted: "context_capacity_exhausted",
         stuckNoProgress: true,
         aborted: true,
         exhausted: true,
@@ -97,9 +158,13 @@ describe("convergenceOutcomeFacts precedence", () => {
     );
     expect(facts.lifecycle).toBe("interrupted");
     expect(facts.reason).toBe("context_capacity_exhausted");
+    const capped = { converged: false, stuckNoProgress: false, aborted: false, exhausted: false };
+    expect(
+      convergenceOutcomeFacts({ ...capped, interrupted: "turn_limit_reached" }, cancel),
+    ).toMatchObject({ lifecycle: "interrupted", reason: "turn_limit_reached" });
   });
   it("keeps the pre-r8 ladder for non-interrupted states", () => {
-    const base = { converged: false, interrupted: false, aborted: false, exhausted: false };
+    const base = { converged: false, interrupted: null, aborted: false, exhausted: false };
     expect(convergenceOutcomeFacts({ ...base, stuckNoProgress: true }, cancel).reason).toBe(
       "stuck_no_progress",
     );

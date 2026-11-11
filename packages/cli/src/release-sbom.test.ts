@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { BETTERLEAKS_RELEASES } from "@claudexor/delivery";
 
 const generator = resolve("scripts/generate-release-sbom.mjs");
 const remoteGenerator = resolve("scripts/generate-remote-runtime-sbom.mjs");
@@ -71,6 +72,8 @@ describe("release SPDX SBOM", () => {
         "claudexor-conpty-helper",
         "claudexor-process-identity",
         "Node.js runtime",
+        "Betterleaks publication scanner (darwin-arm64)",
+        "Betterleaks publication scanner (darwin-x64)",
       ];
       for (const name of runtimeNames) {
         const runtime = document.packages.find((pkg: any) => pkg.name === name);
@@ -87,6 +90,22 @@ describe("release SPDX SBOM", () => {
       expect(document.packages.find((pkg: any) => pkg.name === "@playwright/mcp").versionInfo).toBe(
         browserVersion,
       );
+      for (const key of ["darwin-arm64", "darwin-x64"]) {
+        expect(
+          document.packages.find(
+            (pkg: any) => pkg.name === `Betterleaks publication scanner (${key})`,
+          ),
+        ).toMatchObject({
+          versionInfo: "1.9.0",
+          licenseDeclared: "MIT",
+          downloadLocation: `https://github.com/betterleaks/betterleaks/releases/download/v1.9.0/${BETTERLEAKS_RELEASES[key]!.asset}`,
+          externalRefs: [
+            expect.objectContaining({
+              referenceLocator: "pkg:github/betterleaks/betterleaks@v1.9.0",
+            }),
+          ],
+        });
+      }
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -96,6 +115,18 @@ describe("release SPDX SBOM", () => {
     const fixture = appFixture("0.0.77");
     try {
       expect(() => generate(fixture.app)).toThrow(/packaged Browser MCP does not match/);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the app bundle lacks a bundled publication scanner", () => {
+    const fixture = appFixture();
+    try {
+      rmSync(join(fixture.app, "Contents/Resources/native/betterleaks/darwin-x64/provenance.json"));
+      expect(() => generate(fixture.app)).toThrow(
+        /lacks the bundled darwin-x64 publication scanner/,
+      );
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -184,6 +215,20 @@ describe("remote runtime SPDX SBOM", () => {
         const dependency = document.packages.find((pkg: any) => pkg.name === dependencyName);
         expect(containedIds.has(dependency.SPDXID), dependencyName).toBe(true);
       }
+      // Each target archive carries exactly its own platform's pinned scanner.
+      for (const target of targets) {
+        const scanner = document.packages.find(
+          (pkg: any) => pkg.name === `Betterleaks publication scanner (${target})`,
+        );
+        expect(scanner).toMatchObject({
+          versionInfo: "1.9.0",
+          licenseDeclared: "MIT",
+          checksums: [
+            { algorithm: "SHA256", checksumValue: BETTERLEAKS_RELEASES[target]!.binarySha256 },
+          ],
+        });
+        expect(containedIds.has(scanner.SPDXID), target).toBe(true);
+      }
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
@@ -220,12 +265,22 @@ function appFixture(packagedBrowserVersion = browserVersion) {
     "claudexor-process-identity": join(resources, "native", "claudexor-process-identity"),
     "claudexor-conpty-helper": join(resources, "native", "claudexor-conpty-helper.exe"),
     "Node.js runtime": join(resources, "node"),
+    "Betterleaks publication scanner (darwin-arm64)": join(
+      resources,
+      "native/betterleaks/darwin-arm64/betterleaks",
+    ),
+    "Betterleaks publication scanner (darwin-x64)": join(
+      resources,
+      "native/betterleaks/darwin-x64/betterleaks",
+    ),
   };
   const contents = {
     "@playwright/mcp": "fixture:@playwright/mcp",
     "claudexor-process-identity": "fixture:claudexor-process-identity",
     "claudexor-conpty-helper": fakePe(),
     "Node.js runtime": `#!/bin/sh\nprintf 'v${nodeVersion}\\n'\n`,
+    "Betterleaks publication scanner (darwin-arm64)": "fixture:signed-betterleaks-darwin-arm64",
+    "Betterleaks publication scanner (darwin-x64)": "fixture:signed-betterleaks-darwin-x64",
   };
   for (const [name, path] of Object.entries(files)) {
     mkdirSync(dirname(path), { recursive: true });
@@ -240,6 +295,24 @@ function appFixture(packagedBrowserVersion = browserVersion) {
   writeFileSync(fixtureNode, contents["Node.js runtime"]);
   chmodSync(fixtureNode, 0o755);
   symlinkSync(fixtureNode, files["Node.js runtime"]);
+  for (const key of ["darwin-arm64", "darwin-x64"]) {
+    const release = BETTERLEAKS_RELEASES[key]!;
+    writeFileSync(
+      join(resources, "native/betterleaks", key, "provenance.json"),
+      JSON.stringify({
+        name: "betterleaks",
+        version: "1.9.0",
+        platform: key,
+        license: "MIT",
+        source: `https://github.com/betterleaks/betterleaks/releases/download/v1.9.0/${release.asset}`,
+        archiveSha256: release.archiveSha256,
+        upstreamBinarySha256: release.binarySha256,
+        bundledSha256: createHash("sha256")
+          .update(contents[`Betterleaks publication scanner (${key})` as keyof typeof contents])
+          .digest("hex"),
+      }),
+    );
+  }
   writeFileSync(
     join(dirname(files["@playwright/mcp"]), "package.json"),
     JSON.stringify({ name: "@playwright/mcp", version: packagedBrowserVersion }),

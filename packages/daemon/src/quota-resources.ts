@@ -4,6 +4,8 @@ import { sha256 } from "@claudexor/util";
 import {
   activeQuotaSnapshots,
   activeQuotaSnapshotsWithConstraintFreshness,
+  observationStaleAt,
+  staleAt,
 } from "./quota-registry-support.js";
 import {
   ACCOUNT_RESOURCE_FACETS,
@@ -11,14 +13,15 @@ import {
   ControlQuotaFreshnessResponse,
   emptyResourceFacet,
   type AccountResourceObservation,
+  type AccountResourceTarget,
   type AccountTarget,
   type QuotaAbsence,
   type QuotaSnapshot,
 } from "@claudexor/schema";
 
-export const resourceKey = (target: AccountTarget) =>
+export const resourceKey = (target: AccountResourceTarget) =>
   JSON.stringify([target.harness, target.profile_id]);
-export function emptyResources(target: AccountTarget): AccountResourceSnapshot {
+export function emptyResources(target: AccountResourceTarget): AccountResourceSnapshot {
   return {
     target,
     balances: emptyResourceFacet(),
@@ -28,12 +31,16 @@ export function emptyResources(target: AccountTarget): AccountResourceSnapshot {
   };
 }
 /** Merge independently observed facets. A failed read preserves the successful
- * observation, including its original source and clock. */
+ * observation, including its original source and clock. A row read with
+ * another API key starts empty: one key's figures never stand for another's. */
 export function mergeResources(
   prior: AccountResourceSnapshot | undefined,
   update: AccountResourceObservation,
 ): AccountResourceSnapshot {
-  const result = structuredClone(prior ?? emptyResources(update.target));
+  const sameKey = prior?.credential_fingerprint === update.credential_fingerprint;
+  const result = structuredClone(sameKey && prior ? prior : emptyResources(update.target));
+  if (update.credential_fingerprint !== undefined)
+    result.credential_fingerprint = update.credential_fingerprint;
   for (const key of ACCOUNT_RESOURCE_FACETS) {
     const next = update[key];
     if (!next) continue;
@@ -77,9 +84,16 @@ export function ageResources(
   const result = structuredClone(snapshot);
   for (const key of ACCOUNT_RESOURCE_FACETS) {
     const facet = result[key];
+    const periodEnded =
+      (key === "balances" || key === "spending") &&
+      result[key].value?.some((row) => {
+        const endsAt = Date.parse(row.period?.ends_at ?? "");
+        return Number.isFinite(endsAt) && endsAt <= now;
+      });
     if (facet.value === null) facet.freshness = "unknown";
     else if (
       facet.last_error !== null ||
+      periodEnded ||
       facet.observed_at === null ||
       now - Date.parse(facet.observed_at) >= 300_000
     )
@@ -121,8 +135,10 @@ export function resourceQuotaSnapshots(
   values: Iterable<QuotaSnapshot>,
   cutoffs: ReadonlyMap<string, string>,
   now: number,
+  admission = false,
 ): QuotaSnapshot[] {
-  return activeQuotaSnapshots([...values], now).map((snapshot) =>
+  const age = admission ? observationStaleAt : staleAt;
+  return activeQuotaSnapshots([...values], now, age).map((snapshot) =>
     beforeResourceCutoff(snapshot, cutoffs) ? { ...snapshot, freshness: "stale" } : snapshot,
   );
 }

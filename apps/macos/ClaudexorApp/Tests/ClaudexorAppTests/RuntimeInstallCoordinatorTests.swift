@@ -186,7 +186,7 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
 
 @Suite(.serialized) struct RuntimeInstallCoordinatorTests {
     private func tempRoot() -> URL {
-        let url = FileManager.default.temporaryDirectory
+        let url = runtimeTestTemporaryDirectory
             .appendingPathComponent("cx-install-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
@@ -195,7 +195,7 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
     /// Build a real closure tar.gz whose only entry is claudexord.bundle.cjs, and
     /// return (bytes, sha256hex).
     private func fixtureClosure(_ body: String = "// daemon\n") throws -> (Data, String) {
-        let stage = FileManager.default.temporaryDirectory
+        let stage = runtimeTestTemporaryDirectory
             .appendingPathComponent("cx-stage-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: stage) }
@@ -228,6 +228,10 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
         let (bytes, sha) = try fixtureClosure()
         let daemon = StubDaemon()
         daemon.probeReturns = "3.4.0"
+        // The previous engine serves until the swap; the candidate answers after.
+        daemon.handshakeIdentitySequence = [
+            RuntimeClosureIdentity(version: "3.2.0", buildSha: previousBuildSha)
+        ]
         daemon.handshakeReturns = "3.4.0"
 
         let recorder = PhaseRecorder()
@@ -297,6 +301,7 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
             handshakePollTimeout: 0.1)
         let old = RuntimeClosureIdentity(
             version: "3.2.0", buildSha: previousBuildSha)
+        daemon.handshakeIdentitySequence = [old, old]
         let reconciliation = Task { await reconciler.reconcile(serving: old) }
         await gate.waitUntilEntered()
 
@@ -320,6 +325,43 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
             version: "3.4.0", buildSha: candidateBuildSha)))
         #expect(daemon.stops == 1)
         #expect(daemon.starts == 1)
+    }
+
+    @Test func refusedLifecycleLockIsNamedInsteadOfReportedAsAnotherAction() async throws {
+        // Same symlink-free fixture root as the lifecycle owner tests; the lock
+        // admission proves a canonical service directory before its leaf.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../../../../tmp/lifecycle-\(UUID().uuidString)")
+            .standardizedFileURL
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let leaf = root.appendingPathComponent("lifecycle.lock")
+        try FileManager.default.createSymbolicLink(
+            at: leaf, withDestinationURL: root.appendingPathComponent("elsewhere"))
+        let runtimeRoot = tempRoot()
+        defer { try? FileManager.default.removeItem(at: runtimeRoot) }
+        let installer = RuntimeInstaller(root: runtimeRoot)
+        let daemon = StubDaemon()
+        let recorder = PhaseRecorder()
+        let coord = RuntimeInstallCoordinator(
+            installer: installer, transport: LocalTransport(Data()), daemon: daemon,
+            lifecycleOwner: LocalRuntimeLifecycleOwner(serviceRoot: root),
+            onPhase: { recorder.record($0) })
+        let refusal = LocalRuntimeLifecycleRefusal.unsafeLockFile(path: leaf.path)
+
+        await #expect(throws: RuntimeInstallError.lifecycleUnavailable(refusal)) {
+            try await coord.install(
+                manifest: manifest(version: "3.5.0", sha: String(repeating: "0", count: 64)),
+                assetURL: assetURL)
+        }
+        #expect(recorder.phases == [.failed(reason: refusal.reason)])
+        let message = try #require(RuntimeInstallError.lifecycleUnavailable(refusal).errorDescription)
+        #expect(message.contains(refusal.reason))
+        #expect(!message.localizedCaseInsensitiveContains("another"))
+        #expect(installer.readCurrent() == nil)
+        #expect(daemon.stops == 0)
+        #expect(daemon.starts == 0)
     }
 
     // MARK: - Failure paths
@@ -473,6 +515,65 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
             try await coord.install(manifest: manifest(version: "3.4.0", sha: sha), assetURL: assetURL)
         }
         #expect(installer.readCurrent()?.version == "3.9.0")  // unchanged
+    }
+
+    /// The offer was decided before another app copy replaced the engine: a
+    /// newer engine, or another build of the candidate's version, now serves.
+    @Test(arguments: [
+        RuntimeClosureIdentity(version: "3.5.0", buildSha: wrongBuildSha),
+        RuntimeClosureIdentity(version: "3.4.0", buildSha: wrongBuildSha),
+    ])
+    func installNeverReplacesAServingEngineThatIsNotOlder(serving: RuntimeClosureIdentity) async throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = RuntimeInstaller(root: root)
+        try installer.writeCurrentAtomic(previousPointer())
+        let (bytes, sha) = try fixtureClosure()
+        let daemon = StubDaemon()
+        daemon.probeReturns = "3.4.0"
+        daemon.handshakeIdentitySequence = [serving]
+        let recorder = PhaseRecorder()
+        let coord = RuntimeInstallCoordinator(
+            installer: installer, transport: LocalTransport(bytes), daemon: daemon,
+            lifecycleOwner: testInstallLifecycleOwner,
+            onPhase: { recorder.record($0) })
+
+        let error = await captureError {
+            try await coord.install(
+                manifest: manifest(version: "3.4.0", sha: sha), assetURL: assetURL)
+        }
+        #expect(error as? RuntimeInstallError == .notNewerThanServing(target: "3.4.0", serving: serving))
+        #expect(daemon.stops == 0)
+        #expect(daemon.starts == 0)
+        #expect(installer.readCurrent() == previousPointer())
+        #expect(!FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("versions/3.4.0").path))
+        #expect(recorder.phases.last == .failed(reason: "not newer than the running engine"))
+    }
+
+    /// The updater offers over a prerelease-versioned serving engine (its core
+    /// version is older), so the same monotonic rule keeps that install working.
+    @Test func installStillReplacesAnOlderPrereleaseServingEngine() async throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = RuntimeInstaller(root: root)
+        try installer.writeCurrentAtomic(previousPointer())
+        let (bytes, sha) = try fixtureClosure()
+        let daemon = StubDaemon()
+        daemon.probeReturns = "3.4.0"
+        let prerelease = RuntimeClosureIdentity(version: "3.3.7-rc.0", buildSha: previousBuildSha)
+        daemon.handshakeIdentitySequence = [prerelease]
+        daemon.handshakeReturns = "3.4.0"
+        let coord = RuntimeInstallCoordinator(
+            installer: installer, transport: LocalTransport(bytes), daemon: daemon,
+            lifecycleOwner: testInstallLifecycleOwner)
+
+        let version = try await coord.install(
+            manifest: manifest(version: "3.4.0", sha: sha), assetURL: assetURL)
+        #expect(version == "3.4.0")
+        #expect(daemon.stoppedIdentities == [prerelease])
+        #expect(daemon.starts == 1)
+        #expect(installer.readCurrent()?.version == "3.4.0")
     }
 
     // MARK: - Rollback drill
@@ -728,6 +829,9 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
         let (bytes, sha) = try fixtureClosure()
         let daemon = StubDaemon()
         daemon.probeReturns = "3.4.0"
+        daemon.handshakeIdentitySequence = [
+            RuntimeClosureIdentity(version: "3.2.0", buildSha: previousBuildSha)
+        ]
         daemon.handshakeReturns = "9.9.9"  // step-10 mismatch → rollback
         // stop() runs first in rollback; lock the root so the restore write fails.
         daemon.onStop = { [rootPath = root.path] in
@@ -760,6 +864,9 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
         let (bytes, sha) = try fixtureClosure()
         let daemon = StubDaemon()
         daemon.probeReturns = "3.4.0"
+        daemon.handshakeIdentitySequence = [
+            RuntimeClosureIdentity(version: "3.2.0", buildSha: previousBuildSha)
+        ]
         daemon.handshakeReturns = "9.9.9"  // step-10 mismatch → rollback
         daemon.startThrowsOnCall = 2  // forward relaunch OK; recovery relaunch throws
         let coord = RuntimeInstallCoordinator(
@@ -783,6 +890,9 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
         let (bytes, sha) = try fixtureClosure()
         let daemon = StubDaemon()
         daemon.probeReturns = "3.4.0"
+        daemon.handshakeIdentitySequence = [
+            RuntimeClosureIdentity(version: "3.2.0", buildSha: previousBuildSha)
+        ]
         // 9.9.9 is neither the new (3.4.0) nor the previous (3.2.0) version, so the
         // step-10 handshake AND the rollback handshake both mismatch.
         daemon.handshakeReturns = "9.9.9"
@@ -1065,6 +1175,7 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
         try installer.writeCurrentAtomic(previousPointer())
         let (bytes, sha) = try fixtureClosure()
         let daemon = IdentityOnlyDaemon(
+            previous: RuntimeClosureIdentity(version: "3.2.0", buildSha: previousBuildSha),
             candidate: RuntimeClosureIdentity(version: "3.4.0", buildSha: candidateBuildSha))
         let recorder = PhaseRecorder()
         let coord = RuntimeInstallCoordinator(
@@ -1102,14 +1213,26 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
 }
 
 /// Relies on the protocol's default `servingHandshake()`: identity answers
-/// always name the exact candidate, but no admission is ever proven.
-private struct IdentityOnlyDaemon: RuntimeDaemonControl {
+/// name the previous engine until its stop, then always the exact candidate,
+/// but no admission is ever proven.
+private final class IdentityOnlyDaemon: RuntimeDaemonControl, @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+    let previous: RuntimeClosureIdentity
     let candidate: RuntimeClosureIdentity
+    init(previous: RuntimeClosureIdentity, candidate: RuntimeClosureIdentity) {
+        self.previous = previous
+        self.candidate = candidate
+    }
     func isBusy() async -> Bool? { false }
-    func stopForRuntimeReplacement(expectedIdentity: RuntimeClosureIdentity) async throws {}
+    func stopForRuntimeReplacement(expectedIdentity: RuntimeClosureIdentity) async throws {
+        lock.withLock { stopped = true }
+    }
     func start() throws {}
     func probeIdentity(scriptURL: URL) async -> RuntimeClosureIdentity? { candidate }
-    func handshakeIdentity() async -> RuntimeClosureIdentity? { candidate }
+    func handshakeIdentity() async -> RuntimeClosureIdentity? {
+        lock.withLock { stopped ? candidate : previous }
+    }
 }
 
 private final class Counter: @unchecked Sendable {

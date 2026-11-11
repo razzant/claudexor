@@ -10,6 +10,33 @@
               "type": "string",
               "description": "Harness the models belong to."
             },
+            "sourceProgram": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "models": {
               "type": "array",
               "items": {
@@ -129,6 +156,19 @@
                     "default": null,
                     "description": "Context window in tokens; null when the enumeration source does not report it."
                   },
+                  "input_modalities": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/ControlHarnessModelsQueryResponse/anyOf/0/properties/models/items/properties/processing/properties/nativeModes/items/properties/id"
+                    },
+                    "minItems": 1,
+                    "description": "Input modalities the live catalog declares for this model, verbatim (e.g. text, image, file); absent = unknown, never an empty or 'none' claim. Declared metadata that refuses no request."
+                  },
+                  "max_output_tokens": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "description": "Largest completion the live catalog declares for this model (OpenRouter top_provider.max_completion_tokens); absent = unknown. Input and output share the context window, so the effective maximum can be lower."
+                  },
                   "routes": {
                     "anyOf": [
                       {
@@ -189,6 +229,89 @@
               ],
               "default": null,
               "description": "Vendor CLI version the manifest hints were last verified against; null for api/none sources."
+            },
+            "problem": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "message": {
+                  "type": "string"
+                },
+                "retryable": {
+                  "type": "boolean"
+                },
+                "fieldErrors": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "default": {}
+                },
+                "requiredActions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "default": []
+                },
+                "evidenceRefs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "default": []
+                },
+                "context": {
+                  "type": "object",
+                  "additionalProperties": {},
+                  "default": {},
+                  "description": "Typed route-specific recovery context; never a duplicate error message."
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "retryable"
+              ],
+              "additionalProperties": false,
+              "description": "Present only when the live catalog read failed (code model_catalog_unavailable; context.cause names no_credential, auth_rejected, http_status, network, timeout, malformed or incomplete): models is then empty and is NOT an empty catalog."
+            },
+            "routingVariants": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "suffix": {
+                    "type": "string",
+                    "pattern": "^:[a-z][a-z0-9_-]*$",
+                    "description": "The suffix, colon included (e.g. ':nitro')."
+                  },
+                  "billing": {
+                    "type": "string",
+                    "enum": [
+                      "base",
+                      "service_tier"
+                    ],
+                    "description": "base = billed like the listed row; service_tier = the provider may serve it on another service tier billed at that tier's rate."
+                  }
+                },
+                "required": [
+                  "suffix",
+                  "billing"
+                ],
+                "additionalProperties": false,
+                "description": "One declared request-time routing suffix and its billing effect."
+              },
+              "minItems": 1,
+              "description": "The harness's declared request-time routing suffixes, so a surface finds the listed row of a variant id (#146); omitted when none are declared."
             }
           },
           "required": [
@@ -225,57 +348,7 @@
                   "problem": {
                     "anyOf": [
                       {
-                        "type": "object",
-                        "properties": {
-                          "code": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "message": {
-                            "type": "string"
-                          },
-                          "retryable": {
-                            "type": "boolean"
-                          },
-                          "fieldErrors": {
-                            "type": "object",
-                            "additionalProperties": {
-                              "type": "array",
-                              "items": {
-                                "type": "string"
-                              }
-                            },
-                            "default": {}
-                          },
-                          "requiredActions": {
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "default": []
-                          },
-                          "evidenceRefs": {
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "default": []
-                          },
-                          "context": {
-                            "type": "object",
-                            "additionalProperties": {},
-                            "default": {},
-                            "description": "Typed route-specific recovery context; never a duplicate error message."
-                          }
-                        },
-                        "required": [
-                          "code",
-                          "message",
-                          "retryable"
-                        ],
-                        "additionalProperties": false
+                        "$ref": "#/definitions/ControlHarnessModelsQueryResponse/anyOf/0/properties/problem"
                       },
                       {
                         "type": "null"
@@ -289,6 +362,9 @@
                         "properties": {
                           "harnessId": {
                             "$ref": "#/definitions/ControlHarnessModelsQueryResponse/anyOf/0/properties/harnessId"
+                          },
+                          "sourceProgram": {
+                            "$ref": "#/definitions/ControlHarnessModelsQueryResponse/anyOf/0/properties/sourceProgram"
                           },
                           "models": {
                             "$ref": "#/definitions/ControlHarnessModelsQueryResponse/anyOf/0/properties/models"

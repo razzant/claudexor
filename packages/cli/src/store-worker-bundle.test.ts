@@ -15,7 +15,7 @@ const sqliteAvailable = await import("node:sqlite").then(
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /**
  * The store workers ship INSIDE `claudexord.bundle.cjs`: the bundle is the

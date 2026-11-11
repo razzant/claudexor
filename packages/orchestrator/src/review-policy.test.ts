@@ -25,7 +25,7 @@ import {
 import { Orchestrator, type RunInput } from "./orchestrator.js";
 
 const dirs: string[] = [];
-afterAll(() => dirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
+afterAll(() => dirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), "claudexor-review-policy-"));
   dirs.push(dir);
@@ -93,7 +93,7 @@ function reviewer(id: string, providerFamily: "openai" | "anthropic") {
         kind: "local_cli",
         provider_family: providerFamily,
         access_profiles_supported: ["readonly"],
-        capabilities: { review: true, known_models: [`${id}-model`] },
+        capabilities: { review: true, read_files: true, known_models: [`${id}-model`] },
       });
     },
     async doctor() {

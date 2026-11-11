@@ -42,7 +42,7 @@ export function newAttemptOutputMarkers(): AttemptOutputMarkers {
  * Everything else — message, error, status, started, usage, lifecycle — does
  * not.
  */
-function marksAgentProgress(ev: HarnessEvent): boolean {
+export function marksAgentProgress(ev: HarnessEvent): boolean {
   switch (ev.type) {
     case "thinking":
       return (ev.text?.trim().length ?? 0) > 0;

@@ -55,7 +55,7 @@ const jsonReader = {
 
 afterEach(() => {
   for (const root of tempRoots.splice(0)) rmSync(root, { force: true, recursive: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function emptyFinalDir(): string {
   const root = mkdtempSync(join(tmpdir(), "claudexor-cli-run-facts-"));
@@ -72,6 +72,76 @@ function finalDirWithReceipt(value: unknown = terminalReceipt): string {
 }
 
 describe("RunFacts CLI projections (GH #29)", () => {
+  it("keeps accepted group/store metadata in JSON and NDJSON terminal receipts without inheriting detail fields", () => {
+    const metadata = {
+      taskGroupId: "11111111-1111-4111-8111-111111111111",
+      storeId: "22222222-2222-4222-8222-222222222222",
+    };
+    const out = {
+      runId: "run-g",
+      runDir: "/fixture/run",
+      jobId: "job-g",
+      status: "succeeded",
+      ...metadata,
+    };
+    for (const options of [{}, { frame: "run.terminal" as const }]) {
+      expect(projectTerminalRunOutput(out, "ask", null, options)).toMatchObject(metadata);
+      const { taskGroupId: _group, storeId: _store, ...legacy } = out;
+      const untagged = projectTerminalRunOutput(legacy, "ask", { summary: metadata }, options);
+      expect(untagged).not.toHaveProperty("taskGroupId");
+      expect(untagged).not.toHaveProperty("storeId");
+      const producerContext = projectTerminalRunOutput(
+        { ...legacy, errorContext: metadata },
+        "ask",
+        null,
+        options,
+      );
+      expect(producerContext).not.toHaveProperty("taskGroupId");
+      expect(producerContext).not.toHaveProperty("storeId");
+      const incomplete = projectTerminalRunOutput(
+        { ...legacy, taskGroupId: metadata.taskGroupId },
+        "ask",
+        null,
+        options,
+      );
+      expect(incomplete).not.toHaveProperty("taskGroupId");
+      expect(incomplete).not.toHaveProperty("storeId");
+    }
+  });
+
+  it("keeps an ordinary handle's accepting store, never a producer's lone context key", () => {
+    const storeId = "22222222-2222-4222-8222-222222222222";
+    const out = { runId: "", runDir: "", jobId: "job", status: "failed" };
+    expect(projectTerminalRunOutput({ ...out, storeId }, "ask", null)).toMatchObject({ storeId });
+    expect(
+      projectTerminalRunOutput({ ...out, errorContext: { storeId } }, "ask", null),
+    ).not.toHaveProperty("storeId");
+  });
+
+  it("retains a pre-run failure's accepted metadata from server error context", () => {
+    const metadata = {
+      taskGroupId: "11111111-1111-4111-8111-111111111111",
+      storeId: "22222222-2222-4222-8222-222222222222",
+    };
+    const out = {
+      runId: "",
+      runDir: "",
+      jobId: "job-g",
+      status: "failed",
+      errorCode: "fixture_pre_run_failure",
+      errorContext: { jobId: "job-g", state: "failed", ...metadata },
+    };
+    expect(projectTerminalRunOutput(out, "ask", null)).toMatchObject({
+      jobId: "job-g",
+      runId: "",
+      ...metadata,
+    });
+    expect(projectTerminalRunOutput(out, "ask", null, { frame: "run.terminal" })).toMatchObject({
+      frame: "run.terminal",
+      ...metadata,
+    });
+  });
+
   it("returns the exact validated receipt already carried by run detail", () => {
     const projected = projectRunFacts(
       {

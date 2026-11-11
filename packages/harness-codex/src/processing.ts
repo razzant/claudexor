@@ -50,29 +50,57 @@ export function prepareCodexProcessing(
   capability?: ProcessingCapability,
   nativeOverride?: string,
   allowPaid = true,
+  subscription: boolean | null = null,
 ): ProcessingReceipt | undefined {
   if (preference === undefined && nativeOverride === undefined && allowPaid) return undefined;
   const requestedTier =
     preference === "fast" ? "priority" : preference === "economy" ? "flex" : "default";
-  const listed = capability?.nativeModes.find((entry) => entry.mode === preference)?.id;
+  const ordinaryFastOnly = allowPaid === false && subscription === true && preference === "fast";
+  const listed = capability?.nativeModes.find(
+    (entry) =>
+      entry.mode === preference &&
+      (!ordinaryFastOnly || entry.id === "fast" || entry.id === "priority"),
+  )?.id;
   const fallback = preference !== "standard" && !listed;
   const selectedNative = nativeOverride ?? (listed || (fallback ? "default" : requestedTier));
-  const paidDisallowed = !allowPaid && codexTierMode(selectedNative) === "fast";
-  const submittedNative = paidDisallowed ? "default" : selectedNative;
+  return codexProcessingForPaidPolicy(
+    {
+      requested: preference ?? null,
+      submitted: codexTierMode(selectedNative),
+      submittedNative: selectedNative,
+      observed: "unknown",
+      observedNative: [],
+      reason:
+        nativeOverride !== undefined
+          ? "native_explicit"
+          : fallback
+            ? "requested_mode_not_advertised; ordinary_service_requested"
+            : null,
+      source: "codex.service_tier",
+    },
+    allowPaid,
+    subscription,
+  );
+}
+
+/** Only a mode-qualified included allowance can retain nonstandard service
+ * under a no-paid policy. Account authentication is still checked by the route. */
+export function codexProcessingForPaidPolicy(
+  receipt: ProcessingReceipt,
+  allowPaid: boolean | undefined,
+  subscription: boolean | null,
+): ProcessingReceipt {
+  if (
+    allowPaid !== false ||
+    receipt.submitted === "standard" ||
+    codexProcessingCost(receipt, subscription).kind === "included"
+  )
+    return receipt;
   return {
-    requested: preference ?? null,
-    submitted: codexTierMode(submittedNative),
-    submittedNative,
-    observed: "unknown",
-    observedNative: [],
-    reason: paidDisallowed
-      ? "paid_processing_disallowed; ordinary_service_requested"
-      : nativeOverride !== undefined
-        ? "native_explicit"
-        : fallback
-          ? "requested_mode_not_advertised; ordinary_service_requested"
-          : null,
-    source: "codex.service_tier",
+    ...receipt,
+    submitted: "standard",
+    submittedNative: "default",
+    reason: "paid_processing_disallowed; ordinary_service_requested",
   };
 }
 
@@ -88,18 +116,62 @@ export function codexProcessingCost(
   receipt: ProcessingReceipt,
   subscription: boolean | null = null,
 ): ProcessingCostBasis {
+  // Documented ordinary Fast consumes subscription limits. This prospective
+  // allowance says nothing about observed execution or a cash/credit debit.
+  // ultrafast and future native tiers deliberately remain unqualified.
+  const included =
+    subscription === true &&
+    ["default", "standard", "fast", "priority"].includes(receipt.submittedNative ?? "");
   return {
     nativeMode: receipt.submittedNative,
-    kind:
-      subscription === false
-        ? "cash"
-        : subscription === true && receipt.submitted === "standard"
-          ? "included"
-          : "unknown",
-    source:
-      subscription === true && receipt.submitted === "standard"
-        ? "codex_explicit_ordinary_subscription_service"
-        : "codex_service_tier_has_no_cash_receipt",
+    kind: subscription === false ? "cash" : included ? "included" : "unknown",
+    source: included
+      ? "codex_subscription_service_allowance"
+      : "codex_service_tier_has_no_cash_receipt",
+    // A ChatGPT plan may spend purchased credits beyond its included limits, for
+    // Standard as well as Fast, and no Codex transport reports that debit.
+    ...(subscription === true ? { debit: "unobserved" as const } : {}),
+  };
+}
+
+/** Whether two native tiers are the same speed intent. `fast` and `priority` are
+ * one ordinary Fast; Ultrafast and every other native tier match only themselves
+ * (not by `codexTierMode`, which maps Ultrafast to the Fast mode too). */
+export function sameCodexTierIntent(a: string | null, b: string | null): boolean {
+  const ordinaryFast = (tier: string | null) => tier === "fast" || tier === "priority";
+  return a === b || (ordinaryFast(a) && ordinaryFast(b));
+}
+
+/** Keep the intent this work unit chose without a preference. Another account's
+ * native setting never replaces it; an unadvertised Fast/Economy intent falls
+ * back to ordinary service with its reason. The paid policy still applies. */
+export function retainCodexProcessing(
+  chosen: ProcessingReceipt,
+  capability?: ProcessingCapability,
+): ProcessingReceipt {
+  const mode =
+    chosen.submitted === "fast" || chosen.submitted === "economy" ? chosen.submitted : null;
+  const ordinary = mode === "fast" ? ["fast", "priority"] : ["flex"];
+  const listed = mode
+    ? (
+        capability?.nativeModes.find(
+          (entry) => entry.mode === mode && entry.id === chosen.submittedNative,
+        ) ??
+        capability?.nativeModes.find((entry) => entry.mode === mode && ordinary.includes(entry.id))
+      )?.id
+    : undefined;
+  const native = listed ?? "default";
+  return {
+    requested: null,
+    submitted: codexTierMode(native),
+    submittedNative: native,
+    observed: "unknown",
+    observedNative: [],
+    reason:
+      mode && !listed
+        ? "initial_processing_unavailable; ordinary_service_requested"
+        : "initial_processing_retained",
+    source: "codex.service_tier",
   };
 }
 

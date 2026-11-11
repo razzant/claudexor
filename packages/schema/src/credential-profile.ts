@@ -163,9 +163,10 @@ export type CredentialProfileStatus = z.infer<typeof CredentialProfileStatus>;
 /** Why an observed credential is unusable, in the OBSERVER's typed vocabulary:
  * `auth_revoked` = the vendor rejected the credential itself (a credential-specific rejection);
  * `capability_refused` = a typed non-retryable entitlement refusal was observed
- * on the attempt stream (org-disabled, model-not-entitled — model-scoped when
- * the attempt carried a model hint); `verification_failed` = the profile's own
- * doctor probe failed verification. */
+ * on the attempt stream: credential-wide on the observed subscription route when
+ * the adapter proved the vendor denied that access, otherwise scoped to the model
+ * the attempt requested (an attempt that requested none records nothing);
+ * `verification_failed` = the profile's own doctor probe failed verification. */
 export const CredentialUnusableCode = z
   .enum(["auth_revoked", "capability_refused", "verification_failed"])
   .describe(
@@ -491,12 +492,12 @@ export type ControlCredentialProfileUpdateResponse = z.infer<
   typeof ControlCredentialProfileUpdateResponse
 >;
 
-/** Register a config-dir login profile (agy/claude/codex/cursor) from a UI surface —
+/** Register a config-dir login profile (agy/claude/codex/cursor/grok) from a UI surface —
  * the same ONE locked registration owner `claudexor profiles add` uses. */
 export const ControlCredentialProfileCreateRequest = z
   .object({
     harnessId: Id.describe(
-      "Harness family (agy | claude | codex | cursor) for the config-dir login profile.",
+      "Harness family (agy | claude | codex | cursor | grok) for the config-dir login profile.",
     ),
     profileId: Id.describe("New profile id (bounded slug, unique per harness)."),
     displayName: z

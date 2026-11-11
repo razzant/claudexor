@@ -50,7 +50,7 @@ extension ThreadsScreen {
             .font(.caption2)
             .foregroundStyle(
                 composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? Color.secondary : Theme.status(.caution)
+                    ? Color(nsColor: .secondaryLabelColor) : Theme.status(.caution)
             )
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -109,6 +109,7 @@ extension ThreadsScreen {
             )
             defer { composerSubmissions.finish(submission) }
             guard ownsCompletion else { return }
+
             let current = composerDraftSnapshot
             if sent, materializingFirstTurn {
                 let modelsWereUnchanged = current.composerModels == attemptedDraft.composerModels

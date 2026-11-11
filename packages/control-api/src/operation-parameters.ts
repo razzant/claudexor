@@ -1,4 +1,4 @@
-import { QuotaRequestKind } from "@claudexor/schema";
+import { CONTROL_STORE_IDENTITY_HEADER, QuotaRequestKind } from "@claudexor/schema";
 import type { ControlOperationParameter } from "@claudexor/schema";
 
 /**
@@ -51,6 +51,14 @@ export const resumeHeader = (cursorSemantics: string): ControlOperationParameter
     name: "Last-Event-ID",
     description: `Resume cursor sent on reconnect: ${cursorSemantics}. Omit to snapshot-then-subscribe from the beginning.`,
   });
+
+/** The opt-in header of the handshake and admission receipts: `1` adds `storeId`. */
+export const STORE_IDENTITY_HEADER = headerParam({
+  name: CONTROL_STORE_IDENTITY_HEADER,
+  enum: ["1"],
+  description:
+    "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape.",
+});
 
 /**
  * QA-066: true when every `/`-delimited path segment is strict-decodable (valid

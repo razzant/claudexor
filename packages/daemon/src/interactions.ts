@@ -1,4 +1,7 @@
-import type { InteractionStorePort } from "./store-contracts.js";
+import { createHash } from "node:crypto";
+import { setImmediate as yieldToAdmission } from "node:timers/promises";
+import type { InteractionStorePort, PendingIdentityDigest } from "./store-contracts.js";
+import { StoreError } from "./store/errors.js";
 import type {
   ControlPendingInteraction,
   InteractionAnswerSet,
@@ -8,6 +11,7 @@ import type {
 import {
   ControlPendingInteraction as PendingInteractionSchema,
   InteractionAnswerSet as InteractionAnswerSetSchema,
+  interactionAnswerSetViolation,
 } from "@claudexor/schema";
 
 /** Structural twin of the orchestrator's PendingInteractionContext. */
@@ -19,6 +23,8 @@ export interface InteractionContext {
   request: InteractionRequest;
   requestedAt: string;
   timeoutAt: string | null;
+  /** Runtime-only cancellation of this request; not part of the durable projection. */
+  signal?: AbortSignal;
 }
 
 export type InteractionAnswerStatus = "delivered" | "not_found" | "already_resolved" | "rejected";
@@ -30,10 +36,26 @@ export interface InteractionResolution {
   terminal: InteractionTerminal;
 }
 
+/** The caller supplies the complete keys in storage order. JSON string encoding
+ * preserves boundaries without materializing an unbounded identity array. */
+export function digestPendingIdentities(keys: Iterable<string>): PendingIdentityDigest {
+  const hash = createHash("sha256").update('["claudexor.pending-identities",1');
+  let pending = false;
+  for (const key of keys) {
+    pending = true;
+    hash.update(",").update(JSON.stringify(key));
+  }
+  return { pending, digest: hash.update("]").digest("base64url") };
+}
+
 interface LiveEntry {
   store: InteractionStorePort;
+  /** The request this waiter asked; answers are checked against it. */
+  request: InteractionRequest;
   resolve: (result: InteractionAnswerSet | InteractionHandlerRelease) => void;
   expiresAtMs: number | null;
+  signal?: AbortSignal;
+  onAbort?: () => void;
 }
 
 /** Live answer bridge; durable state remains owned by its store. */
@@ -52,17 +74,44 @@ export class InteractionRegistry {
     params: unknown,
   ): Promise<InteractionAnswerSet | InteractionHandlerRelease> {
     this.prune();
+    if (ctx.signal?.aborted) return Promise.resolve({ kind: "released", reason: "interrupted" });
     // Validate before the durable request append: a malformed internal
     // deadline must not leave an unanswerable journal row without a live owner.
     const expiresAtMs = parseExpiry(ctx.timeoutAt);
     const store = this.stores.forRequest(params);
     store.request(ctx);
-    return new Promise<InteractionAnswerSet | InteractionHandlerRelease>((resolve) => {
-      this.live.set(interactionKey(ctx.runId, ctx.request.interaction_id), {
+    return new Promise<InteractionAnswerSet | InteractionHandlerRelease>((resolve, reject) => {
+      const key = interactionKey(ctx.runId, ctx.request.interaction_id);
+      const entry: LiveEntry = {
         store,
+        request: ctx.request,
         resolve,
         expiresAtMs,
-      });
+        signal: ctx.signal,
+      };
+      this.live.set(key, entry);
+      if (ctx.signal) {
+        entry.onAbort = () => {
+          if (this.live.get(key) !== entry) return;
+          // Withdrawn: nothing reads an answer to it any more. The live waiter
+          // goes first, so none can be handed one even if the record fails.
+          this.live.delete(key);
+          ctx.signal?.removeEventListener("abort", entry.onAbort!);
+          try {
+            store.resolve(ctx.runId, ctx.request.interaction_id, "interrupted");
+          } catch (error) {
+            // Thrown from an abort listener it would be the daemon's uncaught
+            // exception. The waiter receives it instead. The row stays pending
+            // with no live owner, which a later answer releases as no live
+            // session (below) and restart recovery resolves.
+            reject(error);
+            return;
+          }
+          resolve({ kind: "released", reason: "interrupted" });
+        };
+        ctx.signal.addEventListener("abort", entry.onAbort, { once: true });
+        if (ctx.signal.aborted) entry.onAbort();
+      }
     });
   }
 
@@ -76,10 +125,27 @@ export class InteractionRegistry {
     if (!parsed.success) {
       return { status: "rejected", message: parsed.error.issues[0]?.message ?? "invalid answers" };
     }
-    const store = this.storesForRun(runId).find(
-      (candidate) => candidate.status(runId, interactionId) !== "missing",
-    );
-    if (!store) return { status: "not_found", message: missingMessage(runId, interactionId) };
+    const found = this.storesForRun(runId)
+      .map((store) => ({ store, state: store.status(runId, interactionId) }))
+      .find((candidate) => candidate.state !== "missing");
+    if (!found) return { status: "not_found", message: missingMessage(runId, interactionId) };
+    if (found.state !== "pending") return { status: "already_resolved" };
+    const { store } = found;
+    const key = interactionKey(runId, interactionId);
+    const entry = this.live.get(key);
+    if (!entry) {
+      // No session in this daemon waits for it, so nothing could receive an
+      // answer. Release it as restart recovery would, never as answered.
+      store.resolve(runId, interactionId, "interrupted");
+      return {
+        status: "not_found",
+        message: `no live session is waiting for interaction '${interactionId}' of run '${runId}'; it was released as interrupted`,
+      };
+    }
+    // Check the answers against the question before anything is committed: a
+    // refused answer leaves the question pending and answerable.
+    const violation = interactionAnswerSetViolation(entry.request, parsed.data);
+    if (violation) return { status: "rejected", message: violation };
     const status = store.resolve(runId, interactionId, "answered");
     if (status !== "resolved") {
       return {
@@ -87,25 +153,67 @@ export class InteractionRegistry {
         message: status === "not_found" ? missingMessage(runId, interactionId) : undefined,
       };
     }
-    const key = interactionKey(runId, interactionId);
-    const entry = this.live.get(key);
     this.live.delete(key);
-    entry?.resolve(parsed.data);
+    if (entry.onAbort) entry.signal?.removeEventListener("abort", entry.onAbort);
+    // `delivered` = committed and handed to the run's live waiter. Whether the
+    // harness process then reads it is the adapter's concern, not proven here:
+    // an async answer still has to be sent as the agent's next message, and
+    // that send and its echo are separate receipts.
+    entry.resolve(parsed.data);
     return { status: "delivered" };
   }
 
   dropForRun(runId: string): void {
-    for (const store of this.storesForRun(runId)) store.resolveRun(runId, "run_terminal");
-    for (const [key, entry] of this.live) {
-      if (!key.startsWith(`${runId}\u0000`)) continue;
-      this.live.delete(key);
-      entry.resolve({ kind: "released", reason: "run_terminal" });
+    try {
+      for (const store of this.storesForRun(runId)) store.resolveRun(runId, "run_terminal");
+    } finally {
+      // The run has ended, so none of its waiters may be handed an answer,
+      // even when that record failed. Its failure stays the caller's error;
+      // the rows stay pending with no live owner, which a later answer releases
+      // as no live session (above) and restart recovery resolves.
+      for (const [key, entry] of this.live) {
+        if (!key.startsWith(`${runId}\u0000`)) continue;
+        this.live.delete(key);
+        if (entry.onAbort) entry.signal?.removeEventListener("abort", entry.onAbort);
+        entry.resolve({ kind: "released", reason: "run_terminal" });
+      }
     }
   }
 
   pendingForRun(runId: string): ControlPendingInteraction[] {
     this.prune();
     return this.storesForRun(runId).flatMap((store) => store.pendingForRun(runId));
+  }
+
+  /** Reuse the existing expiry owner exactly once, then read identities only.
+   * A local read error is unknown; a typed store failure remains request-wide. */
+  async snapshotPendingIdentities(
+    runIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<Map<string, PendingIdentityDigest | Error>> {
+    const snapshots = new Map<string, PendingIdentityDigest | Error>();
+    if (signal?.aborted) return snapshots;
+    this.prune();
+    for (const runId of new Set(runIds)) {
+      if (snapshots.size > 0 && snapshots.size % 64 === 0) await yieldToAdmission();
+      if (signal?.aborted) break;
+      try {
+        const store = this.stores.forRun(runId);
+        if (store && !store.pendingIdentityDigest)
+          throw new Error("body-free pending identity reads unavailable");
+        snapshots.set(
+          runId,
+          store ? store.pendingIdentityDigest!(runId) : digestPendingIdentities([]),
+        );
+      } catch (error) {
+        if (error instanceof StoreError) throw error;
+        snapshots.set(
+          runId,
+          error instanceof Error ? error : new Error("pending identity read failed"),
+        );
+      }
+    }
+    return snapshots;
   }
 
   private storesForRun(runId: string): InteractionStorePort[] {
@@ -122,6 +230,7 @@ export class InteractionRegistry {
       const interactionId = key.slice(split + 1);
       entry.store.resolve(runId, interactionId, "timeout");
       this.live.delete(key);
+      if (entry.onAbort) entry.signal?.removeEventListener("abort", entry.onAbort);
       entry.resolve({ kind: "released", reason: "timeout" });
     }
   }
@@ -173,5 +282,6 @@ export function pendingInteraction(ctx: InteractionContext): ControlPendingInter
     questions: ctx.request.questions,
     requestedAt: ctx.requestedAt,
     timeoutAt: ctx.timeoutAt,
+    delivery: ctx.request.delivery,
   });
 }

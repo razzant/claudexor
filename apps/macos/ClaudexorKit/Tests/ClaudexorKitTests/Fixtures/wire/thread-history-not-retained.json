@@ -1,0 +1,127 @@
+{
+  "schema": "ThreadHistoryPage",
+  "value": {
+    "storeId": "22222222-2222-4222-8222-222222222222",
+    "threadId": "th-history",
+    "epoch": "partition-epoch",
+    "revision": {
+      "epoch": "11111111-1111-4111-8111-111111111111",
+      "sequence": 42
+    },
+    "header": {
+      "thread": {
+        "id": "th-history",
+        "title": null,
+        "folder": null,
+        "repoRoot": null,
+        "workspaceMode": "in_place",
+        "workspaceRoot": null,
+        "authPreference": "auto",
+        "primaryHarness": null,
+        "eligibleHarnesses": [],
+        "credentialProfileId": null,
+        "access": null,
+        "state": "active",
+        "trashedAt": null,
+        "purgeAfter": null,
+        "headRunId": "run-history",
+        "needsHuman": false,
+        "createdAt": "2026-10-26T10:00:00Z",
+        "updatedAt": "2026-10-26T10:00:00Z"
+      },
+      "latestTurnId": "turn-settled",
+      "latestOrdinal": 1,
+      "latestAdmission": {
+        "id": "turn-settled",
+        "runId": "run-history",
+        "enqueueError": null,
+        "jobId": "job-settled",
+        "state": "succeeded"
+      },
+      "headRun": null,
+      "headRunStatus": "not_retained",
+      "sessions": [],
+      "sessionsComplete": true
+    },
+    "turns": [
+      {
+        "id": "turn-refused",
+        "threadId": "th-history",
+        "runId": null,
+        "parentRunId": null,
+        "answersPlanRunId": null,
+        "planRunId": null,
+        "planHash": null,
+        "planReadinessOverridden": false,
+        "kind": "followup",
+        "prompt": "Question 😀",
+        "enqueueError": {
+          "message": "Choose an available route",
+          "code": null,
+          "retryable": false,
+          "requiredActions": [],
+          "context": {},
+          "failedAt": "2026-10-26T10:00:00Z"
+        },
+        "continuity": null,
+        "createdAt": "2026-10-26T10:00:00Z",
+        "ordinal": 0,
+        "revision": {
+          "epoch": "11111111-1111-4111-8111-111111111111",
+          "sequence": 42
+        },
+        "promptInfo": {
+          "textBytes": 13,
+          "totalTextBytes": 13,
+          "truncated": false
+        },
+        "run": null,
+        "runStatus": "unbound",
+        "primaryOutput": null,
+        "primaryOutputStatus": "none",
+        "answeredByTurnId": null,
+        "answeredByPrompt": null,
+        "planAnswerComplete": true
+      },
+      {
+        "id": "turn-settled",
+        "threadId": "th-history",
+        "runId": "run-history",
+        "parentRunId": null,
+        "answersPlanRunId": null,
+        "planRunId": null,
+        "planHash": null,
+        "planReadinessOverridden": false,
+        "kind": "followup",
+        "prompt": "Question 😀",
+        "enqueueError": null,
+        "continuity": null,
+        "createdAt": "2026-10-26T10:00:00Z",
+        "ordinal": 1,
+        "revision": {
+          "epoch": "11111111-1111-4111-8111-111111111111",
+          "sequence": 42
+        },
+        "promptInfo": {
+          "textBytes": 13,
+          "totalTextBytes": 13,
+          "truncated": false
+        },
+        "run": null,
+        "runStatus": "not_retained",
+        "primaryOutput": null,
+        "primaryOutputStatus": "not_retained",
+        "answeredByTurnId": null,
+        "answeredByPrompt": null,
+        "planAnswerComplete": true
+      }
+    ],
+    "hasOlder": true,
+    "hasNewer": false,
+    "olderCursor": "opaque-older",
+    "newerCursor": null,
+    "replayCursor": "opaque-replay",
+    "replayNextCursor": null,
+    "limitedBy": "turns"
+  }
+}

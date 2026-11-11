@@ -2215,10 +2215,21 @@ import Testing
             frames += "id: \(cursor)\nevent: setup\ndata: \(json)\n\n"
             predecessor = cursor
         }
-        frames += "event: end\ndata: {}\n\n"
+        // The bound trips only when a 65th event arrives while 64 wait unconsumed,
+        // so consume only after the stream has failed: a fixed head start loses
+        // that race to a starved producer. The response stays open with no `end`
+        // (on which the raw reader would release it early), so only the failed
+        // stream ends the load.
         install(frames)
+        let release = HeldResponseRelease()
+        RequestStubURLProtocol.heldResponse = release
+        defer { RequestStubURLProtocol.heldResponse = nil }
         let overflowing = client.setupJobEvents(jobId: "j", lastEventId: "snapshot")
-        try await Task.sleep(for: .milliseconds(100))
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !release.happened, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(release.happened, "the overflowing setup stream never failed and released its response")
         let overflow = await consume(overflowing)
         #expect(overflow.0.count <= 64)
         #expect(String(describing: overflow.1).contains("buffer overflow"))
@@ -3005,8 +3016,22 @@ private struct MutationRaceGateway: SetupJobGateway {
 
 private enum TestTransportError: Error { case badRequest(String) }
 
+/// Observes, across the URL-loading thread, the client tearing down a stub
+/// response that was deliberately never finished.
+private final class HeldResponseRelease: @unchecked Sendable {
+    private let lock = NSLock()
+    private var released = false
+
+    func record() { lock.withLock { released = true } }
+    var happened: Bool { lock.withLock { released } }
+}
+
 private final class RequestStubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+    /// Non-nil: a response stays open after its body until the client tears it
+    /// down. Captured per load, so an earlier finished load can never report.
+    nonisolated(unsafe) static var heldResponse: HeldResponseRelease?
+    private var held: HeldResponseRelease?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -3017,13 +3042,14 @@ private final class RequestStubURLProtocol: URLProtocol {
             let (response, data) = try handler(request)
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
+            held = Self.heldResponse
+            if held == nil { client?.urlProtocolDidFinishLoading(self) }
         } catch {
             client?.urlProtocol(self, didFailWithError: error)
         }
     }
 
-    override func stopLoading() {}
+    override func stopLoading() { held?.record() }
 }
 
 extension ClaudexorKitTests {

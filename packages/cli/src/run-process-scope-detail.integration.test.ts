@@ -151,7 +151,7 @@ beforeEach(() => {
 
 afterAll(() => {
   if (!CAPTURE_DIR) rmSync(base, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** A read-only synthetic adapter whose entire final answer is the verdict JSON. */
 function verdictAdapter(verdict: Verdict, trace: string[]): HarnessAdapter {

@@ -39,7 +39,7 @@ const raw: ControlQuotaResponse = {
 };
 
 describe("quotaControlServices", () => {
-  it.each([undefined, "resources", "constraint_freshness"] as const)(
+  it.each([undefined, "resources", "constraint_freshness", "resources_freshness"] as const)(
     "keeps image quota visible and scoped across the %s read view",
     async (view) => {
       const mixed = structuredClone(raw);
@@ -236,6 +236,17 @@ describe("quotaControlServices", () => {
       const opted = ControlQuotaFreshnessResponse.parse(
         await services.quota({ view: "constraint_freshness" }),
       );
+      const combined = await services.quota({ view: "resources_freshness" });
+      expect(combined.snapshots).toEqual(opted.snapshots);
+      expect(combined).toMatchObject({
+        resources,
+        availability_scope: { basis: "quota_block", model: null, requestKind: "text" },
+      });
+      expect(
+        combined.snapshots[0]!.constraints.filter(
+          (constraint) => constraint.id === "reset_credits",
+        ),
+      ).toHaveLength(1);
       const legacy = await services.quota();
       expect(opted.snapshots[0]!.constraints).toEqual([
         window(aggregate),

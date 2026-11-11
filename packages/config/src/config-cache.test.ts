@@ -26,7 +26,7 @@ afterEach(() => {
     else process.env[name] = saved[name];
   }
   rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 /** Count real parses through the cache's loader seam. */
 function counted() {

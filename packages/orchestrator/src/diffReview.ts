@@ -11,7 +11,7 @@ import type { AuthPreference, ProviderFamily, ReviewFinding } from "@claudexor/s
 import { HarnessUnavailableError, runCapture, runCaptureRaw } from "@claudexor/core";
 import { revalidateFindings, type ReviewerSpec, type reviewCandidate } from "@claudexor/review";
 import { verifySealedEvidencePacket, writeEvidencePacket } from "@claudexor/context";
-import { containsSecretLikeToken, ensureDir, redactSecrets, writeJson } from "@claudexor/util";
+import { ensureDir, writeJson } from "@claudexor/util";
 
 export interface FrozenDiffReviewInput {
   evidenceDir: string;
@@ -19,11 +19,6 @@ export interface FrozenDiffReviewInput {
   candidateSha: string;
   candidateTree: string;
   packetManifestSha256: string;
-  /** Owner-amended delta scope (INV-125 second amendment): the contract's
-   * sol lane reviews the sealed DELTA.patch since this base SHA — the lane
-   * is pinned by the engine, the base/digest verify against the sealed
-   * FINGERPRINTS, and DELTA.patch must be the exact base..candidate diff. */
-  deltaScope?: { baseSha: string };
 }
 
 export interface DiffReviewInput {
@@ -54,8 +49,7 @@ export interface DiffReviewResult {
 
 export interface DiffReviewDeps {
   resolveReviewers: (
-    repoRoot: string,
-    authPreference?: AuthPreference,
+    run: Pick<DiffReviewInput, "repoRoot" | "authPreference" | "signal">,
     onIgnoredSetting?: (detail: string) => void,
   ) => Promise<ReviewerSpec[]>;
   reviewScoped: (
@@ -79,24 +73,8 @@ export async function runDiffReview(
     ? await verifyFrozenReviewPacket(input.repoRoot, input.frozen, true)
     : undefined;
   const diff = frozen?.diff ?? input.diff ?? "";
-  // INV-062: raw secrets must never become review artifacts. The fence lives
-  // HERE so every caller (CLI verb, commit gate, future surfaces) is covered
-  // before any evidence write or reviewer call — and it covers EVERY
-  // artifact-bound string, not just the diff.
-  for (const [label, text] of [
-    ["diff", diff],
-    ["userIntent", input.userIntent],
-    ["tests", input.tests],
-    ["decidedTradeoffs", input.decidedTradeoffs],
-  ] as const) {
-    if (typeof text === "string" && containsSecretLikeToken(text)) {
-      throw new Error(
-        `reviewDiff: ${label} contains a secret-like token; refusing review (remove the secret first)`,
-      );
-    }
-  }
   const ignoredSettings: string[] = [];
-  const reviewers = await deps.resolveReviewers(input.repoRoot, input.authPreference, (detail) => {
+  const reviewers = await deps.resolveReviewers(input, (detail) => {
     if (!ignoredSettings.includes(detail)) ignoredSettings.push(detail);
     input.onReviewerEvent?.({ type: "review.preflight", ignored_settings: [detail] });
   });
@@ -113,9 +91,7 @@ export async function runDiffReview(
   const artifactsDir = input.frozen?.artifactsDir ?? join(baseDir!, "reviewers");
   if (!input.frozen) {
     writeEvidencePacket(evidenceDir, {
-      userIntent: redactSecrets(
-        input.userIntent ?? "Review this staged diff for defects before commit.",
-      ),
+      userIntent: input.userIntent ?? "Review this staged diff for defects before commit.",
       diff,
       tests: input.tests ?? "(no test evidence supplied)",
       decidedTradeoffs: input.decidedTradeoffs,
@@ -134,7 +110,6 @@ export async function runDiffReview(
             candidateTree: input.frozen!.candidateTree,
             packetManifestSha256: frozen.manifestSha256,
           },
-          ...(input.frozen!.deltaScope ? { deltaScope: input.frozen!.deltaScope } : {}),
         }
       : {}),
     cwd: input.repoRoot,
@@ -242,7 +217,7 @@ async function verifyFrozenReviewPacket(
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  const result = await runCapture("git", args, { cwd });
+  const result = await runCapture("git", args, { cwd, windowsConsole: "none" });
   if (result.code !== 0) {
     throw new Error(
       `reviewDiff: git ${args.join(" ")} failed: ${(result.stderr || result.stdout).trim()}`,
@@ -252,7 +227,7 @@ async function git(cwd: string, args: string[]): Promise<string> {
 }
 
 async function gitRaw(cwd: string, args: string[]): Promise<string> {
-  const result = await runCaptureRaw("git", args, { cwd });
+  const result = await runCaptureRaw("git", args, { cwd, windowsConsole: "none" });
   if (result.code !== 0) {
     throw new Error(
       `reviewDiff: git ${args.join(" ")} failed: ${(result.stderr || result.stdout).trim()}`,

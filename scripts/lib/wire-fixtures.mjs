@@ -1,3 +1,4 @@
+import { threadHistoryFixtures } from "./thread-history-fixtures.mjs";
 /**
  * Canonical wire fixtures for the TS↔Swift drift gate (D13).
  *
@@ -27,7 +28,7 @@ const NOW = "2026-07-19T12:00:00.000Z";
 
 /** @type {Array<{ name: string, schema: string, value: unknown }>} */
 export function buildWireFixtures() {
-  const fixtures = [];
+  const fixtures = threadHistoryFixtures(schema);
   const add = (name, schemaName, value) =>
     fixtures.push({ name, schema: schemaName, value: parse(schemaName, value) });
 
@@ -232,6 +233,37 @@ export function buildWireFixtures() {
     review: "not_run",
     reason: "budget_exhausted",
   });
+  // A D-16 work_state veto keeps the lifecycle succeeded. Arbitration may give
+  // the reason to a harder review/checks failure while the work stays unfinished,
+  // so a consumer cannot read the veto from the reason.
+  add("outcome-facts-work-veto", "RunOutcomeFacts", {
+    lifecycle: "succeeded",
+    noChanges: false,
+    checks: "not_configured",
+    review: "not_run",
+    review_requested: false,
+    reason: "input_required",
+    work_state: {
+      state: "needs_input",
+      source: "constrained",
+      required_inputs: [
+        {
+          kind: "file",
+          locator: "fixtures/input.json",
+          description: "The fixture the change needs.",
+        },
+      ],
+    },
+  });
+  add("outcome-facts-work-veto-review-blocked", "RunOutcomeFacts", {
+    lifecycle: "succeeded",
+    noChanges: false,
+    checks: "not_configured",
+    review: "blocked",
+    review_requested: true,
+    reason: "review_blocked",
+    work_state: { state: "incomplete", source: "validated" },
+  });
 
   // Delegate readiness/outcome are consumed directly by the Swift composer
   // and run receipts. Pin both cross-language shapes so a reason/remediation
@@ -284,6 +316,7 @@ export function buildWireFixtures() {
   add("budget-snapshot-capped", "ControlBudgetSnapshot", {
     paidBudget: { kind: "finite", maxUsd: 2.5 },
     spendUsd: 1.25,
+    controllableSpendUsd: 1.25,
     remainingUsd: 1.25,
     estimated: true,
     source: "decision",
@@ -296,6 +329,7 @@ export function buildWireFixtures() {
   add("budget-snapshot-valued", "ControlBudgetSnapshot", {
     paidBudget: { kind: "unlimited" },
     spendUsd: 0,
+    controllableSpendUsd: 0,
     valuationUsd: 0.87,
     valuationKnowledge: "estimated",
     remainingUsd: null,
@@ -475,6 +509,74 @@ export function buildWireFixtures() {
         profileLimitAction: "rotate",
       },
     },
+  });
+
+  // #118/#413: what each route was prepared with, and the scope of web evidence.
+  add("route-control-started", "ControlRouteControl", {
+    harnessId: "cursor",
+    webMode: "auto",
+    webMechanism: "uncontrolled",
+    browser: false,
+    access: "readonly",
+    nativeAccess: "--force --sandbox enabled --trust --mode ask",
+    accessMechanism: "tool_allowlist",
+    nativeSessionStarted: true,
+    homeScoped: false,
+  });
+  add("route-control-prepared-only", "ControlRouteControl", {
+    harnessId: "claude",
+    webMode: "off",
+    webMechanism: "tools",
+    browser: false,
+    access: "inherit_native",
+    nativeAccess: null,
+    accessMechanism: "native_settings",
+    nativeSessionStarted: false,
+    homeScoped: null,
+  });
+  add("web-evidence-dispatched", "ControlWebEvidence", {
+    required: false,
+    mode: "auto",
+    effectiveMode: "cached",
+    attempted: true,
+    satisfied: true,
+    status: "satisfied",
+    verification: "dispatched",
+    observation: { evidence: "tool_calls", network: "not_measured" },
+    tool: "web_search",
+    target: "swift release notes",
+    rawDetailRef: "final/telemetry.yaml",
+    available: true,
+  });
+  add("web-evidence-no-telemetry", "ControlWebEvidence", { mode: "off", available: false });
+  // #118: a verified web search is search results, not a fetched page.
+  add("web-evidence-verified-search", "ControlWebEvidence", {
+    required: false,
+    mode: "live",
+    effectiveMode: "live",
+    attempted: true,
+    satisfied: true,
+    status: "satisfied",
+    verification: "verified",
+    verifiedContent: "search_results",
+    observation: { evidence: "tool_calls", network: "not_measured" },
+    tool: "WebSearch",
+    target: "swift release notes",
+    rawDetailRef: "final/telemetry.yaml",
+    available: true,
+  });
+  // #215: the selected Browser's startup as the route reported it.
+  add("route-control-browser-startup", "ControlRouteControl", {
+    harnessId: "codex",
+    webMode: "live",
+    webMechanism: "native",
+    browser: true,
+    browserStartup: { status: "failed", waitedMs: 812, error: "browser launcher exited" },
+    access: "full",
+    nativeAccess: "sandbox=danger-full-access approvalPolicy=never approvalsReviewer=auto_review",
+    accessMechanism: "none",
+    nativeSessionStarted: true,
+    homeScoped: true,
   });
 
   return fixtures;

@@ -93,6 +93,7 @@ enum PlanAnswerSubmission {
 
 struct PlanQuestionCard: View {
     @Environment(AppModel.self) private var model
+    @Environment(ConversationPresentation.self) private var presentation: ConversationPresentation?
     let questions: [PlanQuestion]
     /// Run whose open questions this card answers; persisted on the follow-up
     /// turn so submitted state survives app reload and remote reconnect.
@@ -104,8 +105,22 @@ struct PlanQuestionCard: View {
     /// Current model/auth/effort choices for this card-started turn.
     let routingOptions: TurnOptions
 
-    @State private var selections: [String: Set<String>] = [:]
-    @State private var freeText: [String: String] = [:]
+    @State private var localSelections: [String: Set<String>] = [:]
+    @State private var localFreeText: [String: String] = [:]
+    private var selections: [String: Set<String>] {
+        get { presentation?.planSelections[sourcePlanRunId] ?? localSelections }
+        nonmutating set {
+            if let presentation { presentation.planSelections[sourcePlanRunId] = newValue }
+            else { localSelections = newValue }
+        }
+    }
+    private var freeText: [String: String] {
+        get { presentation?.planText[sourcePlanRunId] ?? localFreeText }
+        nonmutating set {
+            if let presentation { presentation.planText[sourcePlanRunId] = newValue }
+            else { localFreeText = newValue }
+        }
+    }
     @State private var sending = false
     @State private var errorMessage: String?
     /// Post-ACK bridge until the refreshed thread projection carries the
@@ -188,6 +203,7 @@ struct PlanQuestionCard: View {
                     Spacer()
                     Button(sending ? "Sending…" : "Submit answers") { submit() }
                         .buttonStyle(.borderedProminent)
+                        .tint(Theme.accentSolid)
                         .controlSize(.small)
                         .disabled(
                             !complete || sending

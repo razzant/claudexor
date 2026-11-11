@@ -1,11 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CredentialProfile,
   ModelSubstitutionObservation,
   PreProgressRefusalObservation,
   QuotaSnapshot,
 } from "@claudexor/schema";
-import { GlobalConfig } from "@claudexor/schema";
+import { GlobalConfig, REOPENING_UNKNOWN_COOLDOWN_ID } from "@claudexor/schema";
 import { rankAccountPool, selectFromAccountPool } from "./account-pool.js";
 
 function row(id: string, overrides: Partial<CredentialProfile> = {}): CredentialProfile {
@@ -50,6 +50,14 @@ function snapshot(
     freshness: options.freshness ?? "fresh",
   } as QuotaSnapshot;
 }
+
+// Quota evidence is judged per window at the decision instant (#457): decide at
+// the fixtures' own observation time, one minute after it was read.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Date.parse("2026-08-18T00:01:00Z"));
+});
+afterEach(() => vi.useRealTimers());
 
 const baseArgs = {
   harnessId: "claude",
@@ -448,7 +456,22 @@ describe("account pool selection", () => {
       ],
       readyProfileIds: new Set(["a", "b"]),
     });
-    expect(selection).toEqual({ outcome: "exhausted", resets_at: "2026-08-18T06:00:00Z" });
+    // Both rows stopped below 100% at the saved 90% reserve (#318).
+    expect(selection).toEqual({
+      outcome: "exhausted",
+      resets_at: "2026-08-18T06:00:00Z",
+      reserveOnly: true,
+    });
+    const spent = selectFromAccountPool({
+      ...baseArgs,
+      registry,
+      snapshots: [
+        snapshot("a", 0.95, { resetsAt: "2026-08-18T12:00:00Z" }),
+        snapshot("b", 1, { resetsAt: "2026-08-18T06:00:00Z" }),
+      ],
+      readyProfileIds: new Set(["a", "b"]),
+    });
+    expect(spent).toMatchObject({ outcome: "exhausted", reserveOnly: false });
   });
 
   it("reports an empty pool when nothing is ready", () => {
@@ -459,6 +482,50 @@ describe("account pool selection", () => {
       readyProfileIds: new Set(),
     });
     expect(selection).toEqual({ outcome: "empty", resets_at: null });
+  });
+
+  it("says a row the vendor refused with no reopening time (#558) leaves the spent pool undated", () => {
+    const refused = {
+      subject: {
+        harness: "claude",
+        credential_route: "vendor_native",
+        plan_label: null,
+        subject_id: "a",
+      },
+      constraints: [
+        {
+          id: REOPENING_UNKNOWN_COOLDOWN_ID,
+          label: "Cooldown",
+          used_ratio: null,
+          window_seconds: null,
+          resets_at: null,
+          cooldown_until: "2026-08-18T00:05:00Z",
+        },
+      ],
+      source: "claude_api_retry",
+      observed_at: "2026-08-18T00:00:30Z",
+      freshness: "fresh",
+    } as QuotaSnapshot;
+    const dated = snapshot("b", 1, { resetsAt: "2026-08-18T06:00:00Z" });
+    const pool = (ids: string[], snapshots: QuotaSnapshot[]) =>
+      selectFromAccountPool({
+        ...baseArgs,
+        registry: ids.map((id) => row(id)),
+        snapshots,
+        readyProfileIds: new Set(ids),
+      });
+    expect(pool(["a", "b"], [refused, dated])).toEqual({
+      outcome: "exhausted",
+      resets_at: null,
+      reserveOnly: false,
+      reopening: "unknown",
+    });
+    // Control: a dated window alone keeps its reset and claims no unknown reopening.
+    expect(pool(["b"], [dated])).toEqual({
+      outcome: "exhausted",
+      resets_at: "2026-08-18T06:00:00Z",
+      reserveOnly: false,
+    });
   });
 });
 

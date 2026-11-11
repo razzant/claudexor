@@ -51,12 +51,8 @@ export const JournaledRunCreatedPayload = z
     prompt_sha256: z
       .string()
       .regex(/^[0-9a-f]{64}$/)
-      .describe("sha256 hex digest of the redacted prompt text."),
-    prompt_bytes: z
-      .number()
-      .int()
-      .nonnegative()
-      .describe("UTF-8 byte length of the redacted prompt text."),
+      .describe("sha256 hex digest of the prompt text."),
+    prompt_bytes: z.number().int().nonnegative().describe("UTF-8 byte length of the prompt text."),
   })
   .passthrough()
   .describe(
@@ -139,6 +135,12 @@ export const RunEventType = z
     "interaction.answered",
     "interaction.timeout",
     "interaction.answer_discarded",
+    /** The asking harness withdrew one pending request itself (e.g. Codex
+     * `serverRequest/resolved`): no answer is needed, and a late one is refused.
+     * Neither an expiry nor a run cancellation; answer surfaces close the
+     * prompt they opened for it. Payload: {interaction_id, attempt_id,
+     * harness_id}. */
+    "interaction.withdrawn",
     /** Live message into a running attempt (`POST /v2/runs/:id/messages`).
      * `message.accepted` = daemon ADMISSION, journaled through a
      * failure-propagating append BEFORE any native dispatch (nothing is sent
@@ -230,6 +232,16 @@ export const RunEventType = z
      * adoption (`continueFrom`), apply or the discard decision; never removed
      * automatically. */
     "workspace.retained",
+    /** An isolated directory copy was prepared, before its first executor
+     * starts: what was copied and which selected paths were not found
+     * (`WorkspacePreparedPayload`; a warning when nothing was copied or a
+     * selected path was missing). Once per copy. */
+    "workspace.prepared",
+    /** Settling a kept-or-disposed candidate envelope failed before the
+     * deferred terminal was published; the run's outcome is unchanged and the
+     * tree may remain. Payload: {attempt_id, envelope_id, root, stage
+     * (custody | dispose | retain | resumable), cause}. */
+    "workspace.settlement_failed",
   ])
   .describe(
     "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, and control verbs.",
@@ -307,8 +319,9 @@ export type RouteFallbackPayload = z.infer<typeof RouteFallbackPayload>;
 /**
  * Typed payload for the `route.primary.diverged` event. Emitted at route
  * selection when a run's requested/sticky PRIMARY harness is not the harness
- * that will actually run (its account was quota-exhausted / on cooldown, or the
- * route was unavailable), so the composer's visible harness choice silently
+ * that will actually run (its account was quota-exhausted / on cooldown, the
+ * route was unavailable, or it is degraded and the Auto pool admits only
+ * doctor-ok routes), so the composer's visible harness choice silently
  * would not have applied. The orchestrator validates this before stamping it, so
  * the divergence is always evidence-backed — the receipt discloses "requested
  * <requested> → ran on <effective> (<reason>)" from real facts, never invented.
@@ -321,7 +334,7 @@ export const RoutePrimaryDivergedPayload = z
       .nullable()
       .default(null)
       .describe("The harness that actually ran first, or null when nothing remained routable."),
-    reason: FallbackReason.default("quota_exhausted"),
+    reason: FallbackReason.or(z.literal("capability_incompatible")).default("quota_exhausted"),
     detail: z
       .string()
       .nullable()
@@ -346,6 +359,7 @@ export const RouteDropStage = z
     "access",
     "web",
     "attachment",
+    "model",
   ])
   .describe("The routing stage at which an auto-pool lane was dropped.");
 export type RouteDropStage = z.infer<typeof RouteDropStage>;

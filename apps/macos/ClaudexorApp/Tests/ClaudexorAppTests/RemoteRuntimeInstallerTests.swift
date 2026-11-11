@@ -779,6 +779,35 @@ private final class RemoteRuntimeArchiveURLProtocol: URLProtocol {
                        as: UTF8.self) == "old\nnew\n")
     }
 
+    /// A `current` that is not the runtime symlink exits 73. The SSH manager
+    /// surfaces only stderr for a failed probe, so the probe names it there.
+    @Test func pointerProbeNamesANonSymlinkCurrentOnStderr() throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let current = home.appendingPathComponent(".claudexor/remote/current")
+        try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        let probe = try run(
+            script: RemoteRuntimeInstaller.currentPointerProbeCommand, arguments: [], home: home)
+        #expect(probe.status == 73)
+        #expect(probe.stdout.isEmpty)
+        let reason = String(decoding: probe.stderr, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(reason.contains(current.path))
+        #expect(reason.contains("not a symlink"))
+        #expect(AppModel.harnessInstallPreparationFailure(
+            SSHConnectionError.commandFailed(reason), harness: "codex")
+            == "Codex was not installed: " + reason)
+
+        try FileManager.default.removeItem(at: current)
+        try FileManager.default.createSymbolicLink(
+            atPath: current.path, withDestinationPath: "versions/4.3.1-0123abcd")
+        let linked = try run(
+            script: RemoteRuntimeInstaller.currentPointerProbeCommand, arguments: [], home: home)
+        #expect(linked.status == 0)
+        #expect(try RemoteRuntimeInstaller.currentPointerTarget(fromProbe: linked.stdout)
+            == "versions/4.3.1-0123abcd")
+    }
+
     @Test func installLockAndCurrentCASRefuseConcurrentMutation() throws {
         let home = try temporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }

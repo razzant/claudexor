@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import {
   WorkspaceManager,
   retainForInspection,
@@ -7,29 +7,39 @@ import {
 } from "@claudexor/workspace";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BlobFiles } from "./blob-files.js";
 import { applyCommandPruneInTx, SqlCommandPruner } from "./command-prune.js";
 import { applyCommandInTx, prepareCommandRow } from "./command-rows.js";
 import { SqlEventLedger } from "./event-store.js";
 import { bindIdempotencyInTx } from "./idempotency.js";
+import { SqlInteractionStore } from "./interactions.js";
 import { runMutation } from "./mutation.js";
 import { createPartition } from "./partitions.js";
+import { RetentionReferenceReader } from "./retention-reference-reader.js";
+import { diskRetentionReferences } from "./retention-references.js";
 import { commandRetentionCandidates } from "./retention.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const OLD = "2026-01-01T00:00:00.000Z",
   NOW = Date.parse("2026-10-10T00:00:00.000Z"),
   MONTH = 30 * 86400000;
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "cx-sql-prune-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../../dist/store/flusher-worker.js"),
@@ -47,6 +57,145 @@ async function fixture() {
 }
 
 describe("SQL command retention contract", () => {
+  it("decodes NUL-delimited interaction IDs before pruning their event groups and bodies", async () => {
+    const f = await fixture(),
+      generation = f.generations[0]!,
+      events = new SqlEventLedger(f.store, f.blobs, generation),
+      interactions = new SqlInteractionStore(f.store, events);
+    const victim = "run-π",
+      keeper = "run-keeper",
+      ids = ["question:first", "question:β"];
+    for (const runId of [victim, keeper]) {
+      const command = prepareCommandRow(
+        { id: runId, runId, state: "succeeded", params: {}, createdAt: OLD, finishedAt: OLD },
+        { pid: generation.pid, live: true, operation: "run.create", clientId: "fixture" },
+        (bytes) => f.blobs.prepareBody(bytes),
+      );
+      runMutation(f.store, (tx) => applyCommandInTx(tx, command, "accept"));
+      for (const interactionId of runId === victim ? ids : [ids[0]!])
+        interactions.request({
+          runId,
+          taskId: "task",
+          attemptId: "a01",
+          harnessId: "codex",
+          requestedAt: OLD,
+          timeoutAt: null,
+          request: {
+            interaction_id: interactionId,
+            source_tool: "AskUserQuestion",
+            delivery: "blocking",
+            questions: [
+              {
+                id: "q",
+                question: "q".repeat(70_000),
+                header: null,
+                options: [],
+                multi_select: false,
+              },
+            ],
+          },
+        });
+    }
+    const before = f.store
+      .prepare("SELECT group_key,payload_sha FROM event ORDER BY group_key")
+      .all() as Array<{ group_key: string; payload_sha: string }>;
+    const victimKeys = ids.map((id) => `i:${victim}:${id}`);
+    const keeperKey = `i:${keeper}:${ids[0]}`;
+    expect(before.map((row) => row.group_key).sort()).toEqual([...victimKeys, keeperKey].sort());
+    for (const row of before) expect(existsSync(f.blobs.filePath(row.payload_sha))).toBe(true);
+    const kept = before.find((row) => row.group_key === keeperKey)!;
+    const keptBytes = f.blobs.read(kept.payload_sha);
+
+    const returnedIds: unknown[] = [];
+    const prepare = f.store.prepare.bind(f.store);
+    vi.spyOn(f.store, "prepare").mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (sql.startsWith("DELETE FROM interaction ")) {
+        const all = statement.all.bind(statement);
+        vi.spyOn(statement, "all").mockImplementation((...args: unknown[]) => {
+          const rows = Reflect.apply(all, statement, args) as ReturnType<typeof statement.all>;
+          // Emulate Node 24.15's TEXT truncation on newer Node too; BLOBs stay intact.
+          for (const row of rows) {
+            if (typeof row.id === "string") row.id = row.id.split("\0")[0]!;
+            returnedIds.push(row.id);
+          }
+          return rows;
+        });
+      }
+      return statement;
+    });
+    const gc = vi.spyOn(f.blobs, "gc");
+    f.pruner.prune([victim]);
+    expect(f.store.prepare("SELECT group_key FROM event").all()).toEqual([
+      { group_key: keeperKey },
+    ]);
+    expect(f.store.prepare("SELECT run_id FROM interaction").all()).toEqual([{ run_id: keeper }]);
+    expect(f.store.prepare("SELECT id FROM command").all()).toEqual([{ id: keeper }]);
+    for (const id of returnedIds) expect(id).toBeInstanceOf(Uint8Array);
+    expect(
+      new Set(returnedIds.map((id) => Buffer.from(id as Uint8Array).toString("utf8"))),
+    ).toEqual(new Set(ids.map((id) => `${victim}\0${id}`)));
+    const retired = before.filter((row) => victimKeys.includes(row.group_key));
+    expect(gc.mock.calls.map(([sha]) => sha).sort()).toEqual(
+      retired.map((row) => row.payload_sha).sort(),
+    );
+    f.store.flusherControl.tick();
+    await Promise.all(gc.mock.results.map((result) => result.value));
+    for (const row of retired) {
+      expect(
+        f.store.prepare("SELECT 1 FROM blob WHERE sha256=?").get(row.payload_sha),
+      ).toBeUndefined();
+      expect(existsSync(f.blobs.filePath(row.payload_sha))).toBe(false);
+    }
+    expect(f.blobs.read(kept.payload_sha)).toEqual(keptBytes);
+    expect(existsSync(f.blobs.filePath(kept.payload_sha))).toBe(true);
+  });
+
+  it("refreshes full NUL-delimited interaction IDs published during a retention pass", async () => {
+    const f = await fixture(),
+      events = new SqlEventLedger(f.store, f.blobs, f.generations[0]!),
+      interactions = new SqlInteractionStore(f.store, events);
+    const runId = "run-π",
+      interactionId = "question:β",
+      fullId = `${runId}\0${interactionId}`;
+    const changes: Array<{ table: unknown; id: unknown }> = [];
+    const register = f.store.db.function.bind(f.store.db);
+    vi.spyOn(f.store.db, "function").mockImplementation((name, callback) => {
+      if (name !== "disk_retention_changed") return register(name, callback);
+      register(name, (table, id, root) => {
+        changes.push({ table, id });
+        // Emulate Node 24.15's TEXT truncation on newer Node too; BLOBs stay intact.
+        return callback(table, typeof id === "string" ? id.split("\0")[0]! : id, root);
+      });
+    });
+    const refresh = vi.spyOn(RetentionReferenceReader.prototype, "refresh");
+    const proof = await diskRetentionReferences(f.store);
+    cleanup.push(() => proof.close?.());
+    expect(proof.referencedRunIds.size).toBe(0);
+    interactions.request({
+      runId,
+      taskId: "task",
+      attemptId: "a01",
+      harnessId: "codex",
+      requestedAt: OLD,
+      timeoutAt: null,
+      request: {
+        interaction_id: interactionId,
+        source_tool: "AskUserQuestion",
+        delivery: "blocking",
+        questions: [
+          { id: "q", question: "Continue?", header: null, options: [], multi_select: false },
+        ],
+      },
+    });
+    expect(proof.referencedRunIds.has(runId)).toBe(false);
+    await proof.refresh!();
+    expect(proof.referencedRunIds).toEqual(new Set([runId]));
+    expect(refresh).toHaveBeenCalledExactlyOnceWith("interaction", fullId);
+    expect(changes).toEqual([{ table: "interaction", id: expect.any(Uint8Array) }]);
+    expect(Buffer.from(changes[0]!.id as Uint8Array).toString("utf8")).toBe(fullId);
+  });
+
   it("last-owner inline cleanup waits for every writer in the composed transaction", async () => {
     const f = await fixture(),
       pid = f.generations[0]!.pid;
@@ -400,7 +549,7 @@ describe("SQL command retention contract", () => {
     ]);
   });
 
-  it("retires only aged model/reset event copies in bounded passes and keeps their receipts/bindings forever", async () => {
+  it("retires 30-day model receipts with their events and bindings, keeping account resets and only aging their event copies", async () => {
     const f = await fixture(),
       pid = f.generations[0]!.pid,
       events = new SqlEventLedger(f.store, f.blobs, f.generations[0]!);
@@ -440,11 +589,21 @@ describe("SQL command retention contract", () => {
         });
       }
     });
-    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual([]);
-    expect(f.store.prepare("SELECT count(*) AS n FROM event").get()).toEqual({ n: 20 });
-    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual([]);
-    expect(f.store.prepare("SELECT count(*) AS n FROM event").get()).toEqual({ n: 0 });
+    const models = rows.filter((_, i) => i % 2 === 0).map(({ prepared }) => prepared.row.id);
+    // Product cap/age are 0 here: model receipts follow only their own 30 days.
+    expect(f.pruner.pruneHistory(0, 0, Date.parse(OLD) + MONTH - 1)).toEqual([]);
     expect(f.store.prepare("SELECT count(*) AS n FROM command").get()).toEqual({ n: 120 });
-    expect(f.store.prepare("SELECT count(*) AS n FROM idempotency").get()).toEqual({ n: 120 });
+    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual(models);
+    // One batch removed each model receipt's own event keys; reset copies age separately.
+    expect(f.store.prepare("SELECT count(*) AS n FROM event").get()).toEqual({ n: 0 });
+    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual([]);
+    expect(f.store.prepare("SELECT DISTINCT kind FROM command").all()).toEqual([
+      { kind: "account_reset" },
+    ]);
+    expect(f.store.prepare("SELECT count(*) AS n FROM command").get()).toEqual({ n: 60 });
+    expect(f.store.prepare("SELECT count(*) AS n FROM idempotency").get()).toEqual({ n: 60 });
+    expect(
+      f.store.prepare("SELECT count(*) AS n FROM idempotency WHERE target_id LIKE 'model-%'").get(),
+    ).toEqual({ n: 0 });
   });
 });

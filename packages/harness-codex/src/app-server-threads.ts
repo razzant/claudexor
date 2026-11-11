@@ -1,8 +1,10 @@
 import type { HarnessEvent } from "@claudexor/schema";
 import { WINDOWS_TREE_DEATH_PROOF_UNAVAILABLE, type ProcEvent } from "@claudexor/core";
-import { nowIso } from "@claudexor/util";
+import { nowIso, redactSecrets } from "@claudexor/util";
 import { asObject, codexAppServerEvents, type JsonObject } from "./app-server-protocol.js";
+import { codexNativeWarningEvents, isCodexNativeWarningMethod } from "./app-server-warnings.js";
 import { parseCodexEvent, type CodexParseState } from "./parse.js";
+import { codexErrorCode, codexUsageRefusal } from "./retry-signals.js";
 
 /** The shared completed-event shape for normal, cancelled and failed teardown. */
 export function codexCompletedEvent(
@@ -143,6 +145,40 @@ export class CodexSubagentThreads {
       return { ...rest, type: "status", payload: { ...payload, code: "subagent_message" } };
     });
   }
+
+  /**
+   * The native warnings the run loop never read, taken out of `queue` in
+   * arrival order: queued behind a start that failed, or arrived while the
+   * settled run was read or its process stopped. They are evidence only, so the
+   * terminal events follow them; every other frame stays queued, where
+   * `codexTeardownFailed` still reads it, and taking is once-only. Attribution
+   * is the loop's: once the root is bound another thread's frame carries the
+   * sub-agent tags, and before that a frame belongs to the run. A frame without
+   * its required text stays queued, unread.
+   */
+  takeWarnings(
+    queue: JsonObject[],
+    rootThreadId: string | null,
+    sessionId: string,
+  ): HarnessEvent[] {
+    const events: HarnessEvent[] = [];
+    for (let index = 0; index < queue.length;) {
+      const notification = queue[index]!;
+      const method = notification["method"];
+      const params = asObject(notification["params"]);
+      const mapped =
+        params && isCodexNativeWarningMethod(method)
+          ? rootThreadId !== null && !ownsNotification(params, rootThreadId)
+            ? this.events(notification, sessionId)
+            : codexNativeWarningEvents(method, params, sessionId)
+          : null;
+      if (mapped) {
+        queue.splice(index, 1);
+        events.push(...mapped);
+      } else index += 1;
+    }
+    return events;
+  }
 }
 
 /**
@@ -194,4 +230,54 @@ export function codexTerminalEvents(input: {
     };
   }
   return { events: [], reportedError: null };
+}
+
+/**
+ * Keeps Codex's typed usage refusal (#558) for the root turn it belongs to, on
+ * arrival: the run loop drops a non-retrying `error` frame, and a durable
+ * systemError can settle the run before or after the failed turn is read
+ * (recorded order: systemError, `error`, failed turn). A new root turn clears
+ * it. The loop calls this for root frames only, so a sub-agent's refusal never
+ * limits the root, and only the typed code is read, never the words.
+ * The same frames' own record (`codexErrorInfo` and its words) is kept
+ * as `rootFailure`, opaque evidence for the terminal: a typed record outranks
+ * words alone, otherwise the later record speaks.
+ */
+export function observeCodexRootError(
+  state: CodexParseState,
+  method: unknown,
+  params: JsonObject | null,
+): void {
+  if (method === "turn/started") state.usageRefusal = state.rootFailure = undefined;
+  const error =
+    method === "error" && params?.["willRetry"] !== true
+      ? asObject(params?.["error"])
+      : method === "turn/completed"
+        ? asObject(asObject(params?.["turn"])?.["error"])
+        : null;
+  state.usageRefusal = codexUsageRefusal(error?.["codexErrorInfo"]) ?? state.usageRefusal;
+  const code = codexErrorCode(error?.["codexErrorInfo"])?.slice(0, 128) ?? null;
+  const words = error?.["message"];
+  // A vendor diagnostic, masked where it is created (INV-146).
+  const message =
+    typeof words === "string" && words.trim() ? redactSecrets(words).slice(0, 4000) : null;
+  if ((code || message) && (code || !state.rootFailure?.code))
+    state.rootFailure = { code, message, source: "codex_app_server" };
+}
+
+/**
+ * The settled terminal's events as yielded once the process stopped, so every
+ * frame it wrote has been observed and nothing waits for one that may never
+ * come: the root turn's typed usage refusal joins the terminal error, replacing
+ * a plain prose-matched limit. A completed turn has no error event to carry it.
+ */
+export function codexSettledTerminal(
+  events: HarnessEvent[],
+  state: CodexParseState,
+): HarnessEvent[] {
+  const refusal = state.usageRefusal;
+  if (!refusal) return events;
+  return events.map((event) =>
+    event.type === "error" ? { ...event, rate_limit: { ...refusal } } : event,
+  );
 }

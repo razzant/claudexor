@@ -6,7 +6,6 @@ import { bindIdempotencyInTx } from "./idempotency.js";
 import { runMutation } from "./mutation.js";
 import { Obligations, type ObligationEffects, type ObligationRow } from "./obligations.js";
 import {
-  assertContentAllowed,
   putResourceInTx,
   putUploadInTx,
   readResourceRow,
@@ -32,15 +31,26 @@ export class PublishBlob {
     obligations.registerHandler("publish_blob", (row, effects) => this.recover(row, effects));
   }
 
-  finalize(id: string, expectedSha256: string | undefined, key: string): ControlResource {
+  /** Internal publication mints its own key; every supplied caller key keeps strict replay. */
+  finalize(id: string, expectedSha256: string | undefined, callerKey?: string): ControlResource {
     const requestDigest = hashJson({ uploadId: id, expectedSha256: expectedSha256 ?? null });
-    const prior = this.uploads.bindings.lookup("finalize", key, requestDigest, id);
+    const key = callerKey ?? newId("model-finalize");
+    const prior =
+      callerKey === undefined
+        ? undefined
+        : this.uploads.bindings.lookup("finalize", key, requestDigest, id);
     if (prior) {
       const row = readUploadRow(this.store, id);
-      if (row?.state === "finalizing") this.complete(row);
+      if (row?.state === "finalizing") this.complete(row, undefined, true);
       return ControlResource.parse(prior.result);
     }
     const upload = this.uploads.get(id);
+    if (upload.import)
+      throw resourceError(
+        "this upload belongs to a keyed import; replay POST /v2/uploads/imports to complete it",
+        409,
+        "upload_import_owned",
+      );
     const keyDigest = uploadKeyDigest("finalize", key);
     if (upload.finalization) {
       if (
@@ -52,40 +62,74 @@ export class PublishBlob {
           409,
           "idempotency_conflict",
         );
-      return this.complete(upload);
+      return this.complete(upload, undefined, true);
     }
+    return this.publish(upload, expectedSha256, keyDigest, requestDigest, true);
+  }
+
+  /** A keyed import completes under its own binding, with the digest it declared up front. */
+  publishImport(upload: UploadRow): ControlResource {
+    const binding = upload.import;
+    if (!binding) throw new Error(`upload ${upload.status.uploadId} has no import binding`);
+    if (upload.finalization) {
+      if (upload.state !== "published") return this.complete(upload, undefined, true);
+      return ControlResource.parse(upload.finalization.result);
+    }
+    const requestDigest = hashJson({
+      uploadId: upload.status.uploadId,
+      expectedSha256: binding.sha256,
+    });
+    return this.publish(upload, binding.sha256, binding.keyDigest, requestDigest, false);
+  }
+
+  private publish(
+    upload: UploadRow,
+    expectedSha256: string | undefined,
+    keyDigest: string,
+    requestDigest: string,
+    bindFinalizeKey: boolean,
+  ): ControlResource {
+    const id = upload.status.uploadId;
     if (upload.status.state !== "uploaded")
       throw resourceError(`upload ${id} is ${upload.status.state}`, 409, "upload_not_uploaded");
-    const bytes = readFileSync(this.uploads.partPath(id));
-    if (bytes.length !== upload.status.expectedBytes)
-      throw resourceError(
-        "uploaded file no longer matches declared size",
-        409,
-        "upload_size_mismatch",
-      );
-    try {
-      assertContentAllowed(upload.request, bytes);
-    } catch (error) {
-      this.uploads.cancel(id);
-      throw error;
+    // The bytes were hashed as they were written. A restart drops that digest,
+    // and only then does publication read the part. Between the hash and the
+    // link the hot path does not re-read.
+    const remembered = this.uploads.writeDigest(id);
+    let sha: string;
+    let size: number;
+    if (remembered !== undefined) {
+      sha = remembered;
+      size = upload.status.expectedBytes;
+    } else {
+      const bytes = readFileSync(this.uploads.partPath(id));
+      if (bytes.length !== upload.status.expectedBytes)
+        throw resourceError(
+          "uploaded file no longer matches declared size",
+          409,
+          "upload_size_mismatch",
+        );
+      sha = sha256Hex(bytes);
+      size = bytes.length;
     }
-    const sha = sha256Hex(bytes);
     if (expectedSha256 !== undefined && expectedSha256 !== `sha256:${sha}`)
       throw resourceError(
         "uploaded byte digest does not match expectedSha256",
         409,
         "digest_mismatch",
       );
+    const deduplicated = existsSync(this.blobs.filePath(sha));
     const resource = ControlResource.parse({
       resourceId: newId("res"),
       ...(upload.request.purpose ? { purpose: upload.request.purpose } : {}),
+      ...(upload.import?.lifetime ? { lifetime: upload.import.lifetime } : {}),
       kind: upload.request.kind,
       mime: upload.request.mime,
       name: upload.request.name,
       sha256: `sha256:${sha}`,
-      sizeBytes: bytes.length,
+      sizeBytes: size,
       createdAt: this.store.now().toISOString(),
-      deduplicated: existsSync(this.blobs.filePath(sha)),
+      deduplicated,
     });
     upload.state = "finalizing";
     upload.finalizeSha = sha;
@@ -94,21 +138,27 @@ export class PublishBlob {
     runMutation(this.store, (tx) => {
       putUploadInTx(tx, upload);
       putResourceInTx(tx, { resource, state: "publishing", expiresAt: null, releasedAt: null });
-      bindIdempotencyInTx(tx, {
-        owner: "upload",
-        pid: 0,
-        keyDigest,
-        operation: "finalize",
-        requestDigest,
-        targetId: id,
-        result: resource,
-        createdAt: tx.now().toISOString(),
-      });
+      if (bindFinalizeKey)
+        bindIdempotencyInTx(tx, {
+          owner: "upload",
+          pid: 0,
+          keyDigest,
+          operation: "finalize",
+          requestDigest,
+          targetId: id,
+          result: resource,
+          createdAt: tx.now().toISOString(),
+        });
       this.obligations.create("publish_blob", id, 0, { sha, resource_id: resource.resourceId });
       tx.changes.blobChanged(sha);
       tx.changes.uploadChanged(id);
     });
-    return this.complete(upload);
+    // The binding now holds the digest. Every later complete (replay, recovery)
+    // verifies the bytes, so the in-memory copy is dropped here, not at restart.
+    this.uploads.forgetDigest(id);
+    // Dedup must read the blob already on disk. A missing digest must read the
+    // part. The hot path has already hashed the bytes it is about to link.
+    return this.complete(upload, undefined, remembered === undefined || deduplicated);
   }
 
   /** Called by the composition's single Obligations.onCleared hook, after its owner notification. */
@@ -122,7 +172,11 @@ export class PublishBlob {
     }
   }
 
-  private complete(upload: UploadRow, effects?: ObligationEffects): ControlResource {
+  private complete(
+    upload: UploadRow,
+    effects: ObligationEffects | undefined,
+    verify: boolean,
+  ): ControlResource {
     const resource = upload.finalization!.result;
     const row = readResourceRow(this.store, resource.resourceId);
     if (!row)
@@ -144,11 +198,13 @@ export class PublishBlob {
     }
     const sha = resourceSha(resource);
     const path = this.blobs.filePath(sha);
-    const bytes = verifiedResourceBytes(
-      resource,
-      existsSync(path) ? path : this.uploads.partPath(upload.status.uploadId),
-    );
-    assertContentAllowed(resource, bytes);
+    // Replay, recovery and dedup pass verify. The hot path already hashed the
+    // part while it was written and does not read it again.
+    if (verify)
+      verifiedResourceBytes(
+        resource,
+        existsSync(path) ? path : this.uploads.partPath(upload.status.uploadId),
+      );
     const linked = this.blobs.publishLink(this.uploads.partPath(upload.status.uploadId), sha);
     const generation = effects ? effects.register(this.blobs.dir) : linked.generation;
     // The part stays through the durability barrier. Only the post-clear hook removes it.
@@ -179,6 +235,6 @@ export class PublishBlob {
     if (resourceSha(upload.finalization.result) !== sha || upload.resourceId !== resource_id)
       throw new Error(`publication binding mismatch for ${obligation.key}`);
     // completeOpen owns rematerialization with this process's new registration.
-    this.complete(upload, effects);
+    this.complete(upload, effects, true);
   }
 }

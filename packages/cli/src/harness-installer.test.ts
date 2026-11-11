@@ -1,456 +1,179 @@
-import { existsSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { spawnSync, type SpawnSyncOptions } from "node:child_process";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { spawnProcess, type ChildStdin } from "@claudexor/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CLAUDE_VENDOR_CLI_VERSION } from "@claudexor/harness-claude";
-import { CODEX_VENDOR_CLI_VERSION } from "@claudexor/harness-codex";
-import { OPENCODE_VENDOR_CLI_VERSION } from "@claudexor/harness-opencode";
-import { copilot } from "@claudexor/harness-acp";
-import type { ParsedArgs } from "./args.js";
-import { INSTALLABLE_HARNESSES } from "./harness-command-specs.js";
+import { parseArgs } from "./args.js";
 import {
-  AGY_INSTALL_URL,
-  AGY_INSTALL_URL_WINDOWS,
-  CURSOR_INSTALL_URL,
+  MAINTENANCE_EVIDENCE_PREFIX,
   harnessInstallCommand,
-  harnessInstallerDisclosure,
-  isInstallableHarness,
-  runHarnessInstaller,
+  harnessMutationCommand,
+  retiredInstallFlags,
 } from "./harness-installer.js";
+import { executable, result, vendorFixture } from "./test-support/vendor-program-fixture.js";
 
-const args = (positional: string[], flags: ParsedArgs["flags"] = {}): ParsedArgs => ({
-  _: positional,
-  flags,
-});
-
-const captureStdout = (): { lines: () => string; restore: () => void } => {
-  const chunks: string[] = [];
-  const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-    chunks.push(String(chunk));
+const roots: string[] = [];
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+}, 0);
+function capture() {
+  let output = "";
+  vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+    output += chunk;
     return true;
   });
-  return { lines: () => chunks.join(""), restore: () => spy.mockRestore() };
-};
-
-const captureStderr = (): { lines: () => string; restore: () => void } => {
-  const chunks: string[] = [];
-  const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
-    chunks.push(String(chunk));
-    return true;
+  vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  return () => output;
+}
+describe("harness install/update CLI", () => {
+  it.each(["--target=local", "--target=remote", "--release-tested"])(
+    "hard-errors the retired flag %s with the new spelling",
+    async (flag) => {
+      const output = capture();
+      const args = parseArgs(["harness", "install", "codex", flag, "--json", "--yes"]);
+      expect(retiredInstallFlags(args)).toContain("retired");
+      expect(await harnessInstallCommand(args, true)).toBe(2);
+      expect(output()).toContain("harness install <id> --yes");
+    },
+  );
+  it.each(["previous", "baseline", "latest", "^1.0.0"])(
+    "rejects a non-exact vendor-version value %s with the current spelling",
+    async (version) => {
+      const output = capture();
+      expect(
+        await harnessMutationCommand(
+          parseArgs(["harness", "update", "codex", "--vendor-version", version, "--yes"]),
+          true,
+        ),
+      ).toBe(2);
+      expect(output()).toContain("--vendor-version <exact>");
+    },
+  );
+  it("requires explicit authorization from a nonterminal caller", async () => {
+    const output = capture();
+    expect(
+      await harnessMutationCommand(parseArgs(["harness", "update", "codex", "--json"]), true),
+    ).toBe(2);
+    expect(output()).toContain("--yes");
   });
-  return { lines: () => chunks.join(""), restore: () => spy.mockRestore() };
-};
-
-/** A hostile child: writes vendor noise onto whatever fd its stdout was
- * routed to (fd 2 in json mode, the caller's stdout otherwise) — exactly
- * what real npm/curl/install.sh interleaving looks like. */
-const noisySpawn = (status: number) =>
-  vi.fn((binary: string, argv: string[], options?: { stdio?: unknown }) => {
-    if (binary === "curl") {
-      const target = argv.at(-1) ?? "";
-      writeFileSync(target, "#!/bin/sh\necho fake-installer\n");
-    }
-    const stdio = options?.stdio;
-    const stdoutTarget = Array.isArray(stdio) && stdio[1] === 2 ? process.stderr : process.stdout;
-    stdoutTarget.write("vendor noise: added 42 packages in 3s\n");
-    return { status } as never;
-  });
-
-afterEach(() => vi.restoreAllMocks());
-
-describe("remote harness installer allowlist", () => {
-  it("rejects every non-allowlisted identifier", () => {
-    expect(isInstallableHarness("codex")).toBe(true);
-    expect(isInstallableHarness("../../bin/sh")).toBe(false);
-    expect(isInstallableHarness("codex; touch /tmp/pwned")).toBe(false);
-  });
-});
-
-describe("pinned versions (issue #89: never @latest)", () => {
-  it("every npm harness pins the exact vendor-version SSOT the freshness gates read", () => {
-    const pins = {
-      claude: {
-        version: CLAUDE_VENDOR_CLI_VERSION,
-        verification: "release_verified",
-      },
-      codex: {
-        version: CODEX_VENDOR_CLI_VERSION,
-        verification: "release_verified",
-      },
-      opencode: {
-        version: OPENCODE_VENDOR_CLI_VERSION,
-        verification: "deterministic_only",
-      },
-      copilot: { version: copilot.version, verification: "deterministic_only" },
-    } as const;
-    for (const [harness, pin] of Object.entries(pins)) {
-      const disclosure = harnessInstallerDisclosure(
-        harness as (typeof INSTALLABLE_HARNESSES)[number],
-      );
-      expect(pin.version).toMatch(/^\d+\.\d+\.\d+$/);
-      expect(disclosure.pinnedVersion).toBe(pin.version);
-      expect(disclosure.command.endsWith(`@${pin.version}`)).toBe(true);
-      expect(disclosure.verification).toBe(pin.verification);
-    }
-    for (const harness of INSTALLABLE_HARNESSES) {
-      expect(harnessInstallerDisclosure(harness).command).not.toContain("@latest");
-    }
-  });
-
-  it("discloses the exact command and destination", () => {
-    expect(harnessInstallerDisclosure("claude")).toEqual({
-      harness: "claude",
-      target: "remote",
-      command: `npm install --global --prefix ~/.claudexor/remote/vendor @anthropic-ai/claude-code@${CLAUDE_VENDOR_CLI_VERSION}`,
-      installLocation: "~/.claudexor/remote/vendor/bin",
-      pinnedVersion: CLAUDE_VENDOR_CLI_VERSION,
-      verification: "release_verified",
-    });
-  });
-
-  it("the local target names the managed toolchain prefix, not the remote one", () => {
-    expect(harnessInstallerDisclosure("claude", "local")).toEqual({
-      harness: "claude",
-      target: "local",
-      command: `npm install --global --prefix ~/.claudexor/node @anthropic-ai/claude-code@${CLAUDE_VENDOR_CLI_VERSION}`,
-      installLocation: "~/.claudexor/node/bin",
-      pinnedVersion: CLAUDE_VENDOR_CLI_VERSION,
-      verification: "release_verified",
-    });
-  });
-
-  it("a script vendor installed unattended locally never claims human observation", () => {
-    expect(harnessInstallerDisclosure("cursor", "local").verification).toBe("unattended_unpinned");
-    expect(harnessInstallerDisclosure("agy", "local").verification).toBe("unattended_unpinned");
-    expect(harnessInstallerDisclosure("cursor", "remote").verification).toBe("human_observed");
-  });
-
-  it("agy takes the same honest unpinnable path as cursor (one branch, two rows)", () => {
-    const disclosure = harnessInstallerDisclosure("agy");
-    expect(disclosure.pinnedVersion).toBeNull();
-    expect(disclosure.verification).toBe("human_observed");
-    expect(disclosure.command).toContain(AGY_INSTALL_URL);
-    expect(disclosure.command).toContain("--fail");
-    // Google documents `curl ... | bash`; Claudexor NEVER pipes a remote
-    // script into a shell — it downloads the whole file, prints its sha256,
-    // and executes the file the operator was shown.
-    expect(disclosure.command).not.toMatch(/\|\s*(\/bin\/)?(ba)?sh/);
-    expect(disclosure.installLocation).toContain("~/.local/bin");
-  });
-
-  it("cursor is honestly unpinnable: full download, never piped, human watches the PTY", () => {
-    const disclosure = harnessInstallerDisclosure("cursor");
-    expect(disclosure.pinnedVersion).toBeNull();
-    expect(disclosure.verification).toBe("human_observed");
-    expect(disclosure.command).toContain(CURSOR_INSTALL_URL);
-    expect(disclosure.command).toContain("--fail");
-    expect(disclosure.command).not.toMatch(/\|\s*(\/bin\/)?(ba)?sh/);
-  });
-});
-
-describe("runHarnessInstaller", () => {
-  it("downloads and executes the agy script through the shared script branch", () => {
-    const spawn = noisySpawn(0);
-    const stdout = captureStdout();
-    const result = runHarnessInstaller("agy", { home: "/tmp/operator", spawn: spawn as never });
-    stdout.restore();
-    expect(result).toEqual({ exitCode: 0 });
-    const curlArgv = spawn.mock.calls[0]![1] as string[];
-    expect(curlArgv).toContain(AGY_INSTALL_URL);
-    const installerPath = curlArgv.at(-1)!;
-    expect(installerPath).toContain("claudexor-agy-install-");
-    expect(spawn.mock.calls[1]![0]).toBe("/bin/sh");
-    expect(stdout.lines()).toMatch(/agy installer downloaded: \d+ bytes, sha256 [0-9a-f]{64}/);
-    // The private temp dir is removed on the success path too.
-    expect(existsSync(dirname(installerPath))).toBe(false);
-  });
-
-  it("uses the shared clean child environment instead of forwarding provider secrets", () => {
-    const names = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "HTTPS_PROXY"];
-    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
-    process.env.OPENAI_API_KEY = "secret-openai";
-    process.env.ANTHROPIC_API_KEY = "secret-anthropic";
-    process.env.GITHUB_TOKEN = "secret-github";
-    process.env.HTTPS_PROXY = "https://proxy.example";
-    let environment: NodeJS.ProcessEnv | undefined;
-    const spawn = vi.fn(
-      (_binary: string, _argv: readonly string[], options?: { env?: NodeJS.ProcessEnv }) => {
-        environment = options?.env;
-        return { status: 0 } as never;
-      },
-    );
-    try {
-      runHarnessInstaller("codex", {
-        home: "/tmp/operator",
-        nodePath: "/runtime/node/bin/node",
-        spawn: spawn as never,
-        mkdir: vi.fn(),
-        exists: () => true,
-      });
-      expect(environment?.HOME).toBe("/tmp/operator");
-      expect(environment?.HTTPS_PROXY).toBe("https://proxy.example");
-      expect(environment?.OPENAI_API_KEY).toBeUndefined();
-      expect(environment?.ANTHROPIC_API_KEY).toBeUndefined();
-      expect(environment?.GITHUB_TOKEN).toBeUndefined();
-    } finally {
-      for (const [name, value] of Object.entries(previous)) {
-        if (value === undefined) delete process.env[name];
-        else process.env[name] = value;
-      }
-    }
-  });
-
-  it("uses typed argv for npm installers with the exact pin under the app-owned prefix", () => {
-    const spawn = vi.fn(() => ({ status: 0 }) as never);
-    const result = runHarnessInstaller("codex", {
-      home: "/tmp/operator",
-      nodePath: "/runtime/node/bin/node",
-      spawn: spawn as never,
-      mkdir: vi.fn(),
-      exists: () => true,
-    });
-    expect(result).toEqual({ exitCode: 0 });
-    expect(spawn).toHaveBeenCalledWith(
-      "/runtime/node/bin/node",
-      [
-        "/runtime/node/lib/node_modules/npm/bin/npm-cli.js",
-        "install",
-        "--global",
-        "--prefix",
-        "/tmp/operator/.claudexor/remote/vendor",
-        `@openai/codex@${CODEX_VENDOR_CLI_VERSION}`,
-      ],
-      expect.objectContaining({ stdio: "inherit" }),
-    );
-  });
-
-  it("refuses loudly, naming the expected path, when the bundled npm entrypoint is missing", () => {
-    // A Node closure without the bundled npm tree must be a typed refusal
-    // BEFORE any spawn — never node's raw "Cannot find module" crash.
-    const spawn = vi.fn(() => ({ status: 0 }) as never);
-    const result = runHarnessInstaller("codex", {
-      home: "/tmp/operator",
-      nodePath: "/runtime/node/bin/node",
-      spawn: spawn as never,
-      mkdir: vi.fn(),
-      exists: () => false,
-    });
-    expect(result.exitCode).toBe(1);
-    expect(result.refusal).toContain("/runtime/node/lib/node_modules/npm/bin/npm-cli.js");
-    expect(result.refusal).toContain("nothing was executed");
-    expect(spawn).not.toHaveBeenCalled();
-  });
-
-  it("downloads the Cursor installer, prints its sha256, executes it, and always cleans up", () => {
-    const stdout = captureStdout();
-    let installerPath = "";
-    const spawn = vi.fn((binary: string, argv: string[]) => {
-      if (binary === "curl") {
-        installerPath = argv.at(-1) ?? "";
-        writeFileSync(installerPath, "#!/bin/sh\necho fake-installer\n");
-      }
-      return { status: 0 } as never;
-    });
-    const result = runHarnessInstaller("cursor", {
-      home: "/tmp/operator",
-      spawn: spawn as never,
-    });
-    stdout.restore();
-    expect(result).toEqual({ exitCode: 0 });
-    expect(spawn).toHaveBeenNthCalledWith(
-      1,
-      "curl",
-      [
-        "--fail",
-        "--silent",
-        "--show-error",
-        "--location",
-        CURSOR_INSTALL_URL,
-        "--output",
-        installerPath,
-      ],
-      expect.objectContaining({ stdio: "inherit" }),
-    );
-    expect(spawn).toHaveBeenNthCalledWith(
-      2,
-      "/bin/sh",
-      [installerPath],
-      expect.objectContaining({ stdio: "inherit" }),
-    );
-    expect(stdout.lines()).toMatch(/cursor installer downloaded: \d+ bytes, sha256 [0-9a-f]{64}/);
-    expect(existsSync(dirname(installerPath))).toBe(false);
-  });
-
-  it("refuses loudly on a failed Cursor download and still removes the temp dir", () => {
-    let installerPath = "";
-    const spawn = vi.fn((binary: string, argv: string[]) => {
-      if (binary === "curl") installerPath = argv.at(-1) ?? "";
-      return { status: 22 } as never;
-    });
-    const result = runHarnessInstaller("cursor", { spawn: spawn as never });
-    expect(result.exitCode).toBe(22);
-    expect(result.refusal).toContain("nothing was executed");
-    expect(spawn).toHaveBeenCalledTimes(1);
-    expect(existsSync(dirname(installerPath))).toBe(false);
-  });
-
-  it("refuses to execute a Cursor script it cannot read back", () => {
-    // curl "succeeds" but writes nothing — the read-back gate must refuse.
-    const spawn = vi.fn(() => ({ status: 0 }) as never);
-    const result = runHarnessInstaller("cursor", { spawn: spawn as never });
-    expect(result.exitCode).toBe(1);
-    expect(result.refusal).toContain("could not be read back");
-    expect(spawn).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("harnessInstallCommand disclosure/confirmation gate", () => {
-  it("--dry-run prints the typed disclosure and executes nothing", () => {
-    const stdout = captureStdout();
-    const code = harnessInstallCommand(
-      args(["harness", "install", "codex"], { "dry-run": true }),
-      true,
-    );
-    stdout.restore();
-    const payload = JSON.parse(stdout.lines()) as Record<string, unknown>;
-    expect(code).toBe(0);
-    expect(payload).toMatchObject({
+  it("installs missing through the vendor command and prints one full receipt", async () => {
+    const w = vendorFixture();
+    roots.push(w.home);
+    const output = capture();
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      executable(w.installed, "2.0.0");
+      return result("Done");
+    }) as typeof spawnSync;
+    expect(
+      await harnessInstallCommand(
+        parseArgs(["harness", "install", "fixture", "--yes", "--json"]),
+        true,
+        w.options,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(output())).toMatchObject({
       ok: true,
-      dryRun: true,
-      harness: "codex",
-      pinnedVersion: CODEX_VENDOR_CLI_VERSION,
-      installLocation: "~/.claudexor/remote/vendor/bin",
+      outcome: "changed",
+      installationHome: w.home,
+      before: { path: null },
+      after: { path: w.installed, version: "2.0.0" },
+      commands: [{ script: { sha256: expect.any(String) } }],
     });
   });
-
-  it("refuses without --yes when no human can confirm (json mode / no TTY)", () => {
-    const stdout = captureStdout();
-    const code = harnessInstallCommand(args(["harness", "install", "claude"]), true);
-    stdout.restore();
-    const payload = JSON.parse(stdout.lines()) as Record<string, unknown>;
-    expect(code).toBe(1);
-    expect(payload).toMatchObject({ ok: false, code: "confirmation_required" });
-  });
-
-  it("rejects non-allowlisted or malformed install targets with usage exit 2", () => {
-    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    expect(harnessInstallCommand(args(["harness", "install", "rm -rf /"]), false)).toBe(2);
-    expect(harnessInstallCommand(args(["harness", "install"]), false)).toBe(2);
-    expect(harnessInstallCommand(args(["harness", "install", "codex", "extra"]), false)).toBe(2);
-    stderr.mockRestore();
-  });
-
-  it("the opencode disclosure names its pin a deterministic target, not a verified version", () => {
-    const stdout = captureStdout();
-    const stderr = captureStderr();
-    harnessInstallCommand(args(["harness", "install", "opencode"], { "dry-run": true }), false);
-    harnessInstallCommand(args(["harness", "install", "claude"], { "dry-run": true }), false);
-    stdout.restore();
-    stderr.restore();
-    const lines = stdout.lines();
-    expect(lines).toContain(
-      "deterministic install target — not covered by recorded verification fixtures",
-    );
-    expect(lines).toContain(
-      `${CLAUDE_VENDOR_CLI_VERSION} (exact; the version this release was verified against`,
-    );
+  it("install is idempotent when selected; Update still runs the selected verb", async () => {
+    const w = vendorFixture();
+    roots.push(w.home);
+    capture();
+    executable(w.installed);
+    let mutations = 0;
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      mutations++;
+      return result("Already current");
+    }) as typeof spawnSync;
+    expect(
+      await harnessInstallCommand(
+        parseArgs(["harness", "install", "fixture", "--yes"]),
+        true,
+        w.options,
+      ),
+    ).toBe(0);
+    expect(mutations).toBe(0);
+    expect(
+      await harnessMutationCommand(
+        parseArgs(["harness", "update", "fixture", "--yes"]),
+        true,
+        w.options,
+      ),
+    ).toBe(0);
+    expect(mutations).toBe(1);
   });
 });
 
-describe("--json stdout purity on the execute path (--yes)", () => {
-  const jsonYesInstall = (
-    harness: string,
-    status: number,
-  ): { code: number; stdout: string; stderr: string } => {
-    const stdout = captureStdout();
-    const stderr = captureStderr();
-    const code = harnessInstallCommand(args(["harness", "install", harness], { yes: true }), true, {
-      home: "/tmp/operator",
-      nodePath: "/runtime/node/bin/node",
-      spawn: noisySpawn(status) as never,
-      mkdir: vi.fn(),
-      exists: () => true,
-    });
-    stdout.restore();
-    stderr.restore();
-    return { code, stdout: stdout.lines(), stderr: stderr.lines() };
-  };
-
-  it("a successful npm install emits EXACTLY one JSON object on stdout; vendor noise lands on stderr", () => {
-    const result = jsonYesInstall("codex", 0);
-    expect(result.code).toBe(0);
-    // The whole stdout parses as one object — a machine caller's JSON.parse
-    // must survive a child that sprays garbage at its own stdout.
-    const payload = JSON.parse(result.stdout) as Record<string, unknown>;
-    expect(payload).toMatchObject({ ok: true, dryRun: false, exitCode: 0, harness: "codex" });
-    expect(result.stdout).not.toContain("vendor noise");
-    expect(result.stderr).toContain("vendor noise");
-  });
-
-  it("a failed install keeps stdout to the single {ok:false} envelope", () => {
-    const result = jsonYesInstall("codex", 7);
-    expect(result.code).toBe(7);
-    const payload = JSON.parse(result.stdout) as Record<string, unknown>;
-    expect(payload).toMatchObject({ ok: false, dryRun: false, exitCode: 7 });
-    expect(result.stdout).not.toContain("vendor noise");
-  });
-
-  it("the cursor path routes its sha256/running progress lines to stderr under --json", () => {
-    const result = jsonYesInstall("cursor", 0);
-    expect(result.code).toBe(0);
-    const payload = JSON.parse(result.stdout) as Record<string, unknown>;
-    expect(payload).toMatchObject({ ok: true, dryRun: false, exitCode: 0, harness: "cursor" });
-    expect(result.stdout).not.toContain("cursor installer downloaded");
-    expect(result.stderr).toMatch(/cursor installer downloaded: \d+ bytes, sha256 [0-9a-f]{64}/);
-    expect(result.stderr).toContain("running: /bin/sh ");
-  });
-
-  it("human (non-json) mode keeps the cursor progress lines on stdout", () => {
-    const stdout = captureStdout();
-    const spawn = noisySpawn(0);
-    runHarnessInstaller("cursor", { home: "/tmp/operator", spawn: spawn as never });
-    stdout.restore();
-    expect(stdout.lines()).toMatch(/cursor installer downloaded: \d+ bytes, sha256 [0-9a-f]{64}/);
-    expect(stdout.lines()).toContain("vendor noise");
-  });
-});
-
-describe("Windows installer path (Л-24: best effort, honestly bounded)", () => {
-  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
-  const asWindows = (): void => {
-    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-  };
-  afterEach(() => {
-    Object.defineProperty(process, "platform", originalPlatform);
-  });
-
-  it("discloses the vendor's own Windows installer for agy", () => {
-    asWindows();
-    const disclosure = harnessInstallerDisclosure("agy");
-    expect(disclosure.command).toContain(AGY_INSTALL_URL_WINDOWS);
-    expect(disclosure.command).toContain("powershell");
-    expect(disclosure.command).not.toMatch(/\|\s*(iex|Invoke-Expression)/i);
-    expect(disclosure.installLocation).toContain("LOCALAPPDATA");
-  });
-
-  it("fetches the SAME bytes the disclosure named: the PowerShell URL, not the POSIX one", () => {
-    asWindows();
-    const spawn = noisySpawn(0);
-    const stdout = captureStdout();
-    const result = runHarnessInstaller("agy", { home: "/tmp/operator", spawn: spawn as never });
-    stdout.restore();
-    expect(result).toEqual({ exitCode: 0 });
-    const curlArgv = spawn.mock.calls[0]![1] as string[];
-    expect(curlArgv).toContain(AGY_INSTALL_URL_WINDOWS);
-    expect(curlArgv).not.toContain(AGY_INSTALL_URL);
-    expect(curlArgv.at(-1)).toMatch(/install\.ps1$/);
-    expect(spawn.mock.calls[1]![0]).toBe("powershell");
-  });
-
-  it("refuses rather than running a POSIX script for a vendor with no Windows installer", () => {
-    asWindows();
-    const spawn = vi.fn();
-    const result = runHarnessInstaller("cursor", { home: "/tmp/operator", spawn: spawn as never });
-    expect(result.refusal).toMatch(/no Windows installer/);
-    expect(spawn).not.toHaveBeenCalled();
+it("the real CLI child acknowledges both conversion commands and closes its protocol input", async () => {
+  const w = vendorFixture();
+  roots.push(w.home);
+  const entry = join(
+    w.home,
+    ".claudexor/node/lib/node_modules/@fixture/harness/bin/fixture-harness",
+  );
+  executable(entry);
+  writeFileSync(
+    join(dirname(dirname(entry)), "package.json"),
+    JSON.stringify({ name: "@fixture/harness", bin: { "fixture-harness": "bin/fixture-harness" } }),
+  );
+  const launcher = join(w.home, ".claudexor/node/bin/fixture-harness");
+  mkdirSync(dirname(launcher), { recursive: true });
+  symlinkSync(entry, launcher);
+  const script = join(w.home, "cli-fixture.mjs");
+  const module = new URL("../dist/harness-installer.js", import.meta.url).href;
+  const core = new URL("../../core/dist/index.js", import.meta.url).href;
+  writeFileSync(
+    script,
+    String.raw`
+import { harnessMutationCommand } from ${JSON.stringify(module)};
+import { defineHarnessProgram } from ${JSON.stringify(core)};
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+const options = ${JSON.stringify(w.options)};
+defineHarnessProgram(options.program);
+options.fetch = async () => new Response("#!/bin/sh\n# fixture installer\n");
+options.spawn = (bin, args, opts) => {
+  if (args[0] === "--version") return spawnSync(bin, args, opts);
+  const version = bin === "/bin/sh" ? "2.0.0" : "3.4.5";
+  const path = ${JSON.stringify(w.installed)};
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "#!/bin/sh\necho " + version + "\n", { mode: 0o755 });
+  return { status: 0, stdout: "Done", stderr: "" };
+};
+process.exitCode = await harnessMutationCommand({ _: ["harness", "update", "fixture"], flags: { yes: true, "vendor-version": "3.4.5" } }, true, options);
+`,
+  );
+  const frames: Array<{ commands: unknown[] }> = [];
+  let stdout = "";
+  let input: ChildStdin | undefined;
+  for await (const event of spawnProcess(process.execPath, [script], {
+    env: { CLAUDEXOR_MAINTENANCE_PROTOCOL: "1" },
+    keepStdinOpen: true,
+    onSpawn: (io) => {
+      input = io;
+    },
+    timeoutMs: 10_000,
+    cancelKillDelayMs: 0,
+  })) {
+    if (event.type === "stderr" && event.line.startsWith(MAINTENANCE_EVIDENCE_PREFIX)) {
+      frames.push(JSON.parse(event.line.slice(MAINTENANCE_EVIDENCE_PREFIX.length)));
+      input!.write("ack\n");
+    } else if (event.type === "stdout") stdout += event.line;
+    else if (event.type === "exit") expect(event.code).toBe(0);
+  }
+  expect(frames.map((frame) => frame.commands.length)).toEqual([1, 2]);
+  expect(JSON.parse(stdout)).toMatchObject({
+    ok: true,
+    commands: [{ binary: "/bin/sh" }, { binary: w.installed }],
+    after: { path: w.installed, version: "3.4.5" },
   });
 });

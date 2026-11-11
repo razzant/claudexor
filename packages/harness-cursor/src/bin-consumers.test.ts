@@ -38,7 +38,7 @@ afterEach(() => {
     else process.env[key] = value;
   }
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function script(path: string, body: string): string {
   mkdirSync(dirname(path), { recursive: true });
@@ -78,6 +78,7 @@ function stage(layout: "cursorFirst" | "unrelatedFirst"): Host {
   const cursor = script(
     join(install, "1.0", "cursor-agent"),
     [
+      'if [ "$1" = "--disable-auto-update" ]; then shift; fi',
       'case "$1" in',
       '  --version) echo "fixture-cursor 1.0" ;;',
       '  --list-models) echo "fixture-model - Fixture Model" ;;',

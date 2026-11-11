@@ -90,6 +90,33 @@
                   {
                     "type": "object",
                     "properties": {
+                      "sourceProgram": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "path": {
+                                "type": "string"
+                              },
+                              "version": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "version"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
                       "source": {
                         "$ref": "#/definitions/ControlModelAccountCatalogResponse/properties/source"
                       },
@@ -101,6 +128,10 @@
                           "string",
                           "null"
                         ]
+                      },
+                      "capabilityFingerprint": {
+                        "type": "string",
+                        "description": "Opaque capability identity including plan when available; an invalidation token, never cached admission."
                       },
                       "observedAt": {
                         "type": "string",
@@ -219,7 +250,8 @@
                               "type": "array",
                               "items": {
                                 "type": "string"
-                              }
+                              },
+                              "description": "Input kinds the provider declared, verbatim and open-vocabulary. Empty means unknown, never none: a missing, empty or partly invalid provider list is not a negative claim. Declared metadata only; it neither gates a request nor proves a model understood content."
                             },
                             "reasoningEfforts": {
                               "type": "array",

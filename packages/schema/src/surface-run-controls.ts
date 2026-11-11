@@ -2,6 +2,7 @@ import { RunExecution } from "./control-run-execution.js";
 import { AccessProfile, ExternalContextPolicy, ModeKind, ProviderFamily } from "./primitives.js";
 import { EffortHint } from "./harness.js";
 import { ProcessingPreference } from "./processing.js";
+import { RunTimeLimitStart } from "./run-time-limit.js";
 import { TestCommandInvocation } from "./task.js";
 import { PaidBudget } from "./budget.js";
 import { runStartStrategyViolations } from "./run-strategy.js";
@@ -18,6 +19,14 @@ import { runStartStrategyViolations } from "./run-strategy.js";
  * per-tool race `n` minimum, prompt/cwd requirements).
  */
 export function validateSurfaceRunControls(obj: Record<string, unknown>): string | null {
+  const timeLimit = RunTimeLimitStart.safeParse({
+    maxSeconds: obj.maxSeconds,
+    timeLimitMode: obj.timeLimitMode,
+  });
+  if (!timeLimit.success)
+    return timeLimit.error.issues
+      .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+      .join("; ");
   if (obj.execution !== undefined) {
     const parsed = RunExecution.safeParse(obj.execution);
     if (!parsed.success)

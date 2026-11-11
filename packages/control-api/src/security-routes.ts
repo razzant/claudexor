@@ -8,7 +8,6 @@ import {
   ControlTrustUpdateRequest,
 } from "@claudexor/schema";
 import { MANAGED_SECRET_NAMES, isManagedSecretName } from "@claudexor/secrets";
-import { assertNoInlineSecretValues } from "@claudexor/util";
 import { assertOnlyQueryParams, singleQuery } from "./query.js";
 
 export interface SecurityRouteContext {
@@ -44,7 +43,6 @@ export async function handleSecurityRoute(
     }
     if (method === "POST" && path === "/trust") {
       const raw = await ctx.readBody(req);
-      assertNoInlineSecretValues(raw);
       const body = ControlTrustUpdateRequest.parse(raw);
       ctx.json(res, 200, ControlTrustState.parse(await required(ctx.services?.updateTrust)(body)));
       return true;

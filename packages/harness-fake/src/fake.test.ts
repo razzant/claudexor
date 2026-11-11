@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { runDoctor } from "@claudexor/core";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import { createFakeHarness, FAKE_KINDS } from "./index.js";
+import { FAKE_INTERACTIVE_FIRST_OPTIONS, FAKE_INTERACTIVE_FIRST_QUESTION } from "./interactive.js";
 
 function registry() {
   const m = new Map();
@@ -96,7 +98,7 @@ describe("fake harness adapters", () => {
     }
   });
 
-  it("fake-session mints a native id, resumes a carried one, and probes only engine facts", async () => {
+  it("fake-session mints a native id, resumes a carried one, and probes engine facts and prompt digests", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fake-session-"));
     try {
       const first = await collect(
@@ -114,6 +116,10 @@ describe("fake harness adapters", () => {
       expect(started?.payload?.["native_session_id"]).toBe("fake-native-ses-a");
       const probe = first.find((e) => e.payload?.["code"] === "fake_session_probe");
       expect(probe?.payload).toMatchObject({ resumed_from: null, home: "/lane/home", cwd: dir });
+      // The prompt is proven by digest, never echoed.
+      expect(probe?.payload?.["prompt_line_sha256"]).toEqual([
+        createHash("sha256").update("promptLeakCanary").digest("hex"),
+      ]);
       expect(existsSync(join(dir, "FAKE_CHANGE.txt"))).toBe(true);
       expect(JSON.stringify(first)).not.toContain("promptLeakCanary");
       const second = await collect(
@@ -212,9 +218,96 @@ describe("fake-steerable (live-input fixture)", () => {
     abort.abort();
     expect((await parked).value).toMatchObject({ type: "completed", aborted: true });
     expect((await iterator.next()).done).toBe(true);
-    for (const kind of FAKE_KINDS.filter((k) => k !== "fake-steerable")) {
+    for (const kind of FAKE_KINDS.filter(
+      (k) => k !== "fake-steerable" && k !== "fake-interactive",
+    )) {
       expect(createFakeHarness(kind).message, kind).toBeUndefined();
       expect((await createFakeHarness(kind).discover()).capability_profile.live_input).toBe("none");
     }
+  });
+});
+
+describe("fake-interactive (supervision fixture)", () => {
+  function interactiveSpec(channel: unknown, abort?: AbortController) {
+    return HarnessRunSpec.parse({
+      session_id: "ses-ask",
+      intent: "explain",
+      prompt: "steerTextCanary prompt never echoed",
+      cwd: "/tmp",
+      extra: { interactionChannel: channel, ...(abort ? { abortSignal: abort.signal } : {}) },
+    });
+  }
+
+  it("asks two questions around one accepted live message and never echoes contents", async () => {
+    const adapter = createFakeHarness("fake-interactive");
+    const manifest = await adapter.discover();
+    expect(manifest.capabilities.interactive).toBe(true);
+    expect(manifest.capability_profile.live_input).toBe("mid_turn");
+    const asked: Array<{ interaction_id: string; questions: Array<{ question: string }> }> = [];
+    const channel = {
+      request: async (request: (typeof asked)[number]) => {
+        asked.push(request);
+        return { interaction_id: request.interaction_id, answers: [] };
+      },
+    };
+    const iterator = adapter.run(interactiveSpec(channel))[Symbol.asyncIterator]();
+    const events: HarnessEvent[] = [];
+    // Run until the fixture parks for its live message.
+    for (;;) {
+      const next = await iterator.next();
+      events.push(next.value as HarnessEvent);
+      if (events.at(-1)?.text === "waiting for a live message (fake)") break;
+    }
+    expect(asked.map((r) => r.interaction_id)).toEqual(["fake-q1-ses-ask"]);
+    const first = asked[0]!.questions[0]!.question;
+    expect(first).toBe(FAKE_INTERACTIVE_FIRST_QUESTION);
+    // Larger than a 32 KiB pending page, still inside one 64 KiB event page.
+    expect(Buffer.byteLength(first)).toBeGreaterThan(32_768);
+    expect(Buffer.byteLength(JSON.stringify(asked[0]))).toBeLessThan(60_000);
+    expect(FAKE_INTERACTIVE_FIRST_OPTIONS).toContain("Продолжить 🚀");
+    const parked = iterator.next();
+    await expect(
+      adapter.message?.("ses-ask", { messageId: "m-1", text: "steerTextCanary message" }),
+    ).resolves.toEqual({ outcome: "accepted", nativeTurnId: "fake-turn-1" });
+    events.push((await parked).value as HarnessEvent);
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) break;
+      events.push(next.value);
+    }
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "status",
+        payload: { code: "live_input_delivered", message_id: "m-1", native_turn_id: "fake-turn-1" },
+      }),
+    );
+    expect(asked.map((r) => r.interaction_id)).toEqual(["fake-q1-ses-ask", "fake-q2-ses-ask"]);
+    expect(events.at(-1)?.type).toBe("completed");
+    expect(JSON.stringify(events)).not.toContain("steerTextCanary");
+    await expect(adapter.message?.("ses-ask", { messageId: "m-2", text: "late" })).resolves.toEqual(
+      { outcome: "not_active", reason: "no_active_turn" },
+    );
+  });
+
+  it("fails visibly without an interaction channel and stops on abort", async () => {
+    const adapter = createFakeHarness("fake-interactive");
+    const events = await collect(adapter.run(interactiveSpec(undefined)));
+    expect(events.map((e) => e.type)).toEqual(["started", "error", "completed"]);
+    const abort = new AbortController();
+    const pending = collect(
+      adapter.run(
+        interactiveSpec(
+          {
+            request: () =>
+              new Promise((resolve) =>
+                abort.signal.addEventListener("abort", () => resolve(null), { once: true }),
+              ),
+          },
+          abort,
+        ),
+      ),
+    );
+    setTimeout(() => abort.abort(), 10);
+    expect((await pending).at(-1)).toMatchObject({ type: "completed", aborted: true });
   });
 });

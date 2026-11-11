@@ -49,6 +49,42 @@ describe("agy adapter conformance fixtures", () => {
         expect(stats.errors).toBe(1);
         expect(stats.messages).toBe(0);
       }
+      if (name === "fragment-error-run.jsonl") {
+        // Synthetic: fragments concatenate exactly (whitespace and repeats kept)
+        // to the vendor response, which stays retained evidence beside one
+        // typed error carrying the vendor's own status and words.
+        const fragments = events
+          .filter((e) => e.type === "message" && e.payload?.["delta"] === true)
+          .map((e) => e.text)
+          .join("");
+        const evidence = events.filter(
+          (e) => e.type === "message" && e.payload?.["buffered"] === true,
+        );
+        expect(evidence.map((e) => e.text)).toEqual([fragments]);
+        expect(fragments).toBe("Checking the file.\nhaha done\n");
+        expect(stats.errors).toBe(1);
+        expect(events.find((e) => e.type === "error")?.payload?.["vendor_failure"]).toEqual({
+          code: "ERROR",
+          message: "synthetic terminal failure after streamed text",
+          source: "agy_result",
+        });
+      }
+      if (name === "readonly-deny-continue.jsonl") {
+        // Recorded 1.5.0 (#653): the denied command's ERROR step is its own
+        // error result; the model then reads a file and answers in the same turn.
+        const results = events.filter((e) => e.type === "tool_result");
+        expect(results.map((e) => [e.tool?.name, e.tool?.use_id, e.tool?.status])).toEqual([
+          ["run_command", "step-2", "error"],
+          ["read_file", "step-4", "ok"],
+        ]);
+        expect(results[0]!.tool?.error_summary).toContain("Matches user-configured deny rule");
+        expect(results[1]!.tool?.target).toBe("/data/nonce.txt");
+        expect(stats.errors).toBe(0);
+        expect(events.some((e) => e.type === "file_change")).toBe(false);
+        expect(events.find((e) => e.type === "message" && e.final)?.text).toBe(
+          "date: REFUSED\nnonce: nonce-1b3ecf72ad026682\n",
+        );
+      }
       if (name.startsWith("session-resume")) {
         // The vendor conversation id is surfaced for INV-137 lane resume.
         const started = events.find((e) => (e as { type?: string }).type === "started") as

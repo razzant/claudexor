@@ -82,7 +82,14 @@
               "type": "null"
             }
           ],
-          "description": "Canonical model ids/aliases this quota observation applies to; omitted/null means every model."
+          "description": "Canonical model ids/aliases this quota observation applies to; omitted/null (with no prefixes) means every model."
+        },
+        "applies_to_model_prefixes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BudgetObservation/properties/applies_to_models/anyOf/0/items"
+          },
+          "description": "Producer-declared model-family prefixes, carried with applies_to_models."
         },
         "applies_to_unspecified_model": {
           "type": "boolean",

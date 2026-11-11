@@ -120,4 +120,32 @@ import Testing
             #expect(HarnessPoolPresentation.isIncluded(id, pool: [], available: available))
         }
     }
+
+    /// #133: a manual-only harness is never in Auto's `available` set, so the old
+    /// ordering dropped it on selection. It now joins the subset, after the
+    /// ordered members, in Auto and in explicit mode alike.
+    @Test func selectingAManualLaneKeepsItInsteadOfDroppingIt() {
+        #expect(HarnessPoolPresentation.toggling("openrouter", pool: [], available: available)
+                == available + ["openrouter"])
+        #expect(HarnessPoolPresentation.toggling("openrouter", pool: ["claude"], available: available)
+                == ["claude", "openrouter"])
+        // Deselecting it leaves the rest; the only member leaving falls back to Auto.
+        #expect(HarnessPoolPresentation.toggling("openrouter", pool: ["claude", "openrouter"], available: available)
+                == ["claude"])
+        #expect(HarnessPoolPresentation.toggling("openrouter", pool: ["openrouter"], available: available).isEmpty)
+        // Auto itself never contains it.
+        #expect(!HarnessPoolPresentation.isIncluded("openrouter", pool: [], available: available))
+    }
+
+    @Test func manualOnlyDescriptorFollowsMembershipAndNamesTheDoctorReason() {
+        let reason = "key present but route unproven (no isolated smoke)"
+        let auto = HarnessPoolPresentation.manualOnlyChipDescriptor("openrouter", pool: [], reason: reason)
+        #expect(!auto.included && auto.help.contains(reason) && auto.help.contains("Auto won't pick"))
+        #expect(auto.accessibilityValue == "Manual only, not included by Auto")
+        let included = HarnessPoolPresentation.manualOnlyChipDescriptor(
+            "openrouter", pool: ["claude", "openrouter"], reason: reason)
+        #expect(included.included && included.accessibilityValue == "Manual only, included")
+        let excluded = HarnessPoolPresentation.manualOnlyChipDescriptor("openrouter", pool: ["claude"], reason: reason)
+        #expect(!excluded.included && excluded.accessibilityValue == "Manual only, excluded")
+    }
 }

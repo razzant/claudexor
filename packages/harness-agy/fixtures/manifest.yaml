@@ -5,10 +5,11 @@
 # two-column table shape and presence for that account at that time, not a
 # refreshed 1.1.13 stream/transport proof. No fixture pin was moved.
 #
-# Fixture provenance manifest. All four streams were RECORDED from live
-# authenticated agy 1.1.13 sessions on macOS (2026-08-16) except
-# session-resume.jsonl, which is synthesized from those exact recorded shapes
-# (a resumed conversation was not captured). Host paths are scrubbed to a
+# Fixture provenance manifest. basic-run, schema-envelope-run and error-auth
+# were RECORDED from live authenticated agy 1.1.13 sessions on macOS
+# (2026-08-16). session-resume.jsonl (a resumed conversation was not captured)
+# and fragment-error-run.jsonl are synthesized from those exact recorded
+# shapes. Host paths are scrubbed to a
 # neutral /workspace/demo root and the init tool inventory is trimmed to the
 # fields the parser reads — the event SHAPES are verbatim.
 #
@@ -24,6 +25,14 @@
 # `expectations` (W3.8) are the STREAM SEMANTICS the conformance test asserts
 # through core streamExpectationViolations. agy HAS a typed final: the terminal
 # `result` event — finality never comes from mid-run narration.
+#
+# `delta_messages` is DERIVED from the parser, not from the recordings: the
+# parser types every `text_delta` as a non-final stream fragment
+# (payload.delta), because retained tries show each typed final equal to the
+# exact concatenation of its narration frames. The recorded bytes, dates and
+# CLI version below are unchanged; only these derived counts moved from 0 to
+# the number of text_delta frames each stream carries (basic-run 1,
+# schema-envelope-run 2, session-resume 1). No newer CLI version is claimed.
 cli: agy
 fixtures:
   basic-run.jsonl:
@@ -37,7 +46,7 @@ fixtures:
       final_is_last_message: true
       started_events: 1
       thinking_events: 0
-      delta_messages: 0
+      delta_messages: 1
       typed_rate_limit: false
   schema-envelope-run.jsonl:
     source: recorded
@@ -50,7 +59,7 @@ fixtures:
       final_is_last_message: true
       started_events: 1
       thinking_events: 0
-      delta_messages: 0
+      delta_messages: 2
       typed_rate_limit: false
   error-auth.jsonl:
     source: recorded
@@ -72,5 +81,41 @@ fixtures:
       final_is_last_message: true
       started_events: 1
       thinking_events: 0
-      delta_messages: 0
+      delta_messages: 1
       typed_rate_limit: false
+  # SYNTHETIC, not a recording of any CLI version: the recorded init/step/tool
+  # shapes above with text split into fragments (a whitespace-only frame and a
+  # repeated frame included) around a tool step, ending in the ERROR envelope
+  # shape of error-auth.jsonl with a non-empty response. Neutral fixture text.
+  fragment-error-run.jsonl:
+    source: synthetic
+    expectations:
+      final_messages: 0
+      final_is_last_message: false
+      started_events: 1
+      thinking_events: 0
+      delta_messages: 8
+      typed_rate_limit: false
+  # RECORDED 2026-11-08 from agy 1.5.0 (binary sha256 e61679b8…d07724) in
+  # plan mode with session settings denying command(*) and write_file(*) (#653
+  # arm B, raw stdout sha256 74ddd9ab…a732). The denied `run_command` ends in a
+  # `state: ERROR` step, the model continues, reads a file and answers. Only
+  # host paths (now /workspace/demo and /data/nonce.txt) and the init tool
+  # inventory were changed; every other byte of each event is verbatim.
+  readonly-deny-continue.jsonl:
+    source: recorded
+    cli_version: 1.5.0
+    recorded_at: "2026-11-08"
+    sanitized: true
+    expectations:
+      final_messages: 1
+      final_source: result
+      final_is_last_message: true
+      started_events: 1
+      thinking_events: 0
+      delta_messages: 4
+      tool_error_results: 1
+      typed_rate_limit: false
+
+# Already-normalized historical events live separately under
+# src/test-support/normalized with their own provenance, not a vendor stream pin.

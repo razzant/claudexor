@@ -50,7 +50,7 @@ describe("ops-commands: ad-hoc failure envelopes route through the ONE projector
     else process.env["CLAUDEXOR_DAEMON_ENTRY"] = prevDaemonEntry;
     rmSync(configDir, { recursive: true, force: true });
     vi.restoreAllMocks();
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("`daemon status` with no token yields the canonical {ok,exitCode,message,error} envelope", async () => {
     const { code, env } = await captureJson(() =>

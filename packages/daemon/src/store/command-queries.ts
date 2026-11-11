@@ -1,7 +1,15 @@
-import { directDelegatedChildrenFromRecords, type CommandListQuery } from "@claudexor/schema";
+import { createHash } from "node:crypto";
+import {
+  TaskGroupCursor,
+  TaskGroupRunsInput,
+  directDelegatedChildrenFromRecords,
+  type CommandListQuery,
+  type RunObservationRecord,
+  type TaskGroupPage,
+} from "@claudexor/schema";
 import { parseCommandListQuery } from "../command-list-select.js";
 import { publicJobRecord, type JobRecord } from "../job-record.js";
-import type { CommandQueries } from "../store-contracts.js";
+import type { CommandQueries, TaskGroupPageQuery } from "../store-contracts.js";
 import type { BlobFiles } from "./blob-files.js";
 import {
   commandRow,
@@ -10,6 +18,8 @@ import {
   type MaintenanceCommandSummary,
 } from "./command-rows.js";
 import type { EngineStore } from "./store.js";
+import { servedGenerations, SERVED_PIDS_SQL } from "./generations.js";
+import { StoreError } from "./errors.js";
 
 type SummaryRow = {
   id: string;
@@ -48,6 +58,98 @@ export class SqlCommandQueries implements CommandQueries, ModelResourceQueries {
     private readonly store: EngineStore,
     private readonly blobs: BlobFiles,
   ) {}
+
+  taskGroupPage(input: TaskGroupPageQuery): TaskGroupPage {
+    TaskGroupRunsInput.parse({
+      taskGroupId: input.taskGroupId,
+      limit: input.limit,
+      ...(input.state === null ? {} : { state: input.state }),
+      expectedStoreId: input.storeId,
+    });
+    if (input.cursor !== null) {
+      const cursor = TaskGroupCursor.safeParse(input.cursor);
+      if (!cursor.success)
+        throw new StoreError(
+          "invalid_task_group_cursor",
+          400,
+          false,
+          "malformed task group cursor",
+        );
+      if (cursor.data.storeId !== input.storeId)
+        throw new StoreError(
+          "store_mismatch",
+          409,
+          false,
+          "task group cursor belongs to another store",
+        );
+      if (
+        cursor.data.taskGroupId.toLowerCase() !== input.taskGroupId.toLowerCase() ||
+        cursor.data.state !== input.state
+      )
+        throw new StoreError(
+          "stale_cursor",
+          409,
+          false,
+          "task group cursor belongs to another group or filter",
+        );
+    }
+    const generations = servedGenerations(this.store);
+    if (!generations.some((p) => p.name === "global"))
+      throw new StoreError(
+        "task_group_runs_unavailable",
+        503,
+        false,
+        "current served registry is unavailable",
+      );
+    const identities = [
+      ...new Map(generations.map((p) => [p.pid, [p.name, p.epoch]])).values(),
+    ].sort((a, b) =>
+      a[0]! < b[0]! ? -1 : a[0]! > b[0]! ? 1 : a[1]! < b[1]! ? -1 : a[1]! > b[1]! ? 1 : 0,
+    );
+    const viewToken = createHash("sha256")
+      // Domain 2: membership became case-insensitive, so earlier cursors restart.
+      .update(JSON.stringify(["claudexor.task-group-view", 2, identities]))
+      .digest("base64url");
+    if (input.cursor && input.cursor.viewToken !== viewToken)
+      throw new StoreError(
+        "stale_cursor",
+        409,
+        false,
+        "served task group generations changed; read a fresh page",
+      );
+    // Membership is canonical; accepted params keep the caller's spelling.
+    const bindings: Array<string | number> = [input.taskGroupId.toLowerCase()];
+    const state = input.state === null ? "" : " AND c.state=?";
+    if (input.state !== null) bindings.push(input.state);
+    const keyset = input.cursor ? " AND (c.created_at,c.id) < (?,?)" : "";
+    if (input.cursor) bindings.push(input.cursor.last.createdAt, input.cursor.last.id);
+    bindings.push(input.limit + 1);
+    const records = this.store
+      .prepare(
+        `SELECT c.id AS jobId,c.run_id AS runId,
+      p.name AS partition,p.epoch,c.state,c.created_at AS createdAt,c.task_group_id AS taskGroupId
+      FROM command c JOIN partition p ON p.id=c.pid WHERE c.live=1 AND c.kind='product'
+      AND c.task_group_id=?${state}
+      AND c.pid IN (${SERVED_PIDS_SQL})${keyset}
+      ORDER BY c.created_at DESC,c.id DESC LIMIT ?`,
+      )
+      .all(...bindings) as RunObservationRecord[];
+    return { records, hasMore: records.length > input.limit, viewToken };
+  }
+
+  /** One addressed selection of live product scalars, with no summary or body
+   * decoding. Lifecycle validation belongs to the per-target snapshot boundary. */
+  observationRecords(ids: readonly string[]): RunObservationRecord[] {
+    if (ids.length === 0) return [];
+    return this.store
+      .prepare(
+        `SELECT c.id AS jobId,c.run_id AS runId,p.name AS partition,p.epoch,
+          c.state,c.created_at AS createdAt FROM command c JOIN partition p ON p.id=c.pid
+        WHERE c.live=1 AND c.kind='product' AND
+          (c.id IN (SELECT value FROM json_each(?1)) OR c.run_id IN (SELECT value FROM json_each(?1)))`,
+      )
+      .all(JSON.stringify([...new Set(ids)])) as RunObservationRecord[];
+  }
 
   getByRunId(runId: string): JobRecord | undefined {
     const row = this.rows("c.run_id = ?", [runId])[0];

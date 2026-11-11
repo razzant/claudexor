@@ -27,14 +27,19 @@ import {
   type HarnessAdapter,
   type ProcessingAdmission,
 } from "@claudexor/core";
-import type { ContinuityTurn } from "./continuity.js";
+import { noFinalAnswerText, tailBytes, type ContinuityTurn } from "./continuity.js";
 import { admitCurrentProfileDispatch, type ModelGovernedRoute } from "./modelGovernance.js";
 
 /** Default wall-clock ceiling for one inline summary pass. */
 export const SUMMARY_TIMEOUT_MS = 60_000;
-/** Bytes of each collapsed turn fed to the summariser (prompt + output halves). */
+/**
+ * UTF-8 bytes of each collapsed turn fed to the summariser (prompt + output
+ * halves). Like the summary allowance below, it counts retained text only: a
+ * cut adds its "…" mark outside the allowance (`boundBytes`; before the kept
+ * end of an unfinished turn's output).
+ */
 const PER_TURN_INPUT_BYTES = 4 * 1024;
-/** Bytes retained from the summary answer. */
+/** UTF-8 bytes retained from the summary answer. */
 const MAX_SUMMARY_BYTES = 8 * 1024;
 
 export interface SummaryRunParams {
@@ -43,8 +48,14 @@ export interface SummaryRunParams {
   turns: ContinuityTurn[];
   /** Read-only working directory (the thread's execution root). */
   cwd: string;
+  /** The enclosing run's own `context/`, where an adapter whose stdin cannot
+   * carry the transcript keeps its exact copy (`HarnessRunSpec.input_file_dir`). */
+  inputFileDir?: string | null;
   /** Scoped lane-home env so the pass authenticates on the lane's own account. */
   env: Record<string, string>;
+  /** The lane's own model on a route whose request must name one (#395); otherwise
+   * absent, and the vendor chooses for this side computation. */
+  model?: string;
   /** Resolved credential profile for the lane (null = engine default ladder). */
   credentialProfile: CredentialProfile | null;
   authPreference: "subscription" | "api_key" | "auto";
@@ -52,10 +63,14 @@ export interface SummaryRunParams {
   /** Upper bound on the pass; the caller's run signal aborts it too. */
   timeoutMs?: number;
   signal?: AbortSignal;
-  /** Captured route processing facts for this logical summary pass. */
+  /** Captured route processing facts and prompt-cache lifetime for this summary pass. */
   processing?: Pick<
     HarnessRunSpec,
-    "processing_preference" | "processing" | "processing_cost_basis" | "processing_allow_paid"
+    | "processing_preference"
+    | "processing"
+    | "processing_cost_basis"
+    | "processing_allow_paid"
+    | "prompt_cache_ttl"
   >;
   /** The same lease-bound admission callback as the enclosing candidate. */
   processingAdmission?: ProcessingAdmission;
@@ -65,21 +80,34 @@ export interface SummaryRunParams {
   credentialObserverFactory?: CredentialExecutionObserverFactory;
 }
 
+/**
+ * The longest prefix of `text` that fits `maxBytes` UTF-8 bytes without
+ * splitting a character, followed by "…" when anything was cut. Text that fits
+ * is returned unchanged; the "…" is not counted in `maxBytes` (#577).
+ */
 function boundBytes(text: string, maxBytes: number): string {
-  const buf = Buffer.from(text, "utf8");
-  if (buf.length <= maxBytes) return text;
-  return `${buf.subarray(0, maxBytes).toString("utf8")}…`;
+  // encodeInto writes whole characters only and reports the UTF-16 code units
+  // it consumed, so `read` ends an exact, unsplit prefix of the source text.
+  const { read } = new TextEncoder().encodeInto(text, new Uint8Array(maxBytes));
+  return read === text.length ? text : `${text.slice(0, read)}…`;
 }
 
 /** Render the collapsed prefix as the summariser's input transcript. */
 function transcript(turns: ContinuityTurn[]): string {
+  const half = PER_TURN_INPUT_BYTES / 2;
   return turns
     .map((t, i) => {
-      const prompt = boundBytes(t.prompt.trim(), PER_TURN_INPUT_BYTES / 2);
-      const output = t.outputText.trim()
-        ? boundBytes(t.outputText.trim(), PER_TURN_INPUT_BYTES / 2)
-        : "(no recorded answer)";
-      return `Turn ${i + 1}\nUser: ${prompt}\nAssistant: ${output}`;
+      const prompt = boundBytes(t.prompt.trim(), half);
+      const missing = noFinalAnswerText(t);
+      const text = t.outputText.trim();
+      // A turn without a final answer keeps the end of its output, where its newest text is (#405).
+      const output = !text
+        ? "(no recorded answer)"
+        : missing && Buffer.byteLength(text, "utf8") > half
+          ? `…${tailBytes(text, half)}`
+          : boundBytes(text, half);
+      const said = missing ? `Assistant (${missing.note})` : "Assistant";
+      return `Turn ${i + 1}\nUser: ${prompt}\n${said}: ${output}`;
     })
     .join("\n\n");
 }
@@ -88,7 +116,8 @@ const SUMMARY_INSTRUCTION =
   "You are handing this conversation off to a successor agent that has NOT seen it. " +
   "Summarize the earlier turns below for that agent: the decisions reached, the current " +
   "state of the work, and the open items still to do. Be concise and factual — no preamble, " +
-  "no questions, no tool calls. Output only the summary.";
+  "no questions, and no tool calls except to read this conversation if it was delivered to you " +
+  "as files. Output only the summary.";
 
 /**
  * Run one bounded summary pass. Returns the summary text, or null on any
@@ -113,10 +142,11 @@ export async function summarizeThreadPrefix(params: SummaryRunParams): Promise<s
       intent: "explain",
       prompt: `${SUMMARY_INSTRUCTION}\n\n---\n\n${transcript(params.turns)}`,
       cwd: params.cwd,
+      input_file_dir: params.inputFileDir ?? null,
       access: "readonly",
       external_context_policy: "off",
       tool_permission_policy: { web: "off", allow: [], deny: [] },
-      model_hint: null,
+      model_hint: params.model ?? null,
       effort_hint: null,
       max_turns: 1,
       auth_preference: params.authPreference === "auto" ? undefined : params.authPreference,
@@ -140,6 +170,9 @@ export async function summarizeThreadPrefix(params: SummaryRunParams): Promise<s
         : {}),
       ...(params.processing?.processing_allow_paid !== undefined
         ? { processing_allow_paid: params.processing.processing_allow_paid }
+        : {}),
+      ...(params.processing?.prompt_cache_ttl !== undefined
+        ? { prompt_cache_ttl: params.processing.prompt_cache_ttl }
         : {}),
       extra: {
         abortSignal: abort.signal,

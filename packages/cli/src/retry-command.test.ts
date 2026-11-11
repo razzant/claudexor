@@ -20,6 +20,7 @@ vi.mock("./cli-io.js", async () => {
   };
 });
 
+import { CONTROL_STORE_IDENTITY_HEADER } from "@claudexor/schema";
 import { parseArgs } from "./args.js";
 import { retryCommand, runAgainCommand } from "./retry-command.js";
 
@@ -65,6 +66,23 @@ describe("retryCommand surfaces a typed refusal's message, not just its status",
     expect(await retryCommand(parseArgs(["retry", "run-d1"]), false)).toBe(1);
     expect(stderrText).toContain("full access is required for this project");
     expect(stderrText).not.toContain("HTTP 403");
+  });
+
+  it("asks for the accepting store and prints it on the receipt", async () => {
+    const receipt = {
+      retryOf: "run-d1",
+      jobId: "job-retry",
+      runId: "run-retry",
+      turnId: null,
+      state: "running",
+      storeId: "22222222-2222-4222-8222-222222222222",
+    };
+    mocks.controlApiFetch.mockResolvedValue(Response.json(receipt));
+    expect(await retryCommand(parseArgs(["retry", "run-d1"]), true)).toBe(0);
+    expect(mocks.controlApiFetch.mock.lastCall?.[2]).toMatchObject({
+      headers: { [CONTROL_STORE_IDENTITY_HEADER]: "1" },
+    });
+    expect(mocks.printJson).toHaveBeenCalledWith(receipt);
   });
 
   it("keeps the typed problem fields in the JSON envelope", async () => {

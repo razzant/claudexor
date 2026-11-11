@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { CURSOR_PROGRAM } from "./program.js";
 /**
  * Isolated Cursor API-key smoke: prove a key actually serves a turn inside a
  * scrubbed throwaway HOME before the route ladder may prefer it. Split from
@@ -7,7 +9,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { providerScrubEnv, runCapture } from "@claudexor/core";
+import { observeHarnessProgram, providerScrubEnv, runCapture } from "@claudexor/core";
 import { redactSecrets } from "@claudexor/util";
 import { resolveCursorBin } from "./bin.js";
 
@@ -126,7 +128,16 @@ export async function smokeIsolatedApiKey(
     };
     const r = await (options.runCapture ?? runCapture)(
       resolveCursorBin(),
-      ["-p", "--output-format", "stream-json", "--mode", "plan", "--trust", "Reply exactly OK"],
+      [
+        ...(CURSOR_PROGRAM.childUpdateArgs ?? []),
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--mode",
+        "plan",
+        "--trust",
+        "Reply exactly OK",
+      ],
       {
         env,
         timeoutMs: 45_000,
@@ -147,4 +158,41 @@ export async function smokeIsolatedApiKey(
   } finally {
     await (options.cleanupBase ?? cleanupCursorSmokeBase)(base);
   }
+}
+
+export type CursorApiSmokeDeps = {
+  smokeIsolatedApiKey: typeof smokeIsolatedApiKey;
+  apiSmokeCache: Map<string, { result: CursorApiSmokeResult; expiresAtMs: number }>;
+  apiSmokeCacheTtlMs: number;
+  apiSmokeFailureCacheTtlMs: number;
+  nowMs: () => number;
+};
+
+// Credentials stay private in memory; cache keys contain independent random ids,
+// never a digest of secret bytes. Each credential retains its own TTL entry.
+const smokeBindings = new WeakMap<CursorApiSmokeDeps["apiSmokeCache"], Map<string, string>>();
+function smokeBinding(cache: CursorApiSmokeDeps["apiSmokeCache"], credential: string): string {
+  let bindings = smokeBindings.get(cache);
+  if (!bindings) smokeBindings.set(cache, (bindings = new Map()));
+  let id = bindings.get(credential);
+  if (!id) bindings.set(credential, (id = randomUUID()));
+  return id;
+}
+
+export async function smokeCursorApiKey(
+  deps: CursorApiSmokeDeps,
+  key: string,
+  fresh = false,
+): Promise<CursorApiSmokeResult> {
+  const binding = smokeBinding(deps.apiSmokeCache, key);
+  const program = await observeHarnessProgram(CURSOR_PROGRAM, undefined, undefined, { fresh });
+  const cacheKey = JSON.stringify([binding, program.key]);
+  const now = deps.nowMs();
+  const cached = fresh ? undefined : deps.apiSmokeCache.get(cacheKey);
+  if (cached && cached.expiresAtMs > now) return cached.result;
+  if (cached) deps.apiSmokeCache.delete(cacheKey);
+  const result = await deps.smokeIsolatedApiKey(key);
+  const ttlMs = result.ok ? deps.apiSmokeCacheTtlMs : deps.apiSmokeFailureCacheTtlMs;
+  if (!fresh && ttlMs > 0) deps.apiSmokeCache.set(cacheKey, { result, expiresAtMs: now + ttlMs });
+  return result;
 }

@@ -15,7 +15,7 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("Win32 ConPTY helper artifact custody", () => {
   it("accepts byte-identical bounded PE32+ x64 carriers", () => {

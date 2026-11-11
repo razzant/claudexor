@@ -82,6 +82,67 @@ fixtures:
   # frame must never outrank the final model-authored WorkReport.
   plan/plan-ask-createplan-precedence.jsonl:
     source: synthetic
+  # Shell COMMAND OUTCOMES (#450): exit 0, exit 1, a background handoff after
+  # the 30 s timeout, a requested background handoff, a timeout without an
+  # observed end, an abort after a timeout, and a spawn error. Synthetic: no
+  # Cursor timeout or background result has been recorded. Field names follow
+  # the agent.v1 ShellResult/ShellSuccess/ShellFailure/ShellTimeout/
+  # ShellSpawnError definitions in cursor-agent 2026.08.11-e8db854, serialized
+  # as its stream-json writer does (JSON.stringify of protobuf-es messages, so
+  # default values such as exitCode 0 are present). That CLI builds the
+  # requested-background and timeout results locally; the timeout-driven
+  # background result is assembled elsewhere, so its exact frame is unverified.
+  # Replayed by src/shell-outcome.test.ts, NOT by the root conformance loop.
+  shell/command-outcomes.jsonl:
+    source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "assistant_message"
+      final_is_last_message: true
+      thinking_events: 0
+      started_events: 1
+      delta_messages: 0
+      tool_error_results: 3
+      typed_rate_limit: false
+  # Background completion notifications (#546). NATIVE-SHAPED, not a raw
+  # recording: frames follow the sanitized excerpt of one cursor-agent
+  # 2026.08.11-e8db854 print-mode run in razzant/claudexor#546 (a foreground
+  # command its 30 s timeout moved to the background, with the result-level
+  # `isBackground: false`; a requested background command; one
+  # `system/task_notification` per shell whose `task_id` is that result's
+  # `shellId`, status `success`, no exit code) and that build's stream-json
+  # writer. The raw frames were not shared, so the shape stays a hypothesis
+  # until a sanitized recording replaces this file. Ids, paths, timestamps and
+  # narration are placeholders. Replayed by src/background-completion.test.ts
+  # and the orchestrator integration test, NOT by the root conformance loop.
+  shell/background-completion.jsonl:
+    source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "assistant_message"
+      final_is_last_message: true
+      thinking_events: 0
+      started_events: 1
+      delta_messages: 0
+      tool_error_results: 0
+      typed_rate_limit: false
+  # Negative and unreadable reports (#546). SYNTHETIC, weaker than the file
+  # above: no native run showed these frames. `error` (with `detail:
+  # "exit_code=1"`) and `aborted` come only from a static reading of that build's
+  # stream-json writer and shell-completion code, and the `task_progress` id
+  # likewise. `paused` is INVENTED as a negative control: no source defines it,
+  # so its shell must stay a handoff. The repeated `error` frame is a duplicate.
+  shell/background-completion-failures.jsonl:
+    source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "assistant_message"
+      final_is_last_message: true
+      thinking_events: 0
+      started_events: 1
+      delta_messages: 0
+      tool_error_results: 0
+      typed_rate_limit: false
   # A1 TYPED VENDOR-LIMIT EVIDENCE. Lives in signals/ (NOT top-level) because
   # the top-level conformance loop asserts tool/usage shapes on every fixture
   # and a limit-killed run has none — replayed by src/signals.test.ts against

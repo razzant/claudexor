@@ -1,0 +1,117 @@
+{
+  "$ref": "#/definitions/RunProcessingIntent",
+  "definitions": {
+    "RunProcessingIntent": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "harnesses": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "requested": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "standard",
+                      "fast",
+                      "economy"
+                    ],
+                    "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+              },
+              "submitted": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/RunProcessingIntent/properties/harnesses/additionalProperties/properties/requested/anyOf/0"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+              },
+              "submittedNative": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S",
+                    "description": "User-supplied string that must contain visible content, not just whitespace."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "User-supplied string that must contain visible content, not just whitespace."
+              },
+              "observed": {
+                "type": "string",
+                "enum": [
+                  "standard",
+                  "fast",
+                  "economy",
+                  "mixed",
+                  "unknown"
+                ]
+              },
+              "observedNative": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/RunProcessingIntent/properties/harnesses/additionalProperties/properties/submittedNative/anyOf/0"
+                }
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/RunProcessingIntent/properties/harnesses/additionalProperties/properties/submittedNative/anyOf/0"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "User-supplied string that must contain visible content, not just whitespace."
+              },
+              "source": {
+                "$ref": "#/definitions/RunProcessingIntent/properties/harnesses/additionalProperties/properties/submittedNative/anyOf/0"
+              }
+            },
+            "required": [
+              "requested",
+              "submitted",
+              "submittedNative",
+              "observed",
+              "observedNative",
+              "reason",
+              "source"
+            ],
+            "additionalProperties": false,
+            "description": "Requested intent, submitted native control, and observed execution are independent facts. A submitted flag never proves observed service; mixed or missing session observations remain explicit."
+          },
+          "propertyNames": {
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "description": "Routing-time receipt per routed harness; its source keeps the original provenance (for example codex.managed_config)."
+        }
+      },
+      "required": [
+        "schema_version",
+        "harnesses"
+      ],
+      "additionalProperties": false,
+      "description": "Speed each routed harness chose without a processing preference, written once at its first routing. Exact Retry keeps it instead of a changed or different account's native setting, and a retry records the intent it kept, so a retry chain keeps the original even after an ordinary fallback."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

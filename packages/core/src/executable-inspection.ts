@@ -5,6 +5,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  readSync,
   realpathSync,
   statSync,
 } from "node:fs";
@@ -98,20 +99,54 @@ export function isBoundedRegularExecutable(info: ExecutableInspection): boolean 
   );
 }
 
+/** Names Windows starts as a native image; only PE bytes run under them. */
+const WINDOWS_IMAGE_NAME = /\.(?:exe|com)$/i;
+
+/** Why such a file is refused; phrased to follow the file's path. */
+export const NOT_WINDOWS_IMAGE = "is not a Windows executable image";
+
+/**
+ * The PE minimum shape CreateProcess requires: `MZ`, then `PE\0\0` at the
+ * e_lfanew offset. Without it (an npm placeholder script, a zero-filled or
+ * truncated download) the loader fails with ERROR_BAD_EXE_FORMAT. The shape
+ * says nothing about loader validity or architecture. A read that fails or
+ * comes up short of the size fstat reported is `unknown`, never a verdict.
+ */
+function windowsImageShape(fd: number, size: number): "image" | "not_image" | "unknown" {
+  const dos = Buffer.alloc(0x40);
+  if (size < dos.length) return "not_image";
+  try {
+    if (readSync(fd, dos, 0, dos.length, 0) !== dos.length) return "unknown";
+    const signatureAt = dos.readUInt32LE(0x3c);
+    if (dos.toString("latin1", 0, 2) !== "MZ" || signatureAt > size - 4) return "not_image";
+    const signature = Buffer.alloc(4);
+    if (readSync(fd, signature, 0, 4, signatureAt) !== 4) return "unknown";
+    return signature.toString("latin1") === "PE\0\0" ? "image" : "not_image";
+  } catch {
+    return "unknown";
+  }
+}
+
 /**
  * Cheap "the process can spawn this" verdict for the harness PATH resolver: a
- * bounded regular file the current user may execute. No content hash. Returns
- * false on any inspection error (dangling symlink, permission, mid-walk race).
+ * bounded regular file the current user may execute; on win32 a `.exe`/`.com`
+ * must also have the PE shape, read through the same fd as the facts. No
+ * content hash. Returns false on any inspection error (dangling symlink,
+ * permission, mid-walk race).
  */
 export function isLaunchableExecutable(
   path: string,
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   try {
-    const info = inspectExecutable(path);
-    if (!info.isRegularFile || !info.identityStable) return false;
-    if (platform !== "win32") accessSync(info.realpath, constants.X_OK);
-    return true;
+    return withExecutableInspection(path, (info, fd) => {
+      if (!info.isRegularFile || !info.identityStable) return false;
+      if (platform === "win32") {
+        return !WINDOWS_IMAGE_NAME.test(path) || windowsImageShape(fd, info.size) !== "not_image";
+      }
+      accessSync(info.realpath, constants.X_OK);
+      return true;
+    });
   } catch (err) {
     // An exec-only binary (mode 0o111, not readable) cannot be O_RDONLY-opened
     // by inspectExecutable, but the old resolver accepted it — execution does
@@ -127,6 +162,26 @@ export function isLaunchableExecutable(
         return false;
       }
     }
+    return false;
+  }
+}
+
+/**
+ * Proof, not suspicion: a readable regular `.exe`/`.com` without the PE shape.
+ * An unreadable, raced or short-read file proves nothing. An incomplete header
+ * read during an in-place update can be refused; the next resolution rechecks it.
+ */
+export function isProvenNonWindowsImage(path: string): boolean {
+  if (!WINDOWS_IMAGE_NAME.test(path)) return false;
+  try {
+    return withExecutableInspection(
+      path,
+      (info, fd) =>
+        info.isRegularFile &&
+        info.identityStable &&
+        windowsImageShape(fd, info.size) === "not_image",
+    );
+  } catch {
     return false;
   }
 }

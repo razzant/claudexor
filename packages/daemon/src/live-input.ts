@@ -1,4 +1,5 @@
 import type {
+  InteractionDelivery,
   LiveInputCapability,
   LiveMessageAdapterResult,
   LiveMessageDelivery,
@@ -59,7 +60,10 @@ export class LiveInputRegistry {
   private readonly terminal = new Set<string>();
 
   constructor(
-    private readonly interactions: { pendingForRun(runId: string): readonly unknown[] },
+    /** Pending rows; an absent delivery is a historical row and blocks. */
+    private readonly interactions: {
+      pendingForRun(runId: string): readonly { delivery?: InteractionDelivery }[];
+    },
   ) {}
 
   register(ctx: LiveAttemptContext): LiveAttemptRegistration {
@@ -89,8 +93,10 @@ export class LiveInputRegistry {
 
   /**
    * Decision order (CONTRACT v2): terminal → thread-bound → no live attempt →
-   * multi-attempt → attempt mismatch → pending interaction (INV-048: no vendor
-   * write beside an open question) → no channel → no session → adapter 1:1.
+   * multi-attempt → attempt mismatch → pending blocking interaction (INV-048:
+   * no vendor write beside a question the agent is held on) → no channel → no
+   * session → adapter 1:1. An async question holds nothing, so it never
+   * refuses a message; the message still does not answer it.
    */
   async send(input: LiveMessageInput): Promise<LiveMessageDelivery> {
     const attempts = this.live.get(input.runId);
@@ -126,12 +132,16 @@ export class LiveInputRegistry {
     } else {
       target = first;
     }
-    if (this.interactions.pendingForRun(input.runId).length > 0) {
+    if (
+      this.interactions
+        .pendingForRun(input.runId)
+        .some((interaction) => interaction.delivery !== "async")
+    ) {
       return {
         ...refusal(
           "not_active",
           "interaction_pending",
-          "a question is pending; the message was not sent and did not answer it",
+          "a blocking question is pending; the message was not sent and did not answer it",
         ),
         ...facts(target),
       };

@@ -5,12 +5,12 @@ import type { CommandListQuery } from "@claudexor/schema";
 import { afterAll, describe, expect, it } from "vitest";
 import { DaemonControlApiServer } from "./daemon-server.js";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
-import { resolveContinuationBody } from "./run-continuation-start.js";
+import { readContinuationBody, resolveContinuationBody } from "./run-continuation-start.js";
 
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function tempDir(): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-continue-start-")));
@@ -112,6 +112,26 @@ describe("resolveContinuationBody", () => {
     expect(await resolveContinuationBody(daemon, ordinary)).toBe(ordinary);
     const unknown = { continueFrom: "run-gone", prompt: "" };
     expect(await resolveContinuationBody(daemon, unknown)).toBe(unknown);
+  });
+
+  it("reports only a predecessor no retained record answers to as unrecovered", async () => {
+    const root = tempDir();
+    const runless = predecessor(root, { id: "job-q", runId: undefined });
+    const { daemon } = fakeDaemon([predecessor(root), runless]);
+    const read = (from: string) => readContinuationBody(daemon, { continueFrom: from, prompt: "" });
+    expect(await read("run-gone")).toEqual({
+      body: { continueFrom: "run-gone", prompt: "" },
+      unrecovered: "run-gone",
+    });
+    // Admission never accepts a successor of a run-less predecessor: its raw body is canonical.
+    expect(await read("job-q")).toEqual({
+      body: { continueFrom: "job-q", prompt: "" },
+      unrecovered: null,
+    });
+    expect(await read("job-p")).toMatchObject({
+      body: { continueFrom: "run-p", scope: { kind: "project", root } },
+      unrecovered: null,
+    });
   });
 });
 

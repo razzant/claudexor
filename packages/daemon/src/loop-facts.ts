@@ -1,3 +1,4 @@
+import { processTiming } from "@claudexor/util";
 import {
   type EventLoopUtilization,
   type IntervalHistogram,
@@ -100,6 +101,7 @@ export function startLoopFacts(windowMs: number = LOOP_FACTS_WINDOW_MS): () => v
     last: null as DaemonLoopFacts | null,
     timer: setInterval(() => {
       state.last = window.roll();
+      processTiming.roll(state.last.windowMs, state.last.windowEndedAt);
     }, windowMs),
   };
   state.timer.unref?.();

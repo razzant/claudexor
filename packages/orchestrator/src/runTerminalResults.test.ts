@@ -9,7 +9,7 @@ import { writeFailure } from "./runTerminalResults.js";
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function written(failure: Parameters<typeof writeFailure>[2]): RunFailure {
   const root = mkdtempSync(join(tmpdir(), "claudexor-write-failure-"));
@@ -41,7 +41,7 @@ describe("writeFailure vendorFailure", () => {
     expect(written({ ...base, vendorFailure: null }).vendorFailure).toBeNull();
   });
 
-  it("redacts a secret-like token inside the vendor's words and keeps null parts null (INV-062)", () => {
+  it("redacts a secret-like token inside the vendor's words and keeps null parts null (INV-146)", () => {
     // Assembled at runtime so the source never holds a contiguous secret-like token.
     const token = ["sk-or-v1", "c".repeat(40)].join("-");
     const failure = written({

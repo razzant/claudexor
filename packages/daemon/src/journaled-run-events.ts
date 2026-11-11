@@ -15,6 +15,7 @@ export const JOURNALED_RUN_EVENT_TYPES: ReadonlySet<RunEventType> = new Set<RunE
   "interaction.requested",
   "interaction.answered",
   "interaction.timeout",
+  "interaction.withdrawn",
   "message.accepted",
   "message.delivered",
   "message.refused",

@@ -72,6 +72,17 @@ import Testing
             .contains(AccountsPresentation.defaultAddHarnessId))
     }
 
+    /// Grok Build accounts are named rows like Antigravity: addable from the
+    /// popover under the product name, never a profile-less bootstrap login.
+    @Test func grokIsAddableAsANamedAccountOnly() {
+        let grok = HarnessFamily(rawValue: "grok")
+        #expect(AccountsPresentation.addableFamilies.contains(grok))
+        #expect(AccountsPresentation.addAccountCaption(family: nil).contains("Grok Build"))
+        #expect(AccountsPresentation.addAccountCaption(family: grok).contains("Grok Build"))
+        #expect(SetupHarness(rawValue: grok.setupHarnessId) == .grok)
+        #expect(!AccountsPresentation.supportsBootstrapLogin(grok))
+    }
+
     /// Oxford list: a future two-family set must not read "A, or B".
     @Test func addableFamilyListReadsAsProse() {
         #expect(AccountsPresentation.listed([]) == "")
@@ -458,6 +469,7 @@ import Testing
 
         let row = try #require(AccountsPresentation.rows(model: model).first)
         #expect(row.worstPercent == 20)
+        #expect(row.compactWindow?.usedRatio == 0.2)
         #expect(row.quotaAvailabilityState == "available")
         #expect(row.scopedQuotaLabel == "Fable only")
         #expect(AccountsPresentation.worstPercent([row]) == 20)
@@ -509,7 +521,7 @@ import Testing
     }
 
     @MainActor
-    @Test func scopedOnlyWindowsUseScopedLimitsInsteadOfAnAccountPercent() throws {
+    @Test func scopedOnlyWindowsShowScopedUsageWithoutAnAccountPercent() throws {
         let model = AppModel(client: nil, requestNotificationAuthorization: false)
         model.credentialProfiles = try JSONDecoder().decode(
             [CredentialProfileEntry].self,
@@ -527,7 +539,56 @@ import Testing
 
         let row = try #require(AccountsPresentation.rows(model: model).first)
         #expect(row.worstPercent == nil)
-        #expect(row.scopedQuotaLabel == "Scoped limits")
+        #expect(row.compactWindow?.usedRatio == 0.5)
+        #expect(row.compactWindow?.appliesToModels == ["fable"])
+        #expect(row.scopedQuotaLabel == nil)
+        #expect(AccountsPresentation.worstPercent([row]) == nil)
+    }
+
+    @MainActor
+    @Test func scopedExhaustionKeepsItsServerAuthoredWarningLabel() throws {
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        model.credentialProfiles = try JSONDecoder().decode(
+            [CredentialProfileEntry].self,
+            from: Data(#"[{"profile":{"profile_id":"work","harness_id":"agy","display_name":"Work","credential_kind":"config_dir_login","enabled":true},"status":{"availability":"available","verification":"passed","detail":null,"last_verified_at":null}}]"#.utf8))
+        model.quotaResponse = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(#"""
+        {"snapshots":[{"subject":{"harness":"agy","credential_route":"vendor_native","plan_label":null,"subject_id":"work"},"constraints":[{"id":"gemini-week","label":"Week","applies_to_models":["gemini-*"],"used_ratio":1,"window_seconds":604800,"resets_at":null,"cooldown_until":null}],"source":"agy_command_usage","observed_at":"2026-08-09T00:00:00Z","freshness":"fresh","availability":{"state":"available","blocking_constraints":[],"resets_at":null,"model_scoped_exhaustions":[{"constraint_id":"gemini-week","applies_to_models":["gemini-*"],"resets_at":null} ]}}],"absences":[],"refreshed_at":"2026-08-09T00:00:00Z"}
+        """#.utf8))
+
+        let row = try #require(AccountsPresentation.rows(model: model).first)
+        #expect(row.compactWindow?.usedRatio == 1)
+        #expect(row.scopedQuotaLabel == "Gemini only")
+        #expect(AccountsPresentation.worstPercent([row]) == nil)
+    }
+
+    @MainActor
+    @Test func unmeasuredScopedWindowsRemainUnknown() throws {
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        model.credentialProfiles = try JSONDecoder().decode(
+            [CredentialProfileEntry].self,
+            from: Data(#"[{"profile":{"profile_id":"work","harness_id":"agy","display_name":"Work","credential_kind":"config_dir_login","enabled":true},"status":{"availability":"available","verification":"passed","detail":null,"last_verified_at":null}}]"#.utf8))
+        model.quotaResponse = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(#"{"snapshots":[{"subject":{"harness":"agy","credential_route":"vendor_native","plan_label":null,"subject_id":"work"},"constraints":[{"id":"gemini-week","label":"Week","applies_to_models":["gemini-*"],"used_ratio":null,"window_seconds":604800,"resets_at":null,"cooldown_until":null}],"source":"agy_command_usage","observed_at":"2026-08-09T00:00:00Z","freshness":"fresh","availability":{"state":"available","blocking_constraints":[],"resets_at":null,"model_scoped_exhaustions":[]}}],"absences":[],"refreshed_at":"2026-08-09T00:00:00Z"}"#.utf8))
+
+        let row = try #require(AccountsPresentation.rows(model: model).first)
+        #expect(row.compactWindow == nil)
+        #expect(row.scopedQuotaLabel == nil)
+        #expect(row.worstPercent == nil)
+        #expect(AccountsPresentation.worstPercent([row]) == nil)
+    }
+
+    @MainActor
+    @Test func unknownAccountWideWindowBlocksScopedFallback() throws {
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        model.credentialProfiles = try JSONDecoder().decode(
+            [CredentialProfileEntry].self,
+            from: Data(#"[{"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work","credential_kind":"config_dir_login","enabled":true},"status":{"availability":"available","verification":"passed","detail":null,"last_verified_at":null}}]"#.utf8))
+        model.quotaResponse = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(#"{"snapshots":[{"subject":{"harness":"claude","credential_route":"vendor_native","plan_label":"max","subject_id":"work"},"constraints":[{"id":"five-hour","label":"5 hour","used_ratio":null,"window_seconds":18000,"resets_at":null,"cooldown_until":null},{"id":"fable-week","label":"Week","applies_to_models":["fable"],"used_ratio":0.8,"window_seconds":604800,"resets_at":"2026-08-10T00:00:00Z","cooldown_until":null}],"source":"claude_oauth_usage","observed_at":"2026-08-09T00:00:00Z","freshness":"fresh","availability":{"state":"available","blocking_constraints":[],"resets_at":null,"model_scoped_exhaustions":[]}}],"absences":[],"refreshed_at":"2026-08-09T00:00:00Z"}"#.utf8))
+
+        let row = try #require(AccountsPresentation.rows(model: model).first)
+        #expect(row.worstWindow != nil)
+        #expect(row.worstPercent == nil)
+        #expect(row.compactWindow?.usedRatio == nil)
+        #expect(row.compactWindow?.appliesToModels == nil)
         #expect(AccountsPresentation.worstPercent([row]) == nil)
     }
 

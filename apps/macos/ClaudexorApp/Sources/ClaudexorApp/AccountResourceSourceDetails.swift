@@ -18,7 +18,7 @@ struct AccountResourceSourceDetails: View {
                     }
                 }
                 ForEach(absences) { absence in
-                    entry("Quota check", "Reason: \(absence.reason)\nChecked: \(absence.observedAt)")
+                    entry("Quota check", "Reason: \(AccountResourcePresentation.quotaAbsenceReason(absence.reason))\nChecked: \(absence.observedAt)")
                 }
                 if let snapshot {
                     entry("Balance", AccountResourcePresentation.sourceDetails(snapshot.balances))

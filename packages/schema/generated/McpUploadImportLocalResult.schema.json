@@ -1,0 +1,45 @@
+{
+  "$ref": "#/definitions/McpUploadImportLocalResult",
+  "definitions": {
+    "McpUploadImportLocalResult": {
+      "type": "object",
+      "properties": {
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "uploading",
+            "uploaded",
+            "cancelled"
+          ]
+        },
+        "receivedBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expectedBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expectedSha256": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Digest of the verified local bytes. Save it for finalize; absent while uploading or cancelled."
+        }
+      },
+      "required": [
+        "uploadId",
+        "state",
+        "receivedBytes",
+        "expectedBytes"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

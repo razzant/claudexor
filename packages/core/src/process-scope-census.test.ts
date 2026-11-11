@@ -6,7 +6,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   DARWIN_COMPLETENESS_LIMIT,
   ScopeReaper,
-  capturedCandidates,
   reapScopeMembers,
 } from "./process-scope-census.js";
 import {
@@ -21,6 +20,7 @@ import {
 } from "./process-scope-readers.js";
 import { mintRunScopeMarker } from "./process-scope.js";
 import {
+  capturedCandidates,
   createProcessTableReader,
   descendantProcessRows,
   type CapturedProcess,
@@ -519,6 +519,7 @@ function reapCaptured(
   world: ReturnType<typeof tableWorld>,
   captured: CapturedProcess[],
   scopeStart: string | null = T0,
+  settledAt?: string,
 ) {
   return new ScopeReaper().reap({
     marker: A,
@@ -526,6 +527,7 @@ function reapCaptured(
     table: world.table,
     captured,
     scopeStart,
+    settledAt,
     signal: world.signal,
     now: world.now,
     sleep: world.sleep,
@@ -555,13 +557,37 @@ describe("capturedCandidates (DIRECTIVE 1 rule 2, pure)", () => {
     expect(found.reusedGroups).toEqual([]);
   });
 
-  it("includes a fork born inside a recorded group after the capture", () => {
+  it("keeps a leftover's later child but never signals a leaderless group reused after settlement", async () => {
+    const settledAt = new Date(Date.parse(T1) + 1_000).toISOString();
     const rows: ProcessTableRow[] = [
       { pid: 210, ppid: 1, pgid: 200, birth: T1 },
       { pid: 230, ppid: 210, pgid: 200, birth: T2 }, // never individually captured
     ];
-    const found = capturedCandidates(captured, rows, T0);
+    const found = capturedCandidates(captured, rows, T0, { settledAt });
     expect([...found.candidates.keys()].sort()).toEqual([210, 230]);
+    expect(found.reusedGroups).toEqual([]);
+    const leftover = tableWorld({ rows });
+    const ended = await reapCaptured(leftover, captured, T0, settledAt);
+    expect(ended.ended.map((member) => member.pid).sort()).toEqual([210, 230]);
+    expect(leftover.signals).toEqual([
+      { pid: 210, signal: "SIGTERM" },
+      { pid: 230, signal: "SIGTERM" },
+      { pid: 210, signal: "SIGKILL" },
+      { pid: 230, signal: "SIGKILL" },
+    ]);
+
+    // The old group emptied and its new leader has already exited: only a stranger remains.
+    const strangers: ProcessTableRow[] = [{ pid: 300, ppid: 1, pgid: 200, birth: T2 }];
+    const reused = capturedCandidates(captured, strangers, T0, { settledAt });
+    expect(reused.reusedGroups).toEqual([200]);
+    expect(reused.candidates.size).toBe(0);
+    const stranger = tableWorld({ rows: strangers });
+    const skipped = await reapCaptured(stranger, captured, T0, settledAt);
+    expect(skipped.reusedGroups).toEqual([200]);
+    expect(skipped.settled).toBe(false);
+    expect(skipped.unreadable).toContainEqual({ pid: 300, reason: "group_membership_unproven" });
+    expect(stranger.signals).toEqual([]);
+    expect(stranger.isAlive(300)).toBe(true);
   });
 
   it("skips a group whose id is now owned by a process with another birth (pid reused as leader)", () => {
@@ -602,6 +628,51 @@ describe("capturedCandidates (DIRECTIVE 1 rule 2, pure)", () => {
     );
     expect(noFloor.reusedGroups).toEqual([200]);
     expect([...noFloor.candidates]).toEqual([[210, T1]]);
+  });
+
+  it("another birth at the group id proves the recorded group gone: nothing stays unproven", () => {
+    const rows: ProcessTableRow[] = [
+      { pid: 200, ppid: 1, pgid: 200, birth: T2 },
+      { pid: 300, ppid: 200, pgid: 200, birth: T2 },
+    ];
+    const found = capturedCandidates(captured, rows, T0);
+    expect(found.reusedGroups).toEqual([200]);
+    expect(found.unproven).toEqual([]);
+    expect(found.candidates.size).toBe(0);
+  });
+
+  it("every other skip leaves its possible members unproven and never candidates", () => {
+    const fork: ProcessTableRow = { pid: 230, ppid: 1, pgid: 200, birth: T2 };
+    // A member older than the scope: it is not ours, the younger uncaptured one could be.
+    const older = capturedCandidates(
+      captured,
+      [
+        { pid: 210, ppid: 1, pgid: 200, birth: T1 },
+        fork,
+        { pid: 7, ppid: 1, pgid: 200, birth: EARLIER },
+      ],
+      T0,
+    );
+    expect(older.reusedGroups).toEqual([200]);
+    expect(older.unproven).toEqual([230]);
+    expect([...older.candidates.keys()]).toEqual([210]);
+    // No birth floor at all, then a birth that cannot be read.
+    const noFloor = capturedCandidates(captured, [fork], null);
+    expect(noFloor.reusedGroups).toEqual([200]);
+    expect(noFloor.unproven).toEqual([230]);
+    const garbled = capturedCandidates(captured, [{ ...fork, birth: "not a date" }], T0);
+    expect(garbled.reusedGroups).toEqual([200]);
+    expect(garbled.unproven).toEqual([230]);
+    // A live leader nobody recorded or measured: the group proves nothing either way.
+    const leaderless: CapturedProcess[] = [{ pid: 210, pgid: 200, birth: T1 }];
+    const untold = capturedCandidates(
+      leaderless,
+      [{ pid: 200, ppid: 1, pgid: 200, birth: T1 }, fork],
+      T0,
+    );
+    expect(untold.reusedGroups).toEqual([200]);
+    expect(untold.unproven).toEqual([200, 230]);
+    expect(untold.candidates.size).toBe(0);
   });
 
   it("drops an individually captured pid whose birth changed (reused) and a group that emptied", () => {
@@ -654,9 +725,79 @@ describe("root groups known by leader identity (fix round 2 item 10)", () => {
       leaderVerdict: new Map([[100, "same"]]),
     });
     expect([...same.candidates.keys()].sort()).toEqual([100, 150]);
+    // A leader verdict that could not be told proves nothing: unproven, never admitted.
+    const untold = capturedCandidates([], reusedRows, null, {
+      scopeStartAt: new Date("Mon Oct 12 17:00:00 2026").toISOString(),
+      rootGroups,
+      leaderVerdict: new Map([[100, "unknown"]]),
+    });
+    expect(untold.reusedGroups).toEqual([100]);
+    expect(untold.unproven).toEqual([100, 150]);
+    expect(untold.candidates.size).toBe(0);
     // Without any floor, groups are still skipped.
     expect(capturedCandidates([], rows, null, { rootGroups }).reusedGroups).toEqual([100]);
     void T_OPEN;
+  });
+
+  describe("through the reap", () => {
+    const opened = new Date("Mon Oct 12 17:00:00 2026").toISOString();
+    const leader = identity(100, "100");
+    const rows: ProcessTableRow[] = [
+      { pid: 100, ppid: 1, pgid: 100, birth: "Mon Oct 12 17:00:09 2026" },
+      { pid: 150, ppid: 100, pgid: 100, birth: "Mon Oct 12 17:00:09 2026" },
+    ];
+    const reap = (world: ReturnType<typeof tableWorld>, read: ProcessIdentity) =>
+      new ScopeReaper().reap({
+        marker: A,
+        census: world.census,
+        table: world.table,
+        scopeStartAt: opened,
+        rootGroups: [{ pgid: 100, leaderPid: 100, leaderBirth: null, leaderIdentity: leader }],
+        identity: { read: async () => read },
+        signal: world.signal,
+        now: world.now,
+        sleep: world.sleep,
+        graceMs: 1_000,
+        deadlineMs: 3_000,
+        probeIntervalMs: 250,
+        excludePids: [1, 4242],
+        platform: "darwin",
+      });
+
+    it("settles past a leader of another birth without touching the new group", async () => {
+      const world = tableWorld({ rows });
+      const outcome = await reap(world, identity(100, "999"));
+      expect(outcome.reusedGroups).toEqual([100]);
+      expect(outcome.unreadable).toEqual([]);
+      expect(outcome.settled).toBe(true);
+      expect(world.signals).toEqual([]);
+    });
+
+    it("never settles or signals a group whose leader could not be read", async () => {
+      const world = tableWorld({ rows });
+      const outcome = await reap(world, {
+        status: "unknown",
+        pid: 100,
+        platform: "linux",
+        reason: "helper_failed",
+      });
+      expect(outcome.reusedGroups).toEqual([100]);
+      expect(outcome.unreadable).toEqual([
+        { pid: 100, reason: "group_membership_unproven" },
+        { pid: 150, reason: "group_membership_unproven" },
+      ]);
+      expect(outcome.settled).toBe(false);
+      expect(world.signals).toEqual([]);
+    });
+
+    it("keeps a group whose leader moved away: the leader's birth still holds its id", async () => {
+      const world = tableWorld({ rows: [rows[1]!, { ...rows[0]!, pgid: 700 }], coopLethal: true });
+      const outcome = await reap(world, { ...leader, processGroupId: 700 });
+      expect(outcome.reusedGroups).toEqual([]);
+      expect(world.signals.filter((s) => s.pid === 150).length).toBeGreaterThan(0);
+      expect(outcome.ended.map((m) => m.pid)).toEqual([150]);
+      expect(outcome.settled).toBe(true);
+    });
   });
 });
 
@@ -736,6 +877,68 @@ describe("reapScopeMembers with recorded sources (fake table)", () => {
     expect(outcome.reusedGroups).toEqual([200]);
     expect(world.signals).toEqual([]);
     expect(world.isAlive(300)).toBe(true);
+  });
+
+  it("a positively reused group proves the old one gone and does not hold the scope open", async () => {
+    const world = tableWorld({
+      rows: [
+        { pid: 200, ppid: 1, pgid: 200, birth: T2 },
+        { pid: 300, ppid: 200, pgid: 200, birth: T2 },
+      ],
+    });
+    const outcome = await reapCaptured(world, captured);
+    expect(outcome.reusedGroups).toEqual([200]);
+    expect(outcome.unreadable).toEqual([]);
+    expect(outcome.settled).toBe(true);
+  });
+
+  it("an unproven group member holds the reap open, unsignalled, until a later reap sees it gone", async () => {
+    const stranger: ProcessTableRow = { pid: 7, ppid: 1, pgid: 200, birth: EARLIER };
+    const maybeOurs: ProcessTableRow = { pid: 230, ppid: 1, pgid: 200, birth: T2 };
+    const held = tableWorld({ rows: [stranger, maybeOurs] });
+    const outcome = await reapCaptured(held, captured);
+    expect(outcome.reusedGroups).toEqual([200]);
+    expect(outcome.unreadable).toEqual([{ pid: 230, reason: "group_membership_unproven" }]);
+    expect(outcome.survivors).toEqual([]);
+    expect(outcome.settled).toBe(false);
+    expect(held.signals).toEqual([]);
+    expect(held.isAlive(230)).toBe(true);
+
+    const later = await reapCaptured(tableWorld({ rows: [stranger] }), captured);
+    expect(later.reusedGroups).toEqual([200]);
+    expect(later.unreadable).toEqual([]);
+    expect(later.settled).toBe(true);
+  });
+
+  it("an unproven member that left during the reap stops holding it open", async () => {
+    const world = tableWorld({
+      rows: [
+        { pid: 7, ppid: 1, pgid: 200, birth: EARLIER },
+        { pid: 230, ppid: 1, pgid: 200, birth: T2 },
+        { pid: 240, ppid: 1, pgid: 240, birth: T2 },
+      ],
+      coopLethal: true,
+    });
+    const snapshot = world.table.snapshot.bind(world.table);
+    let reads = 0;
+    world.table.snapshot = async () => {
+      const rows = await snapshot();
+      return reads++ === 0 ? rows : (rows ?? []).filter((row) => row.pid !== 230);
+    };
+    const outcome = await reapCaptured(world, [...captured, { pid: 240, pgid: 240, birth: T2 }]);
+    expect(reads).toBeGreaterThan(1);
+    expect(outcome.ended.map((m) => m.pid)).toEqual([240]);
+    expect(outcome.unreadable).toEqual([]);
+    expect(outcome.settled).toBe(true);
+  });
+
+  it("the reaping daemon itself never counts as an unproven member", async () => {
+    const world = tableWorld({ rows: [{ pid: 4242, ppid: 1, pgid: 200, birth: T2 }] });
+    const outcome = await reapCaptured(world, captured, null);
+    expect(outcome.reusedGroups).toEqual([200]);
+    expect(outcome.unreadable).toEqual([]);
+    expect(outcome.settled).toBe(true);
+    expect(world.signals).toEqual([]);
   });
 
   it("without captured rows coverage stays marker-only", async () => {

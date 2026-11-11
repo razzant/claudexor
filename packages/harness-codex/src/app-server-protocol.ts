@@ -1,18 +1,88 @@
-import { browserMcpCommand, type LiveMessageResult } from "@claudexor/core";
+import {
+  browserMcpCommand,
+  type ChildStdin,
+  type LiveMessageResult,
+  type spawnProcess,
+} from "@claudexor/core";
 import type {
   EffortHint,
   HarnessEvent,
   HarnessRunSpec,
   HarnessRequestRefusal,
 } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
+import { nowIso, redactSecrets } from "@claudexor/util";
+import { CODEX_MCP_STARTUP_TIMEOUT_SEC, codexBrowserInjected } from "./app-server-mcp-startup.js";
+import { codexNativeWarningEvents, isCodexNativeWarningMethod } from "./app-server-warnings.js";
 import { codexEffortFor } from "./effort-probe.js";
 import { parseCodexEvent, type CodexParseState } from "./parse.js";
 import { codexRateLimitEvents } from "./quota.js";
 import { CodexRpcError } from "./rpc-error.js";
+import { codexAppServerAccessParams } from "./sandbox.js";
 export { CodexRpcError } from "./rpc-error.js";
 
 export type JsonObject = Record<string, unknown>;
+
+export interface CodexAppServerRunInput {
+  bin: string;
+  args: string[];
+  spec: HarnessRunSpec;
+  env: Record<string, string | null | undefined>;
+  spawn?: typeof spawnProcess;
+  controller?: CodexAppServerController;
+  /** The run's ONE effort receipt (`submitted`); resolved from the snapshot when absent. */
+  effort?: EffortHint | null;
+  pollIntervalMs?: number;
+  cancelDeadlineMs?: number;
+  /** Bound on the vendor's `turn/steer` answer (default 30 s); see createCodexSteer. */
+  steerDeadlineMs?: number;
+  /** Backstop on selected Browser's startup status; see waitForCodexBrowser. */
+  browserStartupDeadlineMs?: number;
+}
+
+export class CodexServerRequestRefusal extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export function codexApprovalDenial(params: JsonObject | null): "decline" | "cancel" {
+  const offered = params?.["availableDecisions"];
+  return Array.isArray(offered) && !offered.includes("decline") ? "cancel" : "decline";
+}
+
+/** Server IDs are independent of client IDs; unattended requests never grant authority. */
+export function refuseCodexServerRequest(
+  message: JsonObject,
+  io: Pick<ChildStdin, "write">,
+  reason = "this run cannot grant native approval",
+): void {
+  const method = message["method"];
+  if (
+    typeof method !== "string" ||
+    (typeof message["id"] !== "number" && typeof message["id"] !== "string")
+  )
+    return;
+  const approval =
+    method === "item/fileChange/requestApproval" ||
+    method === "item/commandExecution/requestApproval";
+  io.write(
+    `${JSON.stringify({
+      id: message["id"],
+      ...(approval
+        ? { result: { decision: codexApprovalDenial(asObject(message["params"])) } }
+        : { error: { code: -32601, message: "Unsupported server request" } }),
+    })}\n`,
+  );
+  throw new CodexServerRequestRefusal(
+    approval ? "codex_approval_required" : "codex_request_unsupported",
+    approval
+      ? `Codex approval refused (${method}): ${reason}; declined without expanding access`
+      : `Codex requested an unsupported client action (${method})`,
+  );
+}
 
 export function asObject(value: unknown): JsonObject | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -305,25 +375,18 @@ export async function readCodexLifecycle(
   };
 }
 
-function sandboxMode(access: HarnessRunSpec["access"]): string | null {
-  if (access === "readonly") return "read-only";
-  if (access === "workspace_write") return "workspace-write";
-  if (access === "full") return "danger-full-access";
-  return null;
-}
-
 export function codexAppServerThreadParams(
   spec: HarnessRunSpec,
   /** The run's ONE effort receipt (`submitted`); arg-shape callers resolve on the snapshot. */
   effort: EffortHint | null = codexEffortFor(undefined, spec.model_hint, spec.effort_hint),
 ): JsonObject {
   const mcpServers: Record<string, JsonObject> = {};
-  if (spec.browser && spec.external_context_policy !== "off") {
+  if (spec.browser && codexBrowserInjected(spec)) {
     const browser = browserMcpCommand(spec.browser);
     mcpServers["browser"] = {
       command: browser.command,
       args: browser.args,
-      startup_timeout_sec: 90,
+      startup_timeout_sec: CODEX_MCP_STARTUP_TIMEOUT_SEC,
       tool_timeout_sec: 120,
     };
   }
@@ -333,7 +396,7 @@ export function codexAppServerThreadParams(
       args: server.args,
       env: server.env,
       required: server.required,
-      startup_timeout_sec: 90,
+      startup_timeout_sec: CODEX_MCP_STARTUP_TIMEOUT_SEC,
       tool_timeout_sec: 120,
     };
   }
@@ -349,13 +412,10 @@ export function codexAppServerThreadParams(
   };
   if (effort) config["model_reasoning_effort"] = effort;
   if (spec.processing?.submittedNative) config["service_tier"] = spec.processing.submittedNative;
-  const sandbox = sandboxMode(spec.access);
   return {
     cwd: spec.cwd,
     model: spec.model_hint,
-    ...(sandbox ? { sandbox } : {}),
-    approvalPolicy: "never",
-    approvalsReviewer: "auto_review",
+    ...codexAppServerAccessParams(spec),
     ...(spec.instructions?.trim() ? { developerInstructions: spec.instructions } : {}),
     config,
   };
@@ -400,8 +460,13 @@ export function codexAppServerEvents(
   const params = asObject(notification["params"]);
   if (!params) return null;
   if (method === "account/rateLimits/updated") return codexRateLimitEvents(params, sessionId);
+  if (isCodexNativeWarningMethod(method))
+    return codexNativeWarningEvents(method, params, sessionId);
   if (method === "error" && params["willRetry"] === true) {
-    const message = asObject(params["error"])?.["message"];
+    // A vendor transport error is an engine diagnostic, masked where it is
+    // created (INV-146); it is not the user's working content.
+    const safe = JSON.parse(redactSecrets(JSON.stringify(params))) as JsonObject;
+    const message = asObject(safe["error"])?.["message"];
     return [
       {
         type: "status",
@@ -409,7 +474,7 @@ export function codexAppServerEvents(
         ts: nowIso(),
         ...(typeof message === "string" ? { text: message } : {}),
         status: { kind: "api_retry" },
-        payload: params,
+        payload: safe,
       },
     ];
   }

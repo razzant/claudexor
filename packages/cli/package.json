@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/cli",
-  "version": "4.2.0",
+  "version": "6.0.0",
   "license": "MIT",
   "description": "Claudexor CLI (claudexor). Thin surface over the orchestrator.",
   "type": "module",
@@ -37,7 +37,8 @@
     "@claudexor/secrets": "workspace:*",
     "@claudexor/util": "workspace:*",
     "@claudexor/workspace": "workspace:*",
-    "@claudexor/harness-acp": "workspace:*"
+    "@claudexor/harness-acp": "workspace:*",
+    "@claudexor/harness-grok": "workspace:*"
   },
   "repository": {
     "type": "git",

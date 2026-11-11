@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/workspace",
-  "version": "4.2.0",
+  "version": "6.0.0",
   "license": "MIT",
   "description": "WorkspaceEnvelope manager: git worktree + scoped HOME/harness-config isolation + dirty policy.",
   "type": "module",
@@ -21,8 +21,10 @@
   },
   "dependencies": {
     "@claudexor/core": "workspace:*",
+    "@claudexor/event-log": "workspace:*",
     "@claudexor/schema": "workspace:*",
-    "@claudexor/util": "workspace:*"
+    "@claudexor/util": "workspace:*",
+    "yaml": "^2.9.1"
   },
   "repository": {
     "type": "git",

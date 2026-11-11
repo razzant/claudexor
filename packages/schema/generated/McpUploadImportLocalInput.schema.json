@@ -1,0 +1,27 @@
+{
+  "$ref": "#/definitions/McpUploadImportLocalInput",
+  "definitions": {
+    "McpUploadImportLocalInput": {
+      "type": "object",
+      "properties": {
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Explicit absolute regular file on the MCP-server host, never the remote client's filesystem."
+        }
+      },
+      "required": [
+        "uploadId",
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

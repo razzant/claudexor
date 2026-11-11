@@ -15,17 +15,55 @@ export function readProcessLines(
   waitForSpace: () => Promise<void>,
   fail: (error: Error) => void,
   limits?: ProcessStreamLimits,
+  stdoutFraming?: "lf",
 ): { drained: Promise<void>; close(): void; stop(): void } {
   if (!limits) {
-    const out = createInterface({ input: child.stdout });
+    let closeOut: () => void;
+    if (stdoutFraming === "lf") {
+      // readline also splits U+2028/U+2029 on Node 24, corrupting valid JSON strings.
+      // Only each new chunk is searched, and a frame spread over chunks is joined
+      // once at its LF: re-searching (and re-flattening) a growing `tail += chunk`
+      // string on every chunk is quadratic in the frame size.
+      let parts: string[] = [];
+      child.stdout.setEncoding("utf8");
+      const data = (chunk: string): void => {
+        let start = 0;
+        for (let lf = chunk.indexOf("\n"); lf !== -1; lf = chunk.indexOf("\n", start)) {
+          let line = chunk.slice(start, lf);
+          if (parts.length) {
+            parts.push(line);
+            line = parts.join("");
+            parts = [];
+          }
+          publish({ type: "stdout", line: line.endsWith("\r") ? line.slice(0, -1) : line });
+          start = lf + 1;
+        }
+        if (start < chunk.length) parts.push(chunk.slice(start));
+      };
+      const end = (): void => {
+        if (parts.length) publish({ type: "stdout", line: parts.join("") });
+        parts = [];
+      };
+      child.stdout.on("data", data);
+      child.stdout.once("end", end);
+      closeOut = () => {
+        child.stdout.off("data", data);
+        child.stdout.off("end", end);
+        child.stdout.pause();
+        parts = [];
+      };
+    } else {
+      const out = createInterface({ input: child.stdout });
+      out.on("line", (line) => publish({ type: "stdout", line }));
+      closeOut = () => out.close();
+    }
     const err = createInterface({ input: child.stderr });
-    out.on("line", (line) => publish({ type: "stdout", line }));
     err.on("line", (line) => publish({ type: "stderr", line }));
     const close = (): void => {
-      out.close();
+      closeOut();
       err.close();
     };
-    // readline publishes every complete line as it arrives, so stopping the
+    // Unbounded readers publish every complete line as it arrives, so stopping the
     // OS reads keeps everything already read; only a partial line is dropped.
     return { drained: Promise.resolve(), close, stop: close };
   }

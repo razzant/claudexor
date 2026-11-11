@@ -1,28 +1,75 @@
 import { makeOutcomeFacts } from "@claudexor/schema";
 import type { GateResult, ReviewFinding, RunOutcomeFacts, TaskContract } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
-import type { AttemptOutcomeClass } from "./attemptFinalize.js";
+import { attemptInterruption, INTERRUPTION_DETAIL } from "./attemptFinalize.js";
+import type { AttemptInterruption, AttemptOutcomeClass } from "./attemptFinalize.js";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import type { DeclaredFailure } from "./runTerminalResults.js";
 import type { AppliedAttemptFacts } from "./delegatedHome.js";
+import type { ProducedOmission } from "./candidateOutputs.js";
 import type { CaptureRefusal } from "./secretDiff.js";
-import type { SecretLikeFinding } from "./persistedPatch.js";
-import { toolWarnings } from "./attemptTelemetry.js";
+import { captureRefusedFacts } from "./captureRefusal.js";
+import { pickTelemetry, type TelemetryAttempt } from "./runTelemetryWriter.js";
+import { telemetrySummary, toolWarnings } from "./attemptTelemetry.js";
 import { directoryHasOutput, type DirectoryCandidate } from "./directoryCandidate.js";
 import { gatesPassed } from "@claudexor/review";
+import { withVendorCause } from "./harnessFailure.js";
 
 import type { ContinuityTerminalFacts } from "./continuity-terminal.js";
+import type { CandidateObjectFacts } from "./secretDiff.js";
 
-export interface CandidateRun extends ContinuityTerminalFacts {
+/** THE one "did this candidate change the tree?" test (#535): an object result
+ * answers by its trees, since its patch view may be absent; a legacy patch by
+ * its text; a directory result by its manifest. */
+export function hasCandidateChanges(run: Pick<CandidateRun, "diff" | "result" | "files">): boolean {
+  if (run.files) return run.files.noChanges !== true;
+  if (run.result) return run.result.base_tree !== run.result.candidate_tree;
+  return run.diff.trim().length > 0;
+}
+
+/** A Git candidate whose COMPLETE final capture found no change (#502): its
+ * object result's trees agree. A refused or never-taken capture (no result),
+ * a refused continuation and a directory result are unknown, never unchanged. */
+export function capturedNoGitChange(
+  run: Pick<CandidateRun, "result" | "files" | "captureRefusal" | "continuationRefusal">,
+): boolean {
+  return capturedNoGitChangeValue(run) === true;
+}
+
+/** The persisted form of the exact capture fact (#612). `null` means the
+ * producer cannot prove a Git capture was complete (directory output, missing
+ * result, or a refusal); a boolean is known only for a complete Git capture.
+ * Keeping unknown distinct from `false` prevents a failed capture from being
+ * mistaken for an unchanged tree by retention. */
+export function capturedNoGitChangeValue(
+  run: Pick<CandidateRun, "result" | "files" | "captureRefusal" | "continuationRefusal">,
+): boolean | null {
+  if (run.files || run.captureRefusal || run.continuationRefusal || !run.result) return null;
+  return run.result.base_tree === run.result.candidate_tree;
+}
+
+/** Whether a live in-place turn takes its post-turn fence: the revert anchor's
+ * postimage. A refused capture has no anchor; a roster whose complete captures
+ * found no change has no revert target, and every reader of the fence is gated
+ * on a candidate change, so neither takes a snapshot (#502). */
+export function needsPostTurnFence(runs: readonly CandidateRun[]): boolean {
+  if (runs.some((run) => run.captureRefusal)) return false;
+  return !(runs.length > 0 && runs.every(capturedNoGitChange));
+}
+
+export interface CandidateRun extends ContinuityTerminalFacts, CandidateObjectFacts {
   attemptId: string;
   harnessId: string;
   label: string;
+  /** The rendered patch view ("" when absent); `result` is canonical when present. */
   diff: string;
   files?: DirectoryCandidate;
   answerText?: string;
   reviewCwd?: string;
   baseSha?: string;
   producedFiles?: string[];
+  /** Produced images that were not saved, with size and reason. */
+  producedOmitted?: ProducedOmission[];
   gates: GateResult[];
   cost: number;
   errored: boolean;
@@ -30,17 +77,19 @@ export interface CandidateRun extends ContinuityTerminalFacts {
   errors: string[];
   telemetry: AttemptTelemetry;
   infraPhase?: "workspace" | "harness";
-  /** The saved copy of `diff` when secret-like strings had to be hidden in it
-   * (INV-062). `diff` itself is always the exact patch; absent = identical. */
-  persistedDiff?: string;
-  /** Disclosure of what the saved copies hide: paths and counts, never values. */
-  secretLike?: SecretLikeFinding;
   /** The candidate's changes could not be captured at all. Secret-like content
    * is never a refusal; this is the honest name of a failed capture. */
   captureRefusal?: CaptureRefusal;
-  /** Where the exact bytes of an isolated candidate still are when its private
-   * exact patch object could not be written (the envelope is kept, not deleted). */
+  /** The one-shot continuation (its own attempt id) reran in this candidate's
+   * copy and its final capture refused: the copy is kept with this receipt,
+   * while this exhausted attempt still leads, since nothing superseded it. */
+  continuationRefusal?: { attemptId: string; refusal: CaptureRefusal };
+  /** Where the exact bytes of an isolated candidate still are when its capture
+   * was incomplete (the envelope is kept, not deleted). */
   exactBytesRetainedAt?: string;
+  /** Untracked nested repositories the capture left out of `diff` (exact
+   * paths); the attempt record and the final work product disclose them. */
+  excludedNestedRepositories?: string[];
   /** D-16 r7: the finalizer's outcome class for THIS attempt. An `interrupted`
    * candidate (terminal context exhaustion with NO completed WorkReport) is
    * never reviewed/arbitrated/adopted as clean — it terminalizes the run
@@ -56,6 +105,18 @@ export interface CandidateRun extends ContinuityTerminalFacts {
    * Present on success and per-slot failure so a delegated caller reads the
    * applied fact instead of inferring it from the request. */
   applied?: AppliedAttemptFacts;
+  /** Set only by the per-slot catch that saw this run's own attempt fail
+   * before its HOME was decided, so no child started (#648); never read back
+   * from a record. */
+  homeUndecided?: true;
+}
+
+/** Does a declared failure state a typed cause a terminal may speak with: a
+ * code, a config error, or a provider refusal with no code of its own (#558)? */
+export function declaredFailureSpeaks(
+  declared: DeclaredFailure | null | undefined,
+): declared is DeclaredFailure {
+  return Boolean(declared?.code || declared?.category === "config_error" || declared?.quotaRefusal);
 }
 
 /**
@@ -73,17 +134,33 @@ export function unanimousDeclaredFailure(
   runs: readonly Pick<CandidateRun, "declaredFailure">[],
 ): DeclaredFailure | null {
   const first = runs[0]?.declaredFailure;
-  if (!first || (!first.code && first.category !== "config_error")) return null;
+  if (!declaredFailureSpeaks(first)) return null;
   const declared = runs.map((run) => run.declaredFailure);
   const agrees = declared.every((d) => d?.code === first.code && d?.category === first.category);
   if (!agrees) return null;
+  // One quota basis speaks for the run only when every candidate shares it. Its
+  // window, usage and threshold survive only where every candidate agrees, so
+  // one candidate's window is never paired with another candidate's reset.
+  const { quotaRefusal, ...rest } = first;
+  const refusals = declared.map((d) => d?.quotaRefusal);
+  const common = <K extends "constraintId" | "usedRatio" | "threshold">(key: K) =>
+    refusals.every((r) => r?.[key] === quotaRefusal?.[key]) ? (quotaRefusal?.[key] ?? null) : null;
+  const shared =
+    quotaRefusal && refusals.every((r) => r?.basis === quotaRefusal.basis)
+      ? {
+          basis: quotaRefusal.basis,
+          constraintId: common("constraintId"),
+          usedRatio: common("usedRatio"),
+          threshold: common("threshold"),
+        }
+      : null;
   const resets = declared.map((d) => d?.resetsAt ?? null);
   const known = resets.filter((at): at is string => at !== null);
   const resetsAt =
     known.length > 0 && known.length === resets.length
       ? known.reduce((latest, at) => (Date.parse(at) > Date.parse(latest) ? at : latest))
       : null;
-  return { ...first, resetsAt };
+  return { ...rest, ...(shared ? { quotaRefusal: shared } : {}), resetsAt };
 }
 
 /** A pre-work corpse (harness error, no diff) AND an `interrupted` partial
@@ -97,8 +174,37 @@ export function isWorkingCandidate(run: CandidateRun): boolean {
   return (
     !run.captureRefusal &&
     run.outcomeClass !== "interrupted" &&
-    (!run.errored || run.diff.length > 0 || directoryHasOutput(run.files))
+    (!run.errored || (!run.files && hasCandidateChanges(run)) || directoryHasOutput(run.files))
   );
+}
+
+/** Every capture refusal the candidates' attempts left, in attempt order: a
+ * candidate's own, then its one-shot continuation's. */
+export function candidateCaptureRefusals(runs: readonly CandidateRun[]): CaptureRefusal[] {
+  return runs.flatMap((run) => [
+    ...(run.captureRefusal ? [run.captureRefusal] : []),
+    ...(run.continuationRefusal ? [run.continuationRefusal.refusal] : []),
+  ]);
+}
+
+/** A candidate attempt's `harness.completed` payload (the first attempt and its
+ * one-shot continuation alike), a refused capture's receipt as its error.
+ * QA-027: never claim `success` over an attempt the operator/deadline cut
+ * short. An abort makes the run non-successful; the top-level status axis must
+ * say `cancelled` (the nested outcome axis already rides in telemetrySummary),
+ * not launder a torn-off stream as clean. */
+export function candidateCompletion(
+  run: CandidateRun,
+  signal: AbortSignal | undefined,
+): Record<string, unknown> {
+  return {
+    harness_id: run.harnessId,
+    attempt_id: run.attemptId,
+    status: signal?.aborted ? "cancelled" : run.errored ? "failed" : "success",
+    cost_usd: run.cost,
+    ...telemetrySummary(run.telemetry),
+    ...(run.captureRefusal ? { error: run.captureRefusal.detail } : {}),
+  };
 }
 
 /**
@@ -123,46 +229,48 @@ export function partitionCandidates(runs: CandidateRun[]): {
   why: string;
 } {
   const working = runs.filter(isWorkingCandidate);
-  const noChanges = runs.some((r) => r.captureRefusal || r.files?.noChanges === null)
+  const noChanges = runs.some(
+    (r) => r.captureRefusal || r.continuationRefusal || r.files?.noChanges === null,
+  )
     ? null
-    : runs.every((r) =>
-        r.files
-          ? r.files.noChanges === true && !r.answerText
-          : r.diff.trim().length === 0 && !r.answerText,
-      );
-  const facts = runs.some((r) => r.outcomeClass === "interrupted")
-    ? makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted", noChanges })
-    : makeOutcomeFacts("failed", {
-        reason:
-          runs.length > 0 && runs.every((r) => r.captureRefusal)
-            ? "workspace_unavailable"
-            : "harness_failed",
-        noChanges,
-      });
-  const why = runs
-    .map((r) => {
-      const reason =
-        r.outcomeClass === "interrupted"
-          ? "context capacity exhausted before the work completed"
-          : (r.errors[0] ?? "failed before producing work");
-      return `${r.attemptId}/${r.harnessId}: ${reason}`;
-    })
-    .join("; ");
-  return { working, facts, why };
+    : runs.every((r) => !hasCandidateChanges(r) && !r.answerText);
+  const interrupted = runs.find((r) => r.outcomeClass === "interrupted");
+  const facts = interrupted
+    ? makeOutcomeFacts("interrupted", { reason: interruptionOf(interrupted), noChanges })
+    : runs.length > 0 && runs.every((r) => r.captureRefusal)
+      ? captureRefusedFacts()
+      : makeOutcomeFacts("failed", { reason: "harness_failed", noChanges });
+  return { working, facts, why: runs.map(candidateCause).join("; ") };
+}
+
+/** One candidate's own cause: its last try's error with the vendor's own
+ * failure for that try (#633), or its interruption, then any refused
+ * continuation. */
+export function candidateCause(run: CandidateRun): string {
+  const reason =
+    run.outcomeClass === "interrupted"
+      ? INTERRUPTION_DETAIL[interruptionOf(run)]
+      : withVendorCause(
+          run.errors[0] ?? "failed before producing work",
+          run.telemetry.vendorFailure,
+        );
+  const continued = run.continuationRefusal
+    ? `; its continuation ${run.continuationRefusal.attemptId}: ${run.continuationRefusal.refusal.detail}`
+    : "";
+  return `${run.attemptId}/${run.harnessId}: ${reason}${continued}`;
+}
+
+/** The typed limit an interrupted candidate stopped on (#299); context when unrecorded. */
+export function interruptionOf(run: Pick<CandidateRun, "telemetry">): AttemptInterruption {
+  return attemptInterruption(run.telemetry) ?? "context_capacity_exhausted";
 }
 
 /** The telemetry-roster shape ({attemptId, harnessId, telemetry}) that
  * `writeRunTelemetry` and the cancelled terminals consume. ONE owner so the
  * race lane's several hand-offs don't each re-spell the same map (behavior-
  * identical to the inline form). */
-export function candidateRoster(
-  runs: CandidateRun[],
-): { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] {
-  return runs.map((r) => ({
-    attemptId: r.attemptId,
-    harnessId: r.harnessId,
-    telemetry: r.telemetry,
-  }));
+export function candidateRoster(runs: CandidateRun[]): TelemetryAttempt[] {
+  return runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, ...pickTelemetry(r) }));
 }
 
 /** Candidate status projection shared by normal and cancelled race results. */
@@ -218,7 +326,12 @@ export function toCandidateEvidence(
     reviewVerified,
     toolWarningsCount:
       run.telemetry.outcome?.toolWarningsCount ?? toolWarnings(run.telemetry).length,
-    diffSize: run.files ? run.files.changedPaths.length : run.diff.split("\n").length,
+    // An unrendered object result is sized by its inventory, never by an empty view.
+    diffSize: run.files
+      ? run.files.changedPaths.length
+      : run.patchViewUnavailable
+        ? (run.inventory?.changedFiles ?? 1)
+        : run.diff.split("\n").length,
     diffBytes: run.files
       ? run.files.manifest.entries
           .filter((entry) => run.files!.changedPaths.includes(entry.path))
@@ -227,19 +340,19 @@ export function toCandidateEvidence(
               sum + (entry.after?.kind === "file" ? Math.max(1, entry.after.sizeBytes) : 1),
             0,
           )
-      : Buffer.byteLength(run.diff, "utf8"),
+      : (run.patchViewUnavailable?.estimatedBytes ?? Buffer.byteLength(run.diff, "utf8")),
     costUsd: run.cost,
     ...(run.telemetry.outcome?.workState ? { workState: run.telemetry.outcome.workState } : {}),
   };
 }
 
 /** Convergence-loop terminal facts, ONE precedence owner (D-16 r8):
- * converged > interrupted (context exhausted, never arbitrated) >
+ * converged > interrupted (context exhausted or the max-turns cap, never arbitrated) >
  * stuck_no_progress > operator cancel > budget_exhausted > not_converged. */
 export function convergenceOutcomeFacts(
   state: {
     converged: boolean;
-    interrupted: boolean;
+    interrupted: AttemptInterruption | null;
     stuckNoProgress: boolean;
     aborted: boolean;
     exhausted: boolean;
@@ -247,9 +360,7 @@ export function convergenceOutcomeFacts(
   cancelFacts: () => RunOutcomeFacts,
 ): RunOutcomeFacts {
   if (state.converged) return makeOutcomeFacts("succeeded");
-  if (state.interrupted) {
-    return makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted" });
-  }
+  if (state.interrupted) return makeOutcomeFacts("interrupted", { reason: state.interrupted });
   if (state.stuckNoProgress) return makeOutcomeFacts("failed", { reason: "stuck_no_progress" });
   if (state.aborted) return cancelFacts();
   if (state.exhausted) return makeOutcomeFacts("failed", { reason: "budget_exhausted" });

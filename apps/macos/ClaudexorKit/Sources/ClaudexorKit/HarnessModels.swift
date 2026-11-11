@@ -215,17 +215,28 @@ public struct HarnessModel: Codable, Sendable, Identifiable, Equatable, Hashable
     /// Credential routes this model is annotated for (W11: "local_session" /
     /// "api_key"). nil = unannotated, offered on every route.
     public let routes: [String]?
+    /// Input modalities the live catalog declares, verbatim ("text", "image",
+    /// "file", …). nil = unknown, never "no input"; declared metadata that
+    /// gates no request (#146).
+    public let inputModalities: [String]?
+    /// Largest completion the live catalog declares; nil = unknown.
+    public let maxOutputTokens: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, label, routes
         case contextWindow = "context_window"
+        case inputModalities = "input_modalities"
+        case maxOutputTokens = "max_output_tokens"
     }
 
-    public init(id: String, label: String? = nil, contextWindow: Int? = nil, routes: [String]? = nil) {
+    public init(id: String, label: String? = nil, contextWindow: Int? = nil, routes: [String]? = nil,
+                inputModalities: [String]? = nil, maxOutputTokens: Int? = nil) {
         self.id = id
         self.label = label
         self.contextWindow = contextWindow
         self.routes = routes
+        self.inputModalities = inputModalities
+        self.maxOutputTokens = maxOutputTokens
     }
 
     public init(from decoder: Decoder) throws {
@@ -234,6 +245,18 @@ public struct HarnessModel: Codable, Sendable, Identifiable, Equatable, Hashable
         label = try c.decodeIfPresent(String.self, forKey: .label)
         contextWindow = try c.decodeIfPresent(Int.self, forKey: .contextWindow)
         routes = try c.decodeIfPresent([String].self, forKey: .routes)
+        // The engine never sends an empty list for "unknown"; an older or
+        // malformed empty list is treated as unknown rather than "no input".
+        let modalities = try c.decodeIfPresent([String].self, forKey: .inputModalities)
+        inputModalities = modalities?.isEmpty == true ? nil : modalities
+        maxOutputTokens = try c.decodeIfPresent(Int.self, forKey: .maxOutputTokens)
+    }
+
+    /// True only when the catalog declares input modalities and none is an
+    /// image. Unknown modalities answer false: no claim is made (#146).
+    public var catalogDeclaresNoImageInput: Bool {
+        guard let inputModalities else { return false }
+        return !inputModalities.contains("image")
     }
 }
 
@@ -279,14 +302,24 @@ public struct HarnessModelsResponse: Codable, Sendable, Equatable {
     /// Freshness note for manifest-sourced lists: the vendor CLI version the
     /// known-model hints were last verified against (nil for api/none).
     public let verifiedAgainst: String?
+    /// Present only when the live catalog read failed (code
+    /// `model_catalog_unavailable`, `context.cause` naming why): `models` is
+    /// then empty and is NOT an empty catalog (#393).
+    public let problem: ControlProblem?
+    /// The harness's declared request-time routing suffixes (#145/#146); empty
+    /// when it declares none.
+    public let routingVariants: [ModelRoutingVariantInfo]
 
-    enum CodingKeys: String, CodingKey { case harnessId, models, source, verifiedAgainst }
+    enum CodingKeys: String, CodingKey { case harnessId, models, source, verifiedAgainst, problem, routingVariants }
 
-    public init(harnessId: String, models: [HarnessModel] = [], source: String, verifiedAgainst: String? = nil) {
+    public init(harnessId: String, models: [HarnessModel] = [], source: String, verifiedAgainst: String? = nil,
+                problem: ControlProblem? = nil, routingVariants: [ModelRoutingVariantInfo] = []) {
         self.harnessId = harnessId
         self.models = models
         self.source = source
         self.verifiedAgainst = verifiedAgainst
+        self.problem = problem
+        self.routingVariants = routingVariants
     }
 
     public init(from decoder: Decoder) throws {
@@ -295,9 +328,34 @@ public struct HarnessModelsResponse: Codable, Sendable, Equatable {
         models = try c.decodeIfPresent([HarnessModel].self, forKey: .models) ?? []
         source = try c.decode(String.self, forKey: .source)
         verifiedAgainst = try c.decodeIfPresent(String.self, forKey: .verifiedAgainst)
+        problem = try c.decodeIfPresent(ControlProblem.self, forKey: .problem)
+        routingVariants = try c.decodeIfPresent([ModelRoutingVariantInfo].self, forKey: .routingVariants) ?? []
+    }
+
+    /// The row whose metadata applies to `model`: the exact row, else the listed
+    /// row a declared routing variant names. The engine's rule (core
+    /// `catalogRowFor`): suffixes combine in any order, so every DECLARED
+    /// segment after the base id is removed and every other one stays
+    /// (`m:nitro:free` -> `m:free`); that row must itself be listed. No other
+    /// name is guessed.
+    public func row(forModel model: String) -> HarnessModel? {
+        if let exact = models.first(where: { $0.id == model }) { return exact }
+        var segments = model.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard !segments.isEmpty, !segments[0].isEmpty else { return nil }
+        let base = segments.removeFirst()
+        let declared = Set(routingVariants.map { String($0.suffix.dropFirst()) })
+        let kept = segments.filter { !declared.contains($0) }
+        guard kept.count < segments.count else { return nil }
+        let metadataId = ([base] + kept).joined(separator: ":")
+        return models.first(where: { $0.id == metadataId })
     }
 
     /// True when a truth source exists (strict model-truth validation: no truth source = the
-    /// harness runs its default only; there is no free-text model entry).
-    public var canEnumerate: Bool { source != "none" && !models.isEmpty }
+    /// harness runs its default only; there is no free-text model entry). A failed
+    /// live read (`problem`) is not a truth source either, but it is not "default
+    /// only": surfaces show the problem instead.
+    public var canEnumerate: Bool { problem == nil && source != "none" && !models.isEmpty }
+
+    /// The typed cause of a failed live catalog read (`context.cause`), if any.
+    public var problemCause: String? { problem?.context["cause"]?.stringValue }
 }

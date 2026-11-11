@@ -1,0 +1,96 @@
+{
+  "$ref": "#/definitions/PromptCacheTtlReceipt",
+  "definitions": {
+    "PromptCacheTtlReceipt": {
+      "type": "object",
+      "properties": {
+        "requested": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "5m",
+                "1h"
+              ],
+              "description": "Native prompt-cache lifetime for the main conversation and helper requests of a harness that declares it. Omission sends no override: native defaults, profile settings and the inherited environment stay in effect."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Lifetime the engine routed to this session: the run's captured value where this adapter declares it, otherwise null (Default, or an undeclared value disclosed as ignored). The captured intent itself is the task contract's prompt_cache_ttl."
+        },
+        "submitted": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PromptCacheTtlReceipt/properties/requested/anyOf/0"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Value set on the native lifetime controls of this process, null when none was set. Configuration, not proof that the provider applied it."
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "User-supplied string that must contain visible content, not just whitespace."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Known reason the submitted value cannot govern this session (a forcing or disabling native control in effect, or a CLI that predates the controls); null when none is known."
+        },
+        "observed": {
+          "type": "string",
+          "enum": [
+            "5m",
+            "1h",
+            "mixed",
+            "none",
+            "unknown"
+          ],
+          "description": "Lifetime split of the cache writes reported by the native result usage; it does not establish which request buckets that usage aggregates. none = no observed writes (not disabled caching); unknown = a result did not report the split."
+        },
+        "write_5m_tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reported five-minute cache-write tokens summed over results; null when any result omitted the split."
+        },
+        "write_1h_tokens": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PromptCacheTtlReceipt/properties/write_5m_tokens/anyOf/0"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reported one-hour cache-write tokens summed over results; null when any result omitted the split."
+        }
+      },
+      "required": [
+        "requested",
+        "submitted",
+        "reason",
+        "observed",
+        "write_5m_tokens",
+        "write_1h_tokens"
+      ],
+      "additionalProperties": false,
+      "description": "Requested, configured and observed prompt-cache lifetime facts for one attempt. Lifecycle, outcome and cost are separate facts and never derive from this receipt."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

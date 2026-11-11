@@ -1,4 +1,4 @@
 {
-  "minAppVersion": "4.0.0",
-  "rationale": "Engine 4.0 represents concurrency limits as positive integers or unlimited and separates model and long-session admission. Claudexor.app 4.0 reads the updated concurrency contract. The existing appUpdateRequired path preserves the previous working engine until the application is updated; this floor does not install a desktop app for externally managed hosts."
+  "minAppVersion": "6.0.0",
+  "rationale": "Engine 6.0 uses the vendor-program inventory and maintenance receipt contract. Claudexor.app 6.0 consumes that contract for remote harness setup; older applications require the retired verification and pinned-version disclosure fields. The existing appUpdateRequired path preserves the previous working engine until the application is updated. This floor applies to Claudexor.app, not to embedding-host compatibility."
 }

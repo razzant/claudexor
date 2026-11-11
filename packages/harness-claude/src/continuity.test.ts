@@ -6,7 +6,7 @@ import { HarnessEvent } from "@claudexor/schema";
 import { claudeContinuity, claudeProjectDirName, claudeStoreDir } from "./continuity.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true })));
+afterEach(() => roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function store(root: string, name: string): string {
   // Registered profile stores live under the Claudexor-owned root (the test

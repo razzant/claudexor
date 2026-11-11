@@ -87,4 +87,24 @@ describe("RunFailure request refusal variants", () => {
       RunFailure.safeParse({ ...legacy, requestRefusal: { ...refusal, limit: undefined } }).success,
     ).toBe(false);
   });
+
+  it("carries the credential source a vendor reported instead of session login", () => {
+    const refusal = {
+      kind: "credential_source_unconfirmed",
+      native_code: "grok_credential_source_unconfirmed",
+      source: "grok_init",
+      reported_source: "user",
+    };
+    expect(
+      RunFailure.parse({
+        ...legacy,
+        code: "credential_source_unconfirmed",
+        requestRefusal: refusal,
+      }).requestRefusal,
+    ).toEqual(refusal);
+    expect(
+      RunFailure.safeParse({ ...legacy, requestRefusal: { ...refusal, source: "claude_stdout" } })
+        .success,
+    ).toBe(false);
+  });
 });

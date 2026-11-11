@@ -17,6 +17,7 @@ import { SqlEventLedger } from "./event-store.js";
 import type { PartitionGeneration } from "./partitions.js";
 import type { SqlRecoveryProjection } from "./sql-recovery.js";
 import type { EngineStore } from "./store.js";
+import { validateDeferredMessages } from "./deferred-message-rows.js";
 
 /** Explicit recovery validation reuses the domain's original parsers. This
  * cold operation may read the requested partition's full bodies; admission,
@@ -45,6 +46,13 @@ export function sqlRecoveryProjections(
   };
   const projections: SqlRecoveryProjection[] = [
     {
+      name: "deferred-messages",
+      validate: () => {
+        validateDeferredMessages(store, blobs, generation.pid);
+        bindings("deferred_message", "deferred_message");
+      },
+    },
+    {
       name: "commands",
       validate: () => {
         for (const row of store
@@ -68,6 +76,7 @@ export function sqlRecoveryProjections(
             prompt: blobs.read(row.prompt_sha).toString("utf8"),
           });
         bindings("thread", "thread");
+        bindings("thread_retire", "thread");
         bindings("turn", "turn");
       },
     },

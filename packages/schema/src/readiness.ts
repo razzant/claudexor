@@ -50,19 +50,22 @@ export const HarnessStatusDto = z
     manifest: HarnessManifest.nullable()
       .optional()
       .describe("The harness's declared manifest, when available."),
+    /** Explicit-selection eligibility (#133): a degraded harness keeps the
+     * intents its doctor still enables, with its reasons; unavailable = none. */
     enabledIntents: z
       .array(z.string())
       .default([])
-      .describe("Intents the gateway will route to this harness."),
-    /** Intents this harness is ACTUALLY routable for right now: enabledIntents
-     * gated by doctor readiness (a degraded/unauth'd harness routes nothing).
-     * The SERVER-side availability truth — surfaces read this field and never
-     * re-derive availability from status+intents business logic (R8). */
+      .describe(
+        "Intents an explicit selection of this harness may run: capability intents its doctor enables. A degraded harness keeps the intents its doctor still enables, with its reasons; an unavailable harness has none.",
+      ),
+    /** Automatic (Auto pool) eligibility: enabledIntents while the doctor
+     * reports ok, empty otherwise. Surfaces read these two server-side fields
+     * and never re-derive availability from status+intents logic (R8). */
     routableIntents: z
       .array(z.string())
       .default([])
       .describe(
-        "Intents the harness is actually routable for right now (doctor-gated); the server-side availability truth surfaces must read instead of re-deriving.",
+        "Intents the automatic (Auto pool) routing may choose this harness for: enabledIntents while the doctor reports ok, empty for a degraded or unavailable harness. Explicit selection reads enabledIntents instead.",
       ),
     disabledIntents: z.array(z.string()).default([]).describe("Intents the doctor disabled."),
     checks: z.array(ConformanceCheck).default([]).describe("Doctor probe results."),

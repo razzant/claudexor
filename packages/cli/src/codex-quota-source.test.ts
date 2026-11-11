@@ -1,9 +1,9 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { EventEmitter } from "node:events";
+import { dirname, join } from "node:path";
+import { EventEmitter, once } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import type { spawn } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { defaultNativeCodexHome } from "@claudexor/harness-codex";
 import type { QuotaRefreshDiagnostic } from "./quota-refresh-diagnostics.js";
@@ -11,9 +11,54 @@ import {
   codexQuotaInvocation,
   parseCodexRateLimitsResponse,
   refreshCodexQuota,
+  requestCodexAccount,
 } from "./codex-quota-source.js";
 
 describe("Codex app-server quota source", () => {
+  it.skipIf(process.platform === "win32")(
+    "runs its captured app-server without a console window and stops it after the answer",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "codex-quota-window-"));
+      try {
+        const bin = join(dir, "codex");
+        writeFileSync(
+          bin,
+          `#!/usr/bin/env node
+require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
+  const request = JSON.parse(line);
+  if (request.id !== undefined)
+    process.stdout.write(JSON.stringify({ id: request.id, result: { method: request.method } }) + "\\n");
+});
+`,
+        );
+        chmodSync(bin, 0o755);
+        const started: Array<{ args: string[]; options: SpawnOptions; child: ChildProcess }> = [];
+        const start = ((binary: string, args: string[], options: SpawnOptions) => {
+          const child = spawn(binary, args, options);
+          started.push({ args, options, child });
+          return child;
+        }) as typeof spawn;
+        const env = { PATH: dirname(process.execPath) };
+        const home = join(dir, "home");
+        await expect(requestCodexAccount(home, env, bin, start)).resolves.toEqual({
+          method: "account/rateLimits/read",
+        });
+        expect(started).toHaveLength(1);
+        expect(started[0]?.args).toEqual(codexQuotaInvocation(env, home).args);
+        expect(started[0]?.options).toMatchObject({
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+        });
+        expect(started[0]?.options.detached).toBeUndefined();
+        const child = started[0]!.child;
+        if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+        expect(child.signalCode ?? child.exitCode).not.toBeNull();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([
     { rateLimits: null },
     { rateLimitsByLimitId: {} },

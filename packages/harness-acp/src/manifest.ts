@@ -8,7 +8,11 @@ export function acpCapabilityProfile() {
       supported_sources: ["api_key_env"],
       credential_transports: [{ source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"] }],
     },
-    access_control: { readonly_mechanism: "tool_allowlist", write_mechanism: "none" },
+    access_control: {
+      readonly_mechanism: "tool_allowlist",
+      write_mechanism: "none",
+      auxiliary_writable_roots: false,
+    },
     isolation: { supported_containment: ["env_or_file_injection"] },
     live_input: "none",
     mcp_injection: false,

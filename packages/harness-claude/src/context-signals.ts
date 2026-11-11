@@ -1,5 +1,5 @@
 import type { HarnessEvent } from "@claudexor/schema";
-import { claudeQuotaModelAliases } from "./capability-profile.js";
+import { claudeQuotaFamilyScope } from "@claudexor/schema";
 import { claudeQuotaEvents, claudeQuotaReset } from "./quota.js";
 
 /**
@@ -64,7 +64,7 @@ export function claudeRateLimitEvents(obj: Json, sessionId: string, ts: string):
       : rateLimitType === "seven_day_sonnet"
         ? "Sonnet"
         : null;
-  const appliesToModels = modelFamily ? claudeQuotaModelAliases(modelFamily) : null;
+  const familyScope = modelFamily ? claudeQuotaFamilyScope(modelFamily) : null;
   return [
     ...measurements,
     {
@@ -75,12 +75,7 @@ export function claudeRateLimitEvents(obj: Json, sessionId: string, ts: string):
       rate_limit: {
         resets_at: resetsAt,
         retry_delay_ms: null,
-        ...(modelFamily
-          ? {
-              constraint_id: String(rateLimitType),
-              applies_to_models: appliesToModels,
-            }
-          : {}),
+        ...(familyScope ? { constraint_id: String(rateLimitType), ...familyScope } : {}),
       },
       payload: { rate_limit_event: true },
     },

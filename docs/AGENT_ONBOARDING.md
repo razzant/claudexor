@@ -30,7 +30,8 @@ contract throughout these steps, including repair and connection recovery.
    profile and fans out to the vendors). It is one daemon-authored view of
    registered profiles, readiness,
    quota freshness, and `next_up` (the configured default model's verdict only;
-   `routingEvidence` carries model-scoped recent refusals and last service);
+   `routingEvidence` carries model-scoped recent refusals, temporary per-model
+   capability marks, model-scoped credential refusals, and last service);
    do not reconstruct a pool by joining
    `doctor`, `quota`, and profile-list responses yourself. `available/passed`
    on the exact named row describes its last observation; check its age before
@@ -54,11 +55,12 @@ contract throughout these steps, including repair and connection recovery.
 5. **Log in ONLY through Claudexor.** Use `claudexor auth login <harness>` for
    a supported default/bootstrap account, or
    `claudexor profiles login <harness> <profile-id>` when the harness requires
-   a named binding (Antigravity does). Claudexor runs the vendor CLI's own
+   a named binding (Antigravity and Grok Build do). Claudexor runs the vendor CLI's own
    login under the effective platform policy; a profile HOME is not a promise
-   of separate credential custody on every OS. Cursor `profiles login` uses
-   a daemon setup job attached to the same terminal; `claudexor setup cancel`
-   and `claudexor setup reconcile` expose its existing recovery operations.
+   of separate credential custody on every OS. Cursor and Grok Build
+   `profiles login` use a daemon setup job attached to the same terminal;
+   `claudexor setup cancel` and `claudexor setup reconcile` expose its existing
+   recovery operations.
    Claude/AGY profile login retains its direct vendor terminal path.
    Non-Codex `profiles login --json` remains unsupported; it creates no job.
    For codex the default is
@@ -71,8 +73,8 @@ contract throughout these steps, including repair and connection recovery.
    default + this isolation instruction) but cannot prevent it.
    `claudexor auth login codex --browser-redirect` is the explicit opt-in for
    the older localhost-callback flow. **NEVER run a bare `codex login`,
-   `claude auth login`, `cursor-agent login`, `agent login`, or interactive
-   `agy`** — Claudexor cannot bind or verify a requested profile around that
+   `claude auth login`, `cursor-agent login`, `agent login`, `grok login`, or
+   interactive `agy`** — Claudexor cannot bind or verify a requested profile around that
    process, and an OS-user-scoped vendor transport may change the credential
    for the whole OS user (Bible INV-067). To remove a row, use `claudexor profiles remove`;
    that removes the binding and data Claudexor owns, while a typed receipt
@@ -115,7 +117,9 @@ contract throughout these steps, including repair and connection recovery.
    transport and `external_terminal` as `client_pty`; do not infer a
    harness-specific mechanism from the global setup operation. The same
    catalog is served at `GET /v2/agent-capabilities` on the daemon and by the MCP
-   `claudexor_capabilities` tool.
+   `claudexor_capabilities` tool, possibly from a recent composition dated by
+   `generatedAt` ([readiness projections](ARCHITECTURE.md#readiness-projections));
+   the CLI verb composes it live.
 4. **Check harness health.** `claudexor doctor` (human) or
    `claudexor doctor --json`. Doctor is the aggregate/default-store projection,
    not a universal admission veto. An unpinned request first uses the canonical
@@ -166,14 +170,21 @@ entries; do not invent an `@profile` mini-grammar.
   envelope. `claudexor <cmd> --help` (or `--help --json`) prints that command's
   scoped usage; `claudexor help --json` is the full machine catalog.
 - **MCP** (`claudexor mcp serve`, stdio) uses durable handles while MCP Tasks
-  remain experimental. A run tool enqueues work and returns `{runId, runDir,
-  status}` after the daemon binds the run, not terminal output; use
-  `claudexor_run_status`, `claudexor_run_result`,
-  `claudexor_run_cancel`, `claudexor_run_interactions`, and
-  `claudexor_answer_interaction` to continue. A cancel or answer is successful
-  only after the `/v2` control API acknowledges it.
+  remain experimental. A run tool enqueues work and returns `{jobId, runId,
+  runDir, status}` (with `runId: null` while the job is still queued), not
+  terminal output; follow it with `claudexor_run_wait`, `claudexor_run_status`
+  and `claudexor_run_result`, answer questions with
+  `claudexor_run_interactions`/`claudexor_answer_interaction`, steer with
+  `claudexor_run_message`, read oversized events with
+  `claudexor_run_event_read`, and start an explicit successor with
+  `claudexor_run_continue` (contract: [Observing and directing an existing
+  run](INTEGRATIONS.md#observing-and-directing-an-existing-run)). A cancel or
+  answer is successful only after the `/v2` control API acknowledges it.
   Use the read-only `claudexor_accounts` tool to inspect account/profile state
   before selecting a pinned reviewer; it never starts authentication.
+  Documents reach a run as `attachments: [{resourceId}]` from
+  `claudexor_upload_import` or the upload stages (contract: [Document ingress
+  and resource references](INTEGRATIONS.md#document-ingress-and-resource-references)).
 - **ACP** (`claudexor acp serve`, stdio) uses stable protocol version 1 through
   the official TypeScript SDK. ACP session IDs are daemon thread IDs, so
   `session/list`, `session/load`, `session/resume`, `session/close`, prompts,
@@ -196,9 +207,15 @@ entries; do not invent an `@profile` mini-grammar.
   turns can change the live project tree. Choose `isolated` explicitly when you
   want a persistent thread worktree and a later Apply step. Standalone CLI/MCP
   candidate runs still use external isolated envelopes.
-- A secret-like value inside a prompt is hard-blocked at every ingress with
-  the typed `inline_secret_rejected` error. Store credentials with
-  `claudexor secrets set` and reference them; there is no bypass flag.
+- Prompts, instructions, messages and attachments reach the selected harness
+  exactly, including credential-shaped test fixtures, and stay in the local
+  run records. Claudexor does not refuse or mask them by pattern. Keys that
+  Claudexor itself uses belong in `claudexor secrets set`. Only `pr` delivery
+  checks content: the pinned Betterleaks scanner reads what would be pushed,
+  and a finding (`publication_scan_findings`), an unavailable scanner or a
+  failed scan refuses before anything is published. An install that does not
+  bundle the scanner prepares it with the explicit `claudexor scanner prepare`;
+  it is a machine-setup step, so ask before running it for someone else.
 
 ## After a mutating run
 
@@ -216,12 +233,17 @@ Every mutating result carries a `runId`. The decision tree:
 4. The run stopped before its work finished (`resumable` present on
    `GET /v2/runs/:id` — a usage limit, a crash, a cancel, a daemon restart, a
    question for you) → continue it, never restart it: `POST /v2/runs`
-   `{continueFrom: <runId>, prompt: "<what next, may be empty>"}`. The engine
-   resumes the same vendor session when it can and briefs a new one with the
-   evidence otherwise; the receipt says which.
+   `{continueFrom: <runId>, prompt: "<what next, may be empty>"}` (MCP:
+   `claudexor_run_continue`; restate access, web, account, effort, budget, time
+   and review controls the successor must keep). The engine resumes the same
+   vendor session when it can and briefs a new one with the evidence otherwise;
+   the receipt says which.
 5. Lost the handle? `claudexor inspect <runId>`, `claudexor follow <runId>`,
    or the MCP durable tools `claudexor_runs` / `claudexor_run_status` /
-   `claudexor_run_result` / `claudexor_apply_check`.
+   `claudexor_run_result` / `claudexor_apply_check`. Launched them under a saved
+   `taskGroupId`? `claudexor_task_group_runs` (CLI `task-group-runs`) returns the
+   accepted job handles from the group and saved store id alone; then watch them
+   together with `claudexor_runs_wait`.
 
 ## When to ask the human
 

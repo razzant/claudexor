@@ -9,34 +9,45 @@
  * through the same owner finishes every purge whose directory cleanup failed
  * after the purge was journaled.
  */
-import { join } from "node:path";
+import { dirname } from "node:path";
 import type { ProjectThreadPort, ProjectStorePort } from "@claudexor/daemon";
 import type { ControlGcReceipt, ControlGcRequest, Thread } from "@claudexor/schema";
-import { ArtifactStore } from "@claudexor/artifact-store";
-import {
-  findActiveThreadRun,
-  runRetentionPass,
-  type RetentionProject,
-} from "@claudexor/control-api";
+import { findActiveThreadRun, runRetentionPass } from "@claudexor/control-api";
 import { loadConfig } from "@claudexor/config";
-import { claudexorOwnedRoot, noProjectRepoRoot, userConfigDir } from "@claudexor/util";
+import {
+  claudexorOwnedRoot,
+  noProjectRepoRoot,
+  globalRunStores,
+  userConfigDir,
+} from "@claudexor/util";
 import { sweepOrphanLanes } from "@claudexor/workspace";
-import { logLine } from "./daemon-lifecycle.js";
+import type { NativeRetentionRequest, NativeRetentionResult } from "./native-home-retention.js";
+import { retentionProjects } from "./retention-projects.js";
+import { setImmediate as yieldToAdmission } from "node:timers/promises";
+import {
+  serializeRetention,
+  withoutRetentionInventory,
+  type RetentionRunner,
+} from "./retention-lifetime.js";
+export type { RetentionRunner } from "./retention-lifetime.js";
+export { scheduleStartupRetention } from "./retention-schedule.js";
 
 export interface RetentionRunnerDeps {
   projects: () => ProjectStorePort;
+  maxDeletionsPerPass?: number;
+  nativeHomes?: (request: NativeRetentionRequest) => Promise<NativeRetentionResult>;
   threads: ProjectThreadPort;
   daemonJobs: () =>
     | Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>
     | Promise<Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>>;
   /** The ONE thread purge owner (thread-purge.ts): journals the purge, then
-   * deletes the isolated worktree/branch and every lane home of the thread. */
-  purgeThread: (id: string) => Promise<unknown>;
+   * deletes the isolated worktree/branch and every lane home of the thread.
+   * `signal` is the pass's own cancellation: it ends a retirement's lane
+   * verification, and that cleanup then stays pending for the next pass. */
+  purgeThread: (id: string, signal?: AbortSignal) => Promise<unknown>;
   /** Whether a directory that owner deletes is still on disk for the thread. */
   hasPurgeLeftovers: (thread: Thread) => boolean;
 }
-
-export type RetentionRunner = (request: ControlGcRequest) => Promise<ControlGcReceipt>;
 
 /** Trashed threads whose restore window (`purge_after`) has ended. */
 function expiredTrashThreads(threads: readonly Thread[], now: number): Thread[] {
@@ -58,14 +69,17 @@ function expiredTrashThreads(threads: readonly Thread[], now: number): Thread[] 
  */
 async function finishPurgeLeftovers(
   deps: RetentionRunnerDeps,
+  threads: readonly Thread[],
   dryRun: boolean,
+  signal?: AbortSignal,
 ): Promise<{ finished: string[]; errors: string[] }> {
   const finished: string[] = [];
   const errors: string[] = [];
-  for (const thread of deps.threads.listPurgedThreads()) {
+  for (const thread of threads.filter((thread) => thread.state === "purged")) {
+    if (signal?.aborted) break;
     if (!deps.hasPurgeLeftovers(thread)) continue;
     try {
-      if (!dryRun) await deps.purgeThread(thread.id);
+      if (!dryRun) await deps.purgeThread(thread.id, signal);
       finished.push(thread.id);
     } catch (error) {
       errors.push(
@@ -85,19 +99,26 @@ async function finishPurgeLeftovers(
  */
 async function purgeExpiredTrash(
   deps: RetentionRunnerDeps,
-  jobs: Array<{ state: string; params?: unknown }>,
+  threads: readonly Thread[],
   dryRun: boolean,
+  signal?: AbortSignal,
 ): Promise<{ purged: string[]; errors: string[] }> {
   const purged: string[] = [];
   const errors: string[] = [];
-  for (const thread of expiredTrashThreads(deps.threads.listThreads(), Date.now())) {
+  for (const thread of expiredTrashThreads(threads, Date.now())) {
+    if (signal?.aborted) break;
+    const jobs = await deps.daemonJobs();
+    // The inventory yielded: a thread may have been restored while its old
+    // trash deadline passed. Judge current state immediately before purge.
+    const current = deps.threads.getThread(thread.id);
+    if (!current || expiredTrashThreads([current], Date.now()).length === 0) continue;
     const active = findActiveThreadRun(jobs, thread.id);
     if (active) {
       errors.push(`expired trash thread ${thread.id} kept: a turn is still ${active.state}`);
       continue;
     }
     try {
-      if (!dryRun) await deps.purgeThread(thread.id);
+      if (!dryRun) await deps.purgeThread(thread.id, signal);
       purged.push(thread.id);
     } catch (error) {
       errors.push(
@@ -114,159 +135,228 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
   // `claudexor gc` / control-op invocation must not interleave rmSync +
   // tombstone writes on the same candidates, which would double-count
   // freed_bytes and cross-report deletions between receipts.
-  let inFlight: Promise<ControlGcReceipt> | null = null;
-  const runOnce = async (request: ControlGcRequest): Promise<ControlGcReceipt> => {
+  let lastReceipt: ControlGcReceipt | null = null;
+  const truncatedReceipts = new WeakSet<ControlGcReceipt>();
+  const runOnce = async (
+    request: ControlGcRequest,
+    signal: AbortSignal,
+  ): Promise<ControlGcReceipt> => {
     // Policy is read fresh per pass (configurable without restart); the
     // reference set spans EVERY non-purged thread's full run lineage.
+    let morePending = false;
     const retention = loadConfig(noProjectRoot).global.retention;
-    const jobs = await deps.daemonJobs();
-    // Purges left unfinished by an earlier failure, then expired trash, both
-    // FIRST, so the runs only expired trash referenced become ordinary
-    // unreferenced candidates of this same pass. A dry run purges nothing, so
-    // its reference set skips the would-be-purged threads to preview the same.
-    const leftovers = await finishPurgeLeftovers(deps, request.dry_run);
-    const trash = await purgeExpiredTrash(deps, jobs, request.dry_run);
-    const previewPurged = new Set(request.dry_run ? trash.purged : []);
-    const records = jobs
-      .filter((job): job is { runId: string; state: string; finishedAt?: string } =>
-        Boolean(job.runId),
-      )
-      .map((job) => ({ runId: job.runId, state: job.state, finishedAt: job.finishedAt }));
-    const referencedRunIds = (): Set<string> => {
-      const referenced = new Set<string>();
-      for (const thread of deps.threads.listThreads()) {
-        if (previewPurged.has(thread.id)) continue;
-        for (const id of thread.run_ids) referenced.add(id);
-        if (thread.head_run_id) referenced.add(thread.head_run_id);
-        for (const turn of deps.threads.turnsFor(thread.id)) {
-          for (const id of [
-            turn.run_id,
-            turn.parent_run_id,
-            turn.answers_plan_run_id,
-            turn.plan_run_id,
-          ]) {
-            if (id) referenced.add(id);
-          }
-        }
-      }
-      return referenced;
-    };
-    // Fail CLOSED on a quarantined partition (review sol #6/#7): the
-    // reference set (listThreads/turnsFor) and job records both come ONLY
-    // from ready partitions. A project whose partition journal is not ready
-    // contributes an EMPTY reference set — GC'ing its runs against that would
-    // delete runs a live thread still references. So GC only project roots
-    // whose partition is ready; a quarantined project's runs are protected
-    // until it recovers. The no-project root has no partition and is always
-    // eligible.
-    const healthyRoots = new Set(deps.threads.healthyProjectRoots());
-    const roots = [
-      ...new Set([
-        ...deps
-          .projects()
-          .list()
-          .map((p) => p.root)
-          .filter((root) => healthyRoots.has(root)),
-        noProjectRoot,
-      ]),
-    ];
-    const gcProjects: RetentionProject[] = roots.map((root) => ({
-      root,
-      runsDir: new ArtifactStore(root).runsDir(),
-      // Standalone diff-review debris lives in the user's repo; the
-      // no-project root has none.
-      reviewsDir: root === noProjectRoot ? null : join(root, ".claudexor", "reviews"),
-    }));
-    // INV-034 lifecycle owner (c): remove durable per-lane read-only homes whose
-    // thread no longer exists. Bounded to HEALTHY roots only (same fail-closed
-    // set as the run GC): a quarantined partition contributes no live thread
-    // ids, so its lanes are left untouched until it recovers rather than swept
-    // as false orphans. Skip in dry-run — a GC preview must not delete bytes.
-    if (!request.dry_run) {
-      const liveThreadsByRoot = new Map<string, Set<string>>();
-      for (const thread of deps.threads.listThreads()) {
-        const root = thread.repo?.root ?? noProjectRoot;
-        (liveThreadsByRoot.get(root) ?? liveThreadsByRoot.set(root, new Set()).get(root)!).add(
-          thread.id,
+    let leftovers = { finished: [] as string[], errors: [] as string[] };
+    let trash = { purged: [] as string[], errors: [] as string[] };
+    try {
+      signal.throwIfAborted();
+      const maintenanceThreads = await deps.threads.retentionThreads(signal);
+      // Purges left unfinished by an earlier failure, then expired trash, both
+      // FIRST, so the runs only expired trash referenced become ordinary
+      // unreferenced candidates of this same pass. A dry run purges nothing, so
+      // its reference set skips the would-be-purged threads to preview the same.
+      leftovers = await finishPurgeLeftovers(deps, maintenanceThreads, request.dry_run, signal);
+      trash = await purgeExpiredTrash(deps, maintenanceThreads, request.dry_run, signal);
+      const previewPurged = new Set(request.dry_run ? trash.purged : []);
+      const references = await deps.threads.retentionReferences(previewPurged, signal);
+      try {
+        const healthyRoots = new Set(references.blocked ? [] : deps.threads.healthyProjectRoots());
+        const inventoryErrors: string[] = [];
+        const inventoryHolds: ControlGcReceipt["holds"] = [];
+        const laneHold = (example: string) =>
+          inventoryHolds.push({ class: "cleanup_suppressed", count: 1, example });
+        const heldRoots = new Set(references.protectedProjectRoots);
+        const gcProjects = await retentionProjects(
+          references,
+          noProjectRoot,
+          healthyRoots,
+          inventoryErrors,
+          signal,
+          heldRoots,
         );
-      }
-      for (const root of roots) {
-        try {
-          sweepOrphanLanes(root, liveThreadsByRoot.get(root) ?? new Set());
-        } catch {
-          /* best-effort: orphan lane dirs are harmless and re-sweepable */
+        let deletedLanes = 0;
+        const globalStores = new Set(globalRunStores().map((store) => store.runsDir));
+        // Inventory finds orphan namespaces after their last thread disappears.
+        // Global stores hold runs, not per-thread lanes. Archived roots stay held.
+        if (!request.dry_run && !references.blocked) {
+          const laneProofCurrent = references.recheck ?? references.isCurrent;
+          const deferred =
+            "lane sweep deferred: ownership changed; a fresh retention pass must resume";
+          let lanesDeferred = false;
+          const deferLanes = () => {
+            if (lanesDeferred) return;
+            lanesDeferred = true;
+            inventoryErrors.push(deferred);
+            laneHold(deferred);
+          };
+          if (!laneProofCurrent()) deferLanes();
+          else
+            for (const project of gcProjects) {
+              const { root } = project;
+              const runtime = dirname(project.runsDir);
+              if (globalStores.has(project.runsDir) || heldRoots.has(root)) continue;
+              if (!healthyRoots.has(root) && references.registeredProjectRoots.has(root)) continue;
+              await yieldToAdmission();
+              if (signal.aborted) break;
+              try {
+                const ids =
+                  references.laneThreadIds?.(root) ??
+                  new Set(deps.threads.listThreads().map((thread) => thread.id));
+                // No yield between the live read and the synchronous sweep. A namespace
+                // whose registration changed during this pass keeps its lanes, like its
+                // runs, while the others progress: its owners are unknown (#503).
+                if (references.deferredRuntimes?.().has(runtime)) {
+                  deferLanes();
+                  morePending = true;
+                } else if (!references.protectedProjectRoots.has(root))
+                  deletedLanes += sweepOrphanLanes(runtime, ids).length;
+              } catch (error) {
+                if (!laneProofCurrent()) {
+                  deferLanes();
+                  break;
+                }
+                const detail = `lane sweep skipped for ${root}: ${String(error)}`;
+                inventoryErrors.push(detail);
+                laneHold(detail);
+              }
+            }
         }
+        const receipt = await runRetentionPass(
+          {
+            runsMaxAgeDays: retention.runs_max_age_days,
+            reviewsMaxAgeDays: retention.reviews_max_age_days,
+            keepLastRunsPerProject: retention.keep_last_runs_per_project,
+          },
+          request,
+          {
+            signal,
+            anchorsHeld: !!references.blocked || heldRoots.size > 0,
+            projects: () => gcProjects,
+            records: () => references.records,
+            referencedRunIds: () => references.referencedRunIds,
+            referencesCurrent: references.recheck ?? references.isCurrent,
+            referencesHeld: references.held,
+            refreshReferences: references.refresh,
+            ...(references.deferredRuntimes
+              ? { deferredRuntimes: references.deferredRuntimes }
+              : {}),
+            maxDeletionsPerPass: deps.maxDeletionsPerPass,
+            onTruncated: () => {
+              morePending = true;
+            },
+            // Advisory data-root disclosure: the ONE owned-root derivation
+            // (claudexorOwnedRoot covers both the default ~/.claudexor tree and
+            // an explicit CLAUDEXOR_CONFIG_DIR override) is injected here so the
+            // pass itself never reaches for globals. The mode rides along:
+            // claudexorOwnedRoot() collapses onto userConfigDir() exactly when a
+            // CLAUDEXOR_CONFIG_DIR override is active (in the default mode the
+            // owned root is ~/.claudexor while the config dir is its v3 subtree),
+            // and the override root owns secrets.json/plugins/quota/workspaces at
+            // its top level where the default root does not.
+            dataRoot: claudexorOwnedRoot(),
+            dataRootMode: claudexorOwnedRoot() === userConfigDir() ? "override" : "default",
+          },
+        );
+        receipt.deleted_lanes = deletedLanes;
+        receipt.held.roots = heldRoots.size;
+        const reportedGenerationHolds = references.holds?.length ?? 0;
+        receipt.holds.push(...(references.holds ?? []), ...inventoryHolds);
+        const unclassified = [...heldRoots].filter(
+          (root) => !references.protectedProjectRoots.has(root),
+        );
+        if (unclassified.length && !references.blocked)
+          receipt.holds.push({
+            class: "namespace_unreadable",
+            count: unclassified.length,
+            example: unclassified[0]!,
+          });
+        // Run deletions already happened: a native-home failure is recorded on this
+        // receipt, never a lost receipt with freed 0 (#503).
+        const native = await deps
+          .nativeHomes?.({
+            signal,
+            references,
+            dryRun: request.dry_run,
+            olderThan: Date.now() - retention.runs_max_age_days * 24 * 60 * 60_000,
+            ignoredRunIds: new Set(
+              request.dry_run ? receipt.deleted_runs.map((run) => run.run_id) : [],
+            ),
+            ignoredThreadIds: previewPurged,
+          })
+          .catch((error: unknown) => {
+            if (signal.aborted) throw error;
+            receipt.errors.push(`native home retention stopped: ${String(error)}`);
+            // Files it removed before stopping are not in freed_bytes.
+            if (!request.dry_run) receipt.effects = "unknown";
+            morePending = true;
+            return undefined;
+          });
+        if (native) {
+          receipt.freed_bytes += native.freedBytes;
+          receipt.errors.push(...native.errors);
+          morePending ||= native.truncated;
+          receipt.holds.push(...(native.holds ?? []));
+          receipt.held.native_homes = native.heldHomes ?? 0;
+          if (request.native_home_report) receipt.native_homes = native.reports;
+        }
+        receipt.holds.push(...(references.holds ?? []).slice(reportedGenerationHolds));
+        receipt.errors.unshift(
+          ...leftovers.errors,
+          ...trash.errors,
+          ...(references.errors ?? []),
+          ...inventoryErrors,
+        );
+        if (request.trash_purge_report) {
+          receipt.purged_threads = trash.purged;
+          receipt.purge_leftovers = leftovers.finished;
+        }
+        receipt.truncated ||= morePending;
+        receipt.finished_at = new Date().toISOString();
+        if (morePending) truncatedReceipts.add(receipt);
+        lastReceipt = receipt;
+        return receipt;
+      } finally {
+        references.close?.();
       }
+    } catch (error) {
+      if (!signal.aborted) throw partialRetentionFailure(error, leftovers, trash);
+      // Cancellation during inventory has not retired any run. Preserve any
+      // completed thread purges and use the same typed resumable receipt.
+      const receipt = await runRetentionPass(
+        {
+          runsMaxAgeDays: retention.runs_max_age_days,
+          reviewsMaxAgeDays: retention.reviews_max_age_days,
+          keepLastRunsPerProject: retention.keep_last_runs_per_project,
+        },
+        request,
+        { signal, projects: () => [], records: () => [], referencedRunIds: () => new Set() },
+      );
+      receipt.errors.unshift(...leftovers.errors, ...trash.errors);
+      if (request.trash_purge_report) {
+        receipt.purged_threads = trash.purged;
+        receipt.purge_leftovers = leftovers.finished;
+      }
+      truncatedReceipts.add(receipt);
+      lastReceipt = receipt;
+      return withoutRetentionInventory(receipt);
     }
-    const receipt = await runRetentionPass(
-      {
-        runsMaxAgeDays: retention.runs_max_age_days,
-        reviewsMaxAgeDays: retention.reviews_max_age_days,
-        keepLastRunsPerProject: retention.keep_last_runs_per_project,
-      },
-      request,
-      {
-        projects: () => gcProjects,
-        records: () => records,
-        referencedRunIds,
-        // Advisory data-root disclosure: the ONE owned-root derivation
-        // (claudexorOwnedRoot covers both the default ~/.claudexor tree and
-        // an explicit CLAUDEXOR_CONFIG_DIR override) is injected here so the
-        // pass itself never reaches for globals. The mode rides along:
-        // claudexorOwnedRoot() collapses onto userConfigDir() exactly when a
-        // CLAUDEXOR_CONFIG_DIR override is active (in the default mode the
-        // owned root is ~/.claudexor while the config dir is its v3 subtree),
-        // and the override root owns secrets.json/plugins/quota/workspaces at
-        // its top level where the default root does not.
-        dataRoot: claudexorOwnedRoot(),
-        dataRootMode: claudexorOwnedRoot() === userConfigDir() ? "override" : "default",
-      },
-    );
-    receipt.errors.unshift(...leftovers.errors, ...trash.errors);
-    if (request.trash_purge_report) {
-      receipt.purged_threads = trash.purged;
-      receipt.purge_leftovers = leftovers.finished;
-    }
-    return receipt;
   };
-  return (request) => {
-    const chained = (inFlight ?? Promise.resolve()).then(
-      () => runOnce(request),
-      () => runOnce(request),
-    );
-    inFlight = chained;
-    return chained.finally(() => {
-      if (inFlight === chained) inFlight = null;
-    });
-  };
+  const run = serializeRetention(runOnce);
+  run.hasMore = (receipt = lastReceipt ?? undefined) =>
+    receipt !== undefined && truncatedReceipts.has(receipt);
+  return run;
 }
 
-/**
- * SCHEDULE one bounded retention pass after ownership+ready (W3.6) — it never
- * blocks boot, and the unref'd timer never keeps a stopping daemon alive.
- * Failures are logged, never fatal.
- */
-export function scheduleStartupRetention(
-  runner: RetentionRunner,
-  opts: { logPath: string; shuttingDown: () => boolean; delayMs?: number },
-): void {
-  const timer = setTimeout(() => {
-    if (opts.shuttingDown()) return;
-    void runner({ dry_run: false, trash_purge_report: true }).then(
-      (receipt) =>
-        logLine(
-          opts.logPath,
-          `retention: freed ${receipt.freed_bytes} bytes (${receipt.deleted_runs.length} runs, ` +
-            `${receipt.deleted_reviews.length} reviews, ` +
-            `${receipt.purged_threads?.length ?? 0} expired trash threads, ` +
-            `${receipt.purge_leftovers?.length ?? 0} finished purges, ${receipt.errors.length} errors)`,
-        ),
-      (error: unknown) =>
-        logLine(
-          opts.logPath,
-          `retention FAILED: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-    );
-  }, opts.delayMs ?? 60_000);
-  timer.unref?.();
+/** A pass that stopped before its receipt still names what it had already done:
+ * finished purges and purged trash are effects, never reported as nothing. */
+function partialRetentionFailure(
+  error: unknown,
+  leftovers: { finished: string[] },
+  trash: { purged: string[] },
+): unknown {
+  const done = leftovers.finished.length + trash.purged.length;
+  if (done === 0) return error;
+  return new Error(
+    `${String(error)}; before it stopped, this pass had purged ${trash.purged.length} expired trash thread(s) and finished ${leftovers.finished.length} purge cleanup(s)`,
+    { cause: error },
+  );
 }

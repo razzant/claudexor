@@ -18,7 +18,13 @@ import { directoryChangedEntries, type DirectoryCandidate } from "./directoryCan
  * finding cites the matched files as evidence (BIBLE: evidence beats summaries).
  */
 export function policyFindings(
-  run: { diff: string; files?: DirectoryCandidate },
+  run: {
+    diff: string;
+    files?: DirectoryCandidate;
+    patchViewUnavailable?: unknown;
+    changedPaths?: string[];
+    existingPaths?: string[];
+  },
   reviewVerified: boolean,
   protectedPaths: string[] = [],
   autoProtectedPaths: string[] = [],
@@ -38,7 +44,17 @@ export function policyFindings(
         additions: 0,
         deletions: 0,
       }
-    : diffStats(run.diff);
+    : run.patchViewUnavailable
+      ? {
+          // An unrendered result: every changed path from its no-renames raw
+          // diff, so path policy never sees fewer touched paths than exist.
+          paths: run.changedPaths ?? [],
+          touchedPaths: run.changedPaths ?? [],
+          existingPaths: run.existingPaths ?? [],
+          additions: 0,
+          deletions: 0,
+        }
+      : diffStats(run.diff);
   // Path policy gates match stats.touchedPaths — the one owner of "what the
   // diff touches" (core diff.ts, G1 class); a gate matching a narrower
   // projection is an EXPLICIT decision, never an accident. deny_paths: ANY

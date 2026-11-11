@@ -1,0 +1,58 @@
+{
+  "$ref": "#/definitions/RunWaitManyInput",
+  "definitions": {
+    "RunWaitManyInput": {
+      "type": "object",
+      "properties": {
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "runId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "seen": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 43,
+                    "maxLength": 43,
+                    "pattern": "^[A-Za-z0-9_-]{43}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "runId"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "waitMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 50000,
+          "default": 25000
+        },
+        "includeBlocking": {
+          "type": "boolean",
+          "description": "true adds `blocking` to each summary with pending questions; omitted or false returns the compact rows unchanged."
+        }
+      },
+      "required": [
+        "targets"
+      ],
+      "additionalProperties": false,
+      "description": "Read-only attention observation; compact request JSON is at most 1048576 UTF-8 bytes."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

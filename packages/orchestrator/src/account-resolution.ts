@@ -1,4 +1,11 @@
 import type { QuotaRequestKind } from "@claudexor/schema";
+import {
+  pinnedWindowBlocked,
+  quotaRefusalBasis,
+  quotaRefusalResetsAt,
+  quotaRefusalWithScope,
+  subscriptionWindowExhausted,
+} from "./quota-refusal-scope.js";
 import type {
   AuthPreference,
   CredentialProfile,
@@ -18,7 +25,6 @@ import {
   credentialPoolExhausted,
   profileQuotaBlock,
   type PoolExhaustionCandidate,
-  type QuotaBlock,
 } from "./credential-cooldown.js";
 import { readyProfilesForRotation } from "./credential-differential.js";
 import { applicableCredentialUnusable } from "./account-evidence.js";
@@ -27,7 +33,6 @@ import {
   effectiveLimitAction,
   limitSubjectRoute,
   profileHeadroomBreach,
-  type HeadroomBreach,
   type ProfilePolicy,
 } from "./credential-profile-rotation.js";
 import {
@@ -119,62 +124,6 @@ export interface AccountResolutionContext {
   emit: AccountResolutionEmit;
 }
 
-/**
- * A spent subscription window on an EXPLICITLY PINNED account, refused
- * MACHINE-READABLY (D-U6: a pin is strict — never a silent rotation). Homed
- * beside its A4 sibling `pinnedWindowBlocked` in the pinned-lane owner.
- *
- * The verdict a caller actually needs from this refusal is "not now, come back
- * at T" — and the only honest way to deliver T is as a field. Gluing it into
- * the sentence and shipping the terminal as `category: internal, code: null`
- * left every consumer (a surface, a scheduler, an automating host) to regex
- * the prose for a timestamp, which no contract in this repo permits. The
- * message stays human-readable; the machine reads `code` and `resetsAt`, which
- * the run terminal lifts onto `final/failure.yaml` verbatim.
- */
-export function subscriptionWindowExhausted(
-  profileId: string,
-  harnessId: string,
-  breach: HeadroomBreach,
-): Error {
-  return Object.assign(
-    new Error(
-      `credential profile "${profileId}" (${harnessId}) is over its headroom threshold ` +
-        `(${breach.constraint_id} at ${Math.round(breach.used_ratio * 100)}% >= ${Math.round(breach.threshold * 100)}%; ` +
-        `a pinned account never rotates${breach.resets_at ? `; resets ${breach.resets_at}` : ""})`,
-    ),
-    {
-      code: "subscription_window_exhausted",
-      // Not `internal`: nothing malfunctioned. The account cannot serve this
-      // run until its window reopens, which is what harness_unavailable means.
-      category: "harness_unavailable",
-      resetsAt: breach.resets_at,
-    },
-  );
-}
-
-/** The strict pin's refusal for an OBSERVED live block (A4): same typed code
- * and category as the headroom form — a consumer asks "when can I come back",
- * not which detector fired — with the block's own evidence in the prose. */
-function pinnedWindowBlocked(profileId: string, harnessId: string, block: QuotaBlock): Error {
-  return Object.assign(
-    new Error(
-      `credential profile "${profileId}" (${harnessId}) is ${
-        block.kind === "exhausted"
-          ? "over an observed vendor window"
-          : "in a vendor rate-limit cooldown"
-      } (${block.constraint_id ?? "cooldown"}; a pinned account never rotates${
-        block.resets_at ? `; resets ${block.resets_at}` : ""
-      })`,
-    ),
-    {
-      code: "subscription_window_exhausted",
-      category: "harness_unavailable",
-      resetsAt: block.resets_at,
-    },
-  );
-}
-
 /** A live credential ledger verdict outranks bounded stale auth evidence even
  * on a strict pin. Keep the refusal typed as harness unavailability without
  * inventing a quota/reset code for a credential that is actually revoked. */
@@ -210,17 +159,18 @@ function poolExhaustionCandidates(ctx: AccountResolutionContext, ready: Readonly
         model,
         ctx.requestKind,
       );
-      const block = breach
-        ? null
-        : profileQuotaBlock(
-            snapshots,
-            harnessId,
-            row.profile_id,
-            limitSubjectRoute(row),
-            model,
-            undefined,
-            ctx.requestKind,
-          );
+      // A breach speaks for a dated block, but never hides the row's own refusal
+      // with no reopening time (#558) from the terminal's fold.
+      const observed = profileQuotaBlock(
+        snapshots,
+        harnessId,
+        row.profile_id,
+        limitSubjectRoute(row),
+        model,
+        undefined,
+        ctx.requestKind,
+      );
+      const block = breach && !observed?.reopening ? null : observed;
       const vendor = vendorCredentialObservation(ctx.quota, harnessId, row.profile_id);
       const dead =
         applicableCredentialUnusable(
@@ -328,30 +278,40 @@ export async function resolveAccountForRun(
       model,
       ctx.requestKind,
     );
-    const block = breach
-      ? null
-      : profileQuotaBlock(
-          snapshots,
-          harnessId,
-          pinned.profile_id,
-          limitSubjectRoute(pinned),
-          model,
-          undefined,
-          ctx.requestKind,
-        );
+    // A provider block outranks the owner's reserve whatever the threshold
+    // (#318): a spent window is never relabelled as a discretionary reserve.
+    const block = profileQuotaBlock(
+      snapshots,
+      harnessId,
+      pinned.profile_id,
+      limitSubjectRoute(pinned),
+      model,
+      undefined,
+      ctx.requestKind,
+    );
     if (!breach && !block) return pinned;
+    const refusal = block
+      ? pinnedWindowBlocked(pinned.profile_id, harnessId, block, breach)
+      : subscriptionWindowExhausted(pinned.profile_id, harnessId, breach!);
+    // Window, usage, reset and basis all describe the refusal's controlling evidence.
+    const basis = refusal.quotaRefusal;
     emit("route.profile.headroom_exceeded", {
       harness_id: harnessId,
       profile_id: pinned.profile_id,
       action: "refuse",
-      constraint_id: breach?.constraint_id ?? block?.constraint_id ?? null,
-      used_ratio: breach?.used_ratio ?? null,
+      constraint_id: basis?.constraintId ?? null,
+      used_ratio: basis?.usedRatio ?? null,
       threshold: policy.headroom_threshold,
-      resets_at: breach?.resets_at ?? block?.resets_at ?? null,
+      resets_at: quotaRefusalResetsAt(breach, block),
+      basis: basis?.basis ?? null,
     });
-    throw breach
-      ? subscriptionWindowExhausted(pinned.profile_id, harnessId, breach)
-      : pinnedWindowBlocked(pinned.profile_id, harnessId, block as QuotaBlock);
+    throw quotaRefusalWithScope(refusal, {
+      harness: harnessId,
+      profileId: pinned.profile_id,
+      model,
+      requestKind: ctx.requestKind,
+      constraintId: basis?.constraintId,
+    });
   }
   const pool = accountPoolRows(registry, harnessId);
   // The legacy ladder serves ONLY harnesses with no REGISTERED subscription
@@ -504,24 +464,23 @@ export async function resolveAccountForRun(
       );
       // A4: an observed live block on the bound row (reactive cooldown /
       // spent window) unbinds it exactly like a fresh breach would.
-      const block = breach
-        ? null
-        : profileQuotaBlock(
-            snapshots,
-            harnessId,
-            boundId,
-            limitSubjectRoute(bound),
-            model,
-            undefined,
-            ctx.requestKind,
-          );
+      const block = profileQuotaBlock(
+        snapshots,
+        harnessId,
+        boundId,
+        limitSubjectRoute(bound),
+        model,
+        undefined,
+        ctx.requestKind,
+      );
       if (verdict === "available" && !breach && !block) return bound;
-      boundSwitchReason =
-        breach || block
-          ? `quota window exhausted${
-              (breach?.resets_at ?? block?.resets_at)
-                ? ` (resets ${breach?.resets_at ?? block?.resets_at})`
-                : ""
+      const reserveOnly = quotaRefusalBasis(breach, block)?.basis === "owner_reserve";
+      const resetsAt = quotaRefusalResetsAt(breach, block);
+      boundSwitchReason = block?.reopening
+        ? "the vendor refused further usage, with no reopening time named"
+        : breach || block
+          ? `${reserveOnly ? "saved quota reserve reached" : "quota window exhausted"}${
+              resetsAt ? ` (resets ${resetsAt})` : ""
             }`
           : (verdict ?? "not ready");
     } else {
@@ -582,6 +541,8 @@ export async function resolveAccountForRun(
   });
   throw credentialPoolExhausted({
     harnessId,
+    model,
+    requestKind: ctx.requestKind,
     // The triggering subject of a preflight pool refusal is the thread's
     // bound row when one exists (its exhaustion is what forced the pool
     // decision); a fresh unbound run has no subject of its own.

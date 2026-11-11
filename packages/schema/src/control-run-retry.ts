@@ -1,9 +1,11 @@
 import { z } from "zod/v3";
 import { Id } from "./primitives.js";
+import { TaskGroupReceipt } from "./task-group.js";
 
 export function makeControlRunRetrySchemas<T extends z.ZodTypeAny>(runRequest: T) {
   const startInfo = z
     .object({
+      ...TaskGroupReceipt.partial().shape,
       jobId: z.string().optional().describe("Daemon job id backing the run."),
       runId: z.string().describe("Run id."),
       taskId: z.string().optional().describe("Task id, when already allocated."),
@@ -12,6 +14,7 @@ export function makeControlRunRetrySchemas<T extends z.ZodTypeAny>(runRequest: T
     .describe("Response for a successfully enqueued run.");
   const response = z
     .object({
+      ...TaskGroupReceipt.partial().shape,
       retryOf: Id,
       jobId: Id,
       runId: Id.nullable().default(null),
@@ -44,5 +47,14 @@ export function makeControlRunRetrySchemas<T extends z.ZodTypeAny>(runRequest: T
     })
     .strict()
     .describe("Editable Run Again draft copied from a prior run with explicit omissions.");
-  return { startInfo, response, draft };
+  const queuedInfo = <S extends z.ZodTypeAny>(state: S) =>
+    z
+      .object({
+        ...TaskGroupReceipt.partial().shape,
+        jobId: z.string().describe("Daemon job id."),
+        state,
+        error: z.string().optional().describe("Error message, when the job failed."),
+      })
+      .describe("Compact state of a queued/running daemon job.");
+  return { startInfo, response, draft, queuedInfo };
 }

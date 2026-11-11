@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { Orchestrator } from "@claudexor/orchestrator";
 import {
   BOOLEAN_FLAGS,
   CLI_COMMANDS,
@@ -21,10 +22,14 @@ import {
 } from "./command-scope.js";
 import { commandHelpJson, findCommand, renderCommandHelp } from "./command-help.js";
 import { reviewCommand } from "./review-command.js";
+import { parseArgs, requiredStringFlagError } from "./args.js";
 
 describe("command registry — the one owner of the CLI surface", () => {
   it("flag kinds partition KNOWN_FLAGS exactly (no orphan or double-classified flag)", () => {
-    expect(VALUE_FLAGS.length + BOOLEAN_FLAGS.size).toBe(KNOWN_FLAGS.size);
+    // A retired value flag stays known only so its command refuses it.
+    const retired = CLI_FLAGS.filter((f) => f.kind === "value" && f.retired === true);
+    expect(VALUE_FLAGS.length + retired.length + BOOLEAN_FLAGS.size).toBe(KNOWN_FLAGS.size);
+    for (const f of retired) expect(VALUE_FLAGS).not.toContain(f.name);
     for (const f of VALUE_FLAGS) expect(BOOLEAN_FLAGS.has(f)).toBe(false);
     expect(new Set(CLI_FLAGS.map((f) => f.name)).size).toBe(CLI_FLAGS.length); // unique names
   });
@@ -147,8 +152,10 @@ describe("command registry — the one owner of the CLI surface", () => {
       "primary-harness",
       "max-usd",
       "max-seconds",
+      "time-limit-mode",
       "max-turns",
       "prompt-file",
+      "task-group-id",
       "thread",
       "resume",
       "json-stream",
@@ -157,6 +164,7 @@ describe("command registry — the one owner of the CLI surface", () => {
       "model",
       "effort",
       "processing",
+      "prompt-cache-ttl",
       "workspace-kind",
       "scope-path",
       "portfolio",
@@ -165,6 +173,7 @@ describe("command registry — the one owner of the CLI surface", () => {
       "instructions",
       "instructions-file",
       "attach",
+      "attach-resource",
       "image",
       "json",
     ];
@@ -186,6 +195,7 @@ describe("command registry — the one owner of the CLI surface", () => {
       "reviewer-model",
       "reviewer-effort",
       "in-place",
+      "auxiliary-writable-root",
     ];
     const askMode = ["n", "deep-scan", "output-schema"];
     const planMode = ["n", "council"];
@@ -256,6 +266,41 @@ describe("command registry — the one owner of the CLI surface", () => {
     expect(commandPositionalError("project", ["list", "unexpected"])).toContain("usage:");
   });
 
+  it("admits and advertises the profiles migration rollback, still refusing invalid shapes (#570)", () => {
+    expect(commandPositionalError("profiles", ["rollback-migration"])).toBeNull();
+    expect(commandPositionalError("profiles", ["rollback-migration", "codex"])).toBeNull();
+    // One optional harness only; the refusal names the reachable spelling.
+    expect(commandPositionalError("profiles", ["rollback-migration", "codex", "claude"])).toContain(
+      "rollback-migration [harness]",
+    );
+    expect(commandPositionalError("profiles", ["migration-rollback"])).toContain(
+      "invalid positional arguments",
+    );
+    // `--harness` is not a profiles flag, so it cannot silently widen a
+    // one-harness rollback to every migrated harness.
+    expect(commandFlagScopeError("profiles", ["harness"])).toContain("--harness");
+    expect(findCommand("accounts-migration-rollback")).toBeUndefined();
+    const profiles = findCommand("profiles") as CliCommandSpec;
+    expect(renderCommandHelp(profiles)).toContain("rollback-migration [harness]");
+    expect(renderHelp("0.0.0-test")).toContain("rollback-migration [harness]");
+  });
+
+  it("scopes --display-name to `profiles add` across every verb profiles dispatches (#570)", () => {
+    const profiles = findCommand("profiles") as CliCommandSpec;
+    // The scope check passes an undeclared verb, so a missing verb (or alias)
+    // would silently keep ignoring the flag.
+    const verbs = profiles.positionalPatterns.flatMap((pattern) => pattern.prefix ?? []);
+    expect(Object.keys(profiles.subcommandFlags ?? {}).sort()).toEqual([...verbs].sort());
+    for (const verb of verbs) {
+      const error = subcommandFlagScopeError("profiles", verb, ["display-name"]);
+      if (verb === "add") expect(error).toBeNull();
+      else expect(error, verb).toContain("--display-name");
+      expect(subcommandFlagScopeError("profiles", verb, ["json"]), verb).toBeNull();
+    }
+    // The preflight union keeps it, so the add form reaches its handler.
+    expect(commandFlagScopeError("profiles", ["display-name"])).toBeNull();
+  });
+
   it("host fallback examples and recovery verbs project the registry, not hand lists", () => {
     expect(hostFallbackExamples()).toEqual([
       'claudexor ask "..."',
@@ -317,6 +362,49 @@ describe("command registry — the one owner of the CLI surface", () => {
     } finally {
       write.mockRestore();
     }
+  });
+
+  it("refuses the retired --delta-scope before any review work, naming the replacement (#257)", async () => {
+    const reviewDiff = vi
+      .spyOn(Orchestrator.prototype, "reviewDiff")
+      .mockRejectedValue(new Error("a retired invocation must not reach the review engine"));
+    const output: string[] = [];
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(((
+      value: string | Uint8Array,
+    ) => {
+      output.push(String(value));
+      return true;
+    }) as typeof process.stdout.write);
+    const sealedPacket = [
+      ...["--evidence-dir", "/nonexistent/packet", "--artifacts-dir", "/nonexistent/artifacts"],
+      ...["--candidate-sha", "a".repeat(40), "--candidate-tree", "b".repeat(40)],
+      ...["--packet-manifest-digest", "c".repeat(64)],
+    ];
+    const retiredInvocations = [
+      ["review", ...sealedPacket, "--delta-scope", "d".repeat(40)],
+      ["review", "--diff", "/nonexistent/delta.patch", "--delta-scope", "d".repeat(40)],
+      ["review", ...sealedPacket, "--delta-scope"],
+      ["review", "--delta-scope", "--json"],
+      ["review", "--delta-scope="],
+    ];
+    try {
+      for (const argv of retiredInvocations) {
+        const args = parseArgs(argv);
+        // The generic value preflight leaves the retired flag to `review`, value or not.
+        expect(requiredStringFlagError(args, VALUE_FLAGS)).toBeNull();
+        expect(await reviewCommand(args, true)).toBe(2);
+        const refusal = JSON.parse(output.pop() ?? "{}") as { code?: string; error?: string };
+        expect(refusal.code).toBe("invalid_argument");
+        expect(refusal.error).toContain("--delta-scope was retired");
+        expect(refusal.error).toContain("claudexor review --diff delta.patch");
+      }
+      expect(reviewDiff).not.toHaveBeenCalled();
+    } finally {
+      write.mockRestore();
+      reviewDiff.mockRestore();
+    }
+    const help = renderCommandHelp(findCommand("review") as CliCommandSpec);
+    expect(help).toMatch(/--delta-scope <baseSha>\s+Retired; always errors/);
   });
 
   it("REPL help lists every slash command", () => {

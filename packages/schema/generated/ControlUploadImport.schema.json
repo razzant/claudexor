@@ -1,0 +1,134 @@
+{
+  "$ref": "#/definitions/ControlUploadImport",
+  "definitions": {
+    "ControlUploadImport": {
+      "type": "object",
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Durable store that owns this import key and its resource."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "uploading",
+            "ready",
+            "released",
+            "cancelled"
+          ],
+          "description": "open: send the bound bytes; uploading: a transfer is in flight; ready: resource is published; released: the published managed resource was later released by its caller and admits no new reference, a new attachment needs a new key; cancelled: finished without a resource, a new attempt needs a new key."
+        },
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Upload that receives this import's bytes."
+        },
+        "content": {
+          "type": "object",
+          "properties": {
+            "sizeBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Exact byte length."
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$",
+              "description": "Exact digest of the bytes: \"sha256:\" and 64 lowercase hex digits."
+            }
+          },
+          "required": [
+            "sizeBytes",
+            "sha256"
+          ],
+          "additionalProperties": false,
+          "description": "Exact bytes a keyed import owns, bound by its first accepted declaration."
+        },
+        "receivedBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resource": {
+          "type": "object",
+          "properties": {
+            "resourceId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
+            },
+            "purpose": {
+              "type": "string",
+              "const": "model",
+              "description": "Immutable model-operation purpose; absent means a legacy or ordinary attachment."
+            },
+            "lifetime": {
+              "type": "string",
+              "const": "managed",
+              "description": "managed: its caller may later release the ID (POST /v2/resources/:id/release), after which no new reference is admitted while already accepted work keeps the bytes. Absent: indefinite reuse."
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "image",
+                "file"
+              ],
+              "description": "Kind of attached resource: image input or generic file bytes."
+            },
+            "mime": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Content hash in algo:hex form, e.g. \"sha256:abcd...\"."
+            },
+            "sizeBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "createdAt": {
+              "type": "string",
+              "minLength": 1,
+              "description": "ISO-8601 timestamp string."
+            },
+            "deduplicated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "resourceId",
+            "kind",
+            "mime",
+            "name",
+            "sha256",
+            "sizeBytes",
+            "createdAt",
+            "deduplicated"
+          ],
+          "additionalProperties": false,
+          "description": "The immutable resource, present exactly when state is ready or released."
+        },
+        "releasedAt": {
+          "$ref": "#/definitions/ControlUploadImport/properties/resource/properties/createdAt",
+          "description": "The first release of the resource, present exactly when state is released."
+        }
+      },
+      "required": [
+        "storeId",
+        "state",
+        "uploadId",
+        "content",
+        "receivedBytes"
+      ],
+      "additionalProperties": false,
+      "description": "Current state of one keyed import, identical for its first call and every replay."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

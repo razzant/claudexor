@@ -1,13 +1,15 @@
 import { join } from "node:path";
 import type { ArtifactStore } from "@claudexor/artifact-store";
-import type { BudgetLedger } from "@claudexor/budget";
+import type { BudgetLedger, CashCertainty } from "@claudexor/budget";
 import { DecisionRecord, type RunOutcomeFacts } from "@claudexor/schema";
 
 export interface SettledBudgetSnapshot {
+  /** Known settled cash (the run result's figure); the decision applies `cashCertainty`. */
   spendUsd: number | null;
   valuationUsd: number | null;
   estimated: boolean;
   valuationKnowledge: "exact" | "estimated" | "unknown";
+  cashCertainty?: CashCertainty;
 }
 
 interface BudgetSnapshotSource {
@@ -15,6 +17,21 @@ interface BudgetSnapshotSource {
   valuation?: () => number;
   spendEstimated?: () => boolean;
   valuationKnowledge?: () => "exact" | "estimated" | "unknown";
+  cashCertainty?: () => CashCertainty;
+}
+
+/** Decision cash fields. An unknown reported total is never presented as its
+ * known subtotal; the cap-governed part stays visible beside it, like the run
+ * budget's `spendUsd` / `controllableSpendUsd`. Without certainty (ledgerless
+ * or legacy callers) the known amount is kept unchanged. */
+function decisionCash(spendUsd: number | null, certainty: CashCertainty | undefined) {
+  if (!certainty) return { spend_usd: spendUsd, cash_usd: spendUsd };
+  const total = certainty.reported === "unknown" ? null : spendUsd;
+  return {
+    spend_usd: total,
+    cash_usd: total,
+    controllable_cash_usd: certainty.controllable === "unknown" ? null : spendUsd,
+  };
 }
 
 export function settledBudgetSnapshot(source: BudgetSnapshotSource): SettledBudgetSnapshot {
@@ -38,11 +55,18 @@ export function settledBudgetSnapshot(source: BudgetSnapshotSource): SettledBudg
   } catch {
     valuationKnowledge = "unknown";
   }
+  let cashCertainty: CashCertainty | undefined;
+  try {
+    cashCertainty = source.cashCertainty?.();
+  } catch {
+    cashCertainty = { reported: "unknown", controllable: "unknown" };
+  }
   return {
     spendUsd: read(source.spend),
     valuationUsd: read(source.valuation),
     estimated,
     valuationKnowledge,
+    ...(cashCertainty ? { cashCertainty } : {}),
   };
 }
 
@@ -72,8 +96,7 @@ export function reconcileDecisionBudget(
       : {}),
     budget_summary: {
       ...priorBudget,
-      spend_usd: budget.spendUsd,
-      cash_usd: budget.spendUsd,
+      ...decisionCash(budget.spendUsd, budget.cashCertainty),
       valuation_usd: budget.valuationUsd,
       estimated: budget.estimated,
       valuation_knowledge: budget.valuationKnowledge,
@@ -85,19 +108,20 @@ export function reconcileDecisionBudget(
 
 export function decisionBudgetSummary(ledger: BudgetLedger) {
   return {
-    spend_usd: ledger.spend(),
+    ...decisionCash(ledger.spend(), ledger.cashCertainty()),
     estimated: ledger.estimated(),
-    cash_usd: ledger.spend(),
     valuation_usd: ledger.valuation(),
     valuation_knowledge: ledger.valuationKnowledge(),
   } as const;
 }
 
 export function arbitrationBudgetOptions(ledger: BudgetLedger) {
+  const cash = decisionCash(ledger.spend(), ledger.cashCertainty());
   return {
-    spendUsd: ledger.spend(),
+    spendUsd: cash.spend_usd,
     estimatedSpend: ledger.estimated(),
-    cashUsd: ledger.spend(),
+    cashUsd: cash.cash_usd,
+    controllableCashUsd: cash.controllable_cash_usd ?? null,
     valuationUsd: ledger.valuation(),
     valuationKnowledge: ledger.valuationKnowledge(),
   } as const;

@@ -34,6 +34,9 @@ extension AppModel {
         if task.routeProof == .unverified, existing.routeProof != .unverified { task.routeProof = existing.routeProof }
         task.authRoute = task.authRoute ?? existing.authRoute
         task.failureCategory = task.failureCategory ?? existing.failureCategory
+        task.failureCode = task.failureCode ?? existing.failureCode
+        task.failureRecord = task.failureRecord ?? existing.failureRecord
+        task.rawContext = task.rawContext ?? existing.rawContext
         // Delegation lineage/outcome rides the list summary in current engines.
         // Preserve the last engine-owned projection across a skewed/older
         // summary rather than making a durable warning or child link flicker.
@@ -45,6 +48,8 @@ extension AppModel {
         // build resets these to nil/empty, so a refresh mid-thread would blank the
         // Run Detail receipts unless the last hydrated value is kept.
         task.valuationUsd = task.valuationUsd ?? existing.valuationUsd
+        // The cap-governed cash rides Run Detail only (the list summary has the total).
+        task.controllableSpendUsd = task.controllableSpendUsd ?? existing.controllableSpendUsd
         task.council = task.council ?? existing.council
         task.outcomeBanner = task.outcomeBanner ?? existing.outcomeBanner
         task.applyEligibility = task.applyEligibility ?? existing.applyEligibility

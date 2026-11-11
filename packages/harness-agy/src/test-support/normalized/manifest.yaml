@@ -1,0 +1,15 @@
+# Already-normalized engine events, NOT raw vendor stdout. Never feed these
+# through parseAgyEvent or count them as a refreshed vendor stream pin.
+headless-permission-denial.jsonl:
+  source: recorded
+  representation: normalized_run_events
+  recorded_at: "2026-10-14"
+  cli_version: unknown
+  engine_version: unknown
+  original_seq: [20, 21, 22, 23]
+  raw_vendor_stdout: unavailable
+  sanitized: true
+  sanitization: run/task/session identifiers replaced; event payloads and timestamps retained
+  sha256: 510347929e5596292e3df7f785e68d10f825b91e90816399303d48046dbcf7eb
+  coverage: zero-exit native headless permission denial, historical empty-SUCCESS error and retry
+  limitation: historical error prose and retry are observations, not current classification or retry policy

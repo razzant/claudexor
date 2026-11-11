@@ -90,13 +90,19 @@ node scripts/model-hints-freshness.mjs # manifest known_models vs installed vend
 pnpm canary        # canary golden stories (offline fake harnesses; needs pnpm build first)
 ```
 
+Control-api tests load the built worker (`dist/bulk-worker.js`); run `pnpm --filter @claudexor/control-api build` before its focused tests.
+
 There is no root `pnpm lint` script at the moment. `pnpm format:check` checks
 Prettier formatting when a formatting pass is relevant. Note on Node versions:
-`.node-version` pins the development toolchain (24.16.0, matching CI); the
-supported engine floor is Node 24.15.0 with bundled SQLite 3.51.3 or newer.
-CI runs positive store coverage on 24.15.0 and 24.16.0 and proves typed refusal
-on Node 20.19.0. Publication repeats a clean installed-package CLI smoke on the
-published floor and pin before the GitHub Release becomes public.
+`.node-version` pins the development toolchain and the Node that releases ship
+(24.22.3, matching CI): the app's bundled `node` and the
+[SSH runtime archives](ARCHITECTURE.md#remote-ssh-execution). An engine-only
+update does not replace the app's Node. The supported engine floor is Node
+24.15.0 with bundled SQLite 3.51.3 or newer; 24.x releases before 24.22.3 lack
+Node's November 2026 security fixes, so npm installations should run the pin or
+newer. CI runs positive store coverage on 24.15.0 and 24.22.3 and proves typed
+refusal on Node 20.19.0. Publication repeats a clean installed-package CLI
+smoke on the published floor and pin before the GitHub Release becomes public.
 
 macOS app checks:
 
@@ -112,7 +118,7 @@ pnpm release:verify
 ```
 
 This is the portable Node/schema/documentation gate. Native platform checks run
-in GitHub CI; `pnpm release:verify:macos` adds optional local Swift and unsigned
+in GitHub CI; `pnpm release:verify:macos` adds optional local Swift and ad-hoc-signed
 app checks. Installed-vendor fixture/model freshness is diagnostic by default;
 `pnpm release:verify:vendors` opts into strict comparison when the relevant
 vendor CLIs are available. A missing local vendor CLI is not a contribution
@@ -136,10 +142,77 @@ independently, as described below. Missing signing/notary/npm credentials fail;
 there is no unsigned or GitHub-only fallback. npm packages publish in dependency
 order with provenance. An existing package is accepted only when its signed npm
 provenance binds this repository's release workflow, exact tag/commit and published
-digest; a collision fails. Eventual-consistency reads are bounded. The GitHub
+digest; a collision fails. Within one run, a named network failure permits at most
+three attempts of the same packed file, with a registry read before every retry.
+An exposed version then needs that file's original digest; a successful npm
+acknowledgement never permits another publish while indexing or attestations lag.
+Unknown outcomes stay unresolved. Transient registry reads are bounded separately
+from publishing; auth, digest and provenance failures are not retryable. The GitHub
 Release stays draft until all publication checks pass, rejects differing
-same-name assets, and becomes public as the final mutation. Published releases
-are never edited. Versions still use changesets and the fixed lockstep group.
+same-name assets, and becomes public as the final mutation. A published release's
+assets and tag are never changed, and the workflow refuses to touch a published
+release. A factual error in its notes is corrected by a maintainer in place, with a
+dated sentence, and in `CHANGELOG.md`. Versions still use changesets and the fixed
+lockstep group.
+
+A publish run can stop after npm accepted some of its packages, for example when
+npm had not yet exposed the last one by the end of its exposure wait. What that
+run sent can then be checked read-only:
+
+```bash
+node scripts/publish-npm-release.mjs --reconcile selection.json
+```
+
+The selection names the release identity and the versions to read:
+
+```json
+{
+  "registry": "https://registry.npmjs.org/",
+  "repository": "razzant/claudexor",
+  "workflowPath": ".github/workflows/release.yml",
+  "version": "<version>",
+  "ref": "refs/tags/v<version>",
+  "candidateSha": "<full candidate commit SHA>",
+  "packages": [
+    { "name": "@claudexor/cli", "prior": "accepted", "integrity": "sha512-<base64>" },
+    { "name": "@claudexor/policy", "prior": "uncertain" }
+  ]
+}
+```
+
+`prior` records what the stopped run showed: `accepted` when npm acknowledged the
+publish, `uncertain` when the outcome is unknown. It changes only the wording of
+the report; the registry decides every result. Each selected version must be
+exposed, be npm's `latest`, and carry signed npm provenance from this
+repository's release workflow, tag and candidate commit. When `integrity` gives
+the original tarball's sha512 integrity, the published bytes must be exactly
+those; without it the result is the narrower same-source provenance claim, and no
+tarball is packed to stand in for the original. The registry signatures of the
+selected versions and their dependencies are audited last. Every npm command
+passes the selected registry both as the default and for the `@claudexor` scope,
+because npm looks up a scoped package through its scope's registry first and a
+command-line value outranks every npmrc; dependencies under other scopes that
+the audit installs still follow the local npm configuration.
+
+The selected versions share one ten-minute exposure window, and no read, whether
+`npm view` or an attestation request, starts after it closes. Each of those reads
+is stopped after one minute, so waiting ends at most a minute after the window;
+each of the two audit commands is stopped after ten minutes, so a run that
+reaches the audit takes at most about 31 minutes. The command exits 0 only when
+every selected version verified and the audit passed. A version npm still does
+not expose is reported as unresolved, never as published or unsent. Reconciling
+again later is safe because the command never packs, publishes or moves a
+dist-tag. A selection with an unknown or misspelled field is refused before any
+registry read.
+
+Reconciliation does not find out which packages a stopped run sent, decide that
+an omitted or unexposed package was never sent, or publish what is missing. A
+publish run cannot establish the first two either, since it treats every version
+npm does not expose as unpublished; it can publish the remaining packages, which
+reconciliation never does. Reconciliation also cannot stop an ordinary
+re-dispatch: a publish run started while an accepted version is still not
+exposed sends another publish request for it. Because npm versions are
+immutable, that request cannot replace the accepted bytes, but it is still sent.
 
 The `publish` mode carries the OWNER-SIGNED runtime-update manifest (D-2),
 transported as a base64 workflow-dispatch input. The candidate run builds the
@@ -178,12 +251,9 @@ emits a regular-file/directory-only tarball for extractors without POSIX
 symlink semantics. It rejects escaping links, special files, and `.node`
 addons. The closure includes both top-level `claudexord.bundle.cjs` and
 `claudexor.bundle.cjs`, while Node remains host-owned. Embedders keep one exact
-tested full Node toolchain plus protocol/separate daemon-and-CLI
-entrypoints/size in their reviewed pin; local harness installation
-requires the toolchain's own adjacent npm entrypoint
-(`lib/node_modules/npm/bin/npm-cli.js` beside `bin/node`, or
-`node_modules\npm\bin\npm-cli.js` beside `node.exe`) and must never fall back
-to ambient PATH npm. The npm `engines` range
+tested Node runtime plus protocol/separate daemon-and-CLI
+entrypoints/size in their reviewed pin. Vendor installation uses adapter-declared
+commands and requires no adjacent npm. The npm `engines` range
 is not closure-smoke evidence. The existing signed manifest is the publication
 authority used to form that pin; runtime consumers may verify it directly or
 rely on a review-bound exact URL/`buildSha`/SHA-256/size pin, without a second
@@ -191,11 +261,45 @@ manifest or verifier. The focused builder test must cover an internal link's
 expected materialized bytes and an escaping-link refusal. A Windows claim also
 requires a native extract/exact-Node probe/isolated handshake/graceful-stop
 smoke; feature support must not be inferred from portable extraction alone,
-and local Windows harness installation uses the declared native or Node npm
-entrypoint for Codex and Claude. The Windows CI lane must prove managed and
-ordinary npm-prefix launch and the exact pinned version before a release claims
-that platform path. Other installer recipes retain their typed platform bounds;
-custom batch programs are not implicitly interpreted as npm launchers.
+and individual Windows harness routes need their own execution evidence. The release smoke retries only retryable stop
+refusals, for at most 30 seconds, and reports an empty, non-JSON or refused stop
+answer with the stop command's exit code;
+`scripts/lib/release-windows-stop.test.mjs` runs that exact loop from the
+workflow under pwsh with a fake `node` and daemon, checks the 30-second window
+against the loop's virtual pauses plus measured elapsed time, and fails on
+GitHub Actions when pwsh is missing. The required `vendor-programs` Linux/macOS
+job and one Windows test runner execute `scripts/vendor-program-smoke.mjs`.
+The proof installs every declared vendor route, compares its receipt to the next
+selection and native run preparation without login, repeats Install as a no-op,
+runs the program's own updater, and converts a previous release installed by real
+npm for each of the four declared product packages. A failed Update counts as a
+vendor refusal only when the program still answers and the identical command
+also fails directly under the runner environment; a direct success or launch
+error fails the route. A known older
+replacement must preserve npm and is reported as a guarded refusal. Every route
+is attempted before the script fails. Versions come only from the programs.
+Windows phases run in order against the ephemeral runner's actual profile and
+standard folders, because winget/MSI ignore a fictitious LOCALAPPDATA; POSIX uses
+disposable homes. The script requires GitHub Actions and must never run on an
+operator machine. These facts establish no login, model or app-server compatibility.
+Cursor Windows (#667) and OpenCode unattended Windows installation/second line
+(#668) remain absent capabilities. Existing standard npm launcher resolution is
+still tested; custom batch programs are not interpreted as npm launchers.
+
+`scripts/harness-program-freshness.mjs` joins the model-hints release gate. It
+fetches each distinct adapter-declared newest source, applies the shared pick
+rule and supported-major guard, and runs each distinct declared executable verb
+with `--help` where the program is present. Missing programs and script-only
+commands are explicitly skipped, never passed. It never runs an installer.
+Use `--sources-only` on a shared machine to avoid even probing installed programs.
+The data's release-notes links are literal verified vendor addresses. Fixture
+version constants stamp recordings and snapshots only. Focused cache regressions
+must include 18-account passive reads for answered and permanently mute programs,
+a failed fresh ask preserving an earlier answer, an unchanged wrapper refreshed
+when inventory, a fresh read or a native startup frame obtains a different
+version (continued missing answers cannot reveal its changed target), and
+late-answer and credential-invalidation fences. Conversion recovery tests kill a child with its package hidden and
+assert both retirement and restoration on the next explicit maintenance.
 
 The `publish` mode also carries `remote_runtime_manifest_b64`:
 the OWNER-SIGNED four-target SSH runtime manifest, transported the same way.
@@ -272,6 +376,17 @@ the system ones, so CI and other machines work unchanged:
   `docs/ARCHITECTURE.md`. The prepend is skipped when the daemon's own Node is
   the at-risk build.
 
+### Retention changes
+
+Exercise concurrent registration, relink/removal, late continuation/session ownership and
+recovery through the real SQL observer. Prove both unrelated cleanup progress and preservation
+of newly owned bytes; an unreadable changed owner must stay latched after its queue entry is
+consumed. Lane tests cover an unregistered namespace after its last thread/root record disappears,
+as well as a live ephemeral thread and quarantined/archived lane owners. Keep the [retention contract](ARCHITECTURE.md#7-control-api) and storage FEATURES row
+with the implementation. Last-pass tests exercise failure/hold streaks, preservation of the
+previous completion (including a failed durability barrier), preview/truncation, and reset
+only on completion. Regenerate the schema and its consuming fixtures together.
+
 ### Deterministic / hermetic testing
 
 Tests and local smokes must never touch real user state:
@@ -279,9 +394,77 @@ Tests and local smokes must never touch real user state:
 - Isolate global config, the daemon (token/socket/jobs/logs), trust files, and
   run artifacts by pointing `CLAUDEXOR_CONFIG_DIR` at a temp dir; isolate host
   plugin files by pointing `HOME` at a temp dir.
+- A linked-worktree verification build must explicitly put Turbo's cache in
+  run-owned scratch outside both the source checkout and the verification tree.
+  A private `HOME` does not redirect Turbo's shared Git-worktree cache. For a
+  POSIX shell with `TMPDIR` outside those trees:
+
+  ```bash
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/claudexor-build.XXXXXX")"
+  TURBO_CACHE_DIR="$scratch/turbo" pnpm build
+  ```
+
+  On other shells, set `TURBO_CACHE_DIR` to an equivalent absolute run-owned
+  scratch path. `--cache-dir` also selects the cache explicitly. `--force`
+  bypasses cache reads, but still writes cache entries. Keep reports, source
+  reproducers and intended binaries out of cache scratch and preserve them
+  before releasing the scratch directory. This recipe does not change normal
+  shared caching, capture rules or existing saved results.
+- A smoke that starts a packaged entry gives it an empty environment (`env -i`)
+  plus only the variables it needs, and observes the root derived from those
+  same values. A scratch `HOME` alone does not isolate a child that still
+  inherits `CLAUDEXOR_CONFIG_DIR`, `CLAUDEXOR_DAEMON_SOCK`,
+  `CLAUDEXOR_NO_CONTROL_API`, `NODE_OPTIONS` or provider keys. A smoke that
+  starts a daemon stops and reaps that exact child before deleting its root.
+- A slow synchronous cleanup that succeeds does not fail a run. Vitest compares a
+  hook's elapsed time after the hook returns and cannot stop synchronous work, so a
+  deadline on a synchronous removal could only fail one that finished late and
+  skip the hooks after it. A cleanup hook without an await (removal, restore,
+  synchronous close, its assertions) registers with timeout 0; a removal that
+  throws still fails. An awaited `fs/promises` removal keeps its deadline: Vitest
+  is still waiting when that timer fires, so it is a real one.
+- A cleanup that awaits a close or stop keeps Vitest's deadline for that wait and
+  removes afterwards, through `afterEachClosed` in
+  `packages/cli/src/test-support/after-each-closed.ts`: the close phase returns
+  the tail, synchronous unless registered with `"awaited"`, which keeps the
+  hook deadline for a tail that awaits an `fs/promises` removal
+  (`control-api/files-result.test.ts`). A close that rejects or times out keeps its
+  folders, also if it settles later, and a late close in one test cannot reach the
+  next test's folders or handles. The close hook's outcome decides this, never the
+  test's `signal`, which the test's own timeout may have aborted before the hook
+  began. A shared list or handle is taken before the first await,
+  and what follows the last await goes in the tail; a cleanup list keeps closes
+  and removals in separate lists, so one test's removals all follow its closes and
+  a failed close keeps all of that test's folders. A removal that waits for file
+  end goes through the tail too, so no other hook removes what a failed close
+  kept. A fixture's `close` is one operation whose outcome a second caller shares.
+  In `afterAll` the removal hook is registered first, with a flag the close hook
+  sets (`daemon/projects.test.ts`). `scripts/lib/vitest-reaper-hooks.test.mjs` pins
+  these cases under the default `sequence.hooks: "stack"`, which they rely on.
+- A test waiting for work behind the store's dispatch barrier (a model or image
+  send, an account-reset consume) waits for that work, not Vitest's 1 s
+  `waitFor` default: the barrier needs a flusher pass (200 ms cadence, much
+  slower under disk contention). The bound stays below the test timeout, the
+  failure names the phase, and callers assert the terminal state they expect.
 - Managed secrets always use the daemon-owned v2 0600 file store, so a
   disposable `CLAUDEXOR_CONFIG_DIR` fully contains test secret I/O. The public
   CLI cannot select a storage backend.
+- `pr` delivery tests that exercise the real publication scanner run only when
+  `CLAUDEXOR_BETTERLEAKS_PATH` names the pinned build; provision it with
+  `node scripts/provision-betterleaks.mjs --dest <file>` (CI does this before
+  its publication scan). It proves the archive with the code
+  `claudexor scanner prepare` ships, then replaces that file and the `LICENSE`
+  beside it. Their transport is a local bare remote and a fake `gh`; nothing is
+  pushed off the machine. See
+  [Publication scanner](ARCHITECTURE.md#publication-scanner).
+- On macOS, `scripts/build-engine-resources.sh` stages the pinned darwin
+  scanners into `native/betterleaks/`. It downloads the two official archives
+  unless `CLAUDEXOR_BETTERLEAKS_ARCHIVES` names a directory that already holds
+  them; both digests are checked either way. A development build that cannot
+  stage them prints a warning and ships none, so its `pr` refuses as
+  unavailable; `CLAUDEXOR_REQUIRE_BETTERLEAKS=1` (release, macOS CI) makes that
+  an error. `build-remote-runtime.mjs` takes the target's archive with
+  `--betterleaks-archive`.
 - Model-response changes exercise the actual adapter through the model-operation
   and resource/HTTP owners with injected provider I/O. Pin byte-faithful failed
   SSE and HTTP-body evidence, original exception causes, legacy query/result
@@ -293,6 +476,23 @@ Tests and local smokes must never touch real user state:
   signal, and timer dependencies and use temp roots only. They checksum the
   legacy registry before/after, exercise PID reuse and symlink/path fences, and
   never open Terminal or write `~/.claudexor`.
+- macOS app tests construct `AppModel` without persistence. Such a model starts
+  empty, keeps remote connections, the offline remote thread list, preferences
+  and reset recovery in memory, and reads none of `CLAUDEXOR_DEBUG_APPEARANCE`,
+  `CLAUDEXOR_PROJECT_ROOT` or `~/.ssh/config`; only `ClaudexorApp` passes the
+  user's `AppPersistence`. A persistence test injects temporary Kit stores or
+  closure-backed preferences. `HOME` does not move Foundation's home directory,
+  so a test of the default locations re-executes itself through
+  `isolatedRuntimeConsumer` (fresh `HOME` and `CFFIXED_USER_HOME`) and proves
+  each path resolves inside that home before writing there. Launch restore
+  saves the preferences it applies, so that test only reads the real user
+  defaults and gives the app's composition a recording preference writer; a
+  fresh `HOME` or `CFFIXED_USER_HOME` is not relied on to keep a write out of
+  the developer's defaults domain. Unchanged decoy bytes prove no write; a
+  model that stays empty beside loadable decoys proves no read. Rescan, New SSH
+  Host and adding a connection still use the real `~/.ssh/config`, and a test
+  that reaches the default daemon discovery or launcher still needs
+  `isolatedRuntimeConsumer`.
 - The `fake-*` harnesses are the offline, keyless, deterministic fixtures
   (`--harness fake-success`, etc.); they are only selectable by explicit id and
   never enter automatic or reviewer pools. `fake-implement` additionally writes
@@ -300,6 +500,10 @@ Tests and local smokes must never touch real user state:
   Create chains are exercisable with no real harness. `fake-session` reports a
   native session id (resuming one the engine carries) plus a probe of the cwd and
   `HOME` it was handed, so thread lane-home and native-resume stories run
+  offline. `fake-steerable` parks for one live message; `fake-interactive`
+  declares an interaction channel, asks a large Unicode question, then parks for
+  one message whose receipt is only `accepted` (consumption follows as a status),
+  and asks a second question after a fixed pause, so MCP supervision stories run
   offline.
 - Canary fixtures use their candidate's built daemon and isolated endpoint,
   regardless of inherited entry/socket overrides. Cleanup must check the stop
@@ -307,6 +511,27 @@ Tests and local smokes must never touch real user state:
   Known absence and repeated disposal succeed; uncertain cleanup retains the
   root with `canary-cleanup.json`. This is normal teardown, not a guarantee
   against a runner killed before its cleanup executes.
+- Native writer-birth qualification runs after `pnpm build`, and in its own
+  Windows CI step:
+  `pnpm vitest run packages/daemon/src/writer-lease-pid-reuse.test.ts packages/cli/src/claudexord-writer-birth.test.ts`.
+  It drives the built daemon and CLI over the default endpoint in a private root
+  and prints one timing line, which is an observation and not a gate. Its
+  mismatched birth is seeded on a witness process the test owns, and it signals
+  only children it spawned. It does not force real PID recycling; injected
+  unknown and `EPERM` readings stay synthetic. A failed run, a failed soft check
+  included, logs the exact bytes of every writer record and root-authority
+  marker in its private root, with child stderr and the daemon log, before that
+  root is removed.
+- The Windows agy print/ConPTY acceptance reports a failed or timed-out run
+  as the worker's error message (or, without one, the console host's stderr)
+  followed by typed facts: its stage, the in-app runner's exit, allowlisted
+  receipt, input and state facts recorded before the worker's checks and
+  cleanup, and every recorded process not proven gone with its role; a probe
+  that cannot decide stays unknown. The typed facts never carry raw vendor
+  output, OAuth URLs or one-shot input. A cleanup failure is appended to the
+  run's own failure instead of replacing it. Portable controls drive the
+  worker's in-app outcome check with real exited children and the real receipt
+  decoder.
 - Council regression fixtures exercise actual planner transports and final
   artifacts: retained unverified drafts, original failures, merge selection and
   terminal RunFacts must agree. Check solo/draft/merge prompt guidance through
@@ -318,15 +543,25 @@ Tests and local smokes must never touch real user state:
   independent legacy/SQL comparisons. The 219-file frozen oracle is test-only:
   never refresh its hashes or goldens to fit a new implementation.
   `scripts/store-load-bench.mjs` measures the SQL request path and checkpoint
-  behavior; the writer's checkpoint threshold is not a maximum WAL size. Use
+  behavior; writes yield between transactions so readers, flushes and maintenance
+  can run even when the target rate is missed. Its final report awaits integrity
+  and a measured flush, including workloads too short for periodic timers.
+  The writer's checkpoint threshold is not a maximum WAL size. Use
   copied historical corpora and isolated roots. Run responsiveness/SSE and bundle
   worker checks without provider profiles; normal cleanup must close every
   fixture worker and daemon it owns. The durability and migration contracts are
   in [SQLite engine store](ARCHITECTURE.md#sqlite-engine-store).
-- Read-only run lookups (`inspect`, `apply`) connect to an already-running daemon
-  but never auto-start one (a typo'd run id reports `no such run`); only acting
-  paths (`agent`/`best-of`/`create`, `decision`) auto-start it. `daemon start` blocks
-  until the daemon is actually ready, so a follow-up `status`/run can't race it.
+  `node scripts/daemon-load-bench.mjs --base=<commit> --seconds=30 --rounds=2 --out=results/acceptance.json`
+  compares isolated source bundles with model-shaped writes and real run-detail
+  reads; it preserves raw status windows and stops only its own daemon PIDs.
+  Base and candidate must share the installed lockfile. See the
+  [2026-10-20 comparison](benchmarks/daemon-sync-20261020.md).
+- Read-only run lookups (`inspect`, the MCP status/inspect/result tools) attach
+  only to an already-running daemon and never auto-start one, so a typo'd run id
+  cannot launch a background daemon; delivery and acting paths (`apply`,
+  `agent`/`best-of`/`create`, `decision`) auto-start it. Lookup outcomes are listed
+  in [ARCHITECTURE](ARCHITECTURE.md#interactive-runs-waiting_on_user). `daemon start`
+  blocks until the daemon is actually ready, so a follow-up `status`/run can't race it.
 - Real-harness dogfood lives in `scripts/real-harness-battery.mjs`. Its default
   scratch mode runs disposable repos under `~/.claudexor/dogfood`, with an
   isolated config root. It asserts engine-owned artifacts, quarantines repeated
@@ -343,7 +578,7 @@ Tests and local smokes must never touch real user state:
   This mode accepts only the canonical default config path and requires the
   battery directory outside both `~/.claudexor` and the source checkout. It
   deliberately does not export `CLAUDEXOR_CONFIG_DIR`. The battery entrypoint
-  itself first forces every workspace build (no Turbo cache), then dynamically
+  itself first forces every workspace build (bypassing Turbo cache reads), then dynamically
   loads the resulting dist modules and records the launched daemon entry digest
   beside its exact version/SHA/entry handshake. The
   lane refuses a pre-existing daemon, stops only the identity-bound daemon it
@@ -368,10 +603,25 @@ Tests and local smokes must never touch real user state:
   receipt, and no `sandbox-exec` invocation. Codex, Claude, and Cursor each run
   default and named `workspace_write` rows; Agy is named-only. Cursor also runs
   trusted `full`; Claude/Codex Browser and Delegate rows retain their native
-  per-adapter access requirements. OpenCode `workspace_write` must refuse
-  before spawn, while its trusted-Full smoke is recorded as a conditional
-  omission when the binary/route is unavailable, not as a required PASS or
-  SKIP. The lane revokes every temporary disposable-repo full-access grant.
+  per-adapter access requirements. A Browser row serves a one-use loopback
+  page and passes only on a correlated Browser navigation or snapshot result
+  with typed `ok` status whose single Page block lists exactly that URL with a
+  title only the page carries; a tool name, another Browser tool, a failed
+  call, a longer URL or title, a Page block echoed in code or page text or cut
+  off by the summary bound, command output or the model's answer cannot
+  satisfy it. OpenCode `workspace_write`
+  must refuse before spawn, while its trusted-Full smoke is recorded as a
+  conditional omission when the binary/route is unavailable, not as a required
+  PASS or SKIP. The lane revokes every temporary disposable-repo full-access
+  grant.
+  Each of Codex, Claude, Cursor and Agy (named) also runs a readonly
+  capability row: an `ask` run must report a random word from a file outside
+  the project, the number of files in an outside directory and the
+  alphabetically first of their random names, and neither the project nor the
+  outside files may change. An echo, a write denial or a guessed count cannot
+  pass it, which is how agy readonly shipped unable to read (claudexor#525).
+  The row's request is an Ask body without reviewer models (Agent-only), and a
+  unit test runs it through the shared run-start admission.
   Every Codex and
   Claude task attempt in the daemon's complete new-job inventory must disclose
   `local_session` from `native_session`; an API fallback or undisclosed route
@@ -454,7 +704,34 @@ produce a new Standard request and reservation; an unknown outcome may not.
 
 Choosing Fast permits its premium service within existing monetary limits. It
 does not enable paid account settings, change credentials, buy credits, or raise
-limits. An explicit no-paid policy selects ordinary fallback before dispatch.
+limits. An explicit no-paid policy selects ordinary fallback before dispatch
+unless the exact native mode has a documented subscription allowance. On a
+verified ChatGPT subscription, ordinary Codex Fast (`fast`/`priority`) consumes
+included subscription limits ([OpenAI Speed documentation](https://learn.chatgpt.com/docs/agent-configuration/speed))
+and remains eligible under `paid_fallback: never` and `finite(0)`. This allowance
+does not cover `ultrafast`, other premium or unknown tiers, API credentials or
+unknown routes. Advisory Fast still requires the selected model/account's
+advertisement; an inherited native setting is preserved only within the same
+paid policy, and omission never selects Fast by itself. For Codex, omission may
+inherit the first account's own native setting, recorded with its
+`codex.managed_config` provenance; a retry, rotation or in-run continuation keeps
+that chosen intent and never adopts another account's setting (other adapters
+ignore the intent and read each account's own setting). Ordinary Fast is one
+intent under either spelling (`fast`/`priority`); Ultrafast is not. Exact Retry
+keeps its source run's inherited intent as it keeps the frozen model and effort;
+a new command or thread turn chooses its own initial intent. An inherited intent the next account
+cannot serve falls back to ordinary service with its reason, like an advisory
+preference; an exact native `serviceTier` is never substituted, and an inherited
+premium setting is never treated as an exact request.
+Allowance admission is not a debit receipt. A ChatGPT plan can spend purchased
+credits beyond its included limits for Standard as well as Fast, and no Codex
+transport reports that debit, so every verified Codex subscription cost basis
+declares `debit: "unobserved"`. That work completes under unlimited, positive and
+`finite(0)` caps with its reported cash unknown, never inferred as exact zero, in
+the run budget and the decision record alike; the finite cap governs only
+controllable cash and promises no provider-credit limit.
+API, unknown and premium routes, an earlier paid interval without a receipt, and
+actual cash receipts keep their meaning, including `cost_unverifiable`.
 Resolve native controls and mode-qualified billing before ranking and reservation;
 carry observed usage through the existing ledger. Authentication proves the
 credential route, not inclusion of premium service. A native list-price amount is
@@ -565,9 +842,10 @@ Use this split:
 
 Local operator guidance belongs in gitignored local files such as `AGENTS.md`.
 Temporary adversarial review packets and release scratch belong outside public
-docs. Review gates must be file-backed and diagnosable: persist local/redacted
-per-reviewer artifacts and progress events, and point reviewers at evidence
-files instead of embedding large diffs in process argv.
+docs. Review gates must be file-backed and diagnosable: persist local
+per-reviewer artifacts (reviewer text exact, diagnostic copies masked) and
+progress events, and point reviewers at evidence files instead of embedding
+large diffs in process argv.
 
 ## Governance Rules
 

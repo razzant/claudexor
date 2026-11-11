@@ -15,6 +15,8 @@ import {
 import { PaidBudget, RoutingGoal } from "./budget.js";
 import { EffortHint } from "./harness.js";
 import { ProcessingPreference } from "./processing.js";
+import { PromptCacheTtl } from "./prompt-cache.js";
+import { AuxiliaryWritableRoots } from "./auxiliary-writable-roots.js";
 
 export const TestCommandInvocation = z
   .object({
@@ -291,16 +293,17 @@ export const TaskContract = z
         requested_profile: RecordedAccessProfile.default("workspace_write").describe(
           "Access profile the caller requested.",
         ),
-        /** Profile actually enforced by the engine (mode/trust clamps applied; never client-supplied). */
+        /** Profile the engine resolved and passes to the harness (mode/trust clamps applied; never client-supplied). */
         effective_profile: RecordedAccessProfile.default("workspace_write").describe(
-          "Access profile actually enforced by the engine (mode/trust clamps applied; never client-supplied).",
+          "Access profile the engine resolved and passes to the harness (mode/trust clamps applied; never client-supplied); the harness's native setting decides what it confines.",
         ),
+        auxiliary_writable_roots: AuxiliaryWritableRoots,
       })
       .default({
         requested_profile: "workspace_write",
         effective_profile: "workspace_write",
       })
-      .describe("Requested vs engine-enforced access profile."),
+      .describe("Requested vs engine-resolved access profile."),
     external_context: z
       .object({
         policy: ExternalContextPolicy.default("auto").describe(
@@ -314,7 +317,7 @@ export const TaskContract = z
           ),
         /** Mode the selected route actually executes (disclosed upgrades, e.g. claude cached->live). */
         effective_mode: ExternalContextPolicy.default("auto").describe(
-          "Policy the selected route actually executes (disclosed upgrades, e.g. cached to live).",
+          "Policy given to the selected route, after disclosed upgrades (e.g. cached to live).",
         ),
       })
       .default({ policy: "auto", web_required: false, effective_mode: "auto" })
@@ -346,6 +349,7 @@ export const TaskContract = z
         "Resolved harness-scoped model map for this run (harness id to model id); empty means every route uses its per-harness settings default.",
       ),
     processing_preference: ProcessingPreference.optional(),
+    prompt_cache_ttl: PromptCacheTtl.optional(),
     /** QA-035: the RESOLVED reasoning-effort per admitted lane, frozen at
      * contract build so Exact Retry replays the effort that actually governed
      * the run instead of re-reading (possibly changed) settings. Empty = no
@@ -373,6 +377,7 @@ export const ActiveTaskContract = TaskContract.extend({
     .object({
       requested_profile: AccessProfile.default("workspace_write"),
       effective_profile: AccessProfile.default("workspace_write"),
+      auxiliary_writable_roots: AuxiliaryWritableRoots,
     })
     .default({ requested_profile: "workspace_write", effective_profile: "workspace_write" }),
 }).describe("Immutable contract produced for a new active run.");

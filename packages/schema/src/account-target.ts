@@ -5,9 +5,28 @@ export const AccountTarget = z
   .strict();
 export type AccountTarget = z.infer<typeof AccountTarget>;
 
+/** Whose resources a row or refresh names: a registered account, or with a
+ * null profile_id the harness's unregistered default API-key route (INV-135:
+ * a route, never an account row). Reset and management keep AccountTarget. */
+export const AccountResourceTarget = z
+  .object({
+    harness: z.string().min(1),
+    profile_id: z
+      .string()
+      .min(1)
+      .nullable()
+      .describe(
+        "Registered account id; null names the harness's default API-key route, which is not an account.",
+      ),
+  })
+  .strict();
+export type AccountResourceTarget = z.infer<typeof AccountResourceTarget>;
+
 export const ControlQuotaRefreshRequest = z
   .object({
-    target: AccountTarget.optional(),
+    target: AccountResourceTarget.optional().describe(
+      "Exact refresh subject. A null profile_id (the default API-key route) and registered API-key accounts require includeApiKeys=true.",
+    ),
     requestKind: QuotaRequestKind.optional().describe(
       "Availability scope; omitted means text. Raw constraints retain every scope.",
     ),

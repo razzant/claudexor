@@ -1,4 +1,5 @@
 import { mcpSelfTest } from "./plugin-mcp.js";
+import { MCP_RUN_HANDLE_GUIDANCE } from "./plugin-run-guidance.js";
 import {
   copyFileSync,
   existsSync,
@@ -193,8 +194,19 @@ function hostFallbackCommands(runtime: RuntimePaths): string[] {
 /** Exact Claude plugin skill invocation; plain `/claudexor` is not an alias (QA-029A). */
 const CLAUDE_SLASH_COMMAND = "/claudexor:claudexor";
 
-const MCP_RUN_HANDLE_GUIDANCE =
-  "MCP run tools enqueue work and return a durable run handle, not terminal output or a live thread. Follow the handle with `claudexor_run_status`/`claudexor_run_result` (or the CLI) before claiming the answer, completion, or applyability.";
+const MCP_THREAD_HISTORY_GUIDANCE =
+  "Read retained thread answers with `claudexor_thread_history`: `{threadId, limit?, cursor?, beforeTurnId?, afterTurnId?, aroundTurnId?, expectedStoreId?}`. Limit is 1..20 (default 20); omit selectors for the newest page, or supply exactly one selector. `aroundTurnId` returns the anchor and earlier turns; follow `newerCursor` for later turns. Rows are ordered oldest first; opaque cursors are bound to store, epoch, thread and limit. Follow olderCursor/newerCursor explicitly; replayCursor refreshes the same membership, with replayNextCursor for additional segments if answers grow. Prompt/answer previews are bounded; missing evidence and incomplete plan-answer relations are not proof of absence. `claudexor_thread_prompt` reads full prompts, including runless refusals, in UTF-8 parts with `{threadId, turnId, offset?, maxBytes?, expectedStoreId?}`; continue at nextOffset while it is below totalBytes. Full answers use the existing artifact read. These reads never start a daemon, enqueue work or authorize a retry; legacy `claudexor_thread_read` remains available for complete inspection.";
+
+const MCP_DOCUMENT_GUIDANCE = [
+  "For an explicitly selected document on an already-running daemon, first call `claudexor_store_identity` and durably save its `storeId`. Save a caller-owned import key with the exact arguments, then call `claudexor_upload_import` with `{expectedStoreId,path,idempotencyKey}` (optional `kind`, `mime`, `name`). Select one absolute regular file on the MCP-server host, not a remote client's path, URL, glob or directory. The file must not be a symlink, and neither its path nor its resolved target may be a credential store, secret directory, `.env` file, credential file or private key (`sensitive_resource_rejected`); its size and file identity must not change while it is read, and the daemon checks the bytes against the digest the import key owns. File content is not scanned. After any uncertainty or failure repeat the identical call with the saved store id and key, never a later store answer. A completed import returns its original `resource` without reading the file again, even after the file changed or was deleted. Other arguments under a used key fail `idempotency_conflict`; a new edition needs a new key. An unfinished import whose source changed or vanished fails `upload_import_source_changed` or `upload_import_source_unavailable` with its `uploadId`; another store fails `store_mismatch` before the file is touched.",
+  "The low-level stages remain available. Save a caller-owned create key and exact body before `claudexor_upload_create` with `{idempotencyKey,request:{kind,mime,name,sizeBytes}}`. Save its `uploadId`, then call `claudexor_upload_import_local` with `{uploadId,path}`; save the returned `expectedSha256`. Save a separate finalize key and exact body before `claudexor_upload_finalize` with `{uploadId,idempotencyKey,request:{expectedSha256}}`.",
+  "After an unknown create/finalize response, replay the same key and body. After an uncertain PUT, use `claudexor_upload_status` with `{uploadId}`: uploaded means finalize with the saved digest, uploading means observe later, and cancelled needs an explicit new upload. Never overwrite uploaded bytes; repeating import can hash the explicit source to recover its digest, which finalize still checks against the actual uploaded bytes. A finalized upload may be absent from status: replay the original finalize key/body even after status 404. Never auto-cancel an unknown finalize outcome. `claudexor_upload_cancel` with `{uploadId}` is only an explicit decision about an unfinished upload.",
+  "Pass the ready resource as `attachments: [{resourceId}]` to a public run, `claudexor_thread_turn` or `claudexor_run_continue` (CLI `--attach-resource`); paths, base64 and internal resolved objects are invalid run refs. Omission adds no new refs; `[]` is explicit empty. A continuation inherits no attachments: pass the refs again when the successor needs the documents. Continuation refs do not rewrite retained history. Model-purpose resources are not ordinary attachments. The Delegate belt accepts refs on its run tools but has no upload controls. Every selected lane must admit the MIME and finite byte/count limits. Ordinary CLI --attach/--image convenience retains its existing best-effort cancellation; explicit stages retain caller-owned recovery identities.",
+  "Codex provides verified byte references for plain text, Markdown, JSON, PDF and DOCX, with no built-in PDF/DOCX parsing or OCR promise. Native readability follows the selected sandbox; documents add no permission grant or project copy.",
+].join("\n\n");
+
+const MCP_WORKER_CONTROL_GUIDANCE =
+  "Any controlling MCP agent can inspect `claudexor_run_interactions` and use `claudexor_answer_interaction` for an exact action already authorized by the user and allowed by host policy; inspect the action, use the returned IDs and option label, never grant session-wide access, and ask the user for new authority. Delivery is not proof of execution. `Authorize one retry` starts one more worker turn and guarantees nothing. `claudexor_run_time_limit` reads, sets, extends or disables a live run deadline with the current expectedRevision; set keeps the current mode unless `mode` is given; read again on conflict. Omit maxSeconds unless a deadline was requested; never extend or disable a user-mandated hard stop without permission.";
 
 const READINESS_GUIDANCE =
   "Readiness has separate owners: `claudexor_status`/doctor is the aggregate/default-store projection, `claudexor_accounts` is the server-authored exact-profile readiness/quota snapshot, `claudexor_capabilities` declares setup transport, and `claudexor models --harness <id>` is default-route discovery rather than a named profile entitlement. An unpinned request may still be admitted through the canonical account pool when it selects a ready exact profile; only a genuinely profile-less/default fallback depends on doctor status. For a selected profile, strict run/reviewer preflight owns model admission and result telemetry owns the observed profile/model route. `unknown/not_run`, stale quota, or unavailable inventory is uncertainty/refusal; `external_terminal` means the supported client terminal attach path and is not itself unreadiness.";
@@ -230,7 +242,11 @@ function skillText(host: PluginHost, runtime: RuntimePaths): string {
     ...(process.platform === "win32" ? ["Run these commands in PowerShell:"] : []),
     ...hostFallbackCommands(runtime).map((command) => `\`${command}\``),
     "",
+    MCP_DOCUMENT_GUIDANCE,
+    "",
     MCP_RUN_HANDLE_GUIDANCE,
+    MCP_WORKER_CONTROL_GUIDANCE,
+    MCP_THREAD_HISTORY_GUIDANCE,
     "Use an explicit `repoPath` when the host cwd may not be the target project. Use `credentialProfileId` for a strict account pin. For multi-turn supervision, create the thread once, enqueue each follow-up with `claudexor_thread_turn` (pass an `idempotencyKey` and retry an unknown outcome with the same key and body), then follow its returned `runId` with the ordinary status/result tools. If the turn returns only a queued `jobId`, use `claudexor_runs` to recover its `runId` after binding; `claudexor_thread_read` lists earlier turns without starting work.",
     "",
     READINESS_GUIDANCE,
@@ -243,7 +259,7 @@ function skillText(host: PluginHost, runtime: RuntimePaths): string {
     "",
     "Safety rules:",
     "",
-    "- NEVER paste live credentials into prompts — every ingress hard-blocks secret-like values (typed `inline_secret_rejected`). Store keys with `claudexor secrets set` and reference them.",
+    "- Credentials Claudexor itself uses belong in `claudexor auth login <harness>` or `claudexor secrets set`, outside the conversation; do not collect or transform them. Working content (prompts, attachments, files, test fixtures) reaches the selected harness exactly and stays in local run records; only `pr` delivery checks content, scanning what would be pushed with the pinned Betterleaks scanner before anything is published.",
     "- NEVER auto-answer `claudexor decision` for a blocked run: risk acceptance (accept-risk/override) is the HUMAN operator's call. Report the blocked state and the decision options.",
     "- Canonical run-command exits: 0 = success terminal; 1 = failed/blocked/cancelled run; 2 = usage error. Their `--json` failures use `{ok:false, exitCode, message, code?, ...}` on stdout (`error` is a legacy alias). Some subcommands preserve purpose-built schemas or child exits; the exact residue is tracked in `docs/BACKLOG.md` D-7.",
     "",
@@ -281,6 +297,7 @@ function commandText(host: PluginHost, runtime: RuntimePaths): string {
     "",
     MCP_RUN_HANDLE_GUIDANCE,
     READINESS_GUIDANCE,
+    MCP_THREAD_HISTORY_GUIDANCE,
     "",
     "For durable MCP conversations, create once with `claudexor_thread_create`, continue with `claudexor_thread_turn`, and inspect with `claudexor_thread_read`. These tools do not expose portable native vendor sessions or a live vendor conversation. Ask for an explicit repo path if the target project is ambiguous.",
     "",
@@ -314,6 +331,7 @@ function readmeText(host: PluginHost, runtime: RuntimePaths): string {
         ]
       : []),
     MCP_RUN_HANDLE_GUIDANCE,
+    MCP_THREAD_HISTORY_GUIDANCE,
     "Long-running MCP tools (claudexor_run, claudexor_best_of, claudexor_create) are daemon-tracked: every result carries a `runId:` trailer, so a call abandoned by a host timeout stays recoverable via `claudexor inspect <runId>` / `claudexor follow <runId>`.",
     "",
   ].join("\n");

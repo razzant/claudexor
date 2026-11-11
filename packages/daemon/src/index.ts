@@ -1,5 +1,6 @@
 export * from "./token.js";
 export * from "./server.js";
+export * from "./run-time-limit.js";
 export * from "./delegation-admission.js";
 export * from "./writer-lease.js";
 export * from "./root-authority.js";
@@ -10,6 +11,7 @@ export * from "./daemon-local-client.js";
 export * from "./daemon-shutdown-rpc.js";
 export * from "./events.js";
 export * from "./interactions.js";
+export * from "./run-observation.js";
 export * from "./live-input.js";
 export * from "./operator-decisions.js";
 export * from "./threads.js";
@@ -19,13 +21,19 @@ export * from "./command-store.js";
 export * from "./command-scope-roots.js";
 export * from "./runless-turn-recovery.js";
 export * from "./command-authority.js";
+export type { DeferredStartPreparation } from "./deferred-messages.js";
 export * from "./store-contracts.js";
+export type { DiskRetentionReferences } from "./store/retention-references.js";
+export { RETENTION_AGE_REVISIT_MS } from "./store/retention-pages.js";
 export { loadEngineRuntime } from "./store/runtime.js";
 export { EngineStateRecovery } from "./store/engine-state-recovery.js";
 export { SqlPartitionRecovery } from "./store/sql-recovery.js";
 export { sqlRecoveryProjections } from "./store/sql-validation.js";
 export { EngineStore } from "./store/store.js";
+export type { ObservationListener } from "./store/observation-notices.js";
 export { BlobFiles } from "./store/blob-files.js";
+export type { ThreadClosure } from "./store/thread-closure.js";
+export { retirementRefusal, type RetirementRefusal } from "./store/thread-retirement.js";
 export { type MaintenanceCommandSummary } from "./store/command-rows.js";
 export { createSqlDaemonServices } from "./store/sql-daemon-services.js";
 export { importLegacyInWorker } from "./store/import-worker.js";
@@ -43,6 +51,7 @@ export { runMutation } from "./store/mutation.js";
 export { lookupIdempotency } from "./store/idempotency.js";
 export { currentGeneration } from "./store/partitions.js";
 export { encodeJournalCursor, decodeJournalCursor } from "./store/cursors.js";
+export type { JournalEventPage, JournalEventPageRequest } from "./store/cursors.js";
 export * from "./quota-registry.js";
 export * from "./quota-poll-lanes.js";
 export { quotaPacerFileStore } from "./quota-poll-pacer.js";
@@ -61,3 +70,12 @@ export { AccountResets, type AccountResetBinding } from "./account-resets.js";
 import "./store/flusher-worker.js";
 import "./store/maintenance-worker.js";
 export { JournalRecoveryRequiredError, type JournalRecoveryState } from "./store/errors.js";
+
+export {
+  ModelCapabilityLedger,
+  type CapabilityAttempt,
+  type CapabilityBinding,
+} from "./model-capability-ledger.js";
+
+export { SqlThreadHistoryRead } from "./store/thread-history-read.js";
+export { readThreadPromptPart } from "./store/thread-prompt-read.js";

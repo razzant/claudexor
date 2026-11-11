@@ -1,3 +1,4 @@
+import { usageError } from "./cli-error.js";
 import { BOOLEAN_FLAGS } from "./command-registry.js";
 
 export interface ParsedArgs {
@@ -89,4 +90,12 @@ export function requiredStringFlagError(args: ParsedArgs, keys: readonly string[
     }
   }
   return null;
+}
+
+/** A non-negative decimal integer flag (no sign, exponent, radix prefix or leading zero). */
+export function decimalFlag(args: ParsedArgs, key: string, usage: string): number | undefined {
+  const value = flagStr(args, key);
+  if (value === undefined) return undefined;
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) throw usageError(usage, { code: "invalid_argument" });
+  return Number(value);
 }

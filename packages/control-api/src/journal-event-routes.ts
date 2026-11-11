@@ -1,10 +1,26 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { ControlJournalEvent, type ControlJournalEvent as JournalEvent } from "@claudexor/schema";
-import { redactedSseLine } from "./sse-shared.js";
+import { requestGone } from "./request-liveness.js";
+import { sseDataLine } from "./sse-shared.js";
+
+/** Opaque positions from the journal owner; the route never decodes them. */
+export interface JournalEventPageRequest {
+  after?: string;
+  through?: string;
+}
+
+interface JournalEventPage {
+  events: JournalEvent[];
+  position: string;
+  through: string;
+  more: boolean;
+}
 
 export interface JournalEventRouteContext {
   services?: {
-    journalEvents?: (partition: string, afterCursor?: string) => Promise<unknown>;
+    /** One bounded page of retained events (`{ events, position, through, more }`). */
+    journalEvents?: (partition: string, request: JournalEventPageRequest) => Promise<unknown>;
   };
   pollMs?: number;
   heartbeatMs?: number;
@@ -33,6 +49,14 @@ export async function handleJournalEventRoute(
   return false;
 }
 
+/**
+ * Replay then tail one partition. Each walk reads bounded pages through the
+ * head its first page captured; the poll starts the next walk. One read is in
+ * flight per connection, a full socket is drained before the next frame, and a
+ * departed client stops the walk. Cursor refusals arrive before headers;
+ * later failures, including a replaced generation, close the stream so the
+ * client resumes with its last cursor and receives the refusal.
+ */
 async function streamPartition(
   ctx: JournalEventRouteContext,
   partition: string,
@@ -41,49 +65,9 @@ async function streamPartition(
 ): Promise<void> {
   const service = ctx.services?.journalEvents;
   if (!service) return ctx.json(res, 501, { error: "durable journal events are unavailable" });
-  let cursor: string | undefined;
-  let initial: JournalEvent[];
-  try {
-    cursor = lastEventId(req);
-    initial = parseEvents(await service(partition, cursor));
-  } catch (error) {
-    return ctx.requestError(res, error);
-  }
-  res.writeHead(200, {
-    "content-type": "text/event-stream",
-    "cache-control": "no-cache, no-transform",
-    connection: "keep-alive",
-  });
-  res.write(": connected\n\n");
-  ctx.sseClients.add(res);
   let closed = false;
-  let reading = false;
-  const write = (events: JournalEvent[]) => {
-    for (const event of events) {
-      cursor = event.cursor;
-      res.write(
-        `id: ${event.cursor}\nevent: ${event.type}\ndata: ${redactedSseLine(JSON.stringify(event))}\n\n`,
-      );
-    }
-  };
-  write(initial);
-  const poll = setInterval(() => {
-    if (closed || reading) return;
-    reading = true;
-    void service(partition, cursor)
-      .then((value) => write(parseEvents(value)))
-      .catch(() => {
-        if (!closed) res.destroy();
-      })
-      .finally(() => {
-        reading = false;
-      });
-  }, ctx.pollMs ?? 250);
-  poll.unref?.();
-  const heartbeat = setInterval(() => {
-    if (!closed) res.write(`: ping ${Date.now()}\n\n`);
-  }, ctx.heartbeatMs ?? 15_000);
-  heartbeat.unref?.();
+  let poll: ReturnType<typeof setInterval> | undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
   const cleanup = () => {
     if (closed) return;
     closed = true;
@@ -91,8 +75,91 @@ async function streamPartition(
     clearInterval(heartbeat);
     ctx.sseClients.delete(res);
   };
-  req.on("close", cleanup);
+  req.on("close", () => {
+    if (requestGone(req, res)) cleanup();
+  });
+  req.on("aborted", cleanup);
   res.on("close", cleanup);
+  const gone = () => {
+    if (closed || res.destroyed || res.writableEnded) cleanup();
+    return closed;
+  };
+  const read = async (request: JournalEventPageRequest) =>
+    parsePage(await service(partition, request));
+  let first: JournalEventPage;
+  try {
+    first = await read({ after: lastEventId(req) });
+  } catch (error) {
+    if (gone()) return;
+    return ctx.requestError(res, error);
+  }
+  if (gone()) return;
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+  });
+  res.write(": connected\n\n");
+  ctx.sseClients.add(res);
+  let position = first.position;
+  const deliver = async (events: readonly JournalEvent[]): Promise<boolean> => {
+    for (const event of events) {
+      const frame = `id: ${event.cursor}\nevent: ${event.type}\ndata: ${sseDataLine(JSON.stringify(event))}\n\n`;
+      if (res.write(frame)) continue;
+      if (gone()) return false;
+      await drained(res);
+      if (gone()) return false;
+    }
+    return true;
+  };
+  let walking = true;
+  const walk = async (page?: JournalEventPage) => {
+    let through: string | undefined;
+    try {
+      // An ended response (daemon stop) or departed client reads no further page.
+      while (!gone()) {
+        page ??= await read({ after: position, through });
+        if (gone()) return;
+        through = page.through;
+        if (!(await deliver(page.events))) return;
+        position = page.position;
+        if (!page.more) return;
+        page = undefined;
+        // Other requests run between pages of one replay.
+        await nextTurn();
+      }
+    } catch {
+      if (!gone()) res.destroy();
+    } finally {
+      walking = false;
+    }
+  };
+  poll = setInterval(() => {
+    if (walking || gone()) return;
+    walking = true;
+    void walk();
+  }, ctx.pollMs ?? 250);
+  poll.unref?.();
+  heartbeat = setInterval(() => {
+    // A ping waits for the drain like any frame.
+    if (!gone() && !res.writableNeedDrain) res.write(`: ping ${Date.now()}\n\n`);
+  }, ctx.heartbeatMs ?? 15_000);
+  heartbeat.unref?.();
+  // Not awaited: the handler must not hold server stop on a slow client.
+  void walk(first);
+}
+
+/** Resolve when the socket accepts more bytes or the response closes. */
+function drained(res: ServerResponse): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      res.off("drain", done);
+      res.off("close", done);
+      resolve();
+    };
+    res.once("drain", done);
+    res.once("close", done);
+  });
 }
 
 function lastEventId(req: IncomingMessage): string | undefined {
@@ -105,7 +172,22 @@ function lastEventId(req: IncomingMessage): string | undefined {
   return header.trim();
 }
 
-function parseEvents(value: unknown): JournalEvent[] {
-  if (!Array.isArray(value)) throw new Error("journal event service returned a non-array");
-  return value.map((event) => ControlJournalEvent.parse(event));
+function parsePage(value: unknown): JournalEventPage {
+  const page = value as Partial<Record<keyof JournalEventPage, unknown>> | null;
+  if (
+    !page ||
+    !Array.isArray(page.events) ||
+    typeof page.position !== "string" ||
+    !page.position ||
+    typeof page.through !== "string" ||
+    !page.through ||
+    typeof page.more !== "boolean"
+  )
+    throw new Error("journal event service returned an invalid page");
+  return {
+    events: page.events.map((event) => ControlJournalEvent.parse(event)),
+    position: page.position,
+    through: page.through,
+    more: page.more,
+  };
 }

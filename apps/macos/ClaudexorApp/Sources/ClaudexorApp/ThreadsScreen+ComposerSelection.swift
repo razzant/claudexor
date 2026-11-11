@@ -43,9 +43,10 @@ extension ThreadsScreen {
     /// wire pool stays the empty Auto sentinel; Auto is never materialized into an
     /// explicit harness list merely to render.
     var effectiveIncludedFamilies: [HarnessFamily] {
-        let available = poolFamilies.filter { model.availability(for: $0, mode: composerMode).available }
-        return HarnessPoolPresentation
-            .includedFamilies(pool: model.effectiveEligiblePool, available: available.map(\.rawValue))
+        // The same lanes the chips render (#133): Auto expands to its own set; an
+        // explicit subset, manual lanes included, stays exactly itself.
+        HarnessPoolPresentation
+            .includedFamilies(pool: model.effectiveEligiblePool, available: HarnessPoolSection.autoAvailable(poolEntries))
             .map { HarnessFamily(rawValue: $0) }
     }
     /// The thread/draft's pinned credential profile (M9-UX item 2): the composer

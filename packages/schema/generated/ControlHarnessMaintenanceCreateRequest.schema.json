@@ -34,7 +34,7 @@
                 "version": {
                   "type": "string",
                   "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
-                  "description": "One exact vendor version."
+                  "description": "One exact vendor version, never a range or a release fixture stamp."
                 }
               },
               "required": [
@@ -42,35 +42,9 @@
                 "version"
               ],
               "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "kind": {
-                  "type": "string",
-                  "const": "previous"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "kind": {
-                  "type": "string",
-                  "const": "baseline"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "additionalProperties": false
             }
           ],
-          "description": "latest = the vendor's newest release; version = one exact version (up or down); previous = the proved version recorded before an earlier maintenance mutation; baseline = this release's tested pin."
+          "description": "latest runs the selected program's updater, or installs when missing; version uses the adapter's exact-version command. Retired previous/baseline targets must be sent as version with an explicit version."
         }
       },
       "required": [

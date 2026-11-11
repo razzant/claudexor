@@ -143,13 +143,19 @@ export function cursorProcessingMethods(
 ): Pick<HarnessAdapter, "models" | "prepareProcessing"> {
   return {
     models: async (spec) => cursorProcessingModels(await modelsFor(spec)),
-    prepareProcessing: async (spec) =>
-      prepareCursorProcessing(
-        spec.preference,
-        spec.model,
-        await modelsFor(spec),
-        spec.allowPaid,
-        spec.effort,
-      ),
+    prepareProcessing: async (spec) => {
+      const models = await modelsFor(spec);
+      return {
+        ...prepareCursorProcessing(
+          spec.preference,
+          spec.model,
+          models,
+          spec.allowPaid,
+          spec.effort,
+        ),
+        // init.model carries the display label of a row in this same read.
+        catalog: models,
+      };
+    },
   };
 }

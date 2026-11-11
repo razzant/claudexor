@@ -12,15 +12,24 @@
               "minLength": 1
             },
             "profile_id": {
-              "type": "string",
-              "minLength": 1
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Registered account id; null names the harness's default API-key route, which is not an account."
             }
           },
           "required": [
             "harness",
             "profile_id"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Exact refresh subject. A null profile_id (the default API-key route) and registered API-key accounts require includeApiKeys=true."
         },
         "requestKind": {
           "type": "string",

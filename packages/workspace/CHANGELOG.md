@@ -1,5 +1,285 @@
 # @claudexor/workspace
 
+## 6.0.0
+
+### Patch Changes
+
+- a20492c: A file a Raw API patch created is no longer lost when a Git ignore rule matches
+  it (#594). The paths an accepted raw patch wrote stay in the candidate: the next
+  round's tree, the run's result, Apply and Revert carry them by exact path while
+  each is still a file, also after a fresh workspace manager, a `continueFrom`
+  successor that adopts the kept envelope, or orphan recovery. Other ignored files,
+  a gate's output or a native round's, stay out as before, also when a later patch
+  makes the ignore rules match them, and so does a file inside an ignored nested
+  repository. The record lives in per-worktree refs of the envelope's own
+  repository and is written before the patch's first byte lands; a record that
+  cannot be written or read refuses the patch, or the capture, instead of dropping
+  the file. Git before 2.43 cannot tell a failed record lookup from a missing one
+  and reads it as no record. A persistent thread's Raw API turns keep such files
+  between turns, before any Apply; a candidate that was rejected or did not win
+  changes neither the thread's files nor its record.
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/core@6.0.0
+  - @claudexor/util@6.0.0
+  - @claudexor/event-log@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- Sweep orphan lane homes in unregistered runtime namespaces, including the final lane after an ephemeral thread is purged, while protecting live, archived and quarantined owners.
+- b9f57d9: Continuation packets and D-16d checkpoints no longer drop a run's own recorded output because the carried answer, report or prompt contains its words (#568). Only the carried final itself is left out, with its keyed fragments and exact adjacent repeats; other attempts, earlier tries and earlier turns keep their messages whatever their text. `final/retained-output.md` groups keyed text by its speech key and keeps each native turn's final separate. In a Claude `text_runs_joined` response, the one deferred frame of a run of text blocks names the keys it joins (`payload.joined_speech_keys`) and becomes their single block when its words are exactly theirs; otherwise every block stays as recorded. Limits: a represented try without a typed final is still left out whole, since its joined narration is the answer; more evidence now competes for the bounded evidence section, whose cut stays marked; when the represented try is unknown nothing is left out, so the answer can appear twice; the earlier carried-text argument and option are still accepted and ignored.
+- 780ec76: An isolated run no longer starts in an incomplete copy of a partial or sparse clone (#501). When the base commit has files whose content the repository never fetched (a blobless clone's older commit, or files a sparse checkout of one left out), Git's checkout of the private copy reported each file and still succeeded, so the run began with those files missing and its result could read as deleting them. The run now fails in its workspace phase before anything starts, naming the files and the two ways forward: make that content present (a complete clone, or `git sparse-checkout disable` in a sparse checkout), or run in place in that folder (`--in-place`, or an in-place thread). Claudexor fetches nothing, and the folder's files, index and refs stay as they were. A delivery's fresh verify applies the same rule, so it can no longer report a result as checked on such an incomplete copy. Partial and sparse clones whose files are all present keep working as before. A shallow partial clone that Git itself cannot copy (a sparse checkout of a shallow blobless clone, or a deeper shallow blobless clone whose older commits' content was never fetched) used to fail with Git's report of an unreadable object and "possible repository corruption"; its refusal now keeps Git's full report first and adds, as an observation that does not prove the cause, the base commit's files the source lacks, or how many objects its branches and tags reach, with the same two ways forward. Other clone failures keep Git's report alone. An envelope refused this way never started, so it is removed by the call that created it rather than left behind for the daemon's lifetime; if that removal fails, the refusal stands and its message says what was left.
+- 6bce7ce: Convergence rounds now work on a Raw API route (#551). Each round is produced and applied against the exact candidate the earlier round left, including new files and a native round's work, while the run keeps one delivery base, so the final result from that base holds every round. A packet's file contents are now read from the tree the packet names, so a file that changes while the packet is prepared is never sent under the identity of another version; a file whose line endings Git converts on checkout is sent as the tree stores it, the form its patch applies to, and a file that is not UTF-8 text is left out, or refused if mandatory, instead of being sent with replaced bytes. A refused patch was recorded as a crashed process; it is now the attempt's typed failure with the received usage kept. A patch the model can correct reaches the next round through the ordinary revise prompt, and an impossible state, isolation or digest failure ends the run without a retry. Such a refused round applied nothing, so it never counts as a repeat of the earlier result: after an accepted round, an unapplicable or incomplete patch is followed by the correcting round instead of ending the run as `stuck_no_progress`. The correction spends one of the run's rounds, so `--attempts` and every other existing limit still bound it, the same refusal twice is a repeated failure, and the same accepted result twice against a failing gate still stops as `stuck_no_progress`.
+- 780ec76: A result delivered into a shallow clone (`git clone --depth …`) is now verified like one delivered into a full clone (#501). The fresh verify clone reads the target's objects through `git clone --shared`, which Git silently ignores for a shallow source. A shallow target that was dirty, or whose HEAD had moved since the run, was therefore refused: apply failed with `isolated clone checkout failed: … unable to read tree`, or reported the missing composed tree as a result that does not apply, and a commit onto a dirty shallow target showed that clone error in place of its usual dirty-tree refusal. Claudexor now lists the target's object directory itself when Git did not, for a run's isolated envelope as well, so these deliveries verify, run their gates and then apply, commit or refuse as on a full clone. Nothing else about delivery changes; no network access or object copy is added. A linked worktree of a shallow repository, which Git copies locally without its shallow boundary, now gives a copy carrying that repository's own boundary, so `git log`, blame or `fsck` in a run's envelope or a delivery's verify clone stop at the boundary instead of failing on missing parents.
+- 2e8b440: A thread turn that ended without a final answer no longer reaches the next lane as an empty answer (#405). When a later turn runs on another harness or account, the continuation packet (`context/THREAD.md`) and the summary pass now carry what that turn said, under a heading that the text is not a completion verdict. The text is read by the rule a `continueFrom` successor already used: the run's `final/retained-output.md` exactly as stored, else the same projection of its `events.jsonl` when the run's terminal never wrote that file, as after an engine restart. The heading says the turn ended without a final answer when its run did not succeed; when the run's terminal facts cannot be read it says only that no final answer is recorded and the outcome is unknown. Successful plan and report turns, which write no `answer.md`, keep their earlier rendering, and a failed or capped Plan turn is carried like an Ask turn. Within the per-turn 4 KiB output budget an unfinished turn keeps the end of its output, where its newest text is, so the retained file's fixed preamble no longer fills the allowance; the summary pass's 2 KiB and a collapsed one-line entry's 200 characters keep the end the same way. Wherever `THREAD.md` cuts a turn's verbatim output, an answer's included, the cut mark names the file that holds the whole output. When a summary replaces the older turns' one-line entries, each unfinished turn among them keeps its entry beside the summary, with the end of its output and, when cut, the file that holds it, whatever the generated or cached summary says. A prior turn's output is read only when the packet carries that turn. Limits: an answered turn's one-line entry names no file, and a summary names no file for the answered turns it replaces; a summary cached before this change is still reused until the thread's collapse boundary moves; an earlier turn without the retained file has its event log read each time a packet carries it.
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b9f57d9]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/event-log@5.1.0
+  - @claudexor/util@5.1.0
+  - @claudexor/core@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- d9f50f5: An isolated copy of an ordinary folder (directory mode without `--in-place`) is no longer deleted when the run's final capture refuses, for example on an unreadable file or a FIFO in the copy (#563). The copy with the files the executor wrote is kept for inspection under the same per-attempt custody as a refused isolated Git source: the failure names its path, the next actions say to inspect it and decide yourself, and no exact result, apply or revert is offered. Crash recovery, file GC and command pruning keep it until the run's `discard` decision releases it. If retention setup fails, the failure says which part: the custody record was written but the run's address to it was not (setup incomplete until crash recovery restores the address), or the custody record itself was not written (held by the running process only). A per-try capture that a later capture replaces keeps nothing, and in-place runs are unchanged. In a best-of run, a candidate whose copy could not be retained durably is excluded rather than failing the run: a healthy sibling still wins and can be applied, and the run summary and timeline name the excluded candidate's exact capture cause, kept copy and failed retention stage; the CLI follow line previews that receipt. A one-shot continuation after context exhaustion runs in the same copy: if its final capture refuses, the copy is kept and the run stays interrupted, and the failure message, summary, next actions and the continuation's completion event name its attempt, capture cause and kept copy. When a best-of run holds both such a kept copy and a winner's pending files, `discard` now gives up both instead of leaving the winner applicable. Before the executor starts, a new `workspace.prepared` run event, shown on the run timeline (and in the macOS turn transcript of local and remote SSH runs, live and restored) and in the CLI follow output, and a matching line in the executor's prompt state which folder the copy was prepared from, which paths were selected, how many files, directories and symbolic links were copied, and which selected paths were not found there, naming every path. It is a warning when nothing was copied or a selected path was not found; a selected path that does not exist yet is reported as possible new output, not refused.
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+- Updated dependencies [51e5250]
+  - @claudexor/schema@5.0.2
+  - @claudexor/util@5.0.2
+  - @claudexor/event-log@5.0.2
+  - @claudexor/core@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/core@5.0.1
+- @claudexor/event-log@5.0.1
+- @claudexor/schema@5.0.1
+- @claudexor/util@5.0.1
+
+## 5.0.0
+
+### Patch Changes
+
+- 66d5b6a: A run whose changes cannot be captured no longer ends as `failed / workspace_unavailable` with advice to retry the run. When capture fails, for example for lack of disk space, on a Git process that stalls or is killed, on a file that cannot be read, on a missing object, or on an I/O or scratch fault, the run ends `failed` with the new reason `capture_refused` ("Failed (changes not captured)") and its capture failure keeps the typed cause. The refusal names what was not recorded (the exact result, a revert point for live changes, apply eligibility, and the configured checks and requested review, which did not run) and what is kept (the final answer, which stays the diagnostic primary output, run-produced media, and the changed files in place or in the retained isolated source); its next actions no longer suggest retrying the run. Completed work whose only defect is the capture is no longer published as resumable; a harness error, a cancellation or an unfinished work state still is. Screenshots and other produced media are now kept on a refusal: the run copies them and in-place cleanup leaves the run's artifact directory. When the capture had written its candidate tree, a separate bounded pass records a non-exact `inventory` of the largest changed files (path, change kind, size) on the capture failure; `claudexor inspect` and the run summary print it.
+- 8bae6ae: Credential-shaped text in your own work is no longer refused or masked (#555, INV-146 retires INV-062). A review brief, prompt, instruction, output schema, test command, live or deferred message, interaction answer or attachment that contains a bearer header, an `sk-`/`ghp_`/`AKIA` key, a JWT or a PEM block now reaches the selected harness exactly; the typed `inline_secret_rejected` error is gone from the CLI, `POST /v2/runs`, thread turns, MCP and ACP. The task contract, command journal, served job params, thread history, events, SSE frames, answers, plans, reports, retained output, saved `patch.diff` copies, reviewer packets, reviewer workspaces, context packs and served artifacts keep the exact bytes, so Exact Retry, Run Again, continuation and later turns read back what was sent, and reviewers judge the same patch apply uses. Files named `.env`, `credentials.json`, `*.pem`, `*.key`, `secrets/…`, `.ssh/…` or `.claude/…` inside the project are ordinary project files for context, review, directory results, uploads and served outputs; Codex approval requests for them are offered instead of declined, and `review --diff` no longer refuses a diff. Claude `AskUserQuestion` text is shown exactly and answered by its native question text. Tool calls keep unmasked targets (command, path, query, URL) within each adapter's existing bounds, and tool results keep unmasked summaries of their output (`content_summary`, and a failed tool's own `error_summary`, within each adapter's existing bound and whitespace normalization) for every adapter, a Cursor shell command whose end is unconfirmed keeps its complete native result (`native_result`) exactly, a failed raw-API completion keeps the model's bounded partial output (`partial_output`) exact in its error event while it stays a failure, never becomes the answer and the provider's error report stays masked, a Copilot ACP answer keeps credential-shaped text exact (only the managed token Claudexor injected is removed), a work report's required inputs stay exact in telemetry and run facts, a planner's own `plans/<harness>.md` copy is its exact text, and the gate argv disclosed to a candidate is the argv the gate runner executes. Images are no longer withheld from `produced/` or from served outputs for their bytes; an image Claudexor did not save (over the per-image or total size cap, unreadable, a link, not a regular file or an unsafe path) is listed in the attempt's `produced_omitted` with its size and reason, and the run summary names it. Credentials Claudexor itself owns stay in their stores, outside every worktree, behind daemon authentication, grants, read-only and trust policy, root and symlink containment and digest checks; engine diagnostics (errors, stderr tails, probe output, vendor failure reports, also inside the run, attempt and reviewer event journals, which all pass through one masking step) are still masked. Claudexor never places its engine credentials into prompts, events or artifacts; a harness process can read the credential the engine hands it, and whatever the harness prints is ordinary output kept exactly in local run records, as in the vendor's own transcript. Importing an arbitrary host file still refuses credential-store paths, and review risk still rates credential-named paths critical. The historical release-attestation sealer no longer refuses a reviewer report or metadata file for credential-shaped text: it still requires strict UTF-8, the digest and exact-key bindings and its other checks, and the attestation carries digests and validated fields, never report text. A real key you put in working content is ordinary task material: it reaches the selected model and stays in local run records. Runs written by earlier versions keep their masked copies; their `persisted_patch: redacted` patches still apply only from the private exact object (`patch_exact_bytes_unavailable` when it is missing), and the MCP read tools still project their `secretLike` disclosure, which is `null` for new runs.
+
+  **Breaking:** `pr` delivery now needs the pinned open-source scanner Betterleaks 1.9.0 and checks what would leave the machine with it instead of Claudexor's own patterns; an npm-installed CLI bundles no scanner, so its `pr` refuses with `publication_scan_unavailable` until one is provided (below). Before any branch, index or ref changes, the exact outgoing commit, every earlier commit that a URL `git push origin` sends to (its push URL when one is set) does not already advertise, read with `git ls-remote` (a secret added and later deleted included, and a commit only the fetch URL or another remote holds still counts), what each merge in that range itself changed (Git's remerge view, Git 2.36 or newer: a conflict resolution or an "evil" merge, never content its parents already carried; an octopus merge has no such view and is scanned for what it adds over its first parent, which can re-flag content a non-first parent already published), the commit messages of that range, the branch name and the PR title and body are scanned with live validation off; the PR body `gh` reads is the scanned copy, and the push sends exactly the scanned commit object. A finding refuses typed (`publication_scan_findings`, rule and place only, never the matched text; a file name or label the scanner itself flags is shown as `withheld location (sha256 …)`, and every place is withheld when that check cannot run); a missing or unpinned scanner (`publication_scan_unavailable`) and a scan that fails, times out, writes no valid report or reads a Git history that Git's own trace2 record does not prove complete (every `git log` it ran exited 0 without a signal; a `git log` killed mid-stream otherwise looks clean) (`publication_scan_failed`) also refuse, and local apply, branch and commit stay available. The outgoing repository's own `.gitleaksignore`/`.betterleaksignore`, inline allow comments and scanner environment variables cannot suppress a finding. The macOS app and its update closure now bundle the darwin-arm64 and darwin-x64 builds and each SSH runtime archive bundles its own target's build, with the MIT license and provenance (the SBOMs list them). npm installs, and hosts on other platforms embedding the closure, bundle none for their platform: point `CLAUDEXOR_BETTERLEAKS_PATH` at the pinned build or provision it with `node scripts/provision-betterleaks.mjs`. Delivery never downloads it. Betterleaks skips some binary, archive and lockfile content by design, so a clean scan is not proof that nothing sensitive is present. Repository CI and release use the same adapter in place of the old `git grep` step, over the range's commits, merges and messages and the tracked tree; a release being published also scans its annotated tag's message.
+
+- 66d5b6a: Large results are now kept exactly, without a size ceiling (#535). Before, a result whose exact patch exceeded 256 MiB failed its capture. Every Git capture's canonical result is now Git objects identified by a typed digest (`git_objects/v1`), kept in a private per-project object store that is never an alternate of your repository; objects are imported into your repository only before an operation needs them. Results of every size are verified in a fresh private clone, applied onto the current state of your project (your unrelated changes are kept; paths changed on both sides follow `git apply` rules, except that an identical change on both sides is accepted outside rename and copy endpoints), committed or branched, and reverted on the actual delivery pair, keeping later edits outside it (a file the delivery added that your ignore rules now hide, or that sits inside a nested Git repository, is removed too, or the revert refuses if you changed it or cannot read it); a rendered result's `pr` passes the same publication scan as any `pr`, on the exact commit it pushes. Operator decisions and the apply gate bind the result's digest instead of the patch text. The patch becomes a view: when an estimate computed from the changed files' blob sizes exceeds the 256 MiB view limit, or the render itself overflows it, `final/patch.diff` is absent with a typed reason and a bounded inventory (never an empty file), `claudexor inspect`, the run summary, MCP results and the macOS Changes tab say so, and `pr` of such a result refuses typed (`pr_unrendered_result`) before any scan; scanning such a result for `pr` is a follow-up. Because that estimate is computed before rendering, a small edit of a very large file (one changed line in a 110 MiB file) also gets no patch view and `pr` refuses it; the result itself stays exact, deliverable and revertable. A delivery refused for a typed reason (`result_objects_missing`, `pr_unrendered_result`, a publication scan refusal, a conflict, a changed target, a store fault) answers that reason as the HTTP 409 problem code on `POST /v2/runs/:id/apply` and `accept_clean_patch` (a refusal with no typed reason answers `delivery_refused` on both), a replay with the same `Idempotency-Key` answers the same, and `apply/check` returns it as `refusal`, a store, Git or filesystem fault included; a run whose result record is there but cannot be read answers 503 `artifact_read_failed` on apply, apply/check and the decisions instead of "no patch artifact". For a Git result, a `commit`, `branch` or `pr` delivery that fails after writing now answers that HTTP 409 problem, where the last release answered such a failure with HTTP 200 `applied:false` (a legacy patch's delivery still does). A delivery that fails after writing is taken back on its retained pair, keeping later edits outside it (restored as Git holds it: a file whose checkout conversion does not round-trip, an LF file under `core.autocrlf` for one, can come back with converted bytes, which the receipt says); only a write that cannot be taken back stays, reported as `treeMutated` with the action that recovers it and recorded `applied_review_blocked` with a revert anchor instead of `not_applied`. A `pr` whose push fails returns the working tree to where HEAD was and keeps the commit on the local branch; when that checkout fails, the receipt says where HEAD stayed and how to return. A delivery never writes over what Git does not track: a file or directory at a path the result adds that your ignore rules hide refuses `delivery_path_occupied`, naming it, with nothing written, and `apply/check` answers the same (a new file in a directory that already exists still delivers, and so does a rename that only changes case; a hard link of a removed file is never taken for one). In a sparse checkout (cone or non-cone), a result that adds, changes or removes a path outside the sparse-checkout patterns refuses `delivery_outside_sparse_checkout`, naming those paths, with nothing written, and `apply/check` answers the same; the last release's `git apply` wrote such an added file, after which every later snapshot of that checkout failed. A revert that must change such a path, because you narrowed the patterns after the apply, refuses the same way. Widen the sparse checkout (`git sparse-checkout add`) to deliver or revert there. Every path a delivery, take-back or revert does not address keeps its bytes, including a clean file outside the patterns that has no skip-worktree mark (Git's own checkout would delete it), and its index mark, except that in a sparse checkout Git itself clears the skip-worktree mark of a file that is present, which sticks once a `branch`, `commit` or `pr` delivery writes the index; such a write also drops the assume-unchanged mark of a path it changes. This check uses `git sparse-checkout check-rules` (Git 2.41 or newer); with an older Git, a sparse checkout's deliveries, `apply/check` and reverts refuse `git_failed` before writing, naming the Git they need. A file you marked skip-worktree and then deleted counts as deleted, not as unchanged (except a file the sparse patterns leave out), so a revert brings back what a delivery deleted, refuses rather than undo your later deletion, and a delivery does not silently recreate it. A `branch`, `commit` or `pr` delivery commits the result onto HEAD and leaves what your assume-unchanged or skip-worktree marks hide (a local edit, a deleted file) on disk and out of the commit, their marks with them (but for the sparse-checkout case above); a result that changes such a file refuses `delivery_conflict`. A checkout that cannot fit refuses `space_insufficient` before its first write, and a store fault on the way there (the import, the snapshot, the composition) answers the same typed 409 instead of HTTP 400 or 500. A path the result changes whose name is not valid UTF-8 refuses `result_path_encoding` with nothing written, and so does its revert; a name only your project changed is never addressed, so it does not stop an unrelated result. Written paths are proven the way `git status` compares them, and every private proof, snapshot and checkout reads the bytes whatever your configuration or index marks say (`core.ignoreStat`, a filesystem monitor, an assume-unchanged mark); apply, its check and revert also read the paths they decide on by content rather than from the index's stat cache, so a file that kept its size and mtime is neither already applied nor called reverted (`branch`, `commit` and `pr` keep that cache for what they write, as `git checkout` does). A committed CRLF blob under `text=auto` or `core.autocrlf` applies and reverts, and a directory that becomes a file or symlink composes and a file that became a directory reverts on an unchanged target. When a patch render fails for a reason other than its size, the capture keeps the result with `patch_view.reason: render_failed`. Review and synthesis of a result with no patch view read a copy of its saved candidate tree, converted only as that tree's own attributes define with Git's defaults, in a private Git directory, never the workspace, so a configured check that rewrites an output, an attribute rule (tracked or in `.git/info/attributes`) or the repository's filter configuration cannot make review read different bytes than apply consumes (a filter driver is configuration the result does not carry, so a filtered file is read as its stored blob, as in the patch view: a Git LFS pointer or an encrypted blob is reviewed as stored, which says nothing about the content it stands for, and no smudged copy is kept); a changed file that copy cannot hold, a disk too full for it included, is named with its typed cause (`space_insufficient` for a full disk) to reviewers and synthesis, and the review cannot pass clean. A copy that fails holds none of the files: reviewers and synthesis get those causes and nothing to read, never what the failed copy left in its directory or a directory that is gone, and a copy that cannot be removed afterwards stays instead of ending the run, with a best-effort `<copy>.cleanup-error.json` saying why (on a disk too full to write that record whole, the leftover stays with its cleanup unconfirmed). After an earlier apply and revert, a later delivery that strands HEAD on its branch clears the old revert anchor, so `revert_run` refuses instead of answering a false success. A `revert_run` refused for anything but a later edit of what the run changed (the sparse patterns, a file it cannot read, a full disk, a Git fault) now answers `reverse_apply_failed` with its typed cause as `context.refusalCode`, instead of saying the revert is no longer available. Runs recorded by earlier releases keep their patch for apply and revert.
+- d9e7977: `claudexor project remove <project-id> --purge-trashed-threads` (`DELETE /v2/projects/:id?trashedThreads=purge`) removes a project together with the threads already in its trash, in one action (#333). Without the option, removal is unchanged and still refuses while any non-purged thread remains. The option purges only threads that are in the trash: an active or closed thread must be trashed first. The whole removal is refused, with nothing changed, while any thread is outside the trash (`project_has_threads`) or while any of the project's work is queued or running, including a thread Apply or a run started under a former root (`project_has_active_run`). The purges and the project's retirement are one store transaction. Each purged thread then loses what a thread purge deletes: its isolated worktree and `claudexor/thread-*` branch with any changes never applied, and its lane homes. The project folder, a delegated thread's caller-owned workspace and run artifacts are never deleted; the conversation rows stay in the engine store, while the threads leave every listing and can no longer be restored or resumed. The receipt's new `purgedThreads` lists each purged thread with `cleanup: "completed"`, or `"pending"` with the error; a pending cleanup is retried when the daemon next starts. A repeated or inexact `trashedThreads` value is refused with 400 before anything changes. Other query parameters stay ignored as before, so a misspelled parameter name gets the default removal, which still refuses while any non-purged thread remains.
+
+  Every thread purge (Delete Now, expired trash, the retention retry, daemon startup and this removal) now reports a cleanup as completed only once the thread's worktree with its Git registration and branch and its lane homes are gone. When Git refuses, for example for a worktree locked with `git worktree lock` or a ref lock held by another Git process, the cleanup stays pending with Git's error, nothing Git still records is deleted, and a later attempt finishes it once the cause is gone. Git is asked in the repository that registered the worktree, which the worktree's own `.git` file names; a branch, registration or directory already gone there counts as removed. Without that file, the project folder's repository is asked. Because Git deletes the file with the worktree and a project folder can be replaced, the cleanup records the repository it asks before Git's first change there, so a later attempt or the next daemon start finishes in that same repository, and syncs its Git directories to disk, also when the project folder is gone or another repository is at the project path by then. Git drops a worktree's registration even when it fails to delete the worktree directory, for example a read-only one; the cleanup stays pending with Git's error, and once the directory can be deleted, a later attempt finishes it in that recorded repository. A repository moved without relinking the project, or deleted (the two look the same), keeps the cleanup pending too; after a move, `git worktree repair` in the moved repository lets the next daemon start finish it, and a recorded repository that moves away or is replaced at its path afterwards keeps it pending until it is back. Thread purge, the account lane cleanup and the orphan-lane sweep no longer follow a link inside Claudexor's runtime directory: a link above what they delete is refused with an error and its target is left untouched, and a link in place of what they delete is only unlinked. Before, such a link made the deletion follow it into the linked folder, and a Git refusal was reported as completed and never retried.
+
+- Updated dependencies [f428c0a]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [30caf39]
+- Updated dependencies [d16170f]
+- Updated dependencies [f428c0a]
+- Updated dependencies [8bae6ae]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [f428c0a]
+- Updated dependencies [d9e7977]
+- Updated dependencies [2d83b87]
+- Updated dependencies [f428c0a]
+- Updated dependencies [28dfe1a]
+  - @claudexor/schema@5.0.0
+  - @claudexor/core@5.0.0
+  - @claudexor/util@5.0.0
+  - @claudexor/event-log@5.0.0
+
+## 4.8.2
+
+### Patch Changes
+
+- 67b8833: Release old unreferenced artifacts and native sessions after archived project bindings are cleared. Reclaim aged, unnamed revert/exact-patch objects and empty engine containers while preserving surviving runs and recovery holds. Expose a durable last cleanup outcome, counted holds and errors through `claudexor gc --last` and `GET /v2/maintenance/gc`.
+
+  Preserve complete NUL-delimited interaction IDs on Node 24.15 when pruning commands and observing retention changes, so question event groups and bodies are released and questions published during cleanup protect their runs.
+
+  Preserve live workspace, Git checkout and harness-home directories during cleanup. Keep hold history through interrupted inventory, recover unreadable last-pass records with a passive diagnostic, and report unsupported native adapters without false holds.
+
+  Keep foreign Codex session entries informational and preserve unobserved holds through interrupted cleanup. Reclaim empty run-retirement containers and avoid removal attempts on nonempty containers.
+
+- Updated dependencies [97e2f17]
+- Updated dependencies [67b8833]
+- Updated dependencies [f88a561]
+  - @claudexor/event-log@4.8.2
+  - @claudexor/schema@4.8.2
+  - @claudexor/util@4.8.2
+  - @claudexor/core@4.8.2
+
+## 4.8.1
+
+### Patch Changes
+
+- @claudexor/core@4.8.1
+- @claudexor/event-log@4.8.1
+- @claudexor/schema@4.8.1
+- @claudexor/util@4.8.1
+
+## 4.8.0
+
+### Patch Changes
+
+- Add bounded thread history reads. `GET /v2/threads/:id/history` returns one page of at most 20 turns with prompt and answer previews and receipt facts, chosen by a cursor or a before, after or around turn id, and `GET /v2/threads/:id/turns/:turnId/prompt` returns a bounded UTF-8 part of a turn's complete stored prompt, refused turns included, with its total size and SHA-256. CLI `thread history` and `thread prompt` and MCP `claudexor_thread_history` and `claudexor_thread_prompt` expose the same reads; they require an existing daemon and never start one. The existing thread detail read remains available.
+
+  A page stays within 2 MiB of JSON. A stale cursor fails as `thread_history_cursor_stale` with the `resnapshot` required action, and a turn whose run record was pruned reads as `not_retained` instead of failing the page.
+
+  Engine-store schema 5 adds only the `turn_plan_answer` index in an atomic forward-only migration; building it scans existing turns once without rewriting them, and older engines refuse an upgraded store.
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies [6c31c44]
+- Updated dependencies [7dfbc42]
+- Updated dependencies
+  - @claudexor/schema@4.8.0
+  - @claudexor/core@4.8.0
+  - @claudexor/util@4.8.0
+  - @claudexor/event-log@4.8.0
+
+## 4.7.1
+
+### Patch Changes
+
+- Updated dependencies [880081d]
+- Updated dependencies [30f8195]
+- Updated dependencies [8a9c2f6]
+  - @claudexor/schema@4.7.1
+  - @claudexor/core@4.7.1
+  - @claudexor/event-log@4.7.1
+  - @claudexor/util@4.7.1
+
+## 4.7.0
+
+### Minor Changes
+
+- 74fb275: Add `execution.auxiliaryWritableRoots`: exact caller-created service directories (a shared download cache, outside-Git scratch) an Agent run with effective `workspace_write` may also write. Admission records the canonical list in `TaskContract.access.auxiliary_writable_roots` and refuses unsafe, missing or conflicting grants with typed codes, including any overlap with the execution or source tree. Lanes negotiate it through `capability_profile.access_control.auxiliary_writable_roots` and the catalog's `accessControl.auxiliaryWritableRoots`: Codex applies it per turn through its native sandbox policy; a new turn with no roots drops the earlier grant, while `continueFrom` with no execution group inherits the predecessor's whole group. Other adapters refuse an explicit pool and drop from Auto. The CLI gains repeatable `--auxiliary-writable-root`; MCP run tools, `claudexor_thread_turn` and ACP carry the same member.
+
+### Patch Changes
+
+- Updated dependencies [74fb275]
+  - @claudexor/schema@4.7.0
+  - @claudexor/core@4.7.0
+  - @claudexor/event-log@4.7.0
+  - @claudexor/util@4.7.0
+
+## 4.6.2
+
+### Patch Changes
+
+- @claudexor/core@4.6.2
+- @claudexor/event-log@4.6.2
+- @claudexor/schema@4.6.2
+- @claudexor/util@4.6.2
+
+## 4.6.1
+
+### Patch Changes
+
+- @claudexor/core@4.6.1
+- @claudexor/event-log@4.6.1
+- @claudexor/schema@4.6.1
+- @claudexor/util@4.6.1
+
+## 4.6.0
+
+### Patch Changes
+
+- 2593b90: On Windows, background harness runs and captures start the vendor with an invisible
+  console instead of none, so the shells, `git`, MCP servers and other console programs
+  a run starts inherit it instead of opening windows of their own. Agy keeps the
+  console-less start because its print mode treats an openable console input as
+  interactive, and Claudexor's own `git` calls keep the console-less start they always
+  had.
+  Cancellation still stops the whole tree with `taskkill /T`, and a background child
+  now also ends when the daemon process dies. The no-Terminal sign-in
+  children (URL disclosure and the device-code app-server) open no console window, and
+  Codex quota and model discovery, the install version proof and the `login --help`
+  probe start their direct child hidden. The Node preload that defaulted `windowsHide`
+  inside npm wrappers is removed: the inherited console covers those children.
+- Updated dependencies [b344c39]
+- Updated dependencies [a81897c]
+- Updated dependencies [2593b90]
+  - @claudexor/core@4.6.0
+  - @claudexor/schema@4.6.0
+  - @claudexor/util@4.6.0
+  - @claudexor/event-log@4.6.0
+
+## 4.5.0
+
+### Patch Changes
+
+- 85e312d: Skip write-oriented baseline inventory and output capture for readonly live
+  directory Agents, so broad source scopes containing sockets do not block startup
+  and source files are not copied into attempt artifacts. Readonly answers no longer
+  fail file capture because a selected path resembles a credential file. Align empty
+  answer delivery and readonly `noChanges` with the Git readonly convention: no
+  write-backed result, not a filesystem comparison. Writable and isolated directory
+  preparation and capture remain unchanged.
+- Updated dependencies [032b44b]
+  - @claudexor/schema@4.5.0
+  - @claudexor/core@4.5.0
+  - @claudexor/event-log@4.5.0
+  - @claudexor/util@4.5.0
+
+## 4.4.0
+
+### Minor Changes
+
+- Engine retention retires unregistered and archived project histories, orphaned run trees and unreferenced native session parts in recurring bounded maintenance and never removes anything still referenced; immutable attempt, final and anchor patches share one content-addressed object per project where hard links are supported (#477).
+
+### Patch Changes
+
+- Updated dependencies
+  - @claudexor/util@4.4.0
+  - @claudexor/schema@4.4.0
+  - @claudexor/core@4.4.0
+  - @claudexor/event-log@4.4.0
+
+## 4.3.1
+
+### Patch Changes
+
+- 64ee7fc: Keep a run's candidate when its working copy holds untracked folders with their own Git repository. The candidate capture used to stage everything with `git add -A`, which fails outright on a nested repository without a commit (and records a commit link for one with commits), so a finished agent-mode run — for example a reviewer that kept a copy of a repository under `.review-evidence/` — lost its whole work product. Untracked nested repositories that the worktree's `.gitmodules` does not declare are now left out of the patch, which cannot carry another repository anyway, and named top-relative and redacted as `excluded_nested_repositories` in the attempt record and the final work product's meta. A declared submodule is still captured as its commit link, the names stay correct when the project root is a subdirectory of the worktree, and the in-place turn snapshot leaves the same folders out, so a thread's next turn no longer fails on one an earlier turn left behind.
+  - @claudexor/core@4.3.1
+  - @claudexor/schema@4.3.1
+  - @claudexor/util@4.3.1
+
+## 4.3.0
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies [23a74cb]
+  - @claudexor/core@4.3.0
+  - @claudexor/schema@4.3.0
+  - @claudexor/util@4.3.0
+
 ## 4.2.0
 
 ### Patch Changes

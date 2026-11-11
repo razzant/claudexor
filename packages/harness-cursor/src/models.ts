@@ -1,3 +1,4 @@
+import { CURSOR_PROGRAM } from "./program.js";
 import type { HarnessModelSpec } from "@claudexor/core";
 import { providerScrubEnv, runCapture } from "@claudexor/core";
 import type { CredentialProfile, HarnessModel } from "@claudexor/schema";
@@ -32,7 +33,7 @@ export async function queryCursorModels(
   cwd?: string,
 ): Promise<HarnessModel[]> {
   try {
-    const r = await runCapture(bin, ["--list-models"], {
+    const r = await runCapture(bin, [...(CURSOR_PROGRAM.childUpdateArgs ?? []), "--list-models"], {
       env,
       ...(cwd ? { cwd } : {}),
       timeoutMs: 30_000,

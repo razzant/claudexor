@@ -7,7 +7,8 @@ import ClaudexorKit
 //
 //   verify monotonic → download → sha256-verify against the SIGNED manifest →
 //   full unpack to versions/<v> → re-verify → strip quarantine → probe-start the
-//   unpacked daemon (exact `{version,buildSha}` probe) → idle-gate →
+//   unpacked daemon (exact `{version,buildSha}` probe) → idle-gate → fresh
+//   serving identity, still older than the candidate →
 //   identity-proven daemon stop → ATOMIC current.json swap (single rename inside
 //   a whole-critical-section lock) → relaunch → handshake-verify exact identity
 //   AND normal admission → rollback to last-known-good when the engine is wrong
@@ -57,77 +58,14 @@ public struct RuntimeServingHandshake: Sendable, Equatable {
     }
 }
 
-/// One process-local authority for every mutation of the app-owned local daemon
-/// lifecycle. The opaque token makes release exact: a stale caller can never
-/// clear a newer owner's admission. `claim` is synchronous, so both reconciliation
-/// and installation acquire it before their first suspension.
-public enum LocalRuntimeLifecycleOperation: Sendable, Equatable {
-    case reconciliation
-    case installation
-    case outageRecovery
-}
+/// One engine launch scheduled through `RuntimeDaemonControl`. Scheduling
+/// succeeds before any process exists, so `isRunning` answers only for what the
+/// launch has spawned so far; its lifecycle permit decides what it can still spawn.
+public struct RuntimeDaemonLaunch: Sendable {
+    public let isRunning: @Sendable () -> Bool
 
-public struct LocalRuntimeLifecycleLease: Sendable, Equatable {
-    fileprivate let id: UUID
-    public let operation: LocalRuntimeLifecycleOperation
-}
-
-/// Opaque process-local receipt for lifecycle completions. A caller snapshots
-/// it before suspending work, then uses the owner to atomically prove that no
-/// lifecycle finished before it claims a follow-up action.
-struct LocalRuntimeLifecycleCompletionSnapshot: Sendable, Equatable {
-    fileprivate let sequence: UInt64
-}
-
-public final class LocalRuntimeLifecycleOwner: @unchecked Sendable {
-    private let lock = NSLock()
-    private var current: LocalRuntimeLifecycleLease?
-    private var completionSequence: UInt64 = 0
-
-    public init() {}
-
-    public func claim(_ operation: LocalRuntimeLifecycleOperation) -> LocalRuntimeLifecycleLease? {
-        lock.withLock {
-            claimWhileLocked(operation)
-        }
-    }
-
-    /// Snapshot immediately before an awaited observation whose result could be
-    /// stale by the time it returns.
-    func completionSnapshot() -> LocalRuntimeLifecycleCompletionSnapshot {
-        lock.withLock {
-            LocalRuntimeLifecycleCompletionSnapshot(sequence: completionSequence)
-        }
-    }
-
-    /// Atomically claim only when the owner is idle and no lifecycle completed
-    /// since `snapshot`. Returning nil changes neither fact, so a recovery caller
-    /// can retain its launch allowance and obtain a fresh observation.
-    func claim(
-        _ operation: LocalRuntimeLifecycleOperation,
-        ifNoCompletionSince snapshot: LocalRuntimeLifecycleCompletionSnapshot
-    ) -> LocalRuntimeLifecycleLease? {
-        lock.withLock {
-            guard completionSequence == snapshot.sequence else { return nil }
-            return claimWhileLocked(operation)
-        }
-    }
-
-    public func release(_ lease: LocalRuntimeLifecycleLease) {
-        lock.withLock {
-            guard current == lease else { return }
-            current = nil
-            completionSequence += 1
-        }
-    }
-
-    private func claimWhileLocked(
-        _ operation: LocalRuntimeLifecycleOperation
-    ) -> LocalRuntimeLifecycleLease? {
-        guard current == nil else { return nil }
-        let lease = LocalRuntimeLifecycleLease(id: UUID(), operation: operation)
-        current = lease
-        return lease
+    public init(isRunning: @escaping @Sendable () -> Bool) {
+        self.isRunning = isRunning
     }
 }
 
@@ -142,10 +80,12 @@ public protocol RuntimeDaemonControl: Sendable {
     func stopForRuntimeReplacement(expectedIdentity: RuntimeClosureIdentity) async throws
     /// Relaunch the daemon (DaemonLauncher) against the ACTIVE pointer.
     func start() throws
-    /// Relaunch one already-resolved closure. Reconciliation uses this overload
+    /// Schedule one already-resolved closure. Reconciliation uses this overload
     /// so a concurrent pointer change cannot switch the script between its
-    /// exact probe and launch.
-    func start(scriptURL: URL) throws
+    /// exact probe and launch. The spawn happens later, off the caller, and only
+    /// if the exact permit is still valid there; a throw means nothing was
+    /// scheduled because launch files are missing.
+    func start(scriptURL: URL, launchPermit: LocalRuntimeLaunchPermit) throws -> RuntimeDaemonLaunch
     /// Side-effect-free exact closure identity from `--probe`.
     func probeIdentity(scriptURL: URL) async -> RuntimeClosureIdentity?
     /// Exact identity of the currently serving daemon, whatever its admission:
@@ -154,6 +94,14 @@ public protocol RuntimeDaemonControl: Sendable {
     /// Exact identity plus product admission from one handshake. Install and
     /// rollback success require normal admission, not identity alone.
     func servingHandshake() async -> RuntimeServingHandshake?
+    /// Saved closure scripts that may still hold `identity` exactly, for the
+    /// bounded return after a failed replacement. Each is proven by
+    /// `probeIdentity` before use; none is selected through the pointer.
+    func savedScripts(for identity: RuntimeClosureIdentity) -> [URL]
+    /// The Terminal command that stops whatever engine serves this app's root,
+    /// spelled with that root and the CLI this app ships. Operator shutdown is
+    /// not gated by recovery admission and deletes no stored data.
+    func operatorStopCommand() -> String?
 }
 
 public enum RuntimeReplacementStopError: Error, Sendable, Equatable {
@@ -164,12 +112,22 @@ public enum RuntimeReplacementStopError: Error, Sendable, Equatable {
 public extension RuntimeDaemonControl {
     /// Existing installer stubs keep their pointer-based start. Production and
     /// reconciliation-specific stubs override this to bind the selected script.
-    func start(scriptURL: URL) throws { try start() }
+    /// A launch this default cannot observe stays reported as running, so
+    /// nothing is ever started beside it.
+    func start(scriptURL: URL, launchPermit: LocalRuntimeLaunchPermit) throws -> RuntimeDaemonLaunch {
+        try start()
+        return RuntimeDaemonLaunch(isRunning: { true })
+    }
     /// Exact identity is deliberately unavailable unless a conformer proves it;
     /// lifecycle owners treat nil as failure and never guess from a version.
     func probeIdentity(scriptURL: URL) async -> RuntimeClosureIdentity? { nil }
     func handshakeIdentity() async -> RuntimeClosureIdentity? { nil }
     func servingHandshake() async -> RuntimeServingHandshake? { nil }
+    /// A conformer that cannot look for saved copies offers none, so a failed
+    /// replacement never restarts a build it did not find.
+    func savedScripts(for identity: RuntimeClosureIdentity) -> [URL] { [] }
+    /// Without one, a notice names no command it cannot vouch for.
+    func operatorStopCommand() -> String? { nil }
 }
 
 /// Progress states surfaced to the update chip (honest, per DESIGN_SYSTEM).
@@ -233,9 +191,16 @@ public actor RuntimeInstallCoordinator {
         // Session admission is the first operation in this async transaction.
         // The filesystem lock protects pointer writers; this exact lease also
         // excludes the steady reconciler's stop/start lifecycle.
-        guard let lifecycleLease = lifecycleOwner.claim(.installation) else {
+        let lifecycleLease: LocalRuntimeLifecycleLease
+        switch lifecycleOwner.claim(.installation) {
+        case let .acquired(lease):
+            lifecycleLease = lease
+        case .contended:
             fail(.failed(reason: "another engine lifecycle action is in progress"))
             throw RuntimeInstallError.lifecycleBusy
+        case let .refused(refusal):
+            fail(.failed(reason: refusal.reason))
+            throw RuntimeInstallError.lifecycleUnavailable(refusal)
         }
         defer { lifecycleOwner.release(lifecycleLease) }
 
@@ -310,6 +275,16 @@ public actor RuntimeInstallCoordinator {
             try? installer.removeVersionDir(manifest.version)
             fail(.failed(reason: "engine identity became unavailable before replacement admission"))
             throw RuntimeInstallError.daemonBusy
+        }
+        // The cached offer was decided against the engine serving at check
+        // time; another app copy may have replaced it since. The same
+        // monotonic rule gates the engine serving now, so Install never
+        // replaces a newer engine or another build of the same version.
+        guard isMonotonicUpgrade(target: manifest.version, floors: [forwardServing.version]) else {
+            try? installer.removeVersionDir(manifest.version)
+            fail(.failed(reason: "not newer than the running engine"))
+            throw RuntimeInstallError.notNewerThanServing(
+                target: manifest.version, serving: forwardServing)
         }
 
         // 7. Daemon-owned atomic idle proof + admission fence + exact stop. The

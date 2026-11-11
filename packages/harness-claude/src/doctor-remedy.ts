@@ -25,12 +25,23 @@ export function claudeNativeLoginRemedy(
 export function claudeInstallation(
   binary: string,
   patchPath?: string,
-): { path: string | null; advisory: string | null } {
+): { path: string | null; advisory: string | null; refusal?: string } {
   const selected = resolveHarnessCommandOnPath(binary, patchPath ?? normalizedHarnessPath());
   return {
     path: selected.command?.entrypoint ?? null,
     advisory:
       selected.advisory ??
       (patchPath === undefined && !selected.command ? brokenInstallAdvisory(binary) : null),
+    // The probes' launch was refused before spawning: name that file, not "not found".
+    ...(selected.refusal ? { refusal: selected.refusal.message } : {}),
   };
+}
+
+/** Why claude answered no `--version`: the refused launch names its file;
+ * otherwise the caller's not-found wording with any install evidence. */
+export function claudeMissingDetail(
+  installation: { advisory: string | null; refusal?: string },
+  notFound: string,
+): string {
+  return installation.refusal ?? [notFound, installation.advisory].filter(Boolean).join(" — ");
 }

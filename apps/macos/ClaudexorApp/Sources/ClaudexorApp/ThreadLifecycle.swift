@@ -9,183 +9,59 @@ extension AppModel {
     }
 
     func openThread(locationID: ExecutionLocationID, id: String) async {
-        await loadThread(
-            locationID: locationID,
-            id: id,
-            mayReconnect: true,
-            preserveExistingDetail: false)
+        await loadThread(locationID: locationID, id: id, mayReconnect: true)
     }
 
-    /// Refresh the already-visible thread without replacing the conversation
-    /// with the empty/loading state. Remote run streams call this repeatedly,
-    /// so clearing `selectedThreadDetail` here would make the whole feed flash
-    /// on every event.
-    func refreshOpenThread(
-        locationID: ExecutionLocationID,
-        id: String,
-        mayReconnect: Bool = false
-    ) async {
-        await loadThread(
-            locationID: locationID,
-            id: id,
-            mayReconnect: mayReconnect,
-            preserveExistingDetail: true)
+    func refreshOpenThread(locationID: ExecutionLocationID, id: String, mayReconnect: Bool = false) async {
+        guard selectedExecutionLocation == locationID, selectedThreadId == id else { return }
+        await loadThread(locationID: locationID, id: id, mayReconnect: mayReconnect)
     }
 
-    private func loadThread(
-        locationID: ExecutionLocationID,
-        id: String,
-        mayReconnect: Bool,
-        preserveExistingDetail: Bool
-    ) async {
-        let keepsVisibleDetail =
-            preserveExistingDetail
-            && selectedExecutionLocation == locationID
-            && selectedThreadId == id
-            && selectedThreadDetail?.thread.id == id
-        if gateway(for: locationID) == nil, let connectionID = locationID.remoteConnectionID {
-            selectedExecutionLocation = locationID
-            selectedThreadId = id
-            if !keepsVisibleDetail { selectedThreadDetail = nil }
-            if mayReconnect {
-                pendingRemoteThreadSelection = (locationID, id)
-                await connectRemote(connectionID)
+    private func loadThread(locationID: ExecutionLocationID, id: String, mayReconnect: Bool) async {
+        let changed = selectedHistory?.locationID != locationID || selectedHistory?.threadID != id
+        if changed {
+            if locationID == .local, selectedThreadId != nil, selectedThreadId != id, !liveTasks.isEmpty {
+                runListReconciliationNeeded = true
             }
-        }
-        guard let requestClient = gateway(for: locationID) else {
-            selectedExecutionLocation = locationID
-            selectedThreadId = id
-            if !keepsVisibleDetail { selectedThreadDetail = nil }
-            threadStatus = "This host is offline. Reconnect it to load the conversation."
-            return
-        }
-        if pendingRemoteThreadSelection?.locationID == locationID,
-           pendingRemoteThreadSelection?.threadID == id
-        {
-            pendingRemoteThreadSelection = nil
-        }
-        // View hydration is presentation-scoped. Once another thread is
-        // selected, a later bounded runs refresh may evict this thread's
-        // off-page Delegate family; reopening must be allowed to restore it.
-        let reconcileRunList = locationID == .local && (
-            runListReconciliationNeeded || (
-                selectedThreadId != nil && selectedThreadId != id && !liveTasks.isEmpty
-            )
-        )
-        if locationID == .local, selectedThreadId != id {
+            threadLoadGeneration += 1
+            selectedThreadDetail = nil
             hydratedRunDetails.removeAll()
+            selectedHistory = makeHistoryStore(locationID: locationID, id: id)
         }
-        threadLoadGeneration += 1
-        let generation = threadLoadGeneration
         selectedExecutionLocation = locationID
         selectedThreadId = id
-        if !keepsVisibleDetail { selectedThreadDetail = nil }
+        let history = selectedHistory!
         threadStatus = nil
-        // Start the new thread fetch before reconciling the bounded global run
-        // page. The two requests overlap, while the list pass reclaims any
-        // detail-restored family from the previous selection in a quiet daemon.
-        let detailLoad = Task { try await requestClient.threadDetail(id: id) }
-        if reconcileRunList {
-            // Dirty-before-I/O: a direct A→B switch must retry reclamation if
-            // this bounded list request fails, just like the draft detour.
-            runListReconciliationNeeded = true
-            let refreshSuccesses = successfulRunsRefreshes
-            await refreshRuns()
-            guard isCurrentGateway(requestClient, at: locationID),
-                  selectedExecutionLocation == locationID,
-                  selectedThreadId == id,
-                  threadLoadGeneration == generation
-            else { return }
-            if successfulRunsRefreshes > refreshSuccesses {
-                runListReconciliationNeeded = false
-            }
+        if gateway(for: locationID) == nil, mayReconnect, let connectionID = locationID.remoteConnectionID {
+            pendingRemoteThreadSelection = (locationID, id)
+            await connectRemote(connectionID)
         }
-        do {
-            let detail = try await detailLoad.value
-            guard isCurrentGateway(requestClient, at: locationID),
-                  selectedExecutionLocation == locationID,
-                  selectedThreadId == id,
-                  threadLoadGeneration == generation
-            else { return }
-            selectedThreadDetail = detail
-            guard isCurrentGateway(requestClient, at: locationID),
-                  selectedExecutionLocation == locationID,
-                  selectedThreadId == id, threadLoadGeneration == generation else { return }
-            evictBackgroundRunData()
-            // Existing run projection is local-daemon scoped. Remote chat cards
-            // carry their server-owned run summaries inline and are refreshed by
-            // the remote poller, avoiding daemon-id collisions.
-            if locationID == .local {
-                for turn in detail.turns.suffix(5) {
-                    guard isCurrentGateway(requestClient, at: locationID),
-                          selectedThreadId == id,
-                          threadLoadGeneration == generation
-                    else { return }
-                    if let runId = turn.runId {
-                        let missing = !liveTasks.contains(where: { $0.id == runId })
-                        if !missing || turn.run?.delegation?.requested == true {
-                            await ensureRunDetail(runId, insertingIfMissing: missing)
-                        }
-                    }
-                }
-            } else {
-                // Match local bounded hydration: completed remote turns carry
-                // detail-only apply/evidence fields that the runs list omits.
-                for turn in detail.turns.suffix(5) {
-                    guard isCurrentGateway(requestClient, at: locationID),
-                          selectedExecutionLocation == locationID,
-                          selectedThreadId == id,
-                          threadLoadGeneration == generation
-                    else { return }
-                    if let runID = turn.runId,
-                       remoteTasks[locationID]?.contains(where: { $0.id == runID }) == true
-                    {
-                        await loadRunDetail(runID, locationID: locationID)
-                    }
-                }
-                if let runID = detail.thread.headRunId,
-                   remoteTasks[locationID]?.first(where: {
-                       $0.id == runID
-                   })?.phase.isActive == true
-                {
-                    streamRemoteRun(
-                        locationID: locationID, runID: runID, threadID: id)
-                }
-            }
-        } catch {
-            guard isCurrentGateway(requestClient, at: locationID),
-                  selectedExecutionLocation == locationID,
-                  selectedThreadId == id, threadLoadGeneration == generation else { return }
-            if mayReconnect,
-               isRecoverableRemoteTransportFailure(error),
-               let connectionID = locationID.remoteConnectionID
-            {
-                let host = remoteConnection(for: locationID)?.displayName ?? "remote host"
-                threadStatus = "Reconnecting to \(host)…"
-                pendingRemoteThreadSelection = (locationID, id)
-                await disconnectRemote(connectionID)
-                await connectRemote(connectionID)
-                guard selectedExecutionLocation == locationID,
-                      selectedThreadId == id
-                else { return }
-                if gateway(for: locationID) != nil {
-                    await loadThread(
-                        locationID: locationID,
-                        id: id,
-                        mayReconnect: false,
-                        preserveExistingDetail: keepsVisibleDetail)
-                } else {
-                    threadStatus =
-                        remoteConnectionMessages[connectionID]
-                        ?? "Could not reconnect to \(host)."
-                }
-                return
-            }
-            let detail = locationID == .local
-                ? userMessage(for: error)
-                : userMessageForRemote(error)
-            threadStatus = "Could not load thread: \(detail)"
+        guard selectedHistory === history else { return }
+        guard gateway(for: locationID) != nil else {
+            let message = "This host is offline. Reconnect it to load the conversation."
+            threadStatus = message
+            if history.header == nil { history.state = .failed(message) }
+            return
         }
+        pendingRemoteThreadSelection = nil
+        // The global run-list reconciliation never gates this thread's page: it
+        // runs beside the read and settles before eviction. Its refresh takes
+        // the preserved family from the selection current when /runs answers.
+        async let reconciliation: Void = reconcileRunList(at: locationID)
+        await history.open()
+        guard selectedHistory === history else { return }
+        await loadHistoryDelegates(history)
+        if let reason = history.errorMessage { threadStatus = "Could not load thread: \(reason)" }
+        await reconciliation
+        evictBackgroundRunData()
+    }
+
+    /// One bounded global refresh after a selection change; failure keeps it due.
+    private func reconcileRunList(at locationID: ExecutionLocationID) async {
+        guard locationID == .local, runListReconciliationNeeded else { return }
+        let successes = successfulRunsRefreshes
+        await refreshRuns()
+        if successfulRunsRefreshes > successes { runListReconciliationNeeded = false }
     }
 
     func startDraftThread() {
@@ -196,6 +72,7 @@ extension AppModel {
         threadLoadGeneration += 1
         selectedThreadId = nil
         selectedThreadDetail = nil
+        selectedHistory = nil
         threadStatus = nil
         if case .task = route { route = .threads }
         draftPrimaryHarness = nil

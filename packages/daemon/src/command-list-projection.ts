@@ -1,9 +1,8 @@
 import { COMMAND_SUMMARY_PARAM_KEYS, type CommandSummaryParams } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
 import { publicJobRecord, type JobRecord } from "./job-record.js";
 
 /** Collections carry only the request facts their consumers use, never full
- * params/results. Keep the historical redacted 240-character HTTP preview. */
+ * params/results. Keep the historical 240-character HTTP preview. */
 export function compactCommandRecord(record: JobRecord): JobRecord & { promptPreview?: string } {
   const source =
     record.params && typeof record.params === "object"
@@ -13,7 +12,7 @@ export function compactCommandRecord(record: JobRecord): JobRecord & { promptPre
   for (const key of COMMAND_SUMMARY_PARAM_KEYS) {
     if (source[key] !== undefined) (params as Record<string, unknown>)[key] = source[key];
   }
-  const prompt = typeof source.prompt === "string" ? redactSecrets(source.prompt) : undefined;
+  const prompt = typeof source.prompt === "string" ? source.prompt : undefined;
   return publicJobRecord({
     id: record.id,
     state: record.state,

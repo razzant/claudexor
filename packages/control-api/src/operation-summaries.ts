@@ -3,11 +3,15 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "POST /v2/uploads":
     "Create a single-request streaming upload session for an attachment of the declared size.",
   "PUT /v2/uploads/:id/bytes":
-    "Stream the complete declared byte body in ONE request. The store is single-shot: a short, oversized, or interrupted PUT cancels the upload and discards partial bytes — retry by creating a new upload and resending from byte zero. Not resumable.",
+    "Stream the complete declared byte body in ONE request. The store is single-shot: a short, oversized, or interrupted PUT cancels the upload and discards partial bytes — retry by creating a new upload and resending from byte zero. Not resumable. A keyed import's upload instead returns to open, also when its bytes miss the declared sha256, so the same key resends from byte zero.",
   "GET /v2/uploads/:id":
     "Read an upload session's status and received byte count (diagnostic on a cancelled upload, not a resumable offset).",
   "DELETE /v2/uploads/:id": "Abort and discard an in-progress upload session.",
   "POST /v2/uploads/:id/finalize": "Finalize an upload into a durable attachment resource.",
+  "POST /v2/uploads/imports":
+    "Begin, read or replay one keyed attachment import; verified bytes are published under the same key without the source.",
+  "POST /v2/resources/:id/release":
+    "Release a managed ordinary resource: no new reference is admitted afterwards, while already accepted work keeps its bytes.",
   "POST /v2/handshake": "Negotiate the control protocol major before product calls.",
   "GET /v2/daemon/status":
     "Read daemon activity, capacity, current/admission memory and event-loop window facts.",
@@ -33,7 +37,7 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "POST /v2/projects": "Register a project root as a durable handle.",
   "POST /v2/projects/:id/relink": "Relink a registered project to a new root.",
   "DELETE /v2/projects/:id":
-    "Remove a registered project: retire the registry entry and archive its journal partition. Refused (409) while any non-purged thread or live/queued run references it; run artifacts are left to normal GC.",
+    "Remove a registered project: retire the registry entry and archive its journal partition. Refused (409) while any non-purged thread or live/queued run references it; with trashedThreads=purge, threads already in the trash are purged in the same removal instead. Run artifacts are left to normal GC.",
   "GET /v2/projects/:id/events": "Subscribe to a project's event stream (SSE).",
   "GET /v2/projects/:id/outputs": "List a project's durable outputs (artifacts/).",
   "GET /v2/projects/:id/outputs/<path>": "Fetch one durable output file from a project.",
@@ -42,7 +46,16 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "GET /v2/runs":
     "List a bounded, newest-first, keyset-paginated page of durable run summaries visible to the daemon.",
   "POST /v2/runs": "Start a run and return its durable handle.",
+  "POST /v2/runs/lookup":
+    "Read, without starting or waiting, the job a POST /v2/runs with this exact body and Idempotency-Key created: found or not_found in the answering store.",
+  "POST /v2/runs/wait-many":
+    "Wait once for unacknowledged lifecycle or pending-question attention across addressed runs.",
+  "GET /v2/task-groups/:id/runs":
+    "Read one compact page of retained group members in current served generations; absence is not a permanent roster or replay authority.",
   "GET /v2/runs/:id": "Read a run's full detail snapshot.",
+  "GET /v2/runs/:id/time-limit": "Read a run's live time-limit snapshot and revision.",
+  "PATCH /v2/runs/:id/time-limit":
+    "Set, extend, or disable a live run time limit with an expected revision.",
   "POST /v2/runs/:id/retry": "Retry a run, returning a new durable handle.",
   "GET /v2/runs/:id/run-again": "Draft a run-again request from a prior run.",
   "POST /v2/runs/:id/apply":
@@ -51,8 +64,10 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
     "Dry-check whether a run's patch would apply; an already-delivered run reports the safe already-applied no-op.",
   "GET /v2/runs/:id/artifacts": "List a run tree's technical artifacts.",
   "GET /v2/runs/:id/artifacts/<path>": "Fetch one artifact file from a run tree.",
-  "POST /v2/runs/:id/control": "Cancel a queued or running run.",
-  "POST /v2/runs/:id/decision": "Record an operator unblock/rerun decision on a run.",
+  "POST /v2/runs/:id/control":
+    "Cancel a queued or running run and hold its pending next message, also after the run ended.",
+  "POST /v2/runs/:id/decision":
+    "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, needs-decision, or non-patch results with typed reasons and is idempotent.",
   "GET /v2/runs/:id/events": "Replay + tail a run's event stream (SSE).",
   "POST /v2/runs/:id/interactions/:id/answer": "Answer a run's pending interactive question.",
   "POST /v2/runs/:id/messages":
@@ -68,6 +83,8 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "POST /v2/threads/:id/purge": "Permanently purge a trashed thread.",
   "POST /v2/threads/:id/apply": "Apply the thread's latest run work product.",
   "POST /v2/threads/:id/turns": "Enqueue a new turn on a thread.",
+  "POST /v2/threads/:id/turns/lookup":
+    "Read, without creating or waiting, the turn and job a turn create with this exact body and Idempotency-Key recorded: found, turn_only or not_found.",
   "POST /v2/threads/:id/turns/:id/retry": "Retry a thread turn.",
   "GET /v2/trust": "List protected-path trust state.",
   "POST /v2/trust": "Update protected-path trust state.",

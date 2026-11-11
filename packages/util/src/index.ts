@@ -1,11 +1,15 @@
+export * from "./process-timing.js";
 export { CLAUDEXOR_VERSION } from "./version.js";
-export type { PinnedVendorCliVersion } from "./vendor-pin.js";
+export type { VendorCliVersionStamp } from "./vendor-version.js";
 export * from "./secret-names.js";
 export * from "./sensitive-resource.js";
 export * from "./delegation-env.js";
 export * from "./runtime-manifest.js";
 export * from "./retry-delay.js";
 export * from "./problem-safety.js";
+export * from "./patch-objects.js";
+export * from "./stream-echo.js";
+export * from "./text-preview.js";
 import { sensitiveResourcePolicy } from "./sensitive-resource.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -24,6 +28,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -146,6 +151,26 @@ export function fsyncDirectory(path: string, platform: NodeJS.Platform = process
     fsyncDirectoryHandle(fd, platform);
   } finally {
     closeSync(fd);
+  }
+}
+
+/** The same directory durability policy for maintenance I/O that must yield. */
+export async function fsyncDirectoryAsync(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    try {
+      await handle.sync();
+    } catch (error) {
+      if (platform !== "win32") throw error;
+    }
+  } finally {
+    await handle.close();
   }
 }
 
@@ -350,6 +375,38 @@ export function projectRuntimeDir(repoRoot: string): string {
   return join(userConfigDir(), "projects", digest);
 }
 
+/**
+ * `projectRuntimeDir(repoRoot)/<segments>` for a lifecycle owner that deletes
+ * entries inside it. The config root is canonicalized once (it may itself be a
+ * link, or sit under one such as macOS `/var`); below it no component may be a
+ * link. One is refused rather than followed: removal resolves each of these
+ * components, and a link leading out of the runtime tree would aim it at user
+ * files. The entry the caller then names inside is its own to remove, and `rm`
+ * unlinks a link there without following it. Nothing exists below an absent
+ * component or a file, so the walk stops there.
+ */
+export function ownedProjectRuntimeDir(repoRoot: string, ...segments: string[]): string {
+  return ownedRuntimeNamespaceDir(projectRuntimeDir(repoRoot), ...segments);
+}
+
+/** The same lifecycle boundary for an inventoried namespace with no remaining root record. */
+export function ownedRuntimeNamespaceDir(runtime: string, ...segments: string[]): string {
+  const namespace = relative(join(userConfigDir(), "projects"), runtime);
+  if (!/^[0-9a-f]{64}$/.test(namespace))
+    throw new Error(`not an owned runtime namespace: ${runtime}`);
+  const root = canonicalProjectRoot(userConfigDir());
+  const parts = ["projects", namespace, ...segments];
+  for (let depth = 1; depth <= parts.length; depth++) {
+    const component = join(root, ...parts.slice(0, depth));
+    const stat = lstatSync(component, { throwIfNoEntry: false });
+    if (stat?.isSymbolicLink()) {
+      throw new Error(`daemon-owned runtime path is a link; refusing to follow it: ${component}`);
+    }
+    if (!stat?.isDirectory()) break;
+  }
+  return join(root, ...parts);
+}
+
 export function noProjectRepoRoot(): string {
   return join(userHomeDir(), ".cache", "claudexor", "no-project");
 }
@@ -373,94 +430,16 @@ export function isClaudexorOwnedRuntimePath(candidate: string): boolean {
 }
 
 /**
- * Best-effort redaction of obvious secret tokens from text destined for logs or
- * artifacts. This is defense-in-depth, never the primary control: secrets must
- * not reach this layer in the first place.
+ * Best-effort masking of credential-shaped tokens in ENGINE-OWNED diagnostics
+ * (errors, stderr tails, auth/probe output). Never applied to authorized
+ * working content (prompts, attachments, answers, events, patches, review
+ * evidence), which consumers receive exactly.
  */
 export function redactSecrets(text: string): string {
   return sensitiveResourcePolicy.redact(text);
 }
 
-export function containsSecretLikeToken(text: string): boolean {
-  return sensitiveResourcePolicy.containsSensitiveContent(text);
-}
-
-/** Keys whose subtree is a caller-authored JSON SCHEMA: its object keys are
- *  field NAMES (a `token` or `password` property is legitimate), so the
- *  key-based secret check must not fire there — but string VALUES inside it
- *  (const/default/enum literals) are still scanned for real secrets. */
-const SCHEMA_VALUE_SUBTREE_KEYS = new Set(["outputSchema", "output_schema"]);
-
-export function assertNoInlineSecretValues(
-  value: unknown,
-  path = "$",
-  context = "run params",
-  valuesOnly = false,
-): void {
-  if (typeof value === "string") {
-    if (containsSecretLikeToken(value)) {
-      // Prompts get a tailored remediation: they are DURABLE run artifacts
-      // (task contracts, transcripts, review packets), so a pasted live
-      // credential would outlive the run. There is deliberately NO bypass
-      // flag for this fence.
-      const inPrompt = /\.prompt(\[|\.|$)/.test(path);
-      const remediation = inPrompt
-        ? "the prompt contains a secret-like value; prompts are durable run artifacts — remove the credential (store it with `claudexor secrets set` and reference it instead) and retry"
-        : "store values via secrets and pass refs/profiles";
-      throw Object.assign(
-        new Error(`secret-like value is not accepted in ${context} (${path}); ${remediation}`),
-        {
-          status: 400,
-          code: "inline_secret_rejected",
-        },
-      );
-    }
-    return;
-  }
-  if (!value || typeof value !== "object") return;
-  if (Array.isArray(value)) {
-    value.forEach((v, i) => assertNoInlineSecretValues(v, `${path}[${i}]`, context, valuesOnly));
-    return;
-  }
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    // A real secret embedded in a KEY (e.g. a schema property literally named
-    // with a live token) is rejected in EVERY mode — valuesOnly only relaxes
-    // the NAME heuristic (a legitimate `token`/`password` field name), never
-    // the actual-secret detector. Never echo the raw key in the message.
-    if (containsSecretLikeToken(key)) {
-      throw Object.assign(
-        new Error(
-          `secret-like value is not accepted in ${context} (${path}: object key); store values via secrets and pass refs/profiles`,
-        ),
-        { status: 400, code: "inline_secret_rejected" },
-      );
-    }
-    // Inside a JSON Schema subtree, keys are field names — skip the name-word
-    // heuristic (a `token`/`password`/`env` FIELD is legitimate), but string
-    // VALUES are still scanned below.
-    if (
-      !valuesOnly &&
-      (key === "env" ||
-        key === "secrets" ||
-        /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key))
-    ) {
-      throw Object.assign(
-        new Error(
-          `inline secrets/env are not accepted in ${context} (${path}.${key}); store values via secrets and pass refs/profiles`,
-        ),
-        { status: 400, code: "inline_secret_rejected" },
-      );
-    }
-    assertNoInlineSecretValues(
-      child,
-      `${path}.${key}`,
-      context,
-      valuesOnly || SCHEMA_VALUE_SUBTREE_KEYS.has(key),
-    );
-  }
-}
-
-/** The machine-readable `code` a typed error carries (e.g. inline_secret_rejected), if any. */
+/** The machine-readable `code` a typed error carries, if any. */
 export function errorCode(err: unknown): string | undefined {
   if (
     err &&
@@ -546,3 +525,5 @@ export function engineBuildIdentity(): EngineBuildIdentity {
 }
 export * from "./node-heap-args.js";
 export * from "./daemon-heap.js";
+export { readFileUtf8BoundedSync } from "./bounded-file-read.js";
+export * from "./run-stores.js";

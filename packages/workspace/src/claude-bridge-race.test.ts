@@ -38,7 +38,7 @@ describe("ensureClaudeBridge EEXIST race_lost branch (NIT1)", () => {
     dir = mkdtempSync(join(tmpdir(), "claudexor-claude-bridge-race-"));
     state.reportFreeOnce = false;
   });
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  afterEach(() => rmSync(dir, { recursive: true, force: true }), 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("returns race_lost and never overwrites when the exclusive create loses the race", () => {
     writeFileSync(join(dir, "AGENTS.md"), "# a\n");

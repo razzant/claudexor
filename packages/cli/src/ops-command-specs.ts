@@ -1,6 +1,8 @@
 import type { CliCommandSpec } from "./command-registry.js";
+import { UPLOAD_COMMAND_SPECS } from "./upload-command-specs.js";
 
 export const OPS_COMMAND_SPECS_BEFORE_REMOTE = [
+  ...UPLOAD_COMMAND_SPECS,
   {
     id: "account-reset",
     usageArgs:
@@ -147,9 +149,19 @@ export const OPS_COMMAND_SPECS_AFTER_REMOTE = [
   {
     id: "gc",
     positionalPatterns: [{ min: 0, max: 0 }],
-    usageArgs: "[--dry-run]",
+    usageArgs: "[--dry-run | --last]",
     summary: "Reclaim expired run/review artifact trees (daemon retention pass)",
-    flags: ["dry-run", "json"],
+    flags: ["dry-run", "last", "json"],
+    mutability: "ops",
+    stability: "stable",
+  },
+  {
+    id: "scanner",
+    positionalPatterns: [{ prefix: ["prepare"], min: 1, max: 1 }],
+    usageArgs: "prepare [--from-archive <file>]",
+    summary:
+      "Prepare the pinned publication scanner `pr` requires, under this machine's config root (download, or an official archive)",
+    flags: ["from-archive", "json"],
     mutability: "ops",
     stability: "stable",
   },
@@ -164,11 +176,23 @@ export const OPS_COMMAND_SPECS_AFTER_REMOTE = [
       { prefix: ["disable"], min: 3, max: 3 },
       { prefix: ["remove"], min: 3, max: 3 },
       { prefix: ["rm"], min: 3, max: 3 },
+      { prefix: ["rollback-migration"], min: 1, max: 2 },
     ],
-    usageArgs: "[list | add|login|enable|disable|remove <harness> <profile-id>]",
+    usageArgs:
+      "[list | add|login|enable|disable|remove <harness> <profile-id> | rollback-migration [harness]]",
     summary:
-      "Credential profiles: registry + doctor readiness, per-profile toggle, and vendor login",
+      "Credential profiles: registry + doctor readiness, per-profile toggle, vendor login, and the migration rollback to run before a downgrade",
     flags: ["json", "display-name"],
+    subcommandFlags: {
+      list: [],
+      add: ["display-name"],
+      login: [],
+      enable: [],
+      disable: [],
+      remove: [],
+      rm: [],
+      "rollback-migration": [],
+    },
     mutability: "ops",
     stability: "stable",
   },

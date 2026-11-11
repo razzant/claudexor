@@ -14,7 +14,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { ChildProcess, SpawnOptions } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ProcessGroupService,
@@ -45,7 +45,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function knownLeader(pid: number): KnownProcessIdentity {
   return {
@@ -137,15 +137,59 @@ else fs.writeFileSync('observed.json', JSON.stringify({ args: process.argv.slice
     expect(spec.executable.realpath).toBe(spec.binary);
     expect(spec.executable.realpath).not.toBe(process.execPath);
     issuePermit(spec);
+    const spawned: Array<{ args: readonly string[]; options: SpawnOptions }> = [];
     expect(
       await runSetupLoginWorker(manifestPath, {
         processGroupService: processGroups(),
         selfPid: 4242,
+        spawnProcess: ((command: string, args: readonly string[], options: SpawnOptions) => {
+          spawned.push({ args, options });
+          return spawn(command, args, options);
+        }) as never,
       }),
     ).toBe(0);
     expect(JSON.parse(readFileSync(join(spec.cwd, "observed.json"), "utf8"))).toEqual({
       args: spec.args,
       marker: "sealed",
+    });
+    // The captured help probe has no console window; the Terminal sign-in it
+    // precedes keeps its own terminal policy.
+    expect(spawned.map((call) => call.args)).toEqual([
+      ["--no-warnings", spec.binary, "login", "--help"],
+      ["--no-warnings", spec.binary, ...spec.args],
+    ]);
+    expect(spawned[0]?.options).toMatchObject({
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    expect(spawned[1]?.options.windowsHide).toBeUndefined();
+  });
+
+  it("hides the no-Terminal sign-in child that the console-less worker starts", async () => {
+    const { manifestPath, spec } = prepare("process.exit(0);\n", {
+      loginMode: "url_disclosure",
+      deviceCodePath: join(root, "setup-protocol", "runner-devicecode.json"),
+      interpreter: { binary: process.execPath, args: [] },
+    });
+    issuePermit(spec);
+    const spawned: SpawnOptions[] = [];
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+        spawnProcess: ((command: string, args: readonly string[], options: SpawnOptions) => {
+          spawned.push(options);
+          return spawn(command, args, options);
+        }) as never,
+      }),
+    ).toBe(0);
+    // Without the flag Windows gives this child a visible console of its own;
+    // the Terminal sign-in above keeps the window it exists to show.
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]).toMatchObject({
+      detached: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
   });
 
@@ -654,6 +698,49 @@ describe("device-auth capability probe + output tee (v3.0.3 S6)", () => {
     expect(existsSync(join(jobDir, "real-run.txt"))).toBe(true);
   });
 
+  it.each(["daemon", "client_pty"] as const)(
+    "runs Grok's own --device-auth login on the %s transport without the codex help gate",
+    async (transport) => {
+      // Grok's login also passes --device-auth. The old-CLI gate and its upgrade advice
+      // belong to codex, so Grok runs as sealed and its own failure is the result.
+      process.env.CLAUDEXOR_CONFIG_DIR = root;
+      const name = `grok-${transport}`;
+      const probed = join(root, `${name}-help-probed`);
+      const { manifestPath, spec } = prepare(
+        `#!/bin/sh\nif [ "$2" = "--help" ]; then touch '${probed}'; echo "Usage: grok login"; exit 0; fi\n` +
+          `echo "device code expired" >&2\nexit 1\n`,
+        {
+          harness: "grok",
+          args: ["login", "--device-auth"],
+          profileConfigDir: join(root, `${name}-profile`),
+          // A daemon-hosted login tees the vendor output; client_pty inherits the terminal.
+          ...(transport === "daemon"
+            ? {
+                loginMode: "url_disclosure" as const,
+                deviceCodePath: join(root, name, "runner-devicecode.json"),
+              }
+            : {}),
+        },
+        name,
+      );
+      issuePermit(spec);
+      expect(
+        await runSetupLoginWorker(manifestPath, {
+          processGroupService: processGroups(),
+          selfPid: 4242,
+        }),
+      ).toBe(1);
+      expect(existsSync(probed)).toBe(false);
+      const result = readRunnerResult(spec.resultPath) as {
+        errorCode?: string;
+        outputTail?: string;
+      };
+      expect(result).toMatchObject({ commandStarted: true, exitCode: 1 });
+      expect(result.errorCode).toBeUndefined();
+      if (transport === "daemon") expect(result.outputTail).toContain("device code expired");
+    },
+  );
+
   it("fails OPEN when the probe produces no output (broken probe falls through to the real spawn)", async () => {
     const { manifestPath, spec, jobDir } = prepare(
       `#!/bin/sh\nif [ "$1" = "login" ] && [ "$2" = "--help" ]; then exit 7; fi\ntouch real-run.txt\nexit 0\n`,
@@ -758,7 +845,7 @@ describe("device-auth capability probe + output tee (v3.0.3 S6)", () => {
 
   it("the persisted tail carries no ESC bytes and redacts secret-like tokens", async () => {
     // Assembled at runtime so no token-like literal lands in the source tree
-    // (secret-scan CI, INV-062). This matches the redactor's `sk-…` rule.
+    // (secret-scan CI, INV-146). This matches the redactor's `sk-…` rule.
     const token = ["sk", "or", "FAKE".repeat(4) + "1234"].join("-");
     // The script emits, to stderr: an OSC-8 hyperlink (ESC ] 8 ; ; URI ESC \),
     // readable words, a bare ESC, and the secret — then fails (exit 3).
@@ -884,12 +971,19 @@ describe("D-17 device-code runner worker", () => {
       userCode: "SECR-ET99",
     };
 
+    let appServerOptions: SpawnOptions | undefined;
     const exit = await runSetupLoginWorker(manifestPath, {
       processGroupService: processGroups(),
       selfPid: 4242,
-      spawnProcess: (() => fakeAppServer(disclosure).child) as never,
+      spawnProcess: ((_command: string, _args: readonly string[], options: SpawnOptions) => {
+        appServerOptions = options;
+        return fakeAppServer(disclosure).child;
+      }) as never,
     });
     expect(exit).toBe(0);
+    // No Terminal: the console-less worker's app-server opens no console window.
+    expect(appServerOptions).toMatchObject({ stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    expect(appServerOptions?.detached).toBeFalsy(); // it stays in the worker's process group
 
     // The one-time code rides ONLY the transient sidecar.
     const sidecar = readRunnerDeviceCode(spec.deviceCodePath!);

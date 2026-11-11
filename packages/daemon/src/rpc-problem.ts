@@ -6,6 +6,14 @@ import {
 } from "@claudexor/util";
 import { replacementRefusal } from "./daemon-shutdown-rpc.js";
 
+export function storageOnlyFailure(error: unknown): boolean {
+  if (error instanceof AggregateError)
+    return error.errors.length > 0 && error.errors.every(storageOnlyFailure);
+  return ["store_corrupt", "store_flush_unavailable"].includes(
+    (error as { code?: string })?.code ?? "",
+  );
+}
+
 /** The daemon's safe problem projection; clients preserve these facts verbatim. */
 export function rpcProblem(error: unknown) {
   const fields = error && typeof error === "object" ? (error as Record<string, unknown>) : {};

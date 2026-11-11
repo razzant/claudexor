@@ -1,0 +1,175 @@
+{
+  "$ref": "#/definitions/ThreadRetirement",
+  "definitions": {
+    "ThreadRetirement": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "storeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "threadState": {
+          "type": "string",
+          "enum": [
+            "active",
+            "closed",
+            "trashed",
+            "purged"
+          ],
+          "description": "Thread lifecycle state: active, closed, trashed for recovery, or terminally purged."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_accepted",
+            "accepted_pending_removal",
+            "removed"
+          ],
+          "description": "accepted_pending_removal: durably purged; the named originals can no longer be promised back while cleanup is open. removed: every directory the purge owner deletes is gone."
+        },
+        "acceptance": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "operationId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The caller's durable release intent."
+                },
+                "exportId": {
+                  "type": "string",
+                  "description": "The manifest identity the caller transferred."
+                },
+                "closureDigest": {
+                  "type": "string",
+                  "description": "The engine-record identity at acceptance."
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "description": "Every exported byte, re-hashed by the engine."
+                },
+                "laneDigest": {
+                  "type": "string",
+                  "description": "The lane bytes acceptance named for removal."
+                },
+                "acceptedAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "When the purge decision committed."
+                }
+              },
+              "required": [
+                "operationId",
+                "exportId",
+                "closureDigest",
+                "contentDigest",
+                "laneDigest",
+                "acceptedAt"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cleanup": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "reason"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present while removal is open; reason names the last failed attempt."
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "operationId": {
+                  "$ref": "#/definitions/ThreadRetirement/properties/threadId"
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "accepted",
+                    "refused",
+                    "abandoned"
+                  ]
+                },
+                "code": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The refusal's code; null when accepted or abandoned."
+                },
+                "message": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "settledAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "ISO-8601 timestamp string."
+                }
+              },
+              "required": [
+                "operationId",
+                "outcome",
+                "code",
+                "message",
+                "settledAt"
+              ],
+              "additionalProperties": false,
+              "description": "The one outcome bound to this operation; an absent record settles nothing."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The addressed operation's settled outcome. Null means no outcome is bound yet: an in-flight request may still settle it, so null never releases a caller's intent."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "storeId",
+        "threadId",
+        "threadState",
+        "status",
+        "acceptance",
+        "cleanup",
+        "operation"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

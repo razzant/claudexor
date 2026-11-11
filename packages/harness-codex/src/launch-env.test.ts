@@ -29,7 +29,7 @@ afterEach(() => {
   clearCodexEffortCache();
   vi.unstubAllEnvs();
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 it("keeps explicit environment patches and deletions after host normalization", () => {
   vi.stubEnv("CODEX_TEST_REMOVE_NULL", "inherited");

@@ -23,6 +23,7 @@ import {
   type EmitFn,
   type ProfilePolicy,
 } from "./credential-profile-rotation.js";
+import { quotaRefusalBasis, quotaRefusalResetsAt } from "./quota-refusal-scope.js";
 
 /**
  * Default-subject start selection (INV-135, owner scope "auto-balance"): when
@@ -63,16 +64,19 @@ export function preflightDefaultSubject(args: {
   // observed live block (reactive cooldown / spent window) rotates too. The
   // guard above pins `defaultRoute === "local_session"`, so the block is read
   // for the SUBSCRIPTION default subject only.
-  const block = breach ? null : profileQuotaBlock(snapshots, harnessId, null, defaultRoute, model);
+  const block = profileQuotaBlock(snapshots, harnessId, null, defaultRoute, model);
   if (!breach && !block) return null;
+  // One controlling evidence: a provider block outranks the reserve (#318).
+  const refusal = quotaRefusalBasis(breach, block);
   emit("route.profile.headroom_exceeded", {
     harness_id: harnessId,
     profile_id: null,
     action,
-    constraint_id: breach?.constraint_id ?? block?.constraint_id ?? null,
-    used_ratio: breach?.used_ratio ?? null,
+    constraint_id: refusal?.constraintId ?? null,
+    used_ratio: refusal?.usedRatio ?? null,
     threshold: policy.headroom_threshold,
-    resets_at: breach?.resets_at ?? block?.resets_at ?? null,
+    resets_at: quotaRefusalResetsAt(breach, block),
+    basis: refusal?.basis ?? null,
   });
   const next = nextEligibleProfile(
     registry,
@@ -100,14 +104,14 @@ export function preflightDefaultSubject(args: {
     // Same A5 preflight split as the pinned lane: the DEFAULT subject's own
     // observed live block with no eligible alternative refuses typed before
     // spawn; a bare headroom breach proceeds (not proven spent).
-    const hard = block ?? profileQuotaBlock(snapshots, harnessId, null, defaultRoute, model);
-    if (hard) {
+    if (block) {
       throw credentialPoolExhausted({
         harnessId,
+        model,
         profileId: null,
         reason: "profile_headroom_preflight",
         candidates,
-        subjectLimit: { resets_at: hard.resets_at },
+        subjectLimit: { resets_at: block.resets_at },
       });
     }
     return null;
@@ -119,7 +123,7 @@ export function preflightDefaultSubject(args: {
     reason: "profile_headroom_preflight",
     constraint_id: breach?.constraint_id ?? block?.constraint_id ?? null,
     used_ratio: breach?.used_ratio ?? null,
-    resets_at: breach?.resets_at ?? block?.resets_at ?? null,
+    resets_at: block?.reopening ? null : (breach?.resets_at ?? block?.resets_at ?? null),
   });
   return next;
 }

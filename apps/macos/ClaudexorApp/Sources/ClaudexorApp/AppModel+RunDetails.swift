@@ -33,11 +33,9 @@ extension AppModel {
                 remoteRunDetailLoadTokens[loadKey] = nil
             }
         }
-        guard let requestClient = gateway(for: locationID),
-              let original = remoteTasks[locationID]?.first(where: {
-                  $0.id == id || $0.resolvedRunId == id
-              })
-        else { return false }
+        guard let requestClient = gateway(for: locationID) else { return false }
+        let original = remoteTasks[locationID]?.first { $0.id == id || $0.resolvedRunId == id }
+        guard original != nil || selectedThreadAuthorizesColdRun(id) else { return false }
         do {
             let detail = try await requestClient.runDetail(runId: id)
             guard selectedExecutionLocation == locationID,
@@ -45,7 +43,7 @@ extension AppModel {
                   remoteRunDetailLoadTokens[loadKey] == loadToken
             else { return false }
             var task = Self.liveTask(from: detail.summary)
-            task.diff = original.diff
+            task.diff = original?.diff ?? []
             task.operatorDecisionAction = detail.operatorDecisionAction
             task.outcomeBanner = detail.outcomeBanner
             task.applyEligibility = detail.applyEligibility
@@ -67,6 +65,7 @@ extension AppModel {
                 task.capKnown = budget.maxUsd != nil
                 task.spendKnown = budget.spendUsd != nil
                 task.spendEstimated = budget.estimated
+                task.controllableSpendUsd = budget.controllableSpendUsd
                 task.valuationUsd = budget.knownValuationUsd
             }
             if !detail.timeline.isEmpty {
@@ -78,10 +77,12 @@ extension AppModel {
             guard selectedExecutionLocation == locationID,
                   gateway(for: locationID) === requestClient,
                   remoteRunDetailLoadTokens[loadKey] == loadToken,
-                  let index = remoteTasks[locationID]?.firstIndex(where: {
-                      $0.id == id || $0.resolvedRunId == id
-                  })
-            else { return false }
+                  detail.summary.runId == id else { return false }
+            if remoteTasks[locationID]?.contains(where: { $0.id == id }) != true {
+                guard selectedThreadAuthorizesColdRun(id) else { return false }
+                remoteTasks[locationID, default: []].append(task)
+            }
+            guard let index = remoteTasks[locationID]?.firstIndex(where: { $0.id == id }) else { return false }
             let failure = detail.failure ?? detail.summary.failure
             let findings = detail.reviewFindings.compactMap {
                 Self.finding(from: $0, taskTitle: task.title)
@@ -96,7 +97,12 @@ extension AppModel {
                 outcomeFacts: task.outcomeFacts)
             task.diagnosticText = RunDiagnosticsPresentation.summary(
                 detail: detail, error: task.engineError)
+            reconcileHistoryInteractions(&task, lastSeq: detail.lastSeq, at: locationID)
+            foldTimelineNotices(id, detail.timeline, at: locationID)
             remoteTasks[locationID]?[index] = task
+            remoteTasks[locationID] = Self.mergingDelegatedChildren(
+                detail.children, parentRunId: detail.summary.runId, into: remoteTasks[locationID] ?? [])
+            publishHistoryLive(task, locationID: locationID)
             return true
         } catch {
             guard gateway(for: locationID) === requestClient,

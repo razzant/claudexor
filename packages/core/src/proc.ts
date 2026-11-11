@@ -4,7 +4,11 @@ import { readProcessLines, type ProcessStreamLimits } from "./process-lines.js";
 import { composeSpawnEnv } from "./env-scope.js";
 import { postExitDrain } from "./process-drain.js";
 import { runScopeMarkerOf } from "./process-scope.js";
-import { prepareHarnessCommand } from "./runtime-env.js";
+import {
+  backgroundSpawnShape,
+  prepareHarnessCommand,
+  type WindowsConsolePolicy,
+} from "./runtime-env.js";
 import {
   reapProcessTree,
   type KillTreeStrategy,
@@ -19,10 +23,14 @@ import {
 } from "./process-group.js";
 
 export interface SpawnOptions {
+  /** JSON-RPC/NDJSON stdout uses LF delimiters; Unicode separators are payload. */
+  stdoutFraming?: "lf";
   /** Bounded protocol frames/queue and independently drained stderr. */
   streamLimits?: ProcessStreamLimits;
   cwd?: string;
   env?: Record<string, string | null | undefined>;
+  /** Windows console of the child (`runtime-env.ts`); default `hidden`. Ignored on POSIX. */
+  windowsConsole?: WindowsConsolePolicy;
   /**
    * Base env composition for the child: `mirror_native` (default) inherits the
    * parent env; `clean` starts from a minimal allowlist (agent env isolation).
@@ -97,10 +105,25 @@ export interface SpawnOptions {
   onExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
 }
 
+/** What became of one frame given to `ChildStdin.send`. `written` means the OS
+ * pipe accepted every byte; it does not prove that the process read them. */
+export type ChildStdinSend =
+  | { outcome: "written" }
+  | { outcome: "not_written"; reason: "exited" | "ended" | "failed"; error?: string };
+
 /** Minimal live stdin handle for bidirectional CLI protocols. */
 export interface ChildStdin {
   /** Write one line/frame; errors are swallowed (exit carries the outcome). */
   write(data: string): void;
+  /**
+   * Write one frame and report what became of it, for a caller that must know
+   * whether a response could reach the process (`spawnProcess` provides it).
+   * Nothing is written once the direct child has exited (`exited`: a
+   * descendant may still hold the pipes, so `closed` can settle much later) or
+   * stdin was ended (`ended`); a failed write reports its error (`failed`).
+   * Never throws or rejects.
+   */
+  send?(data: string): Promise<ChildStdinSend>;
   /** Close stdin (EOF) — the cooperative way to end a streaming session. */
   end(): void;
   /** Settles once the child process closes or fails to spawn. Session handlers
@@ -143,19 +166,24 @@ export async function* spawnProcess(
   args: string[],
   opts: SpawnOptions = {},
 ): AsyncGenerator<ProcEvent> {
-  const invocation = prepareHarnessCommand(cmd, args, composeSpawnEnv(opts.inheritEnv, opts.env));
+  const invocation = prepareHarnessCommand(
+    cmd,
+    args,
+    composeSpawnEnv(opts.inheritEnv, opts.env),
+    process.platform,
+    opts.cwd,
+  );
   const env = invocation.env;
   const child = spawn(invocation.binary, invocation.args, {
     cwd: opts.cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
     // Fully piped background children; interactive login/attach own their terminal policy.
-    windowsHide: true,
-    // Put the child in its own process group so we can signal the WHOLE tree.
-    // Harnesses spawn grandchildren (shell tools, MCP servers); without this a
-    // cancel/timeout signals only the direct child and grandchildren leak,
-    // keep writing to the worktree, or hang the run forever.
-    detached: true,
+    // POSIX: the child leads its own process group so a cancel/timeout signals the
+    // WHOLE tree (harnesses start shell tools and MCP servers that would otherwise
+    // leak, keep writing to the worktree, or hang the run). Windows: an invisible
+    // console the child's console programs inherit; the tree kill is taskkill /T.
+    ...backgroundSpawnShape(process.platform, opts.windowsConsole),
   });
   if (typeof child.pid === "number") registerChildProcess(child.pid, cmd, runScopeMarkerOf(env));
   // Bounded post-exit output drain (#449 item 2): see `process-drain.ts`.
@@ -179,7 +207,7 @@ export async function* spawnProcess(
   child.once("close", () => resolveClosed());
 
   // Seed the DIRECT group identity NOW, while the child is provably alive and is
-  // its own group leader (detached => pgid == pid). If the direct child later
+  // its own group leader (POSIX detached => pgid == pid). If the direct child later
   // exits before the cancel-time tree snapshot but a grandchild survives in the
   // SAME pgid, that pgid is no longer reachable by ppid BFS (its chain to the
   // root is gone) and would never be enumerated — so reapProcessTree could
@@ -187,7 +215,7 @@ export async function* spawnProcess(
   // group tracked (and raw-probeable) until it is proven empty.
   const groupService = opts.processGroups ?? defaultProcessGroupService;
   let directGroupHandle: ProcessGroupHandle | undefined;
-  if (typeof child.pid === "number") {
+  if (process.platform !== "win32" && typeof child.pid === "number") {
     const capture = groupService.captureLeader(child.pid);
     if (capture.status === "known") directGroupHandle = capture.handle;
   }
@@ -224,6 +252,27 @@ export async function* spawnProcess(
         } catch {
           /* child already gone; exit event carries the outcome */
         }
+      },
+      send: (data: string) => {
+        if (child.exitCode !== null || child.signalCode !== null)
+          return Promise.resolve({ outcome: "not_written", reason: "exited" });
+        if (child.stdin.writableEnded || child.stdin.destroyed)
+          return Promise.resolve({ outcome: "not_written", reason: "ended" });
+        return new Promise<ChildStdinSend>((resolve) => {
+          const failed = (error: unknown): void =>
+            resolve({
+              outcome: "not_written",
+              reason: "failed",
+              error: error instanceof Error ? error.message : String(error),
+            });
+          try {
+            child.stdin.write(data, (error) =>
+              error ? failed(error) : resolve({ outcome: "written" }),
+            );
+          } catch (error) {
+            failed(error);
+          }
+        });
       },
       end: () => {
         try {
@@ -267,6 +316,7 @@ export async function* spawnProcess(
       requestCancel();
     },
     opts.streamLimits,
+    opts.stdoutFraming,
   );
 
   child.on("error", (err) => {

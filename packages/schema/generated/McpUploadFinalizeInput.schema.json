@@ -1,0 +1,40 @@
+{
+  "$ref": "#/definitions/McpUploadFinalizeInput",
+  "definitions": {
+    "McpUploadFinalizeInput": {
+      "type": "object",
+      "properties": {
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "request": {
+          "type": "object",
+          "properties": {
+            "expectedSha256": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Content hash in algo:hex form, e.g. \"sha256:abcd...\"."
+            }
+          },
+          "additionalProperties": false
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "maxLength": 256,
+          "description": "Caller-owned key for this exact stage. Save key and body before calling; replay both after an unknown response."
+        }
+      },
+      "required": [
+        "uploadId",
+        "request",
+        "idempotencyKey"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

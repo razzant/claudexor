@@ -1,10 +1,4 @@
-import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
-/**
- * The durable maintenance OPERATION over a real CommandStore journal and the
- * real spawnProcess owner, driving a fake CLI child (a tiny node script that
- * logs every invocation and its pid). No real npm, vendor CLI, daemon, login
- * or ~/.claudexor is involved; every child pid is proven dead afterwards.
- */
+/** Durable command custody with fake CLI children and private SQLite roots. */
 import {
   existsSync,
   mkdtempSync,
@@ -15,93 +9,131 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { spawnProcess } from "@claudexor/core";
-import { accountObservations } from "./account-observations.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  spawnProcess,
+  observeHarnessProgram,
+  invalidateProgramObservations,
+} from "@claudexor/core";
+import { RunEventBus } from "@claudexor/daemon";
+import type { RunEvent } from "@claudexor/schema";
+import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { createHarnessMaintenance } from "./harness-maintenance-service.js";
+import { emptyMaintenanceEvidence } from "./harness-maintenance.js";
+import { harnessProgram } from "./harness-programs.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
+const selection = (version = "1.0.0") => ({
+  path: "/fixture/codex",
+  realPath: "/fixture/codex",
+  version,
+  versionOutput: `codex ${version}`,
+  overrideEnv: null,
+  overrideValue: null,
+});
+const ROW = {
+  harness: "codex",
+  selection: selection(),
+  newest: { status: "not_read", source: "https://example.invalid/latest" },
+  updateAvailable: "cannot_tell",
+  releaseNotesUrl: null,
+  actions: {
+    install: { available: false, reason: "Already selected; use Update.", commands: [] },
+    update: {
+      available: true,
+      reason: null,
+      commands: [{ kind: "exec", command: "/fixture/codex", args: ["update"] }],
+    },
+    exactVersion: { available: true, reason: null, commands: [] },
+  },
+};
+const EVIDENCE = {
+  ...emptyMaintenanceEvidence({ kind: "latest", version: null }),
+  phase: "installing",
+  installationHome: "/fixture",
+  before: selection(),
+  commands: [{ binary: "/fixture/codex", args: ["update"], env: {}, script: null }],
+  mutation: "unknown",
+};
+const RECEIPT = {
+  ...EVIDENCE,
+  phase: "settled",
+  ok: true,
+  harness: "codex",
+  dryRun: false,
+  after: selection("2.0.0"),
+  outcome: "changed",
+  mutation: "applied",
+  exitCode: 0,
+  progress: ["Updated"],
+};
 const FAKE_CLI = `
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 const [config, , verb, ...rest] = process.argv.slice(2);
 const cfg = JSON.parse(readFileSync(config, "utf8"));
-appendFileSync(cfg.log, JSON.stringify({ verb, rest, pid: process.pid }) + "\\n");
-const now = new Date().toISOString();
+const log = (phase) => appendFileSync(cfg.log, JSON.stringify({ verb, rest, pid: process.pid, phase }) + "\\n");
+log("started");
 if (verb === "inspect") {
-  const one = rest[0] && !rest[0].startsWith("--") ? rest[0] : null;
-  const rows = (one ? [one] : cfg.all).map((harness) => ({ ...cfg.row, harness, observedAt: now }));
-  if (rest.includes("--latest")) for (const row of rows) row.available = { version: cfg.latest, observedAt: now };
-  setTimeout(() => process.stdout.write(JSON.stringify({ observedAt: now, harnesses: rows })), cfg.inspectSleepMs ?? 0);
+  const version = existsSync(cfg.state) ? readFileSync(cfg.state, "utf8") : "1.0.0";
+  const row = { ...cfg.row, selection: { ...cfg.row.selection, version, versionOutput: "codex " + version }, observedAt: new Date().toISOString() };
+  if (rest.includes("--latest")) row.newest = { status: "unavailable", source: "https://example.invalid/latest", observedAt: row.observedAt, problem: { code: "newest_unavailable", message: "offline", retryable: true } };
+  process.stdout.write(JSON.stringify({ harnesses: [row] }));
 } else if (verb === "update") {
-  process.stderr.write("installing " + rest.join(" ") + "\\n");
-  setTimeout(() => {
-    if (cfg.update) process.stdout.write(JSON.stringify(cfg.update));
-    process.exitCode = cfg.update?.ok ? 0 : 1;
-  }, cfg.sleepMs ?? 0);
+  if (cfg.holdPreparation) await new Promise(() => setInterval(() => {}, 1000));
+  await new Promise((resolve) => setTimeout(resolve, cfg.prepareDelay ?? 0));
+  if (process.env.CLAUDEXOR_MAINTENANCE_PROTOCOL !== "1") throw new Error("missing custody protocol");
+  const input = createInterface({ input: process.stdin });
+  process.stderr.write("CLAUDEXOR_MAINTENANCE_EVIDENCE " + JSON.stringify(cfg.evidence) + "\\n");
+  for await (const line of input) { if (line !== "ack") throw new Error("not acknowledged"); break; }
+  input.close();
+  writeFileSync(cfg.state, "2.0.0"); log("mutated");
+  if (cfg.holdCompletion) await new Promise(() => setInterval(() => {}, 1000));
+  await new Promise((resolve) => setTimeout(resolve, cfg.finishDelay ?? 0));
+  if (cfg.receipt) process.stdout.write(JSON.stringify(cfg.receipt));
+  process.exitCode = cfg.receipt?.ok ? 0 : 1;
 }
 `;
-
-const ROW = {
-  mechanism: "managed_npm",
-  maintainable: true,
-  canCheckLatest: true,
-  targets: ["latest", "version", "previous", "baseline"],
-  remedy: null,
-  selection: { kind: "managed", binary: "/m/bin/codex", version: "1.0.0", overrideEnv: null },
-  installed: { version: "1.0.0", binary: "/m/bin/codex", proved: true },
-  releaseTested: { version: "0.1.0", verification: "release_verified" },
-  available: null,
-  availableProblem: null,
-};
-
-const UPDATED = {
-  ok: true,
-  after: { version: "7.7.7", binary: "/m/bin/codex", selected: true, proved: true },
-  mutation: "applied",
-  limitations: ["in_place_replacement", "new_starts_may_fail"],
-};
-
-const roots: string[] = [];
-const stores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
-const pids = new Set<number>();
-afterEach(async () => {
-  for (const pid of pids) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      /* already gone: the expected case */
-    }
-  }
-  pids.clear();
-  for (const sql of stores.splice(0)) await sql.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+const worlds: Array<{
+  root: string;
+  sql: Awaited<ReturnType<typeof sqlFixture>>;
+  close(): Promise<void>;
+}> = [];
+afterEachClosed(async () => {
+  const owned = worlds.splice(0);
+  for (const w of owned) await w.close();
+  vi.unstubAllEnvs();
+  invalidateProgramObservations();
+  return () => {
+    for (const w of owned) rmSync(w.root, { recursive: true, force: true });
+  };
 });
-
 async function harnessWorld(config: Record<string, unknown> = {}, spawn = spawnProcess) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-maint-op-")));
-  roots.push(root);
-  const script = join(root, "fake-cli.mjs");
-  const configPath = join(root, "config.json");
-  const log = join(root, "calls.jsonl");
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "maintenance-service-")));
+  const script = join(root, "fake.mjs"),
+    configPath = join(root, "config.json"),
+    log = join(root, "calls.jsonl"),
+    state = join(root, "version");
   writeFileSync(script, FAKE_CLI);
   const write = (patch: Record<string, unknown>) =>
     writeFileSync(
       configPath,
-      JSON.stringify({ log, all: ["codex"], latest: "7.7.7", row: ROW, update: UPDATED, ...patch }),
+      JSON.stringify({ log, state, row: ROW, evidence: EVIDENCE, receipt: RECEIPT, ...patch }),
     );
   write(config);
   const sql = await sqlFixture(root);
-  stores.push(sql);
   const store = sql.graph.commands.current();
-  let next = 0;
   const controllers = new Map<string, AbortController>();
+  const running = new Set<Promise<unknown>>();
+  let next = 0;
   const client = {
-    enqueue: vi.fn(async (request: unknown, options: Record<string, unknown>) => {
+    enqueue: vi.fn(async (params: unknown, options: Record<string, unknown>) => {
       const { record, reused } = store.accept({
-        id: `job-${(next += 1)}`,
-        params: request,
+        id: `job-${++next}`,
+        params,
         idempotencyKey: String(options.idempotencyKey),
         clientId: String(options.clientId),
-        operation: options.operation as string,
+        operation: String(options.operation),
         idempotencyParams: options.idempotencyRequest,
       });
       return { id: record.id, state: record.state, reused };
@@ -111,324 +143,443 @@ async function harnessWorld(config: Record<string, unknown> = {}, spawn = spawnP
       return { id, cancelled: true };
     }),
   };
-  const spawnArgs: Array<{ args: string[]; resultAtSpawn: unknown }> = [];
+  const bus = new RunEventBus();
+  const acknowledgments: unknown[] = [];
   const readiness = { invalidate: vi.fn() };
   const maintenance = createHarnessMaintenance({
     commands: sql.graph.commands,
     maintenanceQueries: sql.graph.commands.queries,
     client,
+    bus,
     readiness: () => readiness,
     cli: { command: process.execPath, args: [script, configPath] },
-    cancelKillDelayMs: 500,
-    spawn: ((command: string, argv: string[], options: never) => {
-      spawnArgs.push({
-        args: argv.slice(2),
-        resultAtSpawn: structuredClone(sql.records().at(-1)?.result ?? null),
-      });
-      return spawn(command, argv, options);
-    }) as typeof spawnProcess,
+    cancelKillDelayMs: 200,
+    spawn: ((bin, args, options) =>
+      spawn(bin, args, {
+        ...options,
+        ...(options?.onSpawn
+          ? {
+              onSpawn: (io) =>
+                options.onSpawn!({
+                  ...io,
+                  write: (data) => {
+                    acknowledgments.push(structuredClone(sql.records().at(-1)?.result));
+                    io.write(data);
+                  },
+                }),
+            }
+          : {}),
+      })) as typeof spawnProcess,
   });
   const calls = () =>
     existsSync(log)
       ? readFileSync(log, "utf8")
           .trim()
           .split("\n")
-          .map((line) => {
-            const call = JSON.parse(line) as { verb: string; rest: string[]; pid: number };
-            pids.add(call.pid);
-            return call;
-          })
+          .map((line) => JSON.parse(line) as { verb: string; pid: number; phase: string })
       : [];
-  /** Emulates the daemon's runJob: running -> execute -> terminal update. */
-  const run = async (id: string) => {
+  function run(id: string) {
     const controller = new AbortController();
     controllers.set(id, controller);
     store.update(id, { state: "running", startedAt: new Date().toISOString() });
-    const result = await maintenance.execute(store.get(id)!.params, {
-      jobId: id,
-      signal: controller.signal,
-      onRunStart: () => undefined,
-    });
-    store.update(id, { state: result.lifecycle, result, finishedAt: new Date().toISOString() });
-    return maintenance.routes.getMaintenanceOperation(id);
+    const work = (async () => {
+      const value = await maintenance.execute(store.get(id)!.params, {
+        jobId: id,
+        signal: controller.signal,
+        onRunStart: () => undefined,
+      });
+      store.update(id, {
+        state: value.lifecycle,
+        result: value,
+        finishedAt: new Date().toISOString(),
+      });
+      return maintenance.routes.getMaintenanceOperation(id);
+    })();
+    running.add(work);
+    void work.finally(() => running.delete(work));
+    return work;
+  }
+  worlds.push({
+    root,
+    sql,
+    close: async () => {
+      for (const controller of controllers.values()) controller.abort();
+      await Promise.allSettled(running);
+      maintenance.close();
+      await sql.close();
+    },
+  });
+  return {
+    root,
+    maintenance,
+    store,
+    client,
+    bus,
+    calls,
+    run,
+    write,
+    state,
+    acknowledgments,
+    controllers,
+    readiness,
   };
-  return { maintenance, store, client, calls, run, write, spawnArgs, controllers, readiness };
+}
+const latest = { harness: "codex", target: { kind: "latest" } };
+function nativeEvent(
+  bus: RunEventBus,
+  type: string,
+  run = "run-a",
+  attempt = "a1",
+  harness = "codex",
+) {
+  bus.publish({
+    seq: 1,
+    ts: new Date().toISOString(),
+    run_id: run,
+    task_id: "task",
+    type,
+    payload: { attempt_id: attempt, harness_id: harness },
+  } as RunEvent);
 }
 
-const latest = { harness: "codex", target: { kind: "latest" as const } };
-
-describe("harness maintenance operation", () => {
-  it.each([true, false])(
-    "a pre-update inspection cannot restore old observations (newer read: %s)",
-    async (newerRead) => {
-      let release!: () => void;
-      let started!: () => void;
-      const held = new Promise<void>((resolve) => (release = resolve));
-      const captured = new Promise<void>((resolve) => (started = resolve));
-      let version = "1.0.0";
-      let inspections = 0;
-      const w = await harnessWorld({}, async function* (_command, args) {
-        const [, , , verb, ...rest] = args;
-        if (verb === "inspect") {
-          const ids = rest[0]?.startsWith("--") ? ["codex", "claude"] : [rest[0]!];
-          const rows = ids.map((harness) => ({
-            ...ROW,
-            harness,
-            observedAt: new Date().toISOString(),
-            selection: { ...ROW.selection, version: harness === "codex" ? version : "1.0.0" },
-            installed: { ...ROW.installed, version: harness === "codex" ? version : "1.0.0" },
-            available: rest.includes("--latest")
-              ? { version, observedAt: new Date().toISOString() }
-              : null,
-          }));
-          if (++inspections === 1) {
-            started();
-            await held;
-          }
-          yield { type: "stdout", line: JSON.stringify({ harnesses: rows }) };
-        } else {
-          expect(verb).toBe("update");
-          version = "7.7.7";
-          yield { type: "stdout", line: JSON.stringify(UPDATED) };
-        }
-        yield { type: "exit", code: 0, signal: null };
+describe("durable vendor operation", () => {
+  it.each([20, "vendor_launch_failed"])(
+    "settles an abort-shaped failure with code %s without throwing in the handler",
+    async (code) => {
+      const error = Object.assign(new Error("The operation was aborted"), {
+        name: "AbortError",
+        code,
       });
-      const inventory = w.maintenance.routes.maintenanceInventory;
-      const pending = inventory({ harnessIds: ["codex", "claude"], checkLatest: true });
-      await captured;
-      const { id } = await w.maintenance.routes.createMaintenanceOperation(
-        { harness: "codex", target: { kind: "version", version: "7.7.7" } },
-        "update",
-      );
-      expect(await w.run(id)).toMatchObject({ state: "succeeded", after: { version: "7.7.7" } });
-      if (newerRead)
-        expect(
-          (await inventory({ harnessIds: ["codex"], checkLatest: true })).harnesses[0],
-        ).toMatchObject({ installed: { version: "7.7.7" } });
-      release();
-      const rows = (await pending).harnesses;
-      expect(rows).toHaveLength(2);
-      expect(rows[0]).toMatchObject({
-        selection: { version: "7.7.7" },
-        installed: { version: "7.7.7" },
-        available: { version: "7.7.7" },
+      const w = await harnessWorld({}, async function* () {
+        throw error;
       });
-      expect(rows[1]).toMatchObject({ harness: "claude", installed: { version: "1.0.0" } });
-      expect((await inventory({ harnessIds: ["codex", "claude"] })).harnesses).toEqual(rows);
-      // Reuse the newer read, or reacquire only the invalidated harness. The
-      // unaffected row from the original all-harness read remains reusable.
-      expect(
-        w.spawnArgs.filter((call) => call.args[1] === "inspect").map((call) => call.args),
-      ).toEqual([
-        ["harness", "inspect", "--latest", "--json"],
-        ["harness", "inspect", "codex", "--json"],
-        ["harness", "inspect", "codex", "--latest", "--json"],
-      ]);
+      const op = await w.maintenance.routes.createMaintenanceOperation(latest, `abort-${code}`);
+      expect(await w.run(op.id)).toMatchObject({
+        state: "failed",
+        phase: "settled",
+        problem: {
+          code: typeof code === "string" ? code : "maintenance_failed",
+          message: "The operation was aborted",
+        },
+      });
     },
   );
-
-  it("one key + same body rejoins the same operation; a different body conflicts", async () => {
+  it("publishes the inspection child's answer without erasing known versions or retrying mute identities", async () => {
+    let answer: string | null = "2.0.0";
+    let bin: string;
+    const w = await harnessWorld({}, async function* () {
+      yield {
+        type: "stdout",
+        line: JSON.stringify({
+          harnesses: [
+            {
+              ...ROW,
+              observedAt: new Date().toISOString(),
+              selection: {
+                ...selection(),
+                path: bin,
+                realPath: bin,
+                version: answer,
+                versionOutput: answer,
+              },
+            },
+          ],
+        }),
+      };
+    });
+    bin = join(w.root, "codex");
+    const calls = join(w.root, "version-asks");
+    writeFileSync(bin, `#!/bin/sh\necho ask >> '${calls}'\necho 1.0.0\n`, { mode: 0o755 });
+    vi.stubEnv("CLAUDEXOR_CODEX_BIN", bin);
+    const program = harnessProgram("codex");
+    expect((await observeHarnessProgram(program)).program?.version).toBe("1.0.0");
+    const inspect = () => w.maintenance.routes.maintenanceInventory({ harnessIds: ["codex"] });
+    const passive = async (version: string | null) => {
+      const results = await Promise.all(
+        Array.from({ length: 18 }, () => observeHarnessProgram(program)),
+      );
+      expect(results.every((result) => result.program?.version === version)).toBe(true);
+      expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(1);
+    };
+    await inspect();
+    await passive("2.0.0");
+    answer = null;
+    expect((await inspect()).harnesses[0]!.selection.version).toBeNull();
+    await passive("2.0.0");
+    writeFileSync(bin, readFileSync(bin, "utf8") + "\n# replaced identity\n");
+    await inspect();
+    await passive(null);
+    answer = "3.0.0";
+    await inspect();
+    await passive("3.0.0");
+  });
+  it("rejoins duplicate idempotent requests, rejects changed bodies, and allows only one active harness operation", async () => {
     const w = await harnessWorld();
-    const first = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
-    const again = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
-    expect(again.id).toBe(first.id);
-    expect(w.client.enqueue).toHaveBeenCalledTimes(1);
-    expect(first).toMatchObject({ state: "queued", phase: "accepted", target: { version: null } });
+    const route = w.maintenance.routes;
+    const first = await route.createMaintenanceOperation(latest, "key");
+    expect((await route.createMaintenanceOperation(latest, "key")).id).toBe(first.id);
+    expect(w.client.enqueue).toHaveBeenCalledOnce();
     await expect(
-      w.maintenance.routes.createMaintenanceOperation(
-        { harness: "codex", target: { kind: "baseline" } },
-        "k1",
+      route.createMaintenanceOperation(
+        { harness: "codex", target: { kind: "version", version: "2.0.0" } },
+        "key",
       ),
     ).rejects.toMatchObject({ code: "idempotency_conflict" });
-  });
-
-  it("resolves latest once and records the proved before + exact target BEFORE mutating", async () => {
-    const w = await harnessWorld();
-    const observations = vi.spyOn(accountObservations, "invalidateHarness");
-    const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
-    const done = await w.run(id);
+    await expect(route.createMaintenanceOperation(latest, "another")).rejects.toMatchObject({
+      code: "maintenance_already_active",
+    });
+    const done = await w.run(first.id);
     expect(done).toMatchObject({
       state: "succeeded",
-      phase: "settled",
-      mutation: "applied",
-      target: { kind: "latest", version: "7.7.7" },
-      before: { version: "1.0.0", selection: "managed", proved: true },
-      after: { version: "7.7.7", selected: true },
+      outcome: "changed",
+      requester: { source: "control-api", requestId: "key" },
     });
-    const verbs = w.calls().map((call) => call.verb);
-    expect(verbs).toEqual(["inspect", "update"]);
-    expect(w.calls()[0]!.rest).toContain("--latest");
-    expect(w.calls()[1]!.rest).toEqual(["codex", "--vendor-version", "7.7.7", "--yes", "--json"]);
-    const atSpawn = w.spawnArgs.find((entry) => entry.args.includes("update"))!.resultAtSpawn;
-    expect(atSpawn).toMatchObject({
-      phase: "installing",
-      mutation: "unknown",
-      target: { version: "7.7.7" },
-      before: { version: "1.0.0", proved: true },
-    });
-    expect(w.readiness.invalidate).toHaveBeenCalledWith("codex");
-    // Only the affected harness's account observations; no global fanout.
-    expect(observations).toHaveBeenCalledWith("codex");
-    expect(observations).toHaveBeenCalledTimes(1);
-    const inventory = await w.maintenance.routes.maintenanceInventory({});
-    expect(inventory.harnesses[0]).toMatchObject({
-      previous: { version: "1.0.0", operationId: id },
-      operation: { id, state: "succeeded", targetVersion: "7.7.7" },
-    });
+    expect((await route.createMaintenanceOperation(latest, "key")).id).toBe(first.id);
+    expect(await route.getMaintenanceOperation(first.id)).toEqual(done);
   });
-
-  it("a failed first update keeps its before fact, and Return targets that exact version", async () => {
-    const w = await harnessWorld({
-      update: { ok: false, code: "install_verification_failed", mutation: "unknown" },
-    });
-    const { id } = await w.maintenance.routes.createMaintenanceOperation(
-      { harness: "codex", target: { kind: "version", version: "2.0.0" } },
-      "k1",
-    );
-    const failed = await w.run(id);
-    expect(failed).toMatchObject({
-      state: "failed",
-      mutation: "unknown",
-      before: { version: "1.0.0", proved: true },
-      problem: { code: "install_verification_failed" },
-    });
-    const back = await w.maintenance.routes.createMaintenanceOperation(
-      { harness: "codex", target: { kind: "previous" } },
-      "k2",
-    );
-    expect(back.target).toEqual({ kind: "previous", version: "1.0.0" });
-  });
-
-  it("previous stays unknown without retained evidence instead of becoming the baseline", async () => {
+  it("rejoins a duplicate while asynchronous acceptance is still pending", async () => {
     const w = await harnessWorld();
+    const enqueue = w.client.enqueue.getMockImplementation()!;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    w.client.enqueue.mockImplementationOnce(async (...args) => {
+      await held;
+      return enqueue(...args);
+    });
+    const first = w.maintenance.routes.createMaintenanceOperation(latest, "pending");
+    const duplicate = w.maintenance.routes.createMaintenanceOperation(latest, "pending");
     await expect(
       w.maintenance.routes.createMaintenanceOperation(
-        { harness: "codex", target: { kind: "previous" } },
-        "k",
+        { harness: "claude", target: { kind: "latest" } },
+        "pending",
       ),
-    ).rejects.toMatchObject({ code: "maintenance_target_unknown" });
-    expect(w.client.enqueue).not.toHaveBeenCalled();
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+    expect(w.client.enqueue).toHaveBeenCalledOnce();
+    release();
+    expect((await first).id).toBe((await duplicate).id);
   });
-
-  it("cancel stops the child tree and reports an uncertain effect, not a clean rollback", async () => {
-    const w = await harnessWorld({ sleepMs: 30_000 });
-    const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
-    const running = w.run(id);
-    await vi.waitFor(() => expect(w.calls().map((call) => call.verb)).toContain("update"), {
-      timeout: 10_000,
-    });
-    await w.maintenance.routes.cancelMaintenanceOperation(id);
-    const done = await running;
-    expect(done).toMatchObject({
-      state: "cancelled",
-      mutation: "unknown",
-      termination: "confirmed",
-      problem: { code: "maintenance_cancelled" },
-    });
-    for (const call of w.calls()) expect(() => process.kill(call.pid, 0)).toThrow();
-  });
-
-  it("cancel during preparation stops its child before any update starts", async () => {
-    const w = await harnessWorld({ inspectSleepMs: 30_000 });
-    const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
-    const running = w.run(id);
-    await vi.waitFor(() => expect(w.calls()).toHaveLength(1), { timeout: 10_000 });
-    await w.maintenance.routes.cancelMaintenanceOperation(id);
-    const done = await running;
-    expect(done).toMatchObject({
-      state: "cancelled",
-      mutation: "none",
-      termination: "confirmed",
-      problem: { code: "maintenance_cancelled" },
-    });
-    expect(w.calls().map((call) => call.verb)).toEqual(["inspect"]);
-    for (const call of w.calls()) expect(() => process.kill(call.pid, 0)).toThrow();
-  });
-
-  it("keeps the daemon event loop responsive while the installer child runs", async () => {
-    const w = await harnessWorld({ sleepMs: 600 });
-    const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
-    let ticks = 0;
-    const timer = setInterval(() => (ticks += 1), 20);
-    try {
-      await w.run(id);
-    } finally {
-      clearInterval(timer);
-    }
-    expect(ticks).toBeGreaterThanOrEqual(10);
-  });
-
-  it("an interrupted operation after the install began reads as unknown, not as the old version", async () => {
+  it("commits exact command and before evidence before acknowledging mutation; active runs are a fact", async () => {
     const w = await harnessWorld();
-    const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
-    w.store.update(id, {
-      state: "interrupted",
-      error: "daemon restarted before command completion was durably observed",
-      result: {
+    nativeEvent(w.bus, "harness.started");
+    nativeEvent(w.bus, "harness.started", "run-a", "a2");
+    nativeEvent(w.bus, "harness.started", "run-b");
+    nativeEvent(w.bus, "harness.started", "run-c");
+    nativeEvent(w.bus, "run.blocked", "run-c");
+    const op = await w.maintenance.routes.createMaintenanceOperation(latest, "key");
+    const done = await w.run(op.id);
+    expect(w.acknowledgments).toEqual([
+      expect.objectContaining({
         phase: "installing",
-        mechanism: "managed_npm",
-        target: { kind: "latest", version: "7.7.7" },
-        before: { version: "1.0.0", binary: "/m/bin/codex", selection: "managed", proved: true },
-        after: null,
-        mutation: "unknown",
-        termination: "not_applicable",
-        limitations: [],
-        progress: [],
-        problem: null,
-      },
+        activeRunsAtStart: 2,
+        before: selection(),
+        commands: EVIDENCE.commands,
+      }),
+    ]);
+    expect(done).toMatchObject({
+      state: "succeeded",
+      activeRunsAtStart: 2,
+      after: selection("2.0.0"),
+      exitCode: 0,
     });
-    const detail = await w.maintenance.routes.getMaintenanceOperation(id);
-    expect(detail).toMatchObject({
+    expect(w.calls().map((c) => [c.verb, c.phase])).toEqual([
+      ["update", "started"],
+      ["update", "mutated"],
+    ]);
+    expect(w.readiness.invalidate).toHaveBeenCalledWith("codex");
+  });
+  it("cancel after mutation stops the child, re-observes effects and retains the command", async () => {
+    const w = await harnessWorld({ holdCompletion: true });
+    const op = await w.maintenance.routes.createMaintenanceOperation(latest, "cancel");
+    const pending = w.run(op.id);
+    await vi.waitFor(() => expect(w.calls().some((c) => c.phase === "mutated")).toBe(true));
+    await w.maintenance.routes.cancelMaintenanceOperation(op.id);
+    const done = await pending;
+    expect(done).toMatchObject({
+      state: "cancelled",
+      phase: "settled",
+      termination: "confirmed",
+      mutation: "applied",
+      outcome: "changed",
+      before: selection(),
+      after: selection("2.0.0"),
+      commands: EVIDENCE.commands,
+      problem: { code: "maintenance_cancelled" },
+    });
+    for (const pid of new Set(w.calls().map((c) => c.pid)))
+      expect(() => process.kill(pid, 0)).toThrow();
+  });
+  it("cancel before preparation does not authorize mutation", async () => {
+    const w = await harnessWorld({ holdPreparation: true });
+    const op = await w.maintenance.routes.createMaintenanceOperation(latest, "cancel-prepare");
+    const pending = w.run(op.id);
+    await vi.waitFor(() => expect(w.calls()).toHaveLength(1));
+    await w.maintenance.routes.cancelMaintenanceOperation(op.id);
+    expect(await pending).toMatchObject({ state: "cancelled", mutation: "none", commands: [] });
+    expect(existsSync(w.state)).toBe(false);
+  });
+  it("keeps the event loop responsive and reads inventory without executing any update", async () => {
+    const w = await harnessWorld({ finishDelay: 150 });
+    const inventory = await w.maintenance.routes.maintenanceInventory({
+      harnessIds: ["codex"],
+      checkLatest: true,
+    });
+    expect(inventory.harnesses[0]).toMatchObject({
+      selection: selection(),
+      newest: { status: "unavailable" },
+      operation: null,
+    });
+    expect(w.calls().every((c) => c.verb === "inspect")).toBe(true);
+    const op = await w.maintenance.routes.createMaintenanceOperation(latest, "offline-update");
+    const pending = w.run(op.id);
+    let ticked = false;
+    await new Promise((resolve) =>
+      setTimeout(() => {
+        ticked = true;
+        resolve(null);
+      }, 10),
+    );
+    expect(ticked).toBe(true);
+    expect((await pending).state).toBe("succeeded");
+    expect(
+      (await w.maintenance.routes.maintenanceInventory({ harnessIds: ["codex"] })).harnesses[0],
+    ).toMatchObject({
+      selection: selection("2.0.0"),
+      newest: { status: "unavailable" },
+      operation: { id: op.id, outcome: "changed" },
+    });
+  });
+  it("an interrupted durable operation discloses uncertain effects", async () => {
+    const w = await harnessWorld();
+    const op = await w.maintenance.routes.createMaintenanceOperation(latest, "interrupted");
+    w.store.update(op.id, { state: "interrupted", result: EVIDENCE, error: "owner exited" });
+    expect(await w.maintenance.routes.getMaintenanceOperation(op.id)).toMatchObject({
       state: "interrupted",
       mutation: "unknown",
-      after: null,
-      problem: { code: "maintenance_interrupted" },
+      outcome: "unknown",
+      problem: { message: "owner exited" },
     });
   });
-
-  it("reading inventory only inspects: no update, install or login child", async () => {
+  it("rejects retired targets and discloses active maintenance on the bound readiness service", async () => {
     const w = await harnessWorld();
-    const codex = { harnessIds: ["codex"] };
-    await w.maintenance.routes.maintenanceInventory(codex);
-    await w.maintenance.routes.maintenanceInventory(codex);
-    await w.maintenance.routes.maintenanceInventory({ ...codex, checkLatest: true });
-    const verbs = w.calls().map((call) => call.verb);
-    expect(new Set(verbs)).toEqual(new Set(["inspect"]));
-    // The second plain read is served from the in-memory projection.
-    expect(verbs).toHaveLength(2);
-  });
-
-  it("refuses a cached not-maintainable installation before acceptance", async () => {
-    const w = await harnessWorld({
-      row: { ...ROW, maintainable: false, targets: [], remedy: "unset CLAUDEXOR_CODEX_BIN" },
-    });
-    await w.maintenance.routes.maintenanceInventory({});
-    await expect(
-      w.maintenance.routes.createMaintenanceOperation(latest, "k1"),
-    ).rejects.toMatchObject({
-      code: "harness_not_maintainable",
-      status: 409,
-    });
-    expect(w.client.enqueue).not.toHaveBeenCalled();
-  });
-
-  it("an active operation is disclosed on the readiness row instead of an auth/quota cause", async () => {
-    const w = await harnessWorld();
-    const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
-    const list = w.maintenance.decorateHarnessList(async () => ({
+    for (const kind of ["previous", "baseline"])
+      await expect(
+        w.maintenance.routes.createMaintenanceOperation(
+          { harness: "codex", target: { kind } },
+          kind,
+        ),
+      ).rejects.toThrow();
+    const op = await w.maintenance.routes.createMaintenanceOperation(latest, "active");
+    const services = {
+      harnesses: async () => ({ harnesses: [{ id: "codex", reasons: [], readiness: [] }] }),
+    };
+    w.maintenance.bind(services);
+    expect(await services.harnesses()).toMatchObject({
       harnesses: [
-        { id: "codex", reasons: [], readiness: [] },
-        { id: "claude", reasons: [], readiness: [] },
+        { reasons: [expect.stringContaining(op.id)], readiness: [{ id: "maintenance" }] },
       ],
-    }));
-    const value = (await list()) as { harnesses: Array<{ id: string; reasons: string[] }> };
-    expect(value.harnesses[0]!.reasons.join(" ")).toContain(`operation ${id}`);
-    expect(value.harnesses[1]!.reasons).toEqual([]);
-    await expect(
-      w.maintenance.routes.createMaintenanceOperation(latest, "k2"),
-    ).rejects.toMatchObject({
-      code: "maintenance_already_active",
-      context: { operationId: id },
     });
   });
+  it("starts all seven inventory observations before awaiting any one", async () => {
+    const waiting: Array<() => void> = [];
+    const w = await harnessWorld({}, async function* (_bin, args) {
+      const harness = args![args!.indexOf("inspect") + 1]!;
+      await new Promise<void>((resolve) => waiting.push(resolve));
+      yield {
+        type: "stdout",
+        line: JSON.stringify({
+          harnesses: [{ ...ROW, harness, observedAt: new Date().toISOString() }],
+        }),
+      };
+    });
+    const pending = w.maintenance.routes.maintenanceInventory();
+    await vi.waitFor(() => expect(waiting).toHaveLength(7));
+    waiting.reverse().forEach((release) => release());
+    expect((await pending).harnesses.map((row) => row.harness)).toEqual([
+      "agy",
+      "claude",
+      "codex",
+      "copilot",
+      "cursor",
+      "grok",
+      "opencode",
+    ]);
+  });
+  it("retains the last successful newest reading and its time across failures, but accepts a later success", async () => {
+    const observedAt = "2026-11-10T00:00:00.000Z";
+    const unavailable = {
+      status: "unavailable",
+      source: "https://example.invalid/latest",
+      observedAt,
+      problem: { code: "newest_unavailable", message: "rate limited", retryable: true },
+    };
+    const success = {
+      status: "available",
+      source: "https://example.invalid/latest",
+      observedAt,
+      version: "2.0.0",
+    };
+    let newest: object = unavailable;
+    const w = await harnessWorld({}, async function* () {
+      yield {
+        type: "stdout",
+        line: JSON.stringify({
+          harnesses: [{ ...ROW, newest, observedAt: new Date().toISOString() }],
+        }),
+      };
+    });
+    const read = async () =>
+      (
+        await w.maintenance.routes.maintenanceInventory({
+          harnessIds: ["codex"],
+          checkLatest: true,
+        })
+      ).harnesses[0]!;
+    expect((await read()).newest).toMatchObject(unavailable);
+    newest = { ...unavailable, observedAt: "2026-11-11T00:00:00.000Z" };
+    expect((await read()).newest).toMatchObject(newest); // No success yet: keep the current failure.
+    newest = success;
+    expect((await read()).newest).toEqual(success);
+    newest = { ...unavailable, observedAt: "2026-11-11T00:00:00.000Z" };
+    expect(await read()).toMatchObject({ newest: success, updateAvailable: "yes" });
+    newest = { ...success, version: "1.0.0", observedAt: "2026-11-11T00:00:00.000Z" };
+    expect(await read()).toMatchObject({ newest, updateAvailable: "no" });
+  });
+  it.each(["old-first", "new-first"])(
+    "concurrent observations terminate and fence late answers (%s)",
+    async (order) => {
+      const waiting: Array<() => void> = [];
+      let count = 0;
+      const w = await harnessWorld({}, async function* () {
+        const version = `${++count}.0.0`;
+        await new Promise<void>((resolve) => waiting.push(resolve));
+        yield {
+          type: "stdout",
+          line: JSON.stringify({
+            harnesses: [
+              { ...ROW, observedAt: new Date().toISOString(), selection: selection(version) },
+            ],
+          }),
+        };
+      });
+      const read = (checkLatest = false) =>
+        w.maintenance.routes.maintenanceInventory({ harnessIds: ["codex"], checkLatest });
+      const first = read();
+      const shared = read();
+      await vi.waitFor(() => expect(waiting).toHaveLength(1));
+      const newest = read(true); // Requires a public-source read as well.
+      await vi.waitFor(() => expect(waiting).toHaveLength(2));
+      waiting[order === "old-first" ? 0 : 1]!();
+      await new Promise((resolve) => setImmediate(resolve));
+      waiting[order === "old-first" ? 1 : 0]!();
+      for (const result of await Promise.all([first, shared, newest]))
+        expect(result.harnesses[0]!.selection.version).toBe("2.0.0");
+      expect(count).toBe(2);
+      const next = read();
+      await vi.waitFor(() => expect(waiting).toHaveLength(3));
+      waiting[2]!();
+      expect((await next).harnesses[0]!.selection.version).toBe("3.0.0");
+    },
+  );
 });

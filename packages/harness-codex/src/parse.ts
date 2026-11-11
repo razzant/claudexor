@@ -1,6 +1,16 @@
-import { InputTokenUsage, WorkReport, type HarnessEvent, type ToolRef } from "@claudexor/schema";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import {
+  InputTokenUsage,
+  WorkReport,
+  type HarnessEvent,
+  type ToolRef,
+  type VendorFailureEvidence,
+} from "@claudexor/schema";
+import { nowIso } from "@claudexor/util";
+import { BROWSER_MCP_SERVER, browserPageRetrieval } from "@claudexor/core";
+import { isCodexAsyncAgentMessage } from "./async-questions.js";
+import { codexFileChangeEvents } from "./file-change.js";
 import { applyCodexRateLimit, applyCodexTransient, codexReconnectStatus } from "./retry-signals.js";
+import { mcpResultText, mcpToolOutcome, summarizeCodexOutput } from "./tool-output.js";
 
 type Json = any;
 
@@ -38,6 +48,12 @@ export interface CodexParseState {
    * unchanged.
    */
   envelopeActive?: boolean;
+  /** The current root turn's typed usage refusal (#558), kept on arrival by the
+   * run loop's root-only `observeCodexRootError`. */
+  usageRefusal?: NonNullable<HarnessEvent["rate_limit"]>;
+  /** The current root turn's own failure record as the app-server wire carried
+   * it, kept the same way; opaque evidence for the terminal. */
+  rootFailure?: VendorFailureEvidence;
 }
 
 /**
@@ -285,16 +301,7 @@ export function parseCodexEvent(
           },
         ];
       case "file_change":
-        if (updated) return [];
-        return [
-          {
-            type: "file_change",
-            session_id: sessionId,
-            ts,
-            tool: fileToolRef(item),
-            payload: { path: item.path, status: item.status ?? type, item_id: item.id },
-          },
-        ];
+        return updated ? [] : codexFileChangeEvents(item, "started", sessionId, ts);
       default:
         return null;
     }
@@ -304,6 +311,19 @@ export function parseCodexEvent(
     switch (item.type) {
       case "agent_message": {
         const text = String(item.text ?? "");
+        // #628: a message delivered asynchronously (a question asked while the
+        // agent keeps working) stays visible, but it is never the turn's
+        // finality candidate and never an output-schema envelope.
+        if (isCodexAsyncAgentMessage(item))
+          return [
+            {
+              type: "message",
+              session_id: sessionId,
+              ts,
+              text,
+              payload: { delivery: "async", item_id: item.id },
+            },
+          ];
         // Keep the RAW text as the turn's finality candidate: the orchestrator
         // un-nests the FINAL `{work_report, output}` envelope downstream, so the
         // final message must stay raw. Only the VISIBLE intermediate copy below
@@ -322,18 +342,8 @@ export function parseCodexEvent(
       }
       case "reasoning":
         return [{ type: "thinking", session_id: sessionId, ts, text: String(item.text ?? "") }];
-      case "file_change": {
-        const path = item.path ?? (Array.isArray(item.changes) ? item.changes[0]?.path : undefined);
-        return [
-          {
-            type: "file_change",
-            session_id: sessionId,
-            ts,
-            tool: fileToolRef(item),
-            payload: { path, item },
-          },
-        ];
-      }
+      case "file_change":
+        return codexFileChangeEvents(item, "completed", sessionId, ts);
       case "command_execution": {
         const failed =
           item.status === "failed" ||
@@ -358,20 +368,21 @@ export function parseCodexEvent(
         ];
       }
       case "mcp_tool_call": {
-        const failed = item.status === "failed";
+        const outcome = mcpToolOutcome(item);
+        // #118: a successful Browser call is verified only when its whole reply
+        // shows a page (the bounded summary can cut a long one short), and one
+        // that read no web page carries no retrieval stamp at all.
+        const retrieval =
+          item.server === BROWSER_MCP_SERVER && outcome.status === "ok"
+            ? browserPageRetrieval(String(item.tool), mcpResultText(item.result))
+            : {};
         return [
           {
             type: "tool_result",
             session_id: sessionId,
             ts,
-            text: failed ? "tool_result: error" : "tool_result",
-            tool: {
-              ...mcpToolRef(item),
-              status: failed ? "error" : "ok",
-              error_summary: failed
-                ? summarizeCodexOutput(item.error ?? item.result) || "mcp tool call failed"
-                : undefined,
-            },
+            text: outcome.status === "error" ? "tool_result: error" : "tool_result",
+            tool: { ...mcpToolRef(item), ...outcome, ...retrieval },
             payload: {
               server: item.server,
               tool: item.tool,
@@ -551,29 +562,16 @@ function webSearchQuery(item: Json): string | undefined {
   return undefined;
 }
 
-function fileToolRef(item: Json): ToolRef {
-  return {
-    name: "apply_patch",
-    kind: "file",
-    use_id: stringOrUndef(item.id),
-    target: boundedTarget(item.path),
-  };
-}
-
 function commandFailureSummary(item: Json): string {
   return typeof item.exit_code === "number"
     ? `command exited with code ${item.exit_code}`
     : "command execution failed";
 }
 
-function summarizeCodexOutput(value: unknown): string {
-  if (typeof value !== "string" || !value.trim()) return "";
-  return redactSecrets(value).trim().replace(/\s+/g, " ").slice(0, 1000);
-}
-
 function boundedTarget(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
-  return redactSecrets(value).slice(0, 500);
+  // The agent's own tool input (INV-146): bounded for display, never masked.
+  return value.slice(0, 500);
 }
 
 function stringOrUndef(v: unknown): string | undefined {

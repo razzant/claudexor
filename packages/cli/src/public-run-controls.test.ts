@@ -23,7 +23,11 @@ describe("public run request propagation", () => {
     const enqueue = vi
       .spyOn(daemonRun, "enqueueAndAwait")
       .mockResolvedValue({ runId: "child", jobId: "job", status: "running", runDir: "/run" });
-    const execution = { workspaceKind: "directory", scopePaths: ["assets", "binary.dat"] };
+    const execution = {
+      workspaceKind: "directory",
+      scopePaths: ["assets", "binary.dat"],
+      auxiliaryWritableRoots: ["/srv/cache"],
+    };
     const reviewerPanel = parseReviewerPanelJson(
       '[{"harness":"claude","processingPreference":"economy"}]',
     );
@@ -58,7 +62,12 @@ describe("public run request propagation", () => {
       deferred: true,
       processingPreference: "fast",
       repoPath: "/other",
-      execution: { isolation: "live", workspaceRoot: "/wrong", scopePaths: ["."] },
+      execution: {
+        isolation: "live",
+        workspaceRoot: "/wrong",
+        scopePaths: ["."],
+        auxiliaryWritableRoots: ["/srv/cache"],
+      },
     });
     expect(enqueue.mock.calls[0]?.[2]).toMatchObject({
       processingPreference: "standard",
@@ -68,5 +77,24 @@ describe("public run request propagation", () => {
       execution: { isolation: "envelope", workspaceKind: "directory", scopePaths: ["selected"] },
     });
     expect((enqueue.mock.calls[0]?.[2] as any).execution).not.toHaveProperty("workspaceRoot");
+    // A belt child never inherits a writable grant from raw child arguments.
+    expect((enqueue.mock.calls[0]?.[2] as any).execution).not.toHaveProperty(
+      "auxiliaryWritableRoots",
+    );
+  });
+  it("scopes the repeatable auxiliary root flag to Agent", () => {
+    expect(commandFlagScopeError("agent", ["auxiliary-writable-root"])).toBeNull();
+    expect(commandFlagScopeError("ask", ["auxiliary-writable-root"])).not.toBeNull();
+    expect(commandFlagScopeError("plan", ["auxiliary-writable-root"])).not.toBeNull();
+    expect(
+      parseArgs([
+        "agent",
+        "go",
+        "--auxiliary-writable-root",
+        "/srv/a",
+        "--auxiliary-writable-root",
+        "/srv/b",
+      ]).flags["auxiliary-writable-root"],
+    ).toEqual(["/srv/a", "/srv/b"]);
   });
 });

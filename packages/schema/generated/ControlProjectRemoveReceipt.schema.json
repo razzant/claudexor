@@ -39,6 +39,42 @@
           "type": "string",
           "const": "snapshot",
           "description": "How the live/queued-run fence was evaluated. Always 'snapshot': the daemon reads its in-process activity projection and removes the project in the same synchronous turn, with no await between the snapshot and registry/partition mutation."
+        },
+        "purgedThreads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "threadId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The thread that was in the project's trash and is now purged."
+              },
+              "cleanup": {
+                "type": "string",
+                "enum": [
+                  "completed",
+                  "pending"
+                ],
+                "description": "completed: every directory the thread purge owns is deleted. pending: the purge is committed but that deletion did not finish; the engine retries it when the daemon next starts."
+              },
+              "cleanupError": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why the deletion did not finish; null when cleanup completed."
+              }
+            },
+            "required": [
+              "threadId",
+              "cleanup",
+              "cleanupError"
+            ],
+            "additionalProperties": false,
+            "description": "A trashed thread purged together with its project."
+          },
+          "description": "Present only when the request opted in with trashedThreads=purge: every thread that was in the project's trash, purged in the same store transaction that retired the project. Absent on a default removal."
         }
       },
       "required": [

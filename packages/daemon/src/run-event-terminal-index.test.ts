@@ -4,7 +4,8 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
-import type { RunEvent } from "@claudexor/schema";
+// The frozen legacy stores accept the frozen event vocabulary, not later additions.
+import type { RunEvent } from "./store/test-support/fixtures/legacy/schema/index.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
 import { durableTerminalRunEvents } from "./store/test-support/fixtures/legacy/daemon/run-event-terminal-index.js";
@@ -14,9 +15,11 @@ const roots: string[] = [];
 const journals: DurableJournal[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
+  // This test's folders, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const journal of journals.splice(0)) journal.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+  for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function open(): DurableJournal {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "claudexor-terminal-index-")));

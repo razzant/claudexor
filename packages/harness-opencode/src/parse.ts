@@ -1,5 +1,5 @@
 import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { nowIso } from "@claudexor/util";
 
 type Json = any;
 
@@ -162,14 +162,16 @@ export function parseOpenCodeEvent(obj: Json, sessionId: string): HarnessEvent[]
   return null;
 }
 
+/** Bounded, whitespace-collapsed tool output: what the model saw, unmasked (INV-146). */
 function summarize(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) return "";
-  return redactSecrets(value).trim().replace(/\s+/g, " ").slice(0, 1000);
+  return value.trim().replace(/\s+/g, " ").slice(0, 1000);
 }
 
 function boundedTarget(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
-  return redactSecrets(value).slice(0, 500);
+  // The agent's own tool input (INV-146): bounded for display, never masked.
+  return value.slice(0, 500);
 }
 
 function stringOrUndef(v: unknown): string | undefined {

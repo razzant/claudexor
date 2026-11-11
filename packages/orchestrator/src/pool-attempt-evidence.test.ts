@@ -51,7 +51,6 @@ const error = (text: string, overrides: Partial<HarnessEvent> = {}): HarnessEven
 });
 const transient = (
   category: TransientFailureObservation["category"],
-  vendorFailure: TransientFailureObservation["vendorFailure"] = null,
 ): TransientFailureObservation => ({
   kind: "unknown",
   category,
@@ -60,7 +59,13 @@ const transient = (
   httpStatus: null,
   signal: null,
   adapterCode: null,
-  vendorFailure,
+});
+/** The try's own completion; an app-server turn carries no OS exit evidence (#414). */
+const completed = (payload: Record<string, unknown>): HarnessEvent => ({
+  type: "completed",
+  session_id: "ses",
+  ts: "2026-10-13T08:00:01.000Z",
+  payload: { harness_reported_error: true, ...payload },
 });
 const failed = (overrides: Record<string, unknown> = {}) => ({
   harnessErrored: true,
@@ -163,17 +168,25 @@ describe("PoolAttemptEvidence (per-try account attribution)", () => {
     evidence.settle(failed({ markers: marks({ sawSessionStart: false }), originalError: secret }));
     dispatched(evidence, spec("a"), 1);
     evidence.observe(error(`token ${secret} rejected`));
+    evidence.observe(
+      completed({ vendor_failure: { code: secret, message: `bad ${secret}`, source: "x" } }),
+    );
     evidence.settle(
       failed({
         markers: marks({ sawAgentProgress: true }),
-        newTransients: [
-          transient("timeout"),
-          transient("auth_failed", { code: secret, message: `bad ${secret}`, source: "x" }),
-          transient("process_crash"),
-        ],
+        newTransients: [transient("timeout"), transient("auth_failed"), transient("process_crash")],
       }),
     );
-    const [first, second] = evidence.snapshot();
+    // A later try's completion speaks only for that try: a signal kill carries none.
+    dispatched(evidence, spec("b"), 2);
+    evidence.observe(
+      completed({
+        exit_signal: "SIGKILL",
+        vendor_failure: { code: "x", message: null, source: "x" },
+      }),
+    );
+    evidence.settle(failed());
+    const [first, second, third] = evidence.snapshot();
     expect(first).toMatchObject({
       profileId: null,
       profileDisplayName: null,
@@ -186,6 +199,63 @@ describe("PoolAttemptEvidence (per-try account attribution)", () => {
     expect(second!.error).toMatch(/^token .* rejected$/);
     expect(JSON.stringify(second)).not.toContain(secret);
     expect(second!.vendorFailure?.source).toBe("x");
+    expect(first!.vendorFailure).toBeNull();
+    expect(third!.vendorFailure).toBeNull();
+  });
+
+  it("keeps the vendor's last error line bounded and redacted on the pool terminal", () => {
+    const evidence = new PoolAttemptEvidence("claude", "a01");
+    dispatched(evidence, spec("a"), 0);
+    evidence.observe(error("an earlier diagnostic"));
+    evidence.observe(error(`API rejected this client.\nUpdate this program. token=${secret}`));
+    evidence.settle(failed());
+    const terminal = poolFailure("Credential pool exhausted", [
+      { poolAttempts: evidence.snapshot() },
+    ]);
+    expect(terminal.poolAttempts[0]!.lastVendorError).toContain("Update this program.");
+    expect(terminal.message).toContain("Update this program.");
+    expect(terminal.message).toContain("an earlier diagnostic");
+    expect(terminal.message).not.toContain(secret);
+    expect(terminal.poolAttempts[0]!.lastVendorError!.length).toBeLessThanOrEqual(1000);
+  });
+  it.each(["An unpaid invoice\n  (team account)", "A single refusal."])(
+    "keeps the complete original refusal without repeating its final line: %s",
+    (message) => {
+      const evidence = new PoolAttemptEvidence("cursor", "a01");
+      dispatched(evidence, spec("a"), 0);
+      evidence.observe(error(message));
+      evidence.settle(failed());
+      const terminal = poolFailure("Credential pool exhausted", [
+        { poolAttempts: evidence.snapshot() },
+      ]);
+      expect(terminal.message).toContain(message);
+      expect(terminal.message).not.toContain("Last vendor diagnostic:");
+    },
+  );
+  it("takes each try's vendor failure from its own settled terminal, a zero exit included", () => {
+    const evidence = new PoolAttemptEvidence("agy", "a01");
+    const completed = (vendor_failure?: unknown): HarnessEvent => ({
+      type: "completed",
+      session_id: "ses",
+      ts: "2026-10-13T08:00:00.000Z",
+      payload: {
+        exit_code: 0,
+        harness_reported_error: true,
+        ...(vendor_failure ? { vendor_failure } : {}),
+      },
+    });
+    dispatched(evidence, spec("a"), 0);
+    evidence.observe(error("first"));
+    evidence.observe(completed({ code: "ERROR", message: "first", source: "agy_result" }));
+    evidence.settle(failed());
+    dispatched(evidence, spec("a"), 1);
+    evidence.observe(error("second"));
+    evidence.observe(completed());
+    evidence.settle(failed());
+    expect(evidence.snapshot().map((row) => row.vendorFailure)).toEqual([
+      { code: "ERROR", message: "first", source: "agy_result" },
+      null,
+    ]);
   });
 
   it("a malformed event time falls back to the settlement clock instead of failing", () => {

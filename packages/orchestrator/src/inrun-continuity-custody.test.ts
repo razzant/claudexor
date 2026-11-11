@@ -91,6 +91,8 @@ describe("native carrier custody", () => {
     });
     expect(o.result.lifecycle, o.result.summary).toBe("succeeded");
     expect(order).toEqual(["copied", "published", "retired", "spawned"]);
+    // #411(c): the receipt records the retirement it actually confirmed.
+    expect(o.receipts).toMatchObject([{ carrier: "native_moved", sourceRetirement: "retired" }]);
   });
 
   it("a source that cannot be retired leaves a stale copy, not a failed attempt", async () => {
@@ -130,6 +132,29 @@ describe("native carrier custody", () => {
       ["b", "sid-busy"],
     ]);
     expect(o.receipts.map((r) => r["carrier"])).toEqual(["native_moved"]);
+    // Removal that failed (possibly part-way) is not a confirmed retirement.
+    expect(o.receipts[0]).toMatchObject({ sourceRetirement: "not_confirmed" });
+  });
+
+  it("a same-account native resume retires nothing and records no retirement fact", async () => {
+    const o = await run({
+      mode: "agent",
+      profiles: ["a"],
+      script: function* ({ spec, emit, tryOfProfile }) {
+        seedSession(spec.cwd, "a", "sid-same");
+        yield emit({ type: "started", payload: { native_session_id: "sid-same" } });
+        if (tryOfProfile === 1) {
+          yield emit({ type: "tool_call", tool: { name: "Read", kind: "file" } });
+          return yield* crash(emit);
+        }
+        yield emit({ type: "message", text: "finished", final: true });
+        yield emit({ type: "completed" });
+      },
+    });
+    expect(o.result.lifecycle, o.result.summary).toBe("succeeded");
+    expect(o.receipts).toHaveLength(1);
+    expect(o.receipts[0]).toMatchObject({ carrier: "native" });
+    expect(o.receipts[0]).not.toHaveProperty("sourceRetirement");
   });
 
   it.each([false, true])("pins listed attested models on native carriers (hop=%s)", async (hop) => {

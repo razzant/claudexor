@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Testing
 import ClaudexorKit
 @testable import ClaudexorApp
@@ -128,11 +129,18 @@ private final class ComposedInstallPort: RuntimeDaemonControl, @unchecked Sendab
 
 private final class ClosureTransport: RuntimeReleaseTransport, @unchecked Sendable {
     let payload: Data
-    init(_ payload: Data) { self.payload = payload }
+    let beforeDownload: @Sendable () async -> Void
+    init(_ payload: Data, beforeDownload: @escaping @Sendable () async -> Void = {}) {
+        self.payload = payload
+        self.beforeDownload = beforeDownload
+    }
     func fetchLatestRelease(etag: String?) async throws -> ReleaseFetchResult {
         ReleaseFetchResult(status: 200, etag: nil, data: Data())
     }
-    func downloadAsset(from url: URL) async throws -> Data { payload }
+    func downloadAsset(from url: URL) async throws -> Data {
+        await beforeDownload()
+        return payload
+    }
 }
 
 private struct InstallRun {
@@ -317,6 +325,167 @@ private struct InstallRun {
         #expect(run.port.starts == 0)
     }
 
+    /// Persistent compatible-engine notices (a newer or alternate build left
+    /// running) sit above the update state; they never hide Install, View
+    /// release, a historical outcome or a check status.
+    @MainActor
+    @Test(arguments: [LocalDaemonReconciliationDeferral.targetNotNewer, .explicitBuildSwitchRequired])
+    func persistentEngineNoticeNeverHidesTheUpdateState(deferral: LocalDaemonReconciliationDeferral) throws {
+        let model = AppModel(requestNotificationAuthorization: false)
+        let notice = try #require(compatibleNotice(.deferred(deferral, serving: newEngine, target: oldEngine)))
+        model.localDaemonReconciliationNotice = notice
+        let offer = UpdateAvailability(version: "4.3.0")
+        model.updateAvailability = offer
+        #expect(UpdateChip.notice(for: model) == notice)
+        #expect(UpdateChip.content(for: model) == .offer(offer, outcome: nil))
+
+        let outcome = "Update rolled back: post-relaunch handshake mismatch."
+        model.runtimeInstallStatus = outcome
+        #expect(UpdateChip.content(for: model) == .offer(offer, outcome: outcome))
+        model.updateAvailability = nil
+        #expect(UpdateChip.content(for: model) == .installOutcome(outcome))
+        model.runtimeInstallStatus = nil
+        model.runtimeUpdateStatus = "Update check failed: offline"
+        #expect(UpdateChip.content(for: model) == .checkStatus("Update check failed: offline"))
+        #expect(UpdateChip.notice(for: model) == notice)
+    }
+
+    /// A refused install keeps its busy outcome and the retry beside the notice;
+    /// only an active install, which owns the lifecycle, replaces the notice.
+    @MainActor
+    @Test func engineNoticeKeepsABusyRefusalAndItsRetryVisible() async throws {
+        let run = try await install([[normal(oldEngine)]], busy: true)
+        let notice = try #require(compatibleNotice(.deferred(.targetNotNewer, serving: newEngine, target: oldEngine)))
+        run.model.localDaemonReconciliationNotice = notice
+        #expect(UpdateChip.notice(for: run.model) == notice)
+        #expect(UpdateChip.content(for: run.model)
+            == .offer(UpdateAvailability(version: "4.2.0"), outcome: run.status))
+        run.model.runtimeInstalling = true
+        run.model.runtimeInstallStatus = "Downloading engine runtime…"
+        #expect(UpdateChip.notice(for: run.model) == nil)
+        #expect(UpdateChip.content(for: run.model) == .installing("Downloading engine runtime…"))
+    }
+
+    /// The cached offer predates another app copy leaving a newer engine
+    /// running. Install refuses before any stop and retires the stale offer.
+    @MainActor
+    @Test(arguments: ["3.4.0", "3.5.0"])
+    func cachedOfferMeetingANewerServingEngineIsRefusedBeforeStopAndRetired(servingVersion: String) async throws {
+        let fixture = try RecheckFixture(conditionalRequests: true)
+        let candidate = RuntimeClosureIdentity(version: fixture.manifest.version, buildSha: fixture.manifest.buildSha)
+        let serving = RuntimeClosureIdentity(version: servingVersion, buildSha: String(repeating: "4", count: 40))
+        let previous = RuntimeCurrent(version: "3.1.0", path: "versions/3.1.0",
+            sha256: String(repeating: "a", count: 64), installedAt: "old", engineSha: oldEngine.buildSha)
+        let run = try await install([[normal(serving)]], candidate: candidate, previous: previous, before: { model in
+            model.client = admissionClient()
+            model.engineIdentity = EngineBuildIdentity(version: "3.1.0", sha: oldEngine.buildSha, entry: "/fixture/old")
+            model.appVersionOverrideForUpdates = "4.2.0"
+            model.runtimeUpdater = RuntimeUpdater(transport: fixture, authority: fixture.authority)
+            model.makeRuntimeTransport = { fixture }
+            await model.checkForRuntimeUpdate()
+            #expect(await model.runtimeUpdater?.cachedDecision == .available(fixture.manifest))
+            #expect(model.updateAvailability?.version == candidate.version)
+        })
+        #expect(run.status
+            == RuntimeInstallError.notNewerThanServing(target: candidate.version, serving: serving).errorDescription)
+        #expect(run.current == previous)
+        #expect(run.model.engineIdentity == EngineBuildIdentity(
+            version: serving.version, sha: serving.buildSha, entry: "/runtime/claudexord.bundle.cjs"))
+        #expect(run.model.updateAvailability == nil)
+        #expect(await run.model.runtimeUpdater?.cachedDecision == .upToDate)
+        #expect(UpdateChip.content(for: run.model) == .installOutcome(run.status))
+
+        // A cleared ETag means a real HTTP 200, even for the unchanged release.
+        // Observing another copy's version is not an install by this app.
+        await run.model.checkForRuntimeUpdate()
+        #expect(fixture.receivedETags == [nil, nil])
+        #expect(await run.model.runtimeUpdater?.cachedDecision == .upToDate)
+        #expect(run.model.updateAvailability == nil)
+        #expect(run.model.runtimeInstallStatus == run.status)
+        #expect(fixture.responseStatuses == [200, 200])
+        // The next check is genuinely conditional and preserves the same result.
+        await run.model.checkForRuntimeUpdate()
+        #expect(fixture.receivedETags == [nil, nil, "fixture"])
+        #expect(fixture.responseStatuses == [200, 200, 304])
+        #expect(await run.model.runtimeUpdater?.cachedDecision == .upToDate)
+        #expect(run.model.updateAvailability == nil)
+        #expect(UpdateChip.content(for: run.model) == .installOutcome(run.status))
+        // The retired action cannot download or start another coordinator either.
+        await run.model.installRuntimeUpdate()
+        #expect(run.model.runtimeInstallStatus == "No verified update to install.")
+        #expect(fixture.receivedETags.count == 3)
+        #expect(run.port.stoppedIdentities.isEmpty)
+        #expect(run.port.starts == 0)
+
+        // A genuinely newer signed release still becomes an actionable offer.
+        let newer = try fixture.publish(version: "3.6.0")
+        await run.model.checkForRuntimeUpdate()
+        #expect(fixture.responseStatuses == [200, 200, 304, 200])
+        #expect(await run.model.runtimeUpdater?.cachedDecision == .available(newer))
+        #expect(run.model.updateAvailability?.version == "3.6.0")
+        #expect(run.port.stoppedIdentities.isEmpty)
+        #expect(run.port.starts == 0)
+    }
+
+    /// An explicit connection change during the download owns its observation.
+    @MainActor
+    @Test(arguments: ["generation", "client", "identity"])
+    func refusedInstallDoesNotOverwriteASuccessorConnection(change: String) async throws {
+        let fixture = try RecheckFixture()
+        let candidate = RuntimeClosureIdentity(version: fixture.manifest.version, buildSha: fixture.manifest.buildSha)
+        let serving = RuntimeClosureIdentity(version: "3.5.0", buildSha: String(repeating: "4", count: 40))
+        let previous = RuntimeCurrent(version: "3.1.0", path: "versions/3.1.0",
+            sha256: String(repeating: "a", count: 64), installedAt: "old", engineSha: oldEngine.buildSha)
+        let initial = EngineBuildIdentity(version: "3.1.0", sha: oldEngine.buildSha, entry: "/fixture/old")
+        let successor = EngineBuildIdentity(version: "3.2.0", sha: oldEngine.buildSha, entry: "/fixture/successor")
+        let run = try await install([[normal(serving)]], candidate: candidate, previous: previous,
+            duringDownload: { model in
+                switch change {
+                case "generation": model.connectionGeneration += 1
+                case "client": model.client = admissionClient()
+                default: model.engineIdentity = successor
+                }
+            }, before: { model in
+                model.client = admissionClient()
+                model.engineIdentity = initial
+            })
+        #expect(run.model.engineIdentity == (change == "identity" ? successor : initial))
+        #expect(run.status == RuntimeInstallError.notNewerThanServing(target: candidate.version, serving: serving).errorDescription)
+        #expect(run.current == previous)
+        #expect(run.port.stoppedIdentities.isEmpty)
+        #expect(run.port.starts == 0)
+    }
+
+    /// The refresh may see a later, legitimately different engine. Its complete
+    /// identity wins; the refusal's version is not a persistent version floor.
+    @MainActor
+    @Test func refusalRefreshUsesTheLatestHandshakeAndAllowsLaterVersionChanges() async throws {
+        let fixture = try RecheckFixture()
+        let candidate = RuntimeClosureIdentity(version: fixture.manifest.version, buildSha: fixture.manifest.buildSha)
+        let serving = RuntimeClosureIdentity(version: "3.5.0", buildSha: String(repeating: "4", count: 40))
+        let later = RuntimeClosureIdentity(version: "3.2.0", buildSha: String(repeating: "5", count: 40))
+        let previous = RuntimeCurrent(version: "3.1.0", path: "versions/3.1.0",
+            sha256: String(repeating: "a", count: 64), installedAt: "old", engineSha: oldEngine.buildSha)
+        let run = try await install([[normal(serving), normal(later)]], candidate: candidate, previous: previous,
+            before: { model in
+                model.client = admissionClient()
+                model.engineIdentity = EngineBuildIdentity(version: "3.1.0", sha: oldEngine.buildSha, entry: "/fixture/old")
+                model.appVersionOverrideForUpdates = "4.2.0"
+                model.runtimeUpdater = RuntimeUpdater(transport: fixture, authority: fixture.authority)
+                await model.checkForRuntimeUpdate()
+            })
+        #expect(run.model.engineIdentity == EngineBuildIdentity(
+            version: later.version, sha: later.buildSha, entry: "/runtime/claudexord.bundle.cjs"))
+        #expect(run.status == RuntimeInstallError.notNewerThanServing(target: candidate.version, serving: serving).errorDescription)
+        await run.model.checkForRuntimeUpdate()
+        #expect(fixture.responseStatuses == [200, 200])
+        #expect(await run.model.runtimeUpdater?.cachedDecision == .available(fixture.manifest))
+        #expect(UpdateChip.content(for: run.model) == .offer(UpdateAvailability(version: "3.4.0"), outcome: run.status))
+        #expect(run.current == previous)
+        #expect(run.port.stoppedIdentities.isEmpty)
+        #expect(run.port.starts == 0)
+    }
+
     @MainActor
     @Test func recoveryObservationFollowedByDisappearanceKeepsHistoricalOutcome() async throws {
         let run = try await install([[normal(oldEngine)], [recordedNewRecoveryOnly, nil]])
@@ -337,8 +506,10 @@ private struct InstallRun {
             let syntheticHome = try #require(ProcessInfo.processInfo.environment["HOME"])
             try #require(installer.root.resolvingSymlinksInPath().path.hasPrefix(
                 URL(fileURLWithPath: syntheticHome).resolvingSymlinksInPath().path + "/"))
+            // The engine serving before the swap is this fixture's previous 3.1.0.
+            let previousEngine = RuntimeClosureIdentity(version: "3.1.0", buildSha: oldEngine.buildSha)
             let run = try await install(
-                [[normal(oldEngine)], [handshakeBody(candidate, servingMode: "recovery_only")]],
+                [[normal(previousEngine)], [handshakeBody(candidate, servingMode: "recovery_only")]],
                 installer: installer, candidate: candidate, previous: previous,
                 before: { model in
                     // A same-session connection still holds the pre-install identity.
@@ -381,21 +552,28 @@ private struct InstallRun {
 
     // MARK: - Helpers
 
+    /// The production notice text for a reconciliation result.
+    private func compatibleNotice(_ result: LocalDaemonReconciliationResult) -> String? {
+        if case let .useCompatible(notice) = LocalDaemonReconciliationPolicy(result) { return notice }
+        return nil
+    }
+
     @MainActor
     private func install(
         _ processes: [[String?]], timeout: TimeInterval = 0.1, busy: Bool? = false,
         installer suppliedInstaller: RuntimeInstaller? = nil,
         candidate: RuntimeClosureIdentity = newEngine,
         previous: RuntimeCurrent = Self.previousPointer,
+        duringDownload: @escaping @MainActor @Sendable (AppModel) -> Void = { _ in },
         before: (AppModel) async throws -> Void = { _ in }
     ) async throws -> InstallRun {
-        let root = FileManager.default.temporaryDirectory
+        let root = runtimeTestTemporaryDirectory
             .appendingPathComponent("cx-admission-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let installer = suppliedInstaller ?? RuntimeInstaller(root: root)
         try installer.writeCurrentAtomic(previous)
-        let (bytes, sha) = try fixtureClosure()
+        let (bytes, sha) = try await fixtureClosure()
 
         let timeline = EngineTimeline(processes)
         AdmissionURLProtocol.timeline = timeline
@@ -411,7 +589,7 @@ private struct InstallRun {
                 version: candidate.version, sha256: sha, minAppVersion: "4.0.0",
                 buildSha: candidate.buildSha),
             assetURL: URL(string: "https://example.invalid/claudexor-runtime-4.2.0.tar.gz")!,
-            transport: ClosureTransport(bytes),
+            transport: ClosureTransport(bytes, beforeDownload: { await duringDownload(model) }),
             installer: installer,
             rollbackSelection: { nil },
             handshakePollInterval: 0.002,
@@ -425,8 +603,11 @@ private struct InstallRun {
             status: model.runtimeInstallStatus ?? "", current: installer.readCurrent())
     }
 
-    private func fixtureClosure() throws -> (Data, String) {
-        let stage = FileManager.default.temporaryDirectory
+    /// `install` is main-actor isolated, and `waitUntilExit()` there blocks every
+    /// concurrently running @MainActor test for the child's whole lifetime, which
+    /// can exceed other tests' deadlines when the child is slow. Await the exit instead.
+    private func fixtureClosure() async throws -> (Data, String) {
+        let stage = runtimeTestTemporaryDirectory
             .appendingPathComponent("cx-admission-stage-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: stage) }
@@ -435,19 +616,29 @@ private struct InstallRun {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         process.arguments = ["-czf", tar.path, "-C", stage.path, "claudexord.bundle.cjs"]
-        try process.run()
-        process.waitUntilExit()
+        try await withCheckedThrowingContinuation { (exited: CheckedContinuation<Void, Error>) in
+            process.terminationHandler = { _ in exited.resume() }
+            do { try process.run() } catch { exited.resume(throwing: error) }
+        }
         let bytes = try Data(contentsOf: tar)
         return (bytes, RuntimeInstaller(root: stage).sha256Hex(bytes))
     }
 }
 
 /// Reuse the signed cross-language vector; no production keys or release I/O.
-private struct RecheckFixture: RuntimeReleaseTransport {
-    let data: Data
+private final class RecheckFixture: RuntimeReleaseTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var tags: [String?] = []
+    private let conditionalRequests: Bool
+    private var statuses: [Int] = []
+    var responseStatuses: [Int] { lock.withLock { statuses } }
+    var receivedETags: [String?] { lock.withLock { tags } }
+    private var data: Data
+    private var releaseETag = "fixture"
     let authority: RuntimeUpdateAuthority
     let manifest: RuntimeManifest
-    init() throws {
+    init(conditionalRequests: Bool = false) throws {
+        self.conditionalRequests = conditionalRequests
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
@@ -460,8 +651,38 @@ private struct RecheckFixture: RuntimeReleaseTransport {
         manifest = try #require(RuntimeManifest.verified(data, authority: authority))
     }
     func fetchLatestRelease(etag: String?) async throws -> ReleaseFetchResult {
-        ReleaseFetchResult(status: 200, etag: nil,
+        let (notModified, currentETag) = lock.withLock {
+            tags.append(etag)
+            let hit = conditionalRequests && etag == releaseETag
+            statuses.append(hit ? 304 : 200)
+            return (hit, releaseETag)
+        }
+        if notModified { return ReleaseFetchResult(status: 304, etag: currentETag, data: nil) }
+        return ReleaseFetchResult(status: 200, etag: currentETag,
             data: Data(#"{"assets":[{"name":"runtime-manifest.json","browser_download_url":"https://example.invalid/manifest"}]}"#.utf8))
     }
-    func downloadAsset(from url: URL) async throws -> Data { data }
+    func downloadAsset(from url: URL) async throws -> Data { lock.withLock { data } }
+
+    func publish(version: String) throws -> RuntimeManifest {
+        var fields = try #require(JSONSerialization.jsonObject(with: lock.withLock { data }) as? [String: Any])
+        fields["version"] = version
+        fields["archiveName"] = RuntimeManifest.archiveName(for: version)
+        fields["archiveUrl"] = RuntimeManifest.archiveUrl(for: version)
+        fields["notes"] = ""
+        fields.removeValue(forKey: "signature")
+        let bytes = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes])
+        // Public TEST key from scripts/gen-runtime-update-fixtures.mjs; never
+        // the production authority. The original 3.4 regression uses its exact
+        // checked-in signed bytes; only this subsequent release is re-signed.
+        let der = try #require(Data(base64Encoded: "MC4CAQAwBQYDK2VwBCIEIJcml9Acg6+XssPo8BxmJyg1dTrW8oxBc7FgWTVsxOji"))
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: der.suffix(32))
+        fields["signature"] = try key.signature(for: bytes).base64EncodedString()
+        let published = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes])
+        let verified = try #require(RuntimeManifest.verified(published, authority: authority))
+        lock.withLock {
+            data = published
+            releaseETag = "fixture-\(version)"
+        }
+        return verified
+    }
 }

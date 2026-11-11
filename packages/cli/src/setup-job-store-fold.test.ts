@@ -21,9 +21,9 @@ afterEach(() => {
   for (const journal of journals.splice(0)) journal.close();
   rmSync(root, { recursive: true, force: true });
   rmSync(plainRoot, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
-const job = (jobId: string): ControlSetupJob => ({
+const job = (jobId: string): ControlSetupJob & { harness: "codex" } => ({
   jobId,
   harness: "codex",
   action: "login",

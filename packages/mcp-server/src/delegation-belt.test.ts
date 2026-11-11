@@ -314,6 +314,33 @@ describe("delegation belt tool surface (D32)", () => {
     expect(ledger.committedUsd).toBeCloseTo(1, 5);
   });
 
+  it.each([
+    { controllableSpendUsd: 0, committed: 0 },
+    { controllableSpendUsd: 0.25, committed: 0.25 },
+    { controllableSpendUsd: null, committed: 1 },
+  ])(
+    "commits cap-governed spend $controllableSpendUsd when the child's total cash is unknown",
+    async ({ controllableSpendUsd, committed }) => {
+      // An included subscription without a debit receipt: total unknown, cap part known.
+      const ledger = newBeltLedger();
+      const tools = beltClaudexorTools(
+        async () => ({
+          runId: "sub-allowance",
+          status: "succeeded",
+          summary: "done",
+          spendUsd: null,
+          controllableSpendUsd,
+        }),
+        { ...unlimited, parentBudget: { kind: "finite", maxUsd: 1 } },
+        ledger,
+      );
+      const run = tools.find((tool) => tool.name === "claudexor_run")!;
+      await expect(run.handler({ prompt: "x" }, {})).resolves.toBeDefined();
+      expect(ledger.committedUsd).toBeCloseTo(committed, 5);
+      if (committed < 1) await expect(run.handler({ prompt: "y" }, {})).resolves.toBeDefined();
+    },
+  );
+
   it.each(["failed", "cancelled", "interrupted"] as const)(
     "reports a %s child as a typed belt failure after reconciling its spend",
     async (status) => {

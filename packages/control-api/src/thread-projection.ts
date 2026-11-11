@@ -32,12 +32,19 @@ export function projectThread(raw: unknown, needsHuman: boolean): ControlThread 
 export async function projectThreadList(
   daemon: Pick<DaemonFacadeClient, "list">,
   collection: { threads: unknown[]; problems?: unknown[] },
-  needsAttention: (record: DaemonRunRecord) => boolean,
+  needsAttention: (record: DaemonRunRecord) => boolean | Promise<boolean>,
+  active: () => boolean = () => true,
 ): Promise<ControlThreadListResponse> {
+  if (!active()) return { threads: [], problems: [] };
   const heads = await readThreadHeads(daemon, collection.threads);
-  const blocked = new Set(
-    heads.filter((r) => r.state === "succeeded" && needsAttention(r)).map((r) => r.runId ?? r.id),
-  );
+  // The caller discards this value after disconnect; do no artifact projection.
+  if (!active()) return { threads: [], problems: [] };
+  const blocked = new Set<string>();
+  for (const record of heads) {
+    if (!active()) return { threads: [], problems: [] };
+    if (record.state === "succeeded" && (await needsAttention(record)))
+      blocked.add(record.runId ?? record.id);
+  }
   return ControlThreadListResponse.parse({
     threads: collection.threads.map((t) =>
       threadFields(t, blocked.has((t as { head_run_id?: string | null }).head_run_id ?? "")),
@@ -102,24 +109,27 @@ export function turnRunCard(
     spendUsd: summary.spendUsd ?? null,
     outputReadyState: summary.outputReadyState,
     waitingOnUser: summary.waitingOnUser,
+    asyncQuestionsOnly: summary.asyncQuestionsOnly,
     finishedAt: summary.finishedAt ?? null,
     delegation: summary.delegation,
     delegatedChildRunIds,
   });
 }
 
-export function projectTurnRunCards(
+export async function projectTurnRunCards(
   turns: readonly { run_id?: string | null }[],
   runs: readonly DaemonRunRecord[],
-  summarize: (record: DaemonRunRecord) => ControlRunSummary,
-): Map<string, ControlTurnRunCard> {
+  summarize: (record: DaemonRunRecord) => ControlRunSummary | Promise<ControlRunSummary>,
+  active: () => boolean = () => true,
+): Promise<Map<string, ControlTurnRunCard>> {
   const byRun = new Map(runs.map((run) => [run.runId ?? run.id, run]));
   const cards = new Map<string, ControlTurnRunCard>();
   for (const turn of turns) {
+    if (!active()) break;
     const runId = turn.run_id ?? null;
     const record = runId ? byRun.get(runId) : undefined;
     if (runId && record && !cards.has(runId)) {
-      cards.set(runId, turnRunCard(summarize(record), delegatedChildRunIds(runId, runs)));
+      cards.set(runId, turnRunCard(await summarize(record), delegatedChildRunIds(runId, runs)));
     }
   }
   return cards;

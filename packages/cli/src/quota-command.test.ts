@@ -113,6 +113,32 @@ describe("quotaCommand", () => {
     );
   });
 
+  it("describes no_source as a quota-window gap, not absence of account resources", async () => {
+    mocks.controlApiFetch.mockResolvedValue(
+      Response.json({
+        snapshots: [],
+        absences: [
+          {
+            subject: {
+              harness: "cursor",
+              credential_route: "vendor_native",
+              plan_label: null,
+              subject_id: "work",
+            },
+            reason: "no_source",
+            detail: null,
+            observed_at: "2026-10-15T00:00:00Z",
+          },
+        ],
+        refreshed_at: null,
+      }),
+    );
+    expect(await quotaCommand(parseArgs([]), false)).toBe(0);
+    expect(mocks.print).toHaveBeenCalledWith(
+      "cursor/work: no fresh snapshot — no quota-window source (account resources may be reported separately)",
+    );
+  });
+
   it("identifies a paused account and route while retaining legacy vendor-only disclosure", async () => {
     const until = "2026-10-04T15:00:00Z";
     mocks.controlApiFetch.mockResolvedValue(

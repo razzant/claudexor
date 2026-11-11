@@ -1,5 +1,7 @@
-import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
+import { prepareNativeProgram, type NativeProgramRun } from "./native-program.js";
+import type { HarnessEvent, HarnessRunSpec, HarnessProgram } from "@claudexor/schema";
 import { spawnProcess, type ChildStdin } from "./proc.js";
+import type { WindowsConsolePolicy } from "./runtime-env.js";
 import type { ProcessTreeTerminationOutcome, ReapProcessTreeOptions } from "./process-tree.js";
 
 /**
@@ -11,9 +13,8 @@ import type { ProcessTreeTerminationOutcome, ReapProcessTreeOptions } from "./pr
  *
  * - stderr is captured (bounded ring buffer, adapter-redacted) and attached to
  *   the terminal `completed` payload as `stderr_tail` whenever it is non-empty
- *   — raw diagnostics only, never a verdict axis (INV-116 untouched), and
- *   double-redacted downstream (the orchestrator's redactHarnessEvent runs
- *   before events.jsonl persistence). The tail rides that terminal event, so
+ *   — raw diagnostics only, never a verdict axis (INV-116 untouched). The
+ *   tail rides that terminal event, so
  *   persistence into attempt events is guaranteed for consumers that drain
  *   this stream to completion (zero and nonzero exits alike); an
  *   orchestrator-side abort that stops consuming before the terminal event
@@ -47,6 +48,9 @@ export function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefin
 }
 
 export interface CliRunLoopOptions {
+  program?: HarnessProgram;
+  /** Adapter-owned field from the vendor startup frame, never error prose. */
+  programVersion?: (frame: unknown) => unknown;
   bin: string;
   args: string[];
   /** Native process I/O seam; event parsing and lifecycle remain production-owned. */
@@ -61,10 +65,14 @@ export interface CliRunLoopOptions {
    */
   parseEvent: (obj: unknown, sessionId: string) => HarnessEvent[] | null;
   env?: Record<string, string | null | undefined>;
+  /** Forwarded to spawnProcess: the adapter's Windows console policy (default `hidden`). */
+  windowsConsole?: WindowsConsolePolicy;
   /** Label used in synthesized error messages; defaults to `bin`. */
   label?: string;
   /** Redactor applied to stderr detail before it is surfaced. */
   redact?: (text: string) => string;
+  /** Adapter-owned native evidence, observed before diagnostic-tail eviction. */
+  observeStderr?: (line: string) => void;
   /** Adapter-owned translation for a recognized stderr-only nonzero exit. */
   parseStderrFailure?: (stderr: string, sessionId: string) => HarnessEvent | null;
   /** Stop and reap the harness immediately after a normalized fatal event. */
@@ -100,6 +108,25 @@ export interface CliRunLoopOptions {
 }
 
 export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+  if (!opts.program) {
+    yield* runCliHarnessObserved(opts);
+    return;
+  }
+  const program = await prepareNativeProgram(
+    opts.program,
+    opts.bin,
+    opts.spec,
+    opts.env,
+    !!opts.programVersion,
+  );
+  for await (const event of runCliHarnessObserved({ ...opts, bin: program.bin }, program))
+    yield program.event(event);
+}
+
+async function* runCliHarnessObserved(
+  opts: CliRunLoopOptions,
+  program?: NativeProgramRun,
+): AsyncGenerator<HarnessEvent> {
   if (opts.input !== undefined && opts.session !== undefined) {
     throw new Error("runCliHarness input and session are mutually exclusive stdin owners");
   }
@@ -161,6 +188,7 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
       env: opts.env,
       inheritEnv: spec.env_inheritance,
       abortSignal,
+      ...(opts.windowsConsole ? { windowsConsole: opts.windowsConsole } : {}),
       ...(opts.input !== undefined ? { input: opts.input } : {}),
       ...(opts.reap ? { reap: opts.reap } : {}),
       onTerminationUnconfirmed: (info) => {
@@ -183,6 +211,7 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
         continue;
       }
       if (ev.type === "stderr") {
+        opts.observeStderr?.(redact(ev.line));
         stderrRing.push(ev.line);
         if (stderrRing.length > STDERR_RING_MAX) stderrRing.shift();
         continue;
@@ -207,6 +236,7 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
         droppedUnparsedLines += 1;
         continue;
       }
+      program?.observeVersion(opts.programVersion?.(obj));
       if (opts.session && session.io && opts.session.matches(obj)) {
         for await (const out of opts.session.handle(obj, session.io)) {
           if (out.type === "error") sawError = harnessReportedError = true;

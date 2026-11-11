@@ -65,7 +65,7 @@ describe("claudexor follow", () => {
     if (prevConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = prevConfigDir;
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   function writeControlApiInfo(port: number): void {
     const daemonDir = join(dir, "daemon");
@@ -196,6 +196,52 @@ describe("claudexor follow", () => {
     ).toBe("[a01/claude] question wait cancelled");
   });
 
+  it("never calls an async question's run paused or waiting (#628)", () => {
+    const who = { harness_id: "codex", attempt_id: "a01", interaction_id: "int-a" };
+    expect(
+      formatRunEventLine({ type: "interaction.requested", payload: { ...who, delivery: "async" } }),
+    ).toBe("[a01/codex] QUESTION pending (interaction int-a) — the agent keeps working");
+    expect(
+      formatRunEventLine({
+        type: "harness.event",
+        payload: {
+          harness_id: "codex",
+          attempt_id: "a01",
+          type: "interaction_requested",
+          interaction: { interaction_id: "int-a", delivery: "async" },
+        },
+      }),
+    ).toBe("[a01/codex] asked a question and keeps working (answer any time)");
+    expect(
+      formatRunEventLine({ type: "interaction.answered", payload: { ...who, delivery: "async" } }),
+    ).toBe("[a01/codex] answer handed to the running agent (sent as its next message)");
+    expect(
+      formatRunEventLine({ type: "interaction.timeout", payload: { ...who, delivery: "async" } }),
+    ).toBe("[a01/codex] question expired unanswered — nothing was sent; the agent kept working");
+    // Blocking and historical rows keep their wording.
+    for (const delivery of ["blocking", undefined]) {
+      const payload = { ...who, ...(delivery ? { delivery } : {}) };
+      expect(formatRunEventLine({ type: "interaction.requested", payload })).toBe(
+        "[a01/codex] QUESTION pending (interaction int-a)",
+      );
+      expect(formatRunEventLine({ type: "interaction.answered", payload })).toBe(
+        "[a01/codex] answer delivered",
+      );
+      expect(formatRunEventLine({ type: "interaction.timeout", payload })).toBe(
+        "[a01/codex] no answer in time — continuing with assumptions",
+      );
+    }
+  });
+
+  it("renders a harness-withdrawn interaction without expiry or cancellation wording", () => {
+    expect(
+      formatRunEventLine({
+        type: "interaction.withdrawn",
+        payload: { harness_id: "codex", attempt_id: "a01", interaction_id: "int-1" },
+      }),
+    ).toBe("[a01/codex] question withdrawn by the agent — no answer needed");
+  });
+
   it("renders plan.brief.materialized with source run + short sha (QA-046)", () => {
     expect(
       formatRunEventLine({
@@ -259,6 +305,49 @@ describe("claudexor follow", () => {
         },
       }),
     ).toBe("route pool degraded: 2/3 lanes (dropped cursor)");
+
+    expect(
+      formatRunEventLine({
+        type: "workspace.settlement_failed",
+        payload: {
+          attempt_id: "a01",
+          envelope_id: "env-1",
+          root: "/kept/tree",
+          stage: "retain",
+          cause: "EACCES: permission denied",
+        },
+      }),
+    ).toBe(
+      "[a01] WARNING: workspace settlement failed (retain): EACCES: permission denied; the run outcome stands and the tree may remain at /kept/tree",
+    );
+  });
+
+  it("renders workspace.prepared with a warning only when nothing was copied or a selected path was not found (#563)", () => {
+    const prepared = (scope: string[], files: number, missing: string[]) =>
+      formatRunEventLine({
+        type: "workspace.prepared",
+        payload: {
+          attempt_id: "a01",
+          source_root: "/work/project",
+          scope_paths: scope,
+          copied: { files, directories: 0, symlinks: 0 },
+          missing_paths: missing,
+        },
+      });
+    expect(prepared([], 0, [])).toBe(
+      "[a01] WARNING: Isolated copy prepared from /work/project: nothing copied (no input paths were selected).",
+    );
+    expect(prepared(["input.txt", "new.txt"], 1, ["new.txt"])).toBe(
+      '[a01] WARNING: Isolated copy prepared from /work/project: 1 file copied from "input.txt", "new.txt".' +
+        ' Not found there when the copy was prepared: "new.txt" (absent in the copy; may be created as new output).',
+    );
+    expect(prepared(["input.txt"], 1, [])).toBe(
+      '[a01] Isolated copy prepared from /work/project: 1 file copied from "input.txt".',
+    );
+    // A malformed payload is not rendered as a fact.
+    expect(formatRunEventLine({ type: "workspace.prepared", payload: { attempt_id: "a01" } })).toBe(
+      null,
+    );
   });
 
   it("resumes after a mid-stream drop via Last-Event-ID and exits 0 on the terminal", async () => {
@@ -405,6 +494,31 @@ describe("interactive TTY prompt lifetime", () => {
     ]);
   });
 
+  it("sends prose exactly as typed while blank lines answer nothing and padded numbers still pick", async () => {
+    const inputs = ["  keep both spaces  ", " 2 ", " \t "];
+    let index = 0;
+    const question = (id: string) => ({
+      id,
+      question: `${id}?`,
+      header: null,
+      options: [
+        { label: "A", description: null },
+        { label: "B", description: null },
+      ],
+      multi_select: false,
+    });
+    const result = await collectInteractionAnswers(
+      "int-exact-text",
+      [question("q-prose"), question("q-pick"), question("q-blank")] as never,
+      { reader: { question: async () => inputs[index++] ?? "", close: () => {} } },
+    );
+
+    expect(result?.answers).toEqual([
+      { question_id: "q-prose", selected_labels: [], free_text: "  keep both spaces  " },
+      { question_id: "q-pick", selected_labels: ["B"], free_text: null },
+    ]);
+  });
+
   it("is abortable without a deadline when the run terminates", async () => {
     const controller = new AbortController();
     let closed = false;
@@ -484,6 +598,61 @@ describe("interactive TTY prompt lifetime", () => {
     }
     expect(written.join("\n")).toContain("question resolved");
     expect(written.join("\n")).not.toContain("run ended");
+  });
+
+  it("tells an async question's TTY that the agent keeps working and that silence sends nothing", async () => {
+    const written: string[] = [];
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as never);
+    try {
+      const controller = new AbortController();
+      const pending = collectInteractionAnswers(
+        "int-async",
+        [
+          { id: "q1", question: "Who is it for?", header: null, options: [], multi_select: false },
+        ] as never,
+        {
+          delivery: "async",
+          signal: controller.signal,
+          reader: {
+            question: (_prompt, options) =>
+              new Promise<string>((_resolve, reject) => {
+                options?.signal?.addEventListener(
+                  "abort",
+                  () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+                  { once: true },
+                );
+              }),
+            close: () => undefined,
+          },
+        },
+      );
+      controller.abort({ kind: "yield_to_blocking" });
+      await expect(pending).resolves.toBeNull();
+      const expired = await collectInteractionAnswers(
+        "int-async-expired",
+        [{ id: "q1", question: "Who?", header: null, options: [], multi_select: false }] as never,
+        {
+          delivery: "async",
+          timeoutAt: new Date(Date.now() - 1_000).toISOString(),
+          reader: { question: async () => "", close: () => undefined },
+        },
+      );
+      expect(expired).toBeNull();
+    } finally {
+      write.mockRestore();
+    }
+    const text = written.join("");
+    expect(text).toContain("the agent keeps working; this question does not pause it");
+    expect(text).toContain(
+      "a blocking question arrived — this prompt is set aside and asked again after it",
+    );
+    expect(text).toContain(
+      "question already timed out — nothing is sent and the agent keeps working",
+    );
+    expect(text).not.toContain("assumptions");
   });
 
   it("chunks deadlines above Node's single-timer ceiling instead of expiring immediately", async () => {
@@ -643,7 +812,7 @@ describe("claudexor follow text mode", () => {
     if (prevConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = prevConfigDir;
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("prints the doubled codex answer once on the live stream", async () => {
     const answer = "The bug is in the retry loop.";
@@ -984,7 +1153,7 @@ describe("follow surfaces typed refusals through the projector (#93 R1)", () => 
     else process.env.CLAUDEXOR_CONFIG_DIR = prevConfigDir;
     recordEngineSkew(null);
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   function writePointer(content: string): void {
     const daemonDir = join(dir, "daemon");
@@ -1141,7 +1310,7 @@ describe("control-api pointer structural validation (#93 R2)", () => {
     if (prevConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = prevConfigDir;
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   function writePointer(content: string): void {
     const daemonDir = join(dir, "daemon");

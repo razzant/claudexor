@@ -274,11 +274,13 @@ function clearImportedPartition(sql: ImportContext, pid: number): void {
   const refs = sql
     .prepare(
       `SELECT params_sha AS sha FROM command WHERE pid=?1 UNION SELECT result_sha FROM command WHERE pid=?1
-    UNION SELECT prompt_sha FROM turn WHERE pid=?1 UNION SELECT payload_sha FROM event WHERE pid=?1`,
+    UNION SELECT prompt_sha FROM turn WHERE pid=?1 UNION SELECT payload_sha FROM event WHERE pid=?1
+    UNION SELECT body_sha FROM deferred_message WHERE pid=?1`,
     )
     .all(pid) as Array<{ sha: string | null }>;
   for (const table of [
     "command",
+    "deferred_message",
     "thread",
     "turn",
     "session",

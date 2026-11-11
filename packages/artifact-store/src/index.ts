@@ -7,6 +7,7 @@ import {
   readTextSafe,
   writeJson,
   writeText,
+  writePatchObject,
 } from "@claudexor/util";
 
 export interface RunPaths {
@@ -96,6 +97,10 @@ export class ArtifactStore {
 
   writeText(path: string, text: string): void {
     writeText(path, text);
+  }
+
+  writePatch(path: string, text: string): void {
+    writePatchObject(this.claudexorDir, path, text, { durable: false });
   }
 
   readYaml<T = unknown>(path: string): T | null {

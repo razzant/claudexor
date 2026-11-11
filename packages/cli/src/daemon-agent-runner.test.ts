@@ -1,5 +1,5 @@
 import type { ResourceStorePort } from "@claudexor/daemon";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -129,5 +129,38 @@ describe("createDaemonAgentRunner", () => {
     } finally {
       delete process.env.CLAUDEXOR_CONFIG_DIR;
     }
+  });
+
+  it("forwards the caller's auxiliary roots; the engine canonicalizes, records and gates them", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-runner-aux-")));
+    const cache = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-runner-aux-cache-")));
+    const spelled = join(cache, ".");
+    writeFileSync(join(dir, "task.txt"), "bootstrap\n");
+    const res = (await runnerFixture()(
+      {
+        prompt: "x",
+        mode: "agent",
+        scope: { kind: "project", root: dir },
+        harnesses: ["fake-success"],
+        access: "workspace_write",
+        execution: {
+          isolation: "live",
+          delegated: true,
+          workspaceRoot: dir,
+          auxiliaryWritableRoots: [spelled],
+        },
+      },
+      { jobId: "job-aux", signal: new AbortController().signal, onRunStart: () => {} },
+    )) as { lifecycle: string; runDir: string };
+    // Caller spelling crosses the daemon boundary; the contract holds the canonical grant.
+    expect(captured.input?.["auxiliaryWritableRoots"]).toEqual([spelled]);
+    expect(readFileSync(join(res.runDir, "context", "task.yaml"), "utf8")).toContain(
+      `auxiliary_writable_roots:\n    - ${cache}`,
+    );
+    // fake-success declares no native mechanism: the explicit lane refuses before spawning.
+    expect(res.lifecycle).toBe("failed");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "code: auxiliary_writable_roots_unsupported",
+    );
   });
 });

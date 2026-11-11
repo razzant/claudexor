@@ -1,13 +1,14 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { BlobFiles } from "./blob-files.js";
 import { writeExternalFile } from "./external-files.js";
 import type { FlusherPassReport } from "./flusher-protocol.js";
 import { Obligations, type ObligationRow } from "./obligations.js";
 import { runMutation } from "./mutation.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
 const sqliteAvailable = await import("node:sqlite").then(
@@ -27,9 +28,11 @@ const stores: EngineStore[] = [];
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cx-obligations-"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 async function openStore(): Promise<EngineStore> {
   const store = await EngineStore.open({
@@ -93,7 +96,12 @@ describeStore("effect obligations (SYNTHESIS_R5 §4.6, R5_AMENDMENTS A2)", () =>
     });
     // One of two directories registered, never materialized: synced leaves it alone.
     const finalDir = join(root, "run", "final");
-    writeExternalFile(store, { dir: finalDir, name: "run_facts.yaml", bytes: Buffer.from("x") });
+    writeExternalFile(store, {
+      dir: finalDir,
+      name: "run_facts.yaml",
+      bytes: Buffer.from("x"),
+      purpose: "terminal_receipt",
+    });
     obligations.registerEffect("terminal_files", "partial", finalDir);
     await pass(store);
     await pass(store);
@@ -127,10 +135,16 @@ describeStore("effect obligations (SYNTHESIS_R5 §4.6, R5_AMENDMENTS A2)", () =>
         dir: finalDir,
         name: "run_facts.yaml",
         bytes: Buffer.from("facts"),
+        purpose: "terminal_receipt",
       });
       obligations.registerEffect("terminal_files", "run-2", finalDir);
       if (fail) throw new Error("EIO: telemetry");
-      writeExternalFile(store, { dir: finalDir, name: "telemetry.yaml", bytes: Buffer.from("t") });
+      writeExternalFile(store, {
+        dir: finalDir,
+        name: "telemetry.yaml",
+        bytes: Buffer.from("t"),
+        purpose: "terminal_receipt",
+      });
       obligations.registerEffect("terminal_files", "run-2", finalDir);
       obligations.materialize("terminal_files", "run-2");
     };
@@ -244,7 +258,12 @@ describeStore("effect obligations (SYNTHESIS_R5 §4.6, R5_AMENDMENTS A2)", () =>
     second.registerHandler("terminal_files", (obligation, effects) => {
       seen.push(`${obligation.key}:${obligation.state}`);
       const dir = join(root, "redo", obligation.key);
-      writeExternalFile(store, { dir, name: "run_facts.yaml", bytes: Buffer.from("redone") });
+      writeExternalFile(store, {
+        dir,
+        name: "run_facts.yaml",
+        bytes: Buffer.from("redone"),
+        purpose: "terminal_receipt",
+      });
       effects.register(dir);
     });
     second.registerHandler("archive_fs", () => {

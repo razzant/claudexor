@@ -14,6 +14,7 @@ import { afterAll as __afterAllReap } from "vitest";
 // W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
 const __reapDirs: string[] = [];
 const sqlStores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
+let sqlStoresClosed = false;
 async function openSql(root: string) {
   const sql = await sqlFixture(root);
   sqlStores.push(sql);
@@ -24,9 +25,18 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
   __reapDirs.push(dir);
   return dir;
 }
+// Registered before the close hook on purpose: Vitest's default
+// `sequence.hooks: "stack"` runs after-hooks in reverse, so the removal starts
+// only after every store closed, and a close that fails or times out stops the
+// chain and keeps the directories. The flag keeps that true under any order.
+__afterAllReap(() => {
+  if (!sqlStoresClosed) throw new Error("temp dirs retained: the SQL stores did not close first");
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
+// Closing the stores keeps the default hook deadline.
 __afterAllReap(async () => {
   for (const sql of sqlStores.splice(0).reverse()) await sql.close();
-  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+  sqlStoresClosed = true;
 });
 
 async function fixture() {
@@ -320,5 +330,25 @@ describe("whole-registry nesting (one pass)", () => {
       batch.reduce((count, project) => count + project.nesting.length, 0),
     );
     await sql.close();
+  });
+});
+
+describe("missing project roots", () => {
+  it("refuses registration of a vanished root with a named, non-retryable code and no row", async () => {
+    const f = await fixture();
+    const before = f.store.list().length;
+    let failure: unknown;
+    try {
+      f.store.register({ root: join(f.base, "vanished"), idempotencyKey: "k", clientId: "test" });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: "project_root_missing",
+      status: 400,
+      retryable: false,
+      requiredActions: [expect.stringContaining("never starts or replays work")],
+    });
+    expect(f.store.list()).toHaveLength(before);
   });
 });

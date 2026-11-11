@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { flagStr, type ParsedArgs } from "./args.js";
+import { flagBool, flagStr, type ParsedArgs } from "./args.js";
+import { taskGroupLaunchMetadata } from "@claudexor/schema";
 import type {
   ControlReviewerPanelEntry,
   EffortHint,
@@ -168,4 +169,12 @@ export function resolveInstructions(args: ParsedArgs): string | undefined {
     }
   }
   return inline;
+}
+
+/** Validate before daemon startup, thread discovery or attachment upload. */
+export function taskGroupOptions(args: ParsedArgs): { taskGroupId?: string } {
+  const taskGroupId = flagStr(args, "task-group-id");
+  if (taskGroupId !== undefined && flagBool(args, "resume"))
+    throw new Error("--task-group-id is not supported with --resume");
+  return taskGroupLaunchMetadata({ taskGroupId, threadId: flagStr(args, "thread") });
 }

@@ -82,7 +82,8 @@
                     "codex",
                     "claude",
                     "cursor",
-                    "agy"
+                    "agy",
+                    "grok"
                   ],
                   "description": "Harness ids with a managed native-login flow."
                 },

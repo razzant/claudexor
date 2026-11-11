@@ -86,32 +86,11 @@ describe("candidate inventory disclosure", () => {
   });
 });
 
-describe("owner-amended delta scope (INV-125 second amendment)", () => {
-  const deltaPatch = {
-    diffPath: "/evidence/DELTA.patch",
-    summaryPath: "/evidence/DELTA_SUMMARY.md",
-    diffSha256: "sha256:delta",
-    summary: "(delta review)",
-  };
-  const base = "815253dcfdc748b4d93ddc4e40d286bda7ae64f2";
-
-  it("frames the delta as the review subject with the packet as context", () => {
-    const built = buildReviewPrompt("Cand", "/candidate", "/evidence", deltaPatch, {
-      sealed: true,
-      deltaScopeBaseSha: base,
-    });
-    expect(built).toContain("OWNER-AMENDED DELTA SCOPE");
-    expect(built).toContain(`base ${base}`);
-    expect(built).toContain("Delta patch: /evidence/DELTA.patch");
-    expect(built).toContain("remain your CONTEXT");
-    expect(built).toContain("grounded in this delta or in a regression it introduces");
-    // The full-scope subject sentence must not also appear.
-    expect(built).not.toContain("Review Cand's change from the file-backed patch artifact");
-  });
-
-  it("leaves the full-scope subject sentence untouched without the amendment", () => {
+describe("sealed review subject (#257 retired the delta scope)", () => {
+  it("names the complete patch as the only review subject", () => {
     const built = buildReviewPrompt("Cand", "/candidate", "/evidence", patch, { sealed: true });
     expect(built).toContain("Review Cand's change from the file-backed patch artifact");
-    expect(built).not.toContain("OWNER-AMENDED DELTA SCOPE");
+    expect(built).toContain("Full patch: /evidence/DIFF.patch");
+    expect(built).not.toContain("DELTA SCOPE");
   });
 });

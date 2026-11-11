@@ -39,6 +39,7 @@ export async function prepareHarnessProcessing(
     receipt,
     costBasis: ProcessingCostBasis.parse(prepared.costBasis),
     ...(prepared.effort ? { effort: EffortResolution.parse(prepared.effort) } : {}),
+    ...(prepared.catalog ? { catalog: prepared.catalog } : {}),
   };
 }
 

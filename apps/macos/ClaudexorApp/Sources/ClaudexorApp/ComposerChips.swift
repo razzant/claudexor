@@ -23,7 +23,14 @@ struct HarnessAccountChip: View {
     /// nil = automatic (clear the pin); else pin that profile id.
     let onPickAccount: (String?) -> Void
 
-    private var tint: Color { current?.color ?? .secondary }
+    /// The colour of both segments' labels. A borderless `Menu` draws its label
+    /// in the tint and ignores `foregroundStyle`: in a key window both segments
+    /// drew the root accent (3.3:1 dark, 3.8:1 light on the composer glass, #545).
+    /// They take the primary label colour, like the monochrome brand mark beside
+    /// it; the harness identity rides that mark, the name and the family-fill
+    /// capsule, so no harness hue has to be legible as text on the glass.
+    static let labelInk = Color.primary
+
     private var options: [HarnessFamily] {
         pool.isEmpty ? model.selectableHarnesses.filter { $0 != .fake && $0 != .raw } : pool
     }
@@ -40,7 +47,7 @@ struct HarnessAccountChip: View {
                 accountSegment(harness: current)
             }
         }
-        .background(tint.opacity(0.14), in: Capsule())
+        .background((current?.fill ?? .secondary).opacity(0.14), in: Capsule())
         .fixedSize()
     }
 
@@ -68,13 +75,14 @@ struct HarnessAccountChip: View {
                     .lineLimit(1).fixedSize(horizontal: true, vertical: false)
             }
             .font(.caption.weight(.medium))
-            .foregroundStyle(tint)
+            .foregroundStyle(Self.labelInk)
             .padding(.leading, Theme.Spacing.md)
             .padding(.trailing, Theme.Spacing.sm)
             .padding(.vertical, Theme.Controls.chipVPadding)
         }
         // Single native chevron (batch-6 item d — no manual glyph / no hidden).
         .menuStyle(.borderlessButton)
+        .tint(Self.labelInk)
         .fixedSize()
         .help("Primary harness — answers in chat. A change applies from the next turn; switch from the eligible pool.")
     }
@@ -99,18 +107,19 @@ struct HarnessAccountChip: View {
         } label: {
             HStack(spacing: Theme.Spacing.xs) {
                 Image(systemName: segment.systemImage).imageScale(.small)
-                    .foregroundStyle(segment.pinned ? tint : .secondary)
                 Text(segment.label).lineLimit(1).truncationMode(.tail)
                     .frame(maxWidth: 90, alignment: .leading)
             }
+            // A pin reads semibold beside its pin glyph; "Automatic" stays regular.
             .font(.caption.weight(segment.pinned ? .semibold : .regular))
-            .foregroundStyle(segment.pinned ? tint : .secondary)
+            .foregroundStyle(Self.labelInk)
             .padding(.leading, Theme.Spacing.sm)
             .padding(.trailing, Theme.Spacing.md)
             .padding(.vertical, Theme.Controls.chipVPadding)
         }
         // Single native chevron (batch-6 item d — no manual glyph / no hidden).
         .menuStyle(.borderlessButton)
+        .tint(Self.labelInk)
         .fixedSize()
         .help(segment.pinned
             ? "This thread is pinned to \(segment.label). Pick Automatic to route through the quota-aware pool of enabled accounts instead."

@@ -1,9 +1,17 @@
-import { EffortResolution } from "./effort.js";
+import { HarnessProgramIdentity, NativeProgramEvidence } from "./harness-program.js";
+import { EffortHint, EffortResolution, ModelEffortCapability } from "./effort.js";
 import { z } from "zod/v3";
 import { AuthSourceKind, AuthSourceReadiness, CredentialRoute } from "./auth.js";
 import { CredentialProfile } from "./credential-profile.js";
 import { ToolRef } from "./tool-ref.js";
-import { IsolationCapabilities } from "./harness-confinement.js";
+import { AccessControlCapabilities, IsolationCapabilities } from "./harness-confinement.js";
+import { RouteControls, WebPolicySupport } from "./route-controls.js";
+export {
+  AccessControlCapabilities,
+  ReadonlyMechanism,
+  WriteMechanism,
+} from "./harness-confinement.js";
+import { AuxiliaryWritableRoots } from "./auxiliary-writable-roots.js";
 import {
   AccessProfile,
   AuthPreference,
@@ -16,21 +24,28 @@ import { Attachment, AttachmentInputClass } from "./attachment.js";
 import {
   ImplementationTransport,
   RawContextPacket,
+  RawContextReceipt,
   RawGitPatchEnvelope,
   RawPatchRefusalCode,
 } from "./raw.js";
 import { HarnessAccountUsageFields } from "./harness-quota.js";
+import { ModelInventoryCapabilityFields, ObservedModelEventFields } from "./harness-model.js";
+import { HarnessSpeechEventFields } from "./harness-speech.js";
 import { RateLimitSignal } from "./rate-limit.js";
-import { EffortHint, ModelEffortCapability } from "./effort.js";
 import {
   ProcessingCostBasis,
   ProcessingPreference,
   ProcessingReceipt,
   UsageCostBasis,
 } from "./processing.js";
+import { PromptCacheTtl, PromptCacheTtlReceipt, PromptCacheTtlSupport } from "./prompt-cache.js";
 import { AuthCapabilities } from "./platform-auth.js";
 import { InteractionRequest, LiveInputCapability } from "./harness-interaction.js";
-import { HarnessInputLimit, HarnessRequestRefusal } from "./harness-input.js";
+import {
+  HarnessInputLimit,
+  HarnessRequestRefusal,
+  HarnessPermissionDenial,
+} from "./harness-input.js";
 export * from "./harness-input.js";
 export * from "./platform-auth.js";
 // Re-exported so sibling contract modules keep one import path for the type.
@@ -51,22 +66,6 @@ export const HarnessKind = z
   .enum(["local_cli", "remote_api", "fake"])
   .describe("Kind of harness adapter: a local vendor CLI, a remote API, or a fake used for tests.");
 export type HarnessKind = z.infer<typeof HarnessKind>;
-
-/**
- * How a harness can honor the external web policy:
- * - `native`: web modes are a native config surface (codex web_search).
- * - `tools`: web runs through permissioned tools the adapter can allow/deny (claude).
- * - `uncontrolled`: the harness CAN reach the web but exposes no enforceable
- *   switch — incompatible only with strict `off`. cursor/opencode today.
- * - `none`: the harness has NO web access at all — trivially satisfies `off`,
- *   while non-off policies remain optional preferences. raw-api/fake.
- */
-export const WebPolicySupport = z
-  .enum(["native", "tools", "uncontrolled", "none"])
-  .describe(
-    "How a harness can honor the external web policy: native (a native config surface), tools (permissioned tools the adapter can allow/deny), uncontrolled (can reach the web but exposes no enforceable switch), or none (no web access at all).",
-  );
-export type WebPolicySupport = z.infer<typeof WebPolicySupport>;
 
 /**
  * Declared capabilities the ENGINE actually consumes (intent gating, routing,
@@ -138,8 +137,8 @@ export const HarnessCapabilities = z
       ),
     /**
      * The adapter can surface interactive user questions (interaction_requested
-     * events) and deliver typed answers back into the live session. Claude's
-     * bidirectional stream-json control protocol today; honest false elsewhere.
+     * events) and deliver typed answers back into the live session (including
+     * native approvals). Declared only on transports that implement the channel.
      */
     interactive: z
       .boolean()
@@ -231,27 +230,7 @@ export const HarnessCapabilities = z
       .describe(
         "Vendor CLI version the effort ladders were last verified against; null = never verified / not applicable.",
       ),
-    model_inventory_routes: z
-      .array(z.enum(["local_session", "api_key"]))
-      .min(1)
-      .optional()
-      .describe(
-        "Credential routes supported by the adapter's live models() producer; omitted preserves all-route support. Other routes use manifest known_models, never another account's live inventory.",
-      ),
-    /**
-     * What this harness's model lists prove (INV-104) — the live `models()`
-     * answer and the manifest `known_models` hints alike. A list always proves
-     * PRESENCE; this says whether an absence from it is proof too. `authoritative`
-     * (the default when omitted) keeps the strict gate: a model the list lacks is
-     * refused. `advisory` means the harness cannot enumerate what its runtime
-     * accepts, so the gate forwards the explicit model byte-identical and discloses it.
-     */
-    model_inventory_absence: z
-      .enum(["authoritative", "advisory"])
-      .optional()
-      .describe(
-        "Whether an absence from this harness's model lists (the live models() answer and the manifest known_models alike) proves a model is ABSENT; omitted = authoritative (an unlisted model is refused). advisory = absence is not proof, so an explicit model is forwarded to the vendor and disclosed instead of refused.",
-      ),
+    ...ModelInventoryCapabilityFields,
     /**
      * Known model ids/aliases this harness accepts — the manifest-declared model
      * truth source when no live `models()` producer applies to the credential route.
@@ -321,32 +300,6 @@ export function knownModelIdsForRoute(
     .map((entry) => (typeof entry === "string" ? entry : entry.id));
 }
 
-export const ReadonlyMechanism = z
-  .enum(["fs_sandbox", "permission_deny", "tool_allowlist", "none"])
-  .describe(
-    "How read-only access is enforced for a harness: a filesystem sandbox, permission denial, a tool allowlist, or none (read-only intent is advisory).",
-  );
-export type ReadonlyMechanism = z.infer<typeof ReadonlyMechanism>;
-
-export const WriteMechanism = z
-  .enum(["fs_sandbox", "tool_policy", "none"])
-  .describe(
-    "How workspace_write access is CONFINED for a harness: a filesystem/network sandbox (codex seatbelt), a tool-permission policy with no FS/network fence (claude — an allowed shell is unconfined), or none (write intent is advisory).",
-  );
-export type WriteMechanism = z.infer<typeof WriteMechanism>;
-
-export const AccessControlCapabilities = z
-  .object({
-    readonly_mechanism: ReadonlyMechanism.default("none"),
-    // Typed disclosure of the workspace_write asymmetry (owner decision
-    // 2026-08-30): a consumer choosing lanes by confinement reads THIS field,
-    // never a harness-name branch.
-    write_mechanism: WriteMechanism.default("none"),
-  })
-  .default({})
-  .describe("Declared access-control facts for a harness.");
-export type AccessControlCapabilities = z.infer<typeof AccessControlCapabilities>;
-
 /**
  * Structured per-harness facts the engine consumes: auth routing (scoped-home
  * keychain bridging), isolation containment, honest readonly mechanism, and
@@ -406,17 +359,17 @@ export const HarnessCapabilityProfile = z
      * answers `unsupported` without a native write when this is none.
      */
     live_input: LiveInputCapability.default("none"),
+    prompt_cache_ttls: PromptCacheTtlSupport,
   })
   .default({})
   .describe(
-    "Structured per-harness facts the engine consumes: auth routing, isolation containment, readonly mechanism, finite attachment inputs, MCP injection, and live input into a running session.",
+    "Structured per-harness facts the engine consumes: auth routing, isolation containment, readonly mechanism, finite attachment inputs, MCP injection, live input into a running session, and translated prompt-cache lifetimes.",
   );
 export type HarnessCapabilityProfile = z.infer<typeof HarnessCapabilityProfile>;
 
-export { HarnessModel } from "./harness-model.js";
-
 export const HarnessManifest = z
   .object({
+    sourceProgram: HarnessProgramIdentity.nullable().optional(),
     id: Id.describe("Harness id (codex, claude, cursor, opencode, raw-api, ...)."),
     display_name: z.string().describe("Human display name of the harness."),
     kind: HarnessKind,
@@ -433,7 +386,7 @@ export const HarnessManifest = z
     access_profiles_supported: z
       .array(AccessProfile)
       .default([])
-      .describe("Access profiles the adapter can enforce."),
+      .describe("Access profiles the adapter can translate to its harness."),
   })
   .describe(
     "Static manifest an adapter declares for its harness: identity, kind, capabilities, auth modes, and access profiles.",
@@ -465,6 +418,7 @@ export type AdapterStatus = z.infer<typeof AdapterStatus>;
 
 export const ConformanceReport = z
   .object({
+    sourceProgram: HarnessProgramIdentity.nullable().optional(),
     harness_id: Id.describe("Harness the report is about."),
     status: AdapterStatus,
     checks: z.array(ConformanceCheck).default([]).describe("Individual probe results."),
@@ -543,6 +497,7 @@ export type ExtraMcpServer = z.infer<typeof ExtraMcpServer>;
 export const HarnessRunSpec = z
   .object({
     processing_preference: ProcessingPreference.optional(),
+    prompt_cache_ttl: PromptCacheTtl.optional(),
     processing: ProcessingReceipt.optional().describe(
       "Prepared native service choice for this exact attempt.",
     ),
@@ -565,7 +520,15 @@ export const HarnessRunSpec = z
         "Caller-supplied system-level instructions for task-producing lanes; delivered natively (append-system-prompt-file / developer_instructions) or as a delimited prompt prefix.",
       ),
     cwd: z.string().describe("Working directory the harness process runs in."),
+    input_file_dir: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "The run's own context directory, outside every worktree and retired with the run: an adapter whose native input transport cannot carry the whole input keeps exact copies there for the agent to read. Null = none; such an adapter refuses that input instead of cutting it.",
+      ),
     access: AccessProfile.default("workspace_write"),
+    auxiliary_writable_roots: AuxiliaryWritableRoots,
     external_context_policy: ExternalContextPolicy.default("auto"),
     tool_permission_policy: z
       .object({
@@ -724,10 +687,13 @@ export type InputTokenUsage = z.infer<typeof InputTokenUsage>;
 /** Normalized event emitted by every adapter (the SSOT of adapter output). */
 export const HarnessEvent = z
   .object({
+    program: NativeProgramEvidence.optional(),
     request_refusal: HarnessRequestRefusal.optional(),
     effort_resolution: EffortResolution.optional(),
     processing: ProcessingReceipt.optional(),
     processing_cost_basis: ProcessingCostBasis.optional(),
+    prompt_cache_ttl: PromptCacheTtlReceipt.optional(),
+    route_controls: RouteControls.optional(),
     type: z
       .enum([
         "started",
@@ -762,8 +728,12 @@ export const HarnessEvent = z
       .describe(
         "True on the harness's typed final-answer message (vendor terminal result); mid-run narration never sets it.",
       ),
-    /** Typed tool info; set on `tool_call` and `tool_result` events. */
-    tool: ToolRef.optional().describe("Typed tool info; set on tool_call and tool_result events."),
+    ...HarnessSpeechEventFields,
+    /** Typed tool info; set on `tool_call` and `tool_result` events, and on the
+     * `command_outcome_refined` status that refines an earlier call (#546). */
+    tool: ToolRef.optional().describe(
+      "Typed tool info; set on tool_call and tool_result events, and on a status event with payload.code command_outcome_refined, where it names the earlier call (use_id) and carries its refined command_outcome.",
+    ),
     /** Set on `interaction_requested` events. */
     interaction: InteractionRequest.optional().describe("Set on interaction_requested events."),
     patch_envelope: RawGitPatchEnvelope.optional().describe(
@@ -772,6 +742,10 @@ export const HarnessEvent = z
     refusal_code: RawPatchRefusalCode.optional().describe(
       "Typed refusal code for a rejected raw patch contract.",
     ),
+    raw_context: RawContextReceipt.optional().describe(
+      "Set on the status event that discloses, just before the POST, how a raw-api request was sized (#147).",
+    ),
+    permission_denial: HarnessPermissionDenial.optional(),
     usage: z
       .object({
         input_tokens: z.number().int().nonnegative().optional().describe("Input tokens consumed."),
@@ -798,7 +772,7 @@ export const HarnessEvent = z
       })
       .optional()
       .describe("Token/cost usage reported by the harness."),
-    observed_model: z.string().optional().describe("Model the harness actually reported using."),
+    ...ObservedModelEventFields,
     credential_route: CredentialRoute.optional().describe(
       "Concrete credential route selected before spawn; first-class route evidence, never inferred from free-form payload text.",
     ),
@@ -969,6 +943,18 @@ export const HarnessEvent = z
       .optional()
       .describe(
         "Typed context-management signal (compaction boundary / capacity exhaustion) set by the adapter; orthogonal to the transient-retry taxonomy.",
+      ),
+    /** #299: set on the error event of a native turn the vendor ended at the
+     * run's max-turns cap (claude/grok `error_max_turns`). The finalizer maps it
+     * to `interrupted / turn_limit_reached`; it is never retried or resumed. */
+    turn_limit: z
+      .object({
+        native_code: z.string().describe("The vendor's own terminal subtype, verbatim."),
+        num_turns: z.number().int().nonnegative().nullable().describe("Turns the vendor counted."),
+      })
+      .optional()
+      .describe(
+        "Typed max-turns stop set by the adapter on the error event that ends a capped native turn; orthogonal to the transient-retry taxonomy.",
       ),
     error: z.string().optional().describe("Error text for error events."),
     aborted: z

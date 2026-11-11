@@ -13,7 +13,7 @@ import {
 } from "@claudexor/daemon";
 import { harnessRuntimeEnv } from "@claudexor/core";
 import { hashJson } from "@claudexor/util";
-import { CliError, controlProblemError } from "./cli-error.js";
+import { CliError, controlProblemError, withAcceptedReceipt } from "./cli-error.js";
 import { daemonOwner, managedDaemonUnavailable } from "./daemon-owner.js";
 import {
   CLI_DAEMON_LAUNCH_SOURCES,
@@ -27,7 +27,15 @@ import {
   handshakeControlApi,
   type ControlApiAddress,
 } from "./live.js";
-import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
+import {
+  ControlRunState,
+  TERMINAL_LIFECYCLES,
+  taskGroupLaunchMetadata,
+  acceptedReceiptMetadata,
+  CONTROL_STORE_IDENTITY_HEADER,
+  type TaskGroupReceipt,
+} from "@claudexor/schema";
+import { acceptedPreRunFailure } from "./run-start-acceptance.js";
 export { projectOutcomeBanner } from "./run-detail-projections.js";
 export { projectRunOutcomeFacts, mergeDaemonRunOutcome } from "./daemon-outcome.js";
 
@@ -198,10 +206,10 @@ export async function ensureDaemon(
 /**
  * Connect to an ALREADY-RUNNING daemon + control API WITHOUT ever spawning one.
  * Returns null when no token exists, the socket is unreachable, or the control
- * API is down. Used by read-only-looking run lookups (inspect/apply) so a typo'd
- * run id reports "no such run" instead of silently launching a background daemon
- * (`ensureDaemon`, by contrast, auto-starts and is reserved for paths that act —
- * enqueue/decision). A daemon that REFUSES the typed handshake is NOT "not
+ * API is down. Used by read-only run lookups (inspect, MCP recovery reads) so a
+ * typo'd run id never silently launches a background daemon (`ensureDaemon`, by
+ * contrast, auto-starts and is reserved for paths that act — enqueue/decision/
+ * apply). A daemon that REFUSES the typed handshake is NOT "not
  * running": the typed problem propagates — still without spawning (#93).
  */
 export async function connectDaemonIfRunning(): Promise<{
@@ -256,7 +264,7 @@ export async function waitForDaemonReady(
 // projection-owned TERMINAL_LIFECYCLES, never a local re-derivation.
 const TERMINAL_STATES: ReadonlySet<string> = TERMINAL_LIFECYCLES;
 
-export interface DaemonRunOutcome {
+export interface DaemonRunOutcome extends Partial<TaskGroupReceipt> {
   runId: string;
   runDir: string;
   /** The daemon job state (honest terminal: succeeded | blocked | failed | no_op | ...). */
@@ -283,16 +291,34 @@ export async function enqueueAndAwait(
   body: Record<string, unknown>,
   opts: {
     waitForTerminal: boolean;
+    /** Caller-owned HTTP admission key; omitted keeps transport-generated keys. */
+    idempotencyKey?: string;
+    /** Durable-handle callers (MCP deferred launches): return an accepted job
+     * the daemon has not bound yet — still queued, or terminal before any run
+     * started — instead of polling for binding. Streaming callers need a bound
+     * run and leave this unset. */
+    acceptUnbound?: boolean;
     /** Belt-only path: enqueue through the authenticated daemon socket so
      * server-owned delegation lineage never becomes forgeable on POST /runs. */
     internalDaemonEnqueue?: boolean;
     startTimeoutMs?: number;
     /** Invoked each terminal-wait iteration once the run is bound (MCP uses
-     * this to bridge pendingInteractions -> host elicitation). Awaited: a
-     * long answer round-trip pauses status polling, never the run itself. */
+     * this to bridge pendingInteractions -> host elicitation). Awaited: it
+     * must return promptly, or status polling and the terminal wait stop;
+     * the interaction bridge asks its prompts beside this loop. */
     onPollTick?: (info: { runId: string }) => void | Promise<void>;
   } = { waitForTerminal: true },
 ): Promise<DaemonRunOutcome> {
+  taskGroupLaunchMetadata(body, opts.internalDaemonEnqueue);
+  // Belt tools do not expose caller keys: their local budget/count admission
+  // is per invocation. Never silently drop a key or bypass that boundary by
+  // moving server-owned Delegate lineage onto public HTTP admission.
+  if (opts.internalDaemonEnqueue && opts.idempotencyKey !== undefined) {
+    throw new CliError("usage", "Caller idempotency keys are not supported by the Delegate belt.", {
+      code: "delegation_idempotency_unsupported",
+      retryable: false,
+    });
+  }
   await ensureRunProject(addr, body);
   // D10 transport split: a thread continuation (`--thread`/`--resume`) ALWAYS
   // goes through POST /threads/:id/turns — the route owns scope resolution,
@@ -303,6 +329,7 @@ export async function enqueueAndAwait(
   let jobId = "";
   let runId = "";
   let runDir = "";
+  let metadata: Partial<TaskGroupReceipt> = {};
   if (opts.internalDaemonEnqueue) {
     const accepted = await client.enqueue(body, {
       clientId: "delegation-belt",
@@ -319,12 +346,18 @@ export async function enqueueAndAwait(
       : { url: "/runs", postBody: body };
     const startRes = await controlApiFetch(addr, url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        [CONTROL_STORE_IDENTITY_HEADER]: "1",
+        ...(opts.idempotencyKey !== undefined ? { "Idempotency-Key": opts.idempotencyKey } : {}),
+      },
       body: JSON.stringify(postBody),
     });
     const startText = await startRes.text();
     const start = startText ? (JSON.parse(startText) as Record<string, unknown>) : {};
     if (!startRes.ok) {
+      const failedJob = opts.acceptUnbound ? acceptedPreRunFailure(startRes.status, start) : null;
+      if (failedJob) return failedJob;
       throw controlProblemError(
         startRes.status,
         start,
@@ -332,8 +365,15 @@ export async function enqueueAndAwait(
       );
     }
     jobId = String(start["jobId"] ?? "");
+    metadata = acceptedReceiptMetadata(start);
     runId = typeof start["runId"] === "string" ? (start["runId"] as string) : "";
     runDir = typeof start["runDir"] === "string" ? (start["runDir"] as string) : "";
+    // The daemon already waited for binding before answering 202: the
+    // accepted job itself is the durable handle.
+    if (opts.acceptUnbound && jobId && (!runId || !runDir)) {
+      const state = ControlRunState.safeParse(start["state"]);
+      return { jobId, runId: "", runDir: "", status: state.success ? state.data : "", ...metadata };
+    }
   }
 
   // Ctrl-C while the CLI waits on a daemon run must CANCEL THE RUN, not just
@@ -348,7 +388,7 @@ export async function enqueueAndAwait(
     process.stderr.write("\ncancelling daemon run (Ctrl-C again to detach)...\n");
     void controlApiFetch(addr, `/runs/${encodeURIComponent(jobId)}/control`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         control: {
           kind: "cancel",
@@ -397,6 +437,7 @@ export async function enqueueAndAwait(
           runDir: "",
           status: rec.state,
           jobId,
+          ...metadata,
           error: rec.error,
           errorCode: rec.errorCode,
           errorStatus: rec.errorStatus,
@@ -413,13 +454,20 @@ export async function enqueueAndAwait(
 
     if (!opts.waitForTerminal) {
       // The caller keeps watching this run (text mode streams it); hand the
-      // signal responsibility back with the outcome.
-      const rec = jobId ? await client.status(jobId) : null;
+      // signal responsibility back with the outcome. A durable-handle caller
+      // keeps its bound handle even when this state read fails (state unknown).
+      const rec = jobId
+        ? await client.status(jobId).catch((error: unknown) => {
+            if (!opts.acceptUnbound) throw error;
+            return null;
+          })
+        : null;
       return {
         runId,
         runDir,
-        status: rec?.state ?? "running",
+        status: rec?.state ?? (opts.acceptUnbound ? "" : "running"),
         jobId,
+        ...metadata,
         error: rec?.error,
         errorCode: rec?.errorCode,
         errorStatus: rec?.errorStatus,
@@ -438,6 +486,7 @@ export async function enqueueAndAwait(
           runDir: rec.runDir ?? runDir,
           status: rec.state,
           jobId,
+          ...metadata,
           error: rec.error,
           errorCode: rec.errorCode,
           errorStatus: rec.errorStatus,
@@ -449,6 +498,9 @@ export async function enqueueAndAwait(
       if (opts.onPollTick) await opts.onPollTick({ runId: rec.runId ?? runId });
       await sleep(250);
     }
+  } catch (error) {
+    // The job stays accepted whatever failed here; keep its receipt.
+    throw jobId ? withAcceptedReceipt(error, { jobId, ...metadata }) : error;
   } finally {
     removeSignalHandlers();
   }

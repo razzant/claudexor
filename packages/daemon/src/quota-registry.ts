@@ -15,6 +15,7 @@ import type { EventLedger } from "./store-contracts.js";
 import {
   ControlQuotaResponse,
   AccountResourceSnapshot,
+  type AccountResourceTarget,
   type AccountTarget,
   observedResourceFacet,
   HarnessEvent,
@@ -131,6 +132,11 @@ export class QuotaRegistry {
     });
   }
 
+  /** Admission read: windows age individually at the deciding reader (quotaWindowFreshness). */
+  readAdmission(now = this.now().getTime()) {
+    return { snapshots: this.activeSnapshots(now, true) };
+  }
+
   /** Opt-in display read, never used for routing, demand, or journal signatures. */
   readConstraintFreshness(now = this.now().getTime()) {
     return quotaFreshnessRead(this.snapshots, this.resourceCutoffs, this.activeAbsences(now), now);
@@ -152,24 +158,25 @@ export class QuotaRegistry {
     retireAccountResourceEvidence(target, at, this.resourceCutoffs, this.snapshots, this.resources);
   }
 
-  private activeSnapshots(now: number): QuotaSnapshot[] {
-    return resourceQuotaSnapshots(this.snapshots.values(), this.resourceCutoffs, now);
+  private activeSnapshots(now: number, admission = false): QuotaSnapshot[] {
+    return resourceQuotaSnapshots(this.snapshots.values(), this.resourceCutoffs, now, admission);
   }
 
-  async refresh(target?: AccountTarget, afterCurrent = false) {
+  async refresh(target?: AccountResourceTarget, afterCurrent = false) {
     return (await this.refreshCycle(true, undefined, target, afterCurrent)).response;
   }
 
   /** Fresh quota plus the exact global-journal fence for snapshot-then-SSE.
    * The cursor is captured inside refreshCycle, synchronously with `response`,
-   * so a later append can never be skipped by a client resuming from it. */
+   * so a later append can never be skipped by a client resuming from it.
+   * `admission` is the same state's per-window routing read (readAdmission). */
   async refreshWithCursor() {
-    const { response, quotaEventCursor, resources } = await this.refreshCycle();
-    return { response, quotaEventCursor, resources };
+    const { response, quotaEventCursor, resources, admission } = await this.refreshCycle();
+    return { response, quotaEventCursor, resources, admission };
   }
 
   async refreshResources(
-    target?: AccountTarget,
+    target?: AccountResourceTarget,
     afterCurrent = false,
     invalidateBeforeRead = false,
   ) {
@@ -193,7 +200,7 @@ export class QuotaRegistry {
   private async refreshCycle(
     followCredentialChanges = true,
     scope?: PacingLane,
-    target?: AccountTarget,
+    target?: AccountResourceTarget,
     afterCurrent = false,
     invalidateBeforeRead = false,
   ): Promise<Awaited<ReturnType<QuotaRegistry["performRefreshCycle"]>>> {
@@ -203,7 +210,8 @@ export class QuotaRegistry {
         .run((credentialGeneration) => {
           // Drain the previous cycle before moving the reset cutoff. Even an old
           // source stamped at delivery cannot renew history after this boundary.
-          if (target && invalidateBeforeRead) this.invalidateAccountResources(target);
+          if (target?.profile_id && invalidateBeforeRead)
+            this.invalidateAccountResources({ ...target, profile_id: target.profile_id });
           return this.performRefreshCycle(credentialGeneration, scope ?? null, target);
         }, followCredentialChanges)
         .catch((error) => {
@@ -219,7 +227,7 @@ export class QuotaRegistry {
   private async performRefreshCycle(
     credentialGeneration: number,
     scope: PacingLane | null,
-    target?: AccountTarget,
+    target?: AccountResourceTarget,
   ) {
     const serial = ++this.refreshSerial;
     if (this.refresherLanes.entries.length === 0) {
@@ -238,6 +246,7 @@ export class QuotaRegistry {
       refreshSubjects(this.subjects?.(), target),
       this.activeSnapshots(this.now().getTime()),
       target,
+      this.readResources(),
     );
     const settled = await Promise.allSettled(running.map(async ({ refresh }) => refresh()));
     const batches = validatedRefreshBatches(settled, target);
@@ -267,6 +276,7 @@ export class QuotaRegistry {
       claims,
       skipped,
       now,
+      batches.flatMap((batch) => batch?.resources ?? []),
     );
     const refreshedAt = this.now().toISOString();
     const response = ControlQuotaResponse.parse({
@@ -290,6 +300,7 @@ export class QuotaRegistry {
       response,
       quotaEventCursor,
       resources,
+      admission: { snapshots: this.activeSnapshots(now, true) },
       scopeVendor: scope?.vendor ?? null,
       target,
       serial,
@@ -313,7 +324,7 @@ export class QuotaRegistry {
     claims: readonly QuotaAbsence[],
     now: number,
     scope: ReadonlySet<string> | null = null,
-    target?: AccountTarget,
+    target?: AccountResourceTarget,
   ): void {
     const laneVendors = new Set(
       this.refresherLanes.lanes.map((lane) => lane.vendor).filter((vendor) => vendor !== null),
@@ -397,6 +408,7 @@ export class QuotaRegistry {
           dueBefore,
           since,
           this.refresherLanes.lanes,
+          this.readResources(now),
         ),
       currentGeneration: () => this.refreshCoordinator.currentGeneration(),
       isCurrentGeneration: (generation) => this.refreshCoordinator.isCurrent(generation),
@@ -542,18 +554,9 @@ export class QuotaRegistry {
     event: ReturnType<typeof HarnessEvent.parse>,
   ): void {
     const source = REACTIVE_COOLDOWN_SOURCE[harness] ?? "codex_rollout";
-    // The event's profile stamp scopes the cooldown to ITS subject (round-11):
-    // a profiled limit never cools the default subject down (or vice versa).
-    const profileId = event.credential_profile_id ?? null;
-    const existing = [...this.snapshots.values()].find(
-      (snapshot) =>
-        snapshot.subject.harness === harness &&
-        snapshot.subject.credential_route === credentialRoute &&
-        (snapshot.subject.subject_id ?? null) === profileId &&
-        snapshot.source === source,
-    );
+    const current = this.snapshots.values();
     this.upsert(
-      reactiveCooldownSnapshot({ harness, credentialRoute, event, source, existing }, this.now()),
+      reactiveCooldownSnapshot({ harness, credentialRoute, event, source, current }, this.now()),
     );
   }
 

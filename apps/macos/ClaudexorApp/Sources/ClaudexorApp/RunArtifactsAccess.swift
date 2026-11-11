@@ -126,7 +126,11 @@ enum ArtifactFetchError {
         case .http(let status, let body):
             switch status {
             case 409: return .notRenderable("\(path): \(sensitiveRefusalMessage(body: body))")
-            case 413: return .notRenderable("\(path): Too large to preview here — open it from the run folder.")
+            case 413:
+                // #535: an exact result too large to render as one patch is a typed
+                // absence of the VIEW (it stays applyable and revertable).
+                if let unrendered = unrenderedPatchMessage(body: body) { return .notRenderable(unrendered) }
+                return .notRenderable("\(path): Too large to preview here — open it from the run folder.")
             default: return offline(path: path)
             }
         case .decoding:
@@ -152,6 +156,26 @@ enum ArtifactFetchError {
     /// generic refusal — never the raw JSON problem body. A legacy/hostile body that
     /// carries neither (e.g. an old top-level-`error`/`sensitiveClass` shape the real
     /// daemon never emits) falls back generically.
+    /// The engine's typed `patch_view_unavailable` 413 (#535) as one honest line;
+    /// nil for any other body (an ordinary oversize artifact).
+    static func unrenderedPatchMessage(body: String) -> String? {
+        struct Body: Decodable {
+            struct Inventory: Decodable { var changedFiles: Int? }
+            var code: String?
+            var reason: String?
+            var estimatedBytes: Int?
+            var inventory: Inventory?
+        }
+        guard let decoded = body.data(using: .utf8).flatMap({ try? JSONDecoder().decode(Body.self, from: $0) }),
+              decoded.code == "patch_view_unavailable"
+        else { return nil }
+        let files = decoded.inventory?.changedFiles.map { "\($0) changed file\($0 == 1 ? "" : "s"); " } ?? ""
+        let lead = decoded.reason == "render_failed"
+            ? "The patch for these changes could not be rendered"
+            : "These changes are too large to show as one patch"
+        return "\(lead) (\(files)kept exactly). Apply and Revert still work; open the run folder to inspect the files."
+    }
+
     static func sensitiveRefusalMessage(body: String) -> String {
         struct Body: Decodable {
             struct Context: Decodable { var sensitiveClass: String? }

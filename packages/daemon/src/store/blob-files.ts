@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { StoreError } from "./errors.js";
-import { linkExternalFile, writeExternalFile } from "./external-files.js";
+import { linkExternalFile, stageExternalFile, writeExternalFile } from "./external-files.js";
 import { requireTransaction, type SqlWriteContext } from "./mutation.js";
 import type { OwnerGenerations, UnlinkOutcome } from "./owner-generations.js";
 import type { EngineStore } from "./store.js";
@@ -28,9 +28,11 @@ export interface BodyRef {
  */
 export const BLOB_OWNER_PREDICATE = `EXISTS(SELECT 1 FROM command WHERE params_sha = ?1)
   OR EXISTS(SELECT 1 FROM command WHERE result_sha = ?1)
+  OR EXISTS(SELECT 1 FROM deferred_message WHERE body_sha = ?1)
   OR EXISTS(SELECT 1 FROM turn WHERE prompt_sha = ?1)
   OR EXISTS(SELECT 1 FROM event WHERE payload_sha = ?1)
   OR EXISTS(SELECT 1 FROM resource WHERE sha256 = ?1 AND state IN ('publishing', 'ready'))
+  OR EXISTS(SELECT 1 FROM resource_use WHERE sha256 = ?1)
   OR EXISTS(SELECT 1 FROM upload WHERE finalize_sha = ?1)
   OR EXISTS(SELECT 1 FROM effect_obligation WHERE kind = 'publish_blob'
             AND json_extract(CAST(payload AS TEXT), '$.sha') = ?1)`;
@@ -54,10 +56,11 @@ export type GcOutcome = UnlinkOutcome;
 
 /**
  * Content-addressed bodies: `resource-store/blobs/<sha256>` for anything above
- * 64 KiB, written synchronously on the request thread in the same tick as the
- * owning transaction (temp `O_DSYNC` + rename, never rewriting an existing
- * file), then the `blob` row plus the owner's reference row commit together.
- * The store owns the shared owner generations the GC is bound to.
+ * 64 KiB, present in the same tick as the owning transaction (temp `O_DSYNC` +
+ * rename, never rewriting an existing file): written there on the request
+ * thread, or found there after `stageBody` wrote it off that thread. Then the
+ * `blob` row plus the owner's reference row commit together. The store owns
+ * the shared owner generations the GC is bound to.
  */
 export class BlobFiles {
   readonly dir: string;
@@ -90,6 +93,7 @@ export class BlobFiles {
       name: sha256,
       bytes,
       keepExisting: true,
+      purpose: "blob_body",
     });
     return {
       sha256,
@@ -98,6 +102,25 @@ export class BlobFiles {
       file: receipt.path,
       generation: receipt.generation,
     };
+  }
+
+  /**
+   * Off the request thread, ahead of a synchronous owner: write a large body's
+   * content-addressed file so the owner's same-tick `prepareBody` finds it and
+   * only registers the directory. It owns and registers no file; the store's
+   * body directory is created (each new level registered) before the first
+   * staged write. Any failure, or a GC of the still-unowned file before the
+   * owner commits, leaves the write to that owner: presence is decided by the
+   * file at preparation (C3).
+   */
+  async stageBody(bytes: Uint8Array): Promise<void> {
+    if (bytes.byteLength <= INLINE_BODY_MAX_BYTES) return;
+    try {
+      if (this.dir === this.store.paths.blobs) this.store.bodyDirectory();
+      await stageExternalFile({ dir: this.dir, name: sha256Hex(bytes), bytes });
+    } catch {
+      /* the synchronous preparation writes it */
+    }
   }
 
   /** Inside the owning transaction: the `blob` row (idempotent per digest). */

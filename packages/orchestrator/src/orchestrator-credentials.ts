@@ -65,13 +65,18 @@ export interface ReviewerProfileResolutionInput {
   authPreference: AuthPreference;
   credentialProfileId: string | null;
   excludedProfileIds?: ReadonlySet<string>;
+  /** The run's cancellation, under which an explicit seat's pin waits (#532). */
+  signal?: AbortSignal;
 }
 
 export function reviewerProfileResolver(
   credentials: OrchestratorCredentials,
   repoRoot: string,
-): (input: Omit<ReviewerProfileResolutionInput, "repoRoot">) => Promise<CredentialProfile | null> {
-  return (input) => credentials.preflightReviewerProfile({ repoRoot, ...input });
+  signal?: AbortSignal,
+): (
+  input: Omit<ReviewerProfileResolutionInput, "repoRoot" | "signal">,
+) => Promise<CredentialProfile | null> {
+  return (input) => credentials.preflightReviewerProfile({ repoRoot, signal, ...input });
 }
 
 /** The slice of the Orchestrator this cluster reads; accessor functions so the
@@ -122,7 +127,7 @@ export function rotatedSpecInLaneHome(
   return rotatedLane ? { ...rotated, env: rotatedLane } : rotated;
 }
 
-type ProfileProbe = (profile: CredentialProfile) => Promise<CredentialProfileStatus>;
+type ProfileProbe = NonNullable<HarnessAdapter["probeCredentialProfile"]>;
 
 /** The profile probes ONE admission pass made, recorded as they happen so the
  * billing read (#260) reuses the verdict that admitted a row instead of
@@ -134,8 +139,8 @@ export class AdmissionProfileProbes {
   record(probe: ProfileProbe | undefined): ProfileProbe | undefined {
     return (
       probe &&
-      ((profile) => {
-        const status = probe(profile);
+      ((profile, ...wait) => {
+        const status = probe(profile, ...wait);
         this.made.set(`${profile.harness_id}\0${profile.profile_id}`, status);
         return status;
       })
@@ -332,6 +337,9 @@ export class OrchestratorCredentials {
    * last positive after a timeout, #363). When unpinned rows exist and
    * none admits, `unreadyRows` names each row with what its probe observed —
    * the default login's doctor advice never speaks for registered rows (#363).
+   * Every probe runs under the run's cancellation; the pin's probe also carries
+   * the pin fact, so a slow native sign-in check is awaited, never guessed,
+   * while unpinned rows keep the ordinary probe budget (#532).
    */
   async admitRouteRows(args: {
     input: RunInput;
@@ -340,7 +348,7 @@ export class OrchestratorCredentials {
     model: string | null;
     quota: VendorQuotaObservations;
     unusable: readonly CredentialUnusableObservation[];
-    probe: ((profile: CredentialProfile) => Promise<CredentialProfileStatus>) | undefined;
+    probe: ProfileProbe | undefined;
   }): Promise<{ admitted: boolean; pinVerdict: string | null; unreadyRows: string | null }> {
     const { input, harnessId } = args;
     const registry = this.host.config(input.repoRoot)?.global.credential_profiles ?? [];
@@ -358,12 +366,16 @@ export class OrchestratorCredentials {
     }
     const verdicts: string[] = [];
     let lastVerdict: string | null = null;
+    const adapterProbe = args.probe;
+    const pinned = explicitPin ? { pinned: true } : undefined;
+    const probe =
+      adapterProbe && ((profile: CredentialProfile) => adapterProbe(profile, input.signal, pinned));
     for (const candidateId of candidateIds) {
       const verdict = await selectedProfileAvailability({
         registry,
         profileId: candidateId,
         harnessId,
-        probe: args.probe,
+        probe,
         // `verification: passed` from the local store only means a login file
         // is present. The poller's authenticated vendor call is the only
         // liveness evidence; admission must act on it or dispatch may use a revoked token.
@@ -421,10 +433,12 @@ export class OrchestratorCredentials {
     // optional for legacy run admission; this caller opts into the stricter
     // reviewer contract without changing ordinary runs.
     if (pinnedProfile) {
+      // The seat's pin waits for its sign-in check like a run's pin (#532).
+      const adapterProbe = adapter?.probeCredentialProfile?.bind(adapter);
       const status = composeCredentialProfileEvidence(
         await probeCredentialProfileStatus(
           pinnedProfile,
-          adapter?.probeCredentialProfile?.bind(adapter),
+          adapterProbe && ((profile) => adapterProbe(profile, input.signal, { pinned: true })),
         ),
         {
           quota,

@@ -24,6 +24,137 @@ const retryNotifications = readFileSync(
   .map((line) => JSON.parse(line) as Record<string, unknown>);
 
 describe("Codex app-server transport", () => {
+  it.each([
+    ["workspace_write", "workspace-write", "on-request"],
+    ["readonly", "read-only", "never"],
+    ["full", "danger-full-access", "never"],
+    ["inherit_native", undefined, "never"],
+  ])(
+    "preserves the %s boundary while enabling native automatic review",
+    (access, sandbox, policy) => {
+      const params = codexAppServerThreadParams(
+        HarnessRunSpec.parse({
+          session_id: "review-policy",
+          intent: "implement",
+          prompt: "work",
+          cwd: process.cwd(),
+          access,
+        }),
+      );
+      expect(params["sandbox"]).toBe(sandbox);
+      expect(params["approvalPolicy"]).toBe(policy);
+      expect(params["approvalsReviewer"]).toBe("auto_review");
+    },
+  );
+
+  it.each([
+    [
+      0,
+      "item/fileChange/requestApproval",
+      "codex_approval_required",
+      { decision: "decline" },
+      null,
+    ],
+    [
+      3,
+      "item/fileChange/requestApproval",
+      "codex_approval_required",
+      { decision: "decline" },
+      null,
+    ],
+    [
+      "approval-1",
+      "item/fileChange/requestApproval",
+      "codex_approval_required",
+      { decision: "decline" },
+      null,
+    ],
+    [
+      4,
+      "item/commandExecution/requestApproval",
+      "codex_approval_required",
+      { decision: "decline" },
+      null,
+    ],
+    [
+      1,
+      "future/serverAction",
+      "codex_request_unsupported",
+      null,
+      { code: -32601, message: "Unsupported server request" },
+    ],
+  ])(
+    "refuses server request id %s (%s) without granting authority or mistaking it for a response",
+    async (id, method, code, result, error) => {
+      const writes: Array<Record<string, unknown>> = [];
+      const replies: string[] = [];
+      let wake: (() => void) | undefined;
+      let stopped = false;
+      const push = (value: unknown) => {
+        replies.push(JSON.stringify(value));
+        wake?.();
+      };
+      const spawn: typeof spawnProcess = async function* (_bin, _args, options = {}) {
+        // A broken client must fail this assertion, not hang the test indefinitely.
+        const timeout = setTimeout(() => {
+          stopped = true;
+          wake?.();
+        }, 100);
+        options.onSpawn?.({
+          write(line) {
+            const message = JSON.parse(line) as Record<string, unknown>;
+            writes.push(message);
+            if (message.method === "initialize") push({ id: message.id, result: {} });
+            if (message.method === "thread/start")
+              push({ id: message.id, result: { thread: { id: "thread-approval" } } });
+            if (message.method === "turn/start")
+              push({
+                id,
+                method,
+                params: { threadId: "thread-approval", turnId: "turn-1", itemId: "patch-1" },
+              });
+          },
+          end() {
+            stopped = true;
+            wake?.();
+          },
+          closed: Promise.resolve(),
+        });
+        try {
+          while (!stopped || replies.length) {
+            if (replies.length) yield { type: "stdout", line: replies.shift()! };
+            else await new Promise<void>((resolve) => (wake = resolve));
+          }
+          yield { type: "exit", code: 0, signal: null, durationMs: 0 };
+        } finally {
+          clearTimeout(timeout);
+        }
+      };
+      const events: HarnessEvent[] = [];
+      for await (const event of runCodexAppServer({
+        bin: "/fixture/codex",
+        args: [],
+        env: {},
+        spawn,
+        spec: HarnessRunSpec.parse({
+          session_id: "session-approval",
+          intent: "implement",
+          prompt: "Write a file",
+          cwd: process.cwd(),
+          access: "workspace_write",
+        }),
+      }))
+        events.push(event);
+      expect(writes.filter((message) => !message.method)).toEqual([
+        { id, ...(result ? { result } : { error }) },
+      ]);
+      expect(events).toContainEqual(expect.objectContaining({ type: "error", payload: { code } }));
+      expect(events.at(-1)).toMatchObject({
+        type: "completed",
+        payload: { harness_reported_error: true },
+      });
+    },
+  );
   it("preserves recorded native retries without inventing policy signals or counters", () => {
     for (const notification of retryNotifications) {
       const params = notification["params"] as Record<string, unknown>;
@@ -77,7 +208,10 @@ describe("Codex app-server transport", () => {
           };
           writes.push(request);
           if (request.method === "initialize") {
-            push({ id: request.id, result: {} });
+            push({
+              id: request.id,
+              result: { userAgent: "claudexor/0.162.1 (fixture) unknown (claudexor; 5.0.0)" },
+            });
           } else if (request.method === "thread/start") {
             push({ id: request.id, result: { thread: { id: "thread-1" } } });
             push({
@@ -143,7 +277,7 @@ describe("Codex app-server transport", () => {
     let first: HarnessEvent | undefined;
     let quota: HarnessEvent | undefined;
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec,
       env: {},
@@ -156,6 +290,7 @@ describe("Codex app-server transport", () => {
       }
     }
 
+    expect(first?.program).toMatchObject({ version: "0.162.1", versionSource: "vendor_stream" });
     expect(writes.map((request) => request.id).filter(Boolean)).toEqual([1, 2, 3]);
     expect(writes.map((request) => request.method)).toEqual([
       "initialize",
@@ -250,7 +385,7 @@ describe("Codex app-server transport", () => {
     };
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec: HarnessRunSpec.parse({
         session_id: "session-mcp-failure",
@@ -422,9 +557,29 @@ describe("Codex app-server transport", () => {
         "session-map",
         state,
       ),
-    ).toMatchObject([
-      { type: "file_change", payload: { path: "one.ts" } },
-      { type: "file_change", payload: { path: "two.ts" } },
+    ).toEqual([
+      expect.objectContaining({
+        type: "file_change",
+        payload: expect.objectContaining({ path: "one.ts" }),
+        tool: {
+          name: "apply_patch",
+          kind: "file",
+          use_id: "patch-1",
+          target: "one.ts",
+          phase: "completed",
+        },
+      }),
+      expect.objectContaining({
+        type: "file_change",
+        payload: expect.objectContaining({ path: "two.ts" }),
+        tool: {
+          name: "apply_patch",
+          kind: "file",
+          use_id: "patch-1",
+          target: "two.ts",
+          phase: "completed",
+        },
+      }),
     ]);
   });
 
@@ -543,7 +698,7 @@ describe("Codex app-server transport", () => {
     });
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec,
       env: {},
@@ -661,7 +816,7 @@ describe("Codex app-server transport", () => {
     });
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec,
       env: {},
@@ -822,7 +977,7 @@ describe("Codex app-server transport", () => {
     const controller = new CodexAppServerController();
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec,
       env: {},
@@ -934,7 +1089,7 @@ describe("Codex app-server transport", () => {
     const events: HarnessEvent[] = [];
     const collect = (async () => {
       for await (const event of runCodexAppServer({
-        bin: "codex",
+        bin: "/fixture/codex",
         args: [],
         spec,
         env: {},
@@ -1023,7 +1178,7 @@ describe("Codex app-server transport", () => {
       };
       const events: HarnessEvent[] = [];
       for await (const event of runCodexAppServer({
-        bin: "codex",
+        bin: "/fixture/codex",
         args: [],
         spec: HarnessRunSpec.parse({
           session_id: "session-system-error",
@@ -1109,7 +1264,7 @@ describe("Codex app-server transport", () => {
     };
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec: HarnessRunSpec.parse({
         session_id: "session-survivor",
@@ -1189,7 +1344,7 @@ describe("Codex app-server transport", () => {
     });
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec,
       env: {},
@@ -1428,7 +1583,7 @@ describe("Codex live app-server events and messages", () => {
     const watchers: Array<{ match: (event: HarnessEvent) => boolean; resolve: () => void }> = [];
     const done = (async () => {
       for await (const event of runCodexAppServer({
-        bin: "codex",
+        bin: "/fixture/codex",
         args: [],
         spec,
         env: {},
@@ -1894,7 +2049,7 @@ describe("Codex app-server root-thread ownership (native sub-agents)", () => {
   ): Promise<HarnessEvent[]> {
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec: HarnessRunSpec.parse({
         session_id: "session-subagents",
@@ -2337,7 +2492,7 @@ describe("Codex app-server root-thread ownership (native sub-agents)", () => {
     const events: HarnessEvent[] = [];
     let steered: Promise<unknown> | undefined;
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec: HarnessRunSpec.parse({
         session_id: "session-subagents",

@@ -114,7 +114,7 @@ describe("HarnessGateway auth readiness projection", () => {
     ]);
   });
 
-  it("routableIntents is EMPTY for a degraded harness and doctor-gated for an ok one (W_readiness)", async () => {
+  it("routableIntents (Auto eligibility) is EMPTY for a degraded harness and doctor-gated for an ok one (W_readiness)", async () => {
     const make = (id: string, status: "ok" | "degraded"): HarnessAdapter =>
       ({
         id,
@@ -148,8 +148,61 @@ describe("HarnessGateway auth readiness projection", () => {
     // ok: routable mirrors the doctor-enabled intents.
     expect(ok?.routableIntents.length).toBeGreaterThan(0);
     expect(ok?.routableIntents).toEqual(ok?.enabledIntents);
-    // degraded: intents may be declared/enabled, but NOTHING routes (incl. write intents).
+    // degraded: intents stay enabled for explicit selection, but nothing routes
+    // automatically (incl. write intents).
     expect(degraded?.routableIntents).toEqual([]);
+  });
+
+  it("a degraded route keeps its doctor-enabled intents and reasons for explicit selection, never for Auto (#133)", async () => {
+    // Raw-API shape: a remote route that cannot read files, key present but
+    // unsmoked, whose doctor still enables the roles it can serve.
+    const remote = {
+      id: "remote-degraded",
+      discover: async () =>
+        HarnessManifest.parse({
+          id: "remote-degraded",
+          display_name: "Remote",
+          kind: "remote_api",
+          provider_family: "unknown",
+          capabilities: {
+            plan: true,
+            implement: true,
+            implementation_transport: "git_patch_envelope",
+            review: true,
+            synthesize: true,
+            read_files: false,
+          },
+          access_profiles_supported: ["readonly"],
+        }),
+      doctor: async () =>
+        ConformanceReport.parse({
+          harness_id: "remote-degraded",
+          status: "degraded",
+          enabled_intents: ["implement", "plan", "spec", "review", "synthesize", "explain"],
+          disabled_intents: ["create_from_scratch", "repair", "verify", "audit"],
+          reasons: ["key present but route unproven (no isolated smoke)"],
+        }),
+      run: async function* () {
+        /* not used */
+      },
+    } satisfies HarnessAdapter;
+    const [row] = await new HarnessGateway(new Map([[remote.id, remote]])).statusAll({
+      cwd: "/repo",
+    });
+    expect(row?.status).toBe("degraded");
+    expect(row?.available).toBe(true);
+    // Explicit selection: every doctor-enabled role, Ask included without read_files.
+    expect(row?.enabledIntents).toEqual([
+      "plan",
+      "spec",
+      "implement",
+      "review",
+      "synthesize",
+      "explain",
+    ]);
+    expect(row?.reasons).toEqual(["key present but route unproven (no isolated smoke)"]);
+    // Auto pool: never.
+    expect(row?.routableIntents).toEqual([]);
   });
 
   it("targets one harness/source without calling discover or unrelated adapters", async () => {

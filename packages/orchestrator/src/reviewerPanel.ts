@@ -23,7 +23,6 @@ import type {
   CredentialProfile,
   EffortHint,
   Intent,
-  ModelInventoryAbsence,
   ProviderFamily,
 } from "@claudexor/schema";
 import {
@@ -32,13 +31,22 @@ import {
   knownModelIdsForRoute,
 } from "@claudexor/schema";
 import type { HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, hasModelInventoryForRoute, validateModel } from "@claudexor/core";
+import {
+  HarnessUnavailableError,
+  ModelCatalogUnavailableError,
+  hasModelInventoryForRoute,
+  validateModel,
+  validateModelOnUnreadCatalog,
+} from "@claudexor/core";
 import { WorkspaceManager } from "@claudexor/workspace";
-import type { ReviewerSpec } from "@claudexor/review";
+import { CANNOT_READ_EVIDENCE, admitFileReader, type ReviewerSpec } from "@claudexor/review";
 import { reviewerEffortVerdict } from "./reviewerEffort.js";
+import {
+  listModelIdsWithRetry,
+  readAutoModelInventory,
+  type AutoModelInventory,
+} from "./reviewerInventory.js";
 import { safeErrorMessage } from "./runSupport.js";
-
-const MODEL_INVENTORY_RETRY_DELAY_MS = 250;
 
 interface PanelHarnessSettings {
   enabled?: boolean;
@@ -72,35 +80,13 @@ function discloseAutoSkip(deps: ReviewerPanelDeps, harnessId: string, reason: st
   deps.onIgnoredSetting?.(`reviewer family '${harnessId}' skipped: ${reason}`);
 }
 
-type AutoModelInventory =
-  | { status: "available"; ids: Set<string>; source: "api" | "manifest" }
-  | { status: "unknown"; reason: string };
-
-async function readAutoModelInventory(
-  adapter: HarnessAdapter,
-  input: Parameters<NonNullable<HarnessAdapter["models"]>>[0],
-): Promise<AutoModelInventory> {
-  if (typeof adapter.models !== "function")
-    return { status: "unknown", reason: "inventory not enumerable" };
-  try {
-    const models = await adapter.models(input);
-    // The adapter contract is fail-soft: [] means that the provider could not
-    // establish an inventory as often as it means a genuinely empty catalog.
-    // Auto selection must never turn that uncertainty into a model mismatch.
-    if (models.length === 0) return { status: "unknown", reason: "inventory unavailable" };
-    return { status: "available", ids: new Set(models.map((model) => model.id)), source: "api" };
-  } catch (error) {
-    return { status: "unknown", reason: `inventory unavailable: ${safeErrorMessage(error)}` };
-  }
-}
-
 export async function resolveExplicitReviewerPanel(
   deps: ReviewerPanelDeps,
   panel: ControlReviewerPanelEntry[],
 ): Promise<ReviewerSpec[]> {
   const { cwd, registry, harnessSettings } = deps;
   const known = [...registry.keys()].sort().join(", ");
-  const modelInventory = new Map<string, Set<string>>();
+  const modelInventory = new Map<string, Awaited<ReturnType<typeof listModelIdsWithRetry>>>();
   const statusByRoute = new Map<
     string,
     {
@@ -205,6 +191,12 @@ export async function resolveExplicitReviewerPanel(
             `reviewer harness '${entry.harness}' is a fake harness and cannot be used in reviewer panels`,
           );
         }
+        // After the account and any doctor probe above; before the doctor verdict and any model check.
+        if (!admitFileReader(adapter, manifest)) {
+          throw new HarnessUnavailableError(
+            `reviewer harness '${entry.harness}' ${CANNOT_READ_EVIDENCE}`,
+          );
+        }
         if (status.status !== "ok") {
           const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
           throw new HarnessUnavailableError(
@@ -220,6 +212,7 @@ export async function resolveExplicitReviewerPanel(
             `reviewer harness '${entry.harness}' cannot perform readonly review`,
           );
         }
+        const inventoryKey = `${entry.harness}\0${authPreference}\0${credentialProfile?.profile_id ?? "default"}`;
         if (requestedModel) {
           const route = credentialProfile
             ? credentialProfileAuthRoute(credentialProfile)
@@ -236,6 +229,7 @@ export async function resolveExplicitReviewerPanel(
               knownModelIdsForRoute(manifest.capabilities.known_models, route),
               "manifest",
               manifest.capabilities.model_inventory_absence ?? "authoritative",
+              { refusedVariants: manifest.capabilities.model_refused_variants ?? [] },
             );
             if (check.status !== "ok") {
               if (!entry.credentialProfileId && credentialProfile && deps.resolveReviewerProfile) {
@@ -252,11 +246,10 @@ export async function resolveExplicitReviewerPanel(
             // presence only, so a miss (and an empty answer) forwards the
             // explicit model to the vendor instead of refusing it here.
             const absence = manifest.capabilities.model_inventory_absence ?? "authoritative";
-            const inventoryKey = `${entry.harness}\0${authPreference}\0${credentialProfile?.profile_id ?? "default"}`;
             if (!modelInventory.has(inventoryKey)) {
               modelInventory.set(
                 inventoryKey,
-                await listModelIdsWithRetry(adapter.models.bind(adapter), {
+                await listModelIdsWithRetry(adapter, {
                   cwd,
                   authPreference,
                   credentialProfile,
@@ -267,13 +260,35 @@ export async function resolveExplicitReviewerPanel(
                 }),
               );
             }
-            const models = modelInventory.get(inventoryKey);
-            const check = validateModel(requestedModel, [...(models ?? [])], "api", absence);
-            if (models && check.status !== "ok") {
+            const inventory = modelInventory.get(inventoryKey)!;
+            const refusedVariants = manifest.capabilities.model_refused_variants ?? [];
+            // A failed read is no list: never reported as absent (#393, decision A).
+            const check =
+              "failure" in inventory
+                ? validateModelOnUnreadCatalog(requestedModel, inventory.failure, absence, {
+                    refusedVariants,
+                  })
+                : validateModel(requestedModel, [...inventory.ids], "api", absence, {
+                    catalogRead: inventory.catalogRead,
+                    routingVariants: manifest.capabilities.model_routing_variants ?? [],
+                    refusedVariants,
+                  });
+            // A reviewer spawn skips the per-spawn gate: its preflight event says it.
+            if (check.status === "ok" && check.unverified && check.message)
+              deps.onIgnoredSetting?.(
+                `reviewer '${entry.harness}' model '${requestedModel}': ${check.message}`,
+              );
+            if (check.status !== "ok") {
               if (!entry.credentialProfileId && credentialProfile && deps.resolveReviewerProfile) {
                 excludedProfileIds.add(credentialProfile.profile_id);
                 continue;
               }
+              const refusal = `reviewer harness '${entry.harness}' refused requested model '${requestedModel}': ${check.message}`;
+              if (check.catalogFailure)
+                throw new ModelCatalogUnavailableError(refusal, check.catalogFailure);
+              if ("failure" in inventory || check.refusedVariant)
+                throw new HarnessUnavailableError(refusal);
+              const models = inventory.ids;
               const available = [...models].slice(0, 80).join(", ");
               const suffix = models.size > 80 ? `, ... (${models.size} total)` : "";
               throw new HarnessUnavailableError(
@@ -353,6 +368,10 @@ export async function resolveAutoReviewerPanel(
         discloseAutoSkip(deps, adapter.id, "fake harness");
         continue;
       }
+      if (!admitFileReader(adapter, m)) {
+        discloseAutoSkip(deps, adapter.id, `it ${CANNOT_READ_EVIDENCE}`);
+        continue;
+      }
       if (seen.has(m.provider_family)) continue;
       // Per-harness settings gate reviewers before doctor/model probes: a disabled
       // harness must not spend auth/API-key readiness checks.
@@ -418,7 +437,7 @@ export async function resolveAutoReviewerPanel(
           const route = credentialProfile
             ? credentialProfileAuthRoute(credentialProfile)
             : estimateEffectiveAuthRoute(authPreference, report.auth_sources);
-          const inventory = hasModelInventoryForRoute(
+          const inventory: AutoModelInventory = hasModelInventoryForRoute(
             adapter,
             m.capabilities.model_inventory_routes,
             route,
@@ -436,6 +455,7 @@ export async function resolveAutoReviewerPanel(
                       status: "available" as const,
                       ids: new Set(ids),
                       source: "manifest" as const,
+                      catalogRead: false,
                     }
                   : {
                       status: "unknown" as const,
@@ -453,6 +473,11 @@ export async function resolveAutoReviewerPanel(
             [...inventory.ids],
             inventory.source,
             "authoritative",
+            {
+              catalogRead: inventory.catalogRead,
+              routingVariants: m.capabilities.model_routing_variants ?? [],
+              refusedVariants: m.capabilities.model_refused_variants ?? [],
+            },
           );
           if (check.status !== "ok") {
             if (credentialProfile && deps.resolveReviewerProfile) {
@@ -496,51 +521,4 @@ export async function resolveAutoReviewerPanel(
     reviewHome.dispose();
   }
   return specs;
-}
-
-/** One retry with a short delay: transient inventory hiccups (cold auth,
- * slow first call) must not fail a panel that would succeed a moment later —
- * but a persistently empty/erroring inventory still refuses loudly, UNLESS the
- * producer declared its absences advisory: an empty answer from such a source
- * proves nothing, so it is returned as the empty set and the caller's shared
- * decision forwards the explicit model to the vendor (a second probe would ask
- * the same source the same unanswerable question). A thrown call is still a
- * failure, not an answer, and still refuses. */
-async function listModelIdsWithRetry(
-  listModels: NonNullable<HarnessAdapter["models"]>,
-  input: {
-    cwd: string;
-    authPreference: AuthPreference;
-    credentialProfile?: CredentialProfile | null;
-    env: () => Record<string, string>;
-    harnessId: string;
-    requestedModel: string;
-    absence: ModelInventoryAbsence;
-  },
-): Promise<Set<string>> {
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const models = await listModels({
-        cwd: input.cwd,
-        env: input.env(),
-        authPreference: input.authPreference,
-        ...(input.credentialProfile ? { credentialProfile: input.credentialProfile } : {}),
-      });
-      if (models.length === 0) {
-        if (input.absence === "advisory") return new Set();
-        throw new Error("model inventory was empty");
-      }
-      return new Set(models.map((m) => m.id));
-    } catch (err) {
-      lastError = err;
-      if (attempt === 0) {
-        await new Promise((resolve) => setTimeout(resolve, MODEL_INVENTORY_RETRY_DELAY_MS));
-      }
-    }
-  }
-  const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown");
-  throw new HarnessUnavailableError(
-    `reviewer harness '${input.harnessId}' could not verify requested model '${input.requestedModel}' because its model inventory call failed after retry: ${detail}; run \`claudexor models --harness ${input.harnessId}\``,
-  );
 }

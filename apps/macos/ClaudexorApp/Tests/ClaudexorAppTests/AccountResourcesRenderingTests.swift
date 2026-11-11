@@ -14,12 +14,21 @@ struct AccountResourcesRenderingTests {
         let previousPolicy = application.activationPolicy()
         application.setActivationPolicy(.prohibited)
         defer { application.setActivationPolicy(previousPolicy) }
-        let rows = try (0..<24).map(AccountResourcesFixtures.row)
+        let regularRows = try (0..<24).map(AccountResourcesFixtures.row)
         let quota = try AccountResourcesFixtures.quota()
-        let snapshot = try #require(quota.resources?.first)
-        ResourceAppProtocol.handler = { _ in (200, Data(AccountResourcesFixtures.catalog.utf8)) }
-        defer { ResourceAppProtocol.handler = nil }
-        let capabilities = try await ResourceAppProtocol.gateway().accountResourceCapabilities()
+        let regularSnapshot = try #require(quota.resources?.first)
+        let cursorURL = try #require(Bundle.module.url(forResource: "cursor-resources-freshness", withExtension: "json"))
+        let cursor = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(contentsOf: cursorURL))
+        let cursorSnapshot = try #require(cursor.resources?.first)
+        // Separate synthetic absence exercises its coexistence with real producer resources.
+        let cursorAbsence = try JSONDecoder().decode(QuotaAbsence.self, from: Data(#"{"subject":{"harness":"cursor","credential_route":"vendor_native","subject_id":"chosen","plan_label":null},"reason":"no_source","detail":null,"observed_at":"2026-10-15T13:04:58.000Z"}"#.utf8))
+        let cursorRow = AccountRowModel(id: "cursor-fixture", displayName: "Cursor fixture",
+            harnessId: "cursor", family: .cursor, readiness: .ready, verified: true,
+            profileId: "chosen", detail: "Verified", quotaGroups: [], enabled: true, nextUp: false, identity: nil)
+        let fixture = ResourceAppFixture()
+        fixture.handler = { _ in (200, Data(AccountResourcesFixtures.catalog.utf8)) }
+        defer { fixture.handler = nil }
+        let capabilities = try await fixture.gateway().accountResourceCapabilities()
         let scenarios: [(String, Int?, [AccountResetAttempt])] = [
             ("collapsed-24", nil, []), ("expanded", 0, []),
             ("unconfirmed", 0, [try AccountResourcesFixtures.attempt()]),
@@ -28,26 +37,34 @@ struct AccountResourcesRenderingTests {
             ("scrolled-bottom-24", nil, []),
             ("full-details", 0, []),
             ("source-details", 0, []),
+            ("cursor-collapsed", nil, []),
+            ("cursor-full-details", 0, []),
+            ("cursor-source-details", 0, []),
         ]
         var files: [String] = []
         var controlEvidence: [[String: Any]] = []
         for (scenario, expanded, attempts) in scenarios {
+            let isCursor = scenario.hasPrefix("cursor-")
+            let rows = isCursor ? [cursorRow] : regularRows
+            let snapshot = isCursor ? cursorSnapshot : regularSnapshot
             for (name, appearance, scheme) in [("light", NSAppearance.Name.aqua, ColorScheme.light),
                                                 ("dark", .darkAqua, .dark)] {
-                let height: CGFloat = scenario == "full-details" ? 820 : 700
+                let height: CGFloat = scenario == "cursor-full-details" ? 1200 : scenario == "full-details" ? 820 : 700
                 var refreshInvocations = 0
                 var rootEnabled: Bool?
                 var controlActiveState: String?
                 let content = Group {
-                    if scenario == "source-details" {
+                    if scenario.hasSuffix("source-details") {
                         VStack {
-                            AccountResourceSourceDetails(groups: rows[0].quotaGroups, snapshot: snapshot, expanded: true)
+                            AccountResourceSourceDetails(groups: rows[0].quotaGroups, snapshot: snapshot,
+                                absences: isCursor ? [cursorAbsence] : [], expanded: true)
                             Spacer(minLength: 0)
                         }.padding(Theme.Spacing.lg).frame(width: 400, height: height)
                             .background(Color(nsColor: .windowBackgroundColor))
-                    } else if scenario == "full-details" {
+                    } else if scenario.hasSuffix("full-details") {
                         VStack {
                             AccountResourceDetails(row: rows[0], snapshot: snapshot, capabilities: capabilities,
+                                absences: isCursor ? [cursorAbsence] : [],
                                 refresh: { refreshInvocations += 1 }, recover: { _ in }, reset: { _, _ in })
                                 .frame(width: 400 - 2 * Theme.Spacing.lg)
                             Spacer(minLength: 0)
@@ -88,7 +105,7 @@ struct AccountResourcesRenderingTests {
                 #expect(host.frame.width == 400 && host.frame.height == height)
                 #expect(!window.isVisible && !window.isKeyWindow)
                 #expect(rootEnabled == true)
-                if scenario == "full-details" {
+                if scenario.hasSuffix("full-details") {
                     let nodes = accessibilityNodes(host)
                     // Unshown SwiftUI hosts omit button AX actions. Record the
                     // actual environment/window evidence; do not claim a click.
@@ -106,6 +123,7 @@ struct AccountResourcesRenderingTests {
         if let root = ProcessInfo.processInfo.environment["CX_RESOURCE_RENDER_OUTPUT"] {
             let manifest: [String: Any] = ["files": files, "account_count": 24, "width_points": 400,
                 "height_points": 700, "full_details_height_points": 820,
+                "cursor_account_count": 1, "cursor_full_details_height_points": 1200,
                 "capture": "NSHostingView.cacheDisplay", "app_model": false,
                 "window_shown": false, "provider_actions": false, "control_evidence": controlEvidence]
             try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])

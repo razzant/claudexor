@@ -45,7 +45,8 @@
                   "capability",
                   "access",
                   "web",
-                  "attachment"
+                  "attachment",
+                  "model"
                 ],
                 "description": "The routing stage at which an auto-pool lane was dropped."
               },

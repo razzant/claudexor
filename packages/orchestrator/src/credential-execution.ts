@@ -43,22 +43,20 @@ export function createCredentialExecutionObserver(
       const binding = bindings.get(route);
       if (!binding) return;
       if (event.observed_model) observedModel = event.observed_model;
-      const category = event.status?.error_category;
-      if (category) {
-        const refusal = classifyStatusError(category, event.status?.retry_delay_ms ?? null);
-        if (refusal) {
-          const value = credentialStreamRefusal({
-            harnessId: subject.harnessId,
-            profileId: subject.profileId,
-            model: subject.requestedModel,
-            route,
-            refusal,
-            now: new Date(event.ts),
-          });
-          if (value) {
-            pending.set(route, value);
-            cleanTerminal = false;
-          }
+      const refusal = classifyStatusError(event);
+      if (refusal) {
+        const value = credentialStreamRefusal({
+          harnessId: subject.harnessId,
+          profileId: subject.profileId,
+          model: subject.requestedModel,
+          route,
+          refusal,
+          now: new Date(event.ts),
+        });
+        if (value) {
+          // A later refusal of one model never narrows a credential-wide one.
+          if (value.model === null || pending.get(route)?.model !== null) pending.set(route, value);
+          cleanTerminal = false;
         }
       }
       const served =

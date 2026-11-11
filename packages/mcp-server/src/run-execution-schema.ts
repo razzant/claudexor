@@ -1,4 +1,11 @@
-import { WorkspaceKind } from "@claudexor/schema";
+import { AuxiliaryWritableRootsRequest, WorkspaceKind } from "@claudexor/schema";
+
+/** Shared by the run tools and the thread-turn tool (a per-turn grant). */
+export const auxiliaryWritableRootsSchema = {
+  type: "array",
+  items: { type: "string", minLength: 1 },
+  description: AuxiliaryWritableRootsRequest.description,
+};
 
 /** Public ControlRunStartRequest.execution spelling; semantic checks use RunExecution. */
 export const runExecutionSchema = {
@@ -23,5 +30,6 @@ export const runExecutionSchema = {
       description:
         "Selected relative files/directories; '.' selects the whole folder. No implicit whole-folder claim.",
     },
+    auxiliaryWritableRoots: auxiliaryWritableRootsSchema,
   },
 };

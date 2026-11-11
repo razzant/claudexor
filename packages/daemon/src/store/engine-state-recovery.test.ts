@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as util from "@claudexor/util";
 import {
   ControlJournalInspection,
@@ -38,6 +38,7 @@ import {
 import { EngineStore } from "./store.js";
 import { createPartition } from "./partitions.js";
 import { globalGeneration, setGlobalGenerationInTx } from "./generations.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
@@ -57,10 +58,12 @@ const opened: EngineStore[] = [];
 beforeEach(() => {
   root = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-engine-recovery-")));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   vi.restoreAllMocks();
   for (const store of opened.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 const TIME = "2026-10-10T12:00:00.000Z";
 const original = new Map(ENGINE_STATE_FILES.map((name) => [name, Buffer.from(`corrupt ${name}`)]));

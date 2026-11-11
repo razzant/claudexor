@@ -1,10 +1,11 @@
-import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
+import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { execFileSync, spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -31,6 +32,7 @@ import { registerConfigDirProfile } from "./profile-registration.js";
 import { attachSetupJob } from "./setup-attach-command.js";
 import { setupJobControlServices } from "./setup-job-control-services.js";
 import { createSetupJobManager } from "./setup-jobs.js";
+import { SqlSetupLifecycleSlot } from "./sql-setup-lifecycle.js";
 
 // #363 consumer evidence over REAL processes, offline: `claudexor profiles
 // login cursor <id>` creates a client_pty setup job on the real control route,
@@ -60,6 +62,8 @@ function writeVendor(): void {
     vendor.bin,
     [
       "#!/bin/sh",
+      '[ "$1" != --disable-auto-update ] || shift',
+      'if [ "$1" = --version ]; then echo 2026.11.10-abc123; exit 0; fi',
       `D="${d}"`,
       'if [ "$1" = status ]; then',
       '  echo status >> "$D/status-calls"',
@@ -118,6 +122,49 @@ async function until(label: string, predicate: () => boolean, ms = 10_000): Prom
 const TERMINAL = ["succeeded", "failed", "cancelled", "timed_out", "interrupted_unknown"];
 type Manager = ReturnType<typeof createSetupJobManager>;
 
+/** Teardown only: end the runner groups this fixture's own jobs recorded that
+ * are still running, e.g. after a restart failed part-way and no manager knows
+ * them. Uses the measured process-identity service, which signals only while the
+ * recorded leader identity still owns the group. Returns every outcome that is
+ * not proven ended; an unknown state is reported, never treated as success. */
+async function endRecordedRunnerGroups(root: string): Promise<string[]> {
+  const unproven: string[] = [];
+  const artifacts = join(root, "setup-artifacts");
+  if (!existsSync(artifacts)) return unproven;
+  for (const job of readdirSync(artifacts)) {
+    const statePath = join(artifacts, job, "runner-state.json");
+    if (!existsSync(statePath)) continue; // this job never recorded a runner group
+    let handle: ReturnType<typeof parseProcessGroupHandle>;
+    try {
+      const state = JSON.parse(readFileSync(statePath, "utf8")) as { processGroup: unknown };
+      handle = parseProcessGroupHandle(state.processGroup);
+    } catch (error) {
+      unproven.push(`${job}: runner state unreadable (${String(error)})`);
+      continue;
+    }
+    const probe = defaultProcessGroupService.probeEmpty(handle);
+    if (probe.status === "empty") continue;
+    if (probe.status !== "nonempty") {
+      unproven.push(`${job}: group ${handle.pgid} ${probe.status} (${probe.reason})`);
+      continue;
+    }
+    const signal = defaultProcessGroupService.signal(handle, "SIGKILL");
+    if (signal.status === "empty") continue;
+    if (signal.status !== "sent") {
+      unproven.push(`${job}: group ${handle.pgid} not signalled (${signal.reason})`);
+      continue;
+    }
+    try {
+      await until(`runner group ${handle.pgid} to end`, () => {
+        return defaultProcessGroupService.probeEmpty(handle).status === "empty";
+      });
+    } catch (error) {
+      unproven.push(`${job}: group ${handle.pgid} after SIGKILL: ${String(error)}`);
+    }
+  }
+  return unproven;
+}
+
 interface Daemon {
   root: string;
   manager: Manager;
@@ -138,9 +185,11 @@ async function withDaemon<T>(
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx363-daemon-")));
   const bumps: string[] = [];
   const quota = { noteCredentialChange: () => {} };
+  // The daemon's SQL setup store over the engine store this fixture opens and closes.
+  let sql = await sqlFixture(root);
   const build = () =>
     createSetupJobManager({
-      store: new SetupJobStore(root),
+      store: new SqlSetupLifecycleSlot(root, sql.graph).current(),
       rootDir: root,
       runnerPath: RUNNER,
       monitorPollMs: 20,
@@ -198,8 +247,15 @@ async function withDaemon<T>(
       // Logins survive an ordinary daemon stop (v3.0.3 S5).
       bound = null;
       await manager.shutdown();
-      (manager._store as SetupJobStore).journal.close();
+      const previous = sql.store;
+      await sql.close();
       await beforeStart?.();
+      // A real restart: a new engine store over the same database, never the live one.
+      sql = await sqlFixture(root);
+      // A boolean on purpose: Vitest formats a failed toBe's operands after the
+      // teardown closed the store, and that formatting would replace this failure.
+      expect(sql.store === previous, "the restart reused the live engine store").toBe(false);
+      expect(sql.store.storeId).toBe(previous.storeId);
       manager = build();
       await manager.start();
       bound = manager;
@@ -208,11 +264,29 @@ async function withDaemon<T>(
   try {
     return await fn(daemon);
   } finally {
+    // Every teardown step runs. A step's failure is reported beside the test's
+    // own result (soft), never instead of it, and fails an otherwise green test.
+    const teardown: string[] = [];
+    const attempt = async (step: string, action: () => unknown) => {
+      try {
+        await action();
+      } catch (error) {
+        teardown.push(`${step}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
     bindCredentialMutationWindow(null);
-    for (const job of manager.list({ active: true })) await manager.cancel({ jobId: job.jobId });
-    await manager.shutdown();
-    (manager._store as SetupJobStore).journal.close();
-    await server.stop();
+    // A restart that failed part-way leaves `bound` unset and its manager
+    // stopped; its jobs end through their recorded runner groups below.
+    if (bound)
+      await attempt("cancel active jobs", async () => {
+        for (const job of manager.list({ active: true }))
+          await manager.cancel({ jobId: job.jobId });
+      });
+    await attempt("manager shutdown", () => manager.shutdown());
+    await attempt("store close", () => sql.close());
+    await attempt("control API stop", () => server.stop());
+    teardown.push(...(await endRecordedRunnerGroups(root)));
+    expect.soft(teardown, "teardown not proven complete").toEqual([]);
   }
 }
 
@@ -298,7 +372,7 @@ describe("profiles login as a daemon setup job: credential-mutation window over 
     if (!existsSync(RUNNER)) throw new Error(`build @claudexor/cli first: ${RUNNER} is missing`);
     writeVendor();
   });
-  afterAll(() => rmSync(vendor.dir, { recursive: true, force: true }));
+  afterAll(() => rmSync(vendor.dir, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
   beforeEach(() => {
     prevConfig = process.env.CLAUDEXOR_CONFIG_DIR;
     configDir = realpathSync(mkdtempSync(join(tmpdir(), "cx363-config-")));
@@ -312,7 +386,7 @@ describe("profiles login as a daemon setup job: credential-mutation window over 
     else process.env.CLAUDEXOR_CONFIG_DIR = prevConfig;
     vi.restoreAllMocks();
     rmSync(configDir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("a completed login voids everything observed before it and is verified by the daemon", async () => {
     await withDaemon({}, async (daemon) => {

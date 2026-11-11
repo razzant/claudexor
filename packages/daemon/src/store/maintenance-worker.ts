@@ -1,6 +1,6 @@
 import { lstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { isMainThread, parentPort, workerData, type MessagePort } from "node:worker_threads";
 import { BLOB_OWNER_PREDICATE } from "./blob-files.js";
 import { mapStoreError, sqlitePrimaryCode, StoreCorruptError } from "./errors.js";
@@ -9,6 +9,7 @@ import { loadEngineRuntime } from "./runtime.js";
 import { runLegacyImport } from "./importer.js";
 import { discoverLegacyPartitions } from "./import-discovery.js";
 import type { LegacyImportWorkerData } from "./import-worker.js";
+import { readThreadClosure, type ThreadClosure } from "./thread-closure.js";
 import type {
   ExportReport,
   IntegrityReport,
@@ -118,6 +119,40 @@ function sweepCandidates(
   return result;
 }
 
+/**
+ * One thread's closure in one read-only snapshot. Its first read fixes the snapshot
+ * and proves which store it is; every closure row then comes from that snapshot, so
+ * no commit in between can tear it. It writes nothing and always ends here, so the
+ * WAL is never held past this request.
+ */
+function threadClosure(
+  db: DatabaseSync,
+  prepare: (sql: string) => StatementSync,
+  request: Extract<MaintenanceRequest, { kind: "thread_closure" }>,
+  barrier: SharedArrayBuffer | undefined,
+): ThreadClosure | null {
+  db.exec("BEGIN");
+  try {
+    const identity = prepare("SELECT value FROM meta WHERE key='store_id'").get() as
+      { value: string } | undefined;
+    if ((identity?.value ?? null) !== request.storeId)
+      throw new Error("the maintenance snapshot does not read this engine store");
+    if (barrier) parkAtBarrier(barrier);
+    return readThreadClosure({ prepare, storeId: request.storeId ?? undefined }, request.threadId);
+  } finally {
+    if (db.isTransaction) db.exec("ROLLBACK");
+  }
+}
+
+/** Test seam (`MaintenanceWorkerHooks.closureBarrier`): wait for this arrival's release. */
+function parkAtBarrier(buffer: SharedArrayBuffer): void {
+  const slots = new Int32Array(buffer);
+  const arrival = Atomics.add(slots, 0, 1) + 1;
+  Atomics.notify(slots, 0);
+  for (let released = Atomics.load(slots, 1); released < arrival; released = Atomics.load(slots, 1))
+    Atomics.wait(slots, 1, released);
+}
+
 /** `node:sqlite` is imported lazily: the daemon package must load on a Node without it. */
 export async function runMaintenanceWorker(
   port: MessagePort,
@@ -125,6 +160,13 @@ export async function runMaintenanceWorker(
 ): Promise<void> {
   const { sqlite } = await loadEngineRuntime();
   const db: DatabaseSync = new sqlite.DatabaseSync(data.dbPath, { readOnly: true, timeout: 0 });
+  // Cached per SQL text for the connection's life, as the writer caches its own.
+  const statements = new Map<string, StatementSync>();
+  const prepare = (sql: string): StatementSync => {
+    let statement = statements.get(sql);
+    if (!statement) statements.set(sql, (statement = db.prepare(sql)));
+    return statement;
+  };
   port.on("message", (request: MaintenanceRequest) => {
     let response: MaintenanceResponse;
     try {
@@ -137,6 +179,13 @@ export async function runMaintenanceWorker(
           break;
         case "sweep_candidates":
           response = { id: request.id, ok: true, result: sweepCandidates(db, request) };
+          break;
+        case "thread_closure":
+          response = {
+            id: request.id,
+            ok: true,
+            result: threadClosure(db, prepare, request, data.hooks?.closureBarrier),
+          };
           break;
       }
     } catch (error) {

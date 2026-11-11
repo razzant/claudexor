@@ -1,0 +1,215 @@
+{
+  "generatedBy": ["createCursorParser", "harnessEventPayload"],
+  "source": "packages/harness-cursor/fixtures/stream/text-deltas.jsonl",
+  "rows": [
+    {
+      "seq": 1,
+      "ts": "2026-10-29T00:00:00.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:00.000Z",
+        "type": "started",
+        "title": "started",
+        "observed_model": "Auto",
+        "payload": { "native_session_id": "ses-text-deltas" }
+      }
+    },
+    {
+      "seq": 2,
+      "ts": "2026-10-29T00:00:01.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:01.000Z",
+        "type": "thinking",
+        "title": "UX and inter",
+        "text": "UX and inter",
+        "payload": { "delta": true }
+      }
+    },
+    {
+      "seq": 3,
+      "ts": "2026-10-29T00:00:02.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:02.000Z",
+        "type": "thinking",
+        "title": "action",
+        "text": "action",
+        "payload": { "delta": true }
+      }
+    },
+    {
+      "seq": 4,
+      "ts": "2026-10-29T00:00:03.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:03.000Z",
+        "type": "thinking",
+        "title": " ",
+        "text": " ",
+        "payload": { "delta": true }
+      }
+    },
+    {
+      "seq": 5,
+      "ts": "2026-10-29T00:00:04.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:04.000Z",
+        "type": "thinking",
+        "title": "plan · with authored punctuation.\n",
+        "text": "plan · with authored punctuation.\n",
+        "payload": { "delta": true }
+      }
+    },
+    {
+      "seq": 6,
+      "ts": "2026-10-29T00:00:05.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:05.000Z",
+        "type": "tool_call",
+        "title": "read",
+        "text": "read",
+        "tool": { "name": "read", "kind": "file", "use_id": "read-1", "target": "README.md" }
+      }
+    },
+    {
+      "seq": 7,
+      "ts": "2026-10-29T00:00:06.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:06.000Z",
+        "type": "tool_result",
+        "title": "tool_result",
+        "text": "tool_result",
+        "tool": {
+          "name": "read",
+          "kind": "file",
+          "use_id": "read-1",
+          "target": "README.md",
+          "status": "ok",
+          "content_summary": "{\"success\":{\"text\":\"fixture\"}}"
+        }
+      }
+    },
+    {
+      "seq": 8,
+      "ts": "2026-10-29T00:00:07.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:07.000Z",
+        "type": "message",
+        "title": "Final",
+        "text": "Final",
+        "payload": { "delta": true }
+      }
+    },
+    {
+      "seq": 9,
+      "ts": "2026-10-29T00:00:08.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:08.000Z",
+        "type": "message",
+        "title": " answer.",
+        "text": " answer.",
+        "payload": { "delta": true }
+      }
+    },
+    {
+      "seq": 10,
+      "ts": "2026-10-29T00:00:09.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:09.000Z",
+        "type": "message",
+        "title": "Final answer.",
+        "text": "Final answer.",
+        "payload": { "buffered": true, "model_call_id": "model-call-1" }
+      }
+    },
+    {
+      "seq": 11,
+      "ts": "2026-10-29T00:00:10.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:10.000Z",
+        "type": "message",
+        "title": "Final answer.",
+        "text": "Final answer."
+      }
+    },
+    {
+      "seq": 12,
+      "ts": "2026-10-29T00:00:11.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:11.000Z",
+        "type": "usage",
+        "title": "usage: 100 in / 20 out",
+        "usage": {
+          "input_tokens": 100,
+          "output_tokens": 20,
+          "input_token_usage": {
+            "total_tokens": null,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        }
+      }
+    },
+    {
+      "seq": 13,
+      "ts": "2026-10-29T00:00:12.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:12.000Z",
+        "type": "message",
+        "title": "Final answer.",
+        "text": "Final answer.",
+        "final": true,
+        "payload": { "final_source": "assistant_message" }
+      }
+    }
+  ]
+}

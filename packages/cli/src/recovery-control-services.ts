@@ -1,4 +1,8 @@
-import type { PartitionControlPort } from "@claudexor/daemon";
+import type {
+  JournalEventPage,
+  JournalEventPageRequest,
+  PartitionControlPort,
+} from "@claudexor/daemon";
 import type { ControlJournalValidation } from "@claudexor/schema";
 
 interface SetupReplacement {
@@ -15,7 +19,10 @@ export function recoveryControlServices(options: {
   afterQuarantine?(): Promise<void>;
 }) {
   return {
-    journalEvents: async (name: string, cursor?: string) => options.partition(name).events(cursor),
+    journalEvents: async (
+      name: string,
+      request?: JournalEventPageRequest,
+    ): Promise<JournalEventPage> => options.partition(name).events(request),
     recoveryInspectPartition: async (name: string) => options.partition(name).inspect(),
     recoveryValidatePartition: async (name: string) => {
       const result = await options.partition(name).validate();

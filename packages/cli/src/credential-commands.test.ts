@@ -32,7 +32,7 @@ describe("claudexor profiles add (INV-135)", () => {
     else process.env.CLAUDEXOR_CONFIG_DIR = prev;
     vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("registers a config_dir_login profile through the locked global-config owner", async () => {
     const code = await profilesCommand(parseArgs(["profiles", "add", "claude", "work"]), true);
@@ -76,6 +76,164 @@ describe("claudexor profiles add (INV-135)", () => {
     ).not.toBe(0);
     expect(loadConfig(noProjectRepoRoot()).global.credential_profiles).toHaveLength(0);
   });
+
+  it("labels the new profile with --display-name, on either side of the operands (#570)", async () => {
+    expect(
+      await profilesCommand(
+        parseArgs(["profiles", "add", "claude", "work", "--display-name", "Work laptop"]),
+        true,
+      ),
+    ).toBe(0);
+    expect(
+      await profilesCommand(
+        parseArgs(["profiles", "add", "--display-name", "Spare", "codex", "spare"]),
+        true,
+      ),
+    ).toBe(0);
+    const rows = loadConfig(noProjectRepoRoot()).global.credential_profiles;
+    expect(rows.map((row) => [row.harness_id, row.profile_id, row.display_name])).toEqual([
+      ["claude", "work", "Work laptop"],
+      ["codex", "spare", "Spare"],
+    ]);
+  });
+});
+
+/** The real rollback route and request schema on a loopback server (#570): it
+ * records what each command actually asks the daemon to reverse. Ephemeral
+ * port, never a real daemon or migration. */
+async function withRollbackDaemon<T>(
+  fn: (
+    ensureDaemon: () => Promise<{ addr: { baseUrl: string; token: string } }>,
+    bodies: unknown[],
+  ) => Promise<T>,
+): Promise<T> {
+  const bodies: unknown[] = [];
+  const token = "profile-rollback-fixture";
+  const server = new DaemonControlApiServer({
+    token,
+    daemon: {
+      enqueue: async () => ({ id: "unused", state: "queued" }),
+      status: async (id: string) => ({ id, state: "failed" }),
+      list: async () => [],
+      cancel: async () => ({ cancelled: true }),
+    } as never,
+    services: {
+      rollbackAccountsMigration: async (input: unknown) => {
+        bodies.push(input);
+        return { rolledBack: [] };
+      },
+    },
+  });
+  const { host, port } = await server.start();
+  try {
+    return await fn(async () => ({ addr: { baseUrl: `http://${host}:${port}`, token } }), bodies);
+  } finally {
+    await server.stop();
+  }
+}
+
+describe("claudexor profiles verb flags and the rollback operand (#570)", () => {
+  // A regression must fail here and never start a daemon: external ownership
+  // makes the real ensureDaemon attach-only, and this hermetic root has none.
+  beforeEach(() => vi.stubEnv("CLAUDEXOR_DAEMON_OWNER", "external"));
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  const captureStreams = () => {
+    const output = { stdout: "", stderr: "" };
+    vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+      output.stdout += String(chunk);
+      return true;
+    }) as never);
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+      output.stderr += String(chunk);
+      return true;
+    }) as never);
+    return output;
+  };
+
+  it.each<[string, string[], object]>([
+    ["one harness", ["codex"], { harnessId: "codex" }],
+    ["every migrated harness when the operand is absent", [], {}],
+  ])("asks the daemon to reverse %s", async (_scope, operands, body) => {
+    const output = captureStreams();
+    await withRollbackDaemon(async (ensureDaemon, bodies) => {
+      const code = await profilesCommandWithDeps(
+        parseArgs(["profiles", "rollback-migration", ...operands, "--json"]),
+        true,
+        { ensureDaemon },
+      );
+      expect(code).toBe(0);
+      expect(bodies).toEqual([body]);
+    });
+    expect(JSON.parse(output.stdout)).toEqual({ rolledBack: [] });
+  });
+
+  it.each([
+    ["empty", ""],
+    ["spaces", "   "],
+    ["tab", "\t"],
+    ["newline", "\n"],
+  ])("refuses an explicit operand of %s before reaching the daemon", async (_kind, operand) => {
+    const output = captureStreams();
+    const ensureDaemon = vi.fn();
+    const code = await profilesCommandWithDeps(
+      parseArgs(["profiles", "rollback-migration", operand, "--json"]),
+      true,
+      { ensureDaemon },
+    );
+    expect(code).toBe(2);
+    expect(ensureDaemon).not.toHaveBeenCalled();
+    expect(JSON.parse(output.stdout)).toMatchObject({
+      ok: false,
+      exitCode: 2,
+      code: "invalid_argument",
+    });
+    expect(output.stdout).toContain("rollback-migration [harness]");
+  });
+
+  it("keeps the refusal of an empty operand on stderr in human mode", async () => {
+    const output = captureStreams();
+    const ensureDaemon = vi.fn();
+    const code = await profilesCommandWithDeps(
+      parseArgs(["profiles", "rollback-migration", ""]),
+      false,
+      { ensureDaemon },
+    );
+    expect(code).toBe(2);
+    expect(ensureDaemon).not.toHaveBeenCalled();
+    expect(output.stdout).toBe("");
+    expect(output.stderr).toContain("rollback-migration [harness]");
+  });
+
+  it.each<[string, string[]]>([
+    // The value flag would eat the harness and leave an all-harness request.
+    ["rollback-migration", ["rollback-migration", "--display-name", "codex"]],
+    ["rollback-migration", ["rollback-migration", "codex", "--display-name", "x"]],
+    // A bare `profiles` means `list`.
+    ["list", ["--display-name", "x"]],
+    ["list", ["list", "--display-name", "x"]],
+    ["login", ["login", "claude", "work", "--display-name", "x"]],
+    ["enable", ["enable", "claude", "work", "--display-name", "x"]],
+    ["disable", ["disable", "claude", "work", "--display-name", "x"]],
+    ["remove", ["remove", "claude", "work", "--display-name", "x"]],
+    ["rm", ["rm", "claude", "work", "--display-name", "x"]],
+  ])("refuses --display-name where `%s` would ignore it: %j", async (verb, rest) => {
+    const output = captureStreams();
+    const deps = { daemonGet: vi.fn(), ensureDaemon: vi.fn(), spawnSync: vi.fn() };
+    const code = await profilesCommandWithDeps(
+      parseArgs(["profiles", ...rest, "--json"]),
+      true,
+      deps,
+    );
+    expect(code).toBe(2);
+    expect(JSON.parse(output.stdout).message).toContain(
+      `\`claudexor profiles ${verb}\`: --display-name`,
+    );
+    for (const dep of Object.values(deps)) expect(dep).not.toHaveBeenCalled();
+  });
 });
 
 type ScriptedJobState = "waiting_for_input" | "running" | "succeeded" | "failed" | "cancelled";
@@ -85,7 +243,11 @@ type ScriptedJobState = "waiting_for_input" | "running" | "succeeded" | "failed"
  * advances the script, cancel terminalizes it. Ephemeral port, never a real
  * daemon, no runner or vendor. */
 async function withScriptedSetupDaemon<T>(
-  script: { afterCreate: ScriptedJobState[]; onCancel?: ScriptedJobState },
+  script: {
+    afterCreate: ScriptedJobState[];
+    onCancel?: ScriptedJobState;
+    harness?: "cursor" | "grok";
+  },
   fn: (
     ensureDaemon: () => Promise<{ addr: { baseUrl: string; token: string } }>,
     calls: string[],
@@ -93,6 +255,7 @@ async function withScriptedSetupDaemon<T>(
   ) => Promise<T>,
 ): Promise<T> {
   const calls: string[] = [];
+  const harness = script.harness ?? "cursor";
   const requests: unknown[] = [];
   const steps = [...script.afterCreate];
   let state: ScriptedJobState = "waiting_for_input";
@@ -100,7 +263,7 @@ async function withScriptedSetupDaemon<T>(
     const terminal = !["waiting_for_input", "running"].includes(state);
     return {
       jobId: "setup-scripted-1",
-      harness: "cursor",
+      harness,
       action: "login",
       transport: "client_pty",
       state,
@@ -119,7 +282,7 @@ async function withScriptedSetupDaemon<T>(
         disclosure: {
           schemaVersion: 1,
           protocolVersion: 1,
-          harness: "cursor",
+          harness,
           requested: "subscription",
           requiredRoute: "vendor_native",
           requiredSource: "native_session",
@@ -368,13 +531,17 @@ describe("claudexor profiles login machine output", () => {
   const loginDeps = (
     ensureDaemon: () => Promise<{ addr: { baseUrl: string; token: string } }>,
     order: string[],
-    options: { receipt: boolean; interruptDuringAttach?: boolean },
+    options: { receipt: boolean; interruptDuringAttach?: boolean; harness?: "cursor" | "grok" },
   ) => {
     let interrupt: (() => void) | null = null;
     return {
       daemonGet: async () => {
         order.push("get");
-        return { profiles: [row("cursor", "work")], harnessAccounts: [], accountPools: [] };
+        return {
+          profiles: [row(options.harness ?? "cursor", "work")],
+          harnessAccounts: [],
+          accountPools: [],
+        };
       },
       ensureDaemon,
       attach: async (_addr: unknown, jobId: string) => {
@@ -394,6 +561,34 @@ describe("claudexor profiles login machine output", () => {
       pollMs: 1,
     };
   };
+
+  it("Grok profile login uses managed completion and re-reads fresh account status", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const order: string[] = [];
+    await withScriptedSetupDaemon(
+      { harness: "grok", afterCreate: ["running", "succeeded"] },
+      async (ensureDaemon, calls, requests) => {
+        expect(
+          await profilesCommandWithDeps(
+            parseArgs(["profiles", "login", "grok", "work"]),
+            false,
+            loginDeps(ensureDaemon, order, { receipt: true, harness: "grok" }),
+          ),
+        ).toBe(0);
+        expect(calls).toEqual(["create", "status", "status"]);
+        expect(requests).toEqual([
+          {
+            harness: "grok",
+            action: "login",
+            authRequest: "subscription",
+            profileId: "work",
+            transport: "client_pty",
+          },
+        ]);
+        expect(order).toEqual(["get", "attach setup-scripted-1", "unsubscribe", "get"]);
+      },
+    );
+  });
 
   it.each([
     ["succeeded", 0],
@@ -521,7 +716,9 @@ describe("claudexor accounts snapshot (read-only agent doorway)", () => {
     }) as never);
     const evidence = { refusals: [], lastService: [] };
     const get = vi.fn(async (path: string) =>
-      path === "/accounts/routing-evidence" ? evidence : snapshot,
+      path === "/accounts/routing-evidence?includeCapabilities=true&includeCredentialUnusable=true"
+        ? evidence
+        : snapshot,
     );
 
     const code = await accountsCommandWithDeps(
@@ -534,7 +731,7 @@ describe("claudexor accounts snapshot (read-only agent doorway)", () => {
     // Two reads, no probe or mutation: the snapshot and the additive evidence.
     expect(get.mock.calls.map(([path]) => path)).toEqual([
       "/credential-profiles?snapshot=true",
-      "/accounts/routing-evidence",
+      "/accounts/routing-evidence?includeCapabilities=true&includeCredentialUnusable=true",
     ]);
     expect(JSON.parse(stdout)).toMatchObject({
       quotaEventCursor: "q-1",
@@ -560,7 +757,8 @@ describe("claudexor accounts snapshot (read-only agent doorway)", () => {
     }) as never);
     const code = await accountsCommandWithDeps(parseArgs(["accounts"]), false, {
       daemonGet: async (path: string) =>
-        path === "/accounts/routing-evidence"
+        path ===
+        "/accounts/routing-evidence?includeCapabilities=true&includeCredentialUnusable=true"
           ? { refusals: [], lastService: [] }
           : {
               ...snapshot,
@@ -604,7 +802,7 @@ describe("removeProfileFromRegistry (INV-135 removal owner)", () => {
     else process.env.CLAUDEXOR_CONFIG_DIR = prev;
     vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("removes exactly the named entry and returns it", async () => {
     await profilesCommand(parseArgs(["profiles", "add", "claude", "work"]), true);

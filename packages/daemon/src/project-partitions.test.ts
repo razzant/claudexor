@@ -1,38 +1,38 @@
 import { sqlFixture } from "./store/test-support/sql-fixture.js";
+import { readJournalEvents } from "../dist/store/cursors.js";
 import type { ProjectThreadPort } from "./store-contracts.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   handleThreadCreate,
   type ThreadCreateRouteCtx,
 } from "../../control-api/src/thread-create-route.js";
-import { rmSync as __rmSyncReap } from "node:fs";
-import { afterAll as __afterAllReap } from "vitest";
-
-// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
-const __reapDirs: string[] = [];
-function reapMk(...args: Parameters<typeof mkdtempSync>): string {
-  const dir = mkdtempSync(...args);
-  __reapDirs.push(dir);
-  return dir;
-}
-__afterAllReap(() => {
-  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const roots: string[] = [];
 
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const sql of stores.splice(0).reverse()) await sql.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  return () => {
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+  };
 });
 
 const stores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
+
+/** Whole retained histories, read through the same bounded pages the SSE replays. */
+const journal = (
+  graph: Awaited<ReturnType<typeof sqlFixture>>["graph"],
+  name: string,
+  cursor?: string,
+) => readJournalEvents(graph.store, name, cursor, graph.blobs);
 async function fixture() {
-  const root = realpathSync(reapMk(join(tmpdir(), "claudexor-project-partitions-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-project-partitions-")));
   roots.push(root);
   return fixtureAt(root);
 }
@@ -163,7 +163,7 @@ describe("SqlCommandRouter", () => {
     await restarted.close();
   });
 
-  it("redacts delivery failures before the command journal accepts them (INV-062)", async () => {
+  it("redacts delivery failures before the command journal accepts them (INV-146)", async () => {
     const f = await fixture();
     const token = `sk-${"a".repeat(48)}`;
     const delivery = f.partitions.beginDelivery(
@@ -181,7 +181,7 @@ describe("SqlCommandRouter", () => {
       new Error(`provider rejected ${token} ${"diagnostic ".repeat(1_000)}`),
     );
 
-    const durable = JSON.stringify(f.graph.journalEvents("global"));
+    const durable = JSON.stringify(journal(f.graph, "global"));
     const projected = f.partitions.findById(delivery.id)?.get(delivery.id)?.error;
     expect(durable).not.toContain(token);
     expect(projected).not.toContain(token);
@@ -250,7 +250,12 @@ describe("SqlCommandRouter", () => {
       taskId: "task-a",
       attemptId: "a01",
       harnessId: "test",
-      request: { interaction_id: "question", source_tool: "AskUserQuestion", questions: [] },
+      request: {
+        interaction_id: "question",
+        source_tool: "AskUserQuestion",
+        delivery: "blocking",
+        questions: [],
+      },
       requestedAt: new Date().toISOString(),
       timeoutAt: new Date(Date.now() + 60_000).toISOString(),
     });
@@ -266,9 +271,9 @@ describe("SqlCommandRouter", () => {
         payload: { mode: "agent" },
       },
     );
-    expect(
-      f.graph.journalEvents(`project:${a.id}`).some((event) => event.type === "run.event"),
-    ).toBe(true);
+    expect(journal(f.graph, `project:${a.id}`).some((event) => event.type === "run.event")).toBe(
+      true,
+    );
     const decisionRequest = { runId: "run-a", action: "accept_risk" };
     const decisionIdempotency = {
       key: "decision-1",
@@ -340,12 +345,10 @@ describe("SqlCommandRouter", () => {
       ),
     ).toEqual(recordedDecision.record);
     expect(
-      restarted.graph
-        .journalEvents(`project:${a.id}`)
-        .some(
-          (event) =>
-            event.type === "run.event" && (event.payload as { run_id?: string }).run_id === "run-a",
-        ),
+      journal(restarted.graph, `project:${a.id}`).some(
+        (event) =>
+          event.type === "run.event" && (event.payload as { run_id?: string }).run_id === "run-a",
+      ),
     ).toBe(true);
     await restarted.close();
   });
@@ -407,8 +410,8 @@ describe("SqlCommandRouter", () => {
     const prev = process.env["CLAUDEXOR_CONFIG_DIR"];
     // Survivor + missing live OUTSIDE f.root; the ghost lives UNDER f.root and
     // becomes "owned" only after we point CLAUDEXOR_CONFIG_DIR at f.root below.
-    const survivor = realpathSync(reapMk(join(tmpdir(), "claudexor-survivor-")));
-    const missing = realpathSync(reapMk(join(tmpdir(), "claudexor-missing-")));
+    const survivor = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-survivor-")));
+    const missing = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-missing-")));
     roots.push(survivor, missing);
     const ghostRoot = join(f.root, "projects", "d", "workspaces", "task-9", "a01", "tree");
     mkdirSync(ghostRoot, { recursive: true });
@@ -458,20 +461,20 @@ describe("SqlCommandRouter", () => {
     const projectId = f.projects.findByRoot(realpathSync(project))!.id;
 
     const globalPings = () =>
-      f.graph.journalEvents("global").filter((event) => event.type === "thread.head.updated");
+      journal(f.graph, "global").filter((event) => event.type === "thread.head.updated");
     // R5: entity bodies live in their owning rows; only the head ping is streamed.
     expect(
-      f.graph
-        .journalEvents(`project:${projectId}`)
-        .some((event) => event.type === "thread.entities_upserted"),
+      journal(f.graph, `project:${projectId}`).some(
+        (event) => event.type === "thread.entities_upserted",
+      ),
     ).toBe(false);
     expect(f.sql.store.prepare("SELECT pid FROM thread WHERE id=?").get(thread.id)).toEqual({
       pid: f.projects.partition(projectId)!.pid,
     });
     expect(
-      f.graph
-        .journalEvents(`project:${projectId}`)
-        .some((event) => event.type === "thread.head.updated"),
+      journal(f.graph, `project:${projectId}`).some(
+        (event) => event.type === "thread.head.updated",
+      ),
     ).toBe(false);
     expect(globalPings().map((event) => event.payload)).toEqual([
       { thread_id: thread.id, project_id: projectId, revision: 1 },
@@ -635,6 +638,29 @@ describe("SqlCommandRouter", () => {
     await f.close();
   });
 
+  it("keeps a thread of an ephemeral root on its route through turns and a later registration", async () => {
+    const f = await fixture();
+    const root = join(f.root, "disposable-thread-tree");
+    mkdirSync(root, { recursive: true });
+    const thread = f.partitions.createThread({ repoRoot: root, ephemeral: true });
+    const global = f.partitions.forRequest({}).generation.pid;
+
+    // What every turn sends: the thread id, with the project scope rebuilt from thread.repo.
+    const turn = { threadId: thread.id, scope: { kind: "project", root } };
+    expect(f.partitions.forRequest(turn).generation.pid).toBe(global);
+    expect(f.projects.list()).toEqual([]);
+    // That scope alone has no route: a turn reaches the root only through its thread.
+    expect(() => f.partitions.forRequest({ scope: turn.scope })).toThrow(
+      /project is not registered/,
+    );
+
+    f.partitions.registerProject({ root, idempotencyKey: "later", clientId: "fixture" });
+    expect(f.projects.list().map((project) => project.root)).toEqual([root]);
+    expect(f.partitions.forRequest(turn).generation.pid).toBe(global);
+    expect(f.partitions.getThread(thread.id)?.repo?.root).toBe(root);
+    await f.close();
+  });
+
   it("still auto-registers a durable (non-ephemeral) thread root", async () => {
     const f = await fixture();
     const root = join(f.root, "durable-project");
@@ -681,8 +707,7 @@ describe("SqlCommandRouter", () => {
         payload: { lifecycle: "succeeded" },
       }),
     ).toThrow("terminal events require the command terminal transaction");
-    const journaled = f.graph
-      .journalEvents("global")
+    const journaled = journal(f.graph, "global")
       .filter((event) => event.type === "run.event")
       .map((event) => event.payload as { type: string; payload: Record<string, unknown> });
     expect(journaled.map((event) => event.type)).toEqual(["run.created", "output.ready"]);

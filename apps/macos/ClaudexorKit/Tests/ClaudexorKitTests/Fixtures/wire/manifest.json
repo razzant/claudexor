@@ -1,4 +1,10 @@
 {
+  "thread-history-empty": "ThreadHistoryPage",
+  "thread-history-receipts": "ThreadHistoryPage",
+  "thread-history-not-retained": "ThreadHistoryPage",
+  "thread-history-unavailable-evidence": "ThreadHistoryPage",
+  "thread-history-work-veto": "ThreadHistoryPage",
+  "thread-prompt-part": "ThreadPromptPart",
   "effort-resolution-downward": "EffortResolution",
   "handshake-response": "ControlHandshakeResponse",
   "handshake-response-unknown-sha": "ControlHandshakeResponse",
@@ -16,6 +22,8 @@
   "outcome-facts-clean": "RunOutcomeFacts",
   "outcome-facts-needs-decision": "RunOutcomeFacts",
   "outcome-facts-failed": "RunOutcomeFacts",
+  "outcome-facts-work-veto": "RunOutcomeFacts",
+  "outcome-facts-work-veto-review-blocked": "RunOutcomeFacts",
   "delegation-capability-ready": "DelegationCapability",
   "run-delegation-degraded": "RunDelegationInfo",
   "run-failure-delegation-drain-timeout": "RunFailure",
@@ -30,5 +38,11 @@
   "apply-eligibility-no": "ApplyEligibility",
   "quota-response": "ControlQuotaResponse",
   "harness-settings-patch-maximal": "ControlHarnessSettingsPatch",
-  "settings-snapshot-maximal": "ControlSettingsSnapshot"
+  "settings-snapshot-maximal": "ControlSettingsSnapshot",
+  "route-control-started": "ControlRouteControl",
+  "route-control-prepared-only": "ControlRouteControl",
+  "web-evidence-dispatched": "ControlWebEvidence",
+  "web-evidence-no-telemetry": "ControlWebEvidence",
+  "web-evidence-verified-search": "ControlWebEvidence",
+  "route-control-browser-startup": "ControlRouteControl"
 }

@@ -16,7 +16,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   sb.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 /** Drive the real `claudexor mcp serve` over stdio with newline JSON-RPC. */
 function mcpClient(cwd: string, env: NodeJS.ProcessEnv) {

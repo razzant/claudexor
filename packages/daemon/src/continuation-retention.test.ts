@@ -14,7 +14,7 @@ import { prunableCommandIds } from "./store/test-support/fixtures/legacy/daemon/
 import type { JobRecord } from "./server.js";
 
 const dirs: string[] = [];
-afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
+afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const now = Date.parse("2026-10-06T00:00:00.000Z");
 const record = (id: string, over: Partial<JobRecord> = {}): JobRecord => ({
   id,

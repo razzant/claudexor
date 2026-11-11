@@ -1,0 +1,231 @@
+{
+  "$ref": "#/definitions/DeferredMessageReceipt",
+  "definitions": {
+    "DeferredMessageReceipt": {
+      "type": "object",
+      "properties": {
+        "appliedRevision": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "description": "The exact revision originally applied by this idempotency key."
+        },
+        "draft": {
+          "type": "object",
+          "properties": {
+            "draftId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
+            },
+            "revision": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "waiting",
+                "held",
+                "dispatched",
+                "cleared"
+              ]
+            },
+            "predecessorJobId": {
+              "$ref": "#/definitions/DeferredMessageReceipt/properties/draft/properties/draftId"
+            },
+            "predecessorRunId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/DeferredMessageReceipt/properties/draft/properties/draftId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Non-empty identifier string."
+            },
+            "predecessorResult": {
+              "type": "string",
+              "description": "Existing addressed run-detail/result path; no duplicate result store."
+            },
+            "hold": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "predecessor_failed",
+                        "predecessor_cancelled",
+                        "predecessor_interrupted",
+                        "predecessor_needs_input",
+                        "predecessor_incomplete",
+                        "predecessor_facts_unavailable",
+                        "predecessor_work_unverified",
+                        "predecessor_checks_failed",
+                        "predecessor_review_blocked",
+                        "predecessor_output_unavailable",
+                        "settlement_unknown",
+                        "stop_requested",
+                        "shutdown",
+                        "restart_requires_controller",
+                        "partition_retired",
+                        "admission_refused"
+                      ]
+                    },
+                    "problem": {
+                      "type": "object",
+                      "properties": {
+                        "message": {
+                          "type": "string",
+                          "description": "Human-readable refusal message."
+                        },
+                        "code": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "default": null,
+                          "description": "Machine-readable refusal code carried from the throwing gate; null when the failure had no typed code."
+                        },
+                        "retryable": {
+                          "type": "boolean",
+                          "default": true,
+                          "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay or a managed resource it names was released."
+                        },
+                        "required_actions": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 512
+                          },
+                          "maxItems": 16,
+                          "default": [],
+                          "description": "Bounded user actions that may make an exact retry succeed."
+                        },
+                        "context": {
+                          "type": "object",
+                          "additionalProperties": {},
+                          "default": {},
+                          "description": "Bounded typed recovery context; never arbitrary provider or environment output."
+                        }
+                      },
+                      "required": [
+                        "message"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Typed, sanitized problem for a thread turn that could not start."
+                    }
+                  },
+                  "required": [
+                    "code"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
+            },
+            "resumed": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "$ref": "#/definitions/DeferredMessageReceipt/properties/draft/properties/hold/anyOf/0/properties/code"
+                    },
+                    "problem": {
+                      "$ref": "#/definitions/DeferredMessageReceipt/properties/draft/properties/hold/anyOf/0/properties/problem"
+                    }
+                  },
+                  "required": [
+                    "code"
+                  ],
+                  "additionalProperties": false,
+                  "description": "The hold the draft was returned from."
+                },
+                "reason": {
+                  "type": "string",
+                  "const": "process_scope_settled",
+                  "description": "A later settlement of the predecessor's run proved its processes gone; the draft was unchanged, not cleared, replaced or stopped."
+                },
+                "at": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "ISO-8601 timestamp string."
+                }
+              },
+              "required": [
+                "from",
+                "reason",
+                "at"
+              ],
+              "additionalProperties": false,
+              "description": "Why this draft left its hold automatically. It then took the existing revision and admission path; any other reason holds it again."
+            },
+            "dispatchedRevision": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/DeferredMessageReceipt/properties/draft/properties/revision"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "successorJobId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/DeferredMessageReceipt/properties/draft/properties/draftId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Non-empty identifier string."
+            },
+            "successorRunId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/DeferredMessageReceipt/properties/draft/properties/draftId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Non-empty identifier string."
+            }
+          },
+          "required": [
+            "draftId",
+            "revision",
+            "state",
+            "predecessorJobId",
+            "predecessorRunId",
+            "predecessorResult",
+            "hold",
+            "dispatchedRevision",
+            "successorJobId",
+            "successorRunId"
+          ],
+          "additionalProperties": false,
+          "description": "Compact addressed draft state, with exact predecessor result and successor handles. A terminal predecessor does not imply the draft has resolved."
+        }
+      },
+      "required": [
+        "appliedRevision",
+        "draft"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

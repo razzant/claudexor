@@ -3,11 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { streamRunEvents, type StreamEventsCtx } from "./run-events-stream.js";
+import { readEventReplayBatch } from "./event-replay-batch.js";
 
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** Minimal ServerResponse capturing every SSE write; no backpressure. */
 function fakeResponse() {
@@ -55,6 +56,7 @@ describe("streamRunEvents terminal-tail race (QA-018)", () => {
     const ctx: StreamEventsCtx = {
       findRun: async () => rec,
       json() {},
+      readBatch: async (request) => readEventReplayBatch(request),
       opts: {
         daemon: {
           status: async () => {

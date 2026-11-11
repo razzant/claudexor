@@ -46,12 +46,37 @@ describe("Cursor config-dir credential profiles (INV-135)", () => {
     if (priorRoot === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = priorRoot;
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("canonicalizes only Claudexor-owned homes", () => {
     expect(canonicalCursorProfileHome(home)).toBe(home);
     expect(() => canonicalCursorProfileHome("relative/home")).toThrow(/absolute/);
     expect(() => canonicalCursorProfileHome(join(tmpdir(), "outside"))).toThrow(/must live under/);
+  });
+
+  it("names the profile HOME a native profile child receives for applied evidence", () => {
+    const adapter = createCursorAdapter();
+    const live = HarnessRunSpec.parse({
+      session_id: "s",
+      intent: "explain",
+      cwd: root,
+      prompt: "p",
+      credential_profile: profile(),
+      env: { HOME: "/engine/lane/home" },
+    });
+    expect(adapter.childHome?.(live)).toBe(home);
+    // An API-key row keeps the engine HOME: no profile HOME is substituted.
+    expect(
+      adapter.childHome?.({
+        ...live,
+        credential_profile: profile({
+          credential_kind: "api_key",
+          isolation_locator: null,
+          secret_ref: "cursor:valentine",
+        }),
+      }),
+    ).toBeNull();
+    expect(adapter.childHome?.({ ...live, credential_profile: null })).toBeNull();
   });
 
   it("separates profile auth paths from lane config/session paths", () => {
@@ -201,19 +226,34 @@ describe("Cursor config-dir credential profiles (INV-135)", () => {
   );
 
   it("a route check rides a timeout's last positive only when its caller admits it (#363)", async () => {
+    const asked: unknown[] = [];
     const runtime = {
-      nativeAuthOk: async () => timedOutWithLastPositive,
+      nativeAuthOk: async (_env?: unknown, _signal?: AbortSignal, options?: unknown) => {
+        asked.push(options);
+        return timedOutWithLastPositive;
+      },
       resolveProfileSecret: () => null,
     };
     await expect(
       resolveCursorProfileRoute(profile(), {}, runtime, undefined, { admitLastPositive: true }),
     ).resolves.toMatchObject({ kind: "native", staleAuth: lastPositive });
-    // No caller decision is the strict pin contract: the same answer refuses.
+    // No caller decision is the strict contract: the same answer refuses.
     const strict = await resolveCursorProfileRoute(profile(), {}, runtime);
     const refusal = "refusal" in strict ? strict.refusal : "";
     expect(refusal).toContain("login state is unknown");
     expect(refusal).toContain("serves unpinned routing only, never an explicit pin");
     expect(refusal).not.toMatch(/run the profile login|auth login/);
+    // An explicit pin also waits for the answer (#532) and names the bound.
+    const pin = await resolveCursorProfileRoute(profile(), {}, runtime, undefined, {
+      pinned: true,
+    });
+    expect(asked).toEqual([undefined, undefined, { pinned: true }]);
+    const pinRefusal = "refusal" in pin ? pin.refusal : "";
+    expect(pinRefusal).toContain("Cursor did not confirm sign-in within 120s");
+    expect(pinRefusal).toContain(
+      "a pinned account waits for that answer and never starts on an older one",
+    );
+    expect(pinRefusal).not.toMatch(/run the profile login|auth login/);
   });
 
   it("keeps the account identity null while only a stale positive stands in", async () => {
@@ -466,22 +506,35 @@ describe("Cursor config-dir credential profiles (INV-135)", () => {
     });
 
     it.each([
-      { label: "an explicit pin", pinned: true },
-      { label: "an unstamped profile", pinned: null },
+      {
+        label: "an explicit pin",
+        pinned: true,
+        reason: "Cursor did not confirm sign-in within 120s",
+        rule: "never starts on an older one",
+      },
+      {
+        label: "an unstamped profile",
+        pinned: null,
+        reason: "login state is unknown",
+        rule: "never an explicit pin",
+      },
     ])(
       "the same timed-out sequence refuses $label without launching (#363)",
-      async ({ pinned }) => {
-        const { events, launches } = await runOn(
-          async () => timedOutWithLastPositive,
-          selected(pinned),
-        );
+      async ({ pinned, reason, rule }) => {
+        const asked: unknown[] = [];
+        const { events, launches } = await runOn(async (...args: unknown[]) => {
+          asked.push(args[2]);
+          return timedOutWithLastPositive;
+        }, selected(pinned));
         expect(events.map((e) => e.type)).toEqual(["error", "completed"]);
         const error = (events[0] as { error?: string }).error ?? "";
-        expect(error).toContain("login state is unknown");
-        expect(error).toContain("never an explicit pin");
+        expect(error).toContain(reason);
+        expect(error).toContain(rule);
         expect(error).not.toMatch(/run the profile login|auth login/);
         expect(staleEvents(events)).toEqual([]);
         expect(launches).toBe(0);
+        // Only the engine's explicit pin stamp asks for the pin's wait (#532).
+        expect(asked).toEqual([pinned ? { pinned: true } : undefined]);
       },
     );
 

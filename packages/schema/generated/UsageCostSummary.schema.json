@@ -37,7 +37,7 @@
         "valuationKnowledge"
       ],
       "additionalProperties": false,
-      "description": "Observed usage components. An amount of unknown meaning is not charged cash; separately proven included service can still establish exact zero incremental cash."
+      "description": "Observed usage components. An amount of unknown meaning is not charged cash; separately proven included service can still establish exact zero incremental cash unless its route reports no actual debit."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

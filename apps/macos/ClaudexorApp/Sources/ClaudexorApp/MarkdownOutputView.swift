@@ -1,16 +1,18 @@
 import SwiftUI
 import AppKit
 
-/// Block-aware markdown rendering: headings, paragraphs, list items, fenced
-/// code, and GFM pipe tables render as separate views. `AttributedString(markdown:)`
-/// alone collapses every newline into one run-on line, which made multi-paragraph
-/// answers unreadable and flattened tables into `| a | b | | --- | --- |` runs (#24).
+/// Block-aware markdown: contiguous headings, paragraphs, lists and wrapped code
+/// share a native selection host. Tables and images split runs.
+/// The existing block parser preserves paragraph breaks and GFM tables instead
+/// of flattening the whole answer through AttributedString(markdown:) (#24).
 ///
 /// Shared by the run-detail answer view and the chat transcript (a turn's assistant
 /// message renders markdown, not flat text — the v0.10 chat regression fix).
 struct MarkdownOutputView: View {
     // Passive file snapshots can render without a live conversation model.
     @Environment(AppModel.self) private var model: AppModel?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.proseMessageSource) private var messageSource
     let markdown: String
     /// Roots (thread execution root / run dir) whose images may render INLINE and
     /// whose file links may open (F2.5 W-C7). Empty = no local-file access:
@@ -24,13 +26,14 @@ struct MarkdownOutputView: View {
     /// A file snapshot never fetches images automatically. Manual links use the
     /// same system/scoped-file handling as answers.
     var isFilePreview = false
+    var previewHeight: CGFloat? = nil
     /// A visible, dismissible refusal for a blocked file-link click (sol #14):
     /// out-of-scope or unsafe-type targets never fail silently.
     @State private var linkRefusal: String?
     @State private var previewRequest: SafeFilePreviewRequest?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+        ProsePreviewLayout(heightLimit: previewHeight) {
             if let linkRefusal {
                 Label(linkRefusal, systemImage: "hand.raised.fill")
                     .font(.caption).foregroundStyle(.orange)
@@ -38,44 +41,26 @@ struct MarkdownOutputView: View {
                     .onTapGesture { self.linkRefusal = nil }
                     .help("Tap to dismiss. Agent-produced files open only inside this thread's scope, and only for safe document/image types.")
             }
-            ForEach(blocks) { block in
-                switch block.kind {
-                case .heading(let level):
-                    inline(block.text, font: level == 1 ? .title3.weight(.semibold) : level == 2 ? .headline : .subheadline.weight(.semibold))
-                case .paragraph:
-                    inline(block.text, font: bodyFont)
-                case .image(let alt, let target):
+            ForEach(ProseBuilder.segments(boundedMarkdown,
+                style: .make(body: bodyFont == .body, size: dynamicTypeSize))) { segment in
+                switch segment.content {
+                case .prose(let document):
+                    ProseText(document: document)
+                        .layoutValue(key: ProsePreviewBoundary.self, value: { width, limit in
+                            ProseMeasurer.shared.wholeLineHeight(document, width: min(680, width), limit: limit)
+                        })
+                case .image(let alt, let target, let source):
                     if isFilePreview || model == nil {
-                        Text(block.text).font(bodyFont).textSelection(.enabled)
+                        ProseText(document: ProseBuilder.plain(source))
                     } else if model?.selectedExecutionLocation == .local {
                         ScopedInlineImage(target: target, alt: alt, roots: fileScopeRoots)
                     } else {
                         RemoteScopedProjectImage(target: target, alt: alt, scope: remoteFileScope)
                     }
-                case .list:
-                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                        ForEach(Array(block.text.components(separatedBy: "\n").enumerated()), id: \.offset) { _, item in
-                            HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.sm) {
-                                Text("•").font(bodyFont).foregroundStyle(.secondary)
-                                inline(String(item.dropFirst(2)), font: bodyFont)
-                            }
-                        }
-                    }
-                case .table(let table):
-                    // Dense two-dimensional content: a NON-LAZY bounded Grid inside a
-                    // horizontal ScrollView on a solid code surface (§3 dense-content
-                    // rule). Explicitly no nested LazyVStack — the #23 hang lesson.
+                case .table(let table, let source):
                     MarkdownTableView(table: table, bodyFont: bodyFont,
-                                      overflowHint: MarkdownTableView.overflowHint(filePreview: isFilePreview))
-                case .code:
-                    ScrollView(.horizontal, showsIndicators: true) {
-                        Text(block.text)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(Theme.Spacing.md)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .codeSurface(Theme.Radius.control)
+                        overflowHint: MarkdownTableView.overflowHint(filePreview: isFilePreview),
+                        markdown: source)
                 }
             }
             if renderTruncated > 0 {
@@ -87,51 +72,17 @@ struct MarkdownOutputView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .sheet(item: $previewRequest) { SafeFilePreviewSheet(request: $0) }
-        // Local agent files never launch a handler directly. Safe formats open
-        // in the bounded source/Quick Look sheet; unsupported in-scope files are
-        // revealed in Finder, while out-of-scope paths remain refused.
+        .environment(\.proseLinkGate, gate)
+        .environment(\.proseMessageSource, messageSource ?? markdown)
         .environment(\.openURL, OpenURLAction { url in
-            let raw: String
-            switch Self.linkRoute(for: url) {
-            case .system: return .systemAction
-            case .scoped(let target): raw = target
-            }
-            guard let model else {
-                linkRefusal = "Link not opened: preview context is unavailable."
-                return .discarded
-            }
-            if model.selectedExecutionLocation != .local {
-                if model.remoteProjectFileReference(target: raw, scope: remoteFileScope) != nil {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(raw, forType: .string)
-                    linkRefusal =
-                        "Remote path copied. Files stay on the server; images and gallery artifacts load through the scoped SSH tunnel."
-                } else {
-                    linkRefusal = "Remote link not opened: outside this thread's project scope."
-                    NSSound.beep()
-                }
-                return .handled
-            }
-            switch Self.localFileAction(raw, roots: fileScopeRoots) {
-            case .preview(let path, let kind):
-                Task {
-                    do {
-                        previewRequest = try await .scopedLocalFile(
-                            url: URL(fileURLWithPath: path), roots: fileScopeRoots, kind: kind)
-                        linkRefusal = nil
-                    } catch {
-                        linkRefusal = "Link not opened: the file changed or could not be staged safely."
-                    }
-                }
-            case .reveal(let path):
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-                linkRefusal = nil
-            case .refuse(let reason):
-                linkRefusal = Self.refusalNotice(reason)
-                NSSound.beep()
-            }
+            gate.handle(url)
             return .handled
         })
+    }
+
+    private var gate: ProseLinkGate {
+        ProseLinkGate(model: model, roots: fileScopeRoots, remoteScope: remoteFileScope,
+            notice: { linkRefusal = $0 }, preview: { previewRequest = $0 })
     }
 
     enum LinkRoute: Equatable { case system, scoped(target: String) }
@@ -158,14 +109,6 @@ struct MarkdownOutputView: View {
         }
         if case .blocked = decision.kind { return .reveal(path: path) }
         return .preview(path: path, kind: decision.kind)
-    }
-
-    @ViewBuilder
-    private func inline(_ raw: String, font: Font) -> some View {
-        Text(Self.inlineAttributed(raw))
-            .font(font)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Memoized inline-markdown parse: AttributedString(markdown:) is a full
@@ -213,7 +156,6 @@ struct MarkdownOutputView: View {
     // list re-render (e.g. one new SSE event) re-parsed every visible message. The
     // cache keys on the raw string — a completed message's text never changes, so it
     // parses once. (Only the actively-streaming message's text changes → cache miss.)
-    private var blocks: [MarkdownBlock] { Self.parse(boundedMarkdown) }
 
     private final class BlocksBox { let blocks: [MarkdownBlock]; init(_ b: [MarkdownBlock]) { blocks = b } }
     private static let cache: NSCache<NSString, BlocksBox> = {
@@ -239,6 +181,7 @@ struct MarkdownOutputView: View {
         var list: [String] = []
         var code: [String] = []
         var inCode = false
+        var codeLanguage: String?
 
         func flushParagraph() {
             let text = paragraph.joined(separator: " ").trimmingCharacters(in: .whitespaces)
@@ -258,12 +201,13 @@ struct MarkdownOutputView: View {
             let line = lines[i]
             if line.hasPrefix("```") {
                 if inCode {
-                    out.append(MarkdownBlock(id: out.count, kind: .code, text: code.joined(separator: "\n")))
+                    out.append(MarkdownBlock(id: out.count, kind: .code, text: code.joined(separator: "\n"), language: codeLanguage))
                     code.removeAll()
                     inCode = false
                 } else {
                     flushParagraph(); flushList()
                     inCode = true
+                    codeLanguage = line.dropFirst(3).split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
                 }
                 i += 1; continue
             }
@@ -295,7 +239,7 @@ struct MarkdownOutputView: View {
             }
             i += 1
         }
-        if !code.isEmpty { out.append(MarkdownBlock(id: out.count, kind: .code, text: code.joined(separator: "\n"))) }
+        if !code.isEmpty { out.append(MarkdownBlock(id: out.count, kind: .code, text: code.joined(separator: "\n"), language: codeLanguage)) }
         flushParagraph(); flushList()
         return out.isEmpty ? [MarkdownBlock(id: 0, kind: .paragraph, text: markdown)] : out
     }
@@ -488,103 +432,6 @@ struct MarkdownOutputView: View {
         let id: Int
         let kind: Kind
         let text: String
-    }
-}
-
-/// The dedicated table renderer: a NON-LAZY `Grid` inside a horizontal
-/// `ScrollView` on a solid `codeSurface` (§3 — dense content never sits on
-/// glass). No nested lazy layout in the conversation scroll hierarchy (#23).
-/// Cell text runs the shared inline AttributedString path, so emphasis / code /
-/// links keep working and the parent's file-link `openURL` gate still applies.
-struct MarkdownTableView: View {
-    let table: MarkdownOutputView.MarkdownTable
-    var bodyFont: Font = .callout
-    /// Where the rows/columns the caps dropped can still be read.
-    var overflowHint = MarkdownTableView.overflowHint(filePreview: false)
-
-    nonisolated static func overflowHint(filePreview: Bool) -> String {
-        filePreview ? "choose Show source to inspect the loaded text" : "open the run's full answer artifact"
-    }
-
-    private let cellMinWidth: CGFloat = 64
-    private let cellMaxWidth: CGFloat = 320
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-            ScrollView(.horizontal, showsIndicators: true) {
-                Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
-                    GridRow {
-                        ForEach(Array(table.header.enumerated()), id: \.offset) { idx, text in
-                            cell(text, align: alignment(idx), header: true)
-                        }
-                    }
-                    ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
-                        GridRow {
-                            ForEach(Array(row.enumerated()), id: \.offset) { idx, text in
-                                cell(text, align: alignment(idx), header: false)
-                            }
-                        }
-                    }
-                }
-                // #24 (owner dogfood): fix HORIZONTAL only. A plain `.fixedSize()`
-                // (both axes) locked the Grid to its IDEAL height, which is measured
-                // with single-line cells — but a cell wider than its 320pt clamp WRAPS
-                // to 2+ lines at layout time, so the row rendered taller than its
-                // locked slot and OVERLAPPED the next row. Fixing width only lets the
-                // Grid keep its natural width (so it scrolls horizontally, preserving
-                // the 64–320pt column clamps) while each row's HEIGHT grows to the
-                // tallest wrapped cell.
-                .fixedSize(horizontal: true, vertical: false)
-            }
-            .codeSurface(Theme.Radius.control)
-            if let disclosure {
-                Text(disclosure)
-                    .font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    private func alignment(_ idx: Int) -> MarkdownOutputView.MarkdownTable.Alignment {
-        idx < table.alignments.count ? table.alignments[idx] : .leading
-    }
-
-    @ViewBuilder
-    private func cell(_ text: String, align: MarkdownOutputView.MarkdownTable.Alignment, header: Bool) -> some View {
-        Text(MarkdownOutputView.inlineAttributed(text))
-            .font(header ? bodyFont.weight(.semibold) : bodyFont)
-            .multilineTextAlignment(textAlignment(align))
-            .textSelection(.enabled)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.sm)
-            .frame(minWidth: cellMinWidth, maxWidth: cellMaxWidth, alignment: frameAlignment(align))
-            .background(header ? Theme.surfaceRaisedHi : Color.clear)
-            .overlay(alignment: .trailing) { Rectangle().fill(Theme.separator).frame(width: 1) }
-            .overlay(alignment: .bottom) { Rectangle().fill(Theme.separator).frame(height: 1) }
-    }
-
-    private func frameAlignment(_ a: MarkdownOutputView.MarkdownTable.Alignment) -> Alignment {
-        switch a {
-        case .leading: .leading
-        case .center: .center
-        case .trailing: .trailing
-        }
-    }
-
-    private func textAlignment(_ a: MarkdownOutputView.MarkdownTable.Alignment) -> TextAlignment {
-        switch a {
-        case .leading: .leading
-        case .center: .center
-        case .trailing: .trailing
-        }
-    }
-
-    private var disclosure: String? { Self.disclosure(for: table, overflowHint: overflowHint) }
-
-    nonisolated static func disclosure(for table: MarkdownOutputView.MarkdownTable, overflowHint: String) -> String? {
-        var parts: [String] = []
-        if table.truncatedRows > 0 { parts.append("\(table.truncatedRows) more rows") }
-        if table.truncatedColumns > 0 { parts.append("\(table.truncatedColumns) more columns") }
-        guard !parts.isEmpty else { return nil }
-        return parts.joined(separator: " · ") + " not shown — \(overflowHint)."
+        var language: String? = nil
     }
 }

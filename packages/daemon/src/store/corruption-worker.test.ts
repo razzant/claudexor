@@ -1,10 +1,11 @@
 import { closeSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreCorruptError, StoreFlushUnavailableError } from "./errors.js";
 import { MaintenanceController } from "./maintenance.js";
 import { EngineStore, type EngineStoreOptions } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const sqliteAvailable = await import("node:sqlite").then(
   () => true,
@@ -17,10 +18,14 @@ const maintenance: MaintenanceController[] = [];
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cx-corruption-worker-"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's stores, taken before its closes: a late close never takes the next test's.
+  const ownedStores = stores.splice(0);
   for (const controller of maintenance.splice(0)) await controller.stop();
-  for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  for (const store of ownedStores) await store.close();
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 async function open(onCorrupt: NonNullable<EngineStoreOptions["onCorrupt"]>, workerEntry?: string) {
   const store = await EngineStore.open({

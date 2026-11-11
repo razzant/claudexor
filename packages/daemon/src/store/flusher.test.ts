@@ -12,10 +12,11 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ControlAccountResetResponse, ModelDispatch } from "@claudexor/schema";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { StoreFlushUnavailableError } from "./errors.js";
 import type { FlusherPassReport } from "./flusher-protocol.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
 const sqliteAvailable = await import("node:sqlite").then(
@@ -36,9 +37,11 @@ const stores: EngineStore[] = [];
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cx-flusher-"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 
 async function openStore(hooks: {

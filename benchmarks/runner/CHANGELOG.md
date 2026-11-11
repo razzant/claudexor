@@ -1,5 +1,117 @@
 # claudexor-benchmark-runner
 
+## 6.0.0
+
+### Patch Changes
+
+- Updated dependencies [b9e88de]
+  - @claudexor/util@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- Updated dependencies [b1320a9]
+  - @claudexor/util@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [6ba9b91]
+  - @claudexor/util@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/util@5.0.1
+
+## 5.0.0
+
+### Patch Changes
+
+- Updated dependencies [8bae6ae]
+- Updated dependencies [d9e7977]
+  - @claudexor/util@5.0.0
+
+## 4.8.2
+
+### Patch Changes
+
+- Updated dependencies [97e2f17]
+  - @claudexor/util@4.8.2
+
+## 4.8.1
+
+### Patch Changes
+
+- @claudexor/util@4.8.1
+
+## 4.8.0
+
+### Patch Changes
+
+- Updated dependencies [6c31c44]
+- Updated dependencies
+  - @claudexor/util@4.8.0
+
+## 4.7.1
+
+### Patch Changes
+
+- @claudexor/util@4.7.1
+
+## 4.7.0
+
+### Patch Changes
+
+- @claudexor/util@4.7.0
+
+## 4.6.2
+
+### Patch Changes
+
+- @claudexor/util@4.6.2
+
+## 4.6.1
+
+### Patch Changes
+
+- @claudexor/util@4.6.1
+
+## 4.6.0
+
+### Patch Changes
+
+- Updated dependencies [a81897c]
+  - @claudexor/util@4.6.0
+
+## 4.5.0
+
+### Patch Changes
+
+- @claudexor/util@4.5.0
+
+## 4.4.0
+
+### Patch Changes
+
+- Updated dependencies
+  - @claudexor/util@4.4.0
+
+## 4.3.1
+
+### Patch Changes
+
+- @claudexor/util@4.3.1
+
+## 4.3.0
+
+### Patch Changes
+
+- @claudexor/util@4.3.0
+
 ## 4.2.0
 
 ### Patch Changes

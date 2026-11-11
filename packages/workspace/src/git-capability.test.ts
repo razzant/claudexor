@@ -134,8 +134,13 @@ describe("Git capability", () => {
     const root = mkdtempSync(join(tmpdir(), "claudexor-git-win32-"));
     const bin = join(root, "bin");
     mkdirSync(bin);
-    // Real Windows PATH dirs hold git.exe, never an extensionless git.
-    writeFileSync(join(bin, "git.exe"), "MZ", { mode: 0o700 });
+    // Real Windows PATH dirs hold git.exe, never an extensionless git. On a
+    // Windows host the inspection also requires the PE shape (MZ, then PE\0\0).
+    const image = Buffer.alloc(512);
+    image.write("MZ", 0, "latin1");
+    image.writeUInt32LE(0x80, 0x3c);
+    image.write("PE\0\0", 0x80, "latin1");
+    writeFileSync(join(bin, "git.exe"), image, { mode: 0o700 });
     chmodSync(join(bin, "git.exe"), 0o700);
     try {
       expect(resolveGitExecutable(bin, "win32")).toBe(realpathSync(join(bin, "git.exe")));

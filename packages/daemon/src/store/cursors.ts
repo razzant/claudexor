@@ -78,33 +78,116 @@ export function resolveJournalCursor(
   };
 }
 
-/** The retained events after a cursor, as the global/project SSE replays them today. */
-export function readJournalEvents(
+/** Work units of one retained-journal read, not a history limit: a replay
+ * continues page by page. A page holds at most this many rows and this many
+ * stored payload bytes (the inline row bytes, or a referenced body's recorded
+ * size), measured before any body is read. One event above the byte budget is
+ * a page by itself; no event is dropped or shortened. */
+export const JOURNAL_PAGE_ROWS = 256;
+export const JOURNAL_PAGE_BYTES = 1024 * 1024;
+
+export interface JournalEventPageRequest {
+  /** A delivered event cursor or an earlier page `position`; absent starts the generation. */
+  after?: string | null;
+  /** An earlier page's `through`; absent captures the partition's durable head now. */
+  through?: string | null;
+}
+
+export interface JournalEventPage {
+  events: ControlJournalEvent[];
+  /** Where the next page starts: the last event's cursor, else the request position. */
+  position: string;
+  /** The head this walk reads through, in the same `{v,p,e,s}` encoding. */
+  through: string;
+  /** Retained rows remain after `position`, at or before `through`. */
+  more: boolean;
+}
+
+/** Page sizing reads lengths only; query-plan tests pin both primary-key range reads. */
+export const JOURNAL_PAGE_SIZE_SQL = `SELECT e.seq, coalesce(b.size, length(e.payload)) AS bytes
+  FROM event e LEFT JOIN blob b ON b.sha256 = e.payload_sha
+  WHERE e.pid = ? AND e.seq > ? AND e.seq <= ? ORDER BY e.seq LIMIT ?`;
+export const JOURNAL_PAGE_READ_SQL =
+  "SELECT seq, time, type, payload, payload_sha FROM event WHERE pid = ? AND seq > ? AND seq <= ? ORDER BY seq";
+
+/**
+ * One bounded keyset page of the current generation's retained events, as the
+ * global/project SSE replays them. Both positions are cursors checked against
+ * the generation serving now, so a replaced or retired generation is refused
+ * (409 `resnapshot`) instead of continuing in another epoch. Sizes are chosen
+ * first; only the selected rows are read and hydrated, in the same synchronous
+ * turn on the owner connection.
+ */
+export function readJournalEventPage(
   store: EngineStore,
   partition: string,
-  afterCursor?: string | null,
+  request: JournalEventPageRequest = {},
   blobs: Pick<BlobFiles, "read"> = new BlobFiles(store),
-): ControlJournalEvent[] {
-  const { generation, afterSeq } = resolveJournalCursor(store, partition, afterCursor);
-  const rows = store
-    .prepare(
-      "SELECT seq, time, type, payload, payload_sha FROM event WHERE pid = ? AND seq > ? ORDER BY seq",
-    )
-    .all(generation.pid, afterSeq) as Array<{
+): JournalEventPage {
+  const { generation, afterSeq } = resolveJournalCursor(store, partition, request.after);
+  const throughSeq = request.through
+    ? decodeJournalCursor(request.through, partition, generation.epoch, generation.nextSeq)
+    : generation.nextSeq - 1;
+  const sizes = store
+    .prepare(JOURNAL_PAGE_SIZE_SQL)
+    .all(generation.pid, afterSeq, throughSeq, JOURNAL_PAGE_ROWS + 1) as Array<{
+    seq: number | bigint;
+    bytes: number | bigint;
+  }>;
+  let count = 0;
+  let bytes = 0;
+  for (const row of sizes) {
+    if (count === JOURNAL_PAGE_ROWS) break;
+    if (count > 0 && bytes + Number(row.bytes) > JOURNAL_PAGE_BYTES) break;
+    count += 1;
+    bytes += Number(row.bytes);
+  }
+  const lastSeq = count === 0 ? afterSeq : Number(sizes[count - 1]!.seq);
+  const rows = (
+    count === 0 ? [] : store.prepare(JOURNAL_PAGE_READ_SQL).all(generation.pid, afterSeq, lastSeq)
+  ) as Array<{
     seq: number | bigint;
     time: string;
     type: string;
     payload: Uint8Array;
     payload_sha: string | null;
   }>;
-  return rows.map((row) => ({
-    schemaVersion: 1,
-    cursor: encodeJournalCursor(partition, generation.epoch, Number(row.seq)),
-    partition,
-    type: row.type,
-    observedAt: row.time,
-    payload: readStoredEventPayload(row, blobs),
-  }));
+  return {
+    events: rows.map((row) => ({
+      schemaVersion: 1,
+      cursor: encodeJournalCursor(partition, generation.epoch, Number(row.seq)),
+      partition,
+      type: row.type,
+      observedAt: row.time,
+      payload: readStoredEventPayload(row, blobs),
+    })),
+    position: encodeJournalCursor(partition, generation.epoch, lastSeq),
+    through: encodeJournalCursor(partition, generation.epoch, throughSeq),
+    more: count < sizes.length,
+  };
+}
+
+/** The complete retained suffix after a cursor, collected through the same
+ * pages, for in-process readers that need the whole history (store
+ * equivalence, tests). Network replay streams page by page instead. */
+export function readJournalEvents(
+  store: EngineStore,
+  partition: string,
+  afterCursor?: string | null,
+  blobs: Pick<BlobFiles, "read"> = new BlobFiles(store),
+): ControlJournalEvent[] {
+  let page = readJournalEventPage(store, partition, { after: afterCursor }, blobs);
+  const events = [...page.events];
+  while (page.more) {
+    page = readJournalEventPage(
+      store,
+      partition,
+      { after: page.position, through: page.through },
+      blobs,
+    );
+    events.push(...page.events);
+  }
+  return events;
 }
 
 /** Both cursor/SSE and reducer reads hydrate the same logical payload. A digest

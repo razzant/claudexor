@@ -1,18 +1,8 @@
 import SwiftUI
 import ClaudexorKit
 
-/// Settings › Harnesses: install a vendor CLI on a connected SSH host
-/// (issue #89). The confirmation dialog shows the remote runtime's own
-/// `harness install --dry-run --json` disclosure — exact command, install
-/// destination, and version pin — and the installer itself runs in the
-/// visible embedded terminal, where the user watches it like interactive
-/// SSH auth. Claude and Codex install the exact pinned npm version this
-/// release was verified against; OpenCode and GitHub Copilot install their
-/// exact pins as deterministic install targets (no recorded verification
-/// fixture covers them); the script vendors (Antigravity and Cursor) have their installer
-/// downloaded in full and executed under the user's eyes because they
-/// cannot be pinned. Every vendor NAME here comes from `HarnessFamily.label`
-/// — never `id.capitalized`, which renders Antigravity as "Agy".
+/// Settings › Harnesses: vendor-current installation through the remote
+/// engine's adapter declarations and prepared command receipt.
 struct RemoteHarnessInstallSection: View {
     @Environment(AppModel.self) private var model
 
@@ -22,29 +12,19 @@ struct RemoteHarnessInstallSection: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 SectionLabel("Remote Harness Install", systemImage: "arrow.down.circle")
                 Text(
-                    "Puts a vendor CLI on an SSH host. Claude and Codex install the exact npm version this Claudexor release was verified against; OpenCode and GitHub Copilot install their exact pinned versions as deterministic targets (not covered by recorded verification fixtures); the Antigravity and Cursor installer scripts ship no pinnable npm artifact, so each is downloaded in full and runs in the embedded terminal where you watch it. Nothing runs before you confirm the exact command.")
+                    "Installs the vendor's current program on an SSH host, using that host's engine capabilities. Review the vendor command and installation HOME before confirming. Vendor scripts can change between preview and execution; the final receipt records the bytes and program actually used.")
                     .font(.caption).foregroundStyle(.secondary)
                 ForEach(model.remoteConnections) { connection in
                     HStack {
                         Text(connection.displayName)
                         Spacer()
-                        Menu("Install…") {
-                            ForEach(installableRemoteHarnesses, id: \.self) {
-                                harness in
-                                Button(HarnessFamily(rawValue: harness).label) {
-                                    Task {
-                                        await model.startRemoteHarnessInstall(
-                                            connectionID: connection.id, harness: harness)
-                                    }
-                                }
-                            }
-                        }
-                        .frame(maxWidth: 140)
-                        .help(
-                            "Fetches the exact install command from \(connection.displayName) and asks for confirmation before anything runs.")
+                        RemoteHarnessInstallMenu(connection: connection)
                     }
                     if let message = model.remoteConnectionMessages[connection.id] {
-                        Text(message).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
+                        // Unclipped and selectable: a refusal's remedy comes last.
+                        Text(message).font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
                 }
             }
@@ -89,32 +69,16 @@ struct RemoteHarnessInstallSection: View {
     ) -> String {
         let host = model.remoteConnections
             .first(where: { $0.id == prompt.connectionID })?.displayName ?? "the remote host"
-        // The vendor's own product name. The unpinnable branch used to say
-        // "Cursor" outright, which named the wrong vendor the moment a second
-        // script installer (Antigravity) reached it — in the most
-        // security-sensitive dialog in the app.
         let vendor = HarnessFamily(rawValue: prompt.harness).label
-        let pin: String
-        switch prompt.verification {
-        case .releaseVerified:
-            pin = "Pinned version: \(prompt.pinnedVersion!) "
-                + "(exact; the version this release was verified against; "
-                + "npm verifies its registry integrity checksum)"
-        case .deterministicOnly:
-            pin = "Pinned version: \(prompt.pinnedVersion!) "
-                + "(exact deterministic install target; not covered by recorded "
-                + "verification fixtures; npm verifies its registry integrity checksum)"
-        case .humanObserved:
-            pin = "No version pin: \(vendor) ships no pinnable npm artifact; the vendor script "
-                + "is downloaded in full, its size and SHA-256 print, and it runs in the "
-                + "embedded terminal where you watch it"
-        }
+        let target = prompt.requestedVersion.map { "Exact vendor version: \($0)" }
+            ?? "Vendor's current version at execution"
         return """
-        Command: \(prompt.command)
-        Install location: \(prompt.installLocation)
-        \(pin)
+        Install \(vendor) on \(host)
+        \(target)
+        Installation HOME: \(prompt.installationHome)
+        \(prompt.commands.map(\.disclosure).joined(separator: "\n\n"))
 
-        Runs on \(host) in the embedded terminal. Claudexor runs Harness Doctor afterward.
+        The vendor selects its installation folders. Script hashes describe this preview; the final receipt records what ran. Claudexor runs Harness Doctor afterward.
         """
     }
 }

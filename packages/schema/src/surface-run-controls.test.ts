@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { validateSurfaceRunControls } from "./surface-run-controls.js";
 
 describe("surface run-control applicability", () => {
+  it("validates whole-run timer fields through their shared schema", () => {
+    expect(validateSurfaceRunControls({ maxSeconds: 1, timeLimitMode: "soft" })).toBeNull();
+    expect(validateSurfaceRunControls({ maxSeconds: 0 })).toContain("maxSeconds");
+    expect(validateSurfaceRunControls({ timeLimitMode: "forever" })).toContain("timeLimitMode");
+  });
   it("validates model-review opt-in and contradictions through the shared owner", () => {
     expect(validateSurfaceRunControls({ review: "false" })).toMatch(/boolean/);
     expect(validateSurfaceRunControls({ review: false, attempts: 3 })).toBeNull();

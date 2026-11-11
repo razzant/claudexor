@@ -39,6 +39,7 @@ export interface ModelRouteServices {
     captureFailureEvidence?: boolean,
     captureEffortEvidence?: boolean,
     requestKind?: RequestKind,
+    captureRoutingEvidence?: boolean,
   ): Promise<unknown>;
   getModelOperation(id: string): Promise<unknown>;
   readModelResult(id: string): Promise<{ bytes: Buffer; sha256: string }>;
@@ -139,16 +140,18 @@ export async function handleModelRoute(
       const requestKind = kind === undefined ? undefined : ModelOperationRequestKind.parse(kind);
       const effort = optionalBooleanQuery(query, "captureEffortEvidence");
       const capture = optionalBooleanQuery(query, "captureFailureEvidence");
-      // Image results carry neither SSE nor effort evidence: refuse, never ignore.
-      if (requestKind !== undefined && (effort === true || capture === true))
+      const routing = optionalBooleanQuery(query, "captureRoutingEvidence");
+      // Image results carry neither SSE, effort nor routing evidence: refuse, never ignore.
+      if (requestKind !== undefined && (effort === true || capture === true || routing === true))
         throw new Error(
-          "requestKind=image cannot be combined with captureEffortEvidence or captureFailureEvidence",
+          "requestKind=image cannot be combined with captureEffortEvidence, captureFailureEvidence or captureRoutingEvidence",
         );
       return {
         key: requiredIdempotencyKey(req),
         body: ControlModelOperationCreateRequest.parse(await ctx.readBody(req)),
         effort,
         capture,
+        routing,
         requestKind,
       };
     });
@@ -162,16 +165,25 @@ export async function handleModelRoute(
             undefined,
             input.value.requestKind,
           )
-        : input.value.effort === true
+        : input.value.routing === true
           ? services.createModelOperation!(
               input.value.body.request,
               input.value.key,
               input.value.capture === true ? true : undefined,
+              input.value.effort === true ? true : undefined,
+              undefined,
               true,
             )
-          : input.value.capture === true
-            ? services.createModelOperation!(input.value.body.request, input.value.key, true)
-            : services.createModelOperation!(input.value.body.request, input.value.key),
+          : input.value.effort === true
+            ? services.createModelOperation!(
+                input.value.body.request,
+                input.value.key,
+                input.value.capture === true ? true : undefined,
+                true,
+              )
+            : input.value.capture === true
+              ? services.createModelOperation!(input.value.body.request, input.value.key, true)
+              : services.createModelOperation!(input.value.body.request, input.value.key),
     );
     if (!value.ok) return true;
     return serviceResponse(ctx, res, "createModelOperation", () =>
@@ -252,8 +264,14 @@ function catalogView(query: URL): "accounts" | undefined {
  * `processing` and effort verification per row, declared client version per catalog — are stripped
  * here and only here. */
 function legacyModelCatalog(value: unknown, requestedModel?: string) {
-  const { clientVersion, clientVersionSource, admission, ...catalog } =
-    ControlModelCatalogResponse.parse(value);
+  // capabilityFingerprint is a daemon-internal invalidation token, never public.
+  const {
+    clientVersion,
+    clientVersionSource,
+    admission,
+    capabilityFingerprint: _capability,
+    ...catalog
+  } = ControlModelCatalogResponse.parse(value);
   if (requestedModel !== undefined && admission?.requestedModel !== requestedModel)
     throw new Error("Model admission does not identify the requested model");
   return {
@@ -276,16 +294,24 @@ function publicModelAccountCatalog(value: unknown) {
   const view = ControlModelAccountCatalogResponse.parse(value);
   return {
     ...view,
-    accounts: view.accounts.map((account) => ({
+    accounts: view.accounts.map(({ catalog, ...account }) => ({
       ...account,
-      catalog: account.catalog && {
-        ...account.catalog,
-        models: account.catalog.models.map(
+      catalog: catalog && {
+        ...withoutCapabilityFingerprint(catalog),
+        models: catalog.models.map(
           ({ reasoningEffortPreferenceOrder: _preferenceOrder, ...model }) => model,
         ),
       },
     })),
   };
+}
+
+/** The daemon-internal capability token stays inside the engine. */
+function withoutCapabilityFingerprint<T extends { capabilityFingerprint?: string }>(
+  catalog: T,
+): Omit<T, "capabilityFingerprint"> {
+  const { capabilityFingerprint: _capability, ...rest } = catalog;
+  return rest;
 }
 
 /** Kept alongside the actual route contract; the common catalog projects IDs and auth. */
@@ -366,6 +392,12 @@ export const MODEL_OPERATION_DRAFTS: OperationDraft[] = [
         enum: ["true", "false"],
         description:
           "Retain exact failed-response bytes and exception details in the private result. Omitted or false preserves the legacy result shape.",
+      }),
+      queryParam({
+        name: "captureRoutingEvidence",
+        enum: ["true", "false"],
+        description:
+          "Attach account-routing evidence (selection reason, differential outcome, pool events) to the result, receipt and detail. Omitted or false preserves the legacy shapes for strict clients; the choice is bound to idempotency. Capability refusal facts in problem.context are not gated.",
       }),
     ],
     idempotency: "key_required",

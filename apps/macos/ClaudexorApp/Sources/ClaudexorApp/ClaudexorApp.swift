@@ -1,10 +1,15 @@
 import SwiftUI
 import AppKit
+import ClaudexorKit
 
 @main
 struct ClaudexorApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @State private var model = AppModel()
+    // The only AppModel that reads and persists the user's real state.
+    @State private var model = AppModel(
+        persistence: .user,
+        lifecycleOwner: LocalRuntimeLifecycleOwner(
+            serviceRoot: ControlApiDiscovery.defaultPath().deletingLastPathComponent()))
 
     var body: some Scene {
         WindowGroup {

@@ -65,7 +65,7 @@ struct HarnessFamily: RawRepresentable, Identifiable, Hashable {
     /// vendor brands the PRODUCT "Antigravity" — `agy` is only its binary.
     private static let labels = [
         "codex": "Codex", "claude": "Claude", "cursor": "Cursor", "opencode": "OpenCode",
-        "agy": "Antigravity", "copilot": "GitHub Copilot", "raw-api": "Raw API", "openrouter": "OpenRouter", "fake": "Fake",
+        "agy": "Antigravity", "grok": "Grok Build", "copilot": "GitHub Copilot", "raw-api": "Raw API", "openrouter": "OpenRouter", "fake": "Fake",
     ]
     var label: String {
         Self.labels[rawValue] ?? rawValue.split(separator: "-").map { $0.capitalized }.joined(separator: " ")
@@ -73,7 +73,10 @@ struct HarnessFamily: RawRepresentable, Identifiable, Hashable {
     // Vendor iconography is owned solely by `HarnessIcon` (M9-UX item 5): a real
     // brand mark where we ship one, else ONE shared generic glyph. No per-family
     // SF-Symbol placeholder lives on the model any more.
+    /// The harness's text colour: labels and chip text.
     var color: Color { Theme.harness(rawValue) }
+    /// Its chip tints, strokes and dots (`Theme.harnessFill`).
+    var fill: Color { Theme.harnessFill(rawValue) }
     /// Setup and runtime use the same canonical harness id. The retired `raw`
     /// alias must never reappear at a client boundary.
     var setupHarnessId: String { rawValue }
@@ -178,11 +181,10 @@ enum RunPhase: String, CaseIterable, Identifiable, Hashable {
     var isFailureShaped: Bool { self == .failed || self == .interrupted || self == .unknown }
 }
 
-/// Human label for a typed terminal `RunReason` (RunOutcomeFacts.reason). The
-/// reason qualifies a non-clean terminal; it is projected verbatim from the
-/// engine and never composed client-side beyond this display mapping.
+/// Human label for a typed terminal `RunReason` (RunOutcomeFacts.reason), projected
+/// verbatim from the engine and never composed client-side beyond this display mapping.
 enum RunReasonLabel {
-    static func label(_ reason: String?) -> String? {
+    static func known(_ reason: String?) -> String? {
         switch reason {
         case "harness_failed": return "Harness failed"
         case "no_changes": return "No changes"
@@ -194,9 +196,17 @@ enum RunReasonLabel {
         case "not_converged": return "Not converged"
         case "stuck_no_progress": return "Stuck/no progress"
         case "workspace_unavailable": return "Workspace unavailable"
+        case "capture_refused": return "Changes not captured"
         case "wall_clock_exceeded": return "Time limit reached"
+        case "turn_limit_reached": return "Turn limit reached"
         case "crash_interrupted": return "Interrupted"
+        case "context_capacity_exhausted": return "Context capacity exhausted"
+        case "work_report_contract": return "No valid work report"
         case "user_cancelled": return "Cancelled"
+        case "host_cancelled": return "Stopped by host"
+        case "owner_task_gone": return "Owner task gone"
+        case "input_required": return workStateLabel("needs_input")
+        case "work_incomplete": return workStateLabel("incomplete")
         default: return nil
         }
     }
@@ -474,33 +484,8 @@ struct Candidate: Identifiable, Hashable {
     var filesChanged: Int = 0
     var added: Int = 0
     var removed: Int = 0
-}
-
-// MARK: - Diff
-
-enum DiffLineKind { case context, add, remove, hunk }
-
-struct DiffLine: Identifiable, Hashable {
-    let id = UUID()
-    var kind: DiffLineKind
-    var text: String
-    var oldNo: Int?
-    var newNo: Int?
-}
-
-struct DiffHunk: Identifiable, Hashable {
-    let id = UUID()
-    var header: String
-    var lines: [DiffLine]
-}
-
-struct DiffFile: Identifiable, Hashable {
-    let id = UUID()
-    var path: String
-    var added: Int
-    var removed: Int
-    var hunks: [DiffHunk]
-    var accepted: Bool = true
+    /// False when the candidate has no line counts (no rendered patch): unknown is not zero.
+    var hasLineCounts: Bool = true
 }
 
 // MARK: - Task (a run)
@@ -528,6 +513,7 @@ struct TaskRun: Identifiable, Hashable {
     var capKnown: Bool = true
     var budgetUnlimited: Bool = false
     var spendEstimated: Bool = false
+    var controllableSpendUsd: Double? // cap-governed cash; nil = unknown, may be known while `spendKnown` is false
     /// Subscription token valuation (QA-023c), separate from cash; nil is unknown, never $0.
     var valuationUsd: Double?
     var routeProof: RouteProof
@@ -557,6 +543,13 @@ struct TaskRun: Identifiable, Hashable {
     var outputReadyState: String?
     var webEvidenceStatus: String?
     var webEvidenceDetail: String?
+    /// #118: retrieval strength, what a verified result returned, and evidence scope,
+    /// as the engine projected them.
+    var webVerification: String?
+    var webVerifiedContent: String?
+    var webObservation: WebObservation?
+    /// #118/#413: what was prepared for each route and whether it started; [] when unrecorded.
+    var routeControls: [RouteControlInfo] = []
     var browserRequirementDetail: String?
     var requestedAccess: String?
     var effectiveAccess: String?
@@ -574,9 +567,17 @@ struct TaskRun: Identifiable, Hashable {
     var authRoute: RunAuthRoute?
     /// Typed failure category from the run's failure record (W18 failure card).
     var failureCategory: String?
+    /// Machine-readable failure sub-code (`RunFailure.code`), e.g. a request the
+    /// engine refused before sending (#147/#393). Never parsed from the message.
+    var failureCode: String?
+    /// The typed failure record itself: refusal sizes, next actions, earlier tries.
+    var failureRecord: RunFailureInfo?
+    /// Size of the raw-api request the final attempt last prepared (#147); nil otherwise.
+    var rawContext: RawContextReceiptInfo?
     /// Live harness questions awaiting the user (waiting_on_user).
     var pendingInteractions: [PendingInteraction] = []
     var waitingOnUser: Bool = false
+    var serverAsyncQuestionsOnly: Bool = false
     /// Server-persisted operator unblock decision action (accept_risk/override), if any.
     var operatorDecisionAction: String?
     /// Honest in-place application state (projected from the run's work_product):
@@ -607,7 +608,6 @@ struct TaskRun: Identifiable, Hashable {
     var planQuestions: [PlanQuestion] = []
     /// Council plan-strategy projection (D31); nil for non-council runs.
     var council: CouncilInfo?
-
 }
 
 // MARK: - Projects & specs

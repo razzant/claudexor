@@ -18,27 +18,72 @@ export interface ParsedModel {
   id: string;
   label: string | null;
   context_window: number | null;
+  input_modalities: string[] | null;
+  max_output_tokens: number | null;
+}
+
+/** A complete catalog, or why the answer is not one. */
+export type ParsedModelsList =
+  | { ok: true; models: ParsedModel[] }
+  | { ok: false; cause: "malformed" | "incomplete"; detail: string };
+
+function positiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
 /**
  * Parse an OpenAI-compatible `GET /v1/models` response: `{ data: [{ id, ... }] }`.
- * Only `id` is guaranteed by the OpenAI shape; `context_window`/`label` are
- * populated opportunistically (some compatible providers, e.g. OpenRouter,
- * carry richer fields). Entries without a usable string `id` are dropped.
+ * The answer is a complete catalog or a typed failure: a missing list, a row
+ * without a string id, or a page that declares more rows than it carries never
+ * becomes a smaller catalog (INV-104). OpenRouter answers the full list when
+ * neither `offset` nor `limit` is sent, with `total_count` and `links.next`;
+ * a present `total_count` must equal the rows carried, and a `links.next` page
+ * means the answer is incomplete. A generic list without a count is complete
+ * as listed. Only `id` is guaranteed by the OpenAI shape; richer OpenRouter
+ * metadata (`name`, `context_length`, `architecture.input_modalities`,
+ * `top_provider.max_completion_tokens`) is copied when well-formed and is
+ * otherwise unknown (null), never "none".
  */
-export function parseModelsList(json: any): ParsedModel[] {
-  const data = Array.isArray(json?.data) ? json.data : [];
+export function parseModelsList(json: any): ParsedModelsList {
+  const data: unknown[] | null = Array.isArray(json?.data) ? json.data : null;
+  if (!data) return { ok: false, cause: "malformed", detail: "the answer has no data array" };
+  const declared = json?.total_count;
+  if (declared !== undefined && !(Number.isInteger(declared) && declared >= 0))
+    return { ok: false, cause: "malformed", detail: "total_count is not a non-negative integer" };
+  const count: number | null = declared === undefined ? null : declared;
+  const nextPage = typeof json?.links?.next === "string" && json.links.next.length > 0;
+  if (nextPage || (count !== null && count > data.length))
+    return {
+      ok: false,
+      cause: "incomplete",
+      detail: `the answer is one page of a longer list (${data.length} rows of ${count ?? "more"})`,
+    };
+  if (count !== null && count < data.length)
+    return {
+      ok: false,
+      cause: "malformed",
+      detail: `the answer declares ${count} rows but carries ${data.length}`,
+    };
   const out: ParsedModel[] = [];
-  for (const entry of data) {
-    const id = typeof entry?.id === "string" ? entry.id : null;
-    if (!id) continue;
-    const label = typeof entry?.name === "string" ? entry.name : null;
-    const ctxRaw = entry?.context_length ?? entry?.context_window;
-    const context_window =
-      typeof ctxRaw === "number" && Number.isInteger(ctxRaw) && ctxRaw > 0 ? ctxRaw : null;
-    out.push({ id, label, context_window });
+  for (const [index, entry] of data.entries()) {
+    const row = entry as Record<string, any> | null;
+    const id = typeof row?.id === "string" && row.id.trim() ? row.id : null;
+    if (!id) return { ok: false, cause: "malformed", detail: `row ${index} has no string id` };
+    const modalities = row?.architecture?.input_modalities;
+    out.push({
+      id,
+      label: typeof row?.name === "string" ? row.name : null,
+      context_window: positiveInteger(row?.context_length ?? row?.context_window),
+      input_modalities:
+        Array.isArray(modalities) &&
+        modalities.length > 0 &&
+        modalities.every((item) => typeof item === "string" && item.trim().length > 0)
+          ? [...modalities]
+          : null,
+      max_output_tokens: positiveInteger(row?.top_provider?.max_completion_tokens),
+    });
   }
-  return out;
+  return { ok: true, models: out };
 }
 
 /** Parse an OpenAI-compatible /chat/completions response. */

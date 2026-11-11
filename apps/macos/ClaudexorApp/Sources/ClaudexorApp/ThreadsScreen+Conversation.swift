@@ -54,23 +54,11 @@ extension ThreadsScreen {
             ComposerOptionParser.parseProtectedPathApproval)
     }
 
-    /// Folder label for either the immutable selected thread location or the draft.
-    var projectChipName: String {
-        if model.selectedThreadId != nil, let thread = model.currentThread {
-            let folder =
-                thread.repoRoot.map { URL(fileURLWithPath: $0).lastPathComponent }
-                ?? "No project"
-            if let remote = model.selectedRemoteConnection {
-                return "\(remote.displayName) · \(folder)"
-            }
-            return folder
-        }
-        guard !model.normalizedProjectRoot.isEmpty else { return "Choose project" }
-        let folder = URL(fileURLWithPath: model.normalizedProjectRoot).lastPathComponent
-        if let connection = model.remoteConnection(for: model.draftExecutionLocation) {
-            return "\(connection.displayName) · \(folder)"
-        }
-        return folder
+    /// Absence of selected metadata is different from a known thread with no project.
+    var projectChipMetadataKnown: Bool {
+        guard let id = model.selectedThreadId else { return true }
+        return model.selectedHistory?.header?.thread.id == id
+            || model.threadSummary(id, at: model.selectedExecutionLocation) != nil
     }
 
     var emptyConversation: some View {

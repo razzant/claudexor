@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { AuxiliaryWritableRootsCapability } from "./auxiliary-writable-roots.js";
 import { RecordedAccessProfile } from "./primitives.js";
 
 /** One schema-owned statement used by every new delegated mutating attempt. */
@@ -83,3 +84,30 @@ export const IsolationCapabilities = z
   .default({})
   .describe("Declared isolation containment facts for a harness.");
 export type IsolationCapabilities = z.infer<typeof IsolationCapabilities>;
+
+export const ReadonlyMechanism = z
+  .enum(["fs_sandbox", "permission_deny", "tool_allowlist", "none"])
+  .describe(
+    "How a harness applies read-only access: a filesystem sandbox, permission denial, a tool allowlist, or none (read-only intent is advisory).",
+  );
+export type ReadonlyMechanism = z.infer<typeof ReadonlyMechanism>;
+
+export const WriteMechanism = z
+  .enum(["fs_sandbox", "tool_policy", "none"])
+  .describe(
+    "How workspace_write access is CONFINED for a harness: a filesystem/network base sandbox (codex seatbelt; the harness's native automatic reviewer may still admit individual actions outside it, so fs_sandbox does not mean every admitted action stays inside), a tool-permission policy with no FS/network fence (claude — an allowed shell is unconfined), or none (write intent is advisory).",
+  );
+export type WriteMechanism = z.infer<typeof WriteMechanism>;
+
+export const AccessControlCapabilities = z
+  .object({
+    readonly_mechanism: ReadonlyMechanism.default("none"),
+    // Typed disclosure of the workspace_write asymmetry (owner decision
+    // 2026-08-30): a consumer choosing lanes by confinement reads THIS field,
+    // never a harness-name branch.
+    write_mechanism: WriteMechanism.default("none"),
+    auxiliary_writable_roots: AuxiliaryWritableRootsCapability,
+  })
+  .default({})
+  .describe("Declared access-control facts for a harness.");
+export type AccessControlCapabilities = z.infer<typeof AccessControlCapabilities>;

@@ -8,7 +8,7 @@ import {
   type LiveMessageInput,
   type RunEventType,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, safeProblemMessage, sha256 } from "@claudexor/util";
+import { safeProblemMessage, sha256 } from "@claudexor/util";
 import type { DaemonRunRecord } from "./run-record.js";
 import { requiredIdempotencyKey } from "./run-start.js";
 import { runIdempotentDelivery, type DeliveryCommandServices } from "./run-apply-routes.js";
@@ -28,7 +28,7 @@ export interface RunMessageRouteContext {
  * `POST /v2/runs/:id/messages` — a live message into a run's active attempt.
  *
  * HTTP carries only transport facts: 404 unknown run, 501 no service, 400
- * malformed/secret/too-long body or missing Idempotency-Key, 409 idempotency
+ * malformed/too-long body or missing Idempotency-Key, 409 idempotency
  * (conflict / in progress / interrupted after restart), 500 receipt-save
  * failure. EVERY typed outcome (delivered, accepted, rejected, not_active,
  * unsupported, delivery_unknown) is HTTP 200 — deliberately unlike the
@@ -45,7 +45,7 @@ export async function handleRunMessageRoute(
   const runMessageMatch = /^\/runs\/([^/]+)\/messages$/.exec(path);
   if (!(method === "POST" && runMessageMatch)) return false;
   const record = await ctx.findRun(decodeURIComponent(runMessageMatch[1] as string));
-  if (!record?.runDir) {
+  if (!record) {
     ctx.json(res, 404, { error: "no such run" });
     return true;
   }
@@ -57,16 +57,27 @@ export async function handleRunMessageRoute(
   try {
     const key = requiredIdempotencyKey(req);
     const raw = await ctx.readBody(req);
-    assertNoInlineSecretValues(raw);
     const body = ControlRunMessageRequest.parse(raw);
     const runId = record.runId ?? record.id;
-    const receipt = await runIdempotentDelivery(ctx.services, {
-      params: record.params,
-      key,
-      operation: "run.message",
-      request: { runId, body },
-      work: () => deliverLiveMessage(record, runId, key, body, send),
-    });
+    const deliver = (target: string) =>
+      runIdempotentDelivery(ctx.services, {
+        params: record.params,
+        key,
+        operation: "run.message",
+        request: { runId: target, body },
+        work: () => deliverLiveMessage(record, runId, key, body, send),
+      });
+    let receipt: ControlRunMessageResponse;
+    try {
+      receipt = await deliver(runId);
+    } catch (error) {
+      // A message sent while the job was still queued keeps its receipt under
+      // the job id. Once the run binds, the same key and body replay it; any
+      // other request under the key still conflicts.
+      if (runId === record.id || (error as { code?: unknown })?.code !== "idempotency_conflict")
+        throw error;
+      receipt = await deliver(record.id);
+    }
     ctx.json(res, 200, ControlRunMessageResponse.parse(receipt));
   } catch (error) {
     ctx.requestError(res, error);
@@ -98,6 +109,15 @@ async function deliverLiveMessage(
       outcome: "not_active",
       reason: "run_terminal",
       message: `run ${runId} is ${record.state}; no live attempt can receive a message`,
+    });
+  }
+  // An accepted job that has not bound its run yet exists, but nothing can
+  // receive the message: nothing is journaled or sent.
+  if (!record.runDir) {
+    return receiptFor(runId, messageId, {
+      outcome: "not_active",
+      reason: "no_live_session",
+      message: `job ${runId} is ${record.state} and has no live attempt yet; nothing was sent`,
     });
   }
   try {

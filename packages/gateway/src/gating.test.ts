@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type ConformanceReport, HarnessManifest } from "@claudexor/schema";
-import { allowedIntents } from "./gating.js";
+import { allowedIntents, capabilityIntents } from "./gating.js";
 
 // Built through the Zod SSOT so schema defaults apply and the fixture cannot
 // silently drift from the manifest contract.
@@ -82,5 +82,32 @@ describe("allowedIntents", () => {
 
   it("degraded with no enabled intents grants nothing", () => {
     expect(allowedIntents(manifest(), report("degraded"))).toEqual([]);
+  });
+
+  it("answering needs no file access: a route without read_files keeps a doctor-enabled explain, not audit (#133)", () => {
+    const remote = HarnessManifest.parse({
+      id: "remote",
+      display_name: "Remote",
+      kind: "remote_api",
+      provider_family: "unknown",
+      capabilities: { plan: true, review: true, read_files: false },
+      access_profiles_supported: ["readonly"],
+    });
+    expect(capabilityIntents(remote.capabilities)).toEqual(["plan", "spec", "review", "explain"]);
+    const intents = allowedIntents(
+      remote,
+      report("degraded", {
+        enabled_intents: ["plan", "review", "explain", "audit"],
+        disabled_intents: [],
+      }),
+    );
+    expect(intents).toContain("explain");
+    expect(intents).not.toContain("audit");
+    // A doctor that does not enable explain still withholds it.
+    expect(allowedIntents(remote, report("degraded", { enabled_intents: ["plan"] }))).not.toContain(
+      "explain",
+    );
+    // A file-reading harness keeps both, in the established order.
+    expect(capabilityIntents(manifest().capabilities).slice(-2)).toEqual(["explain", "audit"]);
   });
 });

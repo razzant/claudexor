@@ -67,7 +67,7 @@ beforeAll(() => {
 afterAll(() => {
   if (!capture && !existsSync(join(base, "cleanup-unknown.json")))
     rmSync(base, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 type Frame = { method: string; params: Record<string, unknown> };
 const childFrame: Frame = {
@@ -115,7 +115,7 @@ interface Scenario {
   /** The descendant writes its late frames only after the forced closure. */
   afterDrain?: boolean;
   /** The production Codex line reader: no capacity hold, hence no late frames. */
-  readline?: boolean;
+  productionReader?: boolean;
 }
 const verdictOf = (scenario: Scenario) => ({
   verdict: scenario.verdict ?? "PASS",
@@ -192,7 +192,7 @@ async function joined(scenario: Scenario): Promise<void> {
   const held = join(dir, "held");
   const written = join(dir, "late-written");
   const afterDrain = join(dir, "after-drain");
-  const frames = scenario.frames ?? (scenario.readline ? [] : [childFrame]);
+  const frames = scenario.frames ?? (scenario.productionReader ? [] : [childFrame]);
   writeFileSync(
     plan,
     JSON.stringify({
@@ -283,7 +283,7 @@ async function joined(scenario: Scenario): Promise<void> {
             exitDrainMs: EXIT_DRAIN_MS,
             exitDrainMaxMs: EXIT_DRAIN_MAX_MS,
             cancelKillDelayMs: 10000,
-            ...(scenario.readline
+            ...(scenario.productionReader
               ? {}
               : { streamLimits: { stdoutFrameBytes: 65536, queuedFrames: 1, stderrBytes: 4096 } }),
             onExit: () => {
@@ -339,7 +339,7 @@ async function joined(scenario: Scenario): Promise<void> {
               holding = true;
               trace.push("held");
               writeFileSync(held, "first hold frame taken\n"); // the descendant may now let its root exit
-              if (!scenario.readline) {
+              if (!scenario.productionReader) {
                 // Consume nothing more until the root exited and every late frame is in
                 // the pipe (finite: until the descendant closed it too).
                 const ready = () =>
@@ -454,7 +454,7 @@ async function joined(scenario: Scenario): Promise<void> {
     // after the descendant handed every late frame to the pipe.
     expect(trace.indexOf("held")).toBeGreaterThanOrEqual(0);
     expect(trace.indexOf("held")).toBeLessThan(trace.indexOf("direct-exit"));
-    if (!scenario.readline) {
+    if (!scenario.productionReader) {
       expect(trace.indexOf("direct-exit")).toBeLessThan(trace.indexOf("release"));
       expect(trace.indexOf("release")).toBeLessThan(trace.indexOf("drained"));
       expect(writtenAtRelease).toBe(!scenario.afterDrain);
@@ -606,7 +606,7 @@ describe("post-exit Codex drain through scope receipt and real GET detail", () =
       frames: [rootFrames[0]!],
     }));
   it("keeps substantive PASS with a held pipe on the production line reader", () =>
-    joined({ name: "readline-quiet", readline: true }));
+    joined({ name: "production-quiet", productionReader: true }));
   it("rejects a root failure assembled from already buffered chunks", () =>
     joined({
       name: "buffered-root-error",

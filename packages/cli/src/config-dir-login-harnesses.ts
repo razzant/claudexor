@@ -18,8 +18,9 @@ import { canonicalAgyProfileHome } from "@claudexor/harness-agy";
 import { canonicalProfileConfigDir } from "@claudexor/harness-claude";
 import { canonicalCodexProfileHome } from "@claudexor/harness-codex";
 import { canonicalCursorProfileHome } from "@claudexor/harness-cursor";
+import { canonicalGrokProfileHome } from "@claudexor/harness-grok";
 
-export const CONFIG_DIR_LOGIN_HARNESSES = ["claude", "codex", "cursor", "agy"] as const;
+export const CONFIG_DIR_LOGIN_HARNESSES = ["claude", "codex", "cursor", "agy", "grok"] as const;
 export type ConfigDirLoginHarness = (typeof CONFIG_DIR_LOGIN_HARNESSES)[number];
 
 export function isConfigDirLoginHarness(value: string): value is ConfigDirLoginHarness {
@@ -44,6 +45,7 @@ const CANONICAL_PROFILE_LOGIN_DIR: Record<ConfigDirLoginHarness, (locator: strin
   codex: canonicalCodexProfileHome,
   cursor: canonicalCursorProfileHome,
   agy: canonicalAgyProfileHome,
+  grok: canonicalGrokProfileHome,
 };
 
 export function canonicalProfileLoginDir(harness: ConfigDirLoginHarness, locator: string): string {

@@ -1,10 +1,23 @@
 import { z } from "zod/v3";
 import { ControlQuotaResponse } from "./quota.js";
 import { ControlQuotaFreshnessResponse } from "./quota-read.js";
+import { QuotaRequestKind } from "./quota-request-kind.js";
 
-import { AccountTarget } from "./account-target.js";
-export { AccountTarget } from "./account-target.js";
+import { AccountResourceTarget, AccountTarget } from "./account-target.js";
+export { AccountResourceTarget, AccountTarget } from "./account-target.js";
 const instant = z.string().datetime({ offset: true }).nullable();
+const resourceScopeFields = {
+  scope: z.enum(["personal", "team"]).optional(),
+  usage_kind: z.enum(["included", "bonus", "on_demand", "total"]).optional(),
+  period: z.object({ starts_at: instant, ends_at: instant }).strict().optional(),
+  fee_included: z
+    .boolean()
+    .nullable()
+    .optional()
+    .describe(
+      "Whether the reported amount includes fees; null means the source did not establish this.",
+    ),
+};
 export const resourceFacet = <T extends z.ZodTypeAny>(value: T) =>
   z
     .object({
@@ -18,6 +31,7 @@ export const resourceFacet = <T extends z.ZodTypeAny>(value: T) =>
     .strict();
 export const AccountBalance = z
   .object({
+    ...resourceScopeFields,
     id: z.string(),
     label: z.string(),
     amount: z.string().nullable(),
@@ -30,6 +44,7 @@ export const AccountBalance = z
   .strict();
 export const AccountSpending = z
   .object({
+    ...resourceScopeFields,
     id: z.string(),
     label: z.string(),
     enabled: z.boolean().nullable(),
@@ -40,8 +55,31 @@ export const AccountSpending = z
     decimal_places: z.number().int().nonnegative().nullable(),
     resets_at: instant,
     reason: z.string().nullable(),
+    capped: z
+      .boolean()
+      .nullable()
+      .optional()
+      .describe(
+        "true: the provider reports a cap in limit; false: it reports no cap, so a null limit is not unknown and not unlimited money; null or absent: not established.",
+      ),
+    remaining: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "Provider-reported amount left under limit in the current window, with its sign; null when not reported.",
+      ),
+    window: z
+      .enum(["day", "week", "month", "lifetime"])
+      .nullable()
+      .optional()
+      .describe(
+        "Provider calendar window that used counts (UTC); when capped, limit resets at its end and lifetime never resets. resets_at is set only from a provider-reported instant.",
+      ),
   })
   .strict();
+export type AccountSpending = z.infer<typeof AccountSpending>;
+export type AccountBalance = z.infer<typeof AccountBalance>;
 export const AccountResetGrant = z
   .object({
     id: z.string(),
@@ -73,7 +111,14 @@ export const AccountResetOffer = z
 export type AccountResetOffer = z.infer<typeof AccountResetOffer>;
 export const AccountResourceSnapshot = z
   .object({
-    target: AccountTarget,
+    target: AccountResourceTarget,
+    credential_fingerprint: z
+      .string()
+      .regex(/^[0-9a-f]{16}$/)
+      .optional()
+      .describe(
+        "Non-secret identity of the API key this row was read with. Present only on API-key rows; a row is published only while it matches the key requests would send now.",
+      ),
     balances: resourceFacet(z.array(AccountBalance)),
     spending: resourceFacet(z.array(AccountSpending)),
     resets: resourceFacet(z.array(AccountResetOffer)),
@@ -83,6 +128,24 @@ export const AccountResourceSnapshot = z
   })
   .strict();
 export type AccountResourceSnapshot = z.infer<typeof AccountResourceSnapshot>;
+/** Resource-only sources never decide quota admission or routing. An
+ * `account` source reads registered login accounts and joins background poll
+ * demand; an `api_key` source reads the harness's registered API-key accounts
+ * and its default API-key route on explicit refresh only, and its rows reach
+ * only clients that negotiated includeApiKeys. */
+export const ACCOUNT_RESOURCE_REFRESH_SOURCES = {
+  cursor_dashboard: { harness: "cursor", facets: ["balances", "spending"], credential: "account" },
+  openrouter_key: { harness: "openrouter", facets: ["spending"], credential: "api_key" },
+} as const;
+type ResourceSourceCredential =
+  (typeof ACCOUNT_RESOURCE_REFRESH_SOURCES)[keyof typeof ACCOUNT_RESOURCE_REFRESH_SOURCES]["credential"];
+export function accountResourceSourceHarnesses(credential: ResourceSourceCredential): Set<string> {
+  return new Set(
+    Object.values(ACCOUNT_RESOURCE_REFRESH_SOURCES)
+      .filter((source) => source.credential === credential)
+      .map((source) => source.harness),
+  );
+}
 export const AccountResourceObservation = AccountResourceSnapshot.partial()
   .required({ target: true })
   .extend({
@@ -105,12 +168,32 @@ export const ControlAccountResourcesResponse = ControlQuotaResponse.extend({
   resources: z.array(AccountResourceSnapshot),
 }).strict();
 export type ControlAccountResourcesResponse = z.infer<typeof ControlAccountResourcesResponse>;
+/** Negotiated complete passive view. The echo proves which selectors the
+ * engine applied; an old engine's legacy response is not scoped authority. */
+export const ControlAccountResourcesFreshnessResponse = ControlQuotaFreshnessResponse.extend({
+  resources: z.array(AccountResourceSnapshot),
+  availability_scope: z
+    .object({
+      basis: z.literal("quota_block"),
+      model: z.string().min(1).nullable(),
+      requestKind: QuotaRequestKind,
+    })
+    .strict(),
+})
+  .strict()
+  .describe(
+    "Negotiated resources_freshness view: complete passive account resources, per-constraint freshness and the quota_block availability_scope applied by the engine.",
+  );
+export type ControlAccountResourcesFreshnessResponse = z.infer<
+  typeof ControlAccountResourcesFreshnessResponse
+>;
 /** Whole-response union of every strict quota read shape. A caller validates
  * the complete payload; a partial view is never stripped down to legacy. */
 export const ControlQuotaQueryResponse = z.union([
   ControlQuotaResponse,
   ControlAccountResourcesResponse,
   ControlQuotaFreshnessResponse,
+  ControlAccountResourcesFreshnessResponse,
 ]);
 export const ControlAccountResetRequest = z
   .object({

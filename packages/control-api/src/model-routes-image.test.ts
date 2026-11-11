@@ -77,7 +77,11 @@ describe("image model operations over HTTP", () => {
     );
     expect(plain.status).toBe(202);
     expect(createModelOperation).toHaveBeenLastCalledWith(ref, "txt");
-    for (const flag of ["captureEffortEvidence", "captureFailureEvidence"]) {
+    for (const flag of [
+      "captureEffortEvidence",
+      "captureFailureEvidence",
+      "captureRoutingEvidence",
+    ]) {
       const refused = await request(
         `/model-operations?requestKind=image&${flag}=true`,
         { request: ref },

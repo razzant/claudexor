@@ -1,11 +1,31 @@
 import type { BudgetLease, CostKnowledge, PaidBudget } from "@claudexor/schema";
 import type { CircuitThresholds } from "./ledger.js";
 
+/** Cumulative disclosure after every settlement: reported cash knowledge plus the
+ * controllable knowledge that governs a finite cap. */
+export type CashSettledCallback = (
+  cashSpendUsd: number,
+  valuationUsd: number,
+  cashEstimated: boolean,
+  valuationKnowledge: CostKnowledge,
+  cashKnowledge: CostKnowledge,
+  controllableCashKnowledge: CostKnowledge,
+) => void;
+
+/** Settled cash certainty without a default: the reported total and the
+ * cap-governed part. Both are null until something settles. */
+export interface CashCertainty {
+  reported: CostKnowledge | null;
+  controllable: CostKnowledge | null;
+}
+
 export interface TaskFinancialTotals {
   cashUsd: number;
   valuationUsd: number;
   cashEstimated: boolean;
   cashKnowledge: CostKnowledge | null;
+  /** Cap-governed cash knowledge; `cashKnowledge` is the reported total. */
+  controllableCashKnowledge: CostKnowledge | null;
   valuationKnowledge: CostKnowledge | null;
 }
 
@@ -21,28 +41,17 @@ export interface SharedFinancialState {
   valuationUsd: number;
   cashEstimated: boolean;
   cashKnowledge: CostKnowledge | null;
+  controllableCashKnowledge: CostKnowledge | null;
   valuationKnowledge: CostKnowledge | null;
   overshot: boolean;
   unverifiable: boolean;
-  rootOnCashSettled?: (
-    cashSpendUsd: number,
-    valuationUsd: number,
-    cashEstimated: boolean,
-    valuationKnowledge: CostKnowledge,
-    cashKnowledge: CostKnowledge,
-  ) => void;
+  rootOnCashSettled?: CashSettledCallback;
 }
 
 export function newSharedFinancialState(
   budget: PaidBudget,
   thresholds: CircuitThresholds,
-  rootOnCashSettled?: (
-    cashSpendUsd: number,
-    valuationUsd: number,
-    cashEstimated: boolean,
-    valuationKnowledge: CostKnowledge,
-    cashKnowledge: CostKnowledge,
-  ) => void,
+  rootOnCashSettled?: CashSettledCallback,
 ): SharedFinancialState {
   return {
     budget,
@@ -56,6 +65,7 @@ export function newSharedFinancialState(
     valuationUsd: 0,
     cashEstimated: false,
     cashKnowledge: null,
+    controllableCashKnowledge: null,
     valuationKnowledge: null,
     overshot: false,
     unverifiable: false,
@@ -70,6 +80,7 @@ export function recordSharedSettlement(
   valuationUsd: number,
   cashKnowledge: CostKnowledge,
   valuationKnowledge: CostKnowledge | null,
+  controllableCashKnowledge: CostKnowledge,
 ): void {
   financial.cashUsd += cashUsd;
   financial.valuationUsd += valuationUsd;
@@ -77,6 +88,14 @@ export function recordSharedSettlement(
   taskTotals.valuationUsd += valuationUsd;
   taskTotals.cashKnowledge = mergeKnowledge(taskTotals.cashKnowledge, cashKnowledge);
   financial.cashKnowledge = mergeKnowledge(financial.cashKnowledge, cashKnowledge);
+  taskTotals.controllableCashKnowledge = mergeKnowledge(
+    taskTotals.controllableCashKnowledge,
+    controllableCashKnowledge,
+  );
+  financial.controllableCashKnowledge = mergeKnowledge(
+    financial.controllableCashKnowledge,
+    controllableCashKnowledge,
+  );
   taskTotals.cashEstimated = taskTotals.cashKnowledge !== "exact";
   financial.cashEstimated = financial.cashKnowledge !== "exact";
   if (valuationKnowledge !== null) {
@@ -92,6 +111,7 @@ export function recordSharedSettlement(
     financial.cashEstimated,
     financial.valuationKnowledge ?? "unknown",
     financial.cashKnowledge ?? "unknown",
+    financial.controllableCashKnowledge ?? "unknown",
   );
 }
 
@@ -106,6 +126,7 @@ export function taskFinancialTotals(
       valuationUsd: 0,
       cashEstimated: false,
       cashKnowledge: null,
+      controllableCashKnowledge: null,
       valuationKnowledge: null,
     };
     financial.totalsByTask.set(taskId, totals);

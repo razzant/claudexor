@@ -8,7 +8,7 @@ import {
   ModelCallResult,
   type ModelPayloadRef,
 } from "@claudexor/schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createCodexModelAdapter } from "../../../harness-codex/src/model.js";
 import { CODEX_HTTP_CLIENT_VERSION } from "../../../harness-codex/src/http-client-version.js";
 import { AccountResets } from "../account-resets.js";
@@ -21,15 +21,22 @@ import { Obligations } from "./obligations.js";
 import { createPartition } from "./partitions.js";
 import { EngineStore } from "./store.js";
 import { SqlTerminalFiles } from "./terminal-files.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const NOW = "2026-10-10T00:00:00.000Z";
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "cx-q2-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../../dist/store/flusher-worker.js"),
@@ -71,6 +78,12 @@ function resources(): ModelPayloadStore {
       return ref;
     },
     readModel(ref) {
+      const row = bodies.get(ref.resourceId);
+      if (!row) throw new Error("released payload");
+      expect(row.ref).toEqual(ref);
+      return row.bytes;
+    },
+    async readModelAsync(ref) {
       const row = bodies.get(ref.resourceId);
       if (!row) throw new Error("released payload");
       expect(row.ref).toEqual(ref);
@@ -211,6 +224,7 @@ describe("Q2 model dispatch", () => {
       if (mode === "success") {
         expect(posts).toBe(1);
         expect(receipt.lifecycle).toBe("succeeded");
+        expect(receipt.problem).toBeNull();
       } else if (mode === "cancel_before_dispatch" || mode === "cancel_after_dispatch") {
         expect(posts).toBe(mode === "cancel_after_dispatch" ? 1 : 0);
         expect(receipt).toMatchObject({
@@ -218,15 +232,23 @@ describe("Q2 model dispatch", () => {
           dispatch: {
             state: mode === "cancel_after_dispatch" ? "unknown" : "not_started",
             startedAt: NOW,
-            route: { credentialProfileId: "fixture" },
+            // The unsent attempt keeps its selected route; a sent one reports what was observed.
+            route: {
+              credentialProfileId: "fixture",
+              model: mode === "cancel_after_dispatch" ? null : "fixture-model",
+            },
           },
+          problem: { context: { requestedModel: "fixture-model" } },
         });
       } else {
         expect(posts).toBe(0);
         expect(receipt).toMatchObject({
           lifecycle: "failed",
           dispatch: { state: "not_started", startedAt: NOW, route: { model: "fixture-model" } },
-          problem: { code: "store_flush_unavailable" },
+          problem: {
+            code: "store_flush_unavailable",
+            context: { requestedModel: "fixture-model" },
+          },
         });
       }
       const generation = f.store.facts().flusher.generation;

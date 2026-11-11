@@ -1,3 +1,5 @@
+import { composeBaseEnv, resolveSelectedProgramAsync } from "@claudexor/core";
+import { AGY_PROGRAM } from "./program.js";
 import type {
   AccessProfile,
   ConformanceReport,
@@ -16,25 +18,29 @@ import {
 } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter, HarnessModelSpec } from "@claudexor/core";
 import {
+  formatNativeArgs,
   HarnessUnavailableError,
   harnessPlatform,
   needsPrivatePerProfileKeychain,
   promptWithInstructions,
-  runCapture,
   runCliHarness,
 } from "@claudexor/core";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseAgyEvent } from "./parse.js";
+import { createAgyNativeCompletion } from "./native-completion.js";
 import { isAgyProfileKeychainUnsafe, prepareAgyProfileKeychain } from "./keychain.js";
 import {
   AGY_BIN,
+  agyChildHome,
   defaultAgyModelProbe,
   probeAgyCredentialProfile,
   resolveAgyProfileRoute,
 } from "./profile.js";
-import { AGY_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
+import { AGY_VENDOR_CLI_VERSION, agyReadonlyDoctorCheck } from "./vendor-cli-version.js";
 import { listAgyModels } from "./models.js";
 import { applyAgyRunProcessing, prepareAgyProcessing } from "./processing.js";
+import { prepareAgyRunInput } from "./run-input.js";
+import { withAgySessionSettings } from "./session-policy.js";
 // The package publishes only what other packages consume. The profile probe,
 // the route resolver and the stream parser are reached through the adapter
 // this file returns, so re-exporting them would be a dead public surface.
@@ -51,6 +57,14 @@ export {
  * plan mode answered read-only prompts and withheld a requested write;
  * accept-edits wrote into the workspace; --dangerously-skip-permissions wrote
  * and ran commands. Owner decision Л-7 admits full access explicitly.
+ *
+ * Those proofs read only inside the workspace. Real readonly callers also read
+ * outside it, and in a headless run plan mode auto-denies such reads and every
+ * shell command: on 2026-10-28, 62 of 123 managed readonly runs (agy 1.3.4)
+ * ended without an answer that way. The profile read grant (read-grant.ts,
+ * live-proven on 1.3.4) restores reading anywhere; a readonly run's session
+ * settings deny commands and writes (session-policy.ts), so a refused call
+ * returns to the model as a tool error instead of ending the turn.
  */
 function accessArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -65,13 +79,23 @@ function accessArgs(access: AccessProfile): string[] {
   }
 }
 
+/**
+ * Agy's print mode treats an openable CONIN$ as an interactive terminal
+ * (print-command.ts, antigravity-cli#508), and its runs select print mode from
+ * piped stdin. Until a supported agy is proven to ignore CONIN$, its runs and
+ * this version probe keep starting without a console on Windows, while other
+ * harnesses get an invisible one; console programs an agy run starts may open
+ * windows of their own.
+ */
+const AGY_WINDOWS_CONSOLE = "none";
+
 async function detectVersion(): Promise<string | null> {
-  try {
-    const r = await runCapture(AGY_BIN(), ["--version"], { timeoutMs: 10_000 });
-    return r.stdout.trim() || `${AGY_BIN()} (version unknown)`;
-  } catch {
-    return null;
-  }
+  return (
+    await resolveSelectedProgramAsync(AGY_PROGRAM, {
+      environment: { ...composeBaseEnv("mirror_native"), ...AGY_PROGRAM.childUpdateEnv },
+      windowsConsole: AGY_WINDOWS_CONSOLE,
+    })
+  ).versionOutput;
 }
 
 /** Historical menu hints; account-specific presence comes from `models()`.
@@ -172,7 +196,11 @@ export const AGY_CAPABILITY_PROFILE: HarnessCapabilityProfile =
     },
     // workspace_write rides the vendor's `--mode accept-edits` permission
     // policy — the same class as claude/cursor, not an unconfined "none".
-    access_control: { readonly_mechanism: "permission_deny", write_mechanism: "tool_policy" },
+    access_control: {
+      readonly_mechanism: "permission_deny",
+      write_mechanism: "tool_policy",
+      auxiliary_writable_roots: false,
+    },
     isolation: {
       supported_containment: ["env_or_file_injection", "private_per_profile_keychain"],
     },
@@ -229,7 +257,14 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
     });
   const listModels = (spec: HarnessModelSpec) => listAgyModels(spec, prepareProfileKeychain);
   return {
+    nativeHomeLifetime: {
+      status: "not_pruned",
+      reason: "Agy native session storage has no proven independent pruning contract.",
+    },
     id: "agy",
+    program: AGY_PROGRAM,
+    childHome: agyChildHome,
+    nativeAccess: (spec) => formatNativeArgs(accessArgs(spec.access)),
     // The level is a token of the model id: `prepareProcessing` selects the
     // listed variant of the requested model's family from the pinned
     // account's live inventory and returns the effort receipt with it.
@@ -302,18 +337,15 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
 
     async doctor(spec: DoctorSpec): Promise<ConformanceReport> {
       const version = await detectVersion();
-      const installedSemver =
-        version === null ? null : (/\d+\.\d+\.\d+/.exec(version)?.[0] ?? null);
-      const versionDrift =
-        version !== null && installedSemver !== AGY_VENDOR_CLI_VERSION
-          ? `installed agy "${version}" differs from the verified ${AGY_VENDOR_CLI_VERSION}; the platform credential transport and profile policy are re-proven per version (R-2')`
-          : null;
+      const installedSemver = version?.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
       // Л-24 + INV-067: Darwin's profile-local keychain plus vendor fallback
       // preserves the proven profile identity route. Linux retains the
       // config-file transport without a live multi-account proof. Windows has
       // a different effective policy altogether: the vendor credential is
       // OS-user-scoped and HOME scopes state only.
       const platformProof = agyPlatformIsolationDetail();
+      // The readonly minimum (#653) is its own fact, apart from the fixture pin.
+      const readonly = agyReadonlyDoctorCheck(installedSemver);
       const requestedSource = spec.authSource;
       if (requestedSource !== undefined && requestedSource !== "native_session") {
         return ConformanceReportSchema.parse({
@@ -375,9 +407,7 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
             status: "fail",
             detail: "agy has no engine-default credential by design; accounts are named profiles",
           },
-          ...(versionDrift
-            ? [{ id: "version_pin", status: "fail" as const, detail: versionDrift }]
-            : [{ id: "version_pin", status: "pass" as const, detail: AGY_VENDOR_CLI_VERSION }]),
+          readonly,
           ...(platformProof
             ? [{ id: "platform_isolation", status: "skip" as const, detail: platformProof }]
             : []),
@@ -386,7 +416,7 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
         disabled_intents: AGY_ENABLED_INTENTS,
         reasons: [
           "agy routes only through named accounts: add one (`claudexor profiles add agy <id>` + `claudexor profiles login agy <id>`) and pin it (--profile)",
-          ...(versionDrift ? [versionDrift] : []),
+          ...(readonly.status === "fail" ? [readonly.detail] : []),
           ...(platformProof ? [platformProof] : []),
         ],
         auth_sources: [
@@ -430,8 +460,7 @@ async function* runAgy(
   prepareProfileKeychain: (home: string, platform?: NodeJS.Platform) => void,
   listModels: (spec: HarnessModelSpec) => Promise<HarnessModel[]>,
 ): AsyncIterable<HarnessEvent> {
-  const input = promptWithInstructions(spec);
-  if (!input) {
+  if (!promptWithInstructions(spec)) {
     yield {
       type: "error",
       session_id: spec.session_id,
@@ -482,6 +511,11 @@ async function* runAgy(
     // The vendor probe/run remains the final transport authority.
   }
 
+  // Read grant, readonly session policy and note, and inline or file input (#653).
+  const access = yield* prepareAgyRunInput(spec, route.home);
+  if (!access) return;
+  const { settings, input } = access;
+
   // AGY 1.1.13 selects print mode from piped stdin only without a print/prompt flag.
   const args = ["--output-format", "stream-json"];
   // Л-18: without --add-dir agy resolves relative paths against its own app
@@ -497,28 +531,35 @@ async function* runAgy(
   // INV-137: the vendor conversation id is the resumable native session.
   if (spec.resume_session_id) args.push("--conversation", spec.resume_session_id);
 
-  yield* runCliHarness({
-    bin: AGY_BIN(),
-    args,
-    input,
-    spec,
-    env: route.env,
-    label: "agy",
-    redact: redactSecrets,
-    parseEvent: (obj, sessionId) => {
-      const out = parseAgyEvent(obj, sessionId);
-      if (out) {
-        for (const ev of out) {
-          ev.credential_route = "vendor_native";
-          ev.credential_source = "native_session";
-          ev.credential_profile_id = profile.profile_id;
-          if (spec.processing) {
-            ev.processing = spec.processing;
-            ev.processing_cost_basis = spec.processing_cost_basis;
+  const completion = createAgyNativeCompletion();
+  const run = (settingsArgs: string[]) =>
+    runCliHarness({
+      program: AGY_PROGRAM,
+      bin: AGY_BIN(),
+      args: [...settingsArgs, ...args],
+      input,
+      spec,
+      env: route.env,
+      windowsConsole: AGY_WINDOWS_CONSOLE,
+      label: "agy",
+      redact: redactSecrets,
+      observeStderr: completion.observeStderr,
+      parseStderrFailure: completion.parseStderrFailure,
+      parseEvent: (obj, sessionId) => {
+        const out = parseAgyEvent(obj, sessionId);
+        if (out) {
+          for (const ev of out) {
+            ev.credential_route = "vendor_native";
+            ev.credential_source = "native_session";
+            ev.credential_profile_id = profile.profile_id;
+            if (spec.processing) {
+              ev.processing = spec.processing;
+              ev.processing_cost_basis = spec.processing_cost_basis;
+            }
           }
         }
-      }
-      return out;
-    },
-  });
+        return out;
+      },
+    });
+  yield* completion.wrap(withAgySessionSettings(settings, spec.session_id, run));
 }

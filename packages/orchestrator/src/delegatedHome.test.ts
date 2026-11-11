@@ -48,7 +48,7 @@ describe("scopedHarnessHome", () => {
   const repoRoot = join(base, "repo");
   ensureDir(repoRoot);
   const wsm = new WorkspaceManager(repoRoot, { runtimeRoot: join(base, "runtime") });
-  afterAll(() => rmSync(base, { recursive: true, force: true }));
+  afterAll(() => rmSync(base, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("leaves an ordinary in-place attempt on the operator's native environment", () => {
     expect(scopedHarnessHome(wsm, envelopeAt(base, repoRoot, true), true, false)).toEqual({
@@ -90,7 +90,7 @@ describe("durable lane home of a delegated thread candidate (INV-034)", () => {
   const wsm = new WorkspaceManager(copy, { runtimeRoot: join(base, "copy-runtime") });
   const lanes = new WorkspaceManager(project, { runtimeRoot: join(base, "project-runtime") });
   const laneFor = (profile: string | null) => lanes.laneHomeEnv("th-1", "claude", profile).env;
-  afterAll(() => rmSync(base, { recursive: true, force: true }));
+  afterAll(() => rmSync(base, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("re-keys the in-place candidate to the resolved account's lane, the same home every turn", () => {
     const first = scopedHarnessHome(wsm, envelopeAt(base, copy, true), true, true, "full", laneFor);
@@ -190,7 +190,7 @@ describe("delegated boundary disclosure", () => {
   const repoRoot = join(base, "project");
   ensureDir(repoRoot);
   const wsm = new WorkspaceManager(repoRoot, { runtimeRoot: join(base, "runtime") });
-  afterAll(() => rmSync(base, { recursive: true, force: true }));
+  afterAll(() => rmSync(base, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("keeps native workspace_write and records deliberate no-outer-boundary evidence", () => {
     const home = scopedHarnessHome(
@@ -229,7 +229,27 @@ describe("delegated boundary disclosure", () => {
     );
     expect(disclosure).toContain(DELIBERATE_NO_OUTER_BOUNDARY_REASON);
     expect(disclosure).toContain("not containment");
+    expect(disclosure).toContain("Stay within\nthe execution workspace and do not access");
     expect(outerBoundaryNotice(scopedHarnessHome(wsm, envelope, true, false))).toBeNull();
+  });
+
+  it("names explicit auxiliary grants instead of claiming the workspace is the only target", () => {
+    const envelope = envelopeAt(base, repoRoot, true);
+    const roots = ["/srv/cache/uv", "/srv/scratch"];
+    const delegated = outerBoundaryNotice(
+      scopedHarnessHome(wsm, envelope, true, true, "workspace_write"),
+      roots,
+    );
+    expect(delegated).toContain(
+      "the execution workspace and the granted service directories below",
+    );
+    expect(delegated).toContain("/srv/cache/uv, /srv/scratch");
+    expect(delegated).toContain("never part of the project result");
+    // An ordinary lane has no boundary disclosure, but still learns its grant.
+    expect(outerBoundaryNotice(scopedHarnessHome(wsm, envelope, true, false), roots)).toContain(
+      "/srv/cache/uv, /srv/scratch",
+    );
+    expect(outerBoundaryNotice(scopedHarnessHome(wsm, envelope, true, false), [])).toBeNull();
   });
 });
 
@@ -289,10 +309,89 @@ describe("applied attempt evidence", () => {
     ).toBe(false);
   });
 
+  it("leaves an attempt this run marked as failed before its HOME to its own failure (#648)", () => {
+    const beforeHome = appliedAttemptFacts(undefined, "workspace_write", null);
+    const marked = { errored: true, homeUndecided: true, applied: beforeHome } as const;
+    // No child ran: the gate does not replace that attempt's own failure.
+    expect(() =>
+      assertDelegatedEvidence(true, "full", [{ attemptId: "a01", ...marked }]),
+    ).not.toThrow();
+    expect(() =>
+      assertDelegatedEvidence(true, "workspace_write", [
+        { attemptId: "a01", ...marked },
+        { attemptId: "a02", applied: deliberate },
+      ]),
+    ).not.toThrow();
+    // The gap stays a gap: the record never claims what did not run.
+    expect(appliedEvidenceComplete(beforeHome)).toBe(false);
+    // Only that marker exempts: the same homeless block read without it (a
+    // historical record, or one whose catch did not know), a success, a missing
+    // block, or a decided HOME without its disclosure stays unauditable.
+    const started = { ...deliberate, confinement_unavailable_reason: null };
+    for (const attempt of [
+      { attemptId: "a03", errored: true, applied: beforeHome },
+      { attemptId: "a03", homeUndecided: true, applied: beforeHome },
+      { attemptId: "a03", errored: false, homeUndecided: true, applied: beforeHome },
+      { attemptId: "a03", errored: true },
+      { attemptId: "a03", errored: true, applied: started },
+    ])
+      expect(() =>
+        assertDelegatedEvidence(true, "workspace_write", [
+          { attemptId: "a01", ...marked },
+          attempt,
+        ]),
+      ).toThrowError(/1 attempt\(s\) state neither .* \(a03\)$/);
+  });
+
   it("does not gate non-delegated or readonly runs", () => {
     expect(() =>
       assertDelegatedEvidence(false, "workspace_write", [{ attemptId: "a01" }]),
     ).not.toThrow();
     expect(() => assertDelegatedEvidence(true, "readonly", [{ attemptId: "a01" }])).not.toThrow();
+  });
+
+  it("records the HOME an adapter actually gave its child instead of the engine HOME", () => {
+    const spec = {
+      env: { HOME: "/runtime/lane/home" },
+      credential_profile: { profile_id: "acct" },
+    };
+    const profileHome = { childHome: () => "/owned/profiles/acct" };
+    const delegated = followSpecHome(
+      {
+        isolated: true,
+        homeDir: "/runtime/lane/home",
+        outerBoundaryUnavailableReason: DELIBERATE_NO_OUTER_BOUNDARY_REASON,
+      },
+      spec,
+      null,
+      profileHome,
+    );
+    const facts = appliedAttemptFacts(delegated, "workspace_write", "acct");
+    expect(facts).toMatchObject({
+      harness_home_isolated: true,
+      harness_home_dir: "/owned/profiles/acct",
+      credential_profile_applied: "acct",
+      confinement_unavailable_reason: DELIBERATE_NO_OUTER_BOUNDARY_REASON,
+    });
+    expect(appliedEvidenceComplete(facts)).toBe(true);
+    // An ordinary in-place attempt inherits the operator env, but a child the
+    // adapter moved into a Claudexor-owned profile HOME did not run there.
+    const ordinary = () => ({
+      isolated: false,
+      homeDir: null,
+      outerBoundaryUnavailableReason: null,
+    });
+    expect(
+      appliedAttemptFacts(followSpecHome(ordinary(), spec, null, profileHome), "full", "acct"),
+    ).toMatchObject({ harness_home_isolated: true, harness_home_dir: "/owned/profiles/acct" });
+    // Without an adapter-named HOME the record is unchanged.
+    for (const adapter of [undefined, {}, { childHome: () => null }])
+      expect(
+        appliedAttemptFacts(followSpecHome(ordinary(), spec, null, adapter), "full", "acct"),
+      ).toMatchObject({ harness_home_isolated: false, harness_home_dir: null });
+    // A failure before the home was decided keeps its gap: no child ran.
+    expect(appliedAttemptFacts(undefined, "workspace_write", "acct")).not.toHaveProperty(
+      "harness_home_isolated",
+    );
   });
 });

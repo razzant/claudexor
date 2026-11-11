@@ -154,6 +154,9 @@ extension AppModel {
         handshakePollInterval: TimeInterval = LocalDaemonBootPolicy.handshakePollInterval,
         handshakePollTimeout: TimeInterval = LocalDaemonBootPolicy.handshakeTimeout
     ) async {
+        let installGeneration = connectionGeneration
+        let installClient = client
+        let installEngine = engineIdentity
         let coordinator = RuntimeInstallCoordinator(
             installer: installer,
             transport: transport,
@@ -169,7 +172,7 @@ extension AppModel {
             let version = try await coordinator.install(
                 manifest: manifest, assetURL: assetURL)
             runtimeInstallStatus = "Updated to engine v\(version)."
-            await runtimeUpdater?.recordInstalledVersion(
+            await runtimeUpdater?.recordObservedVersion(
                 version, appVersion: Self.appVersionString())
             applyRuntimeDecision(.upToDate)
         } catch let error as RuntimeInstallError {
@@ -182,8 +185,29 @@ extension AppModel {
                 // closure. Until normal connection adopts it, re-check uses
                 // current.json instead of re-offering this installed version.
                 engineIdentity = nil
-                await runtimeUpdater?.recordInstalledVersion(
+                await runtimeUpdater?.recordObservedVersion(
                     identity.version, appVersion: Self.appVersionString())
+                applyRuntimeDecision(.upToDate)
+            }
+            // The offer was decided against an older engine than the one now
+            // serving; the same decision made against it offers nothing.
+            if case let .notNewerThanServing(_, serving) = error {
+                // Refresh the stale connection fact before another HTTP 200
+                // CHECK uses it. The refusal has no entry path: obtain the full
+                // identity from the existing client's handshake, without
+                // reconciliation or connection adoption. A successor connection
+                // or poll owns its own identity and must not be overwritten.
+                if connectionGeneration == installGeneration,
+                   client === installClient, engineIdentity == installEngine,
+                   let installClient,
+                   let outcome = try? await installClient.handshake(), outcome.ok,
+                   let observed = outcome.engine,
+                   connectionGeneration == installGeneration,
+                   client === installClient, engineIdentity == installEngine {
+                    engineIdentity = observed
+                }
+                await runtimeUpdater?.recordObservedVersion(
+                    serving.version, appVersion: updateFlowAppVersion)
                 applyRuntimeDecision(.upToDate)
             }
         } catch {

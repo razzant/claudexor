@@ -10,6 +10,7 @@ import {
 } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { CredentialRoute, QuotaSource, type RunEvent } from "@claudexor/schema";
 import { afterEach, describe, expect, it } from "vitest";
+import type { RunEvent as LegacyRunEvent } from "./store/test-support/fixtures/legacy/schema/index.js";
 import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
 import { InteractionStore } from "./store/test-support/fixtures/legacy/daemon/interactions.js";
 import { journalFoldPolicy } from "./journal-fold-policy.js";
@@ -24,9 +25,11 @@ import { ThreadStore } from "./store/test-support/fixtures/legacy/daemon/threads
 const roots: string[] = [];
 const journals: DurableJournal[] = [];
 afterEach(() => {
+  // This test's folders, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const journal of journals.splice(0)) journal.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+  for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function view(type: string, payload: unknown, seq = 1): FoldRecord {
   return { seq, type, time: "2026-09-14T00:00:00.000Z", payload, byteLength: 1 };
@@ -73,6 +76,10 @@ function snapshot(
 const describeSnapshot = (value: Snapshot) =>
   `${value.subject.harness}/${value.subject.subject_id}@${value.constraints[0]!.used_ratio}`;
 
+/** The frozen legacy store types only the frozen event vocabulary; these
+ * fixtures use none of the event types added after it was sealed. */
+const legacyEvent = (event: RunEvent): LegacyRunEvent => event as LegacyRunEvent;
+
 function runEvent(
   runId: string,
   type: RunEvent["type"],
@@ -100,7 +107,7 @@ function buildFixture() {
   const decisions = new OperatorDecisionStore(journal);
   const runEvents = new RunEventStore(journal);
   const quota = new QuotaRegistry(journal, [], now);
-  const record = (event: RunEvent) => runEvents.record(journaledRunEventCopy(event));
+  const record = (event: RunEvent) => runEvents.record(legacyEvent(journaledRunEventCopy(event)));
   const request = (runId: string, interactionId: string) =>
     interactions.request({
       runId,
@@ -206,7 +213,7 @@ function buildFixture() {
   commands.update("job-d", { state: "succeeded", finishedAt: T0 });
   commands.prune(["job-b", "job-d"]);
 
-  // job-m: a model-operation receipt, retained forever.
+  // job-m: a model-operation receipt, outside the product prune above.
   accept("job-m", {
     kind: "model",
     request: { resourceId: "res-1", sha256: `sha256:${"b".repeat(64)}`, sizeBytes: 3 },
@@ -303,7 +310,9 @@ function buildDuplicateFixture(kind: "terminal" | "request" | "accepted"): strin
   const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "global", now });
   const runEvents = new RunEventStore(journal);
   const interactions = new InteractionStore(journal);
-  runEvents.record(journaledRunEventCopy(runEvent("run-x", "run.created", { mode: "ask" }, 1)));
+  runEvents.record(
+    legacyEvent(journaledRunEventCopy(runEvent("run-x", "run.created", { mode: "ask" }, 1))),
+  );
   if (kind === "accepted") {
     // Same id and idempotency key, conflicting request digest.
     const commands = new CommandStore(journal, now);
@@ -320,8 +329,8 @@ function buildDuplicateFixture(kind: "terminal" | "request" | "accepted"): strin
     });
   } else if (kind === "terminal") {
     const terminal = runEvent("run-x", "run.completed", { lifecycle: "succeeded" }, 2);
-    runEvents.record(terminal);
-    runEvents.record(terminal);
+    runEvents.record(legacyEvent(terminal));
+    runEvents.record(legacyEvent(terminal));
   } else {
     interactions.request({
       runId: "run-x",

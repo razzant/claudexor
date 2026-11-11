@@ -1,8 +1,13 @@
+import { programLauncherDirs } from "./program-registry.js";
 import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { commandForFile, interpretedCommand, type HarnessCommand } from "./npm-launch.js";
+import { windowsImageFault } from "./npm-launch.js";
 import { basename, delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { isLaunchableExecutable } from "./executable-inspection.js";
+import { describeSkipped, launchRefusalError, windowsLaunchRefusal } from "./launch-refusal.js";
+import { envPath, harnessSearchDirs, rawPathEntries } from "./launch-refusal.js";
+import type { HarnessLaunchRefusal, SkippedLaunchCandidate } from "./launch-refusal.js";
 
 /**
  * The directory of the Node binary Claudexor ITSELF is running on, when that
@@ -60,11 +65,9 @@ function dirIsGroupOrWorldWritable(dir: string): boolean {
 }
 
 /**
- * The managed toolchain root under `home`: the notarized Node distribution
- * Claudexor installs plus the pinned vendor CLI shims (`<home>/.claudexor/node`
- * — `bin/codex`, `bin/claude`, the `node` that runs them, and their
- * `lib/node_modules` payloads). ONE spelling shared by every harness PATH
- * producer.
+ * The managed toolchain root under `home`: the Node distribution Claudexor installs.
+ * Older releases also placed npm harnesses here; those are converted by Update.
+ * ONE spelling shared by every harness PATH producer.
  * Deliberately HOME-anchored, not config-dir-anchored — a
  * `CLAUDEXOR_CONFIG_DIR` override relocates the runtime root, never the
  * installed toolchain.
@@ -83,85 +86,6 @@ export function npmGlobalPackagesDir(prefix: string, platform: NodeJS.Platform):
 }
 
 /**
- * The npm entrypoint bundled INSIDE a Node distribution, next to the runtime
- * that will execute it: `<root>/lib/node_modules/npm/bin/npm-cli.js` beside
- * `<root>/bin/node` on POSIX, `<dir>/node_modules/npm/bin/npm-cli.js` beside
- * `<dir>/node.exe` on Windows (the official zip layout). The local installer
- * runs exactly this file on exactly that Node and never an ambient PATH npm.
- */
-export function embeddedNpmCli(execPath: string, platform: NodeJS.Platform): string {
-  const runtimeDir = dirname(resolve(execPath));
-  return platform === "win32"
-    ? join(runtimeDir, "node_modules", "npm", "bin", "npm-cli.js")
-    : resolve(runtimeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js");
-}
-
-/** Compatibility PATH entries for previously installed managed Codex images.
- * Standard npm installs now resolve their own declared bin through npm-launch;
- * keep this existing image location as a fallback for earlier managed installs. */
-const WINDOWS_TARGET_TRIPLES = {
-  x64: "x86_64-pc-windows-msvc",
-  arm64: "aarch64-pc-windows-msvc",
-} as const;
-export type WindowsNativeArch = keyof typeof WINDOWS_TARGET_TRIPLES;
-
-const WINDOWS_NATIVE_IMAGE_PACKAGES: Readonly<
-  Record<string, (arch: WindowsNativeArch) => readonly string[]>
-> = {
-  // @openai/codex 0.156.1: npm's global install nests the optional platform
-  // dependency under the main package's node_modules (observed on the pinned
-  // macOS global install). `bin/codex.js` resolves it from that package and
-  // executes `vendor/<triple>/bin/codex.exe`; Windows CI proves the real layout.
-  "@openai/codex": (arch) => [
-    "@openai",
-    "codex",
-    "node_modules",
-    "@openai",
-    `codex-win32-${arch}`,
-    "vendor",
-    WINDOWS_TARGET_TRIPLES[arch],
-    "bin",
-  ],
-};
-
-export function isWindowsNativeArch(arch: string): arch is WindowsNativeArch {
-  return Object.hasOwn(WINDOWS_TARGET_TRIPLES, arch);
-}
-
-/** Segments from an npm global packages dir to the package-native image dir,
- * or null when no verified Windows image layout exists for that pin/arch. */
-export function windowsNativeImageSegments(
-  npmPackage: string,
-  arch: string,
-): readonly string[] | null {
-  if (!isWindowsNativeArch(arch)) return null;
-  const layout = Object.hasOwn(WINDOWS_NATIVE_IMAGE_PACKAGES, npmPackage)
-    ? WINDOWS_NATIVE_IMAGE_PACKAGES[npmPackage]
-    : undefined;
-  return layout ? layout(arch) : null;
-}
-
-/** The absolute package-native image dir inside an npm prefix on Windows. */
-export function windowsNativeImageDir(
-  prefix: string,
-  npmPackage: string,
-  arch: string,
-): string | null {
-  const segments = windowsNativeImageSegments(npmPackage, arch);
-  return segments ? join(npmGlobalPackagesDir(prefix, "win32"), ...segments) : null;
-}
-
-/** Every verified package-native image dir under the managed toolchain root —
- * the win32 entries the harness PATH carries so a bare `codex` resolves to the
- * vendor's `codex.exe` on every local surface (doctor, login, run, quota). */
-export function managedWindowsNativeImageDirs(home: string, arch: string): string[] {
-  const root = managedNodeRoot(home);
-  return Object.keys(WINDOWS_NATIVE_IMAGE_PACKAGES)
-    .map((npmPackage) => windowsNativeImageDir(root, npmPackage, arch))
-    .filter((dir): dir is string => dir !== null);
-}
-
-/**
  * Single producer for the PATH every local harness discovery/run surface should
  * use. Surfaces may still inherit other env vars, but binary resolution must not
  * depend on whether the daemon was launched from a GUI app, login shell, or CLI.
@@ -172,30 +96,21 @@ export function normalizedHarnessPath(
   source: NodeJS.ProcessEnv = process.env,
   execPath: string = process.execPath,
   platform: NodeJS.Platform = process.platform,
-  arch: string = process.arch,
+  _arch: string = process.arch,
 ): string {
   const home = source.HOME || homedir();
   const runnerDir = managedRunnerNodeDir(execPath, platform);
   const preferred = [
     ...(runnerDir ? [runnerDir] : []),
-    // The disclosed SSH harness installer (`claudexor harness install`,
-    // exact pinned versions) deliberately writes here. Keep this app-owned
-    // prefix ahead of legacy ~/.local or managed-node shims so a successful
-    // remote install cannot remain shadowed by an older vendor CLI. The remote
-    // wrapper sets the marker; local runtimes never probe this remote-only path.
+    // Older remote installations remain selectable until Update converts them.
     ...(source.CLAUDEXOR_REMOTE_RUNTIME === "1"
       ? [join(home, ".claudexor", "remote", "vendor", "bin")]
       : []),
     join(managedNodeRoot(home), "bin"),
     ...(platform === "win32" ? [managedNodeRoot(home)] : []),
-    // Windows: the managed prefix holds no image in any bin dir, only the
-    // vendor's own image inside its platform package (see
-    // WINDOWS_NATIVE_IMAGE_PACKAGES); that dir is the local install's launcher.
-    ...(platform === "win32" ? managedWindowsNativeImageDirs(home, arch) : []),
     join(home, ".local", "bin"),
-    // Cursor's vendor installer may choose this legacy vendor-owned prefix
-    // instead of ~/.local/bin; discovery and execution must resolve either.
-    join(home, ".cursor", "bin"),
+    // Each adapter supplies the directories its vendor installer writes.
+    ...programLauncherDirs(source, platform),
     join(home, ".npm-global", "bin"),
     join(home, ".bun", "bin"),
     "/opt/homebrew/bin",
@@ -205,13 +120,7 @@ export function normalizedHarnessPath(
     "/usr/sbin",
     "/sbin",
   ];
-  const inheritedPath =
-    source.PATH ??
-    (platform === "win32"
-      ? Object.entries(source).find(([key]) => key.toUpperCase() === "PATH")?.[1]
-      : undefined) ??
-    "";
-  const inherited = inheritedPath.split(delimiter).filter(Boolean);
+  const inherited = rawPathEntries(envPath(source, platform) ?? "", platform);
   const seen = new Set<string>();
   return [...preferred, ...inherited]
     .filter((entry) => {
@@ -264,82 +173,125 @@ export function resolveHarnessBinary(
   platform: NodeJS.Platform = process.platform,
 ): string | null {
   return (
-    resolveHarnessCommandOnPath(bin, normalizedHarnessPath(source, execPath, platform), platform)
-      .command?.entrypoint ?? null
+    resolveHarnessCommandOnPath(
+      bin,
+      normalizedHarnessPath(source, execPath, platform),
+      platform,
+      source,
+    ).command?.entrypoint ?? null
   );
 }
 
 export interface HarnessCommandResolution {
   command: HarnessCommand | null;
-  skipped: Array<{ path: string; reason: string }>;
+  skipped: SkippedLaunchCandidate[];
   advisory: string | null;
+  /** win32: nothing selected, and the install is proven broken or spawning `bin`
+   * would reach a provable non-image. */
+  refusal: HarnessLaunchRefusal | null;
 }
 
-/** Exact final PATH; never normalize a scoped HOME or replace a caller's patch. */
+/** Exact final PATH; never normalize a scoped HOME or replace a caller's patch.
+ * PATH entries resolve where the daemon runs, as its probes do; an explicitly
+ * relative name resolves from `cwd`, where the child runs. */
 export function resolveHarnessCommandOnPath(
   bin: string,
   pathValue: string,
   platform: NodeJS.Platform = process.platform,
   source: NodeJS.ProcessEnv = process.env,
+  cwd?: string,
+  maskedPaths: readonly string[] = [],
 ): HarnessCommandResolution {
   const names = binaryNameCandidates(bin, platform);
   // Absolute and explicitly relative paths are exact choices, not PATH searches.
   const explicit = isAbsolute(bin) || /[\\/]/.test(bin);
   const candidates = explicit
-    ? [...new Set([bin, ...names])]
-    : pathValue
-        .split(delimiter)
-        .filter(Boolean)
-        .flatMap((dir) => names.map((name) => join(dir, name)));
-  const skipped: HarnessCommandResolution["skipped"] = [];
+    ? [...new Set([bin, ...names])].map((path) => (cwd === undefined ? path : resolve(cwd, path)))
+    : harnessSearchDirs(pathValue, platform).flatMap((dir) => names.map((name) => join(dir, name)));
+  const skipped: SkippedLaunchCandidate[] = [];
   let command: HarnessCommand | null = null;
   for (const candidate of candidates) {
+    if (maskedPaths.includes(candidate)) continue;
     command = commandForFile(candidate, pathValue, platform, delimiter, source);
+    if (command && maskedPaths.length) {
+      let real: string | null = null;
+      try {
+        real = realpathSync(command.entrypoint);
+      } catch {
+        /* resolution below reports absence */
+      }
+      if (maskedPaths.includes(command.entrypoint) || (real && maskedPaths.includes(real))) {
+        command = null;
+        continue;
+      }
+    }
     if (command) break;
     const kind = lstatKind(candidate);
     if (!kind) continue;
     skipped.push({
       path: candidate,
-      reason:
-        kind === "symlink" && !existsSync(candidate)
-          ? "symlink target is missing"
-          : kind === "dir"
-            ? "is a directory"
-            : platform === "win32" && /\.(?:cmd|bat)$/i.test(candidate)
-              ? "is not a supported standard npm launcher"
-              : "is not launchable",
+      ...(windowsImageFault(candidate, pathValue, delimiter, platform) ?? {
+        reason:
+          kind === "symlink" && !existsSync(candidate)
+            ? "symlink target is missing"
+            : kind === "dir"
+              ? "is a directory"
+              : platform === "win32" && /\.(?:cmd|bat)$/i.test(candidate)
+                ? "is not a supported standard npm launcher"
+                : "is not launchable",
+      }),
     });
   }
+  const refusal = command ? null : windowsLaunchRefusal(bin, pathValue, skipped, platform, cwd);
   const advisory = skipped.length
-    ? `${command ? `Using ${command.entrypoint}; skipped` : "Cannot launch"} ${skipped.map((item) => `${item.path} (${item.reason})`).join("; ")}`
+    ? `${command ? `Using ${command.entrypoint}; skipped` : "Cannot launch"} ${describeSkipped(skipped)}`
     : null;
-  return { command, skipped, advisory };
+  return { command, skipped, advisory, refusal };
 }
 
-/** Prepare the actual OS invocation without changing the environment's authority. */
+/** Prepare the OS invocation run from `cwd` without changing the environment's authority. */
 export function prepareHarnessCommand(
   bin: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform,
+  cwd?: string,
 ): ReturnType<typeof interpretedCommand> & { resolution: HarnessCommandResolution } {
+  // An env without PATH searches the daemon's own on win32 (libuv); "" searches nothing.
   const pathValue =
-    env.PATH ??
-    (platform === "win32"
-      ? Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1]
-      : undefined) ??
-    "";
-  const resolution = resolveHarnessCommandOnPath(bin, pathValue, platform, env);
+    envPath(env, platform) ?? (platform === "win32" ? envPath(process.env, platform) : "") ?? "";
+  const resolution = resolveHarnessCommandOnPath(bin, pathValue, platform, env, cwd);
   const command = resolution.command;
-  if (!command && platform === "win32" && /\.(?:cmd|bat|ps1)$/i.test(bin)) {
-    throw Object.assign(new Error(resolution.advisory ?? `Unsupported Windows launcher: ${bin}`), {
-      code: "ENOEXEC",
-    });
-  }
+  if (resolution.refusal) throw launchRefusalError(resolution.refusal);
   return {
     ...interpretedCommand(command?.entrypoint ?? bin, args, env, command?.interpreter),
     resolution,
   };
+}
+
+/**
+ * Windows console policy for a background child whose stdio is never inherited.
+ * `hidden` (the default) leaves out DETACHED_PROCESS, so `windowsHide` adds
+ * CREATE_NO_WINDOW: the child owns an invisible console, and every console
+ * program it starts without flags of its own inherits that console instead of
+ * opening a window. `none` keeps DETACHED_PROCESS, so the child has no console
+ * at all, for a vendor that treats an openable CONIN$ as an interactive
+ * terminal; console programs that child starts open windows of their own.
+ */
+export type WindowsConsolePolicy = "hidden" | "none";
+
+/**
+ * Spawn shape of `spawnProcess` and `runCaptureRaw`. POSIX: own session and
+ * process group, so a cancel signals the whole tree. Windows has no groups:
+ * the tree is stopped by `taskkill /T` (process-tree.ts), which follows parent
+ * links, and a child that is not detached joins libuv's kill-on-close Job, so
+ * it also ends when the daemon process does (its descendants never join it).
+ */
+export function backgroundSpawnShape(
+  platform: NodeJS.Platform = process.platform,
+  windowsConsole: WindowsConsolePolicy = "hidden",
+): { detached: boolean; windowsHide: true } {
+  return { detached: platform !== "win32" || windowsConsole === "none", windowsHide: true };
 }
 
 /**
@@ -449,6 +401,8 @@ export function brokenInstallAdvisory(
 ): string | null {
   const resolution = resolveHarnessCommandOnPath(bin, normalizedHarnessPath(source));
   if (resolution.command) return resolution.advisory;
+  // A refused launch already names its file; every surface keeps that one wording.
+  if (resolution.refusal?.code === "EFTYPE") return resolution.refusal.message;
   const name = basename(bin);
   const names = binaryNameCandidates(bin, process.platform);
   // A Windows npm install ships shims (`codex`, `codex.cmd`) and no image, so
@@ -457,10 +411,9 @@ export function brokenInstallAdvisory(
     process.platform === "win32" && extname(bin) === "" ? [bin, `${bin}.cmd`, `${bin}.bat`] : [];
   const candidates = isAbsolute(bin)
     ? names
-    : normalizedHarnessPath(source)
-        .split(delimiter)
-        .filter(Boolean)
-        .flatMap((dir) => names.map((n) => join(dir, n)));
+    : harnessSearchDirs(normalizedHarnessPath(source), process.platform).flatMap((dir) =>
+        names.map((n) => join(dir, n)),
+      );
   for (const candidate of candidates) {
     const kind = lstatKind(candidate);
     if (kind === null) continue;
@@ -477,8 +430,7 @@ export function brokenInstallAdvisory(
       `reinstall ${name} or point the binary override at a working install`;
     return `${where} exists but ${how} — ${fix}`;
   }
-  for (const dir of normalizedHarnessPath(source).split(delimiter)) {
-    if (!dir) continue;
+  for (const dir of harnessSearchDirs(normalizedHarnessPath(source), process.platform)) {
     for (const shim of shimNames) {
       if (lstatKind(join(dir, shim)) === null) continue;
       return `${join(dir, shim)} exists but is a launcher script, not a Windows executable — install the native ${name}.exe or point the binary override at one`;

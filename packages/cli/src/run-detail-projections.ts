@@ -3,6 +3,7 @@ import {
   CouncilProjection,
   RunFailure,
   type ControlPrimaryOutput as ControlPrimaryOutputType,
+  type DecisionRecord,
   type RunFailure as RunFailureType,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
@@ -50,6 +51,27 @@ export function projectRunSpendUsd(detail: Record<string, unknown> | null): numb
       ? (summary as { spendUsd?: unknown }).spendUsd
       : undefined;
   return typeof spend === "number" && Number.isFinite(spend) ? spend : null;
+}
+
+/** Cash a finite cap governs. It stays known when an included subscription
+ * reports no actual debit and the total `spendUsd` is therefore unknown. */
+export function projectRunControllableSpendUsd(
+  detail: Record<string, unknown> | null,
+): number | null {
+  const budget = detail?.["budget"];
+  const spend =
+    budget && typeof budget === "object"
+      ? (budget as { controllableSpendUsd?: unknown }).controllableSpendUsd
+      : undefined;
+  return typeof spend === "number" && Number.isFinite(spend) ? spend : null;
+}
+
+/** `inspect` budget line. An unknown total is never printed as its known
+ * subtotal; the cap-governed part is shown separately when known. */
+export function inspectBudgetLine(budget: DecisionRecord["budget_summary"]): string {
+  if (budget.spend_usd === null && typeof budget.controllable_cash_usd === "number")
+    return `budget: spend=unknown controllable=${budget.controllable_cash_usd}`;
+  return `budget: spend=${budget.spend_usd ?? "unknown"}${budget.estimated ? " estimated" : ""}`;
 }
 
 export function projectRunCouncil(detail: Record<string, unknown> | null): unknown {

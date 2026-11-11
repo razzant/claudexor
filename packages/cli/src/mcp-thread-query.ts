@@ -1,7 +1,9 @@
 import {
+  CONTROL_STORE_IDENTITY_HEADER,
   ControlThread,
   ControlThreadDetail,
   ControlThreadTurnResponse,
+  ResourceAttachmentRef,
   type McpThreadTurnResult,
 } from "@claudexor/schema";
 import { connectDaemonIfRunning, ensureDaemon } from "./daemon-run.js";
@@ -17,6 +19,10 @@ export async function threadQuery(
 ): Promise<Record<string, unknown>> {
   const creating = input["mode"] === "__thread_create";
   const reading = input["mode"] === "__thread_read";
+  const attachments =
+    creating || reading || input["attachments"] === undefined
+      ? undefined
+      : ResourceAttachmentRef.array().parse(input["attachments"]);
   // Reads never boot a daemon: an absent one is a typed, retryable refusal.
   const connection =
     requireExistingDaemon || reading ? await connectDaemonIfRunning() : await ensureDaemon();
@@ -63,6 +69,7 @@ export async function threadQuery(
       }
     : {
         prompt: String(input["prompt"] ?? ""),
+        ...(attachments !== undefined ? { attachments } : {}),
         ...(input["runMode"] ? { mode: input["runMode"] } : {}),
         ...(input["harness"] ? { harnesses: [input["harness"]] } : {}),
         ...(input["primaryHarness"] ? { primaryHarness: input["primaryHarness"] } : {}),
@@ -74,11 +81,15 @@ export async function threadQuery(
         ...(input["access"] ? { access: input["access"] } : {}),
         ...(input["web"] ? { web: input["web"] } : {}),
         ...(input["maxSeconds"] ? { maxSeconds: input["maxSeconds"] } : {}),
+        ...(input["timeLimitMode"] ? { timeLimitMode: input["timeLimitMode"] } : {}),
+        ...(input["execution"] ? { execution: input["execution"] } : {}),
       };
   const response = await controlApiFetch(connection.addr, path, {
     method: "POST",
     headers: {
       "content-type": "application/json",
+      // The strict queued turn handle carries the accepting store only for this opt-in.
+      ...(creating ? {} : { [CONTROL_STORE_IDENTITY_HEADER]: "1" }),
       ...(typeof input["idempotencyKey"] === "string"
         ? { "Idempotency-Key": input["idempotencyKey"] }
         : {}),

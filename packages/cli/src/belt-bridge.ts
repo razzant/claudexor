@@ -22,6 +22,7 @@ export async function serveBeltBridge(): Promise<number> {
         delegationParentRunId: policy.parentRunId,
         delegationRepoRoot: policy.repoRoot,
         delegationProcessingPreference: policy.processingPreference,
+        delegationPromptCacheTtl: policy.promptCacheTtl,
         delegationExecution: { workspaceKind: policy.workspaceKind, scopePaths: policy.scopePaths },
       }),
       policy,

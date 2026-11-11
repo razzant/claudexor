@@ -172,8 +172,10 @@ private final class LostCompletionRecoveryHarness {
                     endpoint: "127.0.0.1:41180",
                     generation: 1)
             },
+            // Production shape: re-observation is another real handshake.
+            engineAnswers: { (try? await self.candidate.handshake())?.ok == true },
             pollConnected: { .unavailable },
-            startDaemon: {
+            startDaemon: { _ in
                 self.fallbackStartsAtProbe.append(self.probeCount)
                 return true
             },
@@ -242,7 +244,8 @@ private func seedSuccessorProjections(_ model: AppModel) throws {
         version: "3.2.0", buildSha: String(repeating: "b", count: 40))
 
     private func reconciler(_ daemon: ReconciliationDaemonStub) -> LocalDaemonReconciler {
-        LocalDaemonReconciler(
+        daemon.servingIdentity = old
+        return LocalDaemonReconciler(
             daemon: daemon,
             lifecycleOwner: LocalRuntimeLifecycleOwner(),
             targetClosure: {
@@ -358,6 +361,7 @@ private func seedSuccessorProjections(_ model: AppModel) throws {
         let recovery = LostCompletionRecoveryHarness()
         let daemon = ReconciliationDaemonStub()
         daemon.targetIdentity = target
+        daemon.servingIdentity = old
         daemon.runningIdentity = target
         let stopGate = SuspendedReconciliationEffect()
         daemon.stopGate = stopGate
@@ -401,7 +405,7 @@ private func seedSuccessorProjections(_ model: AppModel) throws {
             LostCompletionURLProtocol.reset(gate: nil)
         }
         let recovery = LostCompletionRecoveryHarness()
-        let installation = try #require(recovery.owner.claim(.installation))
+        let installation = try #require(recovery.owner.claim(.installation).lease)
         let recoveryTask = Task { @MainActor in await recovery.run() }
         try await waitForLostCompletionHandshake(handshakeGate)
 

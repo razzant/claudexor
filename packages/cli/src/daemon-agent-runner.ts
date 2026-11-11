@@ -1,3 +1,4 @@
+import { runCredentialProfileId } from "./run-credential-profile.js";
 import { mkdirSync } from "node:fs";
 import type {
   AccountEvidence,
@@ -18,6 +19,7 @@ import {
   restoreRecordedRunReviewRequest,
   type ResourceAttachmentRef,
   RuntimeConcurrencyCaps,
+  CapturedRunStart,
 } from "@claudexor/schema";
 import { assertPlanImplementReady } from "./plan-implement-readiness.js";
 import { buildRunOrchestrator } from "./run-orchestrator.js";
@@ -31,6 +33,9 @@ import {
 } from "./thread-execution-workspace.js";
 import { threadRunResumeInputs, threadContinuityContext } from "./thread-continuity-context.js";
 import { continuationForRun } from "./continue-from-run.js";
+import { createRunTimeLimit } from "./run-time-limit.js";
+import { exactRetryProcessingIntent } from "./retry-processing.js";
+import { oneShotRunInput } from "./one-shot-run-input.js";
 
 /** Agent commands alone own projects, tool execution, and conversation continuity.
  * Model commands are dispatched before entering this run-normalization boundary. */
@@ -51,6 +56,11 @@ export function createDaemonAgentRunner(deps: {
   ) => NonNullable<
     Parameters<ReturnType<typeof buildRunOrchestrator>["run"]>[0]["onTerminalPersist"]
   >;
+  terminalStaging?: (
+    jobId: string,
+  ) => NonNullable<
+    Parameters<ReturnType<typeof buildRunOrchestrator>["run"]>[0]["onTerminalStage"]
+  >;
 }): RunnerFn {
   const {
     delegationBudgetAuthority,
@@ -67,9 +77,13 @@ export function createDaemonAgentRunner(deps: {
     // A thread-bound run's caller-owned root is revalidated by the thread
     // resolver below as a durable, retryable refusal on the exact turn.
     const threadBound = typeof (params as { threadId?: unknown } | null)?.threadId === "string";
-    const p = restoreRecordedRunReviewRequest(
-      normalizeRunStartRequest(params, { deferExecutionWorkspaceAvailability: threadBound }),
-    );
+    const { deferredDefaults, ...request } = CapturedRunStart.parse(params);
+    const p = {
+      ...restoreRecordedRunReviewRequest(
+        normalizeRunStartRequest(request, { deferExecutionWorkspaceAvailability: threadBound }),
+      ),
+      deferredDefaults,
+    };
     const continuation = continuationForRun(p, deps.commands);
     const mode = p.mode;
     const noProjectAsk = mode === "ask" && p.scope.kind === "none";
@@ -137,6 +151,7 @@ export function createDaemonAgentRunner(deps: {
     const executionRoot = p.execution.workspaceRoot ?? threadExecutionRoot;
     const onRunStart = (info: { runId: string; taskId: string; runDir: string }): void => {
       ctx.onRunStart?.(info);
+      timeLimit.started(info);
       if (!threadId) return;
       try {
         if (turnId) {
@@ -151,43 +166,25 @@ export function createDaemonAgentRunner(deps: {
         /* turn binding must never fail the run */
       }
     };
-    // maxSeconds: a hard wall-clock deadline for the WHOLE run (run-scoped,
-    // never per-attempt). Combine the daemon's per-run cancel signal with a
-    // deadline that aborts with a typed STRING reason so the terminal is
-    // `cancelled` + wall_clock_exceeded rather than a bare user cancel.
-    const maxSeconds =
-      typeof p.maxSeconds === "number" && p.maxSeconds > 0
-        ? // setTimeout 32-bit-ms overflow defense (schema caps at 7 days).
-          Math.min(p.maxSeconds, 604_800)
-        : null;
     // INV-135 precedence: explicit per-turn profile > thread sticky >
     // unpinned; an explicit NULL forces unpinned (release wave round-11).
-    const requestedProfileId =
-      p.credentialProfileId === null
-        ? null
-        : typeof p.credentialProfileId === "string" && p.credentialProfileId
-          ? p.credentialProfileId
-          : threadId
-            ? (threads.getThread(threadId)?.credential_profile_id ?? null)
-            : null;
+    const requestedProfileId = runCredentialProfileId(
+      p,
+      (id) => threads.getThread(id)?.credential_profile_id,
+    );
     const continuityContext = threadContinuityContext({
       threads,
       threadId,
       turnId,
       profileId: requestedProfileId,
     });
-    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
-    let runSignal: AbortSignal | undefined = ctx.signal;
-    if (maxSeconds !== null) {
-      const deadline = new AbortController();
-      deadlineTimer = setTimeout(() => deadline.abort("wall_clock_exceeded"), maxSeconds * 1000);
-      deadlineTimer.unref?.();
-      runSignal = ctx.signal ? AbortSignal.any([ctx.signal, deadline.signal]) : deadline.signal;
-    }
     const delegationBelt = delegationBeltForRun(p.delegate === true, p.paidBudget);
+    const timeLimit = createRunTimeLimit(p, ctx);
     return orchestrator
       .run({
+        ...oneShotRunInput(p),
         onTerminalPersist: deps.terminalPersistence?.(ctx.jobId),
+        onTerminalStage: deps.terminalStaging?.(ctx.jobId),
         onEventPersist: (event) => {
           // The owning journal partition is the durable terminal
           // authority. EventLog runs this before committing RunFacts.
@@ -247,72 +244,27 @@ export function createDaemonAgentRunner(deps: {
                   : null,
               })
           : undefined,
-        authPreference: p.authPreference,
         credentialProfileId: requestedProfileId,
         parentRunId: p.parentRunId ?? null,
         delegatedFromRunId: p.delegatedFromRunId ?? null,
         delegationAdmissionId: ctx.jobId,
-        repoRoot,
-        prompt: String(p.prompt ?? ""),
-        planRef:
-          p.planRef && typeof p.planRef === "object"
-            ? (p.planRef as { runId: string; sha256: string; path: string })
-            : undefined,
-        instructions: typeof p.instructions === "string" ? p.instructions : undefined,
-        denyPaths: Array.isArray(p.denyPaths) ? p.denyPaths : undefined,
-        maxTurns: typeof p.maxTurns === "number" && p.maxTurns > 0 ? p.maxTurns : undefined,
-        outputSchema:
-          p.outputSchema && typeof p.outputSchema === "object" && !Array.isArray(p.outputSchema)
-            ? (p.outputSchema as Record<string, unknown>)
-            : undefined,
         attachments: turnId
           ? (threads.getTurn(turnId)?.attachments ?? [])
-          : resources().resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments),
-        browser: (p as { browser?: boolean }).browser === true,
-        mode: p.mode,
-        review: p.review,
-        contextMode: noProjectAsk
-          ? "off"
-          : p.scope.kind === "project"
-            ? p.scope.context
-            : undefined,
-        harnesses: p.harnesses,
-        primaryHarness: p.primaryHarness,
-        routingGoal: p.routingGoal,
-        n: p.n,
-        attempts: p.attempts ?? null,
-        untilClean: p.untilClean === true,
-        deepScan: p.deepScan === true,
-        create: p.create === true,
-        council: p.council === true,
-        delegate: p.delegate === true,
+          : resources().resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments, {
+              owner: "command",
+              id: ctx.jobId,
+            }),
         // Belt descriptor (D32): built once per delegate run with the parent
         // budget snapshot; injected into agent lanes whose adapter can host
         // MCP servers. Null when delegate is off (no belt).
         delegationBelt,
-        synthesis: p.synthesis,
-        paidBudget: p.paidBudget,
-        access: p.access,
-        web: p.web ?? p.externalContextPolicy,
-        externalContextPolicy: p.externalContextPolicy ?? p.web,
-        model: p.model,
-        models: p.models,
-        effort: p.effort,
-        efforts: p.efforts,
-        processingPreference: p.processingPreference,
-        tests: Array.isArray(p.tests) ? p.tests : undefined,
-        protectedPathApprovals: Array.isArray(p.protectedPathApprovals)
-          ? p.protectedPathApprovals
-          : undefined,
+        processingIntent: exactRetryProcessingIntent(p, deps.commands, repoRoot),
         inPlace,
-        delegated: p.execution.delegated,
-        workspaceKind: p.execution.workspaceKind,
-        scopePaths: p.execution.scopePaths,
-        signal: runSignal,
+        signal: timeLimit.signal,
         onRunStart,
       })
       .finally(() => {
-        if (deadlineTimer) clearTimeout(deadlineTimer);
+        timeLimit.dispose();
       });
   };
 }

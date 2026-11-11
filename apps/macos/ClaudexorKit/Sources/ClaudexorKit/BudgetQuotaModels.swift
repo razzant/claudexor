@@ -73,6 +73,7 @@ public struct QuotaSubject: Codable, Sendable, Equatable, Hashable {
 }
 
 public struct QuotaConstraint: Codable, Sendable, Equatable, Identifiable {
+    public var freshness: String? = nil
     public var appliesToRequestKinds: [String]? = nil
     public var appliesToText: Bool { appliesToRequestKinds?.contains("text") ?? true }
     public let id: String
@@ -90,7 +91,7 @@ public struct QuotaConstraint: Codable, Sendable, Equatable, Identifiable {
     public var modelScope: [String] { quotaModelScopeDisplay(appliesToModels ?? [], appliesToModelPrefixes ?? []) }
 
     private enum CodingKeys: String, CodingKey {
-        case id, label
+        case id, label, freshness
         case appliesToModels = "applies_to_models"
         case appliesToModelPrefixes = "applies_to_model_prefixes"
         case appliesToUnspecifiedModel = "applies_to_unspecified_model"
@@ -213,6 +214,7 @@ public struct QuotaRefreshSkipped: Codable, Sendable, Equatable, Identifiable {
 }
 
 public struct ControlQuotaResponse: Codable, Sendable, Equatable {
+    public var availabilityScope: QuotaAvailabilityScope? = nil
     public let snapshots: [QuotaSnapshot]
     /// Every registered subject reports either a snapshot or a typed absence.
     public let absences: [QuotaAbsence]
@@ -227,6 +229,7 @@ public struct ControlQuotaResponse: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case snapshots, absences, resources
+        case availabilityScope = "availability_scope"
         case refreshedAt = "refreshed_at"
         case refreshSkipped = "refresh_skipped"
     }
@@ -253,6 +256,7 @@ public struct ControlQuotaResponse: Codable, Sendable, Equatable {
         refreshSkipped =
             try c.decodeIfPresent([QuotaRefreshSkipped].self, forKey: .refreshSkipped)
         resources = try c.decodeIfPresent([AccountResourceSnapshot].self, forKey: .resources)
+        availabilityScope = try c.decodeIfPresent(QuotaAvailabilityScope.self, forKey: .availabilityScope)
     }
 }
 

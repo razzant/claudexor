@@ -1,0 +1,638 @@
+{
+  "$ref": "#/definitions/McpRunWaitResult",
+  "definitions": {
+    "McpRunWaitResult": {
+      "type": "object",
+      "properties": {
+        "deferredMessage": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "draftId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Non-empty identifier string."
+                },
+                "revision": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "waiting",
+                    "held",
+                    "dispatched",
+                    "cleared"
+                  ]
+                },
+                "predecessorJobId": {
+                  "$ref": "#/definitions/McpRunWaitResult/properties/deferredMessage/anyOf/0/properties/draftId"
+                },
+                "predecessorRunId": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/McpRunWaitResult/properties/deferredMessage/anyOf/0/properties/draftId"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Non-empty identifier string."
+                },
+                "predecessorResult": {
+                  "type": "string",
+                  "description": "Existing addressed run-detail/result path; no duplicate result store."
+                },
+                "hold": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "predecessor_failed",
+                            "predecessor_cancelled",
+                            "predecessor_interrupted",
+                            "predecessor_needs_input",
+                            "predecessor_incomplete",
+                            "predecessor_facts_unavailable",
+                            "predecessor_work_unverified",
+                            "predecessor_checks_failed",
+                            "predecessor_review_blocked",
+                            "predecessor_output_unavailable",
+                            "settlement_unknown",
+                            "stop_requested",
+                            "shutdown",
+                            "restart_requires_controller",
+                            "partition_retired",
+                            "admission_refused"
+                          ]
+                        },
+                        "problem": {
+                          "type": "object",
+                          "properties": {
+                            "message": {
+                              "type": "string",
+                              "description": "Human-readable refusal message."
+                            },
+                            "code": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "default": null,
+                              "description": "Machine-readable refusal code carried from the throwing gate; null when the failure had no typed code."
+                            },
+                            "retryable": {
+                              "type": "boolean",
+                              "default": true,
+                              "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay or a managed resource it names was released."
+                            },
+                            "required_actions": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              },
+                              "maxItems": 16,
+                              "default": [],
+                              "description": "Bounded user actions that may make an exact retry succeed."
+                            },
+                            "context": {
+                              "type": "object",
+                              "additionalProperties": {},
+                              "default": {},
+                              "description": "Bounded typed recovery context; never arbitrary provider or environment output."
+                            }
+                          },
+                          "required": [
+                            "message"
+                          ],
+                          "additionalProperties": false,
+                          "description": "Typed, sanitized problem for a thread turn that could not start."
+                        }
+                      },
+                      "required": [
+                        "code"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
+                },
+                "resumed": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "$ref": "#/definitions/McpRunWaitResult/properties/deferredMessage/anyOf/0/properties/hold/anyOf/0/properties/code"
+                        },
+                        "problem": {
+                          "$ref": "#/definitions/McpRunWaitResult/properties/deferredMessage/anyOf/0/properties/hold/anyOf/0/properties/problem"
+                        }
+                      },
+                      "required": [
+                        "code"
+                      ],
+                      "additionalProperties": false,
+                      "description": "The hold the draft was returned from."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "const": "process_scope_settled",
+                      "description": "A later settlement of the predecessor's run proved its processes gone; the draft was unchanged, not cleared, replaced or stopped."
+                    },
+                    "at": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "ISO-8601 timestamp string."
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "reason",
+                    "at"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Why this draft left its hold automatically. It then took the existing revision and admission path; any other reason holds it again."
+                },
+                "dispatchedRevision": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/McpRunWaitResult/properties/deferredMessage/anyOf/0/properties/revision"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "successorJobId": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/McpRunWaitResult/properties/deferredMessage/anyOf/0/properties/draftId"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Non-empty identifier string."
+                },
+                "successorRunId": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/McpRunWaitResult/properties/deferredMessage/anyOf/0/properties/draftId"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Non-empty identifier string."
+                }
+              },
+              "required": [
+                "draftId",
+                "revision",
+                "state",
+                "predecessorJobId",
+                "predecessorRunId",
+                "predecessorResult",
+                "hold",
+                "dispatchedRevision",
+                "successorJobId",
+                "successorRunId"
+              ],
+              "additionalProperties": false,
+              "description": "Compact addressed draft state, with exact predecessor result and successor handles. A terminal predecessor does not imply the draft has resolved."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Snapshot only: terminal wakeReason refers to the predecessor, never proves draft resolution."
+        },
+        "runId": {
+          "type": "string",
+          "description": "Canonical run id; a queued job id converges to its run id once the run binds."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "description": "Control-plane run state = the run LIFECYCLE (D8): queued/running while live, then exactly one of succeeded / failed / cancelled / interrupted. Outcome quality (checks/review/delivery) is orthogonal — see outcomeFacts."
+        },
+        "snapshotSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Last event seq at the latest snapshot: a fence, not a cursor. nextSeq below it means events are already written; eventOmission stream_ended reports when the stream cannot serve them."
+        },
+        "snapshotPhase": {
+          "type": "string",
+          "enum": [
+            "before_wait",
+            "after_wait"
+          ]
+        },
+        "snapshotProblem": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "snapshot_unavailable"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A failed final read leaves the explicitly labelled initial snapshot, never invented current state."
+        },
+        "nextSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Last returned event seq, or afterSeq when none was returned. It never advances over an unreturned event."
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "event": {
+                "type": "object",
+                "properties": {
+                  "seq": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "description": "Monotonic per-run sequence stamped at emit time; the durable SSE cursor and snapshot fence. Optional only for pre-v0.8.0 artifacts."
+                  },
+                  "ts": {
+                    "type": "string",
+                    "description": "Event timestamp."
+                  },
+                  "run_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Run the event belongs to."
+                  },
+                  "task_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Task the run belongs to."
+                  },
+                  "thread_id": {
+                    "$ref": "#/definitions/McpRunWaitResult/properties/deferredMessage/anyOf/0/properties/draftId",
+                    "description": "Thread this run is a turn of, when any."
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "run.created",
+                      "task.contract.created",
+                      "context.pack.created",
+                      "project.git.initialized",
+                      "project.claude_bridge.created",
+                      "budget.lease.created",
+                      "budget.observation",
+                      "budget.cash",
+                      "policy.web.upgraded",
+                      "harness.started",
+                      "harness.event",
+                      "harness.completed",
+                      "route.fallback.started",
+                      "route.fallback.completed",
+                      "route.fallback.exhausted",
+                      "route.transient.detected",
+                      "route.transient.retry_scheduled",
+                      "route.profile.headroom_exceeded",
+                      "route.profile.rotated",
+                      "route.profile.rotation_exhausted",
+                      "route.profile.credential_unusable",
+                      "route.account.pool_selected",
+                      "route.account.lane_switch",
+                      "route.account.pool_exhausted",
+                      "route.transient.exhausted",
+                      "route.fallback.auth_switched",
+                      "route.primary.diverged",
+                      "route.pool.degraded",
+                      "session.continuity",
+                      "interaction.requested",
+                      "interaction.answered",
+                      "interaction.timeout",
+                      "interaction.answer_discarded",
+                      "interaction.withdrawn",
+                      "message.accepted",
+                      "message.delivered",
+                      "message.refused",
+                      "plan.progress",
+                      "plan.questions",
+                      "plan.brief.materialized",
+                      "council.started",
+                      "council.draft",
+                      "council.member.failed",
+                      "council.merged",
+                      "budget.quota_pressure",
+                      "delegation.belt.unavailable",
+                      "delegation.belt.degraded",
+                      "output.ready",
+                      "gate.started",
+                      "gate.completed",
+                      "review.preflight",
+                      "review.started",
+                      "review.skipped",
+                      "reviewer.started",
+                      "reviewer.first_event",
+                      "reviewer.auth_switched",
+                      "reviewer.completed",
+                      "reviewer.timed_out",
+                      "reviewer.failed",
+                      "finding.revalidated",
+                      "synthesis.started",
+                      "arbitration.completed",
+                      "work_product.emitted",
+                      "work_product.adopted",
+                      "control.requested",
+                      "control.applied",
+                      "control.rejected",
+                      "run.blocked",
+                      "run.completed",
+                      "run.failed",
+                      "run.continuation",
+                      "run.continuation.denied",
+                      "run.continuity",
+                      "workspace.retained",
+                      "workspace.prepared",
+                      "workspace.settlement_failed"
+                    ],
+                    "description": "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, and control verbs."
+                  },
+                  "payload": {
+                    "type": "object",
+                    "additionalProperties": {},
+                    "default": {},
+                    "description": "Event-type-specific payload."
+                  }
+                },
+                "required": [
+                  "ts",
+                  "run_id",
+                  "task_id",
+                  "type"
+                ],
+                "additionalProperties": false,
+                "description": "Append-only run event record (one JSONL line in the run's event log)."
+              }
+            },
+            "required": [
+              "seq",
+              "event"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 200,
+          "description": "Ordered new events, at most 65536 UTF-8 JSON bytes including envelopes. Legacy events retain their body and use the stream id as seq."
+        },
+        "eventOmission": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "event_limit",
+                "byte_limit",
+                "oversized_frame",
+                "invalid_event",
+                "stream_ended"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the page stopped early: event_limit or byte_limit (more events may follow; resume with nextSeq), oversized_frame (the next frame exceeds the 131072-byte stream frame cap), invalid_event (the next frame failed validation and is never skipped), stream_ended (the stream, which ends only for a terminal run, served nothing after nextSeq although snapshotSeq is higher, such as a last line left unterminated by a crash; nothing was skipped, and the same call returns the same page until the log changes, so stop there). Null means no limit was reached, not that replay is exhausted."
+        },
+        "oversizedEvent": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "seq": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Durable seq of the next unread event."
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Event type the daemon stream names for it."
+                }
+              },
+              "required": [
+                "seq",
+                "type"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The next unread event after nextSeq cannot fit one page. Read its exact bytes in parts with claudexor_run_event_read, then resume with afterSeq set to its seq. Null otherwise."
+        },
+        "pendingInteractions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "interactionId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Interaction id used to answer."
+              },
+              "runId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Run the interaction belongs to."
+              },
+              "attemptId": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Attempt the interaction was raised in, when known."
+              },
+              "harnessId": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Harness that raised the interaction."
+              },
+              "sourceTool": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Native tool that raised the request."
+              },
+              "questions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Question id."
+                    },
+                    "question": {
+                      "type": "string",
+                      "description": "The question text."
+                    },
+                    "header": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null,
+                      "description": "Short chip/header text some harnesses attach to a question."
+                    },
+                    "options": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "label": {
+                            "type": "string",
+                            "description": "Option label shown to the user."
+                          },
+                          "description": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null,
+                            "description": "Optional longer explanation of the option."
+                          }
+                        },
+                        "required": [
+                          "label"
+                        ],
+                        "additionalProperties": false,
+                        "description": "One multiple-choice option of an interactive question."
+                      },
+                      "default": [],
+                      "description": "Selectable options; empty for free-text-only questions."
+                    },
+                    "multi_select": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Whether multiple options may be selected."
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "question"
+                  ],
+                  "additionalProperties": false,
+                  "description": "One question of an interactive user-input request."
+                },
+                "default": [],
+                "description": "Questions awaiting answers."
+              },
+              "requestedAt": {
+                "type": "string",
+                "description": "When the interaction was requested."
+              },
+              "timeoutAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "When the interaction expires unanswered; null = no automatic expiry. A blocking question then declines benignly; an async one closes and nothing is sent."
+              },
+              "delivery": {
+                "type": "string",
+                "enum": [
+                  "blocking",
+                  "async"
+                ],
+                "description": "How the asking agent waits for the answer: blocking (its native tool call waits until the question is answered, declined, expired or released) or async (the agent keeps working and an answer reaches it later as its next user message). Silence, expiry and the run's end never answer either kind.",
+                "default": "blocking"
+              }
+            },
+            "required": [
+              "interactionId",
+              "runId",
+              "requestedAt"
+            ],
+            "additionalProperties": false,
+            "description": "A live interactive question awaiting the user's answer (snapshot projection)."
+          },
+          "description": "Current snapshot's pending questions, bounded to 32768 UTF-8 JSON bytes; claudexor_run_interactions returns complete bodies. They never hold back events."
+        },
+        "pendingInteractionCount": {
+          "$ref": "#/definitions/McpRunWaitResult/properties/events/items/properties/seq"
+        },
+        "omittedInteractions": {
+          "$ref": "#/definitions/McpRunWaitResult/properties/events/items/properties/seq"
+        },
+        "wakeReason": {
+          "type": "string",
+          "enum": [
+            "events",
+            "interactions",
+            "terminal",
+            "timeout",
+            "aborted",
+            "disconnected"
+          ],
+          "description": "Why this observation returned, by precedence: aborted (this read was cancelled; the worker continues), terminal (the run is terminal; events may still follow nextSeq unless eventOmission is stream_ended), interactions (this page includes a question event, or oversizedEvent is a question too large for any page; claudexor_run_interactions returns it complete), events (event mode, a completed zero-wait page, or a page, even an empty one, stopped by event_limit, byte_limit, oversized_frame or invalid_event), timeout (waitMs elapsed, possibly with a partial batch), disconnected (the stream ended early; never completion)."
+        }
+      },
+      "required": [
+        "runId",
+        "status",
+        "snapshotSeq",
+        "snapshotPhase",
+        "snapshotProblem",
+        "nextSeq",
+        "events",
+        "eventOmission",
+        "oversizedEvent",
+        "pendingInteractions",
+        "pendingInteractionCount",
+        "omittedInteractions",
+        "wakeReason"
+      ],
+      "additionalProperties": false,
+      "description": "Read-only run observation, at most 131072 UTF-8 JSON bytes: at most two snapshot reads and one stream subscription, no automatic reconnect or worker cancellation. Events already available at the snapshot fence are returned before any wait, whether or not a question is pending. Resume with nextSeq."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

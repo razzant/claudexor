@@ -39,6 +39,14 @@
                 "minimum": 0,
                 "default": 0,
                 "description": "Number of exact external test-command grants for this repo."
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "file",
+                  "default"
+                ],
+                "description": "default only when no trust file exists at this repo's path; file whenever one does, including an empty, comment-only or unreadable file read as the schema default. Omitted by older daemons and by the unscoped list."
               }
             },
             "required": [

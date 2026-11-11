@@ -248,7 +248,7 @@ struct AccountsSurface: View {
     @State private var actionNotice = AccountsActionNotice()
     @State private var quotaSubscription: AccountsQuotaSubscription?
     @State private var accountContentWidth: CGFloat = 400 - 2 * Theme.Spacing.lg
-    /// The add form registers agy/claude/codex/cursor config_dir_login
+    /// The add form registers agy/claude/codex/cursor/grok config_dir_login
     /// profiles using the same harness set the daemon supports.
     private var addHarness: String? {
         guard let family else { return addHarnessChoice }

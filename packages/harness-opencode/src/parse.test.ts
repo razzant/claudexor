@@ -50,3 +50,14 @@ describe("parseOpenCodeEvent", () => {
     expect(() => HarnessEvent.parse(nested?.[0])).not.toThrow();
   });
 });
+
+describe("tool targets are the agent's own actions, kept exact (INV-146)", () => {
+  it("keeps a credential-shaped command in the tool target", () => {
+    const token = ["ghp", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("_");
+    const out = parseOpenCodeEvent(
+      { type: "tool", tool: "bash", args: { command: `export KEY=${token}` } },
+      "s1",
+    );
+    expect(out?.[0]?.tool?.target).toBe(`export KEY=${token}`);
+  });
+});

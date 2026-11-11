@@ -12,6 +12,9 @@ import {
   codexProcessingCost,
   codexConfiguredTier,
   legacyCodexProcessing,
+  codexProcessingForPaidPolicy,
+  retainCodexProcessing,
+  sameCodexTierIntent,
 } from "./processing.js";
 import { tomlBasicString } from "./toml.js";
 type Env = Record<string, string | null | undefined>;
@@ -88,27 +91,52 @@ export function codexProcessingMethods(
         ? canonicalCodexProfileHome(input.credentialProfile!.isolation_locator ?? "")
         : undefined;
       const env = home ? envFor(input.env, home) : undefined;
+      const subscription = native
+        ? true
+        : input.credentialProfile?.credential_kind === "api_key"
+          ? false
+          : null;
+      const configured = input.preference
+        ? undefined
+        : codexProcessingForPaidPolicy(
+            legacyCodexProcessing(codexConfiguredTier(home)),
+            input.allowPaid,
+            subscription,
+          );
+      // Initial inheritance comes from the first account; a later try keeps it.
+      const retained =
+        configured &&
+        input.chosen &&
+        !sameCodexTierIntent(input.chosen.submittedNative, configured.submittedNative)
+          ? input.chosen
+          : undefined;
       const catalog =
-        native && input.preference ? (await codexEffortsForEnv(runtime, env)).catalog : undefined;
-      let receipt = input.preference
+        native &&
+        (input.preference || retained?.submitted === "fast" || retained?.submitted === "economy")
+          ? (await codexEffortsForEnv(runtime, env)).catalog
+          : undefined;
+      const capability = catalog?.processing?.[input.model ?? catalog.defaultModel ?? ""];
+      const selected = input.preference
         ? prepareCodexProcessing(
             input.preference,
-            catalog?.processing?.[input.model ?? catalog.defaultModel ?? ""],
+            capability,
+            undefined,
+            input.allowPaid,
+            subscription,
           )!
-        : legacyCodexProcessing(codexConfiguredTier(home));
-      if (input.allowPaid === false && receipt.submitted !== "standard")
-        receipt = {
-          ...prepareCodexProcessing("standard")!,
-          requested: input.preference ?? null,
-          reason: "paid_processing_disallowed; ordinary_service_requested",
-        };
+        : retained
+          ? retainCodexProcessing(retained, capability)
+          : // A tier the engine already chose keeps its own reason when this
+            // account's setting resolves to the same tier.
+            input.chosen?.source === "codex.service_tier" &&
+              sameCodexTierIntent(input.chosen.submittedNative, configured!.submittedNative)
+            ? { ...input.chosen, observed: "unknown" as const, observedNative: [] }
+            : configured!;
+      const receipt = codexProcessingForPaidPolicy(selected, input.allowPaid, subscription);
       return {
         model: input.model,
         receipt,
-        costBasis: codexProcessingCost(
-          receipt,
-          native ? true : input.credentialProfile?.credential_kind === "api_key" ? false : null,
-        ),
+        costBasis: codexProcessingCost(receipt, subscription),
       };
     },
   };
@@ -128,9 +156,12 @@ export function codexProcessingArgs(
       undefined,
       spec.processing_allow_paid,
     );
+  // A managed-config receipt lets Codex read its own setting; every tier the
+  // engine chose, including a retained intent, is sent explicitly.
   return processing?.submittedNative &&
     (spec.processing_preference !== undefined ||
       processing.requested !== null ||
+      processing.source === "codex.service_tier" ||
       spec.processing_allow_paid === false)
     ? ["-c", `service_tier=${tomlBasicString(processing.submittedNative)}`]
     : [];
@@ -149,18 +180,24 @@ export function applyCodexRunProcessing(
       ? prepareCodexProcessing(
           spec.processing_preference,
           catalog.processing?.[spec.model_hint ?? catalog.defaultModel ?? ""],
-          undefined,
+          inheritedTier,
           spec.processing_allow_paid,
+          subscription,
         )
       : inheritedTier
         ? legacyCodexProcessing(inheritedTier)
         : undefined);
-  if (processing)
+  if (processing) {
+    const actual = codexProcessingForPaidPolicy(
+      processing,
+      spec.processing_allow_paid,
+      subscription,
+    );
     spec = {
       ...spec,
-      processing,
-      processing_cost_basis:
-        spec.processing_cost_basis ?? codexProcessingCost(processing, subscription),
+      processing: actual,
+      processing_cost_basis: codexProcessingCost(actual, subscription),
     };
+  }
   return spec;
 }

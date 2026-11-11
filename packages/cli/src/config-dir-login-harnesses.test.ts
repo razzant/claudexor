@@ -15,10 +15,10 @@ import {
 // invents a profile store for a harness that has none or refuses a real one.
 describe("config-dir login harness membership", () => {
   it("accepts exactly the harnesses whose native login relocates into a profile dir", () => {
-    for (const harness of ["claude", "codex", "cursor", "agy"]) {
+    for (const harness of ["claude", "codex", "cursor", "agy", "grok"]) {
       expect(isConfigDirLoginHarness(harness)).toBe(true);
     }
-    expect([...CONFIG_DIR_LOGIN_HARNESSES]).toEqual(["claude", "codex", "cursor", "agy"]);
+    expect([...CONFIG_DIR_LOGIN_HARNESSES]).toEqual(["claude", "codex", "cursor", "agy", "grok"]);
   });
 
   it("refuses non-members, near-misses, and path-ish strings", () => {
@@ -41,7 +41,7 @@ describe("config-dir login harness membership", () => {
   });
 
   it("renders the human list the registration and login errors quote", () => {
-    expect(configDirLoginHarnessList()).toBe("claude, codex, cursor, agy");
+    expect(configDirLoginHarnessList()).toBe("claude, codex, cursor, agy, grok");
     expect(configDirLoginHarnessList()).toBe(CONFIG_DIR_LOGIN_HARNESSES.join(", "));
   });
 

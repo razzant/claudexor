@@ -1,0 +1,331 @@
+{
+  "$ref": "#/definitions/DeferredMessageCall",
+  "definitions": {
+    "DeferredMessageCall": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "create"
+                },
+                "predecessorId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Non-empty identifier string."
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "attachments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "resourceId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Immutable daemon resource id returned by upload finalize."
+                      }
+                    },
+                    "required": [
+                      "resourceId"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Reference to an immutable daemon-owned uploaded resource."
+                  }
+                },
+                "controls": {
+                  "type": "object",
+                  "properties": {
+                    "access": {
+                      "type": "string",
+                      "enum": [
+                        "readonly",
+                        "workspace_write",
+                        "full",
+                        "inherit_native"
+                      ],
+                      "description": "Requested access profile; effective access is derived by the engine and never client-supplied."
+                    },
+                    "web": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "auto",
+                        "cached",
+                        "live"
+                      ],
+                      "description": "Web policy for the run (alias of externalContextPolicy; must match when both set)."
+                    },
+                    "externalContextPolicy": {
+                      "$ref": "#/definitions/DeferredMessageCall/properties/request/anyOf/0/properties/controls/properties/web",
+                      "description": "External web/context policy for the run."
+                    },
+                    "credentialProfileId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Explicit per-run credential profile id; null FORCES the engine-default ladder past a thread-sticky profile; unknown/disabled ids refuse, never default."
+                    },
+                    "paidBudget": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "unlimited"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "finite"
+                            },
+                            "maxUsd": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "maxUsd"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ],
+                      "description": "Explicit incremental-cash budget for the run."
+                    },
+                    "maxSeconds": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 604800,
+                      "description": "Wall-clock limit for the whole run (seconds, max seven days). Omission disables the clock. Explicit limits cancel by default; soft mode warns and continues."
+                    },
+                    "timeLimitMode": {
+                      "type": "string",
+                      "enum": [
+                        "soft",
+                        "hard"
+                      ],
+                      "description": "Initial timer mode: soft warns and continues; hard cancels. Omission is hard with maxSeconds and soft without it."
+                    },
+                    "review": {
+                      "type": "boolean",
+                      "description": "Agent model review: ordinary runs default off; true selects an automatic panel. Explicit reviewer controls, best-of and untilClean request review. Capped attempts default to review unless explicitly false."
+                    },
+                    "reviewerPanel": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "harness": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
+                            "description": "Explicit reviewer harness id; repeated harness ids are allowed so one provider can review through multiple requested models."
+                          },
+                          "model": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
+                            "description": "Per-reviewer model hint, passed to that harness only."
+                          },
+                          "effort": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 32,
+                            "pattern": "^[a-z0-9]+(?:[_-][a-z0-9]+)*$",
+                            "description": "Per-reviewer effort hint, passed to that harness only."
+                          },
+                          "credentialProfileId": {
+                            "$ref": "#/definitions/DeferredMessageCall/properties/request/anyOf/0/properties/controls/properties/reviewerPanel/items/properties/model",
+                            "description": "Per-reviewer credential profile id; explicit pins are strict and never fall back."
+                          },
+                          "processingPreference": {
+                            "type": "string",
+                            "enum": [
+                              "standard",
+                              "fast",
+                              "economy"
+                            ],
+                            "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+                          }
+                        },
+                        "required": [
+                          "harness"
+                        ],
+                        "additionalProperties": false,
+                        "description": "One reviewer of an explicit reviewer panel — a harness plus optional model, effort, and strict credentialProfileId. Compact entries are unpinned; structured JSON carries pins."
+                      },
+                      "minItems": 1,
+                      "description": "Explicit Agent reviewer panel — who reviews the change, one entry per reviewer as `harness=model:effort` (CLI `--reviewer-panel`, unpinned) or structured `--reviewer-panel-json` with optional strict credentialProfileId. Duplicate harness entries are kept so one provider can review through several models; overrides the legacy reviewerModels/reviewerEfforts maps."
+                    },
+                    "reviewerModels": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "$ref": "#/definitions/DeferredMessageCall/properties/request/anyOf/0/properties/controls/properties/reviewerPanel/items/properties/model"
+                      },
+                      "propertyNames": {
+                        "enum": [
+                          "openai",
+                          "anthropic",
+                          "google",
+                          "cursor",
+                          "opencode",
+                          "xai",
+                          "local",
+                          "unknown"
+                        ]
+                      },
+                      "description": "Per-provider-family reviewer model overrides (legacy; reviewerPanel wins when present)."
+                    },
+                    "reviewerEfforts": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "$ref": "#/definitions/DeferredMessageCall/properties/request/anyOf/0/properties/controls/properties/reviewerPanel/items/properties/effort"
+                      },
+                      "propertyNames": {
+                        "enum": [
+                          "openai",
+                          "anthropic",
+                          "google",
+                          "cursor",
+                          "opencode",
+                          "xai",
+                          "local",
+                          "unknown"
+                        ]
+                      },
+                      "description": "Per-provider-family reviewer effort overrides (legacy; reviewerPanel wins when present)."
+                    },
+                    "continueCarrier": {
+                      "type": "string",
+                      "enum": [
+                        "auto",
+                        "packet"
+                      ],
+                      "description": "Carrier preference for continueFrom; omitted = auto."
+                    },
+                    "effort": {
+                      "$ref": "#/definitions/DeferredMessageCall/properties/request/anyOf/0/properties/controls/properties/reviewerPanel/items/properties/effort",
+                      "description": "Requested reasoning effort."
+                    },
+                    "efforts": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "$ref": "#/definitions/DeferredMessageCall/properties/request/anyOf/0/properties/controls/properties/reviewerPanel/items/properties/effort"
+                      },
+                      "propertyNames": {
+                        "minLength": 1,
+                        "pattern": "\\S"
+                      },
+                      "description": "Harness-scoped effort map (harness id to effort); an entry here wins over the scalar effort and the per-harness settings default."
+                    },
+                    "taskGroupId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "description": "Caller-generated UUID saved before launching the first member. Each job still needs its own idempotency key; the group grants no execution authority."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Request body for POST /runs: prompt, mode, scope, routing, strategy flags, budget, policies, and thread linkage."
+                }
+              },
+              "required": [
+                "action",
+                "predecessorId",
+                "prompt",
+                "attachments"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "replace"
+                },
+                "draftId": {
+                  "$ref": "#/definitions/DeferredMessageCall/properties/request/anyOf/0/properties/predecessorId"
+                },
+                "expectedRevision": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "prompt": {
+                  "$ref": "#/definitions/DeferredMessageCall/properties/request/anyOf/0/properties/prompt"
+                },
+                "attachments": {
+                  "$ref": "#/definitions/DeferredMessageCall/properties/request/anyOf/0/properties/attachments"
+                }
+              },
+              "required": [
+                "action",
+                "draftId",
+                "expectedRevision",
+                "prompt",
+                "attachments"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "clear"
+                },
+                "draftId": {
+                  "$ref": "#/definitions/DeferredMessageCall/properties/request/anyOf/0/properties/predecessorId"
+                },
+                "expectedRevision": {
+                  "$ref": "#/definitions/DeferredMessageCall/properties/request/anyOf/1/properties/expectedRevision"
+                }
+              },
+              "required": [
+                "action",
+                "draftId",
+                "expectedRevision"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "description": "One editable reserved next message of a daemon-owned one-shot Agent/Ask. Every mutation requires Idempotency-Key; replace/clear require the exact revision."
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "request",
+        "idempotencyKey"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

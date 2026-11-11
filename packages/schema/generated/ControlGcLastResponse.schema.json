@@ -1,0 +1,206 @@
+{
+  "$ref": "#/definitions/ControlGcLastResponse",
+  "definitions": {
+    "ControlGcLastResponse": {
+      "type": "object",
+      "properties": {
+        "last": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "completed",
+                    "held",
+                    "truncated",
+                    "failed"
+                  ]
+                },
+                "started_at": {
+                  "type": "string"
+                },
+                "finished_at": {
+                  "type": "string"
+                },
+                "last_completed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null,
+                  "description": "Last completed non-preview pass time, or null when no completion is known."
+                },
+                "failed_or_held_streak": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 0,
+                  "description": "Failed or held passes since the last completion; truncated passes preserve the count. Only a completed pass resets it."
+                },
+                "freed_bytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "effects": {
+                  "type": "string",
+                  "enum": [
+                    "measured",
+                    "unknown"
+                  ],
+                  "description": "measured: freed_bytes counts this pass's deletions; unknown: the pass stopped before its receipt, or a deletion stopped partway, so freed_bytes is only a lower bound and earlier steps may already have had effects. Absent on records written before the field."
+                },
+                "kept": {
+                  "type": "object",
+                  "properties": {
+                    "active": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 0
+                    },
+                    "recent": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 0
+                    },
+                    "young": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 0
+                    },
+                    "referenced": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 0
+                    },
+                    "actionable": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 0
+                    },
+                    "unknown_state": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Survivor counts per keep reason."
+                },
+                "held": {
+                  "type": "object",
+                  "properties": {
+                    "roots": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 0
+                    },
+                    "native_homes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 0,
+                      "description": "Vetoed native homes only; unsupported adapters and unknown native entries are informational."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Held project roots and vetoed native homes, separate from run counts."
+                },
+                "holds": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "class": {
+                        "type": "string",
+                        "enum": [
+                          "missing_partition",
+                          "unbound_active_registration",
+                          "recovery_pending",
+                          "namespace_unreadable",
+                          "anchor_references_unreadable",
+                          "references_changed",
+                          "native_home_veto",
+                          "cleanup_suppressed"
+                        ]
+                      },
+                      "count": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0
+                      },
+                      "example": {
+                        "type": "string",
+                        "maxLength": 160
+                      },
+                      "since": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "class",
+                      "count",
+                      "example",
+                      "since"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "maxItems": 8
+                },
+                "errors": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "first": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "maxLength": 512
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "count",
+                    "first"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "outcome",
+                "started_at",
+                "finished_at",
+                "freed_bytes",
+                "kept",
+                "held",
+                "holds",
+                "errors"
+              ],
+              "additionalProperties": false,
+              "description": "One durable non-preview pass summary (at most 16 KiB), including outer cleanup failures."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Null when no readable non-preview pass has been recorded; reading never starts GC."
+        },
+        "diagnostic": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Why the stored summary could not be read; absent when no record exists or it is valid."
+        }
+      },
+      "required": [
+        "last"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

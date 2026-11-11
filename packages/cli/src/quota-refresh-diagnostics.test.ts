@@ -27,7 +27,7 @@ describe("quota observation diagnostics", () => {
     else process.env.CLAUDEXOR_CONFIG_DIR = previous;
     rmSync(root, { recursive: true, force: true });
     forgetClaudeOauthRejections();
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("distinguishes a physical request from a remembered-token skip without storing credentials", async () => {
     const records: QuotaRefreshDiagnostic[] = [];

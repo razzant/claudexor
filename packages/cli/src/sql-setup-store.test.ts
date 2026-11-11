@@ -1,7 +1,7 @@
 import { mkdtempSync, realpathSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BlobFiles,
   EngineStore,
@@ -17,6 +17,7 @@ import { SetupJobStore as FrozenSetupJobStore } from "../../daemon/src/store/tes
 import { SqlSetupJobStore } from "./sql-setup-store.js";
 import type { SetupJournalPayload } from "./setup-job-persistence.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const TIME = "2026-10-10T12:00:00.000Z";
 const EPOCH = "e".repeat(32);
@@ -26,14 +27,16 @@ const legacyStores: FrozenSetupJobStore[] = [];
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "sql-setup-")));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   vi.restoreAllMocks();
   for (const old of legacyStores.splice(0)) old.journal.close();
   for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 
-function job(jobId: string): ControlSetupJob {
+function job(jobId: string): ControlSetupJob & { harness: "codex" } {
   return {
     jobId,
     harness: "codex",

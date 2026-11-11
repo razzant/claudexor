@@ -12,11 +12,12 @@ import {
   ControlArtifactInfo,
   ControlBudgetSnapshot,
   ControlEvidenceIntegrity,
-  ControlPendingInteraction,
   ControlRunSummary,
   ControlTimelineEvent,
 } from "./control.js";
+import { ControlPendingInteraction } from "./control-pending-interaction.js";
 import { RunFailure } from "./control-run-failure.js";
+import { DeferredMessageProjection } from "./deferred-message.js";
 
 export const ControlPrimaryOutput = z
   .object({
@@ -171,6 +172,7 @@ export const ControlRunDetail = z
   .object({
     attemptExecution: z.array(AttemptExecutionEvidence).optional(),
     summary: ControlRunSummary,
+    deferredMessage: DeferredMessageProjection.nullable().optional(),
     children: z
       .array(ControlRunSummary)
       .max(MAX_DELEGATED_CHILDREN)

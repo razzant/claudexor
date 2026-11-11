@@ -3,6 +3,7 @@ import type { AnswerAssembly, HarnessAdapter } from "@claudexor/core";
 import type {
   CredentialProfile,
   HarnessRunSpec,
+  ImplementationTransport,
   QuotaSnapshot,
   RunEventType,
   RunResumable,
@@ -17,6 +18,7 @@ import type { TransientRetryPolicy } from "./runSupport.js";
 import type { ContinuedTry } from "./inrun-continuity-carrier.js";
 import type { PoolAttemptEvidence } from "./pool-attempt-evidence.js";
 import type { PredecessorEvidenceSource } from "./continuation-evidence.js";
+import type { LaterAttempt } from "./continuation-later.js";
 
 type ContinuityEmit = (type: RunEventType, payload: Record<string, unknown>) => void;
 
@@ -34,9 +36,18 @@ export interface InRunContinuityDeps {
   workOrder: string;
   /** The first try's full prompt (engine constraints included) — the packet carrier resends it. */
   firstPrompt: string;
+  /** A fallback or D-16d checkpoint attempt continues the plan an earlier attempt of
+   * the same continued run made; any other attempt never re-plans the predecessor. */
+  later?: LaterAttempt;
+  /** This attempt chose its own model (fallback_model, budget downgrade): an
+   * inherited predecessor model never replaces it. */
+  explicitModel?: boolean;
   registry: readonly CredentialProfile[];
   policy: ProfilePolicy;
-  snapshots: readonly QuotaSnapshot[];
+  /** The quota authority's current projection (#457). Each rotation decision
+   * samples it once, after its readiness probes, so a reset or replacement
+   * observed after this attempt began still reaches the decision. */
+  quotaSnapshots: () => readonly QuotaSnapshot[];
   retryPolicy: TransientRetryPolicy;
   pinned: boolean;
   defaultRouteWasVendorNative: boolean;
@@ -59,8 +70,9 @@ export interface InRunContinuityDeps {
     "probeCurrentSubject" | "liveUnusable" | "notePreProgressRefusal"
   >;
   emit: ContinuityEmit;
-  /** The model-governed route: an attested model is pinned only if it lists the id. */
-  route?: ModelGovernedRoute;
+  /** The model-governed route: an attested model is pinned only if it lists the id;
+   * its manifest transport tells whether its process can read a file path. */
+  route?: ModelGovernedRoute & { implementationTransport?: ImplementationTransport };
   /** The attempt's per-try account rows, owned by a caller whose catch must keep
    * them when finishing the attempt throws; absent = the controller's own. */
   poolEvidence?: PoolAttemptEvidence;

@@ -72,9 +72,7 @@ extension AppModel {
             let queuedAlias = detail.summary.jobId == id && existingBaseIdx != nil
             guard exactIdentity || queuedAlias else { return }
             if existingBaseIdx == nil {
-                let belongsToSelectedThread = selectedThreadDetail?.turns.contains {
-                    $0.runId == id || ($0.run?.delegatedChildRunIds ?? []).contains(id)
-                } == true
+                let belongsToSelectedThread = selectedThreadAuthorizesColdRun(id)
                 guard exactIdentity, insertingIfMissing, belongsToSelectedThread else { return }
                 liveTasks.append(Self.liveTask(from: detail.summary))
             }
@@ -134,10 +132,14 @@ extension AppModel {
             let failure = detail.failure ?? detail.summary.failure
             task.engineError = failure?.safeMessage ?? detail.summary.error
             task.failureCategory = failure?.category
+            task.failureCode = failure?.code
+            task.failureRecord = failure
+            task.rawContext = detail.summary.rawContext
             task.runDir = detail.summary.runDir ?? failure?.runDir ?? task.runDir
             task.outputReadyState = detail.summary.outputReadyState
             task.pendingInteractions = detail.pendingInteractions
             task.waitingOnUser = detail.summary.waitingOnUser ?? !detail.pendingInteractions.isEmpty
+            task.serverAsyncQuestionsOnly = detail.summary.asyncQuestionsOnly ?? false
             if let route = detail.summary.route {
                 task.observedModel = route.observedModel
                 task.routeProof = route.verified == true ? .verified : .unverified
@@ -150,10 +152,12 @@ extension AppModel {
             task.reviewRequested = detail.summary.review
             task.reviewerPanel = detail.summary.reviewerPanel
             task.protectedPathApprovals = detail.summary.protectedPathApprovals
-            task.browserRequirementDetail = browserRequirementDetail(detail.summary.requestRequirements)
+            task.browserRequirementDetail = browserRequirementDetail(detail.summary.requestRequirements,
+                                                                     routes: detail.summary.routeControls ?? [])
+            task.applyRouteFacts(detail.summary)
             if detail.summary.webEvidence?.available == false {
                 task.webEvidenceStatus = nil
-                task.webEvidenceDetail = "Web/tool telemetry unavailable for this run (predates telemetry.yaml or still running)."
+                task.webEvidenceDetail = RouteControlsPresentation.telemetryUnavailable
             } else {
                 task.webEvidenceStatus = detail.summary.webEvidence?.status
                 task.webEvidenceDetail = Self.webEvidenceDetail(detail.summary.webEvidence)
@@ -169,6 +173,9 @@ extension AppModel {
                 task.capKnown = budget.maxUsd != nil
                 task.spendKnown = budget.spendUsd != nil
                 task.spendEstimated = budget.estimated
+                // Known beside an unknown total when an included subscription
+                // reports no debit; the finite cap is governed by this part.
+                task.controllableSpendUsd = budget.controllableSpendUsd
                 // QA-023c: the KNOWN subscription valuation only (unknown stays
                 // absent, never a fabricated $0). Rendered beside cash so a $0
                 // cash subscription run still shows what the work was worth.
@@ -177,10 +184,16 @@ extension AppModel {
             // Seed the live box's spend from the snapshot (authoritative up to
             // lastSeq): post-fence budget.observation increments then add ON
             // TOP — same "seed from replay OR summary, never both" rule.
-            if let box = liveBoxes[id], task.spendKnown {
-                box.spendUsd = task.spendUsd
-                box.spendKnown = true
-                box.spendEstimated = task.spendEstimated
+            if let box = liveBoxes[id] {
+                if task.spendKnown {
+                    box.spendUsd = task.spendUsd
+                    box.spendKnown = true
+                    box.spendEstimated = task.spendEstimated
+                    box.cashDisclosed = true
+                }
+                // A fresh budget snapshot may also say the total is unknown (or the
+                // cap-governed part is): that replaces an earlier exact box value.
+                if let budget = detail.budget { box.adopt(budget) }
             }
             if let final = detail.finalSummary, !final.isEmpty,
                !task.activity.contains(where: { $0.title == "Final summary" }) {
@@ -205,6 +218,7 @@ extension AppModel {
             // Diff bytes are TAB-DEMAND payload (INV-136): hydration records
             // artifact existence; TaskDetail loads/parses only when Diff opens.
             if !detail.timeline.isEmpty {
+                foldTimelineNotices(id, detail.timeline)
                 task.activity = detail.timeline.map(Self.activityEvent(from:))
                 // A STREAMING run's feed lives in its box (views read the box
                 // overlay): the snapshot timeline is authoritative up to
@@ -237,8 +251,10 @@ extension AppModel {
             // Re-resolve the row index at WRITE time: streams/refreshes may have
             // inserted or removed rows during the awaits above.
             if let writeIdx = liveTasks.firstIndex(where: { $0.id == id }) {
+                reconcileHistoryInteractions(&task, lastSeq: detail.lastSeq, at: .local)
                 liveTasks[writeIdx] = task
                 hydratedRunDetails.insert(id)
+                publishHistoryLive(task, locationID: .local)
             }
         } catch {
             guard !Task.isCancelled,

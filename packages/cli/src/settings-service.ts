@@ -1,4 +1,4 @@
-import { resolveEffort, effortLadders } from "@claudexor/core";
+import { resolveEffort, effortLadders, type ModelCheck } from "@claudexor/core";
 /**
  * Settings-write validation + patch merge — the daemon's POST /settings core.
  *
@@ -25,7 +25,12 @@ import {
 } from "@claudexor/schema";
 import { effortLevelsForModel } from "@claudexor/schema";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
-import { buildRegistry, checkHarnessModelTruth, harnessModelTruth } from "./registry.js";
+import {
+  buildRegistry,
+  catalogFailureProblem,
+  checkHarnessModelTruth,
+  harnessModelTruth,
+} from "./registry.js";
 
 export function settingsSnapshot(
   repoRoot: string,
@@ -86,6 +91,17 @@ export function settingsSnapshot(
 
 function badRequest(message: string): never {
   throw Object.assign(new Error(message), { status: 400, code: "invalid_request" });
+}
+
+/** A model refusal: a failed catalog read keeps its typed code (409) with the
+ * read's retryable verdict and cause, never the invalid_request of a model a
+ * readable catalog does not list (#393). */
+function refuseModel(check: ModelCheck, message: string): never {
+  if (check.catalogFailure) {
+    const { code, retryable, context } = catalogFailureProblem(check.catalogFailure);
+    throw Object.assign(new Error(message), { status: 409, code, retryable, context });
+  }
+  badRequest(message);
 }
 
 /**
@@ -229,7 +245,7 @@ export async function assertSettingsPatchValid(
         const truth = await harnessModelTruth(route.harness, process.cwd(), true);
         const model = checkHarnessModelTruth(truth, route.model);
         if (model.status !== "ok")
-          badRequest(model.message ?? `model '${route.model}' was refused`);
+          refuseModel(model, model.message ?? `model '${route.model}' was refused`);
         if (model.unverified && model.message)
           notes.push(
             `quality tier route '${route.harness}/${route.model}' (truth source: ${truth.response.source}): ${model.message}`,
@@ -271,7 +287,8 @@ export async function assertSettingsPatchValid(
       for (const { field, value } of models) {
         const check = checkHarnessModelTruth(truth, value);
         if (check.status !== "ok") {
-          badRequest(
+          refuseModel(
+            check,
             `harness '${id}' refused ${field} '${value}' (truth source: ${truth.response.source}): ${check.message}`,
           );
         }

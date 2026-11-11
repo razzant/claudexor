@@ -32,6 +32,9 @@ export async function resolveControlProtocol(input: {
   requestedMajor: string | string[] | undefined;
   readBody: () => Promise<unknown>;
   servingMode?: ControlServingMode;
+  storeId?: () => string | undefined;
+  /** The request opted in to `storeId` (`X-Claudexor-Store-Identity: 1`). */
+  wantsStoreId?: boolean;
 }): Promise<ControlProtocolBoundary> {
   const servingMode = input.servingMode ?? "normal";
   if (input.method === "POST" && input.requestPath === "/v2/handshake") {
@@ -48,6 +51,9 @@ export async function resolveControlProtocol(input: {
         ),
       };
     }
+    // Read after the body await: storage may open or be replaced while it arrives. Only an
+    // opted-in client gets it: the handshake response is strict for older same-major clients.
+    const storeId = input.wantsStoreId ? input.storeId?.() : undefined;
     return {
       kind: "response",
       status: 200,
@@ -58,6 +64,7 @@ export async function resolveControlProtocol(input: {
         operationsPath: "/v2/operations",
         engine: engineBuildIdentity(),
         servingMode,
+        ...(storeId === undefined ? {} : { storeId }),
       }),
     };
   }

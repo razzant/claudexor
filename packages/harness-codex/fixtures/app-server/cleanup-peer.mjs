@@ -1,5 +1,4 @@
 // Credential-free protocol peer. The adapter and process teardown remain real.
-import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -19,17 +18,25 @@ if (process.argv.includes("--wrapper")) {
     process.on("SIGINT", () => {});
     process.on("SIGTERM", () => {});
   }
+  const echoPrompt = process.argv.includes("--echo-prompt");
   const text = process.env.CX_FIXTURE_ANSWER ?? '{"verdict":"PASS"}';
   const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+  // The late root error ends at natural EOF: LF-terminated, without its LF, or cut short.
+  const lateFrame = JSON.stringify({
+    method: "thread/status/changed",
+    params: { threadId: "root", status: { type: "systemError" } },
+  });
+  const lateWire = process.argv.includes("--malformed")
+    ? lateFrame.slice(0, -3)
+    : lateFrame + (process.argv.includes("--unterminated") ? "" : "\n");
   process.stderr.write(`fixture-pid:${process.pid}\n`);
   const terminal = (status) =>
     send({
       method: "turn/completed",
       params: { threadId: "root", turn: { id: "turn", status, items: [] } },
     });
-  const lines = createInterface({ input: process.stdin });
-  lines.on("line", (line) => {
-    const { id, method } = JSON.parse(line);
+  const onRequest = (line) => {
+    const { id, method, params } = JSON.parse(line);
     if (method === "initialize") send({ id, result: {} });
     if (method === "thread/start") send({ id, result: { thread: { id: "root" } } });
     if (method === "turn/start") {
@@ -41,7 +48,11 @@ if (process.argv.includes("--wrapper")) {
           params: {
             threadId: "root",
             turnId: "turn",
-            item: { id: "answer", type: "agentMessage", text },
+            item: {
+              id: "answer",
+              type: "agentMessage",
+              text: echoPrompt ? params.input[0].text : text,
+            },
           },
         });
         terminal("completed");
@@ -54,25 +65,35 @@ if (process.argv.includes("--wrapper")) {
       send({ id, result: {} });
       terminal("interrupted");
     }
+  };
+  // Requests are LF-delimited JSON; readline would also split a prompt at U+2028/U+2029.
+  let pending = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    pending += chunk;
+    for (let lf = pending.indexOf("\n"); lf !== -1; lf = pending.indexOf("\n")) {
+      const line = pending.slice(0, lf);
+      pending = pending.slice(lf + 1);
+      onRequest(line);
+    }
   });
-  lines.on("close", () => {
+  process.stdin.once("end", () => {
     if (drainPlan) {
-      // Only the joined drain fixture: a descendant inherits the real pipes,
+      // Drain fixtures only: a descendant inherits the real pipes,
       // acknowledges readiness, and emits its frames AFTER this root exits.
       const holder = spawn(
         process.execPath,
         [fileURLToPath(new URL("./drain-holder.mjs", import.meta.url)), drainPlan],
-        { stdio: ["ignore", "inherit", "inherit", "ipc"] },
+        {
+          // On Windows, escape libuv's kill-on-close Job Object so the holder
+          // survives this root's exit and keeps the inherited pipes open.
+          detached: process.platform === "win32",
+          windowsHide: true,
+          stdio: ["ignore", "inherit", "inherit", "ipc"],
+        },
       );
       holder.once("message", () => process.exit(0));
-    } else if (lateError)
-      process.stdout.write(
-        JSON.stringify({
-          method: "thread/status/changed",
-          params: { threadId: "root", status: { type: "systemError" } },
-        }) + "\n",
-        () => process.exit(0),
-      );
+    } else if (lateError) process.stdout.write(lateWire, () => process.exit(0));
     else process.exit(0);
   });
 }

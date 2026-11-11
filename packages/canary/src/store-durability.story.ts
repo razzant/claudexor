@@ -38,7 +38,7 @@ afterEach(() => {
   sandbox = undefined;
   expect(existsSync(home)).toBe(false);
   process.stdout.write(`${JSON.stringify({ story: "store-durability", cleanedRoot: home })}\n`);
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function requestApi(sb: Sandbox) {
   return async <T>(

@@ -74,7 +74,7 @@ afterEach(() => {
   calls.forceWal = false;
   expect(calls.active).toBe(0);
   for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function fixture() {
   const path = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-import-fault-")));
   roots.push(path);

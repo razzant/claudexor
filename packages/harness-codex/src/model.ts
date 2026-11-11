@@ -1,3 +1,4 @@
+import { codexCapabilityRefusal } from "./model-capability-refusal.js";
 import {
   codexProcessingCapability,
   prepareCodexProcessing,
@@ -94,6 +95,15 @@ function capacity(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
+/** Declared input kinds verbatim (open vocabulary). Only a wholly valid, non-empty
+ * list counts: a missing, empty, non-array or partly invalid one is unknown (`[]`),
+ * never a filtered subset that would read as a confident negative. */
+function declaredInputModalities(value: unknown): string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((item) => text(item)?.trim())
+    ? [...value]
+    : [];
+}
+
 /** An expired/opaque access token's 401 is not proof that a new login is needed. */
 function authenticatedProblem(
   response: Response,
@@ -147,9 +157,6 @@ export function parseCodexModelCatalog(value: unknown): ModelCatalogEntry[] {
       ? reportedEfforts.map((item) => text(record(item)?.effort)!)
       : [];
     const projectedEfforts = codexModelEfforts(efforts);
-    const modalities = Array.isArray(entry.input_modalities)
-      ? entry.input_modalities.filter((item): item is string => typeof item === "string")
-      : [];
     return {
       id,
       processing: codexProcessingCapability(entry, "codex.models"),
@@ -159,7 +166,7 @@ export function parseCodexModelCatalog(value: unknown): ModelCatalogEntry[] {
       maxContextWindow: capacity(entry.max_context_window),
       // Backend output-cap parameters are unsupported even when a model has a published output capacity.
       maxOutputTokens: capacity(entry.max_output_tokens),
-      inputModalities: modalities,
+      inputModalities: declaredInputModalities(entry.input_modalities),
       ...projectedEfforts,
       reasoningEffortsVerified,
       defaultReasoningEffort:
@@ -225,8 +232,10 @@ async function catalogFor(
     source: "codex",
     credentialProfileId: context.profile.profile_id,
     accountFingerprint: auth.accountFingerprint,
+    capabilityFingerprint: auth.capabilityFingerprint,
     observedAt: new Date(now()).toISOString(),
     provenance: "provider_http",
+    sourceProgram: declared.program ?? null,
     clientVersion: declared.version,
     clientVersionSource: declared.source,
     models,
@@ -323,7 +332,9 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
           discovered &&
           (discovered.source !== route.source ||
             discovered.credentialProfileId !== route.credentialProfileId ||
-            discovered.accountFingerprint !== auth.accountFingerprint)
+            discovered.accountFingerprint !== auth.accountFingerprint ||
+            (discovered.capabilityFingerprint !== undefined &&
+              discovered.capabilityFingerprint !== auth.capabilityFingerprint))
         )
           throw new CodexModelError(
             "auth_changed",
@@ -400,7 +411,12 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
           const result = emptyModelResult({ ...route, model: null });
           const error = await capture.readRefusal(response);
           result.problem = processingAdmissionProblem(
-            authenticatedProblem(response, error, auth, now()),
+            codexCapabilityRefusal(
+              authenticatedProblem(response, error, auth, now()),
+              response.status,
+              error,
+              request.model,
+            ),
             request.options,
             processing,
           );

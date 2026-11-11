@@ -1,6 +1,7 @@
 import type { AccountLastService, CredentialProfile } from "@claudexor/schema";
 import { CredentialGeneration } from "./credential-generation.js";
 import { CredentialUnusableLedger } from "./credential-unusable-ledger.js";
+import { ModelCapabilityLedger } from "./model-capability-ledger.js";
 import { ModelSubstitutionLedger } from "./model-substitution-ledger.js";
 import { PreProgressRefusalLedger } from "./pre-progress-refusal-ledger.js";
 import { AccountServiceStore, type ServiceProducer } from "./store/account-service.js";
@@ -61,6 +62,7 @@ export function createAccountEvidence(
     unusable: new CredentialUnusableLedger(undefined, undefined, credentials),
     refusals: new PreProgressRefusalLedger(undefined, undefined, credentials),
     substitutions: new ModelSubstitutionLedger(),
+    capabilities: new ModelCapabilityLedger(credentials),
     services,
     /** The owning store is closing: no outcome of an earlier run binds any more. */
     retire: () => credentials.retire(),

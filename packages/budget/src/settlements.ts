@@ -1,5 +1,6 @@
 import type { CostKnowledge } from "@claudexor/schema";
 import type { BudgetSettlement } from "./ledger.js";
+import type { ObservedUsageAmounts } from "./usage-evidence.js";
 
 export function usageCostSettlement(
   cashUsd: number,
@@ -18,31 +19,56 @@ export function usageCostSettlement(
     : { knowledge: "unknown", source: `${source}-missing`, provenance };
 }
 
+/** Components a settlement reports: a positive amount, or a zero the usage
+ * tracker observed. Stated knowledge alone never counts as a reported amount. */
+function reportedComponents(
+  amounts: { cashUsd: number; valuationUsd: number; unknownUsd: number },
+  seen: ObservedUsageAmounts | undefined,
+) {
+  const valuationUsd = Math.max(0, amounts.valuationUsd);
+  const valuation = valuationUsd > 0 || seen?.valuation === true;
+  const unknown = amounts.unknownUsd > 0 || seen?.unknown === true;
+  return {
+    valuationUsd,
+    valuation,
+    unknown,
+    any: amounts.cashUsd > 0 || seen?.cash === true || valuation || unknown,
+  };
+}
+
 export function reviewUsageCostSettlement(
   cashUsd: number,
   valuationUsd: number,
-  knowledge: { cash: CostKnowledge; valuation: CostKnowledge },
+  knowledge: {
+    cash: CostKnowledge;
+    valuation: CostKnowledge;
+    allowanceDebitUnobserved?: boolean;
+    observedAmounts?: ObservedUsageAmounts;
+  },
   provenance: string[],
   unknownUsd = 0,
 ): BudgetSettlement {
-  const observed = cashUsd > 0 || valuationUsd > 0 || unknownUsd > 0;
-  const normalizedValuation = Math.max(0, valuationUsd);
+  const reported = reportedComponents(
+    { cashUsd, valuationUsd, unknownUsd },
+    knowledge.observedAmounts,
+  );
   const aggregateKnowledge = mergeKnowledge([
     knowledge.cash,
-    ...(normalizedValuation > 0 || unknownUsd > 0 ? [knowledge.valuation] : []),
+    ...(reported.valuation || reported.unknown ? [knowledge.valuation] : []),
   ]);
   return {
-    knowledge: unknownUsd > 0 ? "unknown" : aggregateKnowledge,
+    knowledge: reported.unknown ? "unknown" : aggregateKnowledge,
     cashKnowledge: knowledge.cash,
-    ...(normalizedValuation > 0 || unknownUsd > 0
+    ...(knowledge.allowanceDebitUnobserved ? { allowanceDebitUnobserved: true } : {}),
+    ...(reported.valuation || reported.unknown
       ? {
-          valuationKnowledge: unknownUsd > 0 ? ("unknown" as const) : knowledge.valuation,
+          valuationKnowledge: reported.unknown ? ("unknown" as const) : knowledge.valuation,
         }
       : {}),
-    source: observed ? "review-usage" : "review-usage-missing",
+    source: reported.any ? "review-usage" : "review-usage-missing",
     provenance,
     cashUsd: Math.max(0, cashUsd),
-    ...(normalizedValuation > 0 ? { valuationUsd: normalizedValuation } : {}),
+    ...(reported.valuation ? { valuationUsd: reported.valuationUsd } : {}),
   };
 }
 
@@ -65,32 +91,33 @@ export function attemptUsageCostSettlement(
     valuationEstimated?: boolean;
     cashKnowledge?: CostKnowledge;
     valuationKnowledge?: CostKnowledge;
+    allowanceDebitUnobserved?: boolean;
+    observedAmounts?: ObservedUsageAmounts;
   },
 ): BudgetSettlement {
   if (split) {
-    const observed = split.cashUsd + split.valuationUsd + split.unknownUsd;
+    const reported = reportedComponents(split, split.observedAmounts);
     const componentEvidence =
       split.cashKnowledge !== undefined || split.valuationKnowledge !== undefined;
-    if (observed > 0 || componentEvidence) {
-      const normalizedValuation = Math.max(0, split.valuationUsd);
+    if (reported.any || componentEvidence) {
       const cashKnowledge =
         split.cashKnowledge ??
-        (split.unknownUsd > 0 ? "unknown" : measuredKnowledge(split.cashEstimated === true));
-      const valuationKnowledge =
-        split.unknownUsd > 0
-          ? "unknown"
-          : (split.valuationKnowledge ?? measuredKnowledge(split.valuationEstimated === true));
+        (reported.unknown ? "unknown" : measuredKnowledge(split.cashEstimated === true));
+      const valuationKnowledge = reported.unknown
+        ? "unknown"
+        : (split.valuationKnowledge ?? measuredKnowledge(split.valuationEstimated === true));
       return {
         knowledge: mergeKnowledge([
           cashKnowledge,
-          ...(normalizedValuation > 0 || split.unknownUsd > 0 ? [valuationKnowledge] : []),
+          ...(reported.valuation || reported.unknown ? [valuationKnowledge] : []),
         ]),
         cashKnowledge,
-        ...(normalizedValuation > 0 || split.unknownUsd > 0 ? { valuationKnowledge } : {}),
-        source: observed > 0 ? "harness-usage-by-route" : "harness-route-usage-missing",
+        ...(split.allowanceDebitUnobserved ? { allowanceDebitUnobserved: true } : {}),
+        ...(reported.valuation || reported.unknown ? { valuationKnowledge } : {}),
+        source: reported.any ? "harness-usage-by-route" : "harness-route-usage-missing",
         provenance: [`attempt:${attemptId}`, `harness:${harnessId}`, "route:stream-evidence"],
         cashUsd: split.cashUsd,
-        ...(normalizedValuation > 0 ? { valuationUsd: normalizedValuation } : {}),
+        ...(reported.valuation ? { valuationUsd: reported.valuationUsd } : {}),
       };
     }
   }

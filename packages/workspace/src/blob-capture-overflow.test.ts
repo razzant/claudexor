@@ -21,7 +21,7 @@ vi.mock("@claudexor/core", async (original) => {
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 it("keeps a complete binary patch when only secret inspection exceeds the buffer budget", async () => {
   const root = mkdtempSync(join(tmpdir(), "cx-blob-overflow-"));
   roots.push(root);
@@ -41,5 +41,4 @@ it("keeps a complete binary patch when only secret inspection exceeds the buffer
   const captured = await captureWorkingTreeTransient(root, "HEAD");
   expect(captured.captureIncomplete).toBe(false);
   expect(captured.patch).toContain("GIT binary patch");
-  expect(captured.binarySecretPaths).toEqual(["binary.bin"]);
 });

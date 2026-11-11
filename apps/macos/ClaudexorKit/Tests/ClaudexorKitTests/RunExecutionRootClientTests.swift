@@ -20,6 +20,17 @@ struct RunExecutionRootClientTests {
         #expect(older.executionRoot == nil)
     }
 
+    @Test func runExecutionOmitsAuxiliaryRootsUnlessACallerSetsThem() throws {
+        let legacy = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(RunExecution())) as? [String: Any]
+        #expect(legacy?.keys.sorted() == ["isolation"])
+        let granted = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(
+                RunExecution(isolation: "envelope", auxiliaryWritableRoots: ["/srv/cache"])))
+            as? [String: Any]
+        #expect(granted?["auxiliaryWritableRoots"] as? [String] == ["/srv/cache"])
+    }
+
     @Test func projectFileFetchCarriesTheRunOnlyWhenGiven() async throws {
         let recorder = ProjectFileRequestRecorder()
         ProjectFileStubURLProtocol.handler = { request in

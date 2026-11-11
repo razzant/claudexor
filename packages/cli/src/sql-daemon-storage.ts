@@ -74,6 +74,9 @@ export class SqlDaemonStorage {
     if (!this.graphValue) throw recoveryOnlyRefusal("engine store");
     return this.graphValue;
   }
+  storeId(): string | undefined {
+    return this.storeValue?.isClosed ? undefined : this.storeValue?.storeId;
+  }
   facts(): DaemonStoreFacts {
     return {
       ...(this.graphValue?.store.facts() ?? {

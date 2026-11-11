@@ -19,6 +19,21 @@ public struct LocalRuntimeClosureSelection: Sendable, Equatable {
     }
 }
 
+/// The process one scheduled launch spawned, once it got that far. Its lifecycle
+/// owner must not start another engine while that process runs.
+final class DaemonLaunchRecord: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+
+    fileprivate func spawned(_ process: Process) {
+        lock.withLock { self.process = process }
+    }
+
+    var isRunning: Bool {
+        lock.withLock { process?.isRunning ?? false }
+    }
+}
+
 /// Starts the engine-service (claudexord) bundled inside the notarized .app, so the app is
 /// one-click self-contained. The bundle ships a notarized `node` and a single-file
 /// `claudexord.bundle.cjs` in Resources; this spawns them when nothing is already serving the
@@ -83,6 +98,45 @@ enum DaemonLauncher {
             scriptURL: bundledDaemon, authority: .bundledStampedProbe)
     }
 
+    /// Saved copies that may still hold an exact build after a failed
+    /// replacement: the contained `versions/<version>` closure, whose helpers
+    /// sit beside its script, then the app-bundled script. The caller proves
+    /// each with `--probe`; nothing here touches the runtime pointer.
+    static func savedScripts(
+        for identity: RuntimeClosureIdentity,
+        installer: RuntimeInstaller = RuntimeInstaller(),
+        bundledDaemon: URL? = DaemonLauncher.bundledDaemon
+    ) -> [URL] {
+        let bundled = bundledDaemon.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+        return [installer.containedDaemonScript(version: identity.version), bundled].compactMap { $0 }
+    }
+
+    /// The operator stop for one engine root, spelled for a POSIX shell. Root
+    /// and socket are both explicit, so a shell's own values cannot redirect
+    /// it: the app's socket override travels with it, and without one the
+    /// variable is set empty, which the engine reads as the root's default
+    /// socket, as did the engine this app launched. The app's bundled Node and
+    /// CLI are named when both exist, else the CLI on `PATH`.
+    static func operatorStopCommand(
+        root: URL, node: URL?, cli: URL?, environment: [String: String],
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> String {
+        var words = [
+            "CLAUDEXOR_CONFIG_DIR=\(shellQuoted(root.path))",
+            "CLAUDEXOR_DAEMON_SOCK=\(shellQuoted(environment["CLAUDEXOR_DAEMON_SOCK", default: ""]))",
+        ]
+        if let node, let cli, fileExists(node.path), fileExists(cli.path) {
+            words += [shellQuoted(node.path), shellQuoted(cli.path)]
+        } else {
+            words.append("claudexor")
+        }
+        return (words + ["daemon", "stop"]).joined(separator: " ")
+    }
+
+    private static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     static var isAvailable: Bool {
         guard let node = bundledNode, let daemon = resolvedDaemon() else { return false }
         let fm = FileManager.default
@@ -94,10 +148,16 @@ enum DaemonLauncher {
     /// daemon-script path is resolved through the installed runtime. The engine's probe
     /// names the heap ceiling first and runs off the caller's thread (outage recovery
     /// calls this on the main actor), so the spawn follows a moment later and a failed
-    /// spawn surfaces through the callers' existing handshake polls.
+    /// spawn surfaces through the callers' existing handshake polls. Outage
+    /// recovery and reconciliation supply an exact lease/deadline permit, checked
+    /// after the probe under ownership at Process.run, so retired queued work
+    /// cannot spawn late. Reconciliation also reads back what was spawned.
     @discardableResult
-    static func startIfNeeded(scriptURL: URL? = nil) -> Bool {
-        guard let node = bundledNode, let daemon = scriptURL ?? resolvedDaemon() else { return false }
+    static func startIfNeeded(
+        scriptURL: URL? = nil, launchPermit: LocalRuntimeLaunchPermit? = nil,
+        launchRecord: DaemonLaunchRecord? = nil, node: URL? = DaemonLauncher.bundledNode
+    ) -> Bool {
+        guard let node, let daemon = scriptURL ?? resolvedDaemon() else { return false }
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: node.path), fm.fileExists(atPath: daemon.path) else {
             return false
@@ -112,7 +172,20 @@ enum DaemonLauncher {
             process.environment = environment
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
-            try? process.run()
+            let spawn = {
+                do {
+                    try process.run()
+                    launchRecord?.spawned(process)
+                    return true
+                } catch {
+                    return false
+                }
+            }
+            if let launchPermit {
+                _ = launchPermit.perform(spawn)
+            } else {
+                _ = spawn()
+            }
         }
         return true
     }

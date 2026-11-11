@@ -1,4 +1,14 @@
-import type { CancelReasonCode, CommandListQuery } from "@claudexor/schema";
+import type {
+  CancelReasonCode,
+  CommandListQuery,
+  RunTimeLimitRequest,
+  RunTimeLimitSnapshot,
+  DeferredMessageCall,
+  DeferredMessageReceipt,
+  DeferredMessageDetail,
+  DeferredMessageProjection,
+  DeferredMessageStopReport,
+} from "@claudexor/schema";
 import { delegatedParentOf } from "@claudexor/schema";
 
 export interface DaemonRunRecord {
@@ -44,7 +54,13 @@ export interface DaemonFacadeClient {
   /** Required addressed selection before projection. */
   list(query: CommandListQuery): Promise<DaemonRunRecord[]>;
   cancel(id: string, reasonCode?: CancelReasonCode): Promise<unknown>;
+  runTimeLimit?(id: string, request: RunTimeLimitRequest): Promise<RunTimeLimitSnapshot>;
   fenceDelegationParent?(runId: string): Promise<unknown>;
+  deferredMessage?(input: DeferredMessageCall): Promise<DeferredMessageReceipt>;
+  deferredMessageRead?(draftId: string): Promise<DeferredMessageDetail | null>;
+  deferredMessageProjection?(predecessorId: string): Promise<DeferredMessageProjection | null>;
+  /** Hold the predecessor's waiting draft for a public Stop and report the slot. */
+  deferredMessageStop?(predecessorId: string): Promise<DeferredMessageStopReport>;
 }
 
 export interface ControlOperatorDecisionRecord {
@@ -55,7 +71,7 @@ export interface ControlOperatorDecisionRecord {
   decidedAt: string;
 }
 
-export function paramsRecord(record: DaemonRunRecord): Record<string, unknown> {
+export function paramsRecord(record: Pick<DaemonRunRecord, "params">): Record<string, unknown> {
   return record.params && typeof record.params === "object" && !Array.isArray(record.params)
     ? (record.params as Record<string, unknown>)
     : {};

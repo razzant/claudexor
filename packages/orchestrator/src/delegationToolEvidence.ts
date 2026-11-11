@@ -1,6 +1,24 @@
 import type { HarnessEvent } from "@claudexor/schema";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 
+/** QA-024: the injected server’s typed startup failure cannot become silent success. */
+export function observeBeltStartup(t: AttemptTelemetry, ev: HarnessEvent): void {
+  const payload = (ev as { payload?: Record<string, unknown> }).payload;
+  const servers = payload?.["mcp_servers"];
+  if (!Array.isArray(servers)) return;
+  for (const raw of servers) {
+    if (!raw || typeof raw !== "object") continue;
+    const entry = raw as { name?: unknown; status?: unknown };
+    if (entry.name !== t.delegationBelt.serverName) continue;
+    const status = typeof entry.status === "string" ? entry.status.toLowerCase() : "";
+    if (status === "failed" || status === "error") t.delegationBelt.failed = true;
+    else if (status === "connected" || status === "ready" || status === "ok") {
+      t.delegationBelt.ready = true;
+    }
+    return;
+  }
+}
+
 /** The required belt server failed after injection. A ready/pending-but-unused
  * belt is not unavailable; the harness remains free to solve the turn itself. */
 export function delegationBeltUnavailable(t: AttemptTelemetry): boolean {

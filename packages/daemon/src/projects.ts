@@ -35,7 +35,16 @@ export function canonicalRoot(input: string): string {
   try {
     root = realpathSync(input);
   } catch {
-    throw Object.assign(new Error(`project root does not exist: ${input}`), { status: 400 });
+    // Named so a caller replaying an accepted launch learns why nothing was
+    // replayed or started: a vanished root is refused, never re-registered.
+    throw Object.assign(new Error(`project root does not exist: ${input}`), {
+      status: 400,
+      code: "project_root_missing",
+      retryable: false,
+      requiredActions: [
+        "Restore or remount the project at the same absolute path, or relink the registered project; a missing root never starts or replays work.",
+      ],
+    });
   }
   if (!lstatSync(root).isDirectory()) {
     throw Object.assign(new Error(`project root is not a directory: ${input}`), { status: 400 });

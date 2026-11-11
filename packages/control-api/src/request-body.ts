@@ -1,15 +1,23 @@
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 
 const MAX_CONTROL_BODY_BYTES = 10 * 1024 * 1024;
 
 /** Reads a bounded JSON request body with strict UTF-8 decoding. */
-export async function readControlRequestBody(req: IncomingMessage): Promise<unknown> {
+export async function readControlRequestBody(
+  req: IncomingMessage,
+  maxBytes = MAX_CONTROL_BODY_BYTES,
+): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of req) {
+  // Stopping early must not destroy the request: the response writer
+  // discards the unread rest so the client receives the typed 413.
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     size += (chunk as Buffer).length;
-    if (size > MAX_CONTROL_BODY_BYTES)
+    if (size > maxBytes) {
+      chunks.length = 0;
       throw Object.assign(new Error("request body too large"), { status: 413 });
+    }
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) return {};
@@ -37,4 +45,46 @@ export async function readControlRequestBody(req: IncomingMessage): Promise<unkn
   } catch {
     throw Object.assign(new Error("invalid JSON body"), { status: 400 });
   }
+}
+
+/** Connections still receiving a body that their answer refused. */
+export class RefusedBodies {
+  /** Each such connection with the answer that refused its body. */
+  private readonly refusals = new Map<Socket, ServerResponse>();
+  private closing = false;
+
+  /** An early answer discards the rest of the body and keeps the connection,
+   * so the client can read the answer. */
+  discard(res: ServerResponse): void {
+    const req = res.req;
+    if (!req || req.complete) return;
+    req.resume();
+    const socket = req.socket;
+    if (this.refusals.has(socket)) return;
+    this.refusals.set(socket, res);
+    const settle = () => {
+      this.refusals.delete(socket);
+      req.off("end", settle);
+      socket.off("close", settle);
+    };
+    req.once("end", settle);
+    socket.once("close", settle);
+    if (this.closing) endAfter(res, socket);
+  }
+
+  /** Called first at stop: a client that keeps sending would hold the listener
+   * open, so each connection is half-closed after its refusing answer, now and
+   * for every later refusal; the rest of the body is still read and discarded
+   * until the client closes its side. */
+  close(): void {
+    this.closing = true;
+    for (const [socket, res] of this.refusals) endAfter(res, socket);
+  }
+}
+
+/** Half-close once the refusing answer is written. Answers queued before it on
+ * the connection go out first, and no request follows an unfinished body. */
+function endAfter(res: ServerResponse, socket: Socket): void {
+  if (res.writableFinished) socket.end();
+  else res.once("finish", () => socket.end());
 }

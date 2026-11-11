@@ -30,7 +30,7 @@
       "project": ["src/**/*.ts"]
     },
     ".": {
-      "entry": ["scripts/*.mjs"],
+      "entry": ["scripts/*.mjs", "scripts/benchmarks/daemon-load-fixture.mjs"],
       "project": ["scripts/**/*.mjs"]
     }
   },

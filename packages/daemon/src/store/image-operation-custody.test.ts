@@ -12,7 +12,7 @@ import {
   type ModelOperationReceipt,
   type ModelPayloadRef,
 } from "@claudexor/schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createCodexModelAdapter } from "../../../harness-codex/src/model.js";
 import { commandDigests } from "../command-store.js";
 import { ModelOperations, type ModelOperationDependencies } from "../model-operations.js";
@@ -36,6 +36,7 @@ import {
   journalPartitionDirectory,
 } from "./test-support/fixtures/legacy/journal/index.js";
 import { builtWorker, chunks } from "./test-support/resource-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** Image operations through the real SQL owners: command store, addressed
  * custody queries, upload/resource store and the flush barrier. The provider is
@@ -62,14 +63,20 @@ const imageResponse = (data: unknown[], extra: Record<string, unknown> = {}) =>
   Response.json({ data, usage: { input_tokens: 11, output_tokens: 7 }, ...extra });
 
 const cleanup: Array<() => unknown> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 function privateRoot(): string {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-img-")));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   return root;
 }
 
@@ -98,14 +105,14 @@ async function daemonLife(root: string, clock: { now: Date }, manualTick = false
     terminalFiles: new SqlTerminalFiles(store, obligations),
     pruner: new SqlCommandPruner(store, blobs),
   });
-  let closed = false;
-  const close = async () => {
-    if (closed) return;
-    closed = true;
-    obligations.close();
-    await store.close();
-    await resources.drainCleanup();
-  };
+  let closing: Promise<void> | undefined;
+  /** One close: a later caller gets its outcome, not a success it never saw (#376). */
+  const close = () =>
+    (closing ??= (async () => {
+      obligations.close();
+      await store.close();
+      await resources.drainCleanup();
+    })());
   cleanup.push(close);
   return {
     store,
@@ -370,10 +377,12 @@ describe("image custody through the SQL owners", () => {
     const ref = await upload(life, request);
     expect(life.resources.readModel(ref).equals(Buffer.from(JSON.stringify(request)))).toBe(true);
     const created = await ops.create(ref, "edit-bytes", undefined, undefined, "image");
+    // A reference and the model create parsed (#649), never the edit bytes.
     expect(ModelOperationParams.parse(life.commands.get(created.id)!.params)).toEqual({
       kind: "model",
       request: ref,
       requestKind: "image",
+      requestedModel: "gpt-image-2",
     });
     const receipt = await run(life, ops, created.id);
     expect(receipt).toMatchObject({
@@ -499,7 +508,8 @@ describe("image custody through the SQL owners", () => {
       state: "interrupted",
       dispatch: { state: "unknown", startedAt: NOW },
       response: { state: "absent" },
-      problem: { code: "model_operation_interrupted" },
+      // No execution receipt survived the crash: the name is the one create parsed (#649).
+      problem: { code: "model_operation_interrupted", context: { requestedModel: "gpt-image-2" } },
     });
     expect((await reopened.ops.create(ref, "crash", undefined, undefined, "image")).id).toBe(
       created.id,
@@ -527,7 +537,9 @@ describe("image custody through the SQL owners", () => {
     const first = await upload(life, generation());
     const created = await ops.create(first, "rejoin", undefined, undefined, "image");
     const executing = start(life, ops, created.id, new AbortController().signal);
-    await vi.waitFor(() => expect(p.posts).toHaveLength(1));
+    // The POST follows the dispatch barrier (one flusher pass, much slower
+    // under disk contention, #441); a 1 s window is not part of the contract.
+    await vi.waitFor(() => expect(p.posts).toHaveLength(1), { timeout: 10_000 });
     // A caller that lost the reply uploads identical bytes again and retries its key.
     const copy = await upload(life, generation());
     expect(copy.resourceId).not.toBe(first.resourceId);

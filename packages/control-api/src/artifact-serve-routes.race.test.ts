@@ -76,7 +76,7 @@ describe("artifact enumeration under concurrent-mutation races (GH #128)", () =>
     state.epermSuffix = null;
     state.eaccesSuffix = null;
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("skips an entry that vanishes between readdir and lstat and lists the survivors", () => {
     writeFileSync(join(dir, "keep.txt"), "kept\n");

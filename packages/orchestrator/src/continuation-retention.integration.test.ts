@@ -66,7 +66,7 @@ describe("retention follows the final run outcome", () => {
                 display_name: "Reviewer",
                 kind: "local_cli",
                 provider_family: "openai",
-                capabilities: { review: true },
+                capabilities: { review: true, read_files: true },
               });
             },
             async doctor() {

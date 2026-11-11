@@ -1079,6 +1079,16 @@ describe("v0.9 threads / sessions / decision", () => {
     expect(() => ControlRunDecisionRequest.parse({ action: "apply", surprise: 1 })).toThrow();
   });
 
+  it("requires the captured_result reason only for the taken decision", () => {
+    expect(
+      ControlRunDecisionRequest.parse({ action: "taken", reason: "captured_result" }),
+    ).toMatchObject({ action: "taken", reason: "captured_result" });
+    expect(() => ControlRunDecisionRequest.parse({ action: "taken" })).toThrow(/reason/);
+    expect(() =>
+      ControlRunDecisionRequest.parse({ action: "discard", reason: "captured_result" }),
+    ).toThrow(/reason/);
+  });
+
   it("projects a ControlThread with a needs-me flag", () => {
     const ct = ControlThread.parse({
       id: "th-1",

@@ -27,7 +27,8 @@ describe("continuation notice", () => {
       uncertainInput: "  Also rename the helper.  ",
       callerText: "Then run the tests.",
     });
-    expect(notice).toContain("(the process died)");
+    expect(notice).toContain("(an error without a typed cause)");
+    expect(notice).not.toContain("died");
     expect(notice).toContain(
       "may not have been delivered. It was:\n\nAlso rename the helper.\n\nReconcile it",
     );

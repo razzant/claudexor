@@ -75,6 +75,19 @@ it("authenticates status, samples real memory without reading commands, and keep
       const measured = await read();
       expect(measured.loop?.windowMs).toBeGreaterThan(0);
       expect(measured.loop?.gc.count).toBeGreaterThanOrEqual(0);
+      expect(measured.timing?.windowEndedAt).toBe(measured.loop?.windowEndedAt);
+      expect(measured.timing?.routes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: "GET",
+            route: "/v2/daemon/status",
+            lifetime: expect.objectContaining({
+              count: expect.any(Number),
+              p99Ms: expect.any(Number),
+            }),
+          }),
+        ]),
+      );
     } finally {
       stopLoopFacts();
     }

@@ -411,7 +411,15 @@
             "effective_profile": {
               "$ref": "#/definitions/TaskContract/properties/access/properties/requested_profile",
               "default": "workspace_write",
-              "description": "Access profile actually enforced by the engine (mode/trust clamps applied; never client-supplied)."
+              "description": "Access profile the engine resolved and passes to the harness (mode/trust clamps applied; never client-supplied); the harness's native setting decides what it confines."
+            },
+            "auxiliary_writable_roots": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "Canonical auxiliary writable directories granted to this run's writable Agent lanes; empty = no extra engine grant. Read-only lanes never receive them."
             }
           },
           "additionalProperties": false,
@@ -419,7 +427,7 @@
             "requested_profile": "workspace_write",
             "effective_profile": "workspace_write"
           },
-          "description": "Requested vs engine-enforced access profile."
+          "description": "Requested vs engine-resolved access profile."
         },
         "external_context": {
           "type": "object",
@@ -443,7 +451,7 @@
             "effective_mode": {
               "$ref": "#/definitions/TaskContract/properties/external_context/properties/policy",
               "default": "auto",
-              "description": "Policy the selected route actually executes (disclosed upgrades, e.g. cached to live)."
+              "description": "Policy given to the selected route, after disclosed upgrades (e.g. cached to live)."
             }
           },
           "additionalProperties": false,
@@ -560,6 +568,14 @@
             "economy"
           ],
           "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+        },
+        "prompt_cache_ttl": {
+          "type": "string",
+          "enum": [
+            "5m",
+            "1h"
+          ],
+          "description": "Native prompt-cache lifetime for the main conversation and helper requests of a harness that declares it. Omission sends no override: native defaults, profile settings and the inherited environment stay in effect."
         },
         "routing_efforts": {
           "type": "object",

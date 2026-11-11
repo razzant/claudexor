@@ -1,5 +1,39 @@
 # Backlog
 
+## #484 siblings: line readers outside Codex app-server LF framing (2026-10-21)
+
+Owner decision 2026-10-21: #484 stays narrow, and these readers keep their
+current framing until a separate decision. Node 24 readline also ends a line at
+U+2028, U+2029 and a bare CR, while `JSON.stringify` (like the Codex peer)
+leaves U+2028/U+2029 unescaped inside strings. Every row comes from source
+reading and none was reproduced end to end. Whether the other vendor CLIs emit
+the separators unescaped is not verified.
+
+- Shared CLI run loop (`runCliHarness`, `packages/core/src/runloop.ts`, used
+  by claude, cursor, opencode and agy) spawns without `stdoutFraming`: a split
+  NDJSON line is counted in `dropped_unparsed_lines` and its event is lost.
+- Daemon RPC socket (`packages/daemon/src/rpc-followers.ts`,
+  `packages/daemon/src/client.ts`) frames with readline on both ends. A
+  `claudexor.enqueue` request carries the prompt; the server silently skips an
+  unparseable fragment, so the CLI would wait for its 10 s RPC timeout, and the
+  client reports a split reply (for example a `claudexor.status` echoing such a
+  prompt) as a transport failure.
+- ACP time-limit feed (`packages/cli/src/acp-time-limit-feed.ts`) reads the
+  run SSE stream with readline, unlike the CLI followers (`live.ts`,
+  `run-wait-events.ts`) that split on LF.
+- CLI Codex quota and device-login app-server readers
+  (`packages/cli/src/codex-quota-source.ts`, `appServerConnection` in
+  `packages/cli/src/setup-login-runner.ts`) use readline; a split response is
+  lost.
+- Codex auth refresh (`refreshCodexModelAuth`,
+  `packages/harness-codex/src/model-auth.ts`) spawns its app-server child
+  without `stdoutFraming`; a split `account/read` reply leaves the refresh
+  unconfirmed.
+- Codex effort probe (`probeCodexEfforts`,
+  `packages/harness-codex/src/effort-probe.ts`) frames on LF but decodes each
+  chunk with `toString()`, so a multi-byte character split between two reads
+  becomes U+FFFD in the model catalog text.
+
 ## 3.8.0 agy private-keychain review advisories (2026-08-22)
 
 These items were independently reproduced during the exact-candidate review.
@@ -315,9 +349,10 @@ deferred; they are recorded here now.
   overlap-aware slicing.
 - W-f: Claude/AGY `profiles login` retains its direct scoped vendor terminal
   path. It does not notify the daemon of credential changes, so old readiness,
-  quota absence and refusal evidence can survive a successful or interrupted
-  login. A future migration must preserve their input and vendor-window
-  behavior through the existing setup owner; Cursor already uses that owner.
+  quota absence, refusal evidence and the cached Claude model picker can survive
+  a successful or interrupted login. A future migration must preserve their
+  input and vendor-window behavior through the existing setup owner; Cursor
+  already uses that owner.
 - W-e: Bible INV-137 note wording — the a-b-a continuity proof lives in a
   pnpm-test suite, not the canary golden-story home the note implies.
 - Q-b: quota sources (`claude-oauth-usage.ts`, `codex-quota-source.ts`) live in
@@ -370,8 +405,22 @@ deferred; they are recorded here now.
   and transport stops are done (in-run continuation ladder); the remaining
   context-exhaustion follow-ups (`prompt_too_long`, codex typed context frames,
   a second continuation) stay deferred.
-- D-13 step D: transcript List migration for pathologically long threads —
-  A/B/C/E sufficed at owner dogfood, List reserved for pathological threads.
+- D-13 step D: native prose and bounded eager history verification —
+  PR #504 mockups use TextKit 1 prose and an eager window of at most 20 turns.
+  Engine paging and review regressions (cursor scopes, live interactions, Delegate
+  restoration, workspace invalidation, snapshot-covered resolutions, completed
+  navigation membership and focus-aware follower recovery) are covered by
+  hermetic tests. The chosen presentation is wrapped code, Copy table, folded
+  long prompts and first-key handoff to the composer, preserving drafts and the
+  saved insertion point with native input composition and Tab traversal. Explicit travel can end an
+  evicted selection while retaining drafts; width changes restore a settled text
+  passage, including focus that pauses following. Word-bounded fold sources,
+  sheet isolation and plain/rich code-header exclusion have native regression
+  coverage. macOS 26.5 stress verification remains. List is reserved for a separately measured future experiment;
+  neither List nor LazyVStack is the current history strategy.
+- Conversation Find: a future feed-level NSTextFinderClient can search mounted
+  prose runs; searching unmounted history needs a dedicated engine search contract.
+  The bounded paging API does not implement Find. Find remains deferred.
 
 ## v3.1.0 dogfood finding (2026-07-23)
 
@@ -534,8 +583,7 @@ authoritative for each exact disposition.
   adopted everywhere.
 - Refine Delegate-family cancellation receipts so successfully delivered but
   still-draining cancellation is not presented as a rejected operation.
-- Require `DIFF_SHA256.txt` explicitly in frozen-packet validation and seal the
-  targeted secret-scan receipt used before review transport.
+- Require `DIFF_SHA256.txt` explicitly in frozen-packet validation.
 - Keep failed in-place `new_repo` WorkProduct kind and `meta.result_kind`
   identical, and document the exported delegation root field in the util
   package changelog.
@@ -583,11 +631,6 @@ authoritative for each exact disposition.
   legal control-character repository paths.
 - Remove the network map's composite image role so assistive technology can
   reach every substantive harness/capability description.
-- Move durable secret-refusal WorkProduct, attempt, and event fields under one
-  schema-owned receipt contract.
-- Put the in-place secret-diff quarantine rollback under the repository
-  mutation lease while preserving its exact-postimage refusal; the path is now
-  inventoried and fenced, but lease serialization remains separate hardening.
 - Consolidate the duplicated environment-scoped Git invocation helper shared
   by workspace capture and revert logic.
 - Distinguish a belt runner throw before daemon child creation from a response

@@ -1,0 +1,385 @@
+{
+  "generatedBy": ["createCursorParser", "harnessEventPayload"],
+  "source": "packages/harness-cursor/fixtures/shell/background-completion-failures.jsonl",
+  "rows": [
+    {
+      "seq": 1,
+      "ts": "2026-10-29T00:00:00.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:00.000Z",
+        "type": "started",
+        "title": "started",
+        "observed_model": "Fixture Model",
+        "payload": { "native_session_id": "ses-background-failures" }
+      }
+    },
+    {
+      "seq": 2,
+      "ts": "2026-10-29T00:00:01.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:01.000Z",
+        "type": "message",
+        "title": "I'll start the three commands.",
+        "text": "I'll start the three commands."
+      }
+    },
+    {
+      "seq": 3,
+      "ts": "2026-10-29T00:00:02.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:02.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-failing-tests",
+          "target": "pnpm test"
+        }
+      }
+    },
+    {
+      "seq": 4,
+      "ts": "2026-10-29T00:00:03.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:03.000Z",
+        "type": "tool_result",
+        "title": "tool_result: Handed off to background after its 30s timeout; completion not observed · shell 148500 · pid 148502",
+        "text": "tool_result: Handed off to background after its 30s timeout; completion not observed · shell 148500 · pid 148502",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-failing-tests",
+          "target": "pnpm test",
+          "status": "ok",
+          "content_summary": "{\"success\":{\"command\":\"pnpm test\",\"workingDirectory\":\"/repo\",\"exitCode\":0,\"signal\":\"\",\"stdout\":\"\",\"stderr\":\"\",\"executionTime\":0,\"shellId\":148500,\"interleavedOutput\":\"\",\"pid\":148502,\"msToWait\":30000,\"backgroundReason\":\"SHELL_BACKGROUND_REASON_TIMEOUT\"},\"isBackground\":false,\"terminalsFolder\":\"/home/us",
+          "command_outcome": {
+            "state": "backgrounded",
+            "background_reason": "timeout",
+            "timeout_ms": 30000,
+            "shell_id": "148500",
+            "pid": 148502
+          }
+        },
+        "payload": {
+          "native_result": {
+            "success": {
+              "command": "pnpm test",
+              "workingDirectory": "/repo",
+              "exitCode": 0,
+              "signal": "",
+              "stdout": "",
+              "stderr": "",
+              "executionTime": 0,
+              "shellId": 148500,
+              "interleavedOutput": "",
+              "pid": 148502,
+              "msToWait": 30000,
+              "backgroundReason": "SHELL_BACKGROUND_REASON_TIMEOUT"
+            },
+            "isBackground": false,
+            "terminalsFolder": "/home/user/.cursor/projects/repo/terminals"
+          }
+        }
+      }
+    },
+    {
+      "seq": 5,
+      "ts": "2026-10-29T00:00:04.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:04.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-dev-server",
+          "target": "pnpm dev"
+        }
+      }
+    },
+    {
+      "seq": 6,
+      "ts": "2026-10-29T00:00:05.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:05.000Z",
+        "type": "tool_result",
+        "title": "tool_result: Handed off to background; completion not observed · shell 148510 · pid 148512",
+        "text": "tool_result: Handed off to background; completion not observed · shell 148510 · pid 148512",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-dev-server",
+          "target": "pnpm dev",
+          "status": "ok",
+          "content_summary": "{\"success\":{\"command\":\"pnpm dev\",\"workingDirectory\":\"/repo\",\"exitCode\":0,\"signal\":\"\",\"stdout\":\"\",\"stderr\":\"\",\"executionTime\":0,\"shellId\":148510,\"interleavedOutput\":\"\",\"pid\":148512,\"backgroundReason\":\"SHELL_BACKGROUND_REASON_USER_REQUEST\"},\"isBackground\":true,\"terminalsFolder\":\"/home/user/.cursor/pro",
+          "command_outcome": {
+            "state": "backgrounded",
+            "background_reason": "requested",
+            "shell_id": "148510",
+            "pid": 148512
+          }
+        },
+        "payload": {
+          "native_result": {
+            "success": {
+              "command": "pnpm dev",
+              "workingDirectory": "/repo",
+              "exitCode": 0,
+              "signal": "",
+              "stdout": "",
+              "stderr": "",
+              "executionTime": 0,
+              "shellId": 148510,
+              "interleavedOutput": "",
+              "pid": 148512,
+              "backgroundReason": "SHELL_BACKGROUND_REASON_USER_REQUEST"
+            },
+            "isBackground": true,
+            "terminalsFolder": "/home/user/.cursor/projects/repo/terminals"
+          }
+        }
+      }
+    },
+    {
+      "seq": 7,
+      "ts": "2026-10-29T00:00:06.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:06.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-long-wait",
+          "target": "sleep 600"
+        }
+      }
+    },
+    {
+      "seq": 8,
+      "ts": "2026-10-29T00:00:07.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:07.000Z",
+        "type": "tool_result",
+        "title": "tool_result: Handed off to background; completion not observed · shell 148520 · pid 148522",
+        "text": "tool_result: Handed off to background; completion not observed · shell 148520 · pid 148522",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-long-wait",
+          "target": "sleep 600",
+          "status": "ok",
+          "content_summary": "{\"success\":{\"command\":\"sleep 600\",\"workingDirectory\":\"/repo\",\"exitCode\":0,\"signal\":\"\",\"stdout\":\"\",\"stderr\":\"\",\"executionTime\":0,\"shellId\":148520,\"interleavedOutput\":\"\",\"pid\":148522,\"backgroundReason\":\"SHELL_BACKGROUND_REASON_USER_REQUEST\"},\"isBackground\":true,\"terminalsFolder\":\"/home/user/.cursor/pr",
+          "command_outcome": {
+            "state": "backgrounded",
+            "background_reason": "requested",
+            "shell_id": "148520",
+            "pid": 148522
+          }
+        },
+        "payload": {
+          "native_result": {
+            "success": {
+              "command": "sleep 600",
+              "workingDirectory": "/repo",
+              "exitCode": 0,
+              "signal": "",
+              "stdout": "",
+              "stderr": "",
+              "executionTime": 0,
+              "shellId": 148520,
+              "interleavedOutput": "",
+              "pid": 148522,
+              "backgroundReason": "SHELL_BACKGROUND_REASON_USER_REQUEST"
+            },
+            "isBackground": true,
+            "terminalsFolder": "/home/user/.cursor/projects/repo/terminals"
+          }
+        }
+      }
+    },
+    {
+      "seq": 9,
+      "ts": "2026-10-29T00:00:08.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:08.000Z",
+        "type": "message",
+        "title": "All three are in background shells; I'll wait for their notifications.",
+        "text": "All three are in background shells; I'll wait for their notifications."
+      }
+    },
+    {
+      "seq": 10,
+      "ts": "2026-10-29T00:00:09.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:09.000Z",
+        "type": "status",
+        "title": "Completion reported (error); exit code unknown · handed off to background after its 30s timeout · shell 148500 · pid 148502",
+        "text": "Completion reported (error); exit code unknown · handed off to background after its 30s timeout · shell 148500 · pid 148502",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-failing-tests",
+          "target": "pnpm test",
+          "command_outcome": {
+            "state": "completion_reported",
+            "background_reason": "timeout",
+            "timeout_ms": 30000,
+            "shell_id": "148500",
+            "pid": 148502,
+            "completion_status": "error"
+          }
+        },
+        "payload": {
+          "code": "command_outcome_refined",
+          "native_notification": {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "148500",
+            "status": "error",
+            "title": "Run the test suite",
+            "detail": "exit_code=1",
+            "session_id": "ses-background-failures",
+            "timestamp_ms": 46050
+          }
+        }
+      }
+    },
+    {
+      "seq": 11,
+      "ts": "2026-10-29T00:00:10.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:10.000Z",
+        "type": "status",
+        "title": "Completion reported (aborted); exit code unknown · handed off to background · shell 148510 · pid 148512",
+        "text": "Completion reported (aborted); exit code unknown · handed off to background · shell 148510 · pid 148512",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-dev-server",
+          "target": "pnpm dev",
+          "command_outcome": {
+            "state": "completion_reported",
+            "background_reason": "requested",
+            "shell_id": "148510",
+            "pid": 148512,
+            "completion_status": "aborted"
+          }
+        },
+        "payload": {
+          "code": "command_outcome_refined",
+          "native_notification": {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "148510",
+            "status": "aborted",
+            "title": "Start the dev server",
+            "session_id": "ses-background-failures",
+            "timestamp_ms": 50000
+          }
+        }
+      }
+    },
+    {
+      "seq": 12,
+      "ts": "2026-10-29T00:00:11.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:11.000Z",
+        "type": "message",
+        "title": "The tests reported an error, the dev server was aborted, and the long wait has reported no end I can read.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```",
+        "text": "The tests reported an error, the dev server was aborted, and the long wait has reported no end I can read.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```"
+      }
+    },
+    {
+      "seq": 13,
+      "ts": "2026-10-29T00:00:12.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:12.000Z",
+        "type": "usage",
+        "title": "usage: 3000 in / 90 out",
+        "usage": {
+          "input_tokens": 3000,
+          "output_tokens": 90,
+          "cached_input_tokens": 500,
+          "input_token_usage": {
+            "total_tokens": 3500,
+            "cache_read_tokens": 500,
+            "cache_write_tokens": 0
+          }
+        }
+      }
+    },
+    {
+      "seq": 14,
+      "ts": "2026-10-29T00:00:13.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:13.000Z",
+        "type": "message",
+        "title": "The tests reported an error, the dev server was aborted, and the long wait has reported no end I can read.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```",
+        "text": "The tests reported an error, the dev server was aborted, and the long wait has reported no end I can read.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```",
+        "final": true,
+        "payload": { "final_source": "assistant_message" }
+      }
+    }
+  ]
+}

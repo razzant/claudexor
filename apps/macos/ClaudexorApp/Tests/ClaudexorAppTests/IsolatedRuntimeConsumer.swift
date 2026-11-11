@@ -1,6 +1,15 @@
 import Foundation
 import Testing
 
+/// Foundation's temporaryDirectory can ignore TMPDIR on Darwin. These runtime
+/// fixtures honor the runner's explicit directory, including re-executed tests.
+var runtimeTestTemporaryDirectory: URL {
+    if let path = ProcessInfo.processInfo.environment["TMPDIR"], !path.isEmpty {
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+    return FileManager.default.temporaryDirectory
+}
+
 /// Default discovery and runtime pointers use process-global paths. Re-execute
 /// only the named test with fresh homes instead of mutating the test runner's
 /// environment (or touching a developer's installed engine).
@@ -14,7 +23,7 @@ func isolatedRuntimeConsumer(
         print("ISOLATED-CONSUMER-COMPLETED \(test)")
         return
     }
-    let root = FileManager.default.temporaryDirectory
+    let root = runtimeTestTemporaryDirectory
         .appendingPathComponent("cx-\(UUID().uuidString.prefix(8))", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: root) }
     for name in ["h", "c", "t"] {

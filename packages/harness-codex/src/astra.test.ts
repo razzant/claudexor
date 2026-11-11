@@ -24,7 +24,7 @@ describe("GPT-6 Astra on the pinned Codex CLI", () => {
   it.each(["live", "snapshot"] as const)(
     "admits Astra and sends ultra unchanged with the %s catalog",
     async (source) => {
-      expect(CODEX_VENDOR_CLI_VERSION).toBe("0.156.1");
+      expect(CODEX_VENDOR_CLI_VERSION).toBe("0.162.1");
       expect(capturedCatalog).not.toBeNull();
       let cliArgs: string[] | undefined;
       const adapter = createCodexAdapter({

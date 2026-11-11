@@ -52,12 +52,10 @@ enum AccountResourcePresentation {
         guard let snapshot else { return "Not reported" }
         var parts: [String] = []
         if let balance = snapshot.balances.value?.first {
-            if balance.amount == nil && balance.hasBalance == nil && balance.unlimited != true {
-                parts.append("Balance unknown")
-            } else {
-                let prefix = snapshot.balances.freshness == .fresh ? "" : "Last known: "
-                parts.append(prefix + Self.balance(balance))
-            }
+            // One source-ordered, scoped fact — never an aggregate/account-wide
+            // balance or a dynamically selected "best" personal/team amount.
+            let prefix = snapshot.balances.freshness == .fresh ? "" : "Last known: "
+            parts.append(prefix + balance.label + ": " + Self.balance(balance))
         }
         if let offer = snapshot.resets.value?.first {
             let kind = offer.kind == .sessionRefill ? "Refill" : "Reset"
@@ -165,6 +163,10 @@ enum AccountResourcePresentation {
         case .stale: return "Last known"
         case .unknown: return "Not reported"
         }
+    }
+
+    static func quotaAbsenceReason(_ reason: String) -> String {
+        reason == "no_source" ? "No quota-window source (no_source); account resources may be reported separately" : reason
     }
 
     static func sourceDetails<Value>(_ facet: ResourceFacet<Value>) -> String {

@@ -1,0 +1,61 @@
+{
+  "$ref": "#/definitions/RunTimeLimitSnapshot",
+  "definitions": {
+    "RunTimeLimitSnapshot": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "soft",
+            "hard"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "armed",
+            "reached",
+            "closed"
+          ]
+        },
+        "deadlineAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reachedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "revision",
+        "mode",
+        "state",
+        "deadlineAt",
+        "reachedAt"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

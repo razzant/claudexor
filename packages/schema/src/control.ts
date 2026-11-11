@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { RunTimeLimitStart } from "./run-time-limit.js";
 import { CANCEL_REASON_CODES } from "./cancel-reason.js";
 import {
   AccessProfile,
@@ -12,15 +13,17 @@ import {
   RecordedAccessProfile,
 } from "./primitives.js";
 import {
+  ControllableSpendUsd,
   PaidBudget,
   PaidFallback,
   QualityTierSet,
+  RemainingCapUsd,
   RouteRankingRationale,
   RoutingGoal,
 } from "./budget.js";
 export { ControlQuotaResponse } from "./quota.js";
 import { RunOutcomeFacts } from "./decision.js";
-import { EffortHint, InputTokenUsage, InteractionQuestion } from "./harness.js";
+import { EffortHint, InputTokenUsage } from "./harness.js";
 import {
   ContinuityKind,
   ThreadFolderName,
@@ -33,17 +36,25 @@ import { RequestRequirementResolution } from "./request-requirements.js";
 import { ProtectedPathApproval, TestCommandInvocation } from "./task.js";
 import { RunScope } from "./control-run-scope.js";
 import { RunFailure } from "./control-run-failure.js";
-import { ControlRunSummaryProcessScope } from "./control-process-scope.js";
+import { RawContextReceipt } from "./raw.js";
+import {
+  ControlRunSummaryProcessScope,
+  ControlRunSummaryProcessScopeLater,
+} from "./control-process-scope.js";
 import { RunExecution } from "./control-run-execution.js";
 import { WorkspaceScopePath } from "./files-manifest.js";
 import { makeControlRunRetrySchemas } from "./control-run-retry.js";
 import { ControlAuthRoute } from "./control-auth-route.js";
+import { ControlRouteControl, ControlWebEvidence } from "./control-web-evidence.js";
+export { ControlRouteControl, ControlWebEvidence } from "./control-web-evidence.js";
 import { DelegatedChildRunIds, RunDelegationInfo } from "./delegation.js";
 import { HARNESS_INACTIVITY_TIMEOUT_DEFAULT_MS, InteractionTimeoutValue } from "./config.js";
 import { RuntimeConcurrencyState } from "./runtime-concurrency.js";
 import { RunContinuityReceipt, RunResumable } from "./run-continuity.js";
 import { ContinueCarrierPreference, ControlRetainedEnvelope } from "./run-continuation.js";
 import { ProcessingPreference } from "./processing.js";
+import { PromptCacheTtl } from "./prompt-cache.js";
+import { TaskGroupId, TaskGroupReceipt } from "./task-group.js";
 export { RunExecution } from "./control-run-execution.js";
 export { ControlTimelineEvent } from "./control-timeline.js";
 export const ControlReviewerPanelEntry = z
@@ -77,7 +88,7 @@ export const ControlRunStartRequest = z
     /** Caller-supplied system-level instructions layered onto every
      * task-producing lane (primary, candidate, planner, explorer) — never
      * reviewers, synthesis, or the auth smoke.
-     * Scanned by the inline-secret fence like the prompt (INV-062). */
+     * Delivered exactly, like the prompt (INV-146). */
     instructions: z
       .string()
       .optional()
@@ -92,6 +103,7 @@ export const ControlRunStartRequest = z
         "Immutable daemon resource ids returned by upload finalize; paths and inline bytes are not accepted.",
       ),
     mode: ModeKind.default("agent"),
+    taskGroupId: TaskGroupId.optional(),
     scope: RunScope.default({ kind: "none" }),
     execution: RunExecution.default({ isolation: "envelope" }),
     harnesses: z
@@ -117,6 +129,7 @@ export const ControlRunStartRequest = z
       ),
     effort: EffortHint.optional().describe("Requested reasoning effort."),
     processingPreference: ProcessingPreference.optional(),
+    promptCacheTtl: PromptCacheTtl.optional(),
     /** Harness-scoped effort map (harness id → effort). Specific beats general:
      * an entry here wins over the scalar `effort` and the per-harness settings
      * default, analogous to `models`. Exact Retry replays the frozen
@@ -238,7 +251,7 @@ export const ControlRunStartRequest = z
       "Server-owned Exact Retry lineage; direct POST /runs rejects it.",
     ),
     continueFrom: Id.optional().describe(
-      "Continue a terminal predecessor run owned by this daemon; one accepted successor per predecessor. Omitted mode, scope, execution, harness and model come from the predecessor; prompt is the continuation text and may be empty.",
+      "Continue a terminal predecessor run owned by this daemon; one accepted successor per predecessor. Omitted mode, scope, execution, harness, model and promptCacheTtl come from the predecessor; prompt is the continuation text and may be empty.",
     ),
     continueCarrier: ContinueCarrierPreference.optional().describe(
       "Carrier preference for continueFrom; omitted = auto.",
@@ -304,22 +317,9 @@ export const ControlRunStartRequest = z
       .describe(
         "Agent-only: inject the Claudexor delegation belt so the harness can spawn bounded isolated sub-runs; non-agent modes refuse, while known belt or harness unavailability degrades before start to ordinary Agent with a durable warning.",
       ),
-    /** Hard wall-clock deadline for the WHOLE run, measured from scheduler
-     * start. On expiry the run is cooperatively cancelled (hard-kill fallback)
-     * and ends `cancelled` with reason `wall_clock_exceeded`, preserving partial
-     * artifacts. Distinct from the inactivity watchdog (per-attempt silence). */
-    maxSeconds: z
-      .number()
-      .int()
-      .positive()
-      // 7 days. Bounded so `maxSeconds * 1000` never exceeds setTimeout's 32-bit
-      // ms ceiling (~24.8 days), where an over-large delay silently wraps to 1ms
-      // and cancels the run almost immediately.
-      .max(604_800)
-      .optional()
-      .describe(
-        "Hard wall-clock deadline for the whole run (seconds, from scheduler start, max 7 days); on expiry the run is cancelled with reason wall_clock_exceeded and partial artifacts are kept.",
-      ),
+    /** Optional whole-run clock: explicit limits remain hard by default;
+     * soft limits warn without cancelling. Separate from attempt inactivity. */
+    ...RunTimeLimitStart.shape,
     /** Per-run globs no candidate may touch at all (create/modify/delete).
      * Envelope/isolated runs only: enforced by the engine's authoritative
      * post-diff policy gate (violation → blocking finding → blocked, patch
@@ -384,13 +384,7 @@ export const ControlRunState = z
   );
 export type ControlRunState = z.infer<typeof ControlRunState>;
 
-export const ControlQueuedRunInfo = z
-  .object({
-    jobId: z.string().describe("Daemon job id."),
-    state: ControlRunState,
-    error: z.string().optional().describe("Error message, when the job failed."),
-  })
-  .describe("Compact state of a queued/running daemon job.");
+export const ControlQueuedRunInfo = RunRetrySchemas.queuedInfo(ControlRunState);
 export type ControlQueuedRunInfo = z.infer<typeof ControlQueuedRunInfo>;
 
 export const ControlProjectMetadata = z
@@ -412,57 +406,6 @@ export const ControlProjectMetadata = z
   })
   .describe("Project metadata projected onto a run summary.");
 export type ControlProjectMetadata = z.infer<typeof ControlProjectMetadata>;
-
-export const ControlWebEvidence = z
-  .object({
-    required: z.boolean().default(false).describe("Explicit stored web requirement."),
-    /** Requested external-context policy for the run. */
-    mode: ExternalContextPolicy.default("auto").describe(
-      "Requested external-context policy for the run.",
-    ),
-    /** Mode the selected route actually executed (disclosed upgrades, e.g. claude cached->live). */
-    effectiveMode: ExternalContextPolicy.default("auto").describe(
-      "Policy the selected route actually executed (disclosed upgrades, e.g. cached to live).",
-    ),
-    attempted: z.boolean().default(false).describe("Whether any web activity was attempted."),
-    satisfied: z
-      .boolean()
-      .default(false)
-      .describe("Completed without a typed failure; retrieved content is not necessarily proven."),
-    status: z
-      .enum(["none", "attempted", "satisfied", "failed", "unverified"])
-      .default("none")
-      .describe("Observed web status; satisfied does not prove retrieved content was verified."),
-    tool: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Web tool that produced the evidence, when any."),
-    target: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Redacted target (query/url) of the web activity, when any."),
-    errorSummary: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Redacted error detail when web activity failed."),
-    rawDetailRef: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Artifact path holding the raw (redacted) evidence detail."),
-    /** False when the run predates telemetry.yaml; surfaces must render "telemetry unavailable". */
-    available: z
-      .boolean()
-      .default(true)
-      .describe(
-        'False when the run predates the telemetry artifact; surfaces must render "telemetry unavailable".',
-      ),
-  })
-  .describe("Web evidence projected onto a run summary from the telemetry artifact.");
-export type ControlWebEvidence = z.infer<typeof ControlWebEvidence>;
 
 /**
  * Run-level route evidence projected from telemetry (observed model per
@@ -539,13 +482,26 @@ export const RunDeliveryState = z
     revertAnchorId: z
       .string()
       .nullable()
-      .default(null)
-      .describe("GC-independent revert anchor recorded at apply time; null when none."),
+      .optional()
+      .describe(
+        "Run-owned revert anchor recorded at apply time; null: this state has none, whatever an earlier delivery or the work product named; absent: the work product's stands.",
+      ),
     postTurnSha: z
       .string()
       .nullable()
       .default(null)
       .describe("Tree SHA right after the operator apply; revert refuses if the tree diverged."),
+    takenAt: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "When the caller acknowledged that it captured a terminal patch result; null/absent until the taken decision.",
+      ),
+    takenReason: z
+      .literal("captured_result")
+      .optional()
+      .describe("Why the caller acknowledged the result; currently only captured_result."),
   })
   .describe(
     "Mutable delivery/apply state of a run (final/delivery_state.yaml); the only run record that changes after the run terminates.",
@@ -597,7 +553,7 @@ export const ControlRunResult = z
       .describe(
         "Tree SHA right after this turn's mutation; revert refuses if the working tree has diverged from this since.",
       ),
-    revertAnchorId: z.string().nullable().default(null).describe("GC-independent revert anchor."),
+    revertAnchorId: z.string().nullable().default(null).describe("Run-owned revert anchor."),
     /** Revert metadata is available (the turn mutated the live tree in place and
      * an external patch anchor was recorded), so a Revert affordance may be offered.
      * This is NOT a live-safe guarantee: the server re-checks tree divergence at
@@ -747,16 +703,22 @@ export const ControlRunSummary = z
       "Access profile the caller requested.",
     ),
     effectiveAccess: RecordedAccessProfile.optional().describe(
-      "Access profile actually enforced by the engine.",
+      "Access profile the engine resolved and passed to its routes; routeControls names each route's native setting.",
     ),
     externalContextPolicy: ExternalContextPolicy.optional().describe(
       "Requested web policy for the run.",
     ),
     webRequired: z.boolean().optional().describe("Explicit stored web requirement."),
     webMode: ExternalContextPolicy.optional().describe(
-      "Web policy actually executed by the selected route.",
+      "Web policy given to the selected route, after disclosed upgrades; not proof that a native session ran.",
     ),
     webEvidence: ControlWebEvidence.default({}),
+    routeControls: z
+      .array(ControlRouteControl)
+      .default([])
+      .describe(
+        "Distinct routes of the run: the native web/access controls prepared for each and whether a native session was reported started.",
+      ),
     requestRequirements: z
       .array(RequestRequirementResolution)
       .default([])
@@ -792,8 +754,16 @@ export const ControlRunSummary = z
       .describe(
         "True while at least one interactive question awaits answer, timeout, run-terminal, or interruption release.",
       ),
+    asyncQuestionsOnly: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True while questions are pending and every one is async: the agent keeps working and the questions are attention only. False when none is pending or any pending question is blocking.",
+      ),
     /** Compact process-scope outcome (INV-144); null while live or unknown — never clean. */
     processScope: ControlRunSummaryProcessScope,
+    /** A later bounded settlement of the finished run's scope (#613); null when none. */
+    processScopeLater: ControlRunSummaryProcessScopeLater,
     /** Route evidence from telemetry; null when no telemetry exists (legacy). */
     route: ControlRouteInfo.nullable()
       .default(null)
@@ -806,6 +776,11 @@ export const ControlRunSummary = z
       .default(null)
       .describe(
         "Typed routing rationale (QA-034) projected from telemetry; null when no ranking was computed or on legacy runs.",
+      ),
+    rawContext: RawContextReceipt.nullable()
+      .default(null)
+      .describe(
+        "Size of the raw-api request the final attempt last prepared, as receipted just before its POST (#147); null otherwise.",
       ),
     tests: z.array(TestCommandInvocation).optional().describe("Typed argv gates."),
     createdAt: z.string().optional().describe("When the run was created."),
@@ -838,6 +813,7 @@ export const ControlBudgetSnapshot = z
       .nullable()
       .default(null)
       .describe("CASH spend so far in USD; null when unknown."),
+    controllableSpendUsd: ControllableSpendUsd,
     /** Subscription VALUATION in USD (QA-023c/QA-017b): what this run's
      * native-subscription work would approximately have cost by token valuation,
      * accumulated separately from real billed cash. Null when no valuation is
@@ -857,11 +833,7 @@ export const ControlBudgetSnapshot = z
       .describe(
         "Confidence of valuationUsd: 'estimated' when token-derived, 'unknown' when no usage was reported (valuationUsd is then null), 'exact' when natively priced.",
       ),
-    remainingUsd: z
-      .number()
-      .nullable()
-      .default(null)
-      .describe("Remaining budget in USD; null when no cap or unknown spend."),
+    remainingUsd: RemainingCapUsd,
     estimated: z
       .boolean()
       .default(false)
@@ -901,33 +873,6 @@ export const ControlArtifactInfo = z
   })
   .describe("One artifact in the run's artifact tree.");
 export type ControlArtifactInfo = z.infer<typeof ControlArtifactInfo>;
-
-/** A live interaction awaiting the user's answer (snapshot projection). */
-export const ControlPendingInteraction = z
-  .object({
-    interactionId: Id.describe("Interaction id used to answer."),
-    runId: Id.describe("Run the interaction belongs to."),
-    attemptId: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Attempt the interaction was raised in, when known."),
-    harnessId: z.string().nullable().default(null).describe("Harness that raised the interaction."),
-    sourceTool: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Native tool that raised the request."),
-    questions: z.array(InteractionQuestion).default([]).describe("Questions awaiting answers."),
-    requestedAt: z.string().describe("When the interaction was requested."),
-    timeoutAt: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("When the interaction times out into a benign decline; null = no timeout."),
-  })
-  .describe("A live interactive question awaiting the user's answer (snapshot projection).");
-export type ControlPendingInteraction = z.infer<typeof ControlPendingInteraction>;
 
 export const ControlInteractionAnswerRequest = z
   .object({
@@ -1041,11 +986,18 @@ export const RunDecisionAction = z
      * refuses if the tree has diverged from the recorded post-turn state). */
     "revert_run",
     "discard",
+    /** The caller already captured a terminal patch result; release its actionable hold. */
+    "taken",
   ])
   .describe(
-    "Operator decision: apply an accepted result, rerun with feedback, accept risk, override needs-human, revert a recorded Git effect, or discard remaining copied files without applying them.",
+    "Operator decision: apply an accepted result, rerun with feedback, accept risk, override needs-human, revert a recorded Git effect, acknowledge a captured terminal patch result, or discard remaining copied files without applying them.",
   );
 export type RunDecisionAction = z.infer<typeof RunDecisionAction>;
+
+export const RunTakenReason = z
+  .literal("captured_result")
+  .describe("The caller has captured the terminal patch result and holds its own copy.");
+export type RunTakenReason = z.infer<typeof RunTakenReason>;
 
 export const ControlRunDecisionRequest = z
   .object({
@@ -1068,8 +1020,25 @@ export const ControlRunDecisionRequest = z
       .optional()
       .describe("Delivery mode for accept_clean_patch."),
     target: ApplyTarget.optional().describe("Delivery target for accept_clean_patch."),
+    reason: RunTakenReason.optional().describe(
+      "Reason for the taken decision; required only for action=taken.",
+    ),
   })
   .strict()
+  .superRefine((value, ctx) => {
+    if (value.action === "taken" && value.reason === undefined)
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: "reason is required",
+      });
+    if (value.action !== "taken" && value.reason !== undefined)
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: "reason is valid only for action=taken",
+      });
+  })
   .describe("Typed operator decision on a run or its pending copied result.");
 export type ControlRunDecisionRequest = z.infer<typeof ControlRunDecisionRequest>;
 
@@ -1077,12 +1046,18 @@ export const ControlRunDecisionResponse = z
   .object({
     accepted: z.boolean().describe("Whether the decision was accepted."),
     status: z
-      .enum(["applied", "requeued", "rejected", "unsupported", "discarded"])
-      .describe("Outcome: applied, requeued (a new turn was enqueued), rejected, or unsupported."),
+      .enum(["applied", "requeued", "rejected", "unsupported", "discarded", "taken"])
+      .describe(
+        "Outcome: applied, requeued (a new turn was enqueued), rejected, unsupported, discarded, or taken.",
+      ),
     /** New run id when the decision re-enqueues a turn (rerun_with_feedback). */
     newRunId: Id.optional().describe(
       "New run id when the decision re-enqueues a turn (rerun_with_feedback).",
     ),
+    newJobId: Id.optional().describe(
+      "Accepted job handle of the re-enqueued work, present even before its run binds.",
+    ),
+    ...TaskGroupReceipt.partial().shape,
     message: z.string().optional().describe("Human-readable detail."),
   })
   .describe("Response to an operator run decision.");
@@ -1209,6 +1184,12 @@ export const ControlTurnRunCard = z
       .boolean()
       .default(false)
       .describe("True while an interactive question is awaiting the user's answer."),
+    asyncQuestionsOnly: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True while questions are pending and every one is async (the agent keeps working); false when none is pending or any is blocking.",
+      ),
     finishedAt: z
       .string()
       .nullable()
@@ -1435,8 +1416,11 @@ export const ControlSettingsSnapshot = z
           .number()
           .int()
           .positive()
+          .nullable()
           .default(HARNESS_INACTIVITY_TIMEOUT_DEFAULT_MS)
-          .describe("Inactivity watchdog for harness streams, in milliseconds."),
+          .describe(
+            "Inactivity watchdog in milliseconds; null disables inactivity timing, not cancellation or cleanup.",
+          ),
         concurrency: RuntimeConcurrencyState.optional(),
         transientRetry: z
           .object({

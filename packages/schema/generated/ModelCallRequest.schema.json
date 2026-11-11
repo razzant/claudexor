@@ -52,7 +52,11 @@
               "additionalProperties": false
             }
           ],
-          "description": "Auto keeps a usable prior account; pin never selects another account."
+          "description": "Auto text operations prefer preferredProfileId among unmarked accounts of the same catalog tier (listed before unlisted); a listed alternative, a mark or a recent refusal outranks it. History bound to that account keeps it first over a catalog miss only while it has neither a mark nor a recent refusal. Image operations order accounts by the pool alone. Pin never selects another account."
+        },
+        "retryOfOperationId": {
+          "$ref": "#/definitions/ModelCallRequest/properties/source",
+          "description": "One host-owned capability retry of a failed auto operation with otherwise identical generation input. No engine re-dispatch; unavailable after daemon restart or four hours."
         },
         "messages": {
           "type": "array",

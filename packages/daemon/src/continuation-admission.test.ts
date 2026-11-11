@@ -11,10 +11,11 @@ import { DaemonServer, type JobRecord } from "./server.js";
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function tempDir(): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-continue-admission-")));
+  // Leave room for daemon.sock beneath a long private TMPDIR on macOS.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ca-")));
   dirs.push(dir);
   return dir;
 }

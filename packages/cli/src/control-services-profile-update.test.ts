@@ -11,10 +11,12 @@ import {
   ControlCredentialProfileUpdateResponse,
   type QuotaSnapshot,
 } from "@claudexor/schema";
-import { createAccountEvidence } from "@claudexor/daemon";
+import { QuotaRegistry, createAccountEvidence } from "@claudexor/daemon";
+import { memoryEventLedger } from "./test-support/memory-event-ledger.js";
 import { controlServices } from "./control-services.js";
 import { bustGlobalCredentialStatusCaches } from "./credential-status-invalidation.js";
 import { registerConfigDirProfile } from "./profile-registration.js";
+import { invalidateStatusProjections } from "./status-projection-cache.js";
 
 // One evidence graph for this file, injected the way the daemon injects its store's graph.
 const accounts = createAccountEvidence();
@@ -52,7 +54,7 @@ vi.mock("./registry.js", async (importOriginal) => {
   return {
     ...original,
     // Catalog projection does not test native model discovery. PATH alone is
-    // insufficient: the harness resolver also checks managed install roots.
+    // insufficient: the harness resolver also checks declared vendor folders.
     harnessModelTruth: async (
       harnessId: string,
     ): ReturnType<typeof original.harnessModelTruth> => ({
@@ -61,6 +63,7 @@ vi.mock("./registry.js", async (importOriginal) => {
         models: [],
         source: "none",
         verifiedAgainst: null,
+        sourceProgram: null,
       },
       absence: "authoritative",
     }),
@@ -85,6 +88,8 @@ vi.mock("./registry.js", async (importOriginal) => {
         };
         registry.set(id, {
           ...adapter,
+          // Readiness is supplied by these stubs, not an installed program.
+          program: undefined,
           ...(adapter.probeCredentialProfile
             ? {
                 probeCredentialProfile: async (profile) => {
@@ -160,7 +165,8 @@ function quotaSnapshot(subjectId: string | null, usedRatio: number): QuotaSnapsh
       },
     ],
     source: "claude_oauth_usage",
-    observed_at: "2026-07-28T00:00:00Z",
+    // Fresh at the routing decision, which judges each window's age (#457).
+    observed_at: new Date().toISOString(),
     freshness: "fresh",
   };
 }
@@ -171,6 +177,8 @@ function services(
     refreshError?: Error;
     quotaEventCursor?: string;
     readQuota?: ControlQuotaResponse;
+    /** A real registry instead of the stub (its own read/admission projections). */
+    registry?: QuotaRegistry;
   } = {},
 ) {
   const threads = {
@@ -195,11 +203,17 @@ function services(
     removeSubject: () => 0,
     noteCredentialChange,
     read: () => options.readQuota ?? emptyQuota,
+    // Fixture snapshots are current, so the admission read is the same rows.
+    readAdmission: () => ({ snapshots: (options.readQuota ?? emptyQuota).snapshots }),
     refresh: refreshQuota,
-    refreshWithCursor: async () => ({
-      response: await refreshQuota(),
-      quotaEventCursor: options.quotaEventCursor ?? "quota-fence-default",
-    }),
+    refreshWithCursor: async () => {
+      const response = await refreshQuota();
+      return {
+        response,
+        admission: { snapshots: response.snapshots },
+        quotaEventCursor: options.quotaEventCursor ?? "quota-fence-default",
+      };
+    },
   };
   return controlServices(
     undefined as never,
@@ -210,7 +224,7 @@ function services(
     undefined as never,
     undefined as never,
     undefined as never,
-    (() => quota) as never,
+    (() => options.registry ?? quota) as never,
     accounts,
     () => [],
   );
@@ -262,7 +276,7 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
     else process.env.PATH = prevPath;
     vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("recomposes new refusals and expiry over cached probes while retaining account identity", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -442,6 +456,9 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
         access_profiles_supported: [],
       },
     };
+    // The catalog is a status projection: a later sweep (window expiry or a
+    // credential mutation) is what observes the changed doctor answer.
+    invalidateStatusProjections();
     const declared = await svc.agentCapabilities();
     expect(declared.harnesses).toHaveLength(1);
     expect(declared.harnesses[0]).toMatchObject({ id: "codex", liveInput: "mid_turn" });
@@ -838,6 +855,111 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
     });
   });
 
+  it("names a pool stopped only by the saved reserve in next_up, not as provider exhaustion (#318)", async () => {
+    registerConfigDirProfile({ harnessId: "claude", profileId: "work" });
+    gatewayMock.profileReadiness = { availability: "available", verification: "passed" };
+    updateGlobalConfig((config) => ({
+      ...config,
+      harnesses: {
+        ...config.harnesses,
+        claude: {
+          ...(config.harnesses.claude ?? {}),
+          profile_policy: {
+            limit_action: "rotate",
+            rotation_eligible: [],
+            headroom_threshold: 0.9,
+          },
+        },
+      },
+    }));
+    const nextUp = async (usedRatio: number) => {
+      const refreshedQuota = ControlQuotaResponse.parse({
+        snapshots: [quotaSnapshot("work", usedRatio)],
+        absences: [],
+        refreshed_at: "2026-07-28T01:02:03Z",
+      });
+      const snapshot = ControlCredentialProfilesSnapshotResponse.parse(
+        await services({ refreshedQuota }).credentialProfiles({ snapshot: true }),
+      );
+      return snapshot.accountPools.find((value) => value.harness_id === "claude")?.next_up;
+    };
+    const reserve = await nextUp(0.95);
+    expect(reserve).toMatchObject({ kind: "none" });
+    expect(reserve && "reason" in reserve ? reserve.reason : "").toContain(
+      "reached its saved quota reserve (headroom_threshold 90%)",
+    );
+    const spent = await nextUp(1);
+    expect(spent && "reason" in spent ? spent.reason : "").toContain("over its quota window");
+  });
+
+  it("next_up judges each window at the decision like run admission, passive and atomic (#457)", async () => {
+    registerConfigDirProfile({ harnessId: "claude", profileId: "work" });
+    gatewayMock.profileReadiness = { availability: "available", verification: "passed" };
+    updateGlobalConfig((config) => ({
+      ...config,
+      harnesses: {
+        ...config.harnesses,
+        claude: {
+          ...(config.harnesses.claude ?? {}),
+          profile_policy: {
+            limit_action: "rotate",
+            rotation_eligible: [],
+            headroom_threshold: 0.9,
+          },
+        },
+      },
+    }));
+    // A three-minute-old reading: the short window reset a minute ago, the
+    // weekly window is still current at 95% against a 90% reserve.
+    const now = Date.now();
+    const at = (ms: number) => new Date(now + ms).toISOString();
+    const reading: QuotaSnapshot = {
+      ...quotaSnapshot("work", 1),
+      observed_at: at(-3 * 60_000),
+      constraints: [
+        { ...quotaSnapshot("work", 1).constraints[0]!, resets_at: at(-60_000) },
+        {
+          id: "seven_day",
+          label: "7 day",
+          used_ratio: 0.95,
+          window_seconds: 604_800,
+          resets_at: at(3 * 86_400_000),
+          cooldown_until: null,
+        },
+      ],
+    };
+    const registry = new QuotaRegistry(memoryEventLedger(at(0)), [
+      async () => ({ snapshots: [reading] }),
+    ]);
+    registry.upsert(reading);
+    const svc = services({ registry });
+    const passive = ControlCredentialProfilesResponse.parse(await svc.credentialProfiles());
+    const atomic = ControlCredentialProfilesSnapshotResponse.parse(
+      await svc.credentialProfiles({ snapshot: true }),
+    );
+    for (const response of [passive, atomic]) {
+      const nextUp = response.accountPools?.find((pool) => pool.harness_id === "claude")?.next_up;
+      // The runtime refuses this account at the reserve; next_up never names it.
+      expect(nextUp).toMatchObject({ kind: "none" });
+      expect(nextUp && "reason" in nextUp ? nextUp.reason : "").toContain("saved quota reserve");
+    }
+    // Display keeps the aggregate snapshot aging and the atomic cursor.
+    expect(registry.read().snapshots[0]?.freshness).toBe("stale");
+    expect(atomic.quota.snapshots[0]?.freshness).toBe("stale");
+    expect(atomic.quotaEventCursor).toMatch(/^global:/);
+    // Past the observation's own TTL nothing is revived: the account is
+    // eligible again (unknown headroom), exactly as for runs.
+    const aged = new QuotaRegistry(memoryEventLedger(at(0)));
+    aged.upsert({ ...reading, observed_at: at(-6 * 60_000) });
+    const later = ControlCredentialProfilesResponse.parse(
+      await services({ registry: aged }).credentialProfiles(),
+    );
+    expect(later.accountPools?.find((pool) => pool.harness_id === "claude")?.next_up).toEqual({
+      kind: "profile",
+      profileId: "work",
+    });
+  });
+
   it("fails the complete snapshot when its quota epoch cannot refresh", async () => {
     const error = Object.assign(new Error("quota refresh unavailable"), {
       code: "quota_refresh_unavailable",
@@ -966,7 +1088,7 @@ describe("A7 per-subject unusable-ledger clearing on control-API credential muta
     credentialUnusableLedger.noteCredentialChange();
     vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   const observation = (harnessId: string, profileId: string | null) => ({
     harness_id: harnessId,

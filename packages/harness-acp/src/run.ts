@@ -1,8 +1,12 @@
 import * as acp from "@agentclientprotocol/sdk";
 import {
   abortSignalFromSpec,
+  selectProgramLauncher,
+  prepareNativeProgram,
+  type NativeProgramRun,
   effortResolutionEvent,
   HarnessUnavailableError,
+  maskHarnessEventDiagnostics,
   promptWithInstructions,
   throwIfEffortRejected,
 } from "@claudexor/core";
@@ -18,6 +22,41 @@ import { connectAcp, type AcpObservation } from "./transport.js";
 export const ACP_DISCLOSURE =
   "ACP preview: readonly uses a CLI tool allowlist; workspace writes and shell commands are not sandboxed. Permission callbacks may be absent (github/copilot-cli#4537); write containment is unproven. Network is uncontrolled; cost may be unknown; live input and MCP injection are unavailable.";
 
+/**
+ * The stored view of one ACP event (INV-146). The managed token the engine
+ * injected never leaves the adapter, wherever it appears (credential
+ * management). Diagnostics are masked: the shared typed seam covers error
+ * events and diagnostic payload keys, and a raw JSON-RPC error frame from the
+ * agent is the vendor's diagnostic too. Everything else, the answer and the raw
+ * frames carrying it included, stays exact.
+ */
+function acpStoredEvent(event: HarnessEvent, token: string): HarnessEvent {
+  const exact = token
+    ? (JSON.parse(
+        JSON.stringify(event, (_key, value: unknown) =>
+          typeof value === "string" ? value.split(token).join("[REDACTED]") : value,
+        ),
+      ) as HarnessEvent)
+    : event;
+  const frame = exact.payload?.["acp_frame"] as { direction?: string; line?: string } | undefined;
+  const stored = maskHarnessEventDiagnostics(exact);
+  if (frame?.direction !== "agent" || typeof frame.line !== "string" || !isErrorFrame(frame.line))
+    return stored;
+  return {
+    ...stored,
+    payload: { ...stored.payload, acp_frame: { ...frame, line: redactSecrets(frame.line) } },
+  };
+}
+
+function isErrorFrame(line: string): boolean {
+  try {
+    const message = JSON.parse(line) as unknown;
+    return typeof message === "object" && message !== null && "error" in message;
+  } catch {
+    return false;
+  }
+}
+
 export interface AcpRunOptions {
   probe?: boolean;
   observation?: AcpObservation;
@@ -30,6 +69,7 @@ export function acpRunner(entry: AcpEntry) {
       await active.get(sessionId)?.();
     },
     async *run(spec: HarnessRunSpec, options: AcpRunOptions = {}): AsyncGenerator<HarnessEvent> {
+      let program: NativeProgramRun | undefined;
       const events = new AcpEvents(spec.session_id, entry.disabledToolsNotice);
       const queue = new Channel<HarnessEvent>();
       const abort = new AbortController();
@@ -87,6 +127,13 @@ export function acpRunner(entry: AcpEntry) {
               "ACP MCP injection is not supported in stage 1",
             );
           prepared = prepareAcpEnv(entry, token, spec.env);
+          program = await prepareNativeProgram(
+            entry.program,
+            selectProgramLauncher(entry.program),
+            spec,
+            prepared.env,
+            true,
+          );
           // The adapter owns the receipt exactly when it owns a knob; a knob-less
           // entry declares no effortParameter and the engine records `omitted`.
           if (entry.effortLevels.length) await emit(effortResolutionEvent(spec.session_id, effort));
@@ -101,7 +148,7 @@ export function acpRunner(entry: AcpEntry) {
           );
           await emit(events.event("status", { text: ACP_DISCLOSURE }));
           transport = connectAcp({
-            binary: process.env[entry.binaryEnv] ?? entry.binary,
+            binary: program.bin,
             args,
             env: prepared.env,
             spec,
@@ -125,6 +172,8 @@ export function acpRunner(entry: AcpEntry) {
           if (initialized.protocolVersion !== acp.PROTOCOL_VERSION)
             throw new AcpFailure("protocol_version", "ACP v1 negotiation failed");
           observation.version = initialized.agentInfo?.version;
+          program.observeVersion(observation.version);
+          await emit(events.event("status", { program: program.evidence() }));
           observation.session = await agent.request(acp.methods.agent.session.new, {
             cwd: spec.cwd,
             mcpServers: [],
@@ -199,15 +248,8 @@ export function acpRunner(entry: AcpEntry) {
         }
       })();
       try {
-        for await (const event of queue.read()) {
-          // Redact before storage, including unknown wire fields and error diagnostics.
-          const json = JSON.stringify(event, (_key, value: unknown) =>
-            typeof value === "string"
-              ? redactSecrets(token ? value.split(token).join("[REDACTED]") : value)
-              : value,
-          );
-          yield JSON.parse(json) as HarnessEvent;
-        }
+        for await (const event of queue.read())
+          yield acpStoredEvent(program?.event(event) ?? event, token);
       } finally {
         queue.close();
         try {

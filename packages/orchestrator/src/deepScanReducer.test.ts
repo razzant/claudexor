@@ -23,7 +23,7 @@ import type { RoutedAdapter } from "./orchestrator.js";
 const __dirs: string[] = [];
 afterAll(() => {
   for (const d of __dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** An adapter that emits a single final message (the reducer's raw output). */
 function reducerAdapter(finalText: string): HarnessAdapter {
@@ -294,6 +294,57 @@ describe("runDeepScanReducer WorkReport contract parity (D-16)", () => {
     const vetoed = await runWith(instructedMode, `Partial.\n\n\`\`\`json\n${footer}\n\`\`\``);
     expect(vetoed.status).toBe("failed");
     if (vetoed.status === "failed") expect(vetoed.error).toMatch(/needs_input/);
+  });
+
+  it("an errored reducer with fragments and no accepted final is a failure with no footer verdict", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-deepscan-"));
+    __dirs.push(root);
+    const store = new ArtifactStore(root, { claudexorDir: join(root, "runtime") });
+    const paths = store.createRun("run-reducer");
+    const log = new EventLog(paths.eventsPath, "run-reducer", "task-reducer");
+    async function* run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
+      const s = spec.session_id;
+      yield { type: "started", session_id: s, ts: nowIso() };
+      for (const text of [
+        "Merged ",
+        "synthesis.\n\n```json\n",
+        '{"work_report":{"state":"completed","required_inputs":[]}}',
+        "\n```",
+      ])
+        yield { type: "message", session_id: s, ts: nowIso(), text, payload: { delta: true } };
+      yield { type: "error", session_id: s, ts: nowIso(), error: "terminal failure after text" };
+      yield { type: "completed", session_id: s, ts: nowIso() };
+    }
+    const adapter = { id: "fake-reducer", run, review: run, cancel: () => Promise.resolve() };
+    const attemptTelemetries: Parameters<typeof runDeepScanReducer>[1]["attemptTelemetries"] = [];
+    try {
+      const result = await runDeepScanReducer(
+        makeDeps({
+          active: true,
+          source: "validated",
+          hasCallerSchema: false,
+          channel: "instructed_fence",
+          instruction: "…",
+        }),
+        {
+          taskId: "task-reducer",
+          goal: "merge the scout reports",
+          routed: { adapter } as unknown as RoutedAdapter,
+          scoutReports: [],
+          ledger: new BudgetLedger({ kind: "unlimited" }),
+          log,
+          paths,
+          attemptTelemetries,
+        },
+      );
+      expect(result.status).toBe("failed");
+      expect(attemptTelemetries[0]?.telemetry.outcome?.workState).toEqual({
+        state: "unverified",
+        source: "validated",
+      });
+    } finally {
+      log.dispose();
+    }
   });
 
   it("does not infer required web from a live reducer policy", async () => {
@@ -720,6 +771,29 @@ describe("runDeepScanReducer WorkReport contract parity (D-16)", () => {
           .filter((event) => event.type === "harness.started" || event.type === "harness.completed")
           .map((event) => event.type),
       ).toEqual(["harness.started", "harness.completed"]);
+    } finally {
+      log.dispose();
+    }
+  });
+
+  it("discloses the reducer route's ignored knobs on harness.started (INV-105)", async () => {
+    const fixture = makeFiniteFixture();
+    const { paths, log } = fixture;
+    const detail =
+      "prompt_cache_ttl=1h (capability_profile.prompt_cache_ttls does not declare it for reducer)";
+    try {
+      const deps = makeDeps(inactiveMode);
+      const buildSpec: DeepScanReducerDeps["buildSpec"] = async (...args) => ({
+        ...(await deps.buildSpec(...args)),
+        ignored: [detail],
+      });
+      await runFiniteReducer(fixture, reducerAdapter("merged"), { deps: { buildSpec } });
+      const started = readFileSync(paths.eventsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { type: string; payload?: Record<string, unknown> })
+        .filter((event) => event.type === "harness.started");
+      expect(started.map((event) => event.payload?.["ignored_settings"])).toEqual([[detail]]);
     } finally {
       log.dispose();
     }

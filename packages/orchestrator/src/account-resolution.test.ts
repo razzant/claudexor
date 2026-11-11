@@ -6,7 +6,12 @@
  * into the same account through the default store the owner just toggled off.
  */
 import { describe, expect, it } from "vitest";
-import type { CredentialProfile } from "@claudexor/schema";
+import {
+  REOPENING_UNKNOWN_COOLDOWN_ID,
+  type CredentialProfile,
+  type QuotaConstraint,
+  type QuotaSnapshot,
+} from "@claudexor/schema";
 import { resolveAccountForRun, type AccountResolutionContext } from "./account-resolution.js";
 
 function profileRow(overrides: Partial<CredentialProfile> = {}): CredentialProfile {
@@ -61,6 +66,74 @@ function ctx(overrides: Partial<AccountResolutionContext> = {}): AccountResoluti
     apiKeyRouteNoted: () => noted,
   };
 }
+
+describe("resolveAccountForRun pool terminal evidence (#558)", () => {
+  const LATER = "2099-06-01T00:00:00.000Z";
+  const FUTURE = "2099-01-01T00:05:00.000Z";
+  const quotaRead = (
+    source: QuotaSnapshot["source"],
+    constraint: Partial<QuotaConstraint> & { id: string },
+  ): QuotaSnapshot => ({
+    subject: {
+      harness: "codex",
+      credential_route: "vendor_native",
+      plan_label: null,
+      subject_id: "a",
+    },
+    constraints: [
+      {
+        label: constraint.id,
+        used_ratio: null,
+        window_seconds: null,
+        resets_at: null,
+        cooldown_until: null,
+        ...constraint,
+      },
+    ],
+    source,
+    observed_at: new Date().toISOString(),
+    freshness: "fresh",
+  });
+  const reserve = (resets_at: string | null) =>
+    quotaRead("codex_app_server", { id: "primary", used_ratio: 0.95, resets_at });
+  const refusal = quotaRead("codex_rollout", {
+    id: REOPENING_UNKNOWN_COOLDOWN_ID,
+    cooldown_until: FUTURE,
+  });
+  const pool = (snapshots: QuotaSnapshot[]) =>
+    ctx({
+      harnessId: "codex",
+      registry: [profileRow({ profile_id: "a", harness_id: "codex" })],
+      snapshots,
+      quota: { snapshots, absences: [] },
+    });
+
+  it("a reserve breach never hides a row's own usage refusal: the pool stays undated and claims no quota", async () => {
+    const context = pool([reserve(LATER), refusal]);
+    await expect(resolveAccountForRun(context)).rejects.toMatchObject({
+      code: "credential_pool_exhausted",
+      resetsAt: null,
+      problem: { context: { poolCauses: ["unavailable"], resetsAt: null } },
+    });
+    const exhausted = context.events.find((event) => event.type === "route.account.pool_exhausted");
+    expect(exhausted?.payload["resets_at"]).toBeNull();
+  });
+
+  it("controls: dated windows keep the pool's existing reset and quota claim", async () => {
+    await expect(resolveAccountForRun(pool([reserve(LATER)]))).rejects.toMatchObject({
+      code: "credential_pool_exhausted",
+      resetsAt: LATER,
+      problem: { context: { poolCauses: ["quota"], resetsAt: LATER } },
+    });
+    // A dated block stays behind an undated breach, as before: no date is promoted.
+    const dated = quotaRead("codex_rollout", { id: "cooldown", cooldown_until: FUTURE });
+    await expect(resolveAccountForRun(pool([reserve(null), dated]))).rejects.toMatchObject({
+      code: "credential_pool_exhausted",
+      resetsAt: null,
+      problem: { context: { poolCauses: ["quota"] } },
+    });
+  });
+});
 
 describe("resolveAccountForRun ladder predicate (Enabled-toggle bypass fix)", () => {
   it("fails loud on a pre-existing ambiguous profile set before any readiness probe", async () => {

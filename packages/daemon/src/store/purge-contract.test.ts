@@ -9,9 +9,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { projectRuntimeDir } from "@claudexor/util";
-import { ensureThreadWorktree, git } from "@claudexor/workspace";
+import { ensureThreadWorktree, git, type PurgeRepositoryRecord } from "@claudexor/workspace";
 import { threadPurgeEffect, threadPurgeOwner } from "../../../cli/src/thread-purge.js";
 import { BlobFiles } from "./blob-files.js";
 import { setGlobalGenerationInTx } from "./generations.js";
@@ -19,8 +19,9 @@ import { Obligations } from "./obligations.js";
 import { createPartition } from "./partitions.js";
 import { SqlProjectRouter } from "./project-router.js";
 import { SqlProjectStore } from "./projects.js";
-import { partitionFilesHandler, SqlPurgeFiles } from "./purge-files.js";
+import { partitionFilesHandler, SqlPurgeFiles, type PurgeFilesEffect } from "./purge-files.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 let root: string,
   store: EngineStore,
@@ -43,12 +44,14 @@ beforeEach(async () => {
   await open();
   store.transaction(() => setGlobalGenerationInTx(store, createPartition(store, "global").pid));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   vi.restoreAllMocks();
   obligations?.close();
   await store?.close();
-  vi.unstubAllEnvs();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 function tick(): Promise<void> {
   return new Promise((done) => {
@@ -58,6 +61,19 @@ function tick(): Promise<void> {
     });
     store.flusherControl.tick();
   });
+}
+/** Drive manual flusher passes until the awaited cleanup settles. */
+async function settled<T>(work: Promise<T>): Promise<T> {
+  let done = false;
+  const observed = work.finally(() => {
+    done = true;
+  });
+  observed.catch(() => undefined);
+  while (!done) {
+    await tick();
+    await new Promise((next) => setTimeout(next, 5));
+  }
+  return observed;
 }
 
 describe("purge decision and filesystem custody", () => {
@@ -77,11 +93,8 @@ describe("purge decision and filesystem custody", () => {
         .code,
     ).toBe(0);
     router.trashThread(thread.id);
-    const operation = threadPurgeOwner(router, join(root, "no-project"), purge).purgeThread(
-      thread.id,
-    );
-    await tick();
-    await operation;
+    // Two barriers: the purge decision, then the repository recorded before Git goes on.
+    await settled(threadPurgeOwner(router, join(root, "no-project"), purge).purgeThread(thread.id));
     expect(existsSync(tree.path)).toBe(false);
     expect(
       (await git(project, ["rev-parse", "--verify", `refs/heads/claudexor/thread-${thread.id}`]))
@@ -148,6 +161,62 @@ describe("purge decision and filesystem custody", () => {
     expect(perform).toHaveBeenCalledTimes(2);
     expect(obligations.open()).toMatchObject([{ state: "materialized" }]);
     expect(router.getThread(thread.id)?.state).toBe("purged");
+  });
+
+  it("keeps the repository an attempt recorded, durably before it goes on, for every retry", async () => {
+    const thread = router.createThread({});
+    router.trashThread(thread.id);
+    router.purgeThread(thread.id);
+    const moved = { gitDir: join(root, "moved", ".git"), identity: "4242" };
+    const handed: Array<PurgeRepositoryRecord | null> = [];
+    let durable = false;
+    const perform: PurgeFilesEffect = async (_thread, repository) => {
+      handed.push(repository?.recorded ?? null);
+      if (handed.length > 1) return [root];
+      await repository!.record(moved);
+      durable = true;
+      throw new Error("ref lock held after the worktree went");
+    };
+    const failed = purge.complete(thread.id, perform);
+    const rejected = expect(failed).rejects.toThrow("ref lock held");
+    await tick();
+    await vi.waitFor(() =>
+      expect(obligations.get("purge_fs", thread.id)?.payload).toMatchObject({ repository: moved }),
+    );
+    // Committed, but the effect waits for the barrier covering it.
+    expect(durable).toBe(false);
+    await tick();
+    await rejected;
+    expect(durable).toBe(true);
+    expect(obligations.open()).toMatchObject([{ state: "pending", key: thread.id }]);
+
+    obligations.close();
+    await store.close();
+    await open();
+    obligations.registerHandler("purge_fs", purge.handler(perform));
+    const recovery = obligations.completeOpen();
+    await tick();
+    expect(await recovery).toMatchObject({ completed: [{ kind: "purge_fs", key: thread.id }] });
+    expect(handed).toEqual([null, moved]);
+  });
+
+  it("refuses a purge whose recorded repository cannot be read", async () => {
+    const thread = router.createThread({});
+    router.trashThread(thread.id);
+    router.purgeThread(thread.id);
+    const stored = obligations.get("purge_fs", thread.id)!.payload as object;
+    const payload = { ...stored, repository: "/x/.git" };
+    store
+      .prepare("UPDATE effect_obligation SET payload=? WHERE kind='purge_fs' AND key=?")
+      .run(Buffer.from(JSON.stringify(payload)), thread.id);
+    const perform = vi.fn(async () => [root]);
+    const refused = expect(purge.complete(thread.id, perform)).rejects.toThrow(
+      "unreadable repository",
+    );
+    await tick();
+    await refused;
+    expect(perform).not.toHaveBeenCalled();
+    expect(obligations.open()).toMatchObject([{ state: "pending", key: thread.id }]);
   });
 
   it("joins concurrent retries and does not repeat materialized file effects", async () => {

@@ -50,7 +50,7 @@ describe("agy profile route and vendor probe", () => {
     if (originalBin === undefined) delete process.env.CLAUDEXOR_AGY_BIN;
     else process.env.CLAUDEXOR_AGY_BIN = originalBin;
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   function fixture(script: string): { root: string; home: string; bin: string } {
     const fixtureRoot = join(claudexorOwnedRoot(), "profiles");
@@ -66,6 +66,21 @@ describe("agy profile route and vendor probe", () => {
     process.env.CLAUDEXOR_AGY_BIN = bin;
     return { root, home, bin };
   }
+
+  it("names the profile HOME its child receives for applied attempt evidence", () => {
+    const { home } = fixture("#!/bin/sh\nexit 0\n");
+    const adapter = createAgyAdapter({ prepareProfileKeychain: () => undefined });
+    const live = HarnessRunSpec.parse({
+      session_id: "s",
+      intent: "explain",
+      cwd: home,
+      prompt: "p",
+      credential_profile: profile(home),
+      env: { HOME: "/engine/lane/home" },
+    });
+    expect(adapter.childHome?.(live)).toBe(home);
+    expect(adapter.childHome?.({ ...live, credential_profile: null })).toBeNull();
+  });
 
   it("constructs the exact route without requiring a fallback token file", () => {
     const { home } = fixture("#!/bin/sh\nexit 0\n");

@@ -66,6 +66,7 @@ struct RemoteLoginContent: View {
                 Spacer()
                 Button(session.lifecycle.job?.isTerminal == true ? "Done" : "Keep running", action: close)
                     .buttonStyle(.borderedProminent)
+                    .tint(Theme.accentSolid)
             }
         }
         .padding(Theme.Spacing.xl)

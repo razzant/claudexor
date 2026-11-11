@@ -6,6 +6,7 @@ public enum SetupHarness: String, Codable, Sendable, CaseIterable {
     /// account is a named config-dir profile, so it has no default-store login;
     /// without this case a server-issued agy login job would not decode at all.
     case agy
+    case grok
 }
 
 public enum SetupJobAction: String, Codable, Sendable, CaseIterable {

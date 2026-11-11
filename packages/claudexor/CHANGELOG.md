@@ -1,5 +1,237 @@
 # claudexor
 
+## 6.0.0
+
+### Major Changes
+
+- 163b570: Vendor programs are installed and maintained through adapter-declared vendor
+  commands under the installation HOME. Selected paths and self-reported versions
+  are shared by runs, probes and maintenance. Passive reads reuse the remembered
+  answer for the same file identity, including no answer; a failed ask preserves
+  an earlier answer. A replacement behind an unchanged wrapper is detected when
+  an inventory read, fresh read or native startup frame obtains a different
+  version; passive polls and continued missing answers do not reveal it.
+  Claude, Codex and Copilot supply startup versions; the other adapters use
+  remembered evidence or one first version ask. Model lists identify their source
+  program. Native attempts retain program evidence and exhausted credential
+  pools retain the last bounded, redacted vendor diagnostic.
+
+  Breaking: maintenance inventory and receipts use selection/newest/actions,
+  tri-state update availability, command previews and before/after evidence.
+  Hosts must update their consumers and use explicit exact versions instead of
+  baseline/previous targets. Install --target and --release-tested hard-error;
+  use harness install/update with optional --vendor-version <exact>. The host npm
+  contract is removed. Product-made npm copies convert during Update only after
+  a version-answering replacement that is not known older and belongs to the
+  adapter's declared major, where present. Interrupted package hides recover on
+  the next explicit maintenance; arbitrary wrappers remain untouched.
+
+  The SSH app consumes the same inventory and receipt contract. Windows executes
+  five vendor installation routes. Copilot's MSI folder is declared for inventory,
+  probes and native runs without restarting the engine. Cursor Windows (#667), OpenCode's second line
+  and unattended Windows installation (#668) remain unsupported. OpenCode stays
+  on 1.x; vendor pruning and package-manager advice remain vendor responsibilities.
+  Copilot Update can return GitHub's unauthenticated rate-limit refusal; the
+  vendor's sentence is the result. No engine timer, update/retry chain, model-to-version table or active-run gate
+  is added. Release checks fetch declared sources and report absent verb checks
+  as skipped.
+
+### Patch Changes
+
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [a20492c]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [163b570]
+  - @claudexor/cli@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- The macOS Accounts row now shows its most-used measured model-scoped text quota window when no account-wide text window is reported, with the scope named beside the percentage. A non-fresh selected scoped window is labelled "Last known". Account-wide percentages, sidebar trigger aggregation, readiness, routing, resource-status overrides and exhausted/cooling-down lines are unchanged. Unmeasured usage remains unknown.
+- 5e1cc16: When the engine selected for an idle replacement does not come up, the macOS app
+  restarts the exact previous build if a saved copy was verified before the stop and
+  nothing can still be running beside it. Otherwise it goes Offline with the specific
+  reason and an explicit Retry, also in the sidebar when remote work keeps the thread
+  screen. If the restarted engine answers only in recovery mode, the notice names the
+  `daemon stop` command for the app's own engine root. The app reports a restart, not
+  a restore: data a newer engine already migrated stays with that engine.
+- 5f4ea12: The macOS app no longer makes ordinary requests wait behind long-lived event
+  streams. Each engine connection, local or remote, now keeps its run, global
+  journal (including the Accounts quota observer) and setup-job streams in a
+  connection pool of its own, configured like its request session, so while many
+  runs stream, opening a thread, refreshing runs and run controls are no longer
+  queued until a stream ends or the 60-second request timeout passes. Switching
+  threads also reads the selected thread's history at once instead of after the
+  global run list: the run-list reconciliation for the previous selection runs
+  beside that read, and when it answers it keeps the off-page rows of the local
+  thread selected at that moment; a selected remote thread no longer keeps local
+  rows that share its run ids. Streams still share the platform's per-host
+  connection limit among themselves (6 observed for loopback HTTP/1.1 on macOS
+  26.4): a stream beyond it waits for another stream to end. No engine API,
+  stream semantics or background-run status changed.
+- 8fb1023: Upload bytes, model-request reads and the full trust-file list no longer run on the daemon's request thread. A scoped trust entry says whether it came from a file or from defaults, so a caller can tell a missing grant from an explicit refusal without listing every repo. The daemon sizes its libuv pool from the host when that variable is unset, and upload writes leave two of those threads free so DNS still runs while parts are being written.
+- Updated dependencies [b63ceac]
+- Updated dependencies [43b0491]
+- Updated dependencies [0d2d858]
+- Updated dependencies [7a6c782]
+- Updated dependencies [d9e8247]
+- Updated dependencies [860bc64]
+- Updated dependencies [8de1106]
+- Updated dependencies [43b0491]
+- Updated dependencies [2be1a9c]
+- Updated dependencies
+- Updated dependencies [cd6e9fa]
+- Updated dependencies [4a4d998]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [0db02d9]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [1c2bd56]
+- Updated dependencies [4d96ddb]
+- Updated dependencies [8905c72]
+- Updated dependencies [0d2d858]
+  - @claudexor/cli@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [a0f3a0e]
+- Updated dependencies [d9f50f5]
+- Updated dependencies [135f6de]
+- Updated dependencies [51e5250]
+  - @claudexor/cli@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- Release verification no longer fails on Git 2.55 and newer when a test lists a repository's object directory right after committing to that repository itself. Since Git 2.55, maintenance that `git commit` starts in the background keeps `objects/maintenance.lock` until it finishes, so the listing could change without any write by Claudexor. The two affected test files now run their own Git commands with `maintenance.autoDetach=false`, which lets that maintenance finish before each command returns, and still compare the complete object directory. 5.0.0 was tagged but its release candidate stopped at one of those tests, so everything listed under 5.0.0 ships in 5.0.1.
+  - @claudexor/cli@5.0.1
+
+## 5.0.0
+
+### Patch Changes
+
+- 5cb8a13: The macOS packaging boot smoke now starts the bundled daemon in an empty environment with only a scratch `HOME` and a fixed `PATH`, watches for discovery in the root derived from that `HOME`, and stops and reaps the daemon before deleting that root. An exported `CLAUDEXOR_CONFIG_DIR`, socket or control-API override, `NODE_OPTIONS` or provider key in the builder's shell can no longer point the smoke at another root or reach the daemon.
+- Updated dependencies [f428c0a]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [8bae6ae]
+- Updated dependencies [0b14e01]
+- Updated dependencies [9a5ef43]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [f428c0a]
+- Updated dependencies [d9e7977]
+- Updated dependencies [d807104]
+- Updated dependencies [2d83b87]
+- Updated dependencies [f428c0a]
+- Updated dependencies [fe7e2ae]
+- Updated dependencies [28dfe1a]
+  - @claudexor/cli@5.0.0
+
+## 4.8.2
+
+### Patch Changes
+
+- Updated dependencies [67b8833]
+- Updated dependencies [f88a561]
+  - @claudexor/cli@4.8.2
+
+## 4.8.1
+
+### Patch Changes
+
+- Release verification no longer fails when the Windows smoke asks a just-started daemon to stop before the daemon can read its own records. The smoke now retries the graceful runtime stop while the daemon answers with a retryable refusal, until a 30-second deadline passes, and still fails on any other answer. 4.8.0 was tagged but its publication stopped at that smoke, so everything listed under 4.8.0 ships in 4.8.1.
+  - @claudexor/cli@4.8.1
+
+## 4.8.0
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies [6c31c44]
+- Updated dependencies [7dfbc42]
+- Updated dependencies
+  - @claudexor/cli@4.8.0
+
+## 4.7.1
+
+### Patch Changes
+
+- Updated dependencies [30f8195]
+  - @claudexor/cli@4.7.1
+
+## 4.7.0
+
+### Patch Changes
+
+- Updated dependencies [74fb275]
+  - @claudexor/cli@4.7.0
+
+## 4.6.2
+
+### Patch Changes
+
+- c6e84d6: Ad-hoc sign and strictly verify local macOS app bundles before creating ZIP or DMG artifacts.
+  - @claudexor/cli@4.6.2
+
+## 4.6.1
+
+### Patch Changes
+
+- 4faf3d2: Disambiguate recent project folders with the shortest distinguishing parent suffix and add full-path hover help. The macOS project chip keeps its ordinary folder glyph; its hover and VoiceOver text say whether the selected folder is in a primary Git checkout or a linked worktree, including reftable repositories, without implying the main branch or where a thread executes. A selected thread with unloaded metadata says “Project unavailable” instead of showing the draft project, and draft help identifies the project for the new thread. Ordinary folders and remote or unavailable selections never inherit another local checkout's Git status.
+- 1b02c73: Keep compatible newer daemons and alternate builds of the same version running
+  when another macOS app copy connects. Add an explicit idle-only same-version
+  build switch in Settings, refresh identity before replacement, and coordinate app
+  lifecycle transactions across copies sharing a service root. An unusable
+  lifecycle lock is named in the app instead of reported as another action.
+  When another copy holds that lock, the build offer stays available for an explicit
+  retry. Engine notices appear alongside Install, and the offline screen shows a
+  refused lock. Install also refuses before any stop when a newer engine, or another build
+  of the same version, is already serving.
+- Updated dependencies [ed646a5]
+  - @claudexor/cli@4.6.1
+
+## 4.6.0
+
+### Patch Changes
+
+- Updated dependencies [a81897c]
+- Updated dependencies [2593b90]
+  - @claudexor/cli@4.6.0
+
+## 4.5.0
+
+### Patch Changes
+
+- Updated dependencies [032b44b]
+  - @claudexor/cli@4.5.0
+
+## 4.4.0
+
+### Patch Changes
+
+- Updated dependencies
+  - @claudexor/cli@4.4.0
+
+## 4.3.1
+
+### Patch Changes
+
+- @claudexor/cli@4.3.1
+
+## 4.3.0
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies [23a74cb]
+  - @claudexor/cli@4.3.0
+
 ## 4.2.0
 
 ### Patch Changes

@@ -13,7 +13,7 @@
 import { statSync } from "node:fs";
 import { RunScope, type ControlRunStartRequest } from "@claudexor/schema";
 import type { RunInput } from "@claudexor/orchestrator";
-import { retainedEnvelopeInChain } from "@claudexor/workspace";
+import { retainedEnvelopeInChain, runFilesExpired } from "@claudexor/workspace";
 
 interface ChainRecord {
   runId?: string;
@@ -71,8 +71,15 @@ export function continuationForRun(
   }
   // An explicit live root or another project runs elsewhere: the kept envelope stays kept.
   const chain = predecessorChain(commands, predecessor);
+  const expiredAncestors: string[] = [];
   const sources = chain.flatMap((record) => {
     if (!record.runId || !record.runDir) return [];
+    if (runFilesExpired(record.runDir)) {
+      if (record === predecessor)
+        throw new Error(`continuation predecessor ${record.runId} expired by retention`);
+      expiredAncestors.push(record.runId);
+      return [];
+    }
     const scope = RunScope.safeParse(paramsOf(record)["scope"]).data;
     return [
       {
@@ -101,6 +108,7 @@ export function continuationForRun(
         .map((prompt) => prompt.trim())
         .join("\n\n"),
       ancestors: sources.slice(1),
+      ...(expiredAncestors.length ? { expiredAncestors } : {}),
       preference: p.continueCarrier ?? "auto",
       inheritModel: p.continueModelInherited ?? (p.model === undefined && p.models === undefined),
     },

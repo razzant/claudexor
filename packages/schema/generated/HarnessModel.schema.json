@@ -118,6 +118,19 @@
           "default": null,
           "description": "Context window in tokens; null when the enumeration source does not report it."
         },
+        "input_modalities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HarnessModel/properties/processing/properties/nativeModes/items/properties/id"
+          },
+          "minItems": 1,
+          "description": "Input modalities the live catalog declares for this model, verbatim (e.g. text, image, file); absent = unknown, never an empty or 'none' claim. Declared metadata that refuses no request."
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Largest completion the live catalog declares for this model (OpenRouter top_provider.max_completion_tokens); absent = unknown. Input and output share the context window, so the effective maximum can be lower."
+        },
         "routes": {
           "anyOf": [
             {

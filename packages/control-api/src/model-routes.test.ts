@@ -152,18 +152,28 @@ describe("raw model operation HTTP surface", () => {
     );
   });
 
-  it.each([{ levels: [] }, { levels: ["high", "ultra"] }])(
-    "projects the real Codex catalog $levels to both frozen HTTP shapes",
-    async ({ levels }) => {
+  it.each([
+    { levels: [], declared: undefined, modalities: [] },
+    { levels: ["high", "ultra"], declared: ["text", "image"], modalities: ["text", "image"] },
+    { levels: [], declared: ["text", { type: "image" }], modalities: [] },
+  ])(
+    "projects the real Codex catalog $levels with modalities $declared with source-program identity in both HTTP projections",
+    async ({ levels, declared, modalities }) => {
       const models = parseCodexModelCatalog({
         models: [
-          { slug: "test-model", supported_reasoning_levels: levels.map((effort) => ({ effort })) },
+          {
+            slug: "test-model",
+            supported_reasoning_levels: levels.map((effort) => ({ effort })),
+            input_modalities: declared,
+          },
         ],
       });
       expect(models[0]?.reasoningEffortsVerified).toBe(true);
+      expect(models[0]?.inputModalities).toEqual(modalities);
       const catalog = {
         source: "codex",
         credentialProfileId: "fixture",
+        sourceProgram: { path: "/fixture/codex", version: "0.167.1" },
         accountFingerprint: null,
         observedAt: "2026-09-12T00:00:00.000Z",
         provenance: "provider_http",
@@ -187,6 +197,7 @@ describe("raw model operation HTTP surface", () => {
       expect(await legacy.json()).toEqual({
         source: "codex",
         credentialProfileId: "fixture",
+        sourceProgram: { path: "/fixture/codex", version: "0.167.1" },
         accountFingerprint: null,
         observedAt: "2026-09-12T00:00:00.000Z",
         provenance: "provider_http",
@@ -198,7 +209,7 @@ describe("raw model operation HTTP surface", () => {
             contextWindow: null,
             maxContextWindow: null,
             maxOutputTokens: null,
-            inputModalities: [],
+            inputModalities: modalities,
             reasoningEfforts: levels.filter((level) => level !== "ultra"),
             defaultReasoningEffort: null,
             supportedOptions: [
@@ -304,6 +315,7 @@ describe("raw model operation HTTP surface", () => {
     const modelCatalog = vi.fn(async (source, profile) => ({
       source,
       credentialProfileId: profile ?? "chosen",
+      sourceProgram: null,
       accountFingerprint: null,
       observedAt: "2026-09-06T00:00:00.000Z",
       provenance,
@@ -329,6 +341,7 @@ describe("raw model operation HTTP surface", () => {
     expect(await observed.json()).toEqual({
       source: "codex",
       credentialProfileId: "chosen",
+      sourceProgram: null,
       accountFingerprint: null,
       observedAt: "2026-09-06T00:00:00.000Z",
       provenance: "provider_http",
@@ -360,7 +373,7 @@ describe("raw model operation HTTP surface", () => {
     expect(modelCatalog).toHaveBeenCalledTimes(4);
   });
 
-  it("negotiates account catalogs while keeping the strict legacy model shape unchanged", async () => {
+  it("negotiates account catalogs while keeping client-version and processing details in the account view", async () => {
     const processing = {
       modes: ["standard", "fast"],
       nativeModes: [{ mode: "fast", id: "priority" }],
@@ -385,6 +398,7 @@ describe("raw model operation HTTP surface", () => {
     const catalog = {
       source: "codex",
       credentialProfileId: "a",
+      sourceProgram: null,
       accountFingerprint: null,
       observedAt: "2026-09-12T00:00:00.000Z",
       provenance: "provider_http",
@@ -458,6 +472,7 @@ describe("raw model operation HTTP surface", () => {
     const catalog = {
       source: "codex",
       credentialProfileId: "a",
+      sourceProgram: null,
       accountFingerprint: "a",
       observedAt: "2026-10-09T00:00:00.000Z",
       provenance: "provider_http",

@@ -1,28 +1,18 @@
 /**
  * Run-artifact serving routes (list/fetch for run trees and produced project
  * outputs), extracted from the daemon-server shell. One owner of artifact
- * MIME/caps/redaction policy and of the honest post-GC answer: a
- * retention-reclaimed run serves a typed 410 tombstone, never a mysterious
- * 404 (W3.6).
+ * MIME/caps policy (bytes are served exactly, INV-146) and of the honest
+ * post-GC answer: a retention-reclaimed run serves a typed 410 tombstone,
+ * never a mysterious 404 (W3.6).
  */
 import type { ServerResponse } from "node:http";
-import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
-import { basename, extname, join, relative, sep } from "node:path";
-import {
-  ControlArtifactListResponse,
-  ControlProjectOutputsResponse,
-  type ControlArtifactInfo,
-} from "@claudexor/schema";
-import { containsSecretLikeToken, redactSecrets } from "@claudexor/util";
-import { isVanishedErrno, safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
-import { readRunTombstone } from "./retention.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import type { ArtifactReadRequest, ArtifactReadResult } from "./artifact-read.js";
+export { expiredRunBody, listArtifacts } from "./artifact-read.js";
 import type { DaemonRunRecord } from "./daemon-server.js";
 import { streamFilesArtifact } from "./files-artifact-stream.js";
 import { runExecutionWorkspaceRoot } from "./run-execution-root.js";
-import { RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
-
-const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
-const MAX_ARTIFACT_BINARY_FETCH_BYTES = 32 * 1024 * 1024;
 
 /** Server-owned workspace facts for a thread, taken from its journal record:
  *  the mode and, for an isolated thread, the persistent worktree path (pinned by
@@ -44,6 +34,8 @@ export interface ArtifactServeContext {
    *  path). Absent when the build has no thread store; null when the thread
    *  record cannot be found. Feeds the QA-038 isolated-produced fix. */
   resolveThreadWorkspace?(id: string): Promise<ResolvedThreadWorkspace | null>;
+  /** One server-owned bulk executor, also used by run detail and SSE reads. */
+  readArtifact(input: ArtifactReadRequest, signal?: AbortSignal): Promise<ArtifactReadResult>;
   json(res: ServerResponse, status: number, body: unknown): void;
 }
 
@@ -61,14 +53,11 @@ export async function handleArtifactServeRoute(
     const projectId = decodeURIComponent(projectOutputsRootMatch[1] as string);
     const root = ctx.resolveProjectRoot ? await ctx.resolveProjectRoot(projectId) : null;
     if (!root) return (ctx.json(res, 404, { error: "no such project" }), true);
-    ctx.json(
-      res,
-      200,
-      ControlProjectOutputsResponse.parse({
-        projectId,
-        artifacts: listArtifacts(join(root, "artifacts")),
-      }),
-    );
+    await serveArtifactRead(ctx, res, {
+      kind: "list",
+      root: join(root, "artifacts"),
+      owner: { kind: "project", id: projectId },
+    });
     return true;
   }
 
@@ -77,11 +66,11 @@ export async function handleArtifactServeRoute(
     const projectId = decodeURIComponent(projectOutputsFetchMatch[1] as string);
     const root = ctx.resolveProjectRoot ? await ctx.resolveProjectRoot(projectId) : null;
     if (!root) return (ctx.json(res, 404, { error: "no such project" }), true);
-    const target = safeArtifactPath(
-      join(root, "artifacts"),
-      decodeURIComponent(projectOutputsFetchMatch[2] as string),
-    );
-    serveArtifactFile(ctx, res, target);
+    await serveArtifactRead(ctx, res, {
+      kind: "fetch",
+      root: join(root, "artifacts"),
+      relative: decodeURIComponent(projectOutputsFetchMatch[2] as string),
+    });
     return true;
   }
 
@@ -89,16 +78,12 @@ export async function handleArtifactServeRoute(
   if (method === "GET" && artifactsRootMatch) {
     const rec = await ctx.findRun(decodeURIComponent(artifactsRootMatch[1] as string));
     if (!rec?.runDir) return (ctx.json(res, 404, { error: "no such run" }), true);
-    const tombstone = readRunTombstone(rec.runDir);
-    if (tombstone) return (ctx.json(res, 410, expiredRunBody(tombstone)), true);
-    ctx.json(
-      res,
-      200,
-      ControlArtifactListResponse.parse({
-        runId: rec.runId ?? rec.id,
-        artifacts: listArtifacts(rec.runDir),
-      }),
-    );
+    await serveArtifactRead(ctx, res, {
+      kind: "list",
+      root: rec.runDir,
+      owner: { kind: "run", id: rec.runId ?? rec.id },
+      runArtifact: true,
+    });
     return true;
   }
 
@@ -106,20 +91,12 @@ export async function handleArtifactServeRoute(
   if (method === "GET" && artifactFetchMatch) {
     const rec = await ctx.findRun(decodeURIComponent(artifactFetchMatch[1] as string));
     if (!rec?.runDir) return (ctx.json(res, 404, { error: "no such run" }), true);
-    const tombstone = readRunTombstone(rec.runDir);
-    if (tombstone) return (ctx.json(res, 410, expiredRunBody(tombstone)), true);
-    if (await streamFilesArtifact(rec, decodeURIComponent(artifactFetchMatch[2] as string), res))
-      return true;
-    const target = safeArtifactPath(
-      rec.runDir,
-      decodeURIComponent(artifactFetchMatch[2] as string),
-    );
-    serveArtifactFile(
-      ctx,
-      res,
-      target,
-      decodeURIComponent(artifactFetchMatch[2] as string) === RETAINED_OUTPUT_PATH,
-    );
+    await serveArtifactRead(ctx, res, {
+      kind: "fetch",
+      root: rec.runDir,
+      relative: decodeURIComponent(artifactFetchMatch[2] as string),
+      runArtifact: true,
+    });
     return true;
   }
 
@@ -137,13 +114,11 @@ export async function handleArtifactServeRoute(
         ),
         true
       );
-    const artifacts =
-      resolved.kind === "root" ? listArtifacts(join(resolved.root, "artifacts")) : [];
-    ctx.json(
-      res,
-      200,
-      ControlArtifactListResponse.parse({ runId: rec.runId ?? rec.id, artifacts }),
-    );
+    await serveArtifactRead(ctx, res, {
+      kind: "list",
+      root: resolved.kind === "root" ? join(resolved.root, "artifacts") : null,
+      owner: { kind: "run", id: rec.runId ?? rec.id },
+    });
     return true;
   }
 
@@ -163,15 +138,47 @@ export async function handleArtifactServeRoute(
       );
     if (resolved.kind !== "root")
       return (ctx.json(res, 404, { error: "no project root for run" }), true);
-    const target = safeArtifactPath(
-      join(resolved.root, "artifacts"),
-      decodeURIComponent(producedFetchMatch[2] as string),
-    );
-    serveArtifactFile(ctx, res, target);
+    await serveArtifactRead(ctx, res, {
+      kind: "fetch",
+      root: join(resolved.root, "artifacts"),
+      relative: decodeURIComponent(producedFetchMatch[2] as string),
+    });
     return true;
   }
 
   return false;
+}
+
+/** A disconnected reader drops its queued work and never starts a response.
+ * The executor owns daemon Stop; no independent worker or retry lives here. */
+async function serveArtifactRead(
+  ctx: ArtifactServeContext,
+  res: ServerResponse,
+  request: ArtifactReadRequest,
+): Promise<void> {
+  if (res.destroyed) return;
+  const abort = new AbortController();
+  const disconnected = () => abort.abort();
+  res.once("close", disconnected);
+  try {
+    const result = await ctx.readArtifact(request, abort.signal);
+    if (res.destroyed || abort.signal.aborted) return;
+    if (result.kind === "error") {
+      ctx.json(res, result.status, result.body);
+    } else if (result.kind === "files") {
+      await streamFilesArtifact(result.transfer, res, abort.signal);
+    } else {
+      res.writeHead(200, {
+        "content-type": result.contentType,
+        "content-length": result.body.byteLength,
+      });
+      res.end(result.body);
+    }
+  } catch (error) {
+    if (!res.destroyed && !abort.signal.aborted) throw error;
+  } finally {
+    res.off("close", disconnected);
+  }
 }
 
 /** Resolve a registered project id to its canonical repo root via the durable
@@ -194,128 +201,6 @@ export async function resolveProjectRoot(
     /* an unavailable registry answers "no such project", never a 500 */
   }
   return null;
-}
-
-/** Shared artifact-file body: caps, patch secret fence, text redaction, and the
- * binary content check (one funnel for run artifacts, outputs and produced). */
-function serveArtifactFile(
-  ctx: ArtifactServeContext,
-  res: ServerResponse,
-  target: string | null,
-  fullRetainedOutput = false,
-): void {
-  if (!target || !existsSync(target) || lstatSync(target).isDirectory())
-    return ctx.json(res, 404, { error: "no such artifact" });
-  // Sensitive-filename REFUSAL (the filename analogue of the `.diff` patch
-  // refusal below): `.env`-style credential files have no file extension, so
-  // `contentType` classified them as octet-stream and they took the BINARY path
-  // — skipping `redactSecrets` and serving their bytes raw. Refuse the
-  // well-known credential-file conventions outright with a typed 409 naming the
-  // class, BEFORE reading any bytes, across all three fetch families (they all
-  // funnel through here).
-  const sensitiveClass = sensitiveArtifactClass(target);
-  if (sensitiveClass) {
-    return ctx.json(res, 409, {
-      error: `refusing to serve ${basename(target)}: credential-bearing ${sensitiveClass} file`,
-      code: "sensitive_file_refused",
-      sensitiveClass,
-    });
-  }
-  const stats = lstatSync(target);
-  // This generated document is a full-result transfer, not a log preview. It
-  // still passes the same path/credential checks and text redaction below.
-  const cap = fullRetainedOutput
-    ? Infinity
-    : isTextArtifact(target)
-      ? MAX_ARTIFACT_FETCH_BYTES
-      : MAX_ARTIFACT_BINARY_FETCH_BYTES;
-  if (stats.size > cap) {
-    return ctx.json(res, 413, {
-      error: `artifact is ${stats.size} bytes (limit ${cap}); read it from disk at ${target}`,
-      bytes: stats.size,
-    });
-  }
-  let data = readFileSync(target);
-  if (isPatchArtifact(target) && containsSecretLikeToken(data.toString("utf8"))) {
-    return ctx.json(res, 409, {
-      error: "artifact contains secret-like token; refusing to serve patch",
-    });
-  }
-  if (isTextArtifact(target)) data = Buffer.from(redactSecrets(data.toString("utf8")), "utf8");
-  // INV-062 for SERVED copies: text is redacted above, but media and other
-  // binaries (project outputs and produced files come straight from the
-  // project/thread tree) cannot be redacted in place. The same content policy
-  // decides: bytes that match it are withheld typed; safe files serve as before.
-  else if (containsSecretLikeToken(data.toString("latin1"))) {
-    return ctx.json(res, 409, {
-      error: `refusing to serve ${basename(target)}: its bytes match the secret-like content policy`,
-      code: "secret_like_content_withheld",
-    });
-  }
-  res.writeHead(200, { "content-type": contentType(target), "content-length": data.length });
-  res.end(data);
-}
-
-/** The honest post-GC answer (W3.6): the run existed, retention reclaimed its
- * artifacts — a typed 410, never a mysterious 404. */
-function expiredRunBody(tombstone: { run_id: string; deleted_at: string }): {
-  error: string;
-  code: string;
-  deleted_at: string;
-} {
-  return {
-    error: `run artifacts were reclaimed by retention on ${tombstone.deleted_at}`,
-    code: "run_expired_by_retention",
-    deleted_at: tombstone.deleted_at,
-  };
-}
-
-/**
- * Enumerate an artifact tree as a point-in-time SNAPSHOT that tolerates
- * concurrent mutation (GH #128): an entry that vanishes between readdir and
- * lstat (git's atomic tmp-object renames in reviewer workspaces, workspace
- * cleanup, retention deletion) is skipped and a directory that vanishes
- * mid-walk lists as empty — a partial snapshot, never a 500. Only vanish
- * errnos (ENOENT/ENOTDIR) are tolerated; anything else stays loud. `.git`
- * entries are never enumerated (engine-owned churn — the reviewer-workspace
- * baseline repo lives inside the run tree) but remain fetchable by explicit
- * path. Symlinks are likewise skipped from the listing (pinned behavior).
- */
-export function listArtifacts(root: string): ControlArtifactInfo[] {
-  const safeRoot = safeArtifactRoot(root);
-  if (!safeRoot) return [];
-  const out: ControlArtifactInfo[] = [];
-  const walk = (dir: string) => {
-    let names: string[];
-    try {
-      names = readdirSync(dir);
-    } catch (err) {
-      if (isVanishedErrno(err)) return; // directory vanished mid-walk → empty subtree
-      throw err;
-    }
-    for (const name of names) {
-      if (name === ".git") continue;
-      const abs = join(dir, name);
-      let st: ReturnType<typeof lstatSync>;
-      try {
-        st = lstatSync(abs);
-      } catch (err) {
-        if (isVanishedErrno(err)) continue; // entry vanished between readdir and lstat
-        throw err;
-      }
-      if (st.isSymbolicLink()) continue;
-      const rel = relative(safeRoot, abs).split(sep).join("/");
-      out.push({
-        path: rel,
-        kind: st.isDirectory() ? "directory" : "file",
-        bytes: st.isDirectory() ? undefined : st.size,
-        mime: st.isDirectory() ? undefined : artifactMime(rel),
-      });
-      if (st.isDirectory()) walk(abs);
-    }
-  };
-  walk(safeRoot);
-  return out.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /** A run's project root, taken from its TYPED scope — NOT by path-slicing the
@@ -451,126 +336,4 @@ function isolatedWorktreeUnavailableBody(resolved: {
  *  transient store failure (503). Both fail CLOSED — never the live root. */
 function worktreeUnavailableStatus(reason: WorktreeUnavailableReason): 410 | 503 {
   return reason === "authority_unavailable" ? 503 : 410;
-}
-
-function contentType(path: string): string {
-  switch (extname(path).toLowerCase()) {
-    case ".json":
-      return "application/json; charset=utf-8";
-    case ".md":
-    case ".txt":
-    case ".jsonl":
-    case ".log":
-    case ".diff":
-    case ".patch":
-    case ".yaml":
-    case ".yml":
-      return "text/plain; charset=utf-8";
-    case ".html":
-    case ".htm":
-      return "text/html; charset=utf-8";
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".svg":
-      return "image/svg+xml";
-    case ".pdf":
-      return "application/pdf";
-    default:
-      return "application/octet-stream";
-  }
-}
-
-/** Clean MIME (no charset) for the artifact listing DTO. */
-function artifactMime(path: string): string {
-  return contentType(path).split(";")[0] as string;
-}
-
-function isPatchArtifact(path: string): boolean {
-  const ext = extname(path);
-  return ext === ".diff" || ext === ".patch";
-}
-
-/**
- * Files whose NAME (not extension) marks them as secret-bearing by convention.
- * These must never be served from a run/produced/project artifact tree,
- * regardless of MIME — `.env`-style files carry no extension, so `contentType`
- * classified them as `application/octet-stream` and the binary fetch path served
- * them raw, bypassing redaction. Returns the refusal class name, or null when
- * the filename is not a known credential convention.
- *
- * The list is bounded to the WELL-KNOWN credential-file conventions rather than
- * a broad guess: dotenv files, package-registry credential files
- * (`.npmrc`/`.pypirc`/`.netrc`), and any `*credentials*` filename (which also
- * catches vendor stores like `.credentials.json`). Truly-binary or ordinary
- * source files are unaffected.
- */
-function sensitiveArtifactClass(path: string): string | null {
-  const name = basename(path).toLowerCase();
-  if (name === ".env" || name.startsWith(".env.")) return "dotenv";
-  if (name === ".npmrc" || name === ".pypirc" || name === ".netrc")
-    return "package_registry_credentials";
-  if (name.includes("credentials")) return "credentials_file";
-  return null;
-}
-
-/**
- * Extensions whose bytes are semantic TEXT even when their MIME is not `text/*`
- * or JSON, so `contentType` classifies them as `application/octet-stream`.
- * Without this set those files took the 32MiB BINARY cap and skipped
- * `redactSecrets`, so a secret-like token inside a served artifact leaked raw
- * (QA-067). Listing them here routes them through the text path: the smaller
- * text cap AND secret redaction.
- *
- * The set is the common text-bearing artifact surface a run produces — source
- * code, config/markup, and structured data — all of which are UTF-8 the
- * redaction pass can safely serve. Truly-binary types (images, PDFs, archives)
- * stay on the binary path. `.env`-style secret files are deliberately NOT here:
- * they never belong in a served artifact tree, and rather than route them
- * through redaction they are REFUSED outright by `sensitiveArtifactClass` (a
- * typed 409) before any bytes are read — adding them here would only imply this
- * path is a safe delivery channel for them.
- */
-const SEMANTIC_TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
-  // structured data / markup
-  ".csv",
-  ".xml",
-  ".svg",
-  ".markdown",
-  ".text",
-  ".json5",
-  ".toml",
-  ".ini",
-  ".cfg",
-  ".conf",
-  ".css",
-  // source code
-  ".js",
-  ".mjs",
-  ".cjs",
-  ".ts",
-  ".tsx",
-  ".jsx",
-  ".sh",
-  ".py",
-  ".rb",
-  ".go",
-  ".rs",
-  ".java",
-  ".c",
-  ".h",
-  ".cpp",
-  ".sql",
-]);
-
-function isTextArtifact(path: string): boolean {
-  const type = contentType(path);
-  if (type.startsWith("text/") || type.startsWith("application/json")) return true;
-  return SEMANTIC_TEXT_EXTENSIONS.has(extname(path).toLowerCase());
 }
