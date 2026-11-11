@@ -196,6 +196,13 @@ function conversionRoute(program) {
   const prefix = join(home, ".claudexor", "node");
   if (win && !installed.has(program.id))
     throw new Error("Windows installation phase did not establish the existing vendor copy");
+  if (win) {
+    const vendor = cli(env, ["harness", "inspect", program.id]).harnesses[0].selection;
+    if (!vendor.path || !vendor.version || vendor.path.startsWith(prefix + sep))
+      throw new Error(
+        "Windows conversion requires the healthy vendor copy established by the earlier phases",
+      );
+  }
   const versions = JSON.parse(npm(env, ["view", program.legacyNpmPackage, "versions", "--json"]));
   const released = [versions].flat().filter((version) => /^\d+\.\d+\.\d+$/.test(version));
   const old = released.at(-2) ?? released.at(-1);
@@ -271,6 +278,8 @@ function conversionRoute(program) {
     after: { path: after.selection.path, version: after.selection.version },
     outcome: receipt.outcome,
     limitations: receipt.limitations,
+    exitCode: receipt.exitCode,
+    progress: receipt.progress,
   };
 }
 
