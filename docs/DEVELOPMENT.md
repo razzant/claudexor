@@ -145,8 +145,11 @@ acknowledgement never permits another publish while indexing or attestations lag
 Unknown outcomes stay unresolved. Transient registry reads are bounded separately
 from publishing; auth, digest and provenance failures are not retryable. The GitHub
 Release stays draft until all publication checks pass, rejects differing
-same-name assets, and becomes public as the final mutation. Published releases
-are never edited. Versions still use changesets and the fixed lockstep group.
+same-name assets, and becomes public as the final mutation. A published release's
+assets and tag are never changed, and the workflow refuses to touch a published
+release. A factual error in its notes is corrected by a maintainer in place, with a
+dated sentence, and in `CHANGELOG.md`. Versions still use changesets and the fixed
+lockstep group.
 
 A publish run can stop after npm accepted some of its packages, for example when
 npm had not yet exposed the last one by the end of its exposure wait. What that
