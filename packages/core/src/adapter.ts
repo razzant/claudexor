@@ -190,10 +190,11 @@ export interface HarnessAdapter {
   planProfileProgramCleanup?(
     profiles: readonly import("@claudexor/schema").CredentialProfile[],
     selected: import("@claudexor/schema").SelectedHarnessProgram,
+    options?: { recoverOnly?: boolean },
   ): {
     paths: string[];
     limitations: string[];
-    execute(current: import("@claudexor/schema").SelectedHarnessProgram): {
+    execute(observe: () => import("@claudexor/schema").SelectedHarnessProgram): {
       removed: string[];
       limitations: string[];
     };

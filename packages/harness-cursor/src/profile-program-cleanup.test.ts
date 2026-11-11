@@ -7,17 +7,36 @@ import {
   existsSync,
   readFileSync,
   realpathSync,
+  renameSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { CredentialProfile, type SelectedHarnessProgram } from "@claudexor/schema";
+import { resolveSelectedProgram } from "@claudexor/core";
+import { CredentialProfile } from "@claudexor/schema";
+import { CURSOR_PROGRAM } from "./program.js";
 import { planCursorProfileProgramCleanup } from "./profile-program-cleanup.js";
 const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 }, 0);
+function vendor(home: string) {
+  const dir = join(home, ".local/share/cursor-agent/versions/current"),
+    link = join(home, ".local/bin/cursor-agent");
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(dirname(link), { recursive: true });
+  // Real vendor shape: link -> bash launcher -> bundled node beside its real path.
+  writeFileSync(
+    join(dir, "cursor-agent"),
+    '#!/usr/bin/env bash\nset -euo pipefail\nSCRIPT_DIR="$(dirname "$(realpath "$0")")"\nexec "$SCRIPT_DIR/node" "$SCRIPT_DIR/index.js" "$@"\n',
+    { mode: 0o755 },
+  );
+  writeFileSync(join(dir, "node"), '#!/bin/sh\nprintf "2026.11.10-731fb78\\n"\n', { mode: 0o755 });
+  writeFileSync(join(dir, "index.js"), "fixture sibling");
+  symlinkSync(join(dir, "cursor-agent"), link);
+  return link;
+}
 function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cursor-cleanup-")));
   roots.push(root);
@@ -25,24 +44,15 @@ function fixture() {
   const home = join(root, "profiles/cursor-a"),
     tree = join(home, ".local/share/cursor-agent"),
     bin = join(home, ".local/bin");
-  mkdirSync(join(tree, "versions/old"), { recursive: true });
-  mkdirSync(bin, { recursive: true });
-  const old = join(tree, "versions/old/cursor-agent");
-  writeFileSync(old, "old copy");
-  symlinkSync(old, join(bin, "cursor-agent"));
-  symlinkSync(old, join(bin, "agent"));
+  const old = vendor(home),
+    selected = vendor(root);
+  symlinkSync(realpathSync(old), join(bin, "agent"));
   writeFileSync(join(bin, "cursor"), "a hand-placed file");
   mkdirSync(join(home, ".cursor"));
   writeFileSync(join(home, ".cursor/credential-fixture"), "unchanged");
-  const selected: SelectedHarnessProgram = {
-    path: join(root, "real-program"),
-    realPath: join(root, "real-program"),
-    version: "2026.08.11-e8db854",
-    versionOutput: "2026.08.11-e8db854",
-    overrideEnv: null,
-    overrideValue: null,
-  };
-  writeFileSync(selected.path!, Buffer.from("cffaedfe00000000", "hex"));
+  const sourceEnv: NodeJS.ProcessEnv = { HOME: root, PATH: "/usr/bin:/bin" };
+  const observe = () =>
+    resolveSelectedProgram(CURSOR_PROGRAM, { sourceEnv, nodePath: "/absent/node" });
   const profile = CredentialProfile.parse({
     profile_id: "a",
     harness_id: "cursor",
@@ -50,59 +60,87 @@ function fixture() {
     credential_kind: "config_dir_login",
     isolation_locator: home,
   });
-  return { root, home, tree, bin, old, selected, profile };
+  return {
+    root,
+    home,
+    tree,
+    bin,
+    old,
+    selected,
+    profile,
+    sourceEnv,
+    observe,
+    hidden: join(dirname(tree), ".cursor-agent.claudexor-hidden"),
+  };
 }
-it("removes exactly the unused tree and proven launcher links, once, preserving profile state", () => {
+it("removes an independent vendor-shaped program copy and its links, preserving the selected program and profile state", () => {
   const f = fixture(),
-    plan = planCursorProfileProgramCleanup([f.profile], f.selected);
+    before = f.observe(),
+    plan = planCursorProfileProgramCleanup([f.profile], before);
   expect(plan.paths).toEqual([join(f.bin, "agent"), join(f.bin, "cursor-agent"), f.tree]);
-  expect(plan.execute(f.selected).removed).toEqual(plan.paths);
+  expect(plan.execute(f.observe).removed).toEqual(plan.paths);
+  expect(f.observe()).toEqual(before);
   expect(existsSync(f.tree)).toBe(false);
+  expect(existsSync(f.hidden)).toBe(false);
   expect(readFileSync(join(f.bin, "cursor"), "utf8")).toBe("a hand-placed file");
   expect(readFileSync(join(f.home, ".cursor/credential-fixture"), "utf8")).toBe("unchanged");
-  expect(planCursorProfileProgramCleanup([f.profile], f.selected).paths).toEqual([]);
+  expect(planCursorProfileProgramCleanup([f.profile], f.observe()).paths).toEqual([]);
 });
-it("preserves a selected profile copy, including a selection changed after planning", () => {
+it("preserves the selected profile copy, including a selection changed after planning", () => {
   const f = fixture(),
-    selected = { ...f.selected, path: join(f.bin, "agent"), realPath: f.old };
-  expect(planCursorProfileProgramCleanup([f.profile], selected).paths).toEqual([]);
-  const plan = planCursorProfileProgramCleanup([f.profile], f.selected);
-  expect(plan.execute(selected).removed).toEqual([]);
+    plan = planCursorProfileProgramCleanup([f.profile], f.observe());
+  f.sourceEnv.CLAUDEXOR_CURSOR_BIN = f.old;
+  expect(planCursorProfileProgramCleanup([f.profile], f.observe()).paths).toEqual([]);
+  expect(plan.execute(f.observe).removed).toEqual([]);
   expect(existsSync(f.old)).toBe(true);
 });
-it("does not follow a redirected profile directory or erase a launcher replaced after inspection", () => {
+it("does not follow redirected parents or remove paths replaced after planning", () => {
   const f = fixture(),
-    plan = planCursorProfileProgramCleanup([f.profile], f.selected);
+    plan = planCursorProfileProgramCleanup([f.profile], f.observe());
   rmSync(join(f.bin, "agent"));
   writeFileSync(join(f.bin, "agent"), "replacement");
-  expect(plan.execute(f.selected).removed).toEqual([]);
+  expect(plan.execute(f.observe).removed).toEqual([]);
   expect(existsSync(f.old)).toBe(true);
-  const share = join(f.home, ".local/share");
+  const share = dirname(f.tree),
+    elsewhere = join(f.root, "elsewhere");
   rmSync(share, { recursive: true });
-  const elsewhere = join(f.root, "elsewhere");
   mkdirSync(join(elsewhere, "cursor-agent"), { recursive: true });
   symlinkSync(elsewhere, share);
-  expect(planCursorProfileProgramCleanup([f.profile], f.selected).paths).toEqual([]);
+  expect(planCursorProfileProgramCleanup([f.profile], f.observe()).paths).toEqual([]);
   expect(existsSync(join(elsewhere, "cursor-agent"))).toBe(true);
 });
-
 it.each([false, true])(
-  "preserves copies behind an opaque selected wrapper (override: %s)",
+  "restores a dependency behind a wrapper selected through PATH or override (%s)",
   (override) => {
     const f = fixture();
-    const plan = planCursorProfileProgramCleanup([f.profile], f.selected);
-    expect(plan.paths).toContain(f.tree); // Direct native entry is independent.
-    writeFileSync(f.selected.path!, `#!/bin/sh\nexec '${f.old}' "$@"\n`);
-    if (override) {
-      f.selected.overrideEnv = "CLAUDEXOR_CURSOR_BIN";
-      f.selected.overrideValue = f.selected.path;
-    }
-    const opaque = planCursorProfileProgramCleanup([f.profile], f.selected);
-    expect(opaque.paths).toEqual([]);
-    expect(opaque.limitations.join(" ")).toContain("independence");
-    expect(plan.execute(f.selected).removed).toEqual([]); // Also recheck at deletion.
+    writeFileSync(realpathSync(f.selected), `#!/bin/sh\nexec '${f.old}' "$@"\n`);
+    if (override) f.sourceEnv.CLAUDEXOR_CURSOR_BIN = f.selected;
+    const before = f.observe(),
+      plan = planCursorProfileProgramCleanup([f.profile], before);
+    const result = plan.execute(f.observe);
+    expect(result.removed).toEqual([]);
+    expect(result.limitations.join(" ")).toContain("in use");
+    expect(f.observe()).toEqual(before);
     expect(existsSync(f.old)).toBe(true);
-    writeFileSync(f.selected.path!, "unknown entry without a shebang");
-    expect(planCursorProfileProgramCleanup([f.profile], f.selected).paths).toEqual([]);
+    expect(existsSync(f.hidden)).toBe(false);
+  },
+);
+it.each([false, true])(
+  "resolves an interrupted hide on the next explicit maintenance (dependency: %s)",
+  (dependent) => {
+    const f = fixture();
+    if (dependent) writeFileSync(realpathSync(f.selected), `#!/bin/sh\nexec '${f.old}' "$@"\n`);
+    const before = f.observe();
+    renameSync(f.tree, f.hidden); // process died after hiding
+    expect(f.observe().version).toBe(dependent ? null : before.version);
+    const plan = planCursorProfileProgramCleanup([f.profile], f.observe(), { recoverOnly: true });
+    const result = plan.execute(f.observe);
+    expect(existsSync(f.hidden)).toBe(false);
+    expect(existsSync(f.tree)).toBe(dependent);
+    expect(f.observe()).toEqual(before);
+    if (dependent) {
+      expect(result.removed).toEqual([]);
+      expect(result.limitations.join(" ")).toContain("in use");
+    } else expect(result.removed).toContain(f.hidden);
   },
 );

@@ -1,7 +1,6 @@
-import { lstatSync, readSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
-import { withExecutableInspection, type HarnessAdapter } from "@claudexor/core";
-import type { SelectedHarnessProgram } from "@claudexor/schema";
+import { hideProgramPaths, type HarnessAdapter } from "@claudexor/core";
 import { canonicalCursorProfileHome } from "./profile.js";
 
 const within = (path: string | null, root: string) =>
@@ -9,50 +8,27 @@ const within = (path: string | null, root: string) =>
 const stat = (path: string) => {
   try {
     return lstatSync(path);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw e;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
 };
 const same = (a: ReturnType<typeof stat>, b: ReturnType<typeof stat>) =>
   a !== null && b !== null && a.dev === b.dev && a.ino === b.ino && a.mtimeMs === b.mtimeMs;
+const hiddenCopy = (root: string) => join(dirname(root), ".cursor-agent.claudexor-hidden");
 
-// A script can forward to any profile tree without changing its own realpath.
-// Never parse shell text to infer dependencies. Only a directly selected native
-// image outside the tree is eligible; unreadable and unrecognized entries stay.
-function directNativeProgram(selected: SelectedHarnessProgram): boolean {
-  if (!selected.path || !selected.realPath || !selected.version) return false;
-  try {
-    return withExecutableInspection(selected.path, (info, fd) => {
-      if (!info.isRegularFile || !info.identityStable || info.realpath !== selected.realPath)
-        return false;
-      const header = Buffer.alloc(4);
-      if (readSync(fd, header, 0, 4, 0) !== 4) return false;
-      return [
-        "7f454c46",
-        "feedface",
-        "cefaedfe",
-        "feedfacf",
-        "cffaedfe",
-        "cafebabe",
-        "bebafeca",
-      ].includes(header.toString("hex"));
-    });
-  } catch {
-    return false;
-  }
-}
-
-/** Idempotent repair of the measured HOME-relative updater fault, only on an explicit Update.
- * No glob over profiles, no startup sweep, no credential/config files, no launcher guesses. */
+/** Explicit maintenance only: hide one enumerated copy, observe through the
+ * resolver, restore dependencies or retire unused bytes. No launcher classifier. */
 export const planCursorProfileProgramCleanup: NonNullable<
   HarnessAdapter["planProfileProgramCleanup"]
-> = (profiles, selected) => {
+> = (profiles, selected, options = {}) => {
   const limitations: string[] = [];
   const plans: Array<{
     root: string;
-    home: string;
-    targets: Array<{ path: string; before: NonNullable<ReturnType<typeof stat>> }>;
+    hidden: string;
+    recovered: boolean;
+    directory: NonNullable<ReturnType<typeof stat>>;
+    links: Array<{ path: string; before: NonNullable<ReturnType<typeof stat>> }>;
   }> = [];
   const seen = new Set<string>();
   for (const profile of profiles) {
@@ -61,39 +37,34 @@ export const planCursorProfileProgramCleanup: NonNullable<
       const home = canonicalCursorProfileHome(profile.isolation_locator);
       if (seen.has(home)) continue;
       seen.add(home);
-      const root = join(home, ".local/share/cursor-agent");
-      const directory = stat(root);
+      const root = join(home, ".local/share/cursor-agent"),
+        hidden = hiddenCopy(root);
+      const recovered = stat(hidden) !== null;
+      if (options.recoverOnly && !recovered) continue;
+      const directory = stat(recovered ? hidden : root);
       if (!directory) continue;
-      if (
-        !directNativeProgram(selected) ||
-        within(selected.path, root) ||
-        within(selected.realPath, root)
-      ) {
-        limitations.push(
-          `Preserved ${root}: it is selected or independence from the selected program cannot be proved (a wrapper or unknown executable).`,
-        );
-        continue;
-      }
+      if (recovered && stat(root))
+        throw new Error(`Both ${root} and its hidden copy exist; preserved both.`);
       if (
         !directory.isDirectory() ||
         directory.isSymbolicLink() ||
         realpathSync(dirname(root)) !== dirname(root)
-      ) {
-        limitations.push(`Preserved ${root}: the profile program directory is redirected.`);
+      )
+        throw new Error(`Preserved ${root}: the profile program directory is redirected.`);
+      if (!recovered && (within(selected.path, root) || within(selected.realPath, root))) {
+        limitations.push(`Preserved ${root}: the profile copy is in use by the selected program.`);
         continue;
       }
-      const targets: Array<{ path: string; before: typeof directory }> = [];
+      const links: (typeof plans)[number]["links"] = [];
       const bin = join(home, ".local/bin");
-      // Each launcher must itself be a link into this exact obsolete tree.
       if (stat(bin) && realpathSync(bin) === bin)
         for (const name of ["agent", "cursor-agent", "cursor"]) {
           const path = join(bin, name),
             before = stat(path);
           if (before?.isSymbolicLink() && within(resolve(bin, readlinkSync(path)), root))
-            targets.push({ path, before });
+            links.push({ path, before });
         }
-      targets.push({ path: root, before: directory });
-      plans.push({ root, home, targets });
+      plans.push({ root, hidden, recovered, directory, links });
     } catch (error) {
       limitations.push(
         `Cursor profile program cleanup: ${error instanceof Error ? error.message : String(error)}`,
@@ -101,35 +72,55 @@ export const planCursorProfileProgramCleanup: NonNullable<
     }
   }
   return {
-    paths: plans.flatMap((p) => p.targets.map((t) => t.path)),
+    paths: plans.flatMap((p) => [...p.links.map((t) => t.path), p.recovered ? p.hidden : p.root]),
     limitations,
-    execute(current) {
+    execute(observe) {
       const removed: string[] = [],
         limitations: string[] = [];
       for (const plan of plans) {
+        let hidden: ReturnType<typeof hideProgramPaths> | undefined;
         try {
+          const current = observe();
           if (
-            !directNativeProgram(current) ||
-            within(current.path, plan.root) ||
-            within(current.realPath, plan.root)
+            !plan.recovered &&
+            (within(current.path, plan.root) || within(current.realPath, plan.root))
+          )
+            throw new Error("the profile copy is in use by the selected program");
+          const unchanged = (path: string, before: NonNullable<ReturnType<typeof stat>>) => {
+            if (realpathSync(dirname(path)) !== dirname(path) || !same(stat(path), before))
+              throw new Error(`path changed after inspection: ${path}`);
+          };
+          unchanged(plan.recovered ? plan.hidden : plan.root, plan.directory);
+          for (const link of plan.links) unchanged(link.path, link.before);
+          hidden = hideProgramPaths([{ path: plan.root, hidden: plan.hidden }]);
+          const without = observe();
+          if (
+            !without.path ||
+            !without.version ||
+            (!plan.recovered &&
+              (without.path !== current.path || without.realPath !== current.realPath))
           )
             throw new Error(
-              "the profile copy is selected or independence from the selected program cannot be proved",
+              "the profile copy is in use: the selected program does not answer without it",
             );
-          if (realpathSync(dirname(plan.root)) !== dirname(plan.root))
-            throw new Error("the profile program directory was redirected");
-          for (const target of plan.targets) {
-            if (
-              realpathSync(dirname(target.path)) !== dirname(target.path) ||
-              !same(stat(target.path), target.before)
-            )
-              throw new Error(`path changed after inspection: ${target.path}`);
-          }
-          for (const target of plan.targets) {
-            rmSync(target.path, { recursive: target.path === plan.root });
-            removed.push(target.path);
+          unchanged(plan.hidden, plan.directory);
+          for (const link of plan.links) unchanged(link.path, link.before);
+          const retired = hidden.retire();
+          hidden = undefined;
+          limitations.push(...retired.limitations);
+          if (retired.removed.length) {
+            for (const link of plan.links) {
+              rmSync(link.path);
+              removed.push(link.path);
+            }
+            removed.push(plan.recovered ? plan.hidden : plan.root);
           }
         } catch (error) {
+          try {
+            hidden?.restore();
+          } catch (restoreError) {
+            limitations.push(String(restoreError));
+          }
           limitations.push(
             `Preserved remaining files under ${plan.root}: ${error instanceof Error ? error.message : String(error)}`,
           );

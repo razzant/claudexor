@@ -8448,9 +8448,14 @@ changed, unchanged, an unselected copy changed, and unknown; none implies rollba
 A product-made npm copy is converted during Update only when its package's bin
 entry proves the launcher's relation inside the product prefix. The operation
 runs the vendor installer, resolves with old launchers masked and requires a
-replacement that answers `--version` before retiring the old package and launcher.
+replacement that answers `--version` and is not known to be older by the adapter's
+version ordering before retiring the old package and launcher. An unorderable
+version is acceptable. The installer's status and lines remain in the receipt;
+a nonzero exit can complete conversion with a limitation when the resulting
+program passes the same proof. A vendor that already removed npm completes
+conversion when ordinary and masked resolution agree.
 An exact-version conversion verifies its second command before retirement too.
-Failure leaves the old copy selected. Folder containment or stale sibling
+A failed engine verification preserves any old copy the vendor left in place. Folder containment or stale sibling
 metadata never authorizes removal of a hand-placed wrapper or symlink.
 
 The inventory exposes action command previews, newest observation time/failure,
@@ -8469,15 +8474,16 @@ bounded, redacted vendor error sentence alongside each try's original refusal.
 Engine-spawned Cursor children receive `--disable-auto-update`; Antigravity,
 Copilot and Grok keep their declared controls. Claude, Codex and OpenCode receive
 no added update switch. An unsupported Cursor switch returns its vendor error
-without a retry. Opaque wrappers and unknown executable formats preserve profile
-program copies because their dependencies cannot be proved. Cleanup is eligible
-only for a directly selected native image outside the profile tree, and the
-selected program must still answer its version after cleanup. Successful explicit
-Cursor maintenance also acknowledges and
-removes only enumerated unused copies under registered profile homes:
-`.local/share/cursor-agent` and its proven launcher symlinks. Redirected, replaced
-or selected paths are preserved. This is idempotent maintenance, with no startup
-sweeper. There is no update timer, automatic failure/update/retry chain,
+without a retry. Explicit Cursor maintenance enumerates registered profile homes
+and reversibly hides each `.local/share/cursor-agent` copy in the fixed sibling
+`.cursor-agent.claudexor-hidden`. The selected program is asked for its version
+through the resolver while the copy is hidden. An answering independent program
+authorizes retirement of that tree and its proven launcher links; otherwise the
+copy is restored and reported in use. Redirected, replaced or directly selected
+paths are preserved. The next explicit maintenance resolves a leftover hidden
+copy by the same observation before invoking the updater. The final selected
+program must still answer after cleanup. There is no journal or startup sweeper.
+There is no update timer, automatic failure/update/retry chain,
 model-to-version table or interpretation of a required version from vendor prose.
 
 Vendor installers own their storage and prune their versions according to vendor

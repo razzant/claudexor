@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { planCursorProfileProgramCleanup } from "../../harness-cursor/src/profile-program-cleanup.js";
@@ -281,6 +289,78 @@ describe("selected vendor operation", () => {
         expect(receipt.progress).toEqual(["Native installed", "Exact release unavailable"]);
     },
   );
+  it.each(["0.153.3", "0.162.1", "0.167.1", "unorderable-build"])(
+    "retires npm only when the resulting vendor program is not known older (%s)",
+    async (replacement) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.program.versionScheme = "semver";
+      executable(old.entry, "0.162.1");
+      executable(w.installed, replacement);
+      w.options.spawn = ((bin, args = [], opts = {}) =>
+        args[0] === "--version"
+          ? spawnSync(bin, args, opts)
+          : result("Installer did nothing")) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      const accepted = replacement !== "0.153.3";
+      expect(receipt).toMatchObject({
+        ok: accepted,
+        exitCode: 0,
+        progress: ["Installer did nothing"],
+      });
+      expect(existsSync(old.pkg)).toBe(!accepted);
+      expect(receipt.after?.version).toBe(accepted ? replacement : "0.162.1");
+      if (!accepted)
+        expect(receipt.problem?.message).toContain(
+          "older than the selected one; nothing was removed",
+        );
+    },
+  );
+  it.each([false, true])(
+    "accepts a nonzero installer only when it leaves an acceptable replacement (%s)",
+    async (healthy) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.program.versionScheme = "semver";
+      executable(w.installed, healthy ? "1.0.109" : "0.9.0");
+      w.options.spawn = ((bin, args = [], opts = {}) =>
+        args[0] === "--version"
+          ? spawnSync(bin, args, opts)
+          : result("No available upgrade found", 2316632107)) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(receipt).toMatchObject({
+        ok: healthy,
+        exitCode: 2316632107,
+        progress: ["No available upgrade found"],
+      });
+      expect(existsSync(old.pkg)).toBe(!healthy);
+      if (healthy) expect(receipt.limitations.join(" ")).toContain("installer exited 2316632107");
+      else expect(receipt.problem?.message).toBe("No available upgrade found");
+    },
+  );
+  it.each([false, true])(
+    "recognizes vendor removal of the npm copy only when ordinary resolution proves the replacement (%s)",
+    async (healthy) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.options.spawn = ((bin, args = [], opts = {}) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        rmSync(old.pkg, { recursive: true });
+        rmSync(old.launcher);
+        if (healthy) executable(w.installed, "2.1.322");
+        return result("Cleaning up npm installations");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(receipt).toMatchObject({
+        ok: healthy,
+        exitCode: 0,
+        progress: ["Cleaning up npm installations"],
+      });
+      expect(existsSync(old.pkg)).toBe(false);
+      expect(receipt.after?.version).toBe(healthy ? "2.1.322" : null);
+      if (!healthy) expect(receipt.problem?.code).toBe("conversion_verification_failed");
+    },
+  );
   it("offers conversion only when an override does not pin the old product copy", async () => {
     const w = world(),
       old = oldCopy(w);
@@ -367,8 +447,8 @@ describe("selected vendor operation", () => {
     const receipt = await runHarnessUpdate("fixture", undefined, {
       ...w.options,
       credentialProfiles: [],
-      planProfileProgramCleanup: () => ({
-        paths: [removedPath],
+      planProfileProgramCleanup: (_profiles, _selected, mode) => ({
+        paths: mode?.recoverOnly ? [] : [removedPath],
         limitations: [],
         execute: () => {
           expect(acknowledgments).toHaveLength(2);
@@ -399,8 +479,8 @@ describe("selected vendor operation", () => {
       const receipt = await runHarnessUpdate("fixture", undefined, {
         ...w.options,
         credentialProfiles: [],
-        planProfileProgramCleanup: () => ({
-          paths: [path],
+        planProfileProgramCleanup: (_profiles, _selected, mode) => ({
+          paths: mode?.recoverOnly ? [] : [path],
           limitations: [],
           execute() {
             rmSync(path);
@@ -416,18 +496,50 @@ describe("selected vendor operation", () => {
       );
     },
   );
-  it.each([false, true])(
-    "preserves the running Cursor profile program behind a wrapper (override: %s)",
-    async (override) => {
+  it.each(
+    [false, true].flatMap((dependent) =>
+      [false, true].flatMap((override) =>
+        [false, true].map((recover) => ({ dependent, override, recover })),
+      ),
+    ),
+  )(
+    "maintains real-shaped Cursor launchers and recovers interrupted hides: %j",
+    async ({ dependent, override, recover }) => {
       const w = world();
       vi.stubEnv("CLAUDEXOR_CONFIG_DIR", w.home);
       const home = join(w.home, "profiles/cursor-a"),
-        target = join(home, ".local/share/cursor-agent/versions/current/cursor-agent");
-      executable(target);
-      const wrapper = join(w.home, ".claudexor/node/bin/fixture-harness");
-      executable(wrapper);
-      writeFileSync(wrapper, `#!/bin/sh\nexec '${target}' "$@"\n`);
-      if (override) w.options.sourceEnv!.FIXTURE_BIN = wrapper;
+        tree = join(home, ".local/share/cursor-agent");
+      const vendor = (base: string, name: string) => {
+        const dir = join(base, "share/cursor-agent/versions/current"),
+          link = join(base, "bin", name);
+        mkdirSync(dir, { recursive: true });
+        mkdirSync(dirname(link), { recursive: true });
+        writeFileSync(
+          join(dir, "cursor-agent"),
+          '#!/usr/bin/env bash\nset -euo pipefail\nSCRIPT_DIR="$(dirname "$(realpath "$0")")"\nexec "$SCRIPT_DIR/node" "$SCRIPT_DIR/index.js" "$@"\n',
+          { mode: 0o755 },
+        );
+        writeFileSync(join(dir, "node"), "#!/bin/sh\necho 2026.11.10-731fb78\n", { mode: 0o755 });
+        writeFileSync(join(dir, "index.js"), "fixture");
+        symlinkSync(join(dir, "cursor-agent"), link);
+        return link;
+      };
+      const target = vendor(join(home, ".local"), "cursor-agent");
+      const selected = vendor(join(w.home, ".vendor"), "fixture-harness");
+      if (dependent) writeFileSync(realpathSync(selected), `#!/bin/sh\nexec '${target}' "$@"\n`);
+      w.options.sourceEnv!.PATH = "/usr/bin:/bin";
+      if (override) w.options.sourceEnv!.FIXTURE_BIN = selected;
+      const hidden = join(dirname(tree), ".cursor-agent.claudexor-hidden");
+      if (recover) {
+        const died = spawnSync(process.execPath, [
+          "--input-type=module",
+          "-e",
+          "import {renameSync} from 'node:fs'; renameSync(process.argv[1], process.argv[2]); process.exit(17)",
+          tree,
+          hidden,
+        ]);
+        expect(died.status).toBe(17);
+      }
       const receipt = await runHarnessUpdate("fixture", undefined, {
         ...w.options,
         credentialProfiles: [
@@ -444,9 +556,16 @@ describe("selected vendor operation", () => {
         ],
         planProfileProgramCleanup: planCursorProfileProgramCleanup,
       });
-      expect(receipt).toMatchObject({ ok: true, after: { version: "1.0.0" } });
-      expect(existsSync(target)).toBe(true);
-      expect(receipt.limitations.join(" ")).toContain("independence");
+      expect(receipt).toMatchObject({ ok: true, after: { version: "2026.11.10-731fb78" } });
+      expect(existsSync(target)).toBe(dependent);
+      expect(existsSync(hidden)).toBe(false);
+      if (dependent) {
+        expect(receipt.profileCleanup?.removedPaths).toEqual([]);
+        expect(receipt.limitations.join(" ")).toContain("in use");
+      } else {
+        expect(receipt.profileCleanup?.removedPaths).toContain(target);
+        expect(receipt.limitations.join(" ")).not.toContain("in use");
+      }
     },
   );
   it("a newest read failure cannot block Update", async () => {

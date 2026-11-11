@@ -250,9 +250,35 @@ export async function runHarnessUpdate(
     if (options.lock !== false && !options.dryRun)
       lease = acquireHarnessInstallLease(runtime.home, HARNESS_INSTALL_LOCK_TIMEOUT_MS);
     receipt.phase = "preparing";
-    const before = resolveSelectedProgram(program, runtime);
+    let before = resolveSelectedProgram(program, runtime);
     receipt.before = before;
     otherBefore = other();
+    const cleanup =
+      options.planProfileProgramCleanup ??
+      (!options.program ? harnessProgramAdapter(harness)?.planProfileProgramCleanup : undefined);
+    const cleanupProfiles = async (recoverOnly: boolean) => {
+      if (!cleanup || options.dryRun) return;
+      try {
+        const profiles =
+          options.credentialProfiles ?? loadConfig(noProjectRepoRoot()).global.credential_profiles;
+        const plan = cleanup(profiles, resolveSelectedProgram(program!, runtime!), { recoverOnly });
+        receipt.limitations.push(...plan.limitations.map(redactSecrets));
+        if (!plan.paths.length) return;
+        receipt.profileCleanup ??= { plannedPaths: [], removedPaths: [] };
+        receipt.profileCleanup.plannedPaths.push(...plan.paths);
+        await options.beforeMutation?.(receipt);
+        const result = plan.execute(() => resolveSelectedProgram(program!, runtime!));
+        receipt.profileCleanup.removedPaths.push(...result.removed);
+        receipt.limitations.push(...result.limitations.map(redactSecrets));
+        cleaned ||= result.removed.length > 0;
+      } catch (error) {
+        receipt.limitations.push(
+          `Profile program cleanup did not finish: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+        );
+      }
+    };
+    await cleanupProfiles(true);
+    if (cleanup) before = resolveSelectedProgram(program, runtime);
     const data = programPlatform(program, runtime.platform);
     const copy = productNpmCopy(program, before, runtime);
     if (version && program.majorVersion && Number(version.split(".")[0]) !== program.majorVersion)
@@ -308,7 +334,10 @@ export async function runHarnessUpdate(
       receipt.ok = true;
       return receipt;
     }
-    const execute = async (invocation: Awaited<ReturnType<typeof prepareProgramCommand>>) => {
+    const execute = async (
+      invocation: Awaited<ReturnType<typeof prepareProgramCommand>>,
+      allowFailure = false,
+    ) => {
       receipt.phase = "installing";
       receipt.mutation = "unknown";
       await options.beforeMutation?.(receipt);
@@ -316,45 +345,57 @@ export async function runHarnessUpdate(
       const result = invocation.run();
       receipt.exitCode = result.exitCode;
       receipt.progress = [...receipt.progress, ...result.progress].slice(-40);
-      if (result.exitCode !== 0)
-        throw Object.assign(
+      if (result.exitCode !== 0) {
+        const failure = Object.assign(
           new Error(result.progress.at(-1) ?? `Vendor command exited ${result.exitCode}`),
           { code: "vendor_command_failed" },
         );
-    };
-    await execute(prepared);
-    if (copy && exactAfterInstall) {
-      const native = replacementProgram(program, copy, runtime);
-      if (!native.path || !native.version)
-        throw Object.assign(
-          new Error(
-            "The vendor installer did not produce a versioned replacement; the old npm copy is unchanged.",
-          ),
-          { code: "conversion_verification_failed" },
-        );
-      if (native.version !== version) {
-        const requested = await prepareProgramCommand(
-          exact!,
-          runtime,
-          native.path,
-          version,
-          options.fetch,
-        );
-        preparedCommands.push(requested);
-        receipt.commands.push(requested.evidence);
-        await execute(requested);
+        if (!allowFailure) throw failure;
+        return failure;
       }
-      if (replacementProgram(program, copy, runtime).version !== version)
-        throw Object.assign(
-          new Error(
-            "The new vendor program did not report the requested exact version; the old npm copy is unchanged.",
-          ),
-          { code: "conversion_verification_failed" },
-        );
-    }
-    if (copy) {
-      const converted = retireProductNpmCopy(program, copy, runtime);
-      receipt.limitations.push(...converted.limitations);
+      return null;
+    };
+    const installerFailure = await execute(prepared, !!copy);
+    try {
+      if (copy && exactAfterInstall) {
+        const native = replacementProgram(program, copy, runtime);
+        if (!native.path || !native.version)
+          throw Object.assign(
+            new Error(
+              "The vendor installer did not produce a versioned replacement; the old npm copy is unchanged.",
+            ),
+            { code: "conversion_verification_failed" },
+          );
+        if (native.version !== version) {
+          const requested = await prepareProgramCommand(
+            exact!,
+            runtime,
+            native.path,
+            version,
+            options.fetch,
+          );
+          preparedCommands.push(requested);
+          receipt.commands.push(requested.evidence);
+          await execute(requested);
+        }
+        if (replacementProgram(program, copy, runtime).version !== version)
+          throw Object.assign(
+            new Error(
+              "The new vendor program did not report the requested exact version; the old npm copy is unchanged.",
+            ),
+            { code: "conversion_verification_failed" },
+          );
+      }
+      if (copy) {
+        const converted = retireProductNpmCopy(program, copy, runtime, before);
+        receipt.limitations.push(...converted.limitations);
+        if (installerFailure)
+          receipt.limitations.push(
+            `The installer exited ${receipt.exitCode}, but conversion completed because the selected replacement answers its version and is not known to be older.`,
+          );
+      }
+    } catch (error) {
+      throw installerFailure ?? error;
     }
     receipt.after = resolveSelectedProgram(program, runtime);
     if (!receipt.after.path || !receipt.after.version)
@@ -363,29 +404,7 @@ export async function runHarnessUpdate(
         { code: "program_verification_failed" },
       );
     receipt.ok = true;
-    const cleanup =
-      options.planProfileProgramCleanup ??
-      (!options.program ? harnessProgramAdapter(harness)?.planProfileProgramCleanup : undefined);
-    if (cleanup) {
-      try {
-        const profiles =
-          options.credentialProfiles ?? loadConfig(noProjectRepoRoot()).global.credential_profiles;
-        const plan = cleanup(profiles, receipt.after);
-        receipt.limitations.push(...plan.limitations.map(redactSecrets));
-        if (plan.paths.length) {
-          receipt.profileCleanup = { plannedPaths: plan.paths, removedPaths: [] };
-          await options.beforeMutation?.(receipt);
-          const result = plan.execute(resolveSelectedProgram(program, runtime));
-          receipt.profileCleanup.removedPaths = result.removed;
-          receipt.limitations.push(...result.limitations.map(redactSecrets));
-          cleaned = result.removed.length > 0;
-        }
-      } catch (error) {
-        receipt.limitations.push(
-          `Profile program cleanup did not finish: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
-        );
-      }
-    }
+    await cleanupProfiles(false);
   } catch (error) {
     receipt.problem = ControlProblem.parse({
       code: (error as { code?: string }).code ?? "maintenance_failed",

@@ -1,7 +1,9 @@
-import { lstatSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
+  hideProgramPaths,
+  programUpdateAvailable,
   managedNodeRoot,
   npmGlobalPackagesDir,
   resolveHarnessCommandOnPath,
@@ -93,6 +95,7 @@ export function retireProductNpmCopy(
   program: HarnessProgram,
   copy: ProductNpmCopy,
   runtime: InstallerRuntime,
+  previous: SelectedHarnessProgram,
 ): { selection: SelectedHarnessProgram; limitations: string[] } {
   const expected = replacementProgram(program, copy, runtime);
   if (!expected.path || !expected.version)
@@ -102,38 +105,49 @@ export function retireProductNpmCopy(
       ),
       { code: "conversion_verification_failed" },
     );
-  const current = productNpmCopy(program, resolveSelectedProgram(program, runtime), runtime);
+  if (programUpdateAvailable(program.versionScheme, expected.version, previous.version) === "yes")
+    throw Object.assign(
+      new Error("The vendor's copy is older than the selected one; nothing was removed."),
+      { code: "conversion_older_program" },
+    );
+  const ordinary = resolveSelectedProgram(program, runtime);
+  const matches = (value: SelectedHarnessProgram) =>
+    value.path === expected.path &&
+    value.realPath === expected.realPath &&
+    value.version === expected.version;
+  const absent = (path: string) => {
+    try {
+      lstatSync(path);
+      return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+      throw error;
+    }
+  };
+  // Some vendor installers remove the npm package themselves. Do not accuse
+  // them of changing the source when ordinary resolution already proves health.
+  if (matches(ordinary) && [copy.packageRoot, ...copy.launchers].some(absent))
+    return { selection: ordinary, limitations: [] };
+  const current = productNpmCopy(program, ordinary, runtime);
   if (!current || JSON.stringify(current) !== JSON.stringify(copy))
     throw Object.assign(
       new Error("The old package/launcher relation changed during conversion; nothing was removed"),
       { code: "conversion_source_changed" },
     );
-  const moved: Array<[string, string]> = [];
+  const hidden = hideProgramPaths(
+    [...copy.launchers, copy.packageRoot].map((path) => ({
+      path,
+      hidden: join(dirname(path), `.claudexor-converted-${randomUUID()}`),
+    })),
+  );
   let selection: SelectedHarnessProgram;
   try {
-    for (const path of [...copy.launchers, copy.packageRoot]) {
-      const backup = join(dirname(path), `.claudexor-converted-${randomUUID()}`);
-      renameSync(path, backup);
-      moved.push([path, backup]);
-    }
     selection = resolveSelectedProgram(program, runtime);
-    if (
-      selection.path !== expected.path ||
-      selection.realPath !== expected.realPath ||
-      selection.version !== expected.version
-    )
-      throw new Error("Selection changed before conversion committed");
+    if (!matches(selection)) throw new Error("Selection changed before conversion committed");
   } catch (error) {
-    for (const [path, backup] of moved.reverse()) renameSync(backup, path);
+    hidden.restore();
     throw error;
   }
-  const limitations: string[] = [];
-  for (const [, backup] of moved) {
-    try {
-      rmSync(backup, { recursive: true, force: true });
-    } catch {
-      limitations.push(`Converted successfully; old bytes could not be pruned at ${backup}`);
-    }
-  }
+  const { limitations } = hidden.retire();
   return { selection, limitations };
 }
