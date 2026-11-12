@@ -31,7 +31,7 @@ const key = Symbol.for('undici.globalDispatcher.1'); // assertion only, never pr
 assert.equal(globalThis[key], undefined);
 const {RequestDelivery} = require('./observer.cjs');
 assert.equal(globalThis[key], undefined, 'loading the bundle must not select a dispatcher');
-const delivery = new RequestDelivery('body');
+const delivery = new RequestDelivery(Buffer.from('body'));
 const options = delivery.request();
 assert.equal(globalThis[key], undefined, 'constructing the observer must remain passive');
 const sent = fetch('http://127.0.0.1:0', {method:'POST', ...options, headers:{'content-length':'4'}});

@@ -345,7 +345,7 @@ export function createCodexImageFacet(deps: CodexImageDeps = {}): ModelImageFace
           );
         const auth = await prepareCodexModelAuth(context.profile, context.signal, deps);
         route = { ...route, accountFingerprint: auth.accountFingerprint };
-        delivery = new RequestDelivery(payload);
+        delivery = new RequestDelivery(Buffer.from(payload, "utf8"));
         const requestHeaders = imageHeaders(auth, context.imageTurnId, delivery.bytes.length);
         context.signal.throwIfAborted();
         await context.onDispatch(route);

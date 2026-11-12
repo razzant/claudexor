@@ -3272,13 +3272,47 @@ Its single inference POST follows a committed dispatch receipt and a completed
 `flushed()` barrier. A barrier failure or cancellation while the adapter still
 waits inside that callback sends nothing and keeps `not_started` with the attempt
 stamp and route; once the callback returns, an uncertain outcome stays unknown.
-Exact JSON bytes stream with Content-Length. `request-delivery.ts` observes public
-callbacks on the existing dispatcher; its lazy `dispatcher-accessor.cts` preserves
-native cold initialization, proxy, TLS and pool ownership. Positive connector or
-incomplete-upload proof yields `transport_not_delivered`, and `ModelOperations`
-refines the terminal to `not_started` only after publishing that proof, keeping
-the attempted-send stamp and route; full handoff, unobserved transport, crash and
-publication failure stay unknown, and no adapter retry is added.
+The JSON body is compressed before that receipt (zstd level 3,
+`Content-Encoding: zstd`), as the vendor's own client does on this endpoint,
+unless `CLAUDEXOR_CODEX_REQUEST_COMPRESSION` is `off` (or `0`, `false`, `no`);
+catalog and image requests are not compressed. The bytes as sent stream with their Content-Length and are what
+the delivery facts count, so a smaller body is fully handed off sooner and more
+of the remaining upload failures read as unknown. `request-delivery.ts` observes
+public callbacks on the existing dispatcher; its lazy `dispatcher-accessor.cts`
+preserves native cold initialization, proxy, TLS and pool ownership. It asks the
+dispatcher for two timeouts on this request only, whatever the dispatcher's own
+values: 300 s for the response head and 300 s for the response body. They are
+the HTTP library's clocks, not wall-clock deadlines, and an expiry is the
+library's report, not a measurement of what the provider sent. On HTTP/1.1 both
+are counted in the library's own ticks, and a stretch in which the daemon's
+event loop is blocked counts as one tick, so a blocked daemon postpones an
+expiry by about the length of the block. The head clock starts with the request
+and restarts whenever the socket pushes back and when the last body byte is
+handed off; while the body is still being written it ends the request only if
+the socket is still backpressured. Such a call reads as an incomplete upload
+when body bytes remained to hand off and stays unknown otherwise. The body clock
+restarts on every chunk of the response. On HTTP/2 the body value is the
+stream's idle timeout in both directions, on the runtime's ordinary timer, which
+keeps counting while the event loop is blocked; the head value is unused and an
+expiry carries another code. An unknown dispatcher keeps its own limits. A call
+that the head timeout ends after the whole body was handed off, or that the body
+timeout ends, stays `transport_unknown`: `errorCode` in the problem's context
+carries the library's code and, for the two HTTP/1.1 codes, the message names
+the library's timeout and the engine's setting in words that clients must not
+parse.
+Proof of non-delivery yields `transport_not_delivered` with one of three bases:
+`connect_failure` (the dispatcher reported an error before it began writing the
+request, whatever the error's code; a dispatcher that wrote before its
+`onConnect`, or an interceptor that withheld that callback, would make this
+false), `incomplete_upload` (the upload broke before
+the whole body was handed off) and `http_408` (the peer's statement that it did
+not receive a complete request, with the refusal's own request id, vendor code
+and retry hint kept; an intermediary answering 408 after the origin accepted the
+whole body would make this false). `ModelOperations` refines the
+terminal to `not_started` only after publishing that proof, keeping the
+attempted-send stamp and route; an error after writing began with no chunk
+observed, full handoff, unobserved transport, crash and publication failure stay
+unknown, and no adapter retry is added.
 Canonical instruction messages keep their roles and ordered text parts in
 Ouroboros history. Because this subscription backend rejects `system` messages in
 `input`, Codex's wire projection maps each canonical `system` message to the
