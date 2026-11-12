@@ -11,6 +11,7 @@ export * from "./patch-objects.js";
 export * from "./stream-echo.js";
 export * from "./text-preview.js";
 export * from "./libuv-pool.js";
+export * from "./ordered-append.js";
 import { sensitiveResourcePolicy } from "./sensitive-resource.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
