@@ -4863,10 +4863,11 @@ describe("reviewer files on the ordered appender (#688)", () => {
       });
       const dir = join(artifactsDir, "01-landing-reviewer");
       if (held) {
-        // The reviewer is done and its metadata written; only its appends are held.
+        // The review has its result: the route proofs are recorded last, just
+        // before it returns. Only its reviewers' appends are still in flight.
         await until("the reviewer completes", () => progress.finished);
-        await until("its metadata says completed", () =>
-          readFileSync(join(dir, "metadata.json"), "utf8").includes('"status": "completed"'),
+        await until("the review records its route proofs", () =>
+          readFileSync(join(dir, "metadata.json"), "utf8").includes('"route_proof":'),
         );
         await quiet();
         expect(held.held.length).toBeGreaterThan(0);
