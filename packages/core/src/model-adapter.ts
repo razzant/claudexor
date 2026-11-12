@@ -15,6 +15,8 @@ import type {
 export interface ModelAdapterContext {
   profile: CredentialProfile;
   signal: AbortSignal;
+  /** Known credential epoch supplied by the engine; absent/NaN never joins raw I/O. */
+  credentialGeneration?: number;
   /** Operation-local discovery only. Revalidate against current adapter-owned
    * credentials before reuse; never a cross-operation/account catalog cache. */
   catalog?: ControlModelCatalogResponse;

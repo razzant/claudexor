@@ -20,6 +20,7 @@ import { queryParam } from "./operation-parameters.js";
 import { assertOnlyQueryParams, optionalBooleanQuery, singleQuery } from "./query.js";
 import { requiredIdempotencyKey } from "./run-start.js";
 import { routeValue, serviceResponse } from "./route-stages.js";
+import { readLifetime } from "./request-liveness.js";
 import { writeBinaryResponse } from "./binary-response.js";
 import type { ResourceRouteContext } from "./resource-routes.js";
 
@@ -31,8 +32,13 @@ export interface ModelRouteServices {
     credentialProfileId?: string,
     requestedModel?: string,
     includeAdmission?: boolean,
+    signal?: AbortSignal,
   ): Promise<unknown>;
-  modelAccountCatalog(source: string, credentialProfileId?: string): Promise<unknown>;
+  modelAccountCatalog(
+    source: string,
+    credentialProfileId?: string,
+    signal?: AbortSignal,
+  ): Promise<unknown>;
   createModelOperation(
     request: ModelPayloadRef,
     idempotencyKey: string,
@@ -41,7 +47,7 @@ export interface ModelRouteServices {
     requestKind?: RequestKind,
     captureRoutingEvidence?: boolean,
   ): Promise<unknown>;
-  getModelOperation(id: string): Promise<unknown>;
+  getModelOperation(id: string, includePreparation?: boolean): Promise<unknown>;
   readModelResult(id: string): Promise<{ bytes: Buffer; sha256: string }>;
   acknowledgeModelResult(id: string, sha256: string): Promise<unknown>;
   cancelModelOperation(id: string, reason?: CancelReasonCode): Promise<unknown>;
@@ -109,29 +115,37 @@ export async function handleModelRoute(
     if (!input.ok) return true;
     if (input.value.view === "accounts" ? !services?.modelAccountCatalog : !services?.modelCatalog)
       return false;
-    const value = await routeValue(ctx, res, 500, () =>
-      input.value.view === "accounts"
-        ? services!.modelAccountCatalog!(input.value.source, input.value.profile)
-        : input.value.admission
-          ? services!.modelCatalog!(
+    const lifetime = readLifetime(req, res);
+    try {
+      const value = await routeValue(ctx, res, 500, () =>
+        input.value.view === "accounts"
+          ? services!.modelAccountCatalog!(input.value.source, input.value.profile, lifetime.signal)
+          : services!.modelCatalog!(
               input.value.source,
               input.value.profile,
               input.value.model,
-              true,
-            )
-          : services!.modelCatalog!(input.value.source, input.value.profile, input.value.model),
-    );
-    if (!value.ok) return true;
-    return serviceResponse(ctx, res, "modelCatalog", () =>
-      ctx.json(
-        res,
-        200,
-        input.value.view === "accounts"
-          ? publicModelAccountCatalog(value.value)
-          : legacyModelCatalog(value.value, input.value.admission ? input.value.model : undefined),
-      ),
-    );
+              input.value.admission,
+              lifetime.signal,
+            ),
+      );
+      if (!value.ok) return true;
+      return serviceResponse(ctx, res, "modelCatalog", () =>
+        ctx.json(
+          res,
+          200,
+          input.value.view === "accounts"
+            ? publicModelAccountCatalog(value.value)
+            : legacyModelCatalog(
+                value.value,
+                input.value.admission ? input.value.model : undefined,
+              ),
+        ),
+      );
+    } finally {
+      lifetime.dispose();
+    }
   }
+
   if (method === "POST" && path === "/model-operations") {
     if (!services?.createModelOperation) return false;
     const input = await routeValue(ctx, res, 400, async () => {
@@ -187,7 +201,7 @@ export async function handleModelRoute(
     );
     if (!value.ok) return true;
     return serviceResponse(ctx, res, "createModelOperation", () =>
-      ctx.json(res, 202, ControlModelOperationDetail.parse(value.value)),
+      ctx.json(res, 202, publicModelOperation(value.value)),
     );
   }
   const detailMatch = /^\/model-operations\/([^/]+)$/.exec(path);
@@ -232,6 +246,16 @@ export async function handleModelRoute(
       );
     });
   }
+  const timing = await routeValue(
+    ctx,
+    res,
+    400,
+    () =>
+      action === "get" &&
+      optionalBooleanQuery(new URL(req.url ?? "/", "http://localhost"), "includePreparation") ===
+        true,
+  );
+  if (!timing.ok) return true;
   const input = await routeValue(ctx, res, 400, async () =>
     action === "ack"
       ? ControlModelOperationAckRequest.parse(await ctx.readBody(req))
@@ -245,12 +269,21 @@ export async function handleModelRoute(
       return services!.acknowledgeModelResult!(id.value, input.value.sha256);
     if (input.value && "action" in input.value)
       return services!.cancelModelOperation!(id.value, input.value.reasonCode);
-    return services!.getModelOperation!(id.value);
+    return timing.value
+      ? services!.getModelOperation!(id.value, true)
+      : services!.getModelOperation!(id.value);
   });
   if (!value.ok) return true;
   return serviceResponse(ctx, res, "modelOperation", () =>
-    ctx.json(res, 200, ControlModelOperationDetail.parse(value.value)),
+    ctx.json(res, 200, publicModelOperation(value.value, timing.value)),
   );
+}
+
+/** Older strict clients keep their operation DTO; durable receipts always keep
+ * timings, and a diagnostic GET can explicitly request the additive field. */
+function publicModelOperation(value: unknown, includePreparation = false) {
+  const { preparation, ...detail } = ControlModelOperationDetail.parse(value);
+  return includePreparation && preparation ? { ...detail, preparation } : detail;
 }
 
 function catalogView(query: URL): "accounts" | undefined {
@@ -411,6 +444,14 @@ export const MODEL_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlModelOperationDetail",
     responseKind: "json",
     summary: "Inspect dispatch, outcome and response custody for the same operation.",
+    parameters: [
+      queryParam({
+        name: "includePreparation",
+        enum: ["true", "false"],
+        description:
+          "Include recorded pre-dispatch step and process timings. Omitted or false preserves the earlier strict operation shape.",
+      }),
+    ],
   },
   {
     method: "GET",

@@ -1267,6 +1267,20 @@ invariant or operator decision before proceeding.
   before capability-marked rows; neither excludes a row. Rationale: a refusal whose wording no rule recognized left the account
   first for every later request of that model, so one account that could not
   serve it absorbed all of them.
+  **CONCEPT-CHANGE(INV-135), owner decision 2026-11-12:** raw-model
+  selection may reuse a dated positive raw login probe within the existing
+  positive doctor TTL (90 seconds by default, `CLAUDEXOR_DOCTOR_TTL_MS`).
+  Reuse requires the same profile, owned auth/settings file versions, known
+  credential generation and observed vendor program identity. Hits never
+  renew the physical probe date; negative, unknown, failed or stale probes
+  and display projections cannot admit through this rule. Config, policy,
+  quota, revocation, refusals, exclusions and capability reservations remain
+  live for every consumer after I/O. Identical in-flight raw probes and
+  catalog reads may share I/O, with independent waiter cancellation, but
+  never share a selection or retain a completed admission catalog. A caller's
+  abandoned catalog read ends when its last waiter leaves; accepted durable
+  operations keep their own lifetime. The vendor catalog remains a fresh
+  read at every selection, bounded as a transport including its body.
   **CONCEPT-CHANGE(INV-135), #363:** an unpinned choice is admitted on FRESH
   readiness, with one bounded exception for Cursor rows: when a row's
   `cursor-agent status` probe did not answer within its own budget, that row
@@ -1328,7 +1342,9 @@ invariant or operator decision before proceeding.
   `packages/cli/src/account-last-service.integration.test.ts` (last-served
   order across a restart); `packages/daemon/src/quota-recovery.integration.test.ts`
   + `packages/cli/src/codex-usage-refusal-recheck.integration.test.ts` (#318
-  refusal recheck).
+  refusal recheck); `packages/cli/src/model-services.test.ts`,
+  `packages/harness-codex/src/model.test.ts`,
+  `packages/control-api/src/model-routes.test.ts` (raw-read ownership and dated login readiness).
 - **INV-136** High-volume UI evidence is PROGRESSIVE, BOUNDED, and honest:
   per-run milestone bursts are exactly one in-flight request plus at most one
   trailing refresh (events during the trailing load cannot chain more GETs);

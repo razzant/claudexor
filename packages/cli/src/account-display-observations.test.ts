@@ -440,3 +440,47 @@ it("uses a necessary runtime probe to replace display history without another re
   expect(displayed.status.verification).toBe("failed");
   expect(f.probe).toHaveBeenCalledTimes(2);
 });
+
+it("shares display acquisition while one reader remains, aborts when all leave, and reacquires", async () => {
+  fixture();
+  const profile = CredentialProfile.parse({
+    profile_id: "waiters",
+    harness_id: "fake-success",
+    credential_kind: "config_dir_login",
+    display_name: "Waiters",
+    isolation_locator: "/fixture",
+  });
+  let entered!: () => void, release!: () => void, physical!: AbortSignal;
+  const active = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const acquire = vi.fn(async (signal: AbortSignal) => {
+    physical = signal;
+    entered();
+    await gate;
+    return "catalog";
+  });
+  const one = new AbortController(),
+    two = new AbortController();
+  const a = accountObservations
+    .read("test-catalog", profile, acquire, false, undefined, one.signal)
+    .catch((e) => e);
+  const b = accountObservations
+    .read("test-catalog", profile, acquire, false, undefined, two.signal)
+    .catch((e) => e);
+  await active;
+  one.abort();
+  await a;
+  expect(physical.aborted).toBe(false);
+  two.abort();
+  await b;
+  expect(physical.aborted).toBe(true);
+  release();
+  expect((await accountObservations.read("test-catalog", profile, acquire)).value).toBe("catalog");
+  expect(acquire).toHaveBeenCalledTimes(2);
+  await accountObservations.read("test-catalog", profile, acquire);
+  expect(acquire).toHaveBeenCalledTimes(2);
+});

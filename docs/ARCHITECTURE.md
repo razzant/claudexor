@@ -3190,6 +3190,47 @@ refresh, and each caller rereads current authorization. Selection hands its
 exact-profile catalog to the invocation, which rechecks the account fingerprint; no catalog or credentials are cached across operations, and an
 unknown fingerprint keeps fresh discovery and cannot authorize native
 continuation reuse.
+Raw model selection owns a separate admission-grade positive login observation
+(`model-login-readiness.ts`), keyed by the whole profile and locator, the stat
+versions of its owned `auth.json` and `config.toml` (including missing settings),
+known credential generation, and `observeHarnessProgram` identity/version.
+Unknown identity never authorizes reuse. Positive, dated, non-stale probes
+expire from their physical start/date under the shared doctor positive policy
+(`CLAUDEXOR_DOCTOR_TTL_MS`, default 90 seconds); hits never extend that date.
+Display projections, negative/unknown results, eligible sets and winners are
+never reused for admission. Live quota and unusable-credential evidence can
+exclude a locally ready account without launching another probe.
+
+Only identical in-flight raw I/O is shared. Catalog keys additionally include
+account/capability fingerprints, an opaque digest of current authorization,
+and the declared client version. Keys contain no tokens. Unknown identities
+never join; completion/error removes entries. Each waiter has its own lifetime:
+one leaving preserves others, the last leaving aborts, and credential/program
+invalidation fences old work. Each consumer re-reads decision evidence after
+waiting, then performs its own selection, bind/reserve/changed and release.
+The selected-account catalog GET has an HTTP-disconnect lifetime; the account
+display view also cancels abandoned acquisition while retaining its existing
+display observation policy. Accepted durable model operations retain their own
+lifetime, independent of the connection that created them. The Codex `/models`
+request and response body share a 60-second transport limit; expiry yields
+`catalog_unavailable`, never an empty successful inventory, and Auto continues
+its normal candidate search. Catalog admission remains NEVER cached: completed
+catalogs are not retained across selections.
+
+Operation receipts carry optional `preparation`; HTTP GET exposes it only with
+`includePreparation=true`, so strict earlier clients keep their DTO. It contains `totalMs`, `steps`
+and `process`, frozen at dispatch or a pre-dispatch failure. Each step records
+`count`, `totalMs`, `maxMs`: `payloadRead`, `payloadParse`, `admission`,
+`loginProbe`, `catalogRead`, `catalogTransport`, `selection`, `reserve`,
+`adapterAuth`, `adapterBody`. `catalogRead` covers the adapter read; its nested
+`catalogTransport` measures the vendor fetch/body wait, including a shared read.
+Login counts include readiness hits. Steps overlap and must not be summed.
+Process `eventLoopActiveMs`/`eventLoopIdleMs` use the same utilization source as
+loop-facts; `childLaunches`/`childLaunchMs` measure launches including synchronous
+leader identity capture. These process deltas include other concurrent work
+and are not per-operation CPU attribution. No body, token or account path is
+recorded. Older receipts omit the optional timing object.
+
 Auto model operations now examine fresh per-account catalogs in selection order:
 listed accounts precede advisory misses; a soft observation (a live pre-progress
 refusal, or a served-model substitution of a non-preferred account) moves that

@@ -38,9 +38,15 @@ async function fixture(services: DaemonControlApiOptions["services"], recovery =
   });
   servers.push(server);
   const address = await server.start();
-  const request = (path: string, body?: unknown, headers: Record<string, string> = {}) =>
+  const request = (
+    path: string,
+    body?: unknown,
+    headers: Record<string, string> = {},
+    signal?: AbortSignal,
+  ) =>
     fetch(`http://${address.host}:${address.port}/v2${path}`, {
       method: body === undefined ? "GET" : "POST",
+      signal,
       headers: {
         Authorization: "Bearer model-test-control",
         "X-Claudexor-Protocol-Major": "3",
@@ -331,7 +337,13 @@ describe("raw model operation HTTP surface", () => {
       provenance: "fixture",
       observedAt: "2026-09-06T00:00:00.000Z",
     });
-    expect(modelCatalog).toHaveBeenLastCalledWith("codex", undefined, undefined);
+    expect(modelCatalog).toHaveBeenLastCalledWith(
+      "codex",
+      undefined,
+      undefined,
+      false,
+      expect.any(AbortSignal),
+    );
     provenance = "provider_http";
     const observed = await f.request("/model-sources/codex/models?credentialProfileId=chosen");
     expect(observed.status).toBe(200);
@@ -347,11 +359,23 @@ describe("raw model operation HTTP surface", () => {
       provenance: "provider_http",
       models: [],
     });
-    expect(modelCatalog).toHaveBeenLastCalledWith("codex", "chosen", undefined);
+    expect(modelCatalog).toHaveBeenLastCalledWith(
+      "codex",
+      "chosen",
+      undefined,
+      false,
+      expect.any(AbortSignal),
+    );
     expect(
       (await f.request("/model-sources/codex/models?requestedModel=exact%2Fmodel%2B1")).status,
     ).toBe(200);
-    expect(modelCatalog).toHaveBeenLastCalledWith("codex", undefined, "exact/model+1");
+    expect(modelCatalog).toHaveBeenLastCalledWith(
+      "codex",
+      undefined,
+      "exact/model+1",
+      false,
+      expect.any(AbortSignal),
+    );
     expect(
       (
         await f.request(
@@ -359,7 +383,13 @@ describe("raw model operation HTTP surface", () => {
         )
       ).status,
     ).toBe(200);
-    expect(modelCatalog).toHaveBeenLastCalledWith("codex", "chosen", "exact-model");
+    expect(modelCatalog).toHaveBeenLastCalledWith(
+      "codex",
+      "chosen",
+      "exact-model",
+      false,
+      expect.any(AbortSignal),
+    );
     for (const query of [
       "credentialProfileId=a&credentialProfileId=b",
       "account=b",
@@ -445,7 +475,11 @@ describe("raw model operation HTTP surface", () => {
       clientVersion: "0.156.1",
       clientVersionSource: "installed_cli",
     });
-    expect(modelAccountCatalog).toHaveBeenCalledExactlyOnceWith("codex", "a");
+    expect(modelAccountCatalog).toHaveBeenCalledExactlyOnceWith(
+      "codex",
+      "a",
+      expect.any(AbortSignal),
+    );
     expect(modelCatalog).toHaveBeenCalledTimes(1);
     for (const query of [
       "view=unknown",
@@ -493,7 +527,13 @@ describe("raw model operation HTTP surface", () => {
     const modern = await f.request(path + "&includeAdmission=true");
     expect(modern.status).toBe(200);
     expect(await modern.json()).toEqual(catalog);
-    expect(modelCatalog).toHaveBeenLastCalledWith("codex", "a", "unlisted/model", true);
+    expect(modelCatalog).toHaveBeenLastCalledWith(
+      "codex",
+      "a",
+      "unlisted/model",
+      true,
+      expect.any(AbortSignal),
+    );
     const count = modelCatalog.mock.calls.length;
     for (const query of [
       "includeAdmission=true",
@@ -543,4 +583,121 @@ describe("raw model operation HTTP surface", () => {
       advertised.find((op) => op.path === "/v2/model-operations" && op.method === "POST"),
     ).toMatchObject({ idempotency: "key_required", completion: "durable_handle" });
   });
+});
+
+describe("catalog HTTP read lifetime", () => {
+  it.each(["selected", "accounts"])(
+    "cancels a disconnected %s catalog read and keeps a connected read live",
+    async (view) => {
+      const catalog = {
+        source: "codex",
+        credentialProfileId: "a",
+        accountFingerprint: null,
+        observedAt: new Date().toISOString(),
+        provenance: "fixture",
+        sourceProgram: null,
+        models: [],
+      };
+      const value =
+        view === "selected" ? catalog : { source: "codex", accounts: [], partial: false };
+      let received!: AbortSignal, entered!: () => void;
+      const active = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let abandoned = true;
+      const read = (signal: AbortSignal) => {
+        received = signal;
+        entered();
+        return abandoned
+          ? new Promise((_, reject) =>
+              signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+            )
+          : Promise.resolve(value);
+      };
+      const f = await fixture({
+        modelCatalog: async (_source, _profile, _model, _admission, signal) => read(signal!),
+        modelAccountCatalog: async (_source, _profile, signal) => read(signal!),
+      });
+      const path = "/model-sources/codex/models" + (view === "accounts" ? "?view=accounts" : "");
+      const controller = new AbortController();
+      const pending = f.request(path, undefined, {}, controller.signal).catch((e) => e);
+      await active;
+      expect(received.aborted).toBe(false);
+      controller.abort();
+      await pending;
+      await vi.waitFor(() => expect(received.aborted).toBe(true));
+      abandoned = false;
+      expect((await f.request(path)).status).toBe(200);
+      expect(received.aborted).toBe(false);
+    },
+  );
+  it("does not attach an accepted durable operation to the creating HTTP connection", async () => {
+    let entered!: () => void, release!: () => void;
+    const active = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let completed = false;
+    const createModelOperation = vi.fn(async () => {
+      entered();
+      await gate;
+      completed = true;
+      return detail();
+    });
+    const f = await fixture({ createModelOperation });
+    const controller = new AbortController();
+    const pending = f
+      .request(
+        "/model-operations",
+        { request: ref },
+        { "Idempotency-Key": "detached" },
+        controller.signal,
+      )
+      .catch((e) => e);
+    await active;
+    controller.abort();
+    await pending;
+    release();
+    await vi.waitFor(() => expect(completed).toBe(true));
+    expect(createModelOperation).toHaveBeenCalledExactlyOnceWith(ref, "detached");
+  });
+});
+
+it("exposes preparation timings only on a negotiated operation GET, including old receipts", async () => {
+  const preparation = {
+    totalMs: 12,
+    steps: { catalogRead: { count: 1, totalMs: 8, maxMs: 8 } },
+    process: { eventLoopActiveMs: 2, eventLoopIdleMs: 10, childLaunches: 0, childLaunchMs: 0 },
+  };
+  const getModelOperation = vi.fn<() => Promise<ControlModelOperationDetail>>(async () => ({
+    ...detail(),
+    preparation,
+  }));
+  const f = await fixture({
+    getModelOperation,
+    createModelOperation: async () => ({ ...detail(), preparation }),
+  });
+  for (const query of ["", "?includePreparation=false"])
+    expect(
+      await (await f.request("/model-operations/job-model" + query)).json(),
+    ).not.toHaveProperty("preparation");
+  expect(getModelOperation).toHaveBeenLastCalledWith("job-model");
+  expect(
+    await (await f.request("/model-operations/job-model?includePreparation=true")).json(),
+  ).toMatchObject({ preparation });
+  expect(getModelOperation).toHaveBeenLastCalledWith("job-model", true);
+  expect(
+    await (
+      await f.request("/model-operations", { request: ref }, { "Idempotency-Key": "replay-timing" })
+    ).json(),
+  ).not.toHaveProperty("preparation");
+  expect((await f.request("/model-operations/job-model?includePreparation=invalid")).status).toBe(
+    400,
+  );
+  getModelOperation.mockResolvedValueOnce(detail());
+  expect(
+    await (await f.request("/model-operations/job-model?includePreparation=true")).json(),
+  ).not.toHaveProperty("preparation");
 });

@@ -494,11 +494,51 @@ export function isModelOperation(params: unknown): boolean {
   );
 }
 
+const PreparationSamples = z
+  .object({
+    count: z.number().int().nonnegative(),
+    totalMs: z.number().finite().nonnegative(),
+    maxMs: z.number().finite().nonnegative(),
+  })
+  .strict();
+export const ModelPreparationTiming = z
+  .object({
+    totalMs: z.number().finite().nonnegative(),
+    steps: z
+      .object({
+        payloadRead: PreparationSamples.optional(),
+        payloadParse: PreparationSamples.optional(),
+        admission: PreparationSamples.optional(),
+        loginProbe: PreparationSamples.optional(),
+        catalogRead: PreparationSamples.optional(),
+        catalogTransport: PreparationSamples.optional(),
+        selection: PreparationSamples.optional(),
+        reserve: PreparationSamples.optional(),
+        adapterAuth: PreparationSamples.optional(),
+        adapterBody: PreparationSamples.optional(),
+      })
+      .strict(),
+    process: z
+      .object({
+        eventLoopActiveMs: z.number().finite().nonnegative(),
+        eventLoopIdleMs: z.number().finite().nonnegative(),
+        childLaunches: z.number().int().nonnegative(),
+        childLaunchMs: z.number().finite().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict()
+  .describe(
+    "Preparation wall times in milliseconds, frozen at dispatch or pre-dispatch failure. Steps overlap; counts describe waits, including shared reads and readiness hits. Process deltas include concurrent operations, not attributed CPU cost.",
+  );
+export type ModelPreparationTiming = z.infer<typeof ModelPreparationTiming>;
+
 export const ModelOperationReceipt = z
   .object({
     lifecycle: RunLifecycle.exclude(["queued", "running"]),
     dispatch: ModelDispatch,
     routing: ModelRoutingEvidence.optional(),
+    preparation: ModelPreparationTiming.optional(),
     response: ModelResponseCustody,
     usage: ModelUsage,
     cost: ModelCostEvidence.nullable(),
@@ -539,6 +579,7 @@ export const ControlModelOperationDetail = z
     finishedAt: IsoTimestamp.nullable(),
     dispatch: ModelDispatch,
     routing: ModelRoutingEvidence.optional(),
+    preparation: ModelPreparationTiming.optional(),
     response: ModelResponseCustody,
     usage: ModelUsage,
     cost: ModelCostEvidence.nullable(),

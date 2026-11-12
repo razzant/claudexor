@@ -1,3 +1,4 @@
+import { modelCredentialRead } from "./model-credential-read.js";
 import type { ModelAdapter } from "@claudexor/core";
 import type {
   ModelCapabilityLedger,
@@ -49,9 +50,10 @@ export async function selectModelCatalog(args: {
   /** Whether the request's historical native continuation belongs to this account. */
   boundHistory?: (profileId: string, fingerprint: string | null) => boolean;
   /** Live pre-generation refusals: a recently refusing account ranks like a marked one. */
-  refusals?: readonly PreProgressRefusalObservation[];
+  refusals?: () => readonly PreProgressRefusalObservation[] | undefined;
   /** Live served-model substitutions: that account answered this model with another one. */
-  substitutions?: readonly SoftObservation[];
+  substitutions?: () => readonly SoftObservation[];
+  decisionFacts: () => string;
   /** Set when the clean-alternative scan passes an account with no capability row:
    * a soft observation may belong to one request, so that account may still serve. */
   seen?: { capable: boolean };
@@ -63,8 +65,15 @@ export async function selectModelCatalog(args: {
   const excluded = new Set(args.excluded);
   const refusals = new Map<string, ControlProblem>();
   const fallback: Array<{ selection: ModelCatalogSelection; priority: number }> = [];
+  let epoch = args.decisionFacts();
   for (;;) {
     args.signal.throwIfAborted();
+    if (epoch !== args.decisionFacts()) {
+      epoch = args.decisionFacts();
+      excluded.clear();
+      for (const id of args.excluded ?? []) excluded.add(id);
+      fallback.length = 0;
+    }
     let profile: CredentialProfile;
     try {
       profile = await args.pick(excluded, refusals);
@@ -73,13 +82,14 @@ export async function selectModelCatalog(args: {
         error && typeof error === "object" && "problem" in error ? error.problem : null,
       );
       if (!pool.success || !pool.data.context.poolCause) throw error;
+      if (epoch !== args.decisionFacts()) continue;
       const candidate = fallback.sort((a, b) => a.priority - b.priority)[0];
       if (candidate) return candidate.selection;
       throw error;
     }
     excluded.add(profile.profile_id);
     const catalog = await readCatalog(args, profile, refusals);
-    if (!catalog) continue;
+    if (!catalog || epoch !== args.decisionFacts()) continue;
     if (args.excludedFingerprint && catalog.accountFingerprint === args.excludedFingerprint)
       continue;
     const listed = args.model === null || catalog.models.some((m) => m.id === args.model);
@@ -110,10 +120,10 @@ export async function selectModelCatalog(args: {
           row.profile_id === profile.profile_id &&
           row.requested_model === args.model,
       ) ?? false;
-    const refused = observed(args.refusals);
+    const refused = observed(args.refusals?.());
     // A usable preferred account is resolved before the substitution ordering (INV-135).
     const substituted =
-      observed(args.substitutions) && args.account.preferredProfileId !== profile.profile_id;
+      observed(args.substitutions?.()) && args.account.preferredProfileId !== profile.profile_id;
     // A conversation whose native history was produced on its preferred account
     // replays only there: while that account carries no capability row and has
     // not just refused it stays first even when its catalog omits the model
@@ -174,7 +184,14 @@ async function readCatalog(
   });
   try {
     const catalog = ControlModelCatalogResponse.parse(
-      await args.adapter.catalog({ profile, signal: args.signal }),
+      await modelCredentialRead(
+        args.capabilities.credentials,
+        args.harnessId,
+        profile,
+        args.signal,
+        (signal, credentialGeneration) =>
+          args.adapter.catalog({ profile, signal, credentialGeneration }),
+      ),
     );
     const after = args.capabilities.credentials.generation(args.harnessId, profile.profile_id);
     // A login window makes either reading unknown (NaN); only two known,

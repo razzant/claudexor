@@ -1,3 +1,4 @@
+import { DOCTOR_TTL_MS } from "./readiness-policy.js";
 import { observeHarnessProgram, assertSameProgram } from "./program-observation.js";
 import { createHash } from "node:crypto";
 import type { ConformanceReport } from "@claudexor/schema";
@@ -12,7 +13,7 @@ import type { AdapterRegistry, DoctorSpec } from "./adapter.js";
  * The TTL bounds staleness; mutating auth/secrets/settings should call
  * `invalidateDoctorCache()` for an immediate refresh.
  */
-const DOCTOR_TTL_MS = Number(process.env.CLAUDEXOR_DOCTOR_TTL_MS ?? 90_000);
+
 /**
  * Non-OK results age out much faster: an out-of-band `codex login` /
  * `claude auth login` (which Claudexor cannot observe to invalidate) should become

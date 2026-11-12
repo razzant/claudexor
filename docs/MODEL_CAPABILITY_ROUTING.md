@@ -4,6 +4,26 @@ An account that cannot serve a requested Codex model is demoted for that model.
 Other models, account enablement, quota and authentication retain their existing
 rules. Each model operation still sends inference at most once.
 
+Selection's raw login readiness may reuse a dated positive probe for the same
+profile, `auth.json` and `config.toml` file versions, known credential generation
+and observed program identity. Its age starts at the physical probe, uses the
+positive doctor TTL (`CLAUDEXOR_DOCTOR_TTL_MS`, default 90 seconds), and never
+renews on a hit. Negative, unknown, failed, undated or stale results always
+probe again. This admission owner is separate from the display cache; quota
+and revocation overlays remain live, including on a hit. The existing strict
+pin and `last_positive_after_timeout` distinction is unchanged.
+
+Concurrent identical login probes and catalog HTTP reads share only raw I/O.
+Unknown identity or generation never joins. Each consumer rechecks config,
+policy, quota, unusable credentials, refusals and substitutions after waiting;
+selection, capability binding/reservation and release remain its own work.
+The last departed reader, shutdown or a detected credential/program change
+cancels pending I/O and fences late results. Catalog fetch and body together
+have a 60-second transport limit; expiry is typed `catalog_unavailable`, so
+Auto can try the next account. A completed catalog is never retained for
+admission: the next selection and selected-account catalog GET read again.
+The account display view keeps its separate explicit-refresh observation policy.
+
 Auto selection reads live per-account catalogs. It prefers a listed model,
 then an advisory miss, then an account with a soft observation for the model (a
 live refusal, or a served-model substitution unless it is the preferred account),
@@ -232,5 +252,6 @@ off it) for up to its hour. The host must use correlation for deterministic diff
 settlement. An unrelated later success on another account does not confirm a
 mark. A success on the marked account clears its own mark. Strict consumers of
 the earlier shapes keep validating: `routing` and `capabilities[]` appear only
-on request, and catalog responses keep their fields. `problem.context` is an
+on request, catalog responses keep their fields, and operation GET exposes
+preparation timings only with `includePreparation=true`. `problem.context` is an
 open map and gains its fields without a flag.

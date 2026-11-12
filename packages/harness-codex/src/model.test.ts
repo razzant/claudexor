@@ -1,3 +1,5 @@
+import { CODEX_CATALOG_TRANSPORT_MS } from "./model-catalog.js";
+import { invalidateProgramObservations } from "@claudexor/core";
 import { join } from "node:path";
 import * as zlib from "node:zlib";
 import { zstdDecompressSync } from "node:zlib";
@@ -1443,5 +1445,214 @@ describe("the inference request body on the wire", () => {
     expect(fixture.fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(
       0,
     );
+  });
+});
+
+describe("raw catalog read ownership", () => {
+  const knownClient = (): CodexCatalogClientVersion => ({
+    ...VERIFIED_CLIENT,
+    program: { path: "/fixture/codex", version: "0.156.1" },
+    programKey: "program-1",
+  });
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  };
+  it("joins identical concurrent reads, detaches one reader, and retains no completed answer", async () => {
+    const f = setup(undefined, undefined, knownClient());
+    const body = deferred<Response>();
+    f.fetcher.mockImplementationOnce(() => body.promise);
+    const first = new AbortController(),
+      second = new AbortController();
+    const a = f.adapter.catalog({ ...f.context, credentialGeneration: 1, signal: first.signal });
+    const settled = a.catch((error: unknown) => error);
+    const b = f.adapter.catalog({ ...f.context, credentialGeneration: 1, signal: second.signal });
+    await vi.waitFor(() => expect(f.readAuthFile).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(1));
+    const physical = f.fetcher.mock.calls[0]![1]!.signal!;
+    first.abort();
+    expect(await settled).toBe(first.signal.reason);
+    expect(physical.aborted).toBe(false);
+    body.resolve(Response.json(catalog));
+    expect((await b).models[0]!.id).toBe("model-one");
+    await f.adapter.catalog({ ...f.context, credentialGeneration: 1 });
+    expect(f.fetcher).toHaveBeenCalledTimes(2);
+  });
+  it("cancels physical work when every waiter leaves and permits a new read", async () => {
+    const f = setup(undefined, undefined, knownClient());
+    f.fetcher.mockImplementationOnce(() => new Promise(() => {}));
+    const first = new AbortController(),
+      second = new AbortController();
+    const a = f.adapter
+      .catalog({ ...f.context, credentialGeneration: 1, signal: first.signal })
+      .catch((e) => e);
+    const b = f.adapter
+      .catalog({ ...f.context, credentialGeneration: 1, signal: second.signal })
+      .catch((e) => e);
+    await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(1));
+    const physical = f.fetcher.mock.calls[0]![1]!.signal!;
+    first.abort();
+    await a;
+    expect(physical.aborted).toBe(false);
+    second.abort();
+    await b;
+    expect(physical.aborted).toBe(true);
+    await expect(
+      f.adapter.catalog({ ...f.context, credentialGeneration: 1 }),
+    ).resolves.toMatchObject({ models: [{ id: "model-one" }] });
+    expect(f.fetcher).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    "generation",
+    "account",
+    "capability",
+    "credential",
+    "program",
+    "version",
+    "locator",
+    "unknown",
+  ])("does not join a different %s identity", async (change) => {
+    const client = knownClient();
+    const f = setup(undefined, undefined, client);
+    const body = deferred<Response>();
+    f.fetcher.mockImplementationOnce(() => body.promise);
+    const context = { ...f.context, credentialGeneration: 1 };
+    const a = f.adapter.catalog(context).catch((e) => e);
+    await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(1));
+    const next = { ...context };
+    if (change === "generation") next.credentialGeneration = 2;
+    if (change === "unknown") next.credentialGeneration = Number.NaN;
+    if (change === "program") client.programKey = "program-2";
+    if (change === "version") client.version = "0.157.0";
+    if (change === "locator")
+      next.profile = {
+        ...next.profile,
+        isolation_locator: next.profile.isolation_locator + "-new",
+      };
+    if (["account", "capability", "credential"].includes(change)) {
+      const auth = JSON.parse(await f.readAuthFile());
+      if (change === "account") auth.tokens.account_id = "account-two";
+      if (change === "credential") auth.tokens.access_token = f.token + "-rotated";
+      if (change === "capability")
+        auth.tokens.id_token = `fixture.${Buffer.from(JSON.stringify({ sub: "user-one", "https://api.openai.com/auth": { chatgpt_plan_type: "pro" } })).toString("base64url")}.signature`;
+      f.readAuthFile.mockResolvedValue(JSON.stringify(auth));
+    }
+    const b = await f.adapter.catalog(next);
+    expect(b.models).toHaveLength(1);
+    expect(f.fetcher).toHaveBeenCalledTimes(2);
+    body.resolve(Response.json(catalog));
+    expect(await a).toMatchObject({ problem: { code: "auth_changed" } });
+  });
+  it.each(["generation", "program", "account", "version"])(
+    "unknown %s identities never join even each other",
+    async (unknown) => {
+      const client = knownClient();
+      if (unknown === "program") delete (client as CodexCatalogClientVersion).programKey;
+      if (unknown === "version") client.program!.version = null;
+      const f = setup(undefined, undefined, client);
+      if (unknown === "account") {
+        const auth = JSON.parse(await f.readAuthFile());
+        delete auth.tokens.id_token;
+        f.readAuthFile.mockResolvedValue(JSON.stringify(auth));
+      }
+      const context = {
+        ...f.context,
+        credentialGeneration: unknown === "generation" ? Number.NaN : 1,
+      };
+      const bodies = [deferred<Response>(), deferred<Response>()];
+      f.fetcher
+        .mockImplementationOnce(() => bodies[0]!.promise)
+        .mockImplementationOnce(() => bodies[1]!.promise);
+      const a = f.adapter.catalog(context),
+        b = f.adapter.catalog(context);
+      await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(2));
+      for (const body of bodies) body.resolve(Response.json(catalog));
+      await Promise.all([a, b]);
+    },
+  );
+  it("does not consume a late body after abandonment, but consumes a live one", async () => {
+    const f = setup(undefined, undefined, knownClient());
+    const pendingResponse = deferred<Response>();
+    const json = vi.fn(async () => catalog);
+    f.fetcher.mockImplementationOnce(() => pendingResponse.promise);
+    const controller = new AbortController();
+    const pending = f.adapter
+      .catalog({ ...f.context, credentialGeneration: 1, signal: controller.signal })
+      .catch((error) => error);
+    await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(1));
+    controller.abort();
+    await pending;
+    pendingResponse.resolve({ ok: true, json } as unknown as Response);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(json).not.toHaveBeenCalled();
+    f.fetcher.mockResolvedValueOnce({ ok: true, json } as unknown as Response);
+    await f.adapter.catalog({ ...f.context, credentialGeneration: 1 });
+    expect(json).toHaveBeenCalledTimes(1);
+  });
+  it("program maintenance cancels a live read and rejects its late answer", async () => {
+    const f = setup(undefined, undefined, knownClient());
+    const body = deferred<Response>();
+    f.fetcher.mockImplementationOnce(() => body.promise);
+    const pending = f.adapter.catalog({ ...f.context, credentialGeneration: 1 }).catch((e) => e);
+    await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(1));
+    invalidateProgramObservations("codex");
+    expect(await pending).toMatchObject({ problem: { code: "auth_changed" } });
+    expect(f.fetcher.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+    body.resolve(Response.json({ models: [] }));
+    expect(
+      (await f.adapter.catalog({ ...f.context, credentialGeneration: 1 })).models,
+    ).toHaveLength(1);
+  });
+  it.each(["request", "body"])(
+    "bounds the entire catalog %s, without turning a timeout into an empty catalog",
+    async (phase) => {
+      vi.useFakeTimers();
+      try {
+        const f = setup();
+        const ready = deferred<void>();
+        const body = deferred<Response>();
+        f.fetcher.mockImplementationOnce(async () => {
+          ready.resolve();
+          if (phase === "request") return body.promise;
+          return { ok: true, json: () => new Promise(() => {}) } as Response;
+        });
+        const pending = f.adapter.catalog(f.context).catch((e) => e);
+        await ready.promise;
+        await vi.advanceTimersByTimeAsync(CODEX_CATALOG_TRANSPORT_MS);
+        expect(await pending).toMatchObject({
+          problem: { code: "catalog_unavailable", retryable: true },
+        });
+        expect(f.fetcher.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+        body.resolve(Response.json(catalog));
+        await expect(f.adapter.catalog(f.context)).resolves.toMatchObject({
+          models: [{ id: "model-one" }],
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+  it("accepts a slow catalog inside the transport bound", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = setup();
+      const ready = deferred<void>(),
+        body = deferred<Response>();
+      f.fetcher.mockImplementationOnce(() => {
+        ready.resolve();
+        return body.promise;
+      });
+      const pending = f.adapter.catalog(f.context);
+      await ready.promise;
+      await vi.advanceTimersByTimeAsync(CODEX_CATALOG_TRANSPORT_MS - 1);
+      expect(f.fetcher.mock.calls[0]![1]!.signal!.aborted).toBe(false);
+      body.resolve(Response.json(catalog));
+      expect((await pending).models).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
