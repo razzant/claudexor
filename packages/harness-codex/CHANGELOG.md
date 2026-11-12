@@ -1,5 +1,34 @@
 # @claudexor/harness-codex
 
+## 6.1.0
+
+### Minor Changes
+
+- 5069e57: Caller-owned Codex model requests are smaller and their failures are named more
+  truthfully. The request body is zstd-compressed (`Content-Encoding: zstd`), about
+  a third of its size on real conversations; `CLAUDEXOR_CODEX_REQUEST_COMPRESSION=off`
+  (or `0`, `false`, `no`) turns that off for a daemon started with it. A send that failed before the request began to be written is
+  `transport_not_delivered` whatever the error's code, and so is the provider's
+  HTTP 408, which used to read as an invalid request and keeps its request id and
+  retry hint. The two five-minute response timeouts are set by the engine on its
+  own request, and on HTTP/1.1 a call one of them ends names that timeout in words
+  while keeping the library's code as the fact.
+
+### Patch Changes
+
+- 254e2d7: Codex workspace-write runs can hand simple MCP requests and correlated
+  automatic-review MCP denials back to their controller. A denial retry remains
+  under native review and does not promise argument-bound authorization. Local
+  repeat detection compares MCP arguments by their exact key-order-independent
+  JSON, keeping own `__proto__` keys, and completed turns do not exhaust later
+  turns' call correlation.
+- Updated dependencies [b789380]
+- Updated dependencies
+  - @claudexor/schema@6.1.0
+  - @claudexor/core@6.1.0
+  - @claudexor/secrets@6.1.0
+  - @claudexor/util@6.1.0
+
 ## 6.0.0
 
 ### Patch Changes
