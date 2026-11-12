@@ -23,6 +23,8 @@ export const poolExhausted = (
       ]
     : [];
   for (const refusal of catalogRefusals.values()) {
+    // A disabled or removed account cannot become usable by quota or login.
+    if (refusal.code === "model_account_unavailable") continue;
     causes.add(
       refusal.code === "auth_required"
         ? "auth"

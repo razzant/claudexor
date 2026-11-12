@@ -2946,6 +2946,55 @@ describe("admission-grade login readiness", () => {
     expect(ready.probe).toHaveBeenCalledTimes(1);
     expect(f.catalog).toHaveBeenCalledTimes(2);
   });
+  it.each(["unchanged", "changed"])(
+    "a pin admits a probe answer whose login identity was %s during the probe",
+    async (identity) => {
+      const ready = await readinessFixture();
+      const f = await fixture({ lazy: true, nativeAdapter: ready.adapter });
+      f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
+      const raw = ready.probe.getMockImplementation()!;
+      ready.probe.mockImplementationOnce(async (profile, signal) => {
+        if (identity === "changed") writeFileSync(join(ready.home, "auth.json"), "refreshed");
+        return raw(profile, signal);
+      });
+      expect((await f.services.routes.modelCatalog("codex", "a")).credentialProfileId).toBe("a");
+      await f.services.routes.modelCatalog("codex", "a");
+      // Only an answer under one unchanged identity is reused.
+      expect(ready.probe).toHaveBeenCalledTimes(identity === "changed" ? 2 : 1);
+    },
+  );
+  it.each(["claude", "codex"])(
+    "a %s program change ends only that harness's in-flight probes and positives",
+    async (harness) => {
+      const f = await readinessFixture();
+      const raw = f.probe.getMockImplementation()!;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let abortedWhileRunning: boolean | undefined;
+      f.probe.mockImplementationOnce(async (profile, signal) => {
+        await gate;
+        abortedWhileRunning = signal!.aborted;
+        return raw(profile, signal);
+      });
+      const pending = f.call().catch((e) => e);
+      await vi.waitFor(() => expect(f.probe).toHaveBeenCalledTimes(1));
+      invalidateProgramObservations(harness);
+      await f.publishProgram();
+      release();
+      expect(await pending).toMatchObject(
+        harness === "codex" ? { code: "auth_changed" } : { availability: "available" },
+      );
+      await vi.waitFor(() => expect(abortedWhileRunning).toBe(harness === "codex"));
+      await f.call();
+      expect(f.probe).toHaveBeenCalledTimes(harness === "codex" ? 2 : 1);
+      invalidateProgramObservations(harness);
+      await f.publishProgram();
+      await f.call();
+      expect(f.probe).toHaveBeenCalledTimes(harness === "codex" ? 3 : 1);
+    },
+  );
 });
 
 describe("fresh decisions after catalog waits", () => {
@@ -3011,20 +3060,132 @@ describe("fresh decisions after catalog waits", () => {
       );
     },
   );
-  it("typed catalog transport failure moves Auto to its next candidate", async () => {
-    const f = await fixture({ lazy: true });
-    f.catalog.mockRejectedValueOnce(
-      Object.assign(new Error("transport limit"), {
-        problem: ControlProblem.parse({
-          code: "catalog_unavailable",
-          message: "catalog transport limit",
-          retryable: true,
-        }),
+  const unavailable = () =>
+    Object.assign(new Error("transport limit"), {
+      problem: ControlProblem.parse({
+        code: "catalog_unavailable",
+        message: "catalog transport limit",
+        retryable: true,
       }),
-    );
-    expect((await f.services.routes.modelCatalog("codex")).credentialProfileId).toBe("b");
-    expect((await f.services.routes.modelCatalog("codex")).credentialProfileId).toBe("a");
-  });
+    });
+  const spent = (harness: string, subject: string, resetsAt = Date.now() + 60_000) =>
+    QuotaSnapshot.parse({
+      subject: { harness, credential_route: "vendor_native", subject_id: subject },
+      constraints: [
+        {
+          id: "session",
+          label: "Session",
+          window_seconds: null,
+          used_ratio: 1,
+          resets_at: new Date(resetsAt).toISOString(),
+        },
+      ],
+      source: harness === "codex" ? "codex_app_server" : "claude_oauth_usage",
+      observed_at: new Date().toISOString(),
+      freshness: "fresh",
+    });
+  const reads = (f: Awaited<ReturnType<typeof fixture>>) =>
+    f.catalog.mock.calls.map(([context]) => context.profile.profile_id);
+  it.each(["unchanged", "changed"])(
+    "typed catalog transport failure moves Auto to its next candidate while facts are %s",
+    async (facts) => {
+      const f = await fixture({ lazy: true });
+      f.catalog.mockImplementationOnce(async () => {
+        if (facts === "changed") f.quota.upsert(spent("claude", "work"));
+        throw unavailable();
+      });
+      expect((await f.services.routes.modelCatalog("codex")).credentialProfileId).toBe("b");
+      expect(reads(f)).toEqual(["a", "b"]);
+      expect((await f.services.routes.modelCatalog("codex")).credentialProfileId).toBe("a");
+    },
+  );
+  it.each(["claude quota", "account b quota", "account b refusal", "account b disabled"])(
+    "keeps a read account and reads it once when %s changes during its read",
+    async (change) => {
+      const f = await fixture({ lazy: true });
+      const raw = f.catalog.getMockImplementation()!;
+      f.catalog.mockImplementationOnce(async (context) => {
+        if (change === "claude quota") f.quota.upsert(spent("claude", "work"));
+        if (change === "account b quota") f.quota.upsert(spent("codex", "b"));
+        if (change === "account b refusal")
+          f.refusals.record({
+            harness_id: "codex",
+            profile_id: "b",
+            requested_model: "test-model",
+          });
+        if (change === "account b disabled") f.cfg.credential_profiles[1]!.enabled = false;
+        return raw(context);
+      });
+      const selected = await f.services.routes.modelCatalog("codex", undefined, "test-model");
+      expect(selected.credentialProfileId).toBe("a");
+      expect(reads(f)).toEqual(["a"]);
+    },
+  );
+  it.each(["unchanged", "exhausted"])(
+    "a pin whose own quota is %s during its read keeps the outcome of an immediate repeat",
+    async (quota) => {
+      const f = await fixture({ lazy: true });
+      const raw = f.catalog.getMockImplementation()!;
+      f.catalog.mockImplementationOnce(async (context) => {
+        if (quota === "exhausted") f.quota.upsert(spent("codex", "a"));
+        return raw(context);
+      });
+      const first = await f.services.routes.modelCatalog("codex", "a").catch((e) => e);
+      const repeat = await f.services.routes.modelCatalog("codex", "a").catch((e) => e);
+      expect(first.problem).toEqual(repeat.problem);
+      if (quota === "unchanged") expect(first.credentialProfileId).toBe("a");
+      else
+        expect(first.problem).toMatchObject({
+          code: "subscription_window_exhausted",
+          context: { resetsAt: expect.any(String) },
+        });
+    },
+  );
+  it.each(["a and b", "b"])(
+    "after a catalog refusal, final quota facts blocking %s give the outcome of an immediate repeat",
+    async (blocked) => {
+      const f = await fixture({ lazy: true });
+      const raw = f.catalog.getMockImplementation()!;
+      const resetsAt = Date.now() + 3_600_000;
+      f.catalog.mockImplementation(async (context) => {
+        if (context.profile.profile_id === "a") throw unavailable();
+        for (const id of blocked === "b" ? ["b"] : ["a", "b"])
+          f.quota.upsert(spent("codex", id, resetsAt));
+        return raw(context);
+      });
+      const first = await f.services.routes.modelCatalog("codex").catch((e) => e);
+      const repeat = await f.services.routes.modelCatalog("codex").catch((e) => e);
+      expect(first.problem).toEqual(repeat.problem);
+      expect(first.problem).toMatchObject(
+        blocked === "b"
+          ? { code: "credential_pool_exhausted", context: { poolCause: "unavailable" } }
+          : {
+              code: "subscription_window_exhausted",
+              context: { poolCause: "quota", resetsAt: new Date(resetsAt).toISOString() },
+            },
+      );
+    },
+  );
+  it.each(["bare managed secret", "default subject", "row"])(
+    "a %s change during a named row's catalog read ends it only for that row",
+    async (change) => {
+      const f = await fixture({ lazy: true });
+      const raw = f.catalog.getMockImplementation()!;
+      let physical!: AbortSignal;
+      f.catalog.mockImplementationOnce(async (context) => {
+        physical = context.signal;
+        if (change === "bare managed secret") f.unusable.clearDefaultSubjects();
+        if (change === "default subject") f.unusable.clearSubject("codex", null);
+        if (change === "row") f.unusable.clearSubject("codex", "a");
+        return raw(context);
+      });
+      const result = await f.services.routes.modelCatalog("codex", "a").catch((e) => e);
+      expect(physical.aborted).toBe(change === "row");
+      expect(result).toMatchObject(
+        change === "row" ? { code: "auth_changed" } : { credentialProfileId: "a" },
+      );
+    },
+  );
   it("passes catalog cancellation and shutdown to raw work", async () => {
     const f = await fixture({ lazy: true });
     let received!: AbortSignal;

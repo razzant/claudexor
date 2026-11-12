@@ -1273,14 +1273,19 @@ invariant or operator decision before proceeding.
   Reuse requires the same profile, owned auth/settings file versions, known
   credential generation and observed vendor program identity. Hits never
   renew the physical probe date; negative, unknown, failed or stale probes
-  and display projections cannot admit through this rule. Config, policy,
-  quota, revocation, refusals, exclusions and capability reservations remain
-  live for every consumer after I/O. Identical in-flight raw probes and
+  and display projections cannot admit through this rule. After each wait a
+  consumer judges again only the account it waited for, from that account's
+  own live facts (enablement, quota and headroom, a revoked or unusable
+  credential, refusals, substitutions, capability marks); the selection keeps
+  its fresh catalogs and exclusions, and a change about another account never
+  restarts it or re-reads a catalog. Identical in-flight raw probes and
   catalog reads may share I/O, with independent waiter cancellation, but
-  never share a selection or retain a completed admission catalog. A caller's
-  abandoned catalog read ends when its last waiter leaves; accepted durable
-  operations keep their own lifetime. The vendor catalog remains a fresh
-  read at every selection, bounded as a transport including its body.
+  never share a selection or retain a completed admission catalog; different
+  or unknown identities run as separate reads. A read ends when its last
+  waiter leaves, at shutdown, or when its own credential generation or
+  program changes; accepted durable operations keep their own lifetime. The
+  vendor catalog remains a fresh read at every selection, bounded as a
+  transport including its body.
   **CONCEPT-CHANGE(INV-135), #363:** an unpinned choice is admitted on FRESH
   readiness, with one bounded exception for Cursor rows: when a row's
   `cursor-agent status` probe did not answer within its own budget, that row

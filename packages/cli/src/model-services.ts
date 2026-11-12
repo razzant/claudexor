@@ -43,7 +43,7 @@ import { bindModelAccountEvidence, withImageAccountEvidence } from "./model-acco
 import { modelOperationControlServices } from "./model-operation-control.js";
 import { selectModelCatalog } from "./model-catalog-selection.js";
 import { historyBoundTo, modelCapabilityOutcome } from "./model-capability-outcome.js";
-import { admitModelAccount, modelSelectionFacts } from "./model-account-admission.js";
+import { admitModelAccount, liveAccountRefusal } from "./model-account-admission.js";
 import { ModelLoginReadiness } from "./model-login-readiness.js";
 import { modelCredentialRead } from "./model-credential-read.js";
 import { modelError, poolExhausted } from "./model-service-refusals.js";
@@ -91,7 +91,6 @@ export function createModelServices(deps: Dependencies) {
   const readiness = new ModelLoginReadiness(capabilities.credentials);
   const readSignal = (signal?: AbortSignal) =>
     signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
-  const decisionFacts = modelSelectionFacts({ ...deps, config });
   const getSource = (id: string): ModelSource => {
     const source = sources.find((entry) => entry.adapter.id === id);
     if (!source) throw modelError("model_source_unavailable", "No such model source", 404);
@@ -142,6 +141,24 @@ export function createModelServices(deps: Dependencies) {
       unusable,
     });
 
+  /** After a wait, only the picked account's own live facts decide again. */
+  const recheck = (
+    admitted: Awaited<ReturnType<typeof admitAccount>>,
+    model: string | null,
+    requestKind: QuotaRequestKind,
+    profileId: string,
+    quota = admissionEvidence(),
+  ) =>
+    liveAccountRefusal({
+      ...admitted,
+      profileId,
+      model,
+      requestKind,
+      config: config(),
+      quota,
+      unusable: unusable.live(),
+    });
+
   /** One pool pick for the given model, or a typed pool refusal. The resolver
    * never generates; an `excluded` set lets a selection epoch move on. */
   const pickAccount = async (
@@ -154,22 +171,15 @@ export function createModelServices(deps: Dependencies) {
     requestKind: QuotaRequestKind = "text",
     poolEvents: ModelRoutingEvidence["poolEvents"] = [],
   ): Promise<CredentialProfile> => {
+    const { harnessId, policy, profiles, probe, pinnedProfile } = admitted;
     for (;;) {
-      admitted.signal.throwIfAborted();
-      const before = decisionFacts(true);
-      if (JSON.stringify(config()) !== admitted.cfgKey)
-        admitted = await admitAccount(source, account, model, admitted.signal);
-      const { harnessId, harness, profiles, probe, pinnedProfile } = admitted;
       const currentQuota = admissionEvidence();
       let profile: CredentialProfile | null;
       try {
         profile = await resolveAccountForRun({
           harnessId,
           registry: profiles,
-          policy:
-            harness?.profile_policy ??
-            GlobalConfig.parse({ harnesses: { [harnessId]: {} } }).harnesses[harnessId]!
-              .profile_policy,
+          policy,
           profileCardinality: credentialProfilePolicyState({
             adapter: registry.get(harnessId),
             registry: profiles,
@@ -210,16 +220,23 @@ export function createModelServices(deps: Dependencies) {
         });
       } catch (error) {
         admitted.signal.throwIfAborted();
-        if (before !== decisionFacts(true)) continue;
-        if (errorCode(error) === "credential_pool_exhausted")
-          throw poolExhausted(source.adapter.id, error, catalogRefusals);
-        throw error;
+        if (errorCode(error) !== "credential_pool_exhausted") throw error;
+        // Causes of this decision: a live block outranks an earlier refusal.
+        const causes = new Map(catalogRefusals);
+        for (const [id, refusal] of causes) {
+          const live = await recheck(admitted, model, requestKind, id, currentQuota);
+          causes.set(id, live ?? refusal);
+        }
+        throw poolExhausted(source.adapter.id, error, causes);
       }
-      admitted.signal.throwIfAborted();
-      if (before !== decisionFacts(true)) continue;
       if (!profile)
         throw modelError("model_account_unavailable", "Connect a managed account for model calls");
-      return profile;
+      // A pin was judged after its probe; a pool pick on facts read before them.
+      if (pinnedProfile) return profile;
+      const refusal = await recheck(admitted, model, requestKind, profile.profile_id);
+      if (!refusal) return profile;
+      catalogRefusals.set(profile.profile_id, refusal);
+      excluded.add(profile.profile_id);
     }
   };
 
@@ -249,9 +266,9 @@ export function createModelServices(deps: Dependencies) {
       unusable,
       quota: deps.quota,
       warn: deps.warn,
-      decisionFacts,
       refusals: () => deps.refusals?.live(),
       substitutions: () => substitutions.live(),
+      recheck: (profile) => recheck(admitted, model, "text", profile.profile_id),
       ...options,
       pick: (excluded, refusals) =>
         pickAccount(
@@ -540,20 +557,15 @@ export function createModelServices(deps: Dependencies) {
           read: async (profile, canReadCatalog, physicalSignal) => {
             physicalSignal.throwIfAborted();
             if (!canReadCatalog) return null;
-            const generation = capabilities.credentials.generation(
+            const { value, generation } = await modelCredentialRead(
+              capabilities.credentials,
               source.credentialHarness,
-              profile.profile_id,
+              profile,
+              physicalSignal,
+              (signal, credentialGeneration) =>
+                source.adapter.catalog({ profile, signal, credentialGeneration }),
             );
-            const catalog = ControlModelCatalogResponse.parse(
-              await modelCredentialRead(
-                capabilities.credentials,
-                source.credentialHarness,
-                profile,
-                physicalSignal,
-                (signal, credentialGeneration) =>
-                  source.adapter.catalog({ profile, signal, credentialGeneration }),
-              ),
-            );
+            const catalog = ControlModelCatalogResponse.parse(value);
             if (catalog.source !== sourceId || catalog.credentialProfileId !== profile.profile_id)
               throw modelError(
                 "model_catalog_identity_mismatch",

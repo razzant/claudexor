@@ -229,19 +229,9 @@ export function createCodexCatalogReader(
           unsubscribe();
         }
       }),
-    ).catch((error: unknown) => {
-      context.signal.throwIfAborted();
-      if (error && typeof error === "object" && "code" in error && error.code === "auth_changed")
-        throw new CodexModelError("auth_changed", "The catalog identity changed during discovery.");
-      throw error;
-    });
-    context.signal.throwIfAborted();
-    const after = await waitForRead(clientVersion(), context.signal);
-    if (declared.programKey !== after.programKey || declared.version !== after.version)
-      throw new CodexModelError(
-        "auth_changed",
-        "The Codex program changed during catalog discovery.",
-      );
+    );
+    // A program change observed during the read already ended it; an answer is
+    // labelled with the client version it was read for.
     return structuredClone(catalog);
   };
 }

@@ -4,14 +4,16 @@ import type { CredentialProfile } from "@claudexor/schema";
 import { modelError } from "./model-service-refusals.js";
 
 /** Each consumer keeps its own generation fence, including its cancellation
- * subscription. Raw adapter I/O may be shared; these decisions never are. */
+ * subscription, and learns the generation it read under. Raw adapter I/O may
+ * be shared; these decisions never are. A login window reads as unknown (NaN);
+ * only two known, different generations prove that the account changed. */
 export async function modelCredentialRead<T>(
   credentials: CredentialGeneration,
   harnessId: string,
   profile: CredentialProfile,
   caller: AbortSignal,
   read: (signal: AbortSignal, generation: number) => Promise<T>,
-): Promise<T> {
+): Promise<{ value: T; generation: number }> {
   const generation = credentials.generation(harnessId, profile.profile_id);
   const changed = new AbortController();
   const refuse = () =>
@@ -32,7 +34,7 @@ export async function modelCredentialRead<T>(
     const after = credentials.generation(harnessId, profile.profile_id);
     if (Number.isFinite(generation) && Number.isFinite(after) && generation !== after) refuse();
     signal.throwIfAborted();
-    return value;
+    return { value, generation };
   } finally {
     unsubscribe();
   }

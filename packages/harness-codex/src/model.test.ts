@@ -1514,7 +1514,7 @@ describe("raw catalog read ownership", () => {
     "version",
     "locator",
     "unknown",
-  ])("does not join a different %s identity", async (change) => {
+  ])("does not join or cancel a read of a different %s identity", async (change) => {
     const client = knownClient();
     const f = setup(undefined, undefined, client);
     const body = deferred<Response>();
@@ -1543,8 +1543,9 @@ describe("raw catalog read ownership", () => {
     const b = await f.adapter.catalog(next);
     expect(b.models).toHaveLength(1);
     expect(f.fetcher).toHaveBeenCalledTimes(2);
+    expect(f.fetcher.mock.calls[0]![1]!.signal!.aborted).toBe(false);
     body.resolve(Response.json(catalog));
-    expect(await a).toMatchObject({ problem: { code: "auth_changed" } });
+    expect((await a).models[0]!.id).toBe("model-one");
   });
   it.each(["generation", "program", "account", "version"])(
     "unknown %s identities never join even each other",

@@ -20,7 +20,9 @@ interface ReadEntry<T> {
 
 /** Raw I/O only. Nothing survives completion; each caller owns its decisions.
  * Keys must contain non-secret identity evidence, never credential material.
- * A null key cannot prove equivalence and therefore never joins another read. */
+ * A null key cannot prove equivalence and therefore never joins another read.
+ * Different keys run side by side: a read ends only when its own last waiter
+ * leaves or its owner invalidates its scope (shutdown, generation or program). */
 export class SharedRead<T> {
   private readonly entries = new Map<string, Set<ReadEntry<T>>>();
 
@@ -33,14 +35,6 @@ export class SharedRead<T> {
     signal.throwIfAborted();
     let group = this.entries.get(scope);
     if (!group) this.entries.set(scope, (group = new Set()));
-    for (const entry of group) {
-      if (entry.key !== key) {
-        entry.controller.abort(
-          Object.assign(new Error("Read identity changed"), { code: "auth_changed" }),
-        );
-        group.delete(entry);
-      }
-    }
     let entry = key === null ? undefined : [...group].find((item) => item.key === key);
     if (!entry) {
       const controller = new AbortController();
@@ -66,9 +60,9 @@ export class SharedRead<T> {
     }
   }
 
-  invalidate(scope?: string): void {
+  invalidate(matches: (scope: string) => boolean = () => true): void {
     for (const [id, group] of this.entries) {
-      if (scope !== undefined && id !== scope) continue;
+      if (!matches(id)) continue;
       this.entries.delete(id);
       for (const entry of group)
         entry.controller.abort(

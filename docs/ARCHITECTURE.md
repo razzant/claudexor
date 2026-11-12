@@ -3199,15 +3199,29 @@ expire from their physical start/date under the shared doctor positive policy
 (`CLAUDEXOR_DOCTOR_TTL_MS`, default 90 seconds); hits never extend that date.
 Display projections, negative/unknown results, eligible sets and winners are
 never reused for admission. Live quota and unusable-credential evidence can
-exclude a locally ready account without launching another probe.
+exclude a locally ready account without launching another probe. A hit runs no
+CLI: a program replaced behind an unchanged wrapper, or a `config.toml` the CLI
+can no longer load while its file identity is unchanged, is seen only when the
+positive expires. A probe whose file or program identity changed while it ran
+still answers its callers, but that answer is not retained.
 
 Only identical in-flight raw I/O is shared. Catalog keys additionally include
 account/capability fingerprints, an opaque digest of current authorization,
-and the declared client version. Keys contain no tokens. Unknown identities
-never join; completion/error removes entries. Each waiter has its own lifetime:
-one leaving preserves others, the last leaving aborts, and credential/program
-invalidation fences old work. Each consumer re-reads decision evidence after
-waiting, then performs its own selection, bind/reserve/changed and release.
+and the declared client version. Keys contain no tokens. Unknown or different
+identities never join and never cancel each other; completion/error removes
+entries. Each waiter has its own lifetime: one leaving preserves others, the
+last leaving aborts, and shutdown or a change of that read's own credential
+generation or harness program ends it (a default-subject change moves no
+registered row's generation). After each wait a consumer judges again only the
+account it waited for (`liveAccountRefusal`: enablement, a revoked or unusable
+credential, and quota/headroom as a strict pin of that account is judged;
+refusals, substitutions and capability marks are re-read by the catalog
+stage). It keeps its fresh catalogs and exclusions: a change about another
+account neither restarts the selection nor re-reads a catalog, and an account
+whose read failed is not tried again. A pool refusal reports the causes of its
+own decision, so an account blocked now reports that block rather than an
+earlier refusal of the same selection. Each consumer then performs its own
+bind/reserve/changed and release.
 The selected-account catalog GET has an HTTP-disconnect lifetime; the account
 display view also cancels abandoned acquisition while retaining its existing
 display observation policy. Accepted durable model operations retain their own

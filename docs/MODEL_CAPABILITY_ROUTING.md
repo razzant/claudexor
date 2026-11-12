@@ -14,15 +14,22 @@ and revocation overlays remain live, including on a hit. The existing strict
 pin and `last_positive_after_timeout` distinction is unchanged.
 
 Concurrent identical login probes and catalog HTTP reads share only raw I/O.
-Unknown identity or generation never joins. Each consumer rechecks config,
-policy, quota, unusable credentials, refusals and substitutions after waiting;
-selection, capability binding/reservation and release remain its own work.
-The last departed reader, shutdown or a detected credential/program change
-cancels pending I/O and fences late results. Catalog fetch and body together
-have a 60-second transport limit; expiry is typed `catalog_unavailable`, so
-Auto can try the next account. A completed catalog is never retained for
-admission: the next selection and selected-account catalog GET read again.
-The account display view keeps its separate explicit-refresh observation policy.
+Unknown or different identities never join and never cancel each other. After
+each wait a consumer rechecks only the account it waited for: its enablement,
+quota and headroom, a revoked or unusable credential, refusals, substitutions
+and capability marks. It keeps the catalogs it read and its exclusions; a change
+about another account never restarts the selection or re-reads a catalog, and
+an account whose read failed is not tried again in that selection. Selection,
+capability binding/reservation and release remain its own work. The last
+departed reader, shutdown, or a change of that read's own credential generation
+or program cancels pending I/O and fences late results. Catalog fetch and body
+together have a 60-second transport limit; expiry is typed
+`catalog_unavailable`, so Auto can try the next account. A completed catalog is
+never retained for admission: the next selection and selected-account catalog
+GET read again. A GET that arrives while an identical read is in flight joins
+it: its `observedAt` is that read's completion time, and the vendor request may
+have been sent before the GET arrived. The account display view keeps its
+separate explicit-refresh observation policy.
 
 Auto selection reads live per-account catalogs. It prefers a listed model,
 then an advisory miss, then an account with a soft observation for the model (a

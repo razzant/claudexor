@@ -9,8 +9,7 @@ import {
 import type { CredentialGeneration } from "@claudexor/daemon";
 import { CredentialProfileStatus, type CredentialProfile } from "@claudexor/schema";
 
-const scopeOf = (profile: Pick<CredentialProfile, "harness_id" | "profile_id">) =>
-  JSON.stringify([profile.harness_id, profile.profile_id]);
+const scopeOf = (harnessId: string, profileId: string) => `${harnessId}\0${profileId}`;
 
 /** Admission-grade raw observations, separate from accountObservations display
  * projections. Quota, revocation, policy and selection never enter this owner. */
@@ -24,25 +23,25 @@ export class ModelLoginReadiness {
   private readonly programUnsubscribe: () => void;
 
   constructor(private readonly credentials: CredentialGeneration) {
-    this.programUnsubscribe = onProgramObservationChange(() => this.invalidate());
+    // A program change ends only that harness's probes and positives.
+    this.programUnsubscribe = onProgramObservationChange((harness) =>
+      this.invalidate((scope) => !harness || scope.startsWith(`${harness}\0`)),
+    );
     this.unsubscribe = credentials.onChange((subject) =>
       this.invalidate(
-        subject
-          ? scopeOf({ harness_id: subject.harnessId, profile_id: subject.profileId })
-          : undefined,
+        (scope) => !subject || scope === scopeOf(subject.harnessId, subject.profileId),
       ),
     );
   }
 
   prune(profiles: readonly CredentialProfile[]): void {
-    const live = new Set(profiles.map(scopeOf));
-    for (const scope of this.positives.keys()) if (!live.has(scope)) this.invalidate(scope);
+    const live = new Set(profiles.map((row) => scopeOf(row.harness_id, row.profile_id)));
+    for (const scope of this.positives.keys()) if (!live.has(scope)) this.positives.delete(scope);
   }
 
-  private invalidate(scope?: string): void {
-    this.reads.invalidate(scope);
-    if (scope === undefined) this.positives.clear();
-    else this.positives.delete(scope);
+  private invalidate(matches: (scope: string) => boolean = () => true): void {
+    this.reads.invalidate(matches);
+    for (const scope of this.positives.keys()) if (matches(scope)) this.positives.delete(scope);
   }
 
   close(): void {
@@ -57,7 +56,7 @@ export class ModelLoginReadiness {
     signal: AbortSignal,
   ): Promise<CredentialProfileStatus> {
     signal.throwIfAborted();
-    const scope = scopeOf(profile);
+    const scope = scopeOf(profile.harness_id, profile.profile_id);
     const identity = async () => {
       const generation = this.credentials.generation(profile.harness_id, profile.profile_id);
       const [files, program] = await Promise.all([
@@ -86,15 +85,13 @@ export class ModelLoginReadiness {
       physicalSignal.throwIfAborted();
       if (status.profile_id !== profile.profile_id || status.harness_id !== profile.harness_id)
         throw new Error("Login probe returned another profile");
-      const after = await identity();
+      // A login or program change during the probe still answers this probe;
+      // only an answer under one unchanged identity is retained for reuse.
+      const unchanged = key !== null && (await identity()) === key;
       physicalSignal.throwIfAborted();
-      if (key !== null && after !== key)
-        throw Object.assign(new Error("Login identity changed during the probe"), {
-          code: "auth_changed",
-        });
       const observedAt = Date.parse(status.last_verified_at ?? "");
       if (
-        key !== null &&
+        unchanged &&
         status.availability === "available" &&
         status.verification === "passed" &&
         status.stale !== true &&

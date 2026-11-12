@@ -17,7 +17,8 @@ export class CredentialGeneration {
   private retired = false;
   private readonly listeners = new Set<(scope: CredentialInvalidation) => void>();
 
-  /** Raw reads stop immediately when their credential epoch ends. */
+  /** Raw reads stop immediately when their credential epoch ends. Only rows
+   * whose generation moved are told; the default subject has no row reader. */
   onChange(listener: (scope: CredentialInvalidation) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -82,14 +83,13 @@ export class CredentialGeneration {
    * but leaves that binding's durable facts. */
   clearSubject(harnessId: string, profileId: string | null, keepsBinding = false): void {
     this.accountChangedAt.set(key(harnessId, profileId), ++this.changes);
-    this.changed(profileId === null ? null : { harnessId, profileId });
-    // Durable facts exist only for registered rows, never the default subject.
+    // Readers and durable facts exist only for registered rows, never the default subject.
+    if (profileId !== null) this.changed({ harnessId, profileId });
     if (profileId !== null && !keepsBinding) this.invalidated({ harnessId, profileId });
   }
 
   clearDefaultSubjects(): void {
     this.defaultChangedAt = ++this.changes;
-    this.changed(null);
   }
 
   private invalidated(scope: CredentialInvalidation): void {
