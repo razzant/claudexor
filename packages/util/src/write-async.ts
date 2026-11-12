@@ -25,3 +25,9 @@ export async function writeTextAsync(path: string, text: string): Promise<void> 
     await withPoolWriteSlot(undefined, () => writeFile(path, text, options));
   }
 }
+
+/** The awaited twin of `writeJson`: the same bytes (two-space JSON and a
+ * newline), written as `writeTextAsync` writes. */
+export async function writeJsonAsync(path: string, value: unknown): Promise<void> {
+  await writeTextAsync(path, JSON.stringify(value, null, 2) + "\n");
+}

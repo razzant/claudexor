@@ -349,3 +349,20 @@ async function writeAll(path: string, data: Buffer): Promise<WriteOutcome> {
 
 /** The process's one ordered appender (one registry, one pool gate). */
 export const orderedAppender = new OrderedAppender();
+
+/**
+ * Flow control for a lane loop: yields `source`'s values, and before reading
+ * the next one waits for each of `files` the appender reports full to drain.
+ * By then the loop has queued the value's lines, so a harness that outruns
+ * the disk slows through the stream limits it already has. The high-water
+ * mark is the runtime's own; this adds no constant.
+ */
+export async function* pacedByAppends<T>(
+  source: AsyncIterable<T>,
+  files: readonly string[],
+): AsyncGenerator<T, void, undefined> {
+  for await (const value of source) {
+    yield value;
+    for (const file of files) if (orderedAppender.full(file)) await orderedAppender.drained(file);
+  }
+}

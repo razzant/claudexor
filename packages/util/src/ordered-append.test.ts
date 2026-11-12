@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { getDefaultHighWaterMark } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withPoolWriteSlot } from "./libuv-pool.js";
-import { orderedAppender } from "./ordered-append.js";
+import { orderedAppender, pacedByAppends } from "./ordered-append.js";
 
 const APPLIED_POOL = Symbol.for("claudexor.libuvPoolSize");
 const realOpen = promises.open;
@@ -441,5 +441,60 @@ describe("ordered appender", () => {
       await orderedAppender.settled(path);
     });
     expect(readFileSync(path, "utf8")).toBe("a\nb\n");
+  });
+});
+
+describe("pacedByAppends", () => {
+  /** Values 0..total-1, counting each one the reader pulls from the source. */
+  async function* counted(total: number, pulled: { count: number }): AsyncGenerator<number> {
+    for (let value = 0; value < total; value += 1) {
+      pulled.count += 1;
+      yield value;
+    }
+  }
+
+  it("stops reading once a file the reader appends to is full, and reads on after the drain", async () => {
+    const mark = getDefaultHighWaterMark(false);
+    const root = freshRoot();
+    const small = join(root, "small.jsonl");
+    const large = join(root, "large.jsonl");
+    // The reader is paced by both files and appends each value's line to one.
+    const read = async (path: string, line: string, pulled: { count: number }, seen: number[]) => {
+      for await (const value of pacedByAppends(counted(10, pulled), [small, large])) {
+        orderedAppender.append(path, line);
+        seen.push(value);
+      }
+    };
+    await holding(async (calls) => {
+      // Lines below the mark never fill a file: the reader reads every value
+      // while the file's first write is held.
+      orderedAppender.append(small, "w\n");
+      await until("the first write is held", () => calls.length === 1);
+      const pulled = { count: 0 };
+      const seen: number[] = [];
+      await read(small, "y\n", pulled, seen);
+      expect(calls).toHaveLength(1);
+      expect(orderedAppender.full(small)).toBe(false);
+      expect(seen).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      expect(pulled.count).toBe(10);
+    });
+    const pulled = { count: 0 };
+    const seen: number[] = [];
+    let reading!: Promise<void>;
+    await holding(async (calls) => {
+      // Two lines of half the mark exceed it: after the second value the file
+      // is full, and the reader pulls nothing more until it drains.
+      reading = read(large, `${"x".repeat(mark / 2)}\n`, pulled, seen);
+      await until("the first write is held", () => calls.length === 1);
+      await quiet();
+      expect(orderedAppender.full(large)).toBe(true);
+      expect(seen).toEqual([0, 1]);
+      expect(pulled.count).toBe(2);
+    });
+    // Released and drained: the reader goes on to the end.
+    await reading;
+    expect(seen).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(readFileSync(large, "utf8").split("\n").filter(Boolean)).toHaveLength(10);
+    expect(unhandled).toEqual([]);
   });
 });
