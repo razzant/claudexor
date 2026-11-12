@@ -185,7 +185,7 @@ export const COMMAND_TERMINAL_COUNT_SQL = `SELECT count(*) AS n FROM (
  * ends the walk at the cutoff and removes no expired row. A row that breaks
  * this (a clock stepped back, or a creation stamped while the clock ran ahead)
  * is selected once both times have aged: later, never earlier. An imported
- * creation that is not such a timestamp never ages. */
+ * creation that is not such a timestamp may never age. */
 export const COMMAND_PRUNABLE_PAGE_SQL = `SELECT id, run_id, run_dir, continue_from, created_at
   FROM command INDEXED BY command_prunable
   WHERE live = 1 AND kind IN ('product','delivery','maintenance') AND finished_at IS NOT NULL AND needs_decision = 0
