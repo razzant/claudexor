@@ -612,11 +612,10 @@ describe("requirements admission through the production Control API, queue and r
     expect(failed.error ?? "").toMatch(/credential profile is not ready/);
     // The price of checking readiness in the run: preparation already happened.
     expect(existsSync(join(failed.runDir, "events.jsonl"))).toBe(true);
-    expect(failed.events.map((event) => event.type)).toEqual(
-      expect.arrayContaining(["project.git.initialized", "project.claude_bridge.created"]),
-    );
+    expect(failed.events.map((event) => event.type)).toContain("project.git.initialized");
+    expect(failed.events.map((event) => event.type)).not.toContain("project.claude_bridge.created");
     expect(existsSync(join(repo, ".git"))).toBe(true);
-    expect(existsSync(join(repo, "CLAUDE.md"))).toBe(true);
+    expect(existsSync(join(repo, "CLAUDE.md"))).toBe(false);
     expect(recorder.spawns).toEqual([]);
     // Exact Retry is a fresh linked command; it replays the same pin.
     const retried = await http(daemon, "POST", `/runs/${runId}/retry`, {});
