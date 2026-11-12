@@ -1,3 +1,4 @@
+import { HarnessProgramIdentity } from "./harness-program.js";
 import { z } from "zod/v3";
 import { Id, IsoTimestamp, NonBlankString } from "./primitives.js";
 import { HarnessModel, ModelRoutingVariants } from "./harness-model.js";
@@ -14,6 +15,7 @@ import { ControlProblem } from "./problem.js";
 export const ControlHarnessModelsResponse = z
   .object({
     harnessId: z.string().describe("Harness the models belong to."),
+    sourceProgram: HarnessProgramIdentity.nullable().default(null),
     models: z
       .array(HarnessModel)
       .default([])

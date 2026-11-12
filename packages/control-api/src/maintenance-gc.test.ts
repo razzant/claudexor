@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { ControlGcLastResponse, ControlGcReceipt } from "@claudexor/schema";
+import { ControlGcLastResponse, ControlGcReceipt, GcLastPass } from "@claudexor/schema";
 import {
   handleMaintenanceRoute,
   MAINTENANCE_OPERATION_DRAFTS,
@@ -18,7 +18,7 @@ function fixture() {
     freed_bytes: 0,
   });
   const runRetention = vi.fn(async () => receipt);
-  const lastRetention = vi.fn(async () => ({ last: null }));
+  const lastRetention = vi.fn(async (): Promise<ControlGcLastResponse> => ({ last: null }));
   const ctx: MaintenanceRouteContext = {
     services: { runRetention, lastRetention },
     readBody: vi.fn(async () => ({})),
@@ -49,6 +49,27 @@ it("GET reads the saved record only, including absence, and the catalog declares
     }),
   );
 });
+it("rejects unknown GET query parameters but accepts the retention report option", async () => {
+  const unknown = fixture();
+  unknown.req.url += "?unexpected=true";
+  expect(
+    await handleMaintenanceRoute(unknown.ctx, "GET", "/maintenance/gc", unknown.req, unknown.res),
+  ).toBe(true);
+  expect(unknown.ctx.requestError).toHaveBeenCalledWith(
+    unknown.res,
+    expect.objectContaining({ message: "unsupported query parameter: unexpected" }),
+    400,
+  );
+  expect(unknown.lastRetention).not.toHaveBeenCalled();
+
+  const known = fixture();
+  known.req.url += "?retention_report=true";
+  expect(
+    await handleMaintenanceRoute(known.ctx, "GET", "/maintenance/gc", known.req, known.res),
+  ).toBe(true);
+  expect(known.lastRetention).toHaveBeenCalledTimes(1);
+  expect(known.ctx.json).toHaveBeenCalledWith(known.res, 200, { last: null });
+});
 it.each([false, true])("POST exposes new fields only with retention_report=%s", async (optIn) => {
   const f = fixture();
   f.ctx.readBody = async () => ({ retention_report: optIn });
@@ -58,4 +79,38 @@ it.each([false, true])("POST exposes new fields only with retention_report=%s", 
   const body = vi.mocked(f.ctx.json).mock.calls[0]![2];
   expect(Object.hasOwn(body as object, "held")).toBe(optIn);
   expect(Object.hasOwn(body as object, "truncated")).toBe(optIn);
+  expect(Object.hasOwn(body as object, "deleted_lanes")).toBe(optIn);
+  if (!optIn)
+    expect(ControlGcReceipt.omit({ deleted_lanes: true }).safeParse(body).success).toBe(true);
+});
+
+it.each([false, true])("GET exposes history only with retention_report=%s", async (optIn) => {
+  const f = fixture();
+  const last = GcLastPass.parse({
+    outcome: "completed",
+    started_at: "2026-10-27T00:00:00Z",
+    finished_at: "2026-10-27T00:00:01Z",
+    last_completed_at: "2026-10-27T00:00:01Z",
+    failed_or_held_streak: 0,
+    freed_bytes: 0,
+    kept: {},
+    held: {},
+    holds: [],
+    errors: { count: 0, first: null },
+  });
+  f.lastRetention.mockResolvedValue({ last });
+  f.req.url += `?retention_report=${optIn}`;
+  await handleMaintenanceRoute(f.ctx, "GET", "/maintenance/gc", f.req, f.res);
+  const body = vi.mocked(f.ctx.json).mock.calls[0]![2] as ControlGcLastResponse;
+  expect(Object.hasOwn(body.last!, "last_completed_at")).toBe(optIn);
+  expect(Object.hasOwn(body.last!, "failed_or_held_streak")).toBe(optIn);
+  if (optIn) expect(body.last).toEqual(last);
+  else {
+    // Main's strict schema has exactly this pre-history last-pass shape.
+    const mainResponse = ControlGcLastResponse.extend({
+      last: GcLastPass.omit({ last_completed_at: true, failed_or_held_streak: true }).nullable(),
+    });
+    expect(mainResponse.safeParse(body).success).toBe(true);
+  }
+  expect(f.runRetention).not.toHaveBeenCalled();
 });

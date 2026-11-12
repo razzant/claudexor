@@ -75,7 +75,7 @@ afterEachClosed(async () => {
   };
 });
 
-function facts() {
+function facts(generatedAt = TIME) {
   const outcome = makeOutcomeFacts("failed", { reason: "harness_failed" });
   return validateRunFactsInvariants({
     schema_version: SCHEMA_VERSION,
@@ -96,10 +96,12 @@ function facts() {
     review: { state: "not_run", blocker_ids: [], blockers: 0 },
     apply: { eligibility: null, operator_decision_present: false },
     required_actions: requiredActionsFor(outcome, false),
-    generated_at: TIME,
+    generated_at: generatedAt,
   });
 }
-function telemetry(generatedAt = TIME) {
+/** A legacy-shaped hook telemetry carrying the retired `run_facts` mirror: the
+ * terminal-files owner ignores it, never staging or writing telemetry.yaml. */
+function telemetry() {
   return RunTelemetry.parse({
     schema_version: SCHEMA_VERSION,
     run_id: "run",
@@ -111,13 +113,13 @@ function telemetry(generatedAt = TIME) {
     effective_web_mode: "off",
     web: {},
     attempts: [],
-    generated_at: generatedAt,
+    generated_at: TIME,
     run_facts: facts(),
   });
 }
 /** A failed terminal whose journal copy is a large body (its error text). */
-function terminal() {
-  const value = facts();
+function terminal(generatedAt = TIME) {
+  const value = facts(generatedAt);
   return RunEvent.parse({
     seq: 2,
     ts: TIME,
@@ -182,7 +184,7 @@ describe("terminal receipts and bodies are written off the request thread before
   it("publishes staged receipts and adopts the staged journal body inside the synchronous commit", async () => {
     const f = await fixture();
     await f.commands.stageTerminal("job", terminal(), telemetry());
-    expect(f.temps()).toHaveLength(2);
+    expect(f.temps()).toHaveLength(1);
     expect(existsSync(join(f.runDir, "final", "run_facts.yaml"))).toBe(false);
     // Its log ends with a canonical line before the terminal: only its tail was read.
     expect(pool.wholeReads.filter((path) => path.endsWith("events.jsonl"))).toEqual([]);
@@ -191,19 +193,15 @@ describe("terminal receipts and bodies are written off the request thread before
       state: "materialized",
     });
     const receipts = f.writes().filter((write) => write.purpose === "terminal_receipt");
-    expect(receipts).toEqual([
-      expect.objectContaining({ staged: true, written: true }),
-      expect.objectContaining({ staged: true, written: true }),
-    ]);
+    expect(receipts).toEqual([expect.objectContaining({ staged: true, written: true })]);
     const bodies = f.writes().filter((write) => write.purpose === "blob_body");
     expect(bodies.length).toBeGreaterThan(0);
     expect(bodies.filter((write) => write.written)).toEqual([]);
     expect(f.temps()).toEqual([]);
     const receipt = parseYaml(readFileSync(join(f.runDir, "final", "run_facts.yaml"), "utf8"));
     expect(validateRunFactsInvariants(receipt)).toEqual(facts());
-    expect(readFileSync(join(f.runDir, "final", "telemetry.yaml"), "utf8")).toContain(
-      '"run_id": "run"',
-    );
+    // The retired telemetry mirror is not written from the hook's telemetry.
+    expect(existsSync(join(f.runDir, "final", "telemetry.yaml"))).toBe(false);
     expect(readFileSync(join(f.runDir, "events.jsonl"), "utf8")).toContain('"type":"run.failed"');
     expect(f.files.pending("run")).toBe(false);
   });
@@ -218,17 +216,17 @@ describe("terminal receipts and bodies are written off the request thread before
     const timer = setInterval(() => ticks++, 2);
     try {
       const staging = f.commands.stageTerminal("job", terminal(), telemetry());
-      // Both receipts and the large journal body are written on the pool, and held there.
+      // The receipt and the large journal body are written on the pool, and held there.
       const held = () => pool.held.map((path) => basename(path));
       await vi.waitFor(() => {
         expect(held()).toEqual(
           expect.arrayContaining([
             expect.stringMatching(/^\.run_facts\.yaml\./),
-            expect.stringMatching(/^\.telemetry\.yaml\./),
             expect.stringMatching(/^\.[0-9a-f]{64}\./),
           ]),
         );
       });
+      expect(held().some((name) => name.startsWith(".telemetry.yaml."))).toBe(false);
       const before = ticks;
       await new Promise((resolve) => setTimeout(resolve, 60));
       expect(ticks - before).toBeGreaterThan(3);
@@ -247,7 +245,6 @@ describe("terminal receipts and bodies are written off the request thread before
     });
     expect(f.writes().filter((write) => write.purpose === "terminal_receipt")).toEqual([
       expect.objectContaining({ staged: true }),
-      expect.objectContaining({ staged: true }),
     ]);
   });
 
@@ -258,7 +255,7 @@ describe("terminal receipts and bodies are written off the request thread before
     const line = JSON.stringify(terminal());
     writeFileSync(join(f.runDir, "events.jsonl"), created + line.slice(0, 80));
     await f.commands.stageTerminal("job", terminal(), telemetry());
-    expect(f.temps()).toHaveLength(3);
+    expect(f.temps()).toHaveLength(2);
     expect(f.commands.persistTerminal("job", terminal(), telemetry())).toEqual({
       state: "materialized",
     });
@@ -285,19 +282,15 @@ describe("terminal receipts and bodies are written off the request thread before
   it("writes on the request thread what changed after staging and drops the stale temp", async () => {
     const f = await fixture();
     await f.commands.stageTerminal("job", terminal(), telemetry());
-    const changed = telemetry("2026-11-02T00:00:01.000Z");
-    expect(f.commands.persistTerminal("job", terminal(), changed)).toEqual({
+    const changed = terminal("2026-11-02T00:00:01.000Z");
+    expect(f.commands.persistTerminal("job", changed, telemetry())).toEqual({
       state: "materialized",
     });
     const receipts = f.writes().filter((write) => write.purpose === "terminal_receipt");
-    expect(receipts).toEqual([
-      expect.objectContaining({ staged: true, written: true }),
-      expect.not.objectContaining({ staged: true }),
-    ]);
-    expect(receipts[1]).toMatchObject({ written: true });
-    expect(readFileSync(join(f.runDir, "final", "telemetry.yaml"), "utf8")).toContain(
-      "2026-11-02T00:00:01.000Z",
-    );
+    expect(receipts).toEqual([expect.not.objectContaining({ staged: true })]);
+    expect(receipts[0]).toMatchObject({ written: true });
+    const receipt = parseYaml(readFileSync(join(f.runDir, "final", "run_facts.yaml"), "utf8"));
+    expect(validateRunFactsInvariants(receipt)).toEqual(facts("2026-11-02T00:00:01.000Z"));
     expect(f.temps()).toEqual([]);
   });
 
@@ -305,7 +298,7 @@ describe("terminal receipts and bodies are written off the request thread before
     const f = await fixture();
     await f.commands.stageTerminal("job", terminal(), telemetry());
     const staged = f.temps();
-    expect(staged).toHaveLength(2);
+    expect(staged).toHaveLength(1);
     const bodies = readdirSync(f.blobs.dir).filter((name) => !name.endsWith(".tmp"));
     // The process dies before the synchronous terminal commit ran.
     await f.store.close();

@@ -1,5 +1,41 @@
 # @claudexor/event-log
 
+## 6.0.0
+
+### Patch Changes
+
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/util@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- b1320a9: Antigravity (`agy`) text that streams before a failed turn is now kept exactly and pointed to, while the run still fails. Each `text_delta` frame is a non-final stream fragment, so the retained output, the in-run continuation packet and reviewer transcripts join fragments byte for byte, keeping whitespace-only and repeated frames, instead of one trimmed section per fragment. A reviewer's complete message (its final or a failed result's response) still starts its own line after the fragments. One shared rule now decides when a complete message exactly repeats unkeyed streamed text from the start of a run of fragments, including text split by tool calls or thoughts, so the findings parser reads it once and the retained output no longer shows a failed response that repeats its fragments a second time; carrying that final answer leaves out the streamed blocks it repeats. A suffix that begins inside one uninterrupted run is not a repetition, text a speech key identifies keeps its own identity (#568), and a typed final ends its turn, so an equal later message stays. Fragments of a reviewer speech the harness states abandoned (Claude's text before an API retry) leave the findings parser input while the transcript keeps them, so their unfinished JSON can no longer hide the retried response's findings or clean answer. A `[]` draft glued to its answer on one line (`[][...]`) no longer reads as a clean review: adjacent payloads separated only by spaces or tabs are read, and an unreadable adjacent payload leaves the reviewer unhealthy. Without a parseable fence, one structural pass over every line-start `[` and `{` runs before any candidate bound, so a line start nested in an earlier multiline payload of either bracket is no longer read as the newest answer. A review is malformed (its reviewer unhealthy, never clean, with any findings it read kept) when, after the first payload read, the text holds another value that opens like JSON and is not an exact copy of one read: another answer, JSON of the wrong schema, an object or an empty answer beside findings, a closed fence that does not parse, a value that closes on the wrong bracket or never closes, or more such values than the parser examines; one-line payloads nested in a span the reader could not read count too. A closed fence or value before the first payload read is an example or a draft and is not counted, on the fenced path as on the bare one. Bracketed prose such as `[x]` or `[1]` and exact copies of the answer pass. An example finding in prose after `[]` therefore reads as malformed rather than clean; the newest-line choice and the preference for array lines over object lines are unchanged. A non-`SUCCESS` result is never an answer: its response stays retained evidence, and the result's own status and error words reach the failed try's account row and the run's failure record as opaque vendor evidence, including on a zero exit. A stream that ends without its terminal result is now an honest failure instead of an Ask answer made from narration. A failed run that retained text names `final/retained-output.md` in its failure record (`logRefs`) and, right after the failure's first line (its cause) and before the account attempts, says that text is not an accepted final answer, so a reader that shortens the record still sees it unless the cause line and the notice together exceed the reader's bound. The record is replaced atomically: a failed replacement keeps the announced output and the original record and is reported on its own, and a later terminal-facts failure record names the file too. An attempt that errored without an accepted final no longer reports `footer_missing` (or a work-report contract failure) from text that never became an answer. A packet continuation keeps the complete retained text beside its evidence index and references it; native continuations still rely on the vendor's history. Continuation notices no longer say the previous process "died", and decision evidence no longer says an errored attempt "produced no work". In Agent candidates, Antigravity fragments now count toward the existing live preview cap of 4,000 fragments per attempt: past it live observers stop receiving them, while the journal, replay and retained output stay complete. The macOS transcript now groups stream fragments as sent by the engine, per physical try: one try's final no longer hides a later try's text, a Claude live message that runs as the next turn of the same session streams again, and concurrent candidates' text never joins. The text of a Claude response the CLI abandoned before retrying it stays beside the retried response, whose complete text replaces only its own block.
+- b9f57d9: Continuation packets and D-16d checkpoints no longer drop a run's own recorded output because the carried answer, report or prompt contains its words (#568). Only the carried final itself is left out, with its keyed fragments and exact adjacent repeats; other attempts, earlier tries and earlier turns keep their messages whatever their text. `final/retained-output.md` groups keyed text by its speech key and keeps each native turn's final separate. In a Claude `text_runs_joined` response, the one deferred frame of a run of text blocks names the keys it joins (`payload.joined_speech_keys`) and becomes their single block when its words are exactly theirs; otherwise every block stays as recorded. Limits: a represented try without a typed final is still left out whole, since its joined narration is the answer; more evidence now competes for the bounded evidence section, whose cut stays marked; when the represented try is unknown nothing is left out, so the answer can appear twice; the earlier carried-text argument and option are still accepted and ignored.
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+
 ## 5.0.2
 
 ### Patch Changes

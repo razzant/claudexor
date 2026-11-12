@@ -94,11 +94,15 @@ Control-api tests load the built worker (`dist/bulk-worker.js`); run `pnpm --fil
 
 There is no root `pnpm lint` script at the moment. `pnpm format:check` checks
 Prettier formatting when a formatting pass is relevant. Note on Node versions:
-`.node-version` pins the development toolchain (24.16.0, matching CI); the
-supported engine floor is Node 24.15.0 with bundled SQLite 3.51.3 or newer.
-CI runs positive store coverage on 24.15.0 and 24.16.0 and proves typed refusal
-on Node 20.19.0. Publication repeats a clean installed-package CLI smoke on the
-published floor and pin before the GitHub Release becomes public.
+`.node-version` pins the development toolchain and the Node that releases ship
+(24.22.3, matching CI): the app's bundled `node` and the
+[SSH runtime archives](ARCHITECTURE.md#remote-ssh-execution). An engine-only
+update does not replace the app's Node. The supported engine floor is Node
+24.15.0 with bundled SQLite 3.51.3 or newer; 24.x releases before 24.22.3 lack
+Node's November 2026 security fixes, so npm installations should run the pin or
+newer. CI runs positive store coverage on 24.15.0 and 24.22.3 and proves typed
+refusal on Node 20.19.0. Publication repeats a clean installed-package CLI
+smoke on the published floor and pin before the GitHub Release becomes public.
 
 macOS app checks:
 
@@ -138,10 +142,18 @@ independently, as described below. Missing signing/notary/npm credentials fail;
 there is no unsigned or GitHub-only fallback. npm packages publish in dependency
 order with provenance. An existing package is accepted only when its signed npm
 provenance binds this repository's release workflow, exact tag/commit and published
-digest; a collision fails. Eventual-consistency reads are bounded. The GitHub
+digest; a collision fails. Within one run, a named network failure permits at most
+three attempts of the same packed file, with a registry read before every retry.
+An exposed version then needs that file's original digest; a successful npm
+acknowledgement never permits another publish while indexing or attestations lag.
+Unknown outcomes stay unresolved. Transient registry reads are bounded separately
+from publishing; auth, digest and provenance failures are not retryable. The GitHub
 Release stays draft until all publication checks pass, rejects differing
-same-name assets, and becomes public as the final mutation. Published releases
-are never edited. Versions still use changesets and the fixed lockstep group.
+same-name assets, and becomes public as the final mutation. A published release's
+assets and tag are never changed, and the workflow refuses to touch a published
+release. A factual error in its notes is corrected by a maintainer in place, with a
+dated sentence, and in `CHANGELOG.md`. Versions still use changesets and the fixed
+lockstep group.
 
 A publish run can stop after npm accepted some of its packages, for example when
 npm had not yet exposed the last one by the end of its exposure wait. What that
@@ -239,12 +251,9 @@ emits a regular-file/directory-only tarball for extractors without POSIX
 symlink semantics. It rejects escaping links, special files, and `.node`
 addons. The closure includes both top-level `claudexord.bundle.cjs` and
 `claudexor.bundle.cjs`, while Node remains host-owned. Embedders keep one exact
-tested full Node toolchain plus protocol/separate daemon-and-CLI
-entrypoints/size in their reviewed pin; local harness installation
-requires the toolchain's own adjacent npm entrypoint
-(`lib/node_modules/npm/bin/npm-cli.js` beside `bin/node`, or
-`node_modules\npm\bin\npm-cli.js` beside `node.exe`) and must never fall back
-to ambient PATH npm. The npm `engines` range
+tested Node runtime plus protocol/separate daemon-and-CLI
+entrypoints/size in their reviewed pin. Vendor installation uses adapter-declared
+commands and requires no adjacent npm. The npm `engines` range
 is not closure-smoke evidence. The existing signed manifest is the publication
 authority used to form that pin; runtime consumers may verify it directly or
 rely on a review-bound exact URL/`buildSha`/SHA-256/size pin, without a second
@@ -252,18 +261,45 @@ manifest or verifier. The focused builder test must cover an internal link's
 expected materialized bytes and an escaping-link refusal. A Windows claim also
 requires a native extract/exact-Node probe/isolated handshake/graceful-stop
 smoke; feature support must not be inferred from portable extraction alone,
-and local Windows harness installation uses the declared native or Node npm
-entrypoint for Codex and Claude. The release smoke retries only retryable stop
+and individual Windows harness routes need their own execution evidence. The release smoke retries only retryable stop
 refusals, for at most 30 seconds, and reports an empty, non-JSON or refused stop
 answer with the stop command's exit code;
 `scripts/lib/release-windows-stop.test.mjs` runs that exact loop from the
 workflow under pwsh with a fake `node` and daemon, checks the 30-second window
 against the loop's virtual pauses plus measured elapsed time, and fails on
-GitHub Actions when pwsh is missing. The Windows CI lane must prove managed and
-ordinary npm-prefix launch and the selected exact vendor version before a release claims
-that platform path; a newer default Codex install is not release-tested native
-app-server compatibility merely because its package/version proof passed. Other installer recipes retain their typed platform bounds;
-custom batch programs are not implicitly interpreted as npm launchers.
+GitHub Actions when pwsh is missing. The required `vendor-programs` Linux/macOS
+job and one Windows test runner execute `scripts/vendor-program-smoke.mjs`.
+The proof installs every declared vendor route, compares its receipt to the next
+selection and native run preparation without login, repeats Install as a no-op,
+runs the program's own updater, and converts a previous release installed by real
+npm for each of the four declared product packages. A failed Update counts as a
+vendor refusal only when the program still answers and the identical command
+also fails directly under the runner environment; a direct success or launch
+error fails the route. A known older
+replacement must preserve npm and is reported as a guarded refusal. Every route
+is attempted before the script fails. Versions come only from the programs.
+Windows phases run in order against the ephemeral runner's actual profile and
+standard folders, because winget/MSI ignore a fictitious LOCALAPPDATA; POSIX uses
+disposable homes. The script requires GitHub Actions and must never run on an
+operator machine. These facts establish no login, model or app-server compatibility.
+Cursor Windows (#667) and OpenCode unattended Windows installation/second line
+(#668) remain absent capabilities. Existing standard npm launcher resolution is
+still tested; custom batch programs are not interpreted as npm launchers.
+
+`scripts/harness-program-freshness.mjs` joins the model-hints release gate. It
+fetches each distinct adapter-declared newest source, applies the shared pick
+rule and supported-major guard, and runs each distinct declared executable verb
+with `--help` where the program is present. Missing programs and script-only
+commands are explicitly skipped, never passed. It never runs an installer.
+Use `--sources-only` on a shared machine to avoid even probing installed programs.
+The data's release-notes links are literal verified vendor addresses. Fixture
+version constants stamp recordings and snapshots only. Focused cache regressions
+must include 18-account passive reads for answered and permanently mute programs,
+a failed fresh ask preserving an earlier answer, an unchanged wrapper refreshed
+when inventory, a fresh read or a native startup frame obtains a different
+version (continued missing answers cannot reveal its changed target), and
+late-answer and credential-invalidation fences. Conversion recovery tests kill a child with its package hidden and
+assert both retirement and restoration on the next explicit maintenance.
 
 The `publish` mode also carries `remote_runtime_manifest_b64`:
 the OWNER-SIGNED four-target SSH runtime manifest, transported the same way.
@@ -339,6 +375,17 @@ the system ones, so CI and other machines work unchanged:
   working Node instead of an ad-hoc Homebrew one it would otherwise SIGKILL; see
   `docs/ARCHITECTURE.md`. The prepend is skipped when the daemon's own Node is
   the at-risk build.
+
+### Retention changes
+
+Exercise concurrent registration, relink/removal, late continuation/session ownership and
+recovery through the real SQL observer. Prove both unrelated cleanup progress and preservation
+of newly owned bytes; an unreadable changed owner must stay latched after its queue entry is
+consumed. Lane tests cover an unregistered namespace after its last thread/root record disappears,
+as well as a live ephemeral thread and quarantined/archived lane owners. Keep the [retention contract](ARCHITECTURE.md#7-control-api) and storage FEATURES row
+with the implementation. Last-pass tests exercise failure/hold streaks, preservation of the
+previous completion (including a failed durability barrier), preview/truncation, and reset
+only on completion. Regenerate the schema and its consuming fixtures together.
 
 ### Deterministic / hermetic testing
 

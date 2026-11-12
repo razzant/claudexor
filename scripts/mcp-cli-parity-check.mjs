@@ -198,7 +198,7 @@ const BOOLEAN_FLAG_MAP = {
   },
   "release-tested": {
     mcp: null,
-    reason: "harness install version selection (subcommand plumbing, not a run control)",
+    reason: "retired harness install spelling, parsed only to return its explicit refusal",
   },
   yes: {
     mcp: null,
@@ -216,6 +216,10 @@ const BOOLEAN_FLAG_MAP = {
   override: { mcp: null, reason: "decision subcommand flag" },
   revert: { mcp: null, reason: "decision subcommand flag" },
   discard: {
+    mcp: null,
+    reason: "decision subcommand flag; public MCP has no result-disposition mutation tool",
+  },
+  taken: {
     mcp: null,
     reason: "decision subcommand flag; public MCP has no result-disposition mutation tool",
   },
@@ -256,8 +260,6 @@ const CLI_ONLY_EXEMPT = {
     "native prompt-cache lifetime; embedder contract is CLI/HTTP-first and delegation-belt children inherit the parent's captured value, so no MCP argument is exposed",
   "prompt-file":
     "terminal input plumbing (file/stdin prompt sources); MCP callers pass the prompt inline",
-  target:
-    "harness-install destination; operator/embedder provisioning surface, while MCP exposes no harness-install tool",
   thread:
     "thread continuation is a CLI/HTTP embedder handle routed through POST /threads/:id/turns (D10); MCP continues threads through claudexor_thread_turn, not a one-shot argument",
   mode: "MCP encodes the mode in the TOOL NAME (claudexor_ask/plan/run/best_of/...)",

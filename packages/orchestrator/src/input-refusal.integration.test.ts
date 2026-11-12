@@ -545,6 +545,7 @@ it.each([
         "Update the Claude Code CLI at /fixture/claude",
       );
       expect(failure.nextActions.join(" ")).toContain(version);
+      expect(failure.nextActions.join(" ")).toContain("claudexor harness update claude --yes");
     }
   },
 );

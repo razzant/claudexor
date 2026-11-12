@@ -18,6 +18,7 @@
  * and `continueFrom`.
  */
 import { commandOutcomeLabel, type ResumableCause } from "@claudexor/schema";
+import { wholeCharPrefix } from "@claudexor/util";
 
 /** Admitted steering message of the predecessor (POST /v2/runs/:id/messages). */
 export interface EvidenceSteering {
@@ -55,7 +56,8 @@ export interface EvidenceToolCall {
   resolved: boolean;
   /** A recorded non-ok outcome of that result or completion (completed is not success). */
   outcome?: "error" | "cancelled" | "denied";
-  /** The result's stored `command_outcome` (#450), when it reported one. */
+  /** The result's stored `command_outcome` (#450), when it reported one, or
+   * the later refinement of it (#546). */
   commandOutcome?: unknown;
   /** An untyped edit frame repeated: the repeat may be its completion or another start. */
   unconfirmed?: true;
@@ -108,15 +110,6 @@ export const EVIDENCE_TOOL_ROWS = 60;
 
 function bytes(text: string): number {
   return Buffer.byteLength(text, "utf8");
-}
-
-/**
- * The first `units` UTF-16 code units of `text`, one fewer when that cut would
- * split a surrogate pair (its lone half reads as U+FFFD). Shorter text and a
- * lone surrogate already in the source are kept exactly.
- */
-export function wholeCharPrefix(text: string, units: number): string {
-  return text.slice(0, (text.codePointAt(units - 1) ?? 0) > 0xffff ? units - 1 : units);
 }
 
 /** Truncate to at most `maxBytes` UTF-8 bytes on a safe char boundary. */
@@ -310,7 +303,8 @@ export function uncoveredWorkSection(work: UncoveredWork): string {
 function toolRow(call: EvidenceToolCall): string {
   const target = call.target ? ` — ${wholeCharPrefix(call.target.replace(/\s+/g, " "), 160)}` : "";
   // A recorded result whose command was moved to the background, timed out or
-  // ended unknown is not a completed command (#450).
+  // ended unknown is not a completed command (#450); neither is one whose later
+  // reported completion carried no exit code (#546).
   const unconfirmed = call.resolved ? commandOutcomeLabel(call.commandOutcome) : null;
   const state = unconfirmed
     ? `unconfirmed: ${unconfirmed}`

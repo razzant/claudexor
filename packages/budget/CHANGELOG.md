@@ -1,5 +1,40 @@
 # @claudexor/budget
 
+## 6.0.0
+
+### Patch Changes
+
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/util@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- 35a2462: A usage event that reports `cost_usd: 0` now counts as a reported amount instead of looking like no data (#171). In Agent, Ask, Plan, Deep Scan and review panels, the zero keeps its cash, valuation or unknown meaning and its exact or estimated status: it gets a `budget.observation` spend row and a settlement labelled as usage rather than usage missing, an estimated zero sets the attempt record's `cost_estimated`, and CLI follow output prints the row as `spend +$0.0000`. A zero valuation now reaches `budget.cash`, the decision record and the run budget as a known `$0` valuation instead of unknown. Each lane's spend row names its amount's meaning in a new `amount_kind` field; a review panel's aggregate row, written after its settlement, carries separate cash, valuation and unknown totals instead. Before the first settlement the run budget reads as it did before: spend is an estimate and a zero row adds no total, certainty or valuation, so an exact `$0` appears only once the ledger settles, and a paid try of the same attempt that reported nothing, before or after the zero, leaves it unknown there. A clean attempt's routing cost average takes a zero sample only from a reported cash receipt whose total is known, so one free API-key attempt moves the average toward zero instead of erasing it. An absent amount stays unobserved. Included work with known controllable cash, a zero valuation, a generic Raw API instance that declares no USD unit and an earlier unpriced paid interval still clear the average as unpriced and never become a free sample. Positive amounts, finite-cap behaviour, unobserved allowance debits and the reading of existing records are unchanged.
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+
 ## 5.0.2
 
 ### Patch Changes

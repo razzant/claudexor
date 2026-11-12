@@ -303,8 +303,9 @@ export async function enqueueAndAwait(
     internalDaemonEnqueue?: boolean;
     startTimeoutMs?: number;
     /** Invoked each terminal-wait iteration once the run is bound (MCP uses
-     * this to bridge pendingInteractions -> host elicitation). Awaited: a
-     * long answer round-trip pauses status polling, never the run itself. */
+     * this to bridge pendingInteractions -> host elicitation). Awaited: it
+     * must return promptly, or status polling and the terminal wait stop;
+     * the interaction bridge asks its prompts beside this loop. */
     onPollTick?: (info: { runId: string }) => void | Promise<void>;
   } = { waitForTerminal: true },
 ): Promise<DaemonRunOutcome> {

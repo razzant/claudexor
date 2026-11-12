@@ -1,3 +1,5 @@
+import { observeHarnessProgram } from "@claudexor/core";
+import { CODEX_PROGRAM } from "./program.js";
 import {
   prepareHarnessCommand,
   killOwnedProcessTree,
@@ -17,7 +19,7 @@ import { EffortHint, effortLevelsForModel, mergeEffortLadders } from "@claudexor
 import { effortLadders, resolveEffortEvidence } from "@claudexor/core";
 import { readCodexProcessingModels } from "./processing.js";
 import type { ProcessingCapability, HarnessModel } from "@claudexor/schema";
-import { BIN, probeEnv } from "./missing-cli.js";
+import { resolveCodexBin, probeEnv } from "./missing-cli.js";
 import { CODEX_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 
 export type CodexEffortCapability = Record<string, ModelEffortCapability>;
@@ -418,13 +420,14 @@ export async function codexEffortCapability(
   bin: string,
   env?: NodeJS.ProcessEnv,
 ): Promise<{ catalog: CodexEffortCatalog; live: boolean }> {
+  const generation = codexEffortCacheGeneration;
   const now = nowMs();
-  const key = codexEffortCacheKey(bin, env);
+  const program = await observeHarnessProgram(CODEX_PROGRAM, env, bin);
+  const key = JSON.stringify([codexEffortCacheKey(bin, env), program.key]);
   const cached = codexEffortCache.get(key);
-  if (cached && cached.expiresAtMs > now) {
+  if (generation === codexEffortCacheGeneration && cached && cached.expiresAtMs > now) {
     return { catalog: cached.catalog, live: cached.live };
   }
-  const generation = codexEffortCacheGeneration;
   const probed = await probe(bin, env);
   const live = probed !== null;
   const catalog = probed ?? CODEX_EFFORT_SNAPSHOT;
@@ -458,7 +461,12 @@ export async function codexEffortsForEnv(
   deps: { probeEfforts: CodexEffortProbe; nowMs: () => number },
   envPatch?: Record<string, string | null | undefined>,
 ): Promise<{ catalog: CodexEffortCatalog; live: boolean }> {
-  return await codexEffortCapability(deps.probeEfforts, deps.nowMs, BIN, probeEnv(envPatch));
+  return await codexEffortCapability(
+    deps.probeEfforts,
+    deps.nowMs,
+    resolveCodexBin(),
+    probeEnv(envPatch),
+  );
 }
 
 /** The ONE effort result of a codex route: arg builders send `resolution.submitted`,

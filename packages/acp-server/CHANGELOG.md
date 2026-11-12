@@ -1,5 +1,100 @@
 # @claudexor/acp-server
 
+## 6.0.0
+
+### Patch Changes
+
+- f4f8caf: Questions now say whether the agent waits for the answer (#628). Each pending
+  question carries `delivery`: `blocking` (every question so far, and the
+  meaning of a stored question without the field) or `async`, a question the
+  agent asks while it keeps working. An async question is still attention: it
+  sets `waitingOnUser`, wakes `claudexor_run_wait`, and can be answered through
+  the same routes. It does not pause the inactivity watchdog or refuse live
+  messages, and the new run-summary flag `asyncQuestionsOnly` is true only while
+  every pending question is async, so a blocking question is never hidden behind
+  one. `claudexor follow`, ACP and the macOS app no longer call such a run paused
+  or waiting: they keep it working, say that silence or expiry sends nothing,
+  and a blocking question is asked before an open async prompt. ACP and MCP
+  answer prompts for an async question no longer hold the run's terminal; they
+  close when the question is answered elsewhere or the run ends. In the macOS app a
+  run that has ended no longer shows a question card, a Send button or a question
+  state while its last snapshot still lists the question; a late answer the engine
+  refuses reads as a sentence saying it was not sent, instead of a raw HTTP error;
+  the deadline label keeps counting down; and an async question between the last
+  message and the final answer no longer leaves a copy of that answer in Activity.
+
+  A failed answer surface is no longer reported as the user's decline. When the
+  engine cannot register or keep a question, the run's interaction channel now
+  rejects with the cause instead of returning "no answer"; a question that was
+  never registered is not announced. A Codex approval or access request whose
+  answer channel failed stays declined and records `interaction_answer_unavailable`
+  instead of failing the run. A failed read of a run's pending questions is no
+  longer reported as having none: `GET /v2/runs/:id` for a live run answers with
+  the typed problem, so an open prompt stays open and a kept answer is retried,
+  while a finished run's detail, a run list and a child card still render.
+
+  A Codex app-server run now raises Codex's `request_user_input_async` as such a
+  question: one async interaction per native item, with Codex's own question ids
+  and options. Its text stays visible as an agent message but is never taken as
+  the run's answer, even when the turn produced no other text. A committed answer
+  goes to the turn that asked, once, as Codex's reply envelope (`turn/steer` with
+  client message id `interaction-answer:<id>`), and each send leaves an
+  `interaction_answer_steer` receipt. The end of that turn,
+  Stop and the run's end withdraw an open question and send nothing. A sub-agent's
+  question cannot be answered, and a question Claudexor cannot read, a run without
+  an answer channel and a failing channel are recorded as
+  `interaction_answer_unavailable`. This follows the Codex 0.162.1 source; it was
+  not checked against a live Codex run.
+
+- f4f8caf: An ACP prompt for a blocking question no longer holds the turn. `session/cancel`
+  now reaches a run that is parked on a question, and a prompt whose question was
+  answered elsewhere, expired or outlived its run closes without the editor
+  replying. The agent stays parked until its question is settled, a turn that was
+  cancelled no longer reports a run still paused, and a prompt that fails still
+  fails the turn.
+- b9e88de: Interaction text reaches callers exactly (#651). The Codex access question
+  now quotes the worker's complete final output instead of silently cutting it
+  at 32,000 characters. A Codex approval refused for details over the
+  32,000-character review limit now says so, with the measured size, instead of
+  the generic "cannot grant" reason; readonly and workspace_write command refusals
+  keep their priority. The bounded display labels (a harness event's timeline
+  `title` and a Claude question's preview text) end in a visible "…" and never
+  split a character; the complete text still rides beside them.
+  `claudexor_run_wait` reports `wakeReason: "interactions"` when the next event is
+  a question too large for any page. Each ACP multi-select include/skip round
+  shows every option of the question with its description.
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/util@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- 8de1106: A Cursor command handed to a background shell no longer reads as running forever. The handoff now says "Handed off to background; completion not observed" (after its timeout when the 30-second shell timeout moved it) instead of "still running". When Cursor later reports, in a `system/task_notification` frame, that this shell ended with `success`, `error` or `aborted`, Claudexor updates the same command instead of dropping the frame as unrecognized: a `status` event with `payload.code: command_outcome_refined` names the original tool call and carries the refined `command_outcome` (`completion_reported` with that word, the handoff facts kept), and the complete native frame is kept as evidence. The exit code stays unknown, because the frame has no typed one and free-text detail is not parsed, so the command reads "Completion reported; exit code unknown" or "Completion reported (error); exit code unknown". It is never shown as a success, a passing test or a recovery from an earlier failure. The run's telemetry keeps each report as a command fact (`reported_command_outcomes`) that `claudexor inspect` lists apart from tool errors: the tool call itself stays `ok`, and a reported `error` or `aborted` is no tool warning, failed attempt or ranking penalty, since a deliberately stopped dev server may simply have finished correctly. The macOS transcript updates that command's row in place (found by its exact tool-use id, never by name, and never to green), the run timeline shows the update as a warning row, and the continuation packet carries the refined outcome. ACP sends one more `tool_call_update` for the already closed call with its new text and `_meta`, leaving `status` out so the terminal `failed` stands. `claudexor acp serve` now actually streams tool activity: its run event feed, which carried only timer notices, also delivers each tool call, its result and these refinements (never narration or thinking), and each ACP call id names the run and try that issued it, so tries or turns that reuse a native id stay separate calls. The macOS transcript pairs a result only with its own try's call of the same tool-use id; a result whose call never arrived gets its own row instead of closing another open command, and an id-less result closes only the one open id-less call of its exact name in its try when the name fits the existing tool-field limit; longer names remain separate rows. `claudexor inspect` says how many reported outcomes it shows of the total. A notification that names no pending handoff of the same session (an unknown or progress id, a duplicate, a shell id shared by two pending handoffs) or carries any other status changes nothing and stays counted as an unrecognized frame. The frame shape follows one native cursor-agent 2026.08.11 run and that build's stream writer; no sanitized recording exists yet (razzant/claudexor#546).
+- 2be1a9c: Questions Claude Code asks through `AskUserQuestion` now reach every answering surface without the former length cuts (2,000 characters for a question, 100 for a header, 500 for an option label and 1,000 for a description), and a selected long label goes back unchanged (#560). Non-blank free text is sent as written; `claudexor follow` and the macOS card take one line per question. The daemon refuses an answer row that names a question the interaction does not list, repeats a question, or carries neither a label nor non-blank text (`rejected`), and the question stays pending; partial answers, the empty-set decline and selected labels are handled as before. A pending question that no live session holds is answered `not_found` instead of `delivered`, and `delivered` does not prove that the Claude process read the answer. In ACP, each permission prompt now also shows the question's header and option descriptions, a multi-select question with every option skipped is left out instead of sent as an empty row, and a turn-text message names every question left without an answer: with nothing chosen the run stays paused on the set until it is answered elsewhere or expires, and otherwise the message says the chosen answers will be submitted as a partial answer that closes the set once it is accepted. The macOS question card wraps long option labels and scrolls long questions inside a bounded area. No live Claude CLI was run for this change, and the cause of the incident reported in #560 is not established.
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+
 ## 5.0.2
 
 ### Patch Changes

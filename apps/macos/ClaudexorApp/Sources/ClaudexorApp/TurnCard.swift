@@ -183,8 +183,8 @@ struct TurnCard: View {
                 // PlanQuestionCard placement below. D42 retired TaskDetailView, the
                 // pinned InteractionCard's only surface, leaving AppModel
                 // .answerInteraction with no UI caller — this restores it so a
-                // pending interaction is always answerable in default config.
-                ForEach(run.pendingInteractions) { pending in
+                // question is answerable while the run is live (`openQuestions`).
+                ForEach(run.openQuestions) { pending in
                     InteractionCard(interaction: pending)
                 }
                 // D17: a plan that came back needs_answers surfaces its open

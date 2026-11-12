@@ -235,3 +235,52 @@ describe("thread PATCH forwarding (release wave round-7 tier1 blocker)", () => {
     rmSync(repo, { recursive: true, force: true });
   });
 });
+
+describe("thread turn resource holder forwarding (#249)", () => {
+  it("resolves a same-key create of a recorded turn as that turn, a new turn with no holder", async () => {
+    const holders: unknown[] = [];
+    const resources = {
+      resolve: (_refs: unknown, heldBy?: unknown) => {
+        holders.push(heldBy);
+        return [];
+      },
+    };
+    const recorded = { id: "tn-recorded" };
+    const threads = {
+      getThread: () => undefined,
+      stageTurnPrompt: async () => {},
+      findTurnByIdempotency: (_id: string, idempotency: { key: string }) =>
+        idempotency.key === "create-key" ? recorded : undefined,
+      createTurn: (_id: string, _prompt: string, input: { idempotency?: { key: string } }) =>
+        input.idempotency?.key === "create-key" ? recorded : { id: "tn-new" },
+    };
+    const services = controlServices(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      threads as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      (() => resources) as never,
+      undefined as never,
+      createAccountEvidence(),
+      () => [],
+    );
+    const refs = [{ resourceId: "res-1" }];
+    const create = (key: string) =>
+      services.createThreadTurn("th-1", "p", {
+        attachments: refs,
+        idempotency: { key, client: "control-api", request: { threadId: "th-1" } },
+      });
+    expect(await create("create-key")).toBe(recorded);
+    expect(await create("new-key")).toEqual({ id: "tn-new" });
+    // The production lazy resource accessor carries the holder; it never drops it.
+    await services.validateResources(refs, { owner: "turn", id: "tn-recorded" });
+    expect(holders).toEqual([
+      { owner: "turn", id: "tn-recorded" },
+      undefined,
+      { owner: "turn", id: "tn-recorded" },
+    ]);
+  });
+});

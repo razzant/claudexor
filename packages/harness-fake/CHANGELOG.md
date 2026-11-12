@@ -1,5 +1,85 @@
 # @claudexor/harness-fake
 
+## 6.0.0
+
+### Patch Changes
+
+- f4f8caf: Questions now say whether the agent waits for the answer (#628). Each pending
+  question carries `delivery`: `blocking` (every question so far, and the
+  meaning of a stored question without the field) or `async`, a question the
+  agent asks while it keeps working. An async question is still attention: it
+  sets `waitingOnUser`, wakes `claudexor_run_wait`, and can be answered through
+  the same routes. It does not pause the inactivity watchdog or refuse live
+  messages, and the new run-summary flag `asyncQuestionsOnly` is true only while
+  every pending question is async, so a blocking question is never hidden behind
+  one. `claudexor follow`, ACP and the macOS app no longer call such a run paused
+  or waiting: they keep it working, say that silence or expiry sends nothing,
+  and a blocking question is asked before an open async prompt. ACP and MCP
+  answer prompts for an async question no longer hold the run's terminal; they
+  close when the question is answered elsewhere or the run ends. In the macOS app a
+  run that has ended no longer shows a question card, a Send button or a question
+  state while its last snapshot still lists the question; a late answer the engine
+  refuses reads as a sentence saying it was not sent, instead of a raw HTTP error;
+  the deadline label keeps counting down; and an async question between the last
+  message and the final answer no longer leaves a copy of that answer in Activity.
+
+  A failed answer surface is no longer reported as the user's decline. When the
+  engine cannot register or keep a question, the run's interaction channel now
+  rejects with the cause instead of returning "no answer"; a question that was
+  never registered is not announced. A Codex approval or access request whose
+  answer channel failed stays declined and records `interaction_answer_unavailable`
+  instead of failing the run. A failed read of a run's pending questions is no
+  longer reported as having none: `GET /v2/runs/:id` for a live run answers with
+  the typed problem, so an open prompt stays open and a kept answer is retried,
+  while a finished run's detail, a run list and a child card still render.
+
+  A Codex app-server run now raises Codex's `request_user_input_async` as such a
+  question: one async interaction per native item, with Codex's own question ids
+  and options. Its text stays visible as an agent message but is never taken as
+  the run's answer, even when the turn produced no other text. A committed answer
+  goes to the turn that asked, once, as Codex's reply envelope (`turn/steer` with
+  client message id `interaction-answer:<id>`), and each send leaves an
+  `interaction_answer_steer` receipt. The end of that turn,
+  Stop and the run's end withdraw an open question and send nothing. A sub-agent's
+  question cannot be answered, and a question Claudexor cannot read, a run without
+  an answer channel and a failing channel are recorded as
+  `interaction_answer_unavailable`. This follows the Codex 0.162.1 source; it was
+  not checked against a live Codex run.
+
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/core@6.0.0
+  - @claudexor/util@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- 8905c72: Add exact thread export (`claudexor thread export`, `GET /v2/threads/:id/export`) and conditional retirement against that export (`claudexor thread-retire`, `POST /v2/threads/:id/retire`), with `POST /v2/threads/:id/retire/abandon` to settle an unanswered operation and `GET /v2/threads/:id/retirement` (`claudexor thread retirement`) to read its outcome. A partial export names each gap and cannot retire. Retirement reaches only what a recorded real session proved, currently Claude 2.1.316 transcripts and spilled tool output on Darwin; any other host platform or session material is a named gap, exported byte-exact only where its harness declares its layout. A name the bundle's volume cannot hold is kept by item id, with the complete name in the manifest and the place in the receipt. `thread-retire` re-hashes and syncs every byte its bundle received, and the directories above it, before it sends a new operation, keeps that request in the bundle until an answer settles it, and names it in every unknown answer, so repeating the command repeats that operation. A purged thread admits no new work: a turn's create or retry, Exact Retry and decision rerun answer 409 `thread_purged`, while a command the thread accepted still answers its replay and a run's retained result can still be applied, discarded or reverted. Stop ends an export's journal or transcript read at its next chunk, and a restart's replay of an open retirement cleanup between lane entries. An export observes the thread's closure in the store maintenance worker's read-only snapshot, off the request thread, and an export read cancelled by Stop answers 503 `daemon_stopping` (retryable); the retirement decision still rereads the closure synchronously inside its transaction, at a cost that grows with the closure.
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+  - @claudexor/core@5.1.0
+
 ## 5.0.2
 
 ### Patch Changes

@@ -8,6 +8,7 @@
  * only on a real budget refusal.
  */
 import type { HarnessFailureCategory, VendorFailureEvidence } from "@claudexor/schema";
+import { redactSecrets } from "@claudexor/util";
 import type { TransientFailureObservation } from "./transientClassify.js";
 
 /**
@@ -88,4 +89,50 @@ export function attemptVendorFailure(
 ): VendorFailureEvidence | null {
   const owner = attempts.find((a) => a.attemptId === attemptId) ?? attempts.at(-1);
   return owner?.telemetry.vendorFailure ?? null;
+}
+
+/** The most of the vendor's own words a cause line quotes (`vendorFailure` keeps them all). */
+const QUOTED_VENDOR_WORDS = 240;
+
+/**
+ * An attempt's error with the vendor's own failure for that same try beside it
+ * (#633, #635): its source and code, and its words when the error does not
+ * already carry them (such as a synthetic `settled in systemError` line).
+ * Masked, one line, bounded. Display only: nothing branches on the code.
+ */
+export function withVendorCause(
+  error: string,
+  vendor: VendorFailureEvidence | null | undefined,
+): string {
+  if (!vendor) return error;
+  const flat = (text: string) => redactSecrets(text).replace(/\s+/g, " ").trim();
+  const words = vendor.message ? flat(vendor.message) : "";
+  const cut =
+    words.length > QUOTED_VENDOR_WORDS ? `${words.slice(0, QUOTED_VENDOR_WORDS - 1)}…` : words;
+  const parts = [
+    vendor.code && redactSecrets(vendor.code),
+    words && !flat(error).includes(words) && `"${cut}"`,
+  ].filter(Boolean);
+  return parts.length ? `${error} (vendor ${vendor.source}: ${parts.join(", ")})` : error;
+}
+
+/** Each attempt's cause line, with its OWN last try's vendor failure, never another's. */
+export function attemptCauseLines(
+  attempts: readonly { attemptId: string; harnessId: string; error?: string | null }[],
+  telemetries: readonly {
+    attemptId: string;
+    telemetry: { vendorFailure: VendorFailureEvidence | null };
+  }[],
+): string[] {
+  return attempts.map((attempt) => {
+    const own = telemetries.find((t) => t.attemptId === attempt.attemptId);
+    const cause = withVendorCause(attempt.error ?? "failed", own?.telemetry.vendorFailure);
+    return `${attempt.attemptId}/${attempt.harnessId}: ${cause}`;
+  });
+}
+
+/** The record's own vendor evidence as an inspection step: attributed, the same for every code. */
+export function vendorFailureAction(vendor: VendorFailureEvidence): string {
+  const code = vendor.code ? `: ${redactSecrets(vendor.code)}` : "";
+  return `Read the vendor's own failure record (${vendor.source}${code}) before retrying`;
 }

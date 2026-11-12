@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import { describe, expect, it } from "vitest";
 import { makeOutcomeFacts, SCHEMA_VERSION, validateRunFactsInvariants } from "@claudexor/schema";
 import { defaultClaudexorTools, serveClaudexorMcp, type McpTool, type RunnerFn } from "./index.js";
+import { accountsTool } from "./accounts-tool.js";
 import { beltClaudexorTools } from "./delegation-belt.js";
 
 function sleep(ms: number): Promise<void> {
@@ -396,6 +397,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
       availableHarnesses: [],
       modes: ["ask", "plan", "agent"],
       runControlKeys: ["prompt"],
+      runDecisionActions: ["taken"],
       outputSchemaDialects: [
         {
           dialect: "draft-07",
@@ -1156,7 +1158,21 @@ describe("Claudexor MCP server (SDK v2)", () => {
           identity: null,
         },
       ],
-      harnesses: [{ id: "claude", status: "ok" }],
+      harnesses: [
+        {
+          id: "claude",
+          status: "ok",
+          manifest: {
+            id: "claude",
+            display_name: "Claude",
+            kind: "local_cli",
+            capability_profile: {},
+            capabilities: { plan: true, engine_added_capability: true },
+            auth_modes: [],
+            access_profiles_supported: [],
+          },
+        },
+      ],
       git: { status: "available", version: null, detail: null, remediation: null },
       quota: { snapshots: [], refreshed_at: null },
       quotaEventCursor: "q-1",
@@ -1204,7 +1220,38 @@ describe("Claudexor MCP server (SDK v2)", () => {
       profiles: expect.any(Object),
     });
     const result = await accounts!.handler({}, {});
-    expect(result).toMatchObject({ structured: snapshot });
+    const structured = typeof result === "string" ? {} : (result.structured ?? {});
+    expect(structured).toMatchObject({
+      profiles: snapshot.profiles,
+      harnesses: [{ id: "claude", status: "ok", manifest: { id: "claude" } }],
+    });
+    expect((structured as any).harnesses[0].manifest.capabilities).not.toHaveProperty(
+      "engine_added_capability",
+    );
+    expect((structured as any).quota).not.toHaveProperty("resources");
+    const resourcesSnapshot = structuredClone(snapshot) as any;
+    resourcesSnapshot.quota.resources = [];
+    const resourcesTool = accountsTool(async () => resourcesSnapshot, accounts!.outputSchema!);
+    const resourcesResult = await resourcesTool.handler({}, {});
+    const resourcesStructured =
+      typeof resourcesResult === "string" ? {} : (resourcesResult.structured ?? {});
+    expect((resourcesStructured as any).quota.resources).toEqual([]);
+    const malformedAtomic = structuredClone(snapshot) as any;
+    delete malformedAtomic.quota.snapshots;
+    const malformedAtomicResult = await wireToolCall(
+      defaultClaudexorTools(async () => malformedAtomic),
+      "claudexor_accounts",
+      {},
+    );
+    expect(malformedAtomicResult?.isError).toBe(true);
+    const malformedResources = structuredClone(resourcesSnapshot);
+    malformedResources.quota.resources = {};
+    const malformedResourcesResult = await wireToolCall(
+      defaultClaudexorTools(async () => malformedResources),
+      "claudexor_accounts",
+      {},
+    );
+    expect(malformedResourcesResult?.isError).toBe(true);
     await accounts!.handler({ fresh: true }, {});
     await accounts!.handler({ fresh: false }, {});
     expect(calls).toEqual([

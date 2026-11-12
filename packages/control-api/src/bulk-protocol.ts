@@ -19,7 +19,11 @@ export interface DetailRead {
   cursor: number;
   pending: ControlPendingInteraction[];
   operator: ControlOperatorDecisionRecord | null;
-  children: { record: DaemonRunRecord; pending: boolean }[];
+  /** Each child's question attention, derived by pendingQuestionAttention. */
+  children: {
+    record: DaemonRunRecord;
+    attention: { waitingOnUser: boolean; asyncQuestionsOnly: boolean };
+  }[];
   deferred?: DeferredMessageProjection | null;
 }
 export interface BulkInputs {

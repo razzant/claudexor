@@ -65,6 +65,7 @@ describe("the openrouter registry instance over its typed catalog (#393, #145, #
       harnessId: "openrouter",
       models: [],
       source: "api",
+      sourceProgram: null,
       verifiedAgainst: null,
       problem: {
         code: "model_catalog_unavailable",

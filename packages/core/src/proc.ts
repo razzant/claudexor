@@ -105,10 +105,25 @@ export interface SpawnOptions {
   onExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
 }
 
+/** What became of one frame given to `ChildStdin.send`. `written` means the OS
+ * pipe accepted every byte; it does not prove that the process read them. */
+export type ChildStdinSend =
+  | { outcome: "written" }
+  | { outcome: "not_written"; reason: "exited" | "ended" | "failed"; error?: string };
+
 /** Minimal live stdin handle for bidirectional CLI protocols. */
 export interface ChildStdin {
   /** Write one line/frame; errors are swallowed (exit carries the outcome). */
   write(data: string): void;
+  /**
+   * Write one frame and report what became of it, for a caller that must know
+   * whether a response could reach the process (`spawnProcess` provides it).
+   * Nothing is written once the direct child has exited (`exited`: a
+   * descendant may still hold the pipes, so `closed` can settle much later) or
+   * stdin was ended (`ended`); a failed write reports its error (`failed`).
+   * Never throws or rejects.
+   */
+  send?(data: string): Promise<ChildStdinSend>;
   /** Close stdin (EOF) — the cooperative way to end a streaming session. */
   end(): void;
   /** Settles once the child process closes or fails to spawn. Session handlers
@@ -237,6 +252,27 @@ export async function* spawnProcess(
         } catch {
           /* child already gone; exit event carries the outcome */
         }
+      },
+      send: (data: string) => {
+        if (child.exitCode !== null || child.signalCode !== null)
+          return Promise.resolve({ outcome: "not_written", reason: "exited" });
+        if (child.stdin.writableEnded || child.stdin.destroyed)
+          return Promise.resolve({ outcome: "not_written", reason: "ended" });
+        return new Promise<ChildStdinSend>((resolve) => {
+          const failed = (error: unknown): void =>
+            resolve({
+              outcome: "not_written",
+              reason: "failed",
+              error: error instanceof Error ? error.message : String(error),
+            });
+          try {
+            child.stdin.write(data, (error) =>
+              error ? failed(error) : resolve({ outcome: "written" }),
+            );
+          } catch (error) {
+            failed(error);
+          }
+        });
       },
       end: () => {
         try {

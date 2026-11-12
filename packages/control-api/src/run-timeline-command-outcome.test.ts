@@ -48,3 +48,84 @@ describe("timelineEvents projects command outcomes (#450)", () => {
     expect(rows.map((row) => row.severity)).toEqual(["info", "info", "error"]);
   });
 });
+
+/**
+ * #546: the later `command_outcome_refined` status names the same command and
+ * its reported completion. The timeline needs no special case: the typed
+ * `tool` facts make it a warning row for the command (an end without an exit
+ * code is not a confirmed success) whose title is the engine's label.
+ */
+describe("timelineEvents projects a refined command outcome (#546)", () => {
+  it("shows the reported completion as a warning row of the same command", () => {
+    const label =
+      "Completion reported; exit code unknown · handed off to background after its 30s timeout · shell 3";
+    const [row] = timelineEvents({}, [
+      {
+        type: "harness.event",
+        payload: {
+          harness_id: "cursor",
+          attempt_id: "a01",
+          type: "status",
+          title: label,
+          text: label,
+          tool: {
+            name: "shell",
+            kind: "command",
+            use_id: "c1",
+            target: "sleep 45",
+            command_outcome: {
+              state: "completion_reported",
+              background_reason: "timeout",
+              timeout_ms: 30000,
+              shell_id: "3",
+              completion_status: "success",
+            },
+          },
+          payload: { code: "command_outcome_refined" },
+        },
+      },
+    ]);
+    expect(row).toMatchObject({
+      type: "harness.event",
+      severity: "warning",
+      toolName: "shell",
+      target: "sleep 45",
+      title: label,
+      harnessId: "cursor",
+      attemptId: "a01",
+    });
+    expect(row?.outcome).toBeNull();
+  });
+
+  it("keeps a reported error a warning about the command, never a failed tool call", () => {
+    const label =
+      "Completion reported (error); exit code unknown · handed off to background · shell 3";
+    const [row] = timelineEvents({}, [
+      {
+        type: "harness.event",
+        payload: {
+          harness_id: "cursor",
+          attempt_id: "a01",
+          type: "status",
+          title: label,
+          text: label,
+          tool: {
+            name: "shell",
+            kind: "command",
+            use_id: "c1",
+            target: "pnpm test",
+            command_outcome: {
+              state: "completion_reported",
+              background_reason: "requested",
+              shell_id: "3",
+              completion_status: "error",
+            },
+          },
+          payload: { code: "command_outcome_refined" },
+        },
+      },
+    ]);
+    expect(row).toMatchObject({ severity: "warning", title: label, toolName: "shell" });
+    expect(row?.errorSummary).toBeNull();
+  });
+});

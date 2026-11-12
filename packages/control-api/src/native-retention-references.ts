@@ -2,7 +2,7 @@ import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { collectNativeRunSessions } from "./native-run-sessions.js";
-import { userConfigDir } from "@claudexor/util";
+import { globalRunStores, userConfigDir } from "@claudexor/util";
 import { RETIRING } from "./retention-removal.js";
 
 async function optionalStat(path: string) {
@@ -38,10 +38,14 @@ export async function retainedNativeSessions(
     if (!seen.has(run)) collectNativeRunSessions(run, sessions, seen, ignoredRunIds, signal);
   };
   const projects = join(userConfigDir(), "projects");
+  const runStores: string[] = [];
   for (const hash of await directories(projects)) {
     signal?.throwIfAborted();
-    if (!/^[0-9a-f]{64}$/.test(hash)) continue;
-    const runs = join(projects, hash, "runs");
+    if (/^[0-9a-f]{64}$/.test(hash)) runStores.push(join(projects, hash, "runs"));
+  }
+  // The folderless Ask and one-shot stores hold retained runs too (#503).
+  runStores.push(...globalRunStores().map((store) => store.runsDir));
+  for (const runs of runStores) {
     for (const id of await directories(runs)) {
       signal?.throwIfAborted();
       if (id === RETIRING || ignoredRunIds.has(id)) continue;

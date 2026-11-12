@@ -1,3 +1,10 @@
+import { observeHarnessProgram } from "@claudexor/core";
+import { CLAUDE_PROGRAM } from "./program.js";
+import {
+  selectProgramLauncher,
+  resolveSelectedProgramAsync,
+  composeBaseEnv,
+} from "@claudexor/core";
 /**
  * Effort discovery for the INSTALLED claude CLI.
  *
@@ -30,7 +37,7 @@ import {
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { CLAUDE_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 
-export const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
+export const resolveClaudeBin = () => selectProgramLauncher(CLAUDE_PROGRAM);
 
 /**
  * Recorded fallback, captured from `claude --help` on the CLI version stamped
@@ -80,9 +87,7 @@ export function claudeEffortResolution(
 }
 
 /** Vendor CLI version `CLAUDE_EFFORT_SNAPSHOT` was captured from. Aliases the
- * per-package vendor-version SSOT (vendor-cli-version.ts), the same constant
- * the remote installer pins — bumping the pin without re-recording this
- * snapshot is a lie the alias makes impossible to tell twice. */
+ * per-package vendor-version SSOT (vendor-cli-version.ts), the stamp on this recorded effort snapshot. It never selects a vendor install. */
 export const CLAUDE_EFFORT_SNAPSHOT_VERIFIED_AGAINST: string = CLAUDE_VENDOR_CLI_VERSION;
 
 /**
@@ -190,18 +195,10 @@ export async function detectClaudeVersion(
   abortSignal?: AbortSignal,
   patchPath?: string,
 ): Promise<string | null> {
-  try {
-    const r = await runCapture(helpProbeIdentity(patchPath).spawn, ["--version"], {
-      ...(patchPath !== undefined ? { env: { PATH: patchPath } } : {}),
-      timeoutMs: 10_000,
-      abortSignal,
-      cancelSignal: "SIGTERM",
-      cancelKillDelayMs: 0,
-    });
-    return r.stdout.trim() || `${BIN} (version unknown)`;
-  } catch {
-    return null;
-  }
+  const environment = composeBaseEnv("mirror_native");
+  if (patchPath !== undefined) environment.PATH = patchPath;
+  return (await resolveSelectedProgramAsync(CLAUDE_PROGRAM, { environment, abortSignal }))
+    .versionOutput;
 }
 
 /**
@@ -310,36 +307,43 @@ type ClaudeHelpProbe =
 const HELP_PROBE_TIMEOUT_MS = 10_000;
 
 /**
- * The memo is keyed by the BINARY IDENTITY (`harnessBinaryIdentity`: realpath,
- * inode, size, mtime — one stat, no spawn), so a CLI updated at the same path
+ * The memo is keyed by the selected program, including its own --version answer
+ * and the launcher stat identity, so a CLI updated at the same path
  * is re-read on the next call instead of served the old ladder for the life
  * of the daemon (live defect 2026-09-18: a stale `xhigh`-less ladder after an
  * in-place update). An unresolvable binary keys as such; its capture fails and
  * is forgotten below anyway, so the next call looks again. A run whose env
  * patch carries a PATH executes the binary on THAT path (the spawn layer applies
  * the patch verbatim over the normalized PATH), so its ladder is read from the
- * same bytes: resolved on the exact patch PATH, spawned by absolute path. Two
- * bounds of that, stated rather than engineered away: the memo is ONE slot, so
- * a patched caller that alternates with host-keyed ones re-reads `--help` (one
- * bounded spawn per alternation, never a wrong answer); and a RELATIVE entry
- * in a patch PATH is resolved as the daemon sees it (its own cwd), so a binary
+ * same bytes: resolved on the exact patch PATH, spawned by absolute path.
+ * Captures for different identities never replace each other; a bounded map
+ * retains recent identities. A RELATIVE entry in a patch PATH is resolved as
+ * the daemon sees it (its own cwd), so a binary
  * reachable only through a project-relative entry is invisible to the probe
  * and that run falls back to the snapshot ladder — use absolute directories.
  */
-let helpProbe: { key: string; promise: Promise<ClaudeHelpProbe> } | null = null;
+const helpProbes = new Map<string, Promise<ClaudeHelpProbe>>();
 
-function helpProbeIdentity(patchPath?: string): { key: string; spawn: string } {
+async function helpProbeIdentity(
+  patchPath?: string,
+): Promise<{ key: string; spawn: string; cacheable: boolean }> {
   const id =
     patchPath === undefined
-      ? harnessBinaryIdentity(BIN)
-      : harnessBinaryIdentityOnPath(BIN, patchPath);
+      ? harnessBinaryIdentity(resolveClaudeBin())
+      : harnessBinaryIdentityOnPath(resolveClaudeBin(), patchPath);
+  const program = await observeHarnessProgram(
+    CLAUDE_PROGRAM,
+    patchPath === undefined ? undefined : { PATH: patchPath },
+  );
   return {
-    key: JSON.stringify(
+    cacheable: program.selection?.path != null,
+    key: JSON.stringify([
+      program.key,
       id
         ? [id.path, id.ino, id.size, id.mtimeMs, id.interpreter]
-        : ["unresolved", BIN, patchPath ?? null],
-    ),
-    spawn: id?.launcher ?? id?.path ?? BIN,
+        : ["unresolved", resolveClaudeBin(), patchPath ?? null],
+    ]),
+    spawn: id?.launcher ?? id?.path ?? resolveClaudeBin(),
   };
 }
 
@@ -371,9 +375,10 @@ function abandonedProbe(): ClaudeHelpProbe {
  * machine running an older CLI does not merely lose freshness: it advertises and
  * forwards `xhigh` to a binary that rejects it, for the life of the daemon.
  */
-function sharedHelpCapture(patchPath?: string): Promise<ClaudeHelpProbe> {
-  const { key, spawn } = helpProbeIdentity(patchPath);
-  if (helpProbe?.key === key) return helpProbe.promise;
+async function sharedHelpCapture(patchPath?: string): Promise<ClaudeHelpProbe> {
+  const { key, spawn, cacheable } = await helpProbeIdentity(patchPath);
+  const cached = helpProbes.get(key);
+  if (cached) return cached;
   const pending = (async (): Promise<ClaudeHelpProbe> => {
     try {
       const result = await runCapture(spawn, ["--help"], {
@@ -390,15 +395,15 @@ function sharedHelpCapture(patchPath?: string): Promise<ClaudeHelpProbe> {
       };
     }
   })();
-  const memo = { key, promise: pending };
-  helpProbe = memo;
+  helpProbes.set(key, pending);
+  if (helpProbes.size > 16) helpProbes.delete(helpProbes.keys().next().value!);
   // Identity-guarded so a late settle can only ever clear its OWN memo, never a
   // re-probe another caller has already started.
   const forget = (): void => {
-    if (helpProbe === memo) helpProbe = null;
+    if (helpProbes.get(key) === pending) helpProbes.delete(key);
   };
   void pending.then((probe) => {
-    if (!probe.ok || probe.code === null) forget();
+    if (!cacheable || !probe.ok || probe.code === null) forget();
   }, forget);
   return pending;
 }

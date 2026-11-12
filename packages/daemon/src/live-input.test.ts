@@ -26,7 +26,9 @@ function attempt(overrides: Partial<LiveAttemptContext> = {}): LiveAttemptContex
   };
 }
 
-function registry(pending: readonly unknown[] = []) {
+function registry(
+  pending: readonly { interactionId: string; delivery?: "blocking" | "async" }[] = [],
+) {
   return new LiveInputRegistry({ pendingForRun: () => pending });
 }
 
@@ -103,6 +105,37 @@ describe("LiveInputRegistry decision order (CONTRACT v2)", () => {
       reason: "interaction_pending",
       attemptId: "a01",
     });
+    expect(message).not.toHaveBeenCalled();
+  });
+
+  it("sends a message beside an async question: the agent is still working (#628)", async () => {
+    const message = vi.fn(
+      async () => ({ outcome: "accepted", nativeTurnId: "turn-9" }) as LiveMessageAdapterResult,
+    );
+    const r = registry([{ interactionId: "async-1", delivery: "async" }]);
+    r.register(attempt({ adapter: adapterWith("codex", message) }));
+    await expect(send(r)).resolves.toMatchObject({ outcome: "accepted", nativeTurnId: "turn-9" });
+    // The message is ordinary steering; it never answers the open question.
+    expect(message).toHaveBeenCalledWith("ses-1", { messageId: "msg-1", text: "use MANGO" });
+  });
+
+  it("refuses beside a blocking question even when an async one is also pending", async () => {
+    const message = vi.fn(async () => ({ outcome: "accepted" }) as LiveMessageAdapterResult);
+    for (const pending of [
+      [
+        { interactionId: "async-1", delivery: "async" as const },
+        { interactionId: "blocking-1", delivery: "blocking" as const },
+      ],
+      [{ interactionId: "blocking-1", delivery: "blocking" as const }],
+    ]) {
+      const r = registry(pending);
+      r.register(attempt({ adapter: adapterWith("codex", message) }));
+      const refused = await send(r);
+      expect(refused).toMatchObject({ outcome: "not_active", reason: "interaction_pending" });
+      expect(refused.message).toBe(
+        "a blocking question is pending; the message was not sent and did not answer it",
+      );
+    }
     expect(message).not.toHaveBeenCalled();
   });
 

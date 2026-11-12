@@ -3,10 +3,11 @@ import { join } from "node:path";
 import type { ArtifactStore, RunPaths } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
 import type { BudgetLedger } from "@claudexor/budget";
-import { makeOutcomeFacts, type ModeKind } from "@claudexor/schema";
+import { makeOutcomeFacts, type ModeKind, type RunOutcomeFacts } from "@claudexor/schema";
 import type { OrchestratorResult } from "./orchestrator.js";
 import {
   candidateCaptureRefusals,
+  candidateCause,
   declaredFailureSpeaks,
   hasCandidateChanges,
   partitionCandidates,
@@ -168,6 +169,39 @@ export function erroredWinnerFailure(
       ...keptSources,
     ],
   };
+}
+
+/**
+ * The race terminal's statement before its account attempts: arbitration's
+ * ranking line, led by an ERRORED winner's own cause (#621), the first line
+ * route health groups by and the retained-output notice follows. Only the
+ * winner speaks, never a loser; a review or check block keeps its statement,
+ * and the phase and category stay arbitration's typed axis.
+ */
+export function raceStatement(
+  winner: CandidateRun | undefined,
+  decisionBlock: boolean,
+  whyWinner: string,
+): string {
+  return winner?.errored && !decisionBlock ? `${candidateCause(winner)}\n${whyWinner}` : whyWinner;
+}
+
+/**
+ * The convergence terminal's lead, the same rule for its last attempt: a loop
+ * that ended not converged on an ERRORED last attempt names that attempt's own
+ * cause (#633), never an earlier attempt's. A budget mapping, a review or check
+ * block, a stall, an interruption and a cancellation keep their own statements,
+ * and the loop's phase and category stay as they were. Null otherwise.
+ */
+export function convergenceCause(
+  lastRun: CandidateRun | null | undefined,
+  facts: RunOutcomeFacts,
+  budgetSpeaks: boolean,
+): string | null {
+  const block = facts.review === "blocked" || facts.checks === "failed";
+  return lastRun?.errored && facts.reason === "not_converged" && !budgetSpeaks && !block
+    ? candidateCause(lastRun)
+    : null;
 }
 
 /** A review/arbitration failure still owns the completed candidates' continuity

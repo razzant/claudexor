@@ -225,12 +225,12 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   CLI_SMOKE_HOME="$(mktemp -d)"
   CLI_HELP_JSON="$(env -i HOME="$CLI_SMOKE_HOME" PATH="/usr/bin:/bin" \
     "$APP/Contents/Resources/node" "$CLI_JS" help --json)"
-  CLI_INSTALL_JSON="$(env -i HOME="$CLI_SMOKE_HOME" PATH="/usr/bin:/bin" \
+  CLI_INVENTORY_JSON="$(env -i HOME="$CLI_SMOKE_HOME" PATH="/usr/bin:/bin" \
     "$APP/Contents/Resources/node" "$CLI_JS" \
-    harness install codex --target local --release-tested --dry-run --json)"
+    harness inspect codex --json)"
   "$APP/Contents/Resources/node" -e '
     const help = JSON.parse(process.argv[1]);
-    const install = JSON.parse(process.argv[2]);
+    const inventory = JSON.parse(process.argv[2]);
     const expectedVersion = process.argv[3];
     const harness = Array.isArray(help.commands)
       ? help.commands.find((command) => command?.id === "harness")
@@ -238,18 +238,14 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
     if (
       help.ok !== true ||
       help.version !== expectedVersion ||
-      !harness?.flags?.includes("target") ||
-      install.ok !== true ||
-      install.dryRun !== true ||
-      install.harness !== "codex" ||
-      install.target !== "local" ||
-      install.installLocation !== "~/.claudexor/node/bin"
+      !harness?.flags?.includes("vendor-version") ||
+      !inventory.harnesses?.some(row => row.harness === "codex" && row.actions?.install && row.actions?.update)
     ) {
       throw new Error(`bundled CLI help contract mismatch: ${JSON.stringify(help)}`);
     }
-  ' "$CLI_HELP_JSON" "$CLI_INSTALL_JSON" "$VERSION"
+  ' "$CLI_HELP_JSON" "$CLI_INVENTORY_JSON" "$VERSION"
   if [ -n "$(find "$CLI_SMOKE_HOME" -mindepth 1 -print -quit)" ]; then
-    echo "ERROR: bundled CLI dry-run mutated its isolated HOME" >&2
+    echo "ERROR: bundled CLI inventory read mutated its isolated HOME" >&2
     find "$CLI_SMOKE_HOME" -mindepth 1 -maxdepth 3 -print >&2
     exit 1
   fi

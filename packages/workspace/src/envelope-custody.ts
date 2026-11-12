@@ -23,7 +23,9 @@ import {
 import { dirname, join } from "node:path";
 import { EnvelopeCustody, type ResumableCause, type WorkspaceEnvelope } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
+import { reachableFile } from "./fs-presence.js";
 import { git } from "./git.js";
+import { rawIgnoredAcceptedPaths } from "./raw-patch.js";
 
 export const ENVELOPE_CUSTODY_FILE = "continuation-custody.json";
 
@@ -162,12 +164,24 @@ export function retainEnvelopeCustody(
 }
 
 /** Whether the envelope's tree differs from its base (uncommitted or
- * untracked changes, or commits past the base); null when Git cannot tell. */
+ * untracked changes, a file an accepted raw patch wrote that the ignore rules hide
+ * from status, or commits past the base); null when Git cannot tell. A raw patch
+ * record that cannot be read counts as a change: it may name files status cannot see. */
 export async function envelopeTreeChanged(env: WorkspaceEnvelope): Promise<boolean | null> {
   if (!existsSync(env.worktree_path)) return null;
   const status = await git(env.worktree_path, ["status", "--porcelain", "--untracked-files=all"]);
   if (status.code !== 0) return null;
   if (status.stdout.trim().length > 0) return true;
+  try {
+    // Status is clean, so only an accepted path that is still an untracked file
+    // here is an ignored addition. A tracked path can remain in the membership
+    // record after Apply; treating every reachable accepted name as dirty keeps
+    // clean old→new→old work alive forever.
+    const accepted = await rawIgnoredAcceptedPaths(env.worktree_path, env.base_sha ?? "HEAD");
+    if (accepted.some((path) => reachableFile(env.worktree_path, path))) return true;
+  } catch {
+    return true;
+  }
   if (!env.base_sha) return false;
   const head = await git(env.worktree_path, ["rev-parse", "HEAD"]);
   return head.code === 0 ? head.stdout.trim() !== env.base_sha : null;

@@ -32,8 +32,11 @@ const adapter = (mode = "replay", fixture = basic) => {
     log,
     adapter: createAcpAdapter({
       ...copilot,
-      binary: process.execPath,
-      binaryEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      program: {
+        ...copilot.program,
+        launchers: [{ name: process.execPath }],
+        overrideEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      },
       flags: [join(fixtures, "agent.mjs"), mode, fixture, log],
     }),
   };
@@ -454,8 +457,11 @@ describe("ACP discovery and free/explicit probes", () => {
     ]);
     const missing = createAcpAdapter({
       ...copilot,
-      binary: join(root, "missing"),
-      binaryEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      program: {
+        ...copilot.program,
+        launchers: [{ name: join(root, "missing") }],
+        overrideEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      },
     });
     expect(await checks(missing)).toEqual([
       ["installed", "fail", expect.stringContaining("not installed")],
@@ -476,8 +482,11 @@ describe("ACP discovery and free/explicit probes", () => {
     );
     const missing = createAcpAdapter({
       ...copilot,
-      binary: join(root, "missing"),
-      binaryEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      program: {
+        ...copilot.program,
+        launchers: [{ name: join(root, "missing") }],
+        overrideEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      },
     });
     expect((await missing.doctor({ cwd: root })).status).toBe("unavailable");
     secrets.token = null;

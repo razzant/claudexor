@@ -97,10 +97,10 @@ describe("terminal staging through the production daemon wiring", () => {
         async () => expect(TERMINAL.has((await runtime.client.status(id)).state)).toBe(true),
         { timeout: 60_000, interval: 50 },
       );
-      expect(receipts()).toHaveLength(2 * run);
+      expect(receipts()).toHaveLength(run);
     }
     expect(receipts()).toEqual(
-      Array.from({ length: 4 }, () => expect.objectContaining({ staged: true, written: true })),
+      Array.from({ length: 2 }, () => expect.objectContaining({ staged: true, written: true })),
     );
     expect(readdirSync(store.paths.blobs).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });

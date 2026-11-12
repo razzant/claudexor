@@ -250,7 +250,10 @@ export function createDaemonAgentRunner(deps: {
         delegationAdmissionId: ctx.jobId,
         attachments: turnId
           ? (threads.getTurn(turnId)?.attachments ?? [])
-          : resources().resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments),
+          : resources().resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments, {
+              owner: "command",
+              id: ctx.jobId,
+            }),
         // Belt descriptor (D32): built once per delegate run with the parent
         // budget snapshot; injected into agent lanes whose adapter can host
         // MCP servers. Null when delegate is off (no belt).

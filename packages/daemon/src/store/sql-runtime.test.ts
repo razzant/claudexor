@@ -153,6 +153,7 @@ describe("SQL daemon composition through the existing RPC boundary", () => {
         request: {
           interaction_id: "question",
           source_tool: "ask",
+          delivery: "blocking",
           questions: [
             { id: "q", question: "Continue?", header: null, multi_select: false, options: [] },
           ],
@@ -167,6 +168,60 @@ describe("SQL daemon composition through the existing RPC boundary", () => {
     await expect(waiting).resolves.toEqual({ kind: "released", reason: "run_terminal" });
     expect(f.graph.interactions.pendingForRun(runId)).toEqual([]);
     expect(f.graph.threads.turnsFor(thread.id)[0]?.prompt).toBe("full prompt");
+  });
+
+  it("persists each question's delivery and reads a historical row as blocking (#628)", async () => {
+    const f = await fixture();
+    const runId = "run-delivery";
+    const asked = f.graph.interactions.register(
+      {
+        runId,
+        taskId: "task",
+        attemptId: "a01",
+        harnessId: "codex",
+        request: {
+          interaction_id: "async-question",
+          source_tool: "request_user_input_async",
+          delivery: "async",
+          questions: [
+            { id: "q", question: "Who is it for?", header: null, multi_select: false, options: [] },
+          ],
+        },
+        requestedAt: new Date().toISOString(),
+        timeoutAt: null,
+      },
+      {},
+    );
+    // A row written before delivery existed carries no field at all.
+    const historical = {
+      interactionId: "historical-question",
+      runId,
+      attemptId: "a01",
+      harnessId: "claude",
+      sourceTool: "AskUserQuestion",
+      questions: [],
+      requestedAt: new Date().toISOString(),
+      timeoutAt: null,
+    };
+    f.store
+      .prepare("INSERT INTO interaction(id,pid,run_id,state,request) VALUES(?,?,?,'pending',?)")
+      .run(
+        `${runId}\u0000historical-question`,
+        f.global.pid,
+        runId,
+        Buffer.from(JSON.stringify(historical)),
+      );
+    expect(
+      f.graph.interactions
+        .pendingForRun(runId)
+        .map((pending) => [pending.interactionId, pending.delivery]),
+    ).toEqual([
+      ["async-question", "async"],
+      ["historical-question", "blocking"],
+    ]);
+    f.graph.interactions.dropForRun(runId);
+    await expect(asked).resolves.toEqual({ kind: "released", reason: "run_terminal" });
+    expect(f.graph.interactions.pendingForRun(runId)).toEqual([]);
   });
 
   it("hides all old generation commands on global quarantine without deleting evidence", async () => {

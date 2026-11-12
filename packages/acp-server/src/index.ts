@@ -17,7 +17,7 @@ import {
 import { runControlsFromMeta, validateRunControls } from "./validate.js";
 import { terminalAuth, type AcpAuthOptions } from "./auth.js";
 import { attachmentInputs } from "./attachments.js";
-import { toolResultUpdate } from "./tool-update.js";
+import { AcpClosedHandoffs, acpToolCallId, acpToolOwner, toolResultUpdate } from "./tool-update.js";
 import { requestInteractionAnswers } from "./interaction-answers.js";
 
 export const ACP_PROTOCOL_VERSION = acp.PROTOCOL_VERSION;
@@ -56,6 +56,7 @@ type AcpSessionRecord = {
 export class AcpServer {
   private readonly activeRuns = new Map<string, AbortController>();
   private readonly openToolCalls = new Map<string, string[]>();
+  private readonly closedHandoffs = new AcpClosedHandoffs();
 
   constructor(private readonly opts: AcpServerOptions) {}
 
@@ -205,6 +206,8 @@ export class AcpServer {
         } finally {
           if (this.activeRuns.get(params.sessionId) === controller)
             this.activeRuns.delete(params.sessionId);
+          // The turn's run is over: its calls are never closed or refined later.
+          this.dropToolCalls(params.sessionId);
         }
       })
       .onNotification(acp.methods.agent.session.cancel, async ({ params }) => {
@@ -291,6 +294,10 @@ export class AcpServer {
     if (type !== "harness.event") return;
     const sub = String(payload["type"] ?? "");
     const tool = payload["tool"] as Record<string, any> | undefined;
+    // A call belongs to the run and try that issued it, never to a bare native id (X2).
+    const owner = acpToolOwner(event);
+    const useId = typeof tool?.["use_id"] === "string" ? (tool["use_id"] as string) : null;
+    const unnamed = `${sessionId}\0${owner}\0${String(tool?.["name"] ?? "")}`;
     if ((sub === "message" || sub === "thinking") && typeof payload["text"] === "string") {
       await client.notify(acp.methods.client.session.update, {
         sessionId,
@@ -302,11 +309,9 @@ export class AcpServer {
       return;
     }
     if (sub === "tool_call" && tool) {
-      const id = String(tool["use_id"] ?? `tc-${crypto.randomUUID()}`);
-      if (typeof tool["use_id"] !== "string") {
-        const key = `${sessionId}:${String(tool["name"] ?? "")}`;
-        this.openToolCalls.set(key, [...(this.openToolCalls.get(key) ?? []), id]);
-      }
+      const id = useId === null ? `tc-${crypto.randomUUID()}` : acpToolCallId(owner, useId);
+      if (useId === null)
+        this.openToolCalls.set(unnamed, [...(this.openToolCalls.get(unnamed) ?? []), id]);
       await client.notify(acp.methods.client.session.update, {
         sessionId,
         update: {
@@ -318,22 +323,23 @@ export class AcpServer {
       });
       return;
     }
+    const update = this.closedHandoffs.refinement(sessionId, event);
+    if (update) await client.notify(acp.methods.client.session.update, { sessionId, update });
     if (sub === "tool_result" && tool) {
-      const key = `${sessionId}:${String(tool["name"] ?? "")}`;
-      const queue = this.openToolCalls.get(key);
-      const id = typeof tool["use_id"] === "string" ? tool["use_id"] : queue?.shift();
-      if (queue?.length === 0) this.openToolCalls.delete(key);
+      const queue = this.openToolCalls.get(unnamed);
+      const id = useId === null ? queue?.shift() : acpToolCallId(owner, useId);
+      if (queue?.length === 0) this.openToolCalls.delete(unnamed);
       if (!id) return;
-      await client.notify(acp.methods.client.session.update, {
-        sessionId,
-        update: toolResultUpdate(id, tool),
-      });
+      this.closedHandoffs.closed(sessionId, id, tool);
+      const closing = toolResultUpdate(id, tool);
+      await client.notify(acp.methods.client.session.update, { sessionId, update: closing });
     }
   }
 
   private dropToolCalls(sessionId: string): void {
+    this.closedHandoffs.drop(sessionId);
     for (const key of this.openToolCalls.keys()) {
-      if (key.startsWith(`${sessionId}:`)) this.openToolCalls.delete(key);
+      if (key.startsWith(`${sessionId}\0`)) this.openToolCalls.delete(key);
     }
   }
 }

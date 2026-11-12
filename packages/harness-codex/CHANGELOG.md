@@ -1,5 +1,130 @@
 # @claudexor/harness-codex
 
+## 6.0.0
+
+### Patch Changes
+
+- f4f8caf: Questions now say whether the agent waits for the answer (#628). Each pending
+  question carries `delivery`: `blocking` (every question so far, and the
+  meaning of a stored question without the field) or `async`, a question the
+  agent asks while it keeps working. An async question is still attention: it
+  sets `waitingOnUser`, wakes `claudexor_run_wait`, and can be answered through
+  the same routes. It does not pause the inactivity watchdog or refuse live
+  messages, and the new run-summary flag `asyncQuestionsOnly` is true only while
+  every pending question is async, so a blocking question is never hidden behind
+  one. `claudexor follow`, ACP and the macOS app no longer call such a run paused
+  or waiting: they keep it working, say that silence or expiry sends nothing,
+  and a blocking question is asked before an open async prompt. ACP and MCP
+  answer prompts for an async question no longer hold the run's terminal; they
+  close when the question is answered elsewhere or the run ends. In the macOS app a
+  run that has ended no longer shows a question card, a Send button or a question
+  state while its last snapshot still lists the question; a late answer the engine
+  refuses reads as a sentence saying it was not sent, instead of a raw HTTP error;
+  the deadline label keeps counting down; and an async question between the last
+  message and the final answer no longer leaves a copy of that answer in Activity.
+
+  A failed answer surface is no longer reported as the user's decline. When the
+  engine cannot register or keep a question, the run's interaction channel now
+  rejects with the cause instead of returning "no answer"; a question that was
+  never registered is not announced. A Codex approval or access request whose
+  answer channel failed stays declined and records `interaction_answer_unavailable`
+  instead of failing the run. A failed read of a run's pending questions is no
+  longer reported as having none: `GET /v2/runs/:id` for a live run answers with
+  the typed problem, so an open prompt stays open and a kept answer is retried,
+  while a finished run's detail, a run list and a child card still render.
+
+  A Codex app-server run now raises Codex's `request_user_input_async` as such a
+  question: one async interaction per native item, with Codex's own question ids
+  and options. Its text stays visible as an agent message but is never taken as
+  the run's answer, even when the turn produced no other text. A committed answer
+  goes to the turn that asked, once, as Codex's reply envelope (`turn/steer` with
+  client message id `interaction-answer:<id>`), and each send leaves an
+  `interaction_answer_steer` receipt. The end of that turn,
+  Stop and the run's end withdraw an open question and send nothing. A sub-agent's
+  question cannot be answered, and a question Claudexor cannot read, a run without
+  an answer channel and a failing channel are recorded as
+  `interaction_answer_unavailable`. This follows the Codex 0.162.1 source; it was
+  not checked against a live Codex run.
+
+- 860bc04: A failed run's message now names the cause the vendor recorded for the try it
+  describes (#633, #635). When that record is known, the message quotes its
+  source, code and words beside the error, so a Codex run that ended as "settled in
+  systemError" also shows, for example, `server_overloaded` and the vendor's own
+  words. An untyped harness failure's first next action points to that record. The
+  code stays evidence only: retries, account choice, cooldowns and the record's
+  category are unchanged, and a typed refusal keeps its own remedy. Codex also
+  keeps the root turn's own error record from the app-server wire when its session
+  rollout holds none.
+
+  When the winning candidate changed files and then failed, its own cause now
+  leads the failure message and the returned summary, before the ranking line,
+  and the run summary (`summary.md`) names it as a `- Failure:` line. A repair
+  loop (`--attempts`) that ends not converged on such an attempt leads with that
+  attempt's own cause and keeps its vendor record. No earlier or losing attempt's
+  cause is ever used, and the failure phases stay `arbitration` and `convergence`.
+
+  In a delegated write run, an attempt that failed while it was being prepared,
+  before its home directory was decided, now ends with its own failure instead of
+  `delegated_evidence_incomplete` (#648), and a healthy sibling candidate can still
+  win. Only an attempt the engine itself saw fail at that point is exempt, never a
+  record that merely lacks the fields; an attempt whose adapter ran without
+  stating what it ran under is still refused.
+
+- b9e88de: Interaction text reaches callers exactly (#651). The Codex access question
+  now quotes the worker's complete final output instead of silently cutting it
+  at 32,000 characters. A Codex approval refused for details over the
+  32,000-character review limit now says so, with the measured size, instead of
+  the generic "cannot grant" reason; readonly and workspace_write command refusals
+  keep their priority. The bounded display labels (a harness event's timeline
+  `title` and a Claude question's preview text) end in a visible "…" and never
+  split a character; the complete text still rides beside them.
+  `claudexor_run_wait` reports `wakeReason: "interactions"` when the next event is
+  a question too large for any page. Each ACP multi-select include/skip round
+  shows every option of the question with its description.
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/core@6.0.0
+  - @claudexor/util@6.0.0
+  - @claudexor/secrets@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- 0d2d858: Codex now holds the first turn for an explicitly selected Browser (#215). Codex starts Browser in the background, and a server not ready about a second after `turn/start` was absent from the first model request, so the model could report Browser as unavailable while it was still starting. The adapter waits for Browser's own startup status after `thread/start` and `thread/resume` while Codex's existing 90-second startup limit runs, holding the turn at most 5 seconds longer so that a failure Codex reports at its limit (observed at about 90.06 seconds) keeps Codex's own reason; it waits only when Browser is injected: other optional servers, runs without Browser and runs with web off start as before. Stop during the wait ends as `user_cancelled` without starting a turn, which also fixes a Stop that could hang while waiting for a required server. A Browser that fails to start never fails the run: the turn continues with the remaining tools, and a `codex_browser_startup` status event records the outcome, the wait and Codex's own masked reason, so a task that needs a page stays visibly unmet. The engine also records that outcome as the attempt's `browser.startup`, the run summary projects it as each route's `browserStartup` (null for a Browser that was only handed to the route, never read as connected), `claudexor inspect` prints it as `browser_startup=` on the `web route` line, and the macOS Browser badge states it (`prepared` when nothing was reported, `ready`, `startup failed`, `startup cancelled` or `startup unconfirmed`, never a run failure), with Codex's reason in its help and in Diagnostics. This does not establish why any earlier live Browser run failed.
+- 7a6c782: The daemon's credential invalidation also drops the cached Codex model and effort catalog (#610). After a setup-job login, a profile created, toggled or removed, or a secret set or deleted, the next read of a Codex home asks `model/list` again, where it could previously answer with the earlier account's models and effort ladders for up to ten minutes. The drop runs before the configuration and quota reads that can fail. A probe already running when the catalog is dropped, by this invalidation or by harness maintenance, still answers the caller that started it, so that one call can carry the earlier account's rows or ladder into a listing or a run; it no longer stores its answer or its failure, so it cannot reach a later reader or replace what a newer probe stored. The same invalidation runs on every settings save, whatever it changed, and on any harness's login window, and it drops every home, so the next read of each home spawns one prompt-free `app-server` child again (concurrent reads of an empty entry each spawn their own, as on any miss). The cache belongs to the daemon process and nothing re-reads it on a schedule: after a change the daemon does not observe, such as a vendor login or logout it did not run, a live answer stays until its first read past ten minutes, an observed invalidation, a changed binary or a daemon restart. The account view retains its own copy past those ten minutes until an observed invalidation, harness maintenance, an Accounts refresh or a restart discards it, and a refresh inside them retains the adapter's cached rows again.
+- b9f57d9: Codex rollout readers now take only the thread's newest rollout part (#573). Its plain `.jsonl` copy is read; when that part exists only as `.jsonl.zst` or only through a link, the observed model, rollout quota and vendor failure are reported unknown instead of being read from an older part. Nothing is decompressed. Each lookup stops after the first day with a matching part, visits no older days and remembers no absence, so a plain copy written later is read by the next lookup. Continuity names the newest part as the session's holder and still moves every part. Whether Codex ever leaves the newest part compressed-only has not been observed.
+- d9e8247: A Codex usage refusal is no longer treated as a network blip (#558), and the vendor's own failure record reaches the run's diagnostics without an OS exit code (#414).
+
+  Codex's typed `usage_limit_exceeded` (a spent plan window or a workspace out of credits) now becomes a typed limit with no known reopening time (`rate_limit.reopening: "unknown"`), read from the rollout record or the app-server frame and never from the message words. The run never resumes or replays the same account for it, and neither does an ordinary reviewer when the refusal's words also read as a broken stream; a broken stream with no typed refusal is still retried on the same account as before. A pinned account ends at once with `code: null`, `category: harness_unavailable`, `resetsAt: null` and the vendor's cause, because `subscription_window_exhausted` tells every reader that waiting cures it, which nobody knows here. An unpinned run follows its `limit_action` (the default moves to the next ready account), and with no other account it ends with an undated `credential_pool_exhausted`. The daemon keeps the refusal for its existing bounded cooldown under the identity `cooldown:reopening_unknown`, with no invented usage or reset, so the next pinned run is refused before spawn with the same honest record and the pool ranks the account last and stays undated, even when another of the account's windows has a date. The same record is kept when a pinned Ask's `fallback_model` meets the refusal during attempt setup, and the Accounts `next_up` text no longer says unpinned runs wait for a reset when a member was refused this way. A newer recognized quota read retires the refusal under the same rules as a generic refusal. Vendor-dated windows, retry delays and vendor reset days with no such refusal beside them keep their code and reset. The `vendorFailure` of a failed try is recorded whether or not the try ended with an exit code, on that try's `poolAttempts` row and on the failure record for the attempt's last try only. A candidate that changed files before such a typed refusal now keeps the refusal's code, reset and remedy on its failure record instead of a generic harness error.
+
+- 8905c72: Add exact thread export (`claudexor thread export`, `GET /v2/threads/:id/export`) and conditional retirement against that export (`claudexor thread-retire`, `POST /v2/threads/:id/retire`), with `POST /v2/threads/:id/retire/abandon` to settle an unanswered operation and `GET /v2/threads/:id/retirement` (`claudexor thread retirement`) to read its outcome. A partial export names each gap and cannot retire. Retirement reaches only what a recorded real session proved, currently Claude 2.1.316 transcripts and spilled tool output on Darwin; any other host platform or session material is a named gap, exported byte-exact only where its harness declares its layout. A name the bundle's volume cannot hold is kept by item id, with the complete name in the manifest and the place in the receipt. `thread-retire` re-hashes and syncs every byte its bundle received, and the directories above it, before it sends a new operation, keeps that request in the bundle until an answer settles it, and names it in every unknown answer, so repeating the command repeats that operation. A purged thread admits no new work: a turn's create or retry, Exact Retry and decision rerun answer 409 `thread_purged`, while a command the thread accepted still answers its replay and a run's retained result can still be applied, discarded or reverted. Stop ends an export's journal or transcript read at its next chunk, and a restart's replay of an open retirement cleanup between lane entries. An export observes the thread's closure in the store maintenance worker's read-only snapshot, off the request thread, and an export read cancelled by Stop answers 503 `daemon_stopping` (retryable); the retirement decision still rereads the closure synchronously inside its transaction, at a cost that grows with the closure.
+- 0d2d858: Run receipts now say what Web Off and an access profile actually did on each route, without changing either (#118, #413). Just before dispatching an adapter, the per-spawn gate records a `route_controls` receipt of what was prepared: the route's own web switch (`native`, `tools`, `uncontrolled` or `none`), the access profile, the vendor access arguments the adapter passes (for example Cursor `--force --sandbox enabled --trust --mode ask`, Codex `sandbox=read-only approvalPolicy=never approvalsReviewer=auto_review`) and the access mechanism, where only `fs_sandbox`, the vendor's own sandbox, declares an OS file boundary and `native_settings` (`inherit_native`) leaves it unknown. `native_session_started` reports whether the attempt's native session was reported started, so a pre-spawn refusal or a stop stays distinct from a launch; `false` never proves that no process ran. The gate checks Stop again after recording the receipt, so a stop that lands at the receipt keeps it and never dispatches the adapter. Agent attempts also carry their applied HOME fact, where `false` means the engine did not replace HOME; Ask and Plan record none, so none is claimed. The web evidence states its scope (`observation`: typed web tool calls and engine Browser calls; network traffic not measured), so `attempted: false` no longer reads as "no network". The run summary projects the distinct routes as `routeControls` together with `webEvidence.verification` and `webEvidence.observation`, and `claudexor inspect` prints `access route`, `web route`, `web retrieval` and `web scope` lines. Retrieval strength now says what came back. A verified result carries `verified_content`: Claude's WebFetch and a Browser navigation or snapshot of a loaded http(s) page are a `page`, while Claude's WebSearch is `search_results`, which is not a fetched page; its strength and the required-web gate are unchanged. A Browser page read that got an HTTP error status is `dispatched`, and a Browser call that read no web page (closing, clicking, listing tabs, an `about:blank` or `data:` page) carries no retrieval stamp: it still counts as completed web activity for the unchanged required-web gate, but the strength stays `none`. The Browser rule is checked against recorded replies of the pinned Browser MCP, and a denied or cancelled Claude web call is no longer stamped as a verified retrieval. The macOS run facts show "Web verified" for a verified page, "Web searched" for verified search results, "Web reached" for a web call without a typed result and "Web tools used" when completed web tools retrieved nothing or the engine sent no strength; for Web Off they show "Web tools off" only when a route reported a native session under the off switch, otherwise "Web Off requested"; and they describe access by its native setting and declared boundary instead of "enforced".
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+  - @claudexor/core@5.1.0
+  - @claudexor/secrets@5.1.0
+
 ## 5.0.2
 
 ### Patch Changes

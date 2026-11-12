@@ -81,6 +81,24 @@ describe("parseAgyEvent", () => {
     expect(out![0]).toMatchObject({ type: "error", error: "authentication failed or timed out" });
   });
 
+  it("turns AGY's structured inference-quota refusal into unknown reopening evidence", () => {
+    const error = "Individual quota reached. Resets in 68h48m15s.";
+    const out = parseAgyEvent(
+      { event: "result", result: { status: "ERROR", response: "", error } },
+      SID,
+    )!;
+    expect(out).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        error,
+        rate_limit: { resets_at: null, retry_delay_ms: null, reopening: "unknown" },
+        payload: {
+          vendor_failure: { code: "ERROR", message: error, source: "agy_result" },
+        },
+      }),
+    );
+  });
+
   it("types text_delta as an exact non-final fragment: whitespace-only and repeated frames kept", () => {
     const frames = ["Hel", "lo", " ", "\n", "ha", "ha", "\t\n"];
     const out = frames.flatMap((text_delta, index) =>
@@ -278,7 +296,7 @@ describe("parseAgyEvent", () => {
   });
 
   it("never claims success for a non-DONE tool state (Ф0 review #1)", () => {
-    for (const state of ["CANCELLED", "ERROR", "PENDING", ""]) {
+    for (const state of ["CANCELLED", "PENDING", ""]) {
       const out = parseAgyEvent(
         {
           event: "step_update",
@@ -293,6 +311,95 @@ describe("parseAgyEvent", () => {
       // No fabricated tool_result and — critically — no fabricated file_change.
       expect(out).toEqual([]);
     }
+  });
+
+  // Recorded 1.5.0 frames (#653, arm B of the 8 Nov A/B): a session deny rule
+  // fails the call with state ERROR and the model continues; the ERROR frame is
+  // that call's own result, an error, never success and never a file change.
+  it("returns a refused tool step as its own error result, keyed by the step", () => {
+    const refusal =
+      'permission check failed for unsandboxed "date -u": Permission denied for unsandboxed(date -u). Matches user-configured deny rule.';
+    const call = parseAgyEvent(
+      {
+        event: "step_update",
+        step_update: {
+          step_index: 2,
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: { name: "run_command", parameters: { CommandLine: "date -u" } },
+        },
+      },
+      SID,
+    )!;
+    const result = parseAgyEvent(
+      {
+        event: "step_update",
+        step_update: {
+          step_index: 2,
+          state: "ERROR",
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: {
+            name: "run_command",
+            parameters: { CommandLine: "date -u" },
+            error: { type: "TOOL_ERROR", message: refusal },
+          },
+        },
+      },
+      SID,
+    )!;
+    expect(call).toEqual([expect.objectContaining({ type: "tool_call" })]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      type: "tool_result",
+      tool: {
+        name: "run_command",
+        kind: "command",
+        use_id: "step-2",
+        target: "date -u",
+        status: "error",
+        error_summary: expect.stringContaining(JSON.stringify(refusal).slice(1, -1)),
+      },
+    });
+    expect(result[0]!.tool!.use_id).toBe(call[0]!.tool!.use_id);
+    const write = parseAgyEvent(
+      {
+        event: "step_update",
+        step_update: {
+          step_index: 4,
+          state: "ERROR",
+          step_type: "tool",
+          tool_info: { name: "write_file", parameters: { TargetFile: "/w/a.txt" } },
+        },
+      },
+      SID,
+    )!;
+    expect(write.map((event) => event.type)).toEqual(["tool_result"]);
+    expect(write[0]!.tool).toMatchObject({
+      status: "error",
+      error_summary: "agy reported the tool step as ERROR",
+    });
+  });
+
+  it("names the Path parameter of a read as its target", () => {
+    const out = parseAgyEvent(
+      {
+        event: "step_update",
+        step_update: {
+          step_index: 4,
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_info: { name: "read_file", parameters: { Path: "/data/nonce.txt" } },
+        },
+      },
+      SID,
+    )!;
+    expect(out[0]!.tool).toMatchObject({
+      name: "read_file",
+      kind: "file",
+      target: "/data/nonce.txt",
+    });
   });
 
   it("flags a proven writer whose name does not match the convention (#5)", () => {

@@ -48,6 +48,9 @@ export interface SummaryRunParams {
   turns: ContinuityTurn[];
   /** Read-only working directory (the thread's execution root). */
   cwd: string;
+  /** The enclosing run's own `context/`, where an adapter whose stdin cannot
+   * carry the transcript keeps its exact copy (`HarnessRunSpec.input_file_dir`). */
+  inputFileDir?: string | null;
   /** Scoped lane-home env so the pass authenticates on the lane's own account. */
   env: Record<string, string>;
   /** The lane's own model on a route whose request must name one (#395); otherwise
@@ -113,7 +116,8 @@ const SUMMARY_INSTRUCTION =
   "You are handing this conversation off to a successor agent that has NOT seen it. " +
   "Summarize the earlier turns below for that agent: the decisions reached, the current " +
   "state of the work, and the open items still to do. Be concise and factual — no preamble, " +
-  "no questions, no tool calls. Output only the summary.";
+  "no questions, and no tool calls except to read this conversation if it was delivered to you " +
+  "as files. Output only the summary.";
 
 /**
  * Run one bounded summary pass. Returns the summary text, or null on any
@@ -138,6 +142,7 @@ export async function summarizeThreadPrefix(params: SummaryRunParams): Promise<s
       intent: "explain",
       prompt: `${SUMMARY_INSTRUCTION}\n\n---\n\n${transcript(params.turns)}`,
       cwd: params.cwd,
+      input_file_dir: params.inputFileDir ?? null,
       access: "readonly",
       external_context_policy: "off",
       tool_permission_policy: { web: "off", allow: [], deny: [] },

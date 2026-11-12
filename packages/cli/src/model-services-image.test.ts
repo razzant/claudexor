@@ -78,6 +78,7 @@ async function fixture(imageDeps?: Parameters<typeof createCodexModelAdapter>[0]
     accountFingerprint: profile.profile_id,
     observedAt: new Date().toISOString(),
     provenance: "fixture",
+    sourceProgram: null,
     clientVersion: null,
     clientVersionSource: null,
     models: [

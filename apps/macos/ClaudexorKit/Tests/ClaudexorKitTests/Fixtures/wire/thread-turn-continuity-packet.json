@@ -31,6 +31,7 @@
       "spendUsd": 0.12,
       "outputReadyState": "ready",
       "waitingOnUser": false,
+      "asyncQuestionsOnly": false,
       "finishedAt": "2026-07-19T12:00:00.000Z",
       "delegation": null,
       "delegatedChildRunIds": []

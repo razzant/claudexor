@@ -474,7 +474,8 @@ describe("absence vs refusal discrimination (#93)", () => {
   let httpServer: HttpServer | null = null;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(realpathSync(tmpdir()), "cx-dr-"));
+    // Leave room for the canonical Unix socket under long private TMPDIR roots.
+    dir = mkdtempSync(join(realpathSync(tmpdir()), "d-"));
     prevConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     prevSock = process.env.CLAUDEXOR_DAEMON_SOCK;
     prevEntry = process.env.CLAUDEXOR_DAEMON_ENTRY;

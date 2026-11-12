@@ -18,7 +18,7 @@ import {
   bustLoginCredentialState,
 } from "./credential-status-invalidation.js";
 
-// The adapter reads its binary path when its module loads.
+// Select the offline fixture for every dynamic program observation.
 const stub = vi.hoisted(() => {
   const dir = `${(process.env.TMPDIR ?? "/tmp").replace(/\/+$/, "")}/claudexor-572-picker-${process.pid}`;
   process.env.CLAUDEXOR_CLAUDE_BIN = `${dir}/claude`;
@@ -29,7 +29,7 @@ beforeAll(() => {
   mkdirSync(stub.dir, { recursive: true });
   writeFileSync(
     stub.bin,
-    `#!/bin/sh\necho spawn >> "${stub.spawns}"\n/bin/cat "${stub.answer}"\n`,
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.0.0; exit 0; fi\necho spawn >> "${stub.spawns}"\n/bin/cat "${stub.answer}"\n`,
     { mode: 0o755 },
   );
 });

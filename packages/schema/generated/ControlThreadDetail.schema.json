@@ -723,6 +723,11 @@
                         "default": false,
                         "description": "True while an interactive question is awaiting the user's answer."
                       },
+                      "asyncQuestionsOnly": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "True while questions are pending and every one is async (the agent keeps working); false when none is pending or any is blocking."
+                      },
                       "finishedAt": {
                         "type": [
                           "string",

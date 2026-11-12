@@ -90,6 +90,19 @@ function assertExistingTurnIsRunless(turn: unknown, turnId: string): void {
   }
 }
 
+/** The accepted-command query of a turn create: the thread routes it, the turn key binds it. */
+export function acceptedTurnCommandQuery(threadId: string, idempotency: ThreadTurnIdempotency) {
+  return [
+    { threadId },
+    {
+      idempotencyKey: idempotency.key,
+      clientId: idempotency.client,
+      operation: "thread.turn.create",
+      idempotencyRequest: idempotency.request,
+    },
+  ] as const;
+}
+
 /** Read-only admission for ordinary turn create: accepted handle or tail orphan. */
 export async function inspectThreadTurnCreateReplay(
   daemon: Pick<DaemonFacadeClient, "findAccepted">,
@@ -105,15 +118,7 @@ export async function inspectThreadTurnCreateReplay(
   const detail = await services.threadDetail(threadId);
   if (!existing) return { detail, existingId: null, accepted: null };
 
-  const accepted = await daemon.findAccepted?.(
-    { threadId },
-    {
-      idempotencyKey: idempotency.key,
-      clientId: idempotency.client,
-      operation: "thread.turn.create",
-      idempotencyRequest: idempotency.request,
-    },
-  );
+  const accepted = await daemon.findAccepted?.(...acceptedTurnCommandQuery(threadId, idempotency));
   if (accepted) return { detail, existingId: existing.id, accepted };
 
   const turn = (detail.turns as Array<Record<string, unknown>>).find(

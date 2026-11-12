@@ -105,7 +105,7 @@ describe("Cursor shell command outcomes (#450, synthetic fixture)", () => {
       pid: 4242,
     });
     expect(handoff.text).toBe(
-      "tool_result: Moved to background after 30s · still running · shell 3 · pid 4242",
+      "tool_result: Handed off to background after its 30s timeout; completion not observed · shell 3 · pid 4242",
     );
     // The complete native result rides the durable tool payload exactly.
     expect(handoff.payload?.["native_result"]).toEqual(nativeResult(frames, "c-bg-timeout"));
@@ -121,7 +121,9 @@ describe("Cursor shell command outcomes (#450, synthetic fixture)", () => {
       shell_id: "4",
       pid: 4343,
     });
-    expect(handoff.text).toBe("tool_result: Running in background · shell 4 · pid 4343");
+    expect(handoff.text).toBe(
+      "tool_result: Handed off to background; completion not observed · shell 4 · pid 4343",
+    );
     expect(handoff.payload?.["native_result"]).toEqual(nativeResult(frames, "c-bg-request"));
   });
 
@@ -216,10 +218,12 @@ describe("Cursor shell command outcome edge shapes (#450)", () => {
     });
     expect(event.tool?.exit_code).toBeUndefined();
     expect(event.tool?.command_outcome).toEqual({ state: "backgrounded", pid: 77 });
-    expect(event.text).toBe("tool_result: Running in background · pid 77");
+    expect(event.text).toBe(
+      "tool_result: Handed off to background; completion not observed · pid 77",
+    );
   });
 
-  it("describes a zero-wait timeout handoff as a background start", () => {
+  it("describes a zero-wait timeout handoff as a plain handoff", () => {
     const event = shellCall({
       success: {
         command: "pnpm dev",
@@ -235,7 +239,9 @@ describe("Cursor shell command outcome edge shapes (#450)", () => {
       timeout_ms: 0,
       shell_id: "5",
     });
-    expect(event.text).toBe("tool_result: Running in background · shell 5");
+    expect(event.text).toBe(
+      "tool_result: Handed off to background; completion not observed · shell 5",
+    );
   });
 
   it("adds no command facts to denied, legacy-failed or non-shell results", () => {

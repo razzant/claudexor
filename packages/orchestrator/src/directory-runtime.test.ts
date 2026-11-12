@@ -32,7 +32,8 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "claudexor-directory-runtime-"));
+  // Leave room for a Unix socket when the test runner supplies a long TMPDIR.
+  const root = mkdtempSync(join(tmpdir(), "dr-"));
   dirs.push(root);
   writeFileSync(join(root, "input.txt"), "selected source\r\n");
   writeFileSync(join(root, "outside.txt"), "unselected source");

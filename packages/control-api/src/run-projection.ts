@@ -8,7 +8,7 @@ import {
 } from "./run-card-facts.js";
 import { budgetSnapshot } from "./run-budget-snapshot.js";
 import { runRepoRoot, applyEligibilityFor } from "./run-apply-projection.js";
-import { projectProcessScope } from "./run-detail-scope.js";
+import { projectProcessScope, projectProcessScopeLater } from "./run-detail-scope.js";
 
 import { readTextArtifact, safeReadStructuredArtifact } from "./run-artifact-read.js";
 import { controlRunResult } from "./run-delivery-state.js";
@@ -22,6 +22,7 @@ import { continuationSummary } from "./run-continuation-projection.js";
 import { boundedArtifactText, outputReadyState, primaryOutput } from "./primary-output.js";
 
 import { controlWebEvidence, latestPlanProgress, timelineEvents } from "./run-timeline.js";
+import { projectRouteControls } from "./route-controls-projection.js";
 import { readRunEventFacts, type RunEventFacts } from "./run-event-facts.js";
 import {
   paramsRecord,
@@ -45,6 +46,7 @@ import {
   ControlRunSummary,
   PaidBudget,
   type ControlPendingInteraction,
+  pendingQuestionAttention,
   DecisionRecord,
   ModeKind,
   RoutingGoal,
@@ -245,6 +247,7 @@ export function summarizeRun(rec: DaemonRunRecord, facts?: RunEventFacts): Contr
     webRequired: telemetry?.web_required ?? task?.external_context.web_required,
     webMode: telemetry?.effective_web_mode ?? task?.external_context.effective_mode,
     webEvidence,
+    routeControls: projectRouteControls(telemetry),
     requestRequirements: telemetry?.request_requirements ?? [],
     toolPermissionPolicy: task?.tool_permission_policy,
     outputReadyState: outputReadyState(
@@ -310,6 +313,7 @@ export function detailFor(
     attemptExecution: telemetry?.attempts.map((attempt) => ({
       attemptId: attempt.attempt_id,
       harnessId: attempt.harness_id,
+      programs: attempt.programs,
       processing: attempt.processing,
       processingCostBasis: attempt.processing_cost_basis,
       usageCost: attempt.usage_cost,
@@ -317,8 +321,9 @@ export function detailFor(
     summary: {
       ...summary,
       outcomeFacts,
-      waitingOnUser: pendingInteractions.length > 0,
+      ...pendingQuestionAttention(pendingInteractions),
       processScope: projectProcessScope(rec, summary.state),
+      processScopeLater: projectProcessScopeLater(rec, summary.state),
     },
     children,
     runFacts,

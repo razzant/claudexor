@@ -112,7 +112,7 @@ export function makeSandbox(): Sandbox {
   // macOS runners only.
   const base = mkdtempSync(join(realpathSync.native(tmpdir()), "cx-"));
   const home = base;
-  const configDir = join(base, "config");
+  const configDir = join(base, "c"); // Leave socket-path room for a workspace-scoped TMPDIR.
   const repo = join(base, "repo");
   mkdirSync(home, { recursive: true });
   mkdirSync(configDir, { recursive: true });

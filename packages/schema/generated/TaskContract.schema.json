@@ -411,7 +411,7 @@
             "effective_profile": {
               "$ref": "#/definitions/TaskContract/properties/access/properties/requested_profile",
               "default": "workspace_write",
-              "description": "Access profile actually enforced by the engine (mode/trust clamps applied; never client-supplied)."
+              "description": "Access profile the engine resolved and passes to the harness (mode/trust clamps applied; never client-supplied); the harness's native setting decides what it confines."
             },
             "auxiliary_writable_roots": {
               "type": "array",
@@ -427,7 +427,7 @@
             "requested_profile": "workspace_write",
             "effective_profile": "workspace_write"
           },
-          "description": "Requested vs engine-enforced access profile."
+          "description": "Requested vs engine-resolved access profile."
         },
         "external_context": {
           "type": "object",
@@ -451,7 +451,7 @@
             "effective_mode": {
               "$ref": "#/definitions/TaskContract/properties/external_context/properties/policy",
               "default": "auto",
-              "description": "Policy the selected route actually executes (disclosed upgrades, e.g. cached to live)."
+              "description": "Policy given to the selected route, after disclosed upgrades (e.g. cached to live)."
             }
           },
           "additionalProperties": false,

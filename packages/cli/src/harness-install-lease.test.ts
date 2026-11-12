@@ -18,3 +18,29 @@ describe("harness install lease", () => {
     }
   });
 });
+
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+
+it("reclaims a lease after its recorded owner exited, then excludes a second owner", () => {
+  const home = mkdtempSync(join(tmpdir(), "claudexor-dead-install-lease-"));
+  const owner = spawnSync(process.execPath, ["-e", ""], { env: {}, timeout: 10_000 });
+  expect(owner.status).toBe(0);
+  const lock = join(home, ".claudexor", "harness-install.lock");
+  mkdirSync(lock, { recursive: true });
+  writeFileSync(
+    join(lock, "owner.json"),
+    JSON.stringify({ pid: owner.pid, token: "exited-owner" }),
+  );
+  let lease: ReturnType<typeof acquireHarnessInstallLease> | undefined;
+  try {
+    lease = acquireHarnessInstallLease(home, 0);
+    expect(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")).pid).toBe(process.pid);
+    expect(() => acquireHarnessInstallLease(home, 0)).toThrow(/another claudexor harness install/);
+    lease.release();
+    lease = acquireHarnessInstallLease(home, 0);
+  } finally {
+    lease?.release();
+    rmSync(home, { recursive: true, force: true });
+  }
+});

@@ -50,6 +50,56 @@ const win32ConptyBuild = readFileSync(
 const publishMcp = readFileSync(".github/workflows/publish-mcp.yml", "utf8");
 const prepareJob = jobBody(release, "prepare");
 const packageMacosJob = jobBody(release, "package-macos");
+const releaseGates = stepBody(packageMacosJob, "Deterministic release gates");
+const freshnessStepName = "Check vendor program freshness";
+const freshnessStep = stepBody(packageMacosJob, freshnessStepName);
+errors.push(...programFreshnessFindings(release));
+for (const [label, mutated] of [
+  ["a dropped freshness step", release.replace(freshnessStep, "")],
+  [
+    "a no-op freshness step",
+    release.replace("run: node scripts/harness-program-freshness.mjs", "run: true"),
+  ],
+  [
+    "a candidate-only freshness step",
+    release.replace(
+      freshnessStep,
+      freshnessStep.replace(
+        "        env:\n",
+        "        if: needs.prepare.outputs.mode == 'candidate'\n        env:\n",
+      ),
+    ),
+  ],
+  [
+    "a missing source token",
+    release.replace(
+      freshnessStep,
+      freshnessStep.replace("          GITHUB_TOKEN: ${{ github.token }}\n", ""),
+    ),
+  ],
+  [
+    "a token under another name in the gates",
+    release.replace(
+      releaseGates,
+      releaseGates.replace(
+        "        env:\n",
+        "        env:\n          SOURCE_TOKEN: ${{ github.token }}\n",
+      ),
+    ),
+  ],
+  [
+    "a freshness step before the gates",
+    release
+      .replace(freshnessStep, "")
+      .replace(
+        "      - name: Deterministic release gates\n",
+        `${freshnessStep}      - name: Deterministic release gates\n`,
+      ),
+  ],
+]) {
+  if (mutated === release || programFreshnessFindings(mutated).length === 0)
+    errors.push(`release-workflow-check self-test: failed to reject ${label}`);
+}
 const publishNpmJob = jobBody(release, "publish-npm");
 const publishReleaseJob = jobBody(release, "publish-release");
 errors.push(...windowsPrLegFindings(ci));
@@ -550,7 +600,7 @@ for (const [label, mutated, expectedFinding] of [
     "authority Node floor drift",
     release.replace(
       "          node-version: 24.15.0\n\n      - name: Initialize pinned x64 MSVC environment",
-      "          node-version: 24.16.0\n\n      - name: Initialize pinned x64 MSVC environment",
+      "          node-version: 24.22.3\n\n      - name: Initialize pinned x64 MSVC environment",
     ),
   ],
   [
@@ -570,8 +620,8 @@ for (const [label, mutated, expectedFinding] of [
   [
     "assembled-byte smoke moved off Windows latest",
     release.replace(
-      "  windows-conpty-candidate-smoke:\n    name: Execute assembled Windows ConPTY bytes (Node 24.16)\n    needs: [prepare, windows-conpty-authority, package-macos]\n    runs-on: windows-latest",
-      "  windows-conpty-candidate-smoke:\n    name: Execute assembled Windows ConPTY bytes (Node 24.16)\n    needs: [prepare, windows-conpty-authority, package-macos]\n    runs-on: windows-2022",
+      "  windows-conpty-candidate-smoke:\n    name: Execute assembled Windows ConPTY bytes (Node 24.22)\n    needs: [prepare, windows-conpty-authority, package-macos]\n    runs-on: windows-latest",
+      "  windows-conpty-candidate-smoke:\n    name: Execute assembled Windows ConPTY bytes (Node 24.22)\n    needs: [prepare, windows-conpty-authority, package-macos]\n    runs-on: windows-2022",
     ),
   ],
   [
@@ -630,15 +680,15 @@ for (const [label, mutated] of [
   [
     "extra Windows PR matrix leg",
     ci.replace(
-      "          - runner: windows-latest\n            node-version: 24.16.0",
-      "          - runner: windows-latest\n            node-version: 24.16.0\n          - runner: windows-2022\n            node-version: 24.16.0",
+      "          - runner: windows-latest\n            node-version: 24.22.3",
+      "          - runner: windows-latest\n            node-version: 24.22.3\n          - runner: windows-2022\n            node-version: 24.22.3",
     ),
   ],
   [
     "Windows 2022 Node compatibility floor drift",
     ci.replace(
       "          - runner: windows-2022\n            node-version: 24.15.0",
-      "          - runner: windows-2022\n            node-version: 24.16.0",
+      "          - runner: windows-2022\n            node-version: 24.22.3",
     ),
   ],
   [
@@ -670,9 +720,18 @@ for (const [label, mutated] of [
     ci.replace("          packages/cli/src/claudexord-writer-birth.test.ts\n", ""),
   ],
   ["Windows agy acceptance ordered before native fixture build", delayedWindowsFixtureCi],
+  ["vendor proof removed from required aggregate", ci.replace(", vendor-programs]", "]")],
+  [
+    "vendor proof status ignored",
+    ci.replace('[ "$VENDOR_RESULT" != "success" ]', '[ "success" != "success" ]'),
+  ],
+  [
+    "real vendor proof replaced with a no-op",
+    ci.replaceAll("node scripts/vendor-program-smoke.mjs", "node --version"),
+  ],
   [
     "Windows matrix removed from required aggregate",
-    ci.replace("    needs: [build-test, windows-test, swift]", "    needs: [build-test, swift]"),
+    ci.replace("needs: [build-test, windows-test,", "needs: [build-test,"),
   ],
 ]) {
   if (mutated === ci || windowsPrLegFindings(mutated).length === 0) {
@@ -853,6 +912,93 @@ if (
     ])
 ) {
   errors.push("server.json: executable npm MCP identity or package arguments drifted");
+}
+
+// #650: a hung step must fail visibly, not hold a job for GitHub's six-hour
+// default. CI jobs and release jobs that neither sign nor publish carry a job
+// bound; package-macos bounds its gates step instead, and each full test step
+// is followed by a listing of the processes it left. Publication stays unbounded.
+errors.push(...hangBoundFindings(ci, release));
+const ciListing =
+  "      - name: List processes left after the test step failed or timed out\n        if: failure() && steps.test.outcome == 'failure'\n";
+const gatesListing =
+  "      - name: List processes left after the release gates failed or timed out\n        if: failure() && steps.gates.outcome == 'failure'\n";
+for (const [label, mutatedCi, mutatedRelease] of [
+  [
+    "a CI job without its bound",
+    ci.replace("    runs-on: macos-26\n    timeout-minutes: 25\n", "    runs-on: macos-26\n"),
+    release,
+  ],
+  [
+    "a new CI job without a bound",
+    ci.replace(
+      "\n  swift:\n",
+      "\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n\n  swift:\n",
+    ),
+    release,
+  ],
+  [
+    "a release smoke job without its bound",
+    ci,
+    release.replace(
+      "    needs: [prepare, package-macos]\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n",
+      "    needs: [prepare, package-macos]\n    runs-on: ubuntu-latest\n",
+    ),
+  ],
+  [
+    "npm publication cut short by a job bound",
+    ci,
+    release.replace(
+      "    if: needs.prepare.outputs.mode == 'publish'\n    runs-on: macos-26\n",
+      "    if: needs.prepare.outputs.mode == 'publish'\n    runs-on: macos-26\n    timeout-minutes: 120\n",
+    ),
+  ],
+  [
+    "signing and notarization cut short by a job bound",
+    ci,
+    release.replace(
+      "    runs-on: macos-26\n    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n",
+      "    runs-on: macos-26\n    timeout-minutes: 120\n    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n",
+    ),
+  ],
+  [
+    "the CI test step without its bound",
+    ci.replace("        id: test\n        timeout-minutes: 40\n", "        id: test\n"),
+    release,
+  ],
+  [
+    "a CI test step bound the job bound would preempt",
+    ci.replace(
+      "        id: test\n        timeout-minutes: 40\n",
+      "        id: test\n        timeout-minutes: 60\n",
+    ),
+    release,
+  ],
+  [
+    "the release gates step without its bound",
+    ci,
+    release.replace(
+      "        id: gates\n        shell: bash\n        timeout-minutes: 100\n",
+      "        id: gates\n        shell: bash\n",
+    ),
+  ],
+  [
+    "a CI test step without its process listing",
+    ci.replace(ciListing, "      - name: Unrelated\n        if: failure()\n"),
+    release,
+  ],
+  [
+    "a release process listing that runs after every failure",
+    ci,
+    release.replace(gatesListing, gatesListing.replace(" && steps.gates.outcome == 'failure'", "")),
+  ],
+]) {
+  if (
+    (mutatedCi === ci && mutatedRelease === release) ||
+    hangBoundFindings(mutatedCi, mutatedRelease).length === 0
+  ) {
+    errors.push(`release-workflow-check self-test: failed to reject ${label}`);
+  }
 }
 
 const directInputs = [...release.matchAll(/\$\{\{\s*inputs\.[^}]+\}\}/g)].map((match) => match[0]);
@@ -1085,8 +1231,8 @@ function windowsPrLegFindings(workflow) {
     );
   }
   requirePattern(
-    "windows-2022 must run Node 24.15.0 and windows-latest must run Node 24.16.0",
-    /- runner: windows-2022\n\s*node-version: 24\.15\.0\n\s*- runner: windows-latest\n\s*node-version: 24\.16\.0/,
+    "windows-2022 must run Node 24.15.0 and windows-latest must run Node 24.22.3",
+    /- runner: windows-2022\n\s*node-version: 24\.15\.0\n\s*- runner: windows-latest\n\s*node-version: 24\.22\.3/,
   );
   requirePattern(
     "Windows PR legs must initialize the x64 MSVC environment",
@@ -1142,8 +1288,23 @@ function windowsPrLegFindings(workflow) {
   }
   requirePattern(
     "required build-test aggregate must depend on and reject a failed Windows matrix",
-    /needs:\s*\[build-test, windows-test, swift\][\s\S]*?WINDOWS_RESULT:[\s\S]*?\[ "\$WINDOWS_RESULT" != "success" \]/,
+    /needs:\s*\[[^\]]*\bwindows-test\b[^\]]*\][\s\S]*?WINDOWS_RESULT:[\s\S]*?\[ "\$WINDOWS_RESULT" != "success" \]/,
     gate,
+  );
+  requirePattern(
+    "required aggregate must depend on and reject failed vendor proof",
+    /needs:\s*\[[^\]]*\bvendor-programs\b[^\]]*\][\s\S]*?VENDOR_RESULT:[\s\S]*?\[ "\$VENDOR_RESULT" != "success" \]/,
+    gate,
+  );
+  requirePattern(
+    "Windows must execute real vendor proof",
+    /node scripts\/vendor-program-smoke\.mjs/,
+    windows,
+  );
+  requirePattern(
+    "vendor-programs must execute real vendor proof",
+    /node scripts\/vendor-program-smoke\.mjs/,
+    jobSection(workflow, "vendor-programs"),
   );
   return findings;
 }
@@ -1214,8 +1375,8 @@ function windowsConptyCustodyFindings(workflow) {
     packageMacos,
   );
   requirePattern(
-    "assembled Windows smoke must run on windows-latest with Node 24.16",
-    /^\s{4}runs-on:\s*windows-latest\s*$[\s\S]*?node-version:\s*24\.16\.0/m,
+    "assembled Windows smoke must run on windows-latest with Node 24.22.3",
+    /^\s{4}runs-on:\s*windows-latest\s*$[\s\S]*?node-version:\s*24\.22\.3/m,
     assembledSmoke,
   );
   requirePattern(
@@ -1371,6 +1532,95 @@ function remoteSmokeGateFindings(workflow) {
     }
   }
   return findings;
+}
+
+function programFreshnessFindings(workflow) {
+  const section = jobSection(workflow, "package-macos");
+  const gates = stepBody(section, "Deterministic release gates");
+  const freshness = stepBody(section, freshnessStepName);
+  const findings = [];
+  if (
+    /GITHUB_TOKEN|RELEASE_SOURCE_TOKEN|\$\{\{\s*github\.token\s*\}\}|harness-program-freshness\.mjs/.test(
+      gates,
+    )
+  )
+    findings.push(
+      "release.yml: deterministic gates must contain neither the source token nor the freshness command",
+    );
+  if (
+    !freshness ||
+    section.indexOf(freshness) !== section.indexOf(gates) + gates.length ||
+    !/^ {8}run: node scripts\/harness-program-freshness\.mjs\s*$/m.test(freshness) ||
+    !/^ {8}env:\n {10}GITHUB_TOKEN: \$\{\{ github\.token \}\}\s*$/m.test(freshness) ||
+    /^ {8}(?:if|continue-on-error):/m.test(freshness)
+  )
+    findings.push(
+      "release.yml: authenticated vendor freshness must run in its own step immediately after the gates, for both candidate and publish, and fail closed",
+    );
+  return findings;
+}
+
+function hangBoundFindings(ciWorkflow, releaseWorkflow) {
+  const findings = [];
+  const minutes = (text, indent) =>
+    Number(
+      new RegExp(`^ {${indent}}timeout-minutes: ([1-9][0-9]*)\\s*$`, "m").exec(text)?.[1] ?? 0,
+    );
+  // Signing, notarization, attestation and publication are never cut short.
+  const unbounded = new Set(["package-macos", "publish-npm", "publish-release"]);
+  for (const [file, workflow] of [
+    ["ci.yml", ciWorkflow],
+    ["release.yml", releaseWorkflow],
+  ]) {
+    for (const job of workflowJobs(workflow)) {
+      const bounded = minutes(jobSection(workflow, job), 4) > 0;
+      if (file === "release.yml" && unbounded.has(job)) {
+        if (bounded)
+          findings.push(`${file}: ${job} signs or publishes and must carry no job timeout-minutes`);
+      } else if (!bounded) {
+        findings.push(`${file}: job ${job} must declare a finite timeout-minutes`);
+      }
+    }
+  }
+  for (const [file, workflow, job, step, id] of [
+    ["ci.yml", ciWorkflow, "build-test", "Test", "test"],
+    ["release.yml", releaseWorkflow, "package-macos", "Deterministic release gates", "gates"],
+  ]) {
+    const section = jobSection(workflow, job);
+    const suite = stepBody(section, step);
+    const stepBound = minutes(suite, 8);
+    const jobBound = minutes(section, 4);
+    if (!new RegExp(`^ {8}id: ${id}\\s*$`, "m").test(suite) || stepBound === 0) {
+      findings.push(
+        `${file}: the ${step} step of ${job} needs id ${id} and a finite timeout-minutes`,
+      );
+    } else if (jobBound > 0 && stepBound >= jobBound) {
+      findings.push(`${file}: the ${step} step bound must end before the ${job} job bound`);
+    }
+    let after = suite ? section.slice(section.indexOf(suite) + suite.length) : "";
+    // Source authentication is confined to the intervening freshness step.
+    const freshness = file === "release.yml" ? stepBody(section, freshnessStepName) : "";
+    if (freshness && after.startsWith(freshness)) after = after.slice(freshness.length);
+    const next = /^ {6}- [\s\S]*?(?=^ {6}- |(?![\s\S]))/m.exec(after)?.[0] ?? "";
+    if (
+      !next.includes(`        if: failure() && steps.${id}.outcome == 'failure'\n`) ||
+      !/^ {8}run: ps axww -o [^\n]*\bcommand\b/m.test(next)
+    ) {
+      findings.push(
+        `${file}: a process listing must follow ${step} (and release freshness) when that step failed or timed out`,
+      );
+    }
+  }
+  return findings;
+}
+
+/** The job keys of a workflow, in order. */
+function workflowJobs(workflow) {
+  const text = workflow.replace(/\r\n/g, "\n");
+  const start = text.search(/^jobs:\n/m);
+  return start < 0
+    ? []
+    : [...text.slice(start).matchAll(/^ {2}([a-z0-9-]+):\n/gm)].map((match) => match[1]);
 }
 
 function replaceLastOccurrence(text, needle, replacement) {

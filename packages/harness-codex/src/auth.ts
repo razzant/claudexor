@@ -10,7 +10,7 @@ import {
   redactSecrets,
 } from "@claudexor/util";
 
-const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
+import { resolveCodexBin } from "./missing-cli.js";
 export const CODEX_FILE_AUTH_OVERRIDE = 'cli_auth_credentials_store="file"';
 export const CODEX_FILE_AUTH_ARGS = ["-c", CODEX_FILE_AUTH_OVERRIDE] as const;
 
@@ -133,7 +133,7 @@ export interface CodexLoginProbeOptions {
  * must fail loudly with the CLI's own message instead.
  */
 export async function probeLogin(
-  bin: string = BIN,
+  bin: string = resolveCodexBin(),
   options: CodexLoginProbeOptions = {},
 ): Promise<CodexLoginProbe> {
   try {

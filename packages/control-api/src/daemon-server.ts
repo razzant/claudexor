@@ -35,7 +35,7 @@ import { safeArtifactRoot } from "./artifact-paths.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 import { readFilesWorkProduct } from "./files-work-product.js";
 import { appendRunAuditEvent } from "./run-audit.js";
-import { discardRunResult } from "./run-discard.js";
+import { handleRunDisposition } from "./run-taken-route.js";
 import { applyFilesResult } from "./files-apply-route.js";
 import { streamRunEvents } from "./run-events-stream.js";
 import {
@@ -70,6 +70,7 @@ import { handleRunEventPartRoute } from "./run-event-part-routes.js";
 import { handleRunTimeLimitRoute } from "./run-time-limit-routes.js";
 import { handleRunWaitManyRoute } from "./run-wait-many-routes.js";
 import { handleTaskGroupRunsRoute } from "./task-group-routes.js";
+import { handleRunStartRoute } from "./run-start-routes.js";
 import type { TaskGroupRunsInput, TaskGroupRunsResult } from "@claudexor/schema";
 import type { RunWaitManyHost } from "./run-wait-many.js";
 import {
@@ -147,6 +148,7 @@ import {
   type ControlPendingInteraction,
   type LiveMessageDelivery,
   type LiveMessageInput,
+  pendingQuestionAttention,
   ControlRunDecisionRequest,
   ControlRunDecisionResponse,
   ControlRunApplicabilityResponse,
@@ -215,8 +217,15 @@ export interface DaemonControlApiOptions {
         harnessIds?: string[];
       }) => Promise<unknown>;
       agentCapabilities?: () => Promise<unknown>;
-      preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
-      preflightThreadRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
+      /** `heldBy` (both preflights): a recorded turn reading its own refs at its first dispatch. */
+      preflightRunRequirements?: (
+        request: ControlRunStartRequest,
+        heldBy?: { owner: "turn"; id: string },
+      ) => Promise<void>;
+      preflightThreadRunRequirements?: (
+        request: ControlRunStartRequest,
+        heldBy?: { owner: "turn"; id: string },
+      ) => Promise<void>;
       harnessModels?: (input: {
         harnessId: string;
         route?: "local_session" | "api_key";
@@ -731,6 +740,8 @@ export class DaemonControlApiServer {
       taskGroupRuns: this.opts.taskGroupRuns,
       threadHistoryReads: this.opts.threadHistoryReads,
       pollMs: this.opts.pollMs,
+      storeId: this.opts.storeId,
+      waitForRunStart: (jobId: string) => this.waitForRunStart(jobId),
       stopping: this.stopSignal.signal,
       summarize: (record: DaemonRunRecord) => this.summarizeRunOrDiagnostic(record),
       bulk: this.bulk,
@@ -750,6 +761,7 @@ export class DaemonControlApiServer {
       handleModelRoute,
       handleMaintenanceRoute,
       handleDaemonStatusRoute,
+      handleRunStartRoute,
     ]) {
       if (await route(dataRoutes, method, path, req, res)) return;
     }
@@ -770,23 +782,6 @@ export class DaemonControlApiServer {
       )
     )
       return;
-
-    if (method === "POST" && path === "/runs") {
-      return runStart.handleRunCreate(
-        {
-          daemon: this.opts.daemon,
-          readBody: (request) => this.readBody(request),
-          requestError: (response, error, fallback) => this.requestError(response, error, fallback),
-          json: (response, status, body) => this.json(response, status, body),
-          waitForRunStart: (id) => this.waitForRunStart(id),
-          storeId: this.opts.storeId,
-          validateResources: this.opts.services?.validateResources,
-          preflightRunRequirements: this.opts.services?.preflightRunRequirements,
-        },
-        req,
-        res,
-      );
-    }
 
     if (method === "GET" && path === "/runs") {
       return serveRunList(
@@ -888,7 +883,7 @@ export class DaemonControlApiServer {
                   operator: this.operatorDecisionFor(rec),
                   children: children.map((record) => ({
                     record,
-                    pending: this.pendingInteractionsFor(record).length > 0,
+                    attention: pendingQuestionAttention(this.pendingInteractionsFor(record, true)),
                   })),
                   deferred,
                 },
@@ -1234,23 +1229,18 @@ export class DaemonControlApiServer {
         }
       }
 
-      if (body.action === "discard") {
-        try {
-          const response = await this.chainRunMutation(rec, () =>
-            runIdempotentDelivery(this.opts.services, {
-              params: rec.params,
-              key: decisionKey,
-              operation: "run.decision.discard",
-              request: { runId: rec.runId ?? rec.id, body },
-              work: () => discardRunResult(rec),
-            }),
-          );
-          return this.json(res, 200, response);
-        } catch (error) {
-          return this.requestError(res, error);
-        }
+      if (body.action === "taken" || body.action === "discard") {
+        return handleRunDisposition({
+          services: this.opts.services,
+          record: rec,
+          body,
+          key: decisionKey,
+          chainMutation: (record, work) => this.chainRunMutation(record, work),
+          response: res,
+          json: (response, status, result) => this.json(response, status, result),
+          requestError: (response, error) => this.requestError(response, error),
+        });
       }
-
       if (body.action === "accept_clean_patch") {
         if (readFilesWorkProduct(rec)) {
           try {
@@ -2181,8 +2171,11 @@ export class DaemonControlApiServer {
    */
   private async summarizeRunLive(rec: DaemonRunRecord): Promise<ControlRunSummary> {
     const summary = await this.summarizeRunCached(rec);
-    const waiting = this.pendingInteractionsFor(rec).length > 0;
-    return summary.waitingOnUser === waiting ? summary : { ...summary, waitingOnUser: waiting };
+    const attention = pendingQuestionAttention(this.pendingInteractionsFor(rec, true));
+    return summary.waitingOnUser === attention.waitingOnUser &&
+      summary.asyncQuestionsOnly === attention.asyncQuestionsOnly
+      ? summary
+      : { ...summary, ...attention };
   }
 
   /**
@@ -2242,11 +2235,15 @@ export class DaemonControlApiServer {
     );
   }
 
-  private pendingInteractionsFor(rec: DaemonRunRecord): ControlPendingInteraction[] {
+  /** A run's pending questions. A failed read is unknown, never an empty list, so it fails the
+   * addressed run's own detail; only a row of a wider read (`row`) degrades alone, and a finished
+   * run has no live question left to lose. */
+  private pendingInteractionsFor(rec: DaemonRunRecord, row = false): ControlPendingInteraction[] {
     try {
       return this.opts.services?.pendingInteractions?.(rec.runId ?? rec.id) ?? [];
-    } catch {
-      return [];
+    } catch (error) {
+      if (row || TERMINAL_STATES.has(rec.state)) return [];
+      throw error;
     }
   }
 }

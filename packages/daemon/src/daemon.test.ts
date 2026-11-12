@@ -1,4 +1,5 @@
 import { InteractionStore } from "./store/test-support/fixtures/legacy/daemon/interactions.js";
+import { legacyInteractionPort } from "./store/test-support/legacy-interaction-port.js";
 import { legacyCommandFixture } from "./store/test-support/legacy-command-fixture.js";
 import {
   existsSync,
@@ -45,7 +46,9 @@ __afterAllReap(() => {
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function tempDir(name = "daemon"): string {
-  return realpathSync(reapMk(join(tmpdir(), `claudexor-${name}-`)));
+  // The configured TMPDIR may already be long; leave room for daemon.sock
+  // within macOS's Unix socket limit. The label is diagnostic, not identity.
+  return realpathSync(reapMk(join(tmpdir(), `d-${name.slice(0, 6)}-`)));
 }
 
 const TEST_RUNTIME_IDENTITY = {
@@ -2131,7 +2134,7 @@ describe("InteractionRegistry", () => {
       rootDir: join(tempDir("interactions"), "journal"),
       partition: "global",
     });
-    const store = new InteractionStore(journal);
+    const store = legacyInteractionPort(new InteractionStore(journal));
     const registry = new InteractionRegistry({ forRequest: () => store, forRun: () => store });
     const context = (runId: string) => ({
       runId,
@@ -2141,6 +2144,7 @@ describe("InteractionRegistry", () => {
       request: {
         interaction_id: "same",
         source_tool: "AskUserQuestion",
+        delivery: "blocking" as const,
         questions: [],
       },
       requestedAt: new Date().toISOString(),
@@ -2163,7 +2167,7 @@ describe("InteractionRegistry", () => {
       rootDir: join(tempDir("interactions"), "journal"),
       partition: "global",
     });
-    const store = new InteractionStore(journal);
+    const store = legacyInteractionPort(new InteractionStore(journal));
     const registry = new InteractionRegistry({ forRequest: () => store, forRun: () => store });
     const pending = registry.register(
       {
@@ -2171,7 +2175,12 @@ describe("InteractionRegistry", () => {
         taskId: "task",
         attemptId: "a01",
         harnessId: "test",
-        request: { interaction_id: "question", source_tool: "AskUserQuestion", questions: [] },
+        request: {
+          interaction_id: "question",
+          source_tool: "AskUserQuestion",
+          delivery: "blocking",
+          questions: [],
+        },
         requestedAt: new Date().toISOString(),
         timeoutAt: new Date(Date.now() + 60_000).toISOString(),
       },

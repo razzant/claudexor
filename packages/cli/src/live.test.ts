@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeOutcomeFacts } from "@claudexor/schema";
+import { makeOutcomeFacts, RunEvent } from "@claudexor/schema";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
 import { CliError, controlProblemError, renderCliFailure } from "./cli-error.js";
 import { ENGINE_STOP_REMEDY, observedEngineSkew, recordEngineSkew } from "./engine-skew.js";
@@ -114,6 +114,22 @@ describe("claudexor follow", () => {
     ).toBe("git repository setup stopped during init at /tmp/project; partial metadata may remain");
   });
 
+  it("replays a historical CLAUDE.md bridge event as a file creation, not a model read (CX590)", () => {
+    // An events.jsonl line written before CX590 still parses and is labelled
+    // only as what it recorded: Claudexor created a file.
+    const historical = RunEvent.parse({
+      seq: 3,
+      ts: "2026-11-01T00:00:00.000Z",
+      run_id: "run-1",
+      task_id: "task-1",
+      type: "project.claude_bridge.created",
+      payload: { project_root: "/tmp/project", path: "CLAUDE.md", source: "AGENTS.md" },
+    });
+    expect(formatRunEventLine(historical)).toBe(
+      "created instruction bridge AGENTS.md → CLAUDE.md (file creation; reading not confirmed)",
+    );
+  });
+
   it("renders deadline and operator cancellation from canonical terminal facts", () => {
     expect(
       formatRunEventLine({
@@ -194,6 +210,43 @@ describe("claudexor follow", () => {
         payload: { harness_id: "claude", attempt_id: "a01", reason: "cancelled" },
       }),
     ).toBe("[a01/claude] question wait cancelled");
+  });
+
+  it("never calls an async question's run paused or waiting (#628)", () => {
+    const who = { harness_id: "codex", attempt_id: "a01", interaction_id: "int-a" };
+    expect(
+      formatRunEventLine({ type: "interaction.requested", payload: { ...who, delivery: "async" } }),
+    ).toBe("[a01/codex] QUESTION pending (interaction int-a) — the agent keeps working");
+    expect(
+      formatRunEventLine({
+        type: "harness.event",
+        payload: {
+          harness_id: "codex",
+          attempt_id: "a01",
+          type: "interaction_requested",
+          interaction: { interaction_id: "int-a", delivery: "async" },
+        },
+      }),
+    ).toBe("[a01/codex] asked a question and keeps working (answer any time)");
+    expect(
+      formatRunEventLine({ type: "interaction.answered", payload: { ...who, delivery: "async" } }),
+    ).toBe("[a01/codex] answer handed to the running agent (sent as its next message)");
+    expect(
+      formatRunEventLine({ type: "interaction.timeout", payload: { ...who, delivery: "async" } }),
+    ).toBe("[a01/codex] question expired unanswered — nothing was sent; the agent kept working");
+    // Blocking and historical rows keep their wording.
+    for (const delivery of ["blocking", undefined]) {
+      const payload = { ...who, ...(delivery ? { delivery } : {}) };
+      expect(formatRunEventLine({ type: "interaction.requested", payload })).toBe(
+        "[a01/codex] QUESTION pending (interaction int-a)",
+      );
+      expect(formatRunEventLine({ type: "interaction.answered", payload })).toBe(
+        "[a01/codex] answer delivered",
+      );
+      expect(formatRunEventLine({ type: "interaction.timeout", payload })).toBe(
+        "[a01/codex] no answer in time — continuing with assumptions",
+      );
+    }
   });
 
   it("renders a harness-withdrawn interaction without expiry or cancellation wording", () => {
@@ -561,6 +614,61 @@ describe("interactive TTY prompt lifetime", () => {
     }
     expect(written.join("\n")).toContain("question resolved");
     expect(written.join("\n")).not.toContain("run ended");
+  });
+
+  it("tells an async question's TTY that the agent keeps working and that silence sends nothing", async () => {
+    const written: string[] = [];
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as never);
+    try {
+      const controller = new AbortController();
+      const pending = collectInteractionAnswers(
+        "int-async",
+        [
+          { id: "q1", question: "Who is it for?", header: null, options: [], multi_select: false },
+        ] as never,
+        {
+          delivery: "async",
+          signal: controller.signal,
+          reader: {
+            question: (_prompt, options) =>
+              new Promise<string>((_resolve, reject) => {
+                options?.signal?.addEventListener(
+                  "abort",
+                  () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+                  { once: true },
+                );
+              }),
+            close: () => undefined,
+          },
+        },
+      );
+      controller.abort({ kind: "yield_to_blocking" });
+      await expect(pending).resolves.toBeNull();
+      const expired = await collectInteractionAnswers(
+        "int-async-expired",
+        [{ id: "q1", question: "Who?", header: null, options: [], multi_select: false }] as never,
+        {
+          delivery: "async",
+          timeoutAt: new Date(Date.now() - 1_000).toISOString(),
+          reader: { question: async () => "", close: () => undefined },
+        },
+      );
+      expect(expired).toBeNull();
+    } finally {
+      write.mockRestore();
+    }
+    const text = written.join("");
+    expect(text).toContain("the agent keeps working; this question does not pause it");
+    expect(text).toContain(
+      "a blocking question arrived — this prompt is set aside and asked again after it",
+    );
+    expect(text).toContain(
+      "question already timed out — nothing is sent and the agent keeps working",
+    );
+    expect(text).not.toContain("assumptions");
   });
 
   it("chunks deadlines above Node's single-timer ceiling instead of expiring immediately", async () => {

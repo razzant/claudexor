@@ -51,6 +51,20 @@ export const InteractionQuestion = z
 export type InteractionQuestion = z.infer<typeof InteractionQuestion>;
 
 /**
+ * How the asking agent waits for an answer. `blocking`: its native tool call
+ * waits until the question is answered, declined, expired or released, so the
+ * run is held on it. `async`: the agent keeps working; the question is
+ * attention only, and an answer reaches the agent later as its next user
+ * message. Silence, expiry and the run's end never answer either kind.
+ */
+export const InteractionDelivery = z
+  .enum(["blocking", "async"])
+  .describe(
+    "How the asking agent waits for the answer: blocking (its native tool call waits until the question is answered, declined, expired or released) or async (the agent keeps working and an answer reaches it later as its next user message). Silence, expiry and the run's end never answer either kind.",
+  );
+export type InteractionDelivery = z.infer<typeof InteractionDelivery>;
+
+/**
  * A live request for user input raised by an interactive harness session.
  * Carried on `interaction_requested` HarnessEvents and projected into
  * `interaction.requested` RunEvents.
@@ -68,6 +82,7 @@ export const InteractionRequest = z
       .nullable()
       .default(null)
       .describe('Native tool that raised the request (e.g. "AskUserQuestion").'),
+    delivery: InteractionDelivery.default("blocking"),
   })
   .describe("A live request for user input raised by an interactive harness session.");
 export type InteractionRequest = z.infer<typeof InteractionRequest>;

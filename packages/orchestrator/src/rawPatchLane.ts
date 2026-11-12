@@ -19,10 +19,15 @@ import {
   RawPatchRefusalError,
   captureRawPatchEnvelope,
   consumeRawPatchEnvelope,
+  exportRawRecords,
+  publishRawRecords,
   rawCandidateTree,
   rawPatchRefusalIsModelCorrectable,
+  transferRawRecords,
+  type RawRecords,
 } from "@claudexor/workspace";
 import type { CandidateRun } from "./candidateEvidence.js";
+import { safeErrorMessage } from "./runSupport.js";
 
 export class RawPatchLane {
   private readonly producesPatches: boolean;
@@ -84,6 +89,48 @@ export class RawPatchLane {
     if (!(err instanceof RawPatchRefusalError)) return false;
     this.refusal = err;
     return true;
+  }
+}
+
+/**
+ * One run's Raw membership between a persistent worktree and its isolated candidates
+ * (#594). Membership is scoped to a Git worktree: a thread's persistent worktree is the
+ * source of the next turn, but a raw transport still executes in a disposable candidate.
+ * What a candidate would bring back stays apart from the worktree until adoption, and
+ * only the winner's is published; its envelope is gone by then, so the record travels
+ * with the attempt. An ordinary directory has no Git worktree and so no membership.
+ */
+export class RawAdoption {
+  private readonly records = new Map<string, RawRecords>();
+  private readonly inPlace: boolean;
+
+  constructor(
+    private readonly execRoot: string,
+    run: { inPlace?: boolean; workspaceKind?: string },
+  ) {
+    this.inPlace = run.inPlace === true && run.workspaceKind !== "directory";
+  }
+
+  /** Give a candidate the worktree's private record before RawPatchLane sizes its packet. */
+  async seed(worktree: string): Promise<void> {
+    if (this.inPlace) await transferRawRecords(this.execRoot, worktree);
+  }
+
+  /** Hold a finished candidate's record for adoption, its objects copied, no ref moved. */
+  async keep(attemptId: string, worktree: string): Promise<void> {
+    if (!this.inPlace || worktree === this.execRoot) return;
+    this.records.set(attemptId, await exportRawRecords(worktree, this.execRoot));
+  }
+
+  /** The adoption already stands: a record that cannot follow it is reported, never a
+   * reason to call the delivered work undelivered. */
+  async publish(attemptId: string): Promise<{ raw_records_error?: string }> {
+    const records = this.records.get(attemptId);
+    if (!records) return {};
+    return publishRawRecords(this.execRoot, records).then(
+      () => ({}),
+      (error) => ({ raw_records_error: safeErrorMessage(error) }),
+    );
   }
 }
 

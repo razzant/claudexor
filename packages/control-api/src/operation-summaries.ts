@@ -10,6 +10,8 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "POST /v2/uploads/:id/finalize": "Finalize an upload into a durable attachment resource.",
   "POST /v2/uploads/imports":
     "Begin, read or replay one keyed attachment import; verified bytes are published under the same key without the source.",
+  "POST /v2/resources/:id/release":
+    "Release a managed ordinary resource: no new reference is admitted afterwards, while already accepted work keeps its bytes.",
   "POST /v2/handshake": "Negotiate the control protocol major before product calls.",
   "GET /v2/daemon/status":
     "Read daemon activity, capacity, current/admission memory and event-loop window facts.",
@@ -44,6 +46,8 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "GET /v2/runs":
     "List a bounded, newest-first, keyset-paginated page of durable run summaries visible to the daemon.",
   "POST /v2/runs": "Start a run and return its durable handle.",
+  "POST /v2/runs/lookup":
+    "Read, without starting or waiting, the job a POST /v2/runs with this exact body and Idempotency-Key created: found or not_found in the answering store.",
   "POST /v2/runs/wait-many":
     "Wait once for unacknowledged lifecycle or pending-question attention across addressed runs.",
   "GET /v2/task-groups/:id/runs":
@@ -62,7 +66,8 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "GET /v2/runs/:id/artifacts/<path>": "Fetch one artifact file from a run tree.",
   "POST /v2/runs/:id/control":
     "Cancel a queued or running run and hold its pending next message, also after the run ended.",
-  "POST /v2/runs/:id/decision": "Record an operator unblock/rerun decision on a run.",
+  "POST /v2/runs/:id/decision":
+    "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, needs-decision, or non-patch results with typed reasons and is idempotent.",
   "GET /v2/runs/:id/events": "Replay + tail a run's event stream (SSE).",
   "POST /v2/runs/:id/interactions/:id/answer": "Answer a run's pending interactive question.",
   "POST /v2/runs/:id/messages":
@@ -78,6 +83,8 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "POST /v2/threads/:id/purge": "Permanently purge a trashed thread.",
   "POST /v2/threads/:id/apply": "Apply the thread's latest run work product.",
   "POST /v2/threads/:id/turns": "Enqueue a new turn on a thread.",
+  "POST /v2/threads/:id/turns/lookup":
+    "Read, without creating or waiting, the turn and job a turn create with this exact body and Idempotency-Key recorded: found, turn_only or not_found.",
   "POST /v2/threads/:id/turns/:id/retry": "Retry a thread turn.",
   "GET /v2/trust": "List protected-path trust state.",
   "POST /v2/trust": "Update protected-path trust state.",

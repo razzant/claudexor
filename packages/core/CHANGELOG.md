@@ -1,5 +1,135 @@
 # @claudexor/core
 
+## 6.0.0
+
+### Patch Changes
+
+- 80ca9ee: Antigravity read-only runs no longer end at their first shell command, and
+  large Antigravity inputs reach the model whole (#653).
+
+  A read-only run now passes session-only settings that deny every command and
+  file write, including commands the profile allows. agy returns a denied call to
+  the model as a tool error, so the run keeps reading files and delivers its
+  answer; before, plan mode's unanswerable permission prompt ended the whole turn.
+  The profile's own allow, deny and ask rules stay in force: agy replaces each
+  list a session object names, so all three are copied from the profile. If the
+  profile settings cannot be read, the read-only run is refused before it starts;
+  if only saving the read grant fails, the session settings carry the grant.
+  Read-only runs therefore need agy 1.4.10 or newer, the first release that
+  accepts session-only settings: on an older CLI a read-only run stops before any
+  model call with a message asking to update agy, and `doctor` states the
+  minimum. Full-access and workspace-write runs are unaffected, and nothing
+  updates agy automatically. Every tool step agy
+  reports as ERROR, refused or otherwise failed, now records that call's error
+  result.
+
+  In the recorded runs agy kept only the first 192,000 bytes of each larger piped
+  prompt. Input over Claudexor's conservative 128 KiB limit is now saved unchanged
+  in the run's context directory and named by a short bootstrap whose size does
+  not grow with the input. This also covers inputs between 128 KiB and 192,000
+  bytes, which agy would have received whole, and a thread's summary pass, which
+  uses its enclosing run's directory. A lane without a run directory, an
+  unavailable profile read grant or a failed write refuses such input before
+  anything is sent.
+
+- f4f8caf: Questions now say whether the agent waits for the answer (#628). Each pending
+  question carries `delivery`: `blocking` (every question so far, and the
+  meaning of a stored question without the field) or `async`, a question the
+  agent asks while it keeps working. An async question is still attention: it
+  sets `waitingOnUser`, wakes `claudexor_run_wait`, and can be answered through
+  the same routes. It does not pause the inactivity watchdog or refuse live
+  messages, and the new run-summary flag `asyncQuestionsOnly` is true only while
+  every pending question is async, so a blocking question is never hidden behind
+  one. `claudexor follow`, ACP and the macOS app no longer call such a run paused
+  or waiting: they keep it working, say that silence or expiry sends nothing,
+  and a blocking question is asked before an open async prompt. ACP and MCP
+  answer prompts for an async question no longer hold the run's terminal; they
+  close when the question is answered elsewhere or the run ends. In the macOS app a
+  run that has ended no longer shows a question card, a Send button or a question
+  state while its last snapshot still lists the question; a late answer the engine
+  refuses reads as a sentence saying it was not sent, instead of a raw HTTP error;
+  the deadline label keeps counting down; and an async question between the last
+  message and the final answer no longer leaves a copy of that answer in Activity.
+
+  A failed answer surface is no longer reported as the user's decline. When the
+  engine cannot register or keep a question, the run's interaction channel now
+  rejects with the cause instead of returning "no answer"; a question that was
+  never registered is not announced. A Codex approval or access request whose
+  answer channel failed stays declined and records `interaction_answer_unavailable`
+  instead of failing the run. A failed read of a run's pending questions is no
+  longer reported as having none: `GET /v2/runs/:id` for a live run answers with
+  the typed problem, so an open prompt stays open and a kept answer is retried,
+  while a finished run's detail, a run list and a child card still render.
+
+  A Codex app-server run now raises Codex's `request_user_input_async` as such a
+  question: one async interaction per native item, with Codex's own question ids
+  and options. Its text stays visible as an agent message but is never taken as
+  the run's answer, even when the turn produced no other text. A committed answer
+  goes to the turn that asked, once, as Codex's reply envelope (`turn/steer` with
+  client message id `interaction-answer:<id>`), and each send leaves an
+  `interaction_answer_steer` receipt. The end of that turn,
+  Stop and the run's end withdraw an open question and send nothing. A sub-agent's
+  question cannot be answered, and a question Claudexor cannot read, a run without
+  an answer channel and a failing channel are recorded as
+  `interaction_answer_unavailable`. This follows the Codex 0.162.1 source; it was
+  not checked against a live Codex run.
+
+- f4f8caf: A Claude question whose answer the adapter could not obtain or deliver is no
+  longer recorded as the user's decline (#622). An `AskUserQuestion` error result
+  is now a neutral record with the CLI's own detail ("returned an error instead
+  of answers") and the session input Claudexor held when it read the question.
+  Frames can arrive in batches, so that state does not say when the model asked.
+  When the adapter itself cannot obtain or send an answer, an
+  `interaction_answer_unavailable` status names the reason with the request and
+  tool-use ids: the run has no answer channel, the channel failed, the process
+  ended before an answer was sent, the response could not be written, or the
+  CLI's permission request was read after Claudexor had closed the session's
+  stdin. That late request carries its exact native input instead of counting as
+  a dropped frame. Only the no-channel and failed-channel denies tell the model
+  why it got no answer; in the other cases it sees at most the CLI's own error,
+  and a deny that cannot be written adds a second status. The stdin handle of a
+  bidirectional session gains `send`, which reports whether a frame reached the
+  child's pipe: nothing is written once the child has exited, even while a
+  descendant still holds its output pipes, and a refused write reports its error.
+  A declined or expired question keeps its benign decline and typed interaction
+  events, and none of these is a blocking tool error. A failure inside the
+  orchestrator's answer surface that it resolves as no answer is still sent as
+  the benign decline.
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/util@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- Preserve intermediate registration roots and late recovery holds during retention; later process-scope settlement keeps first group-birth bounds, unresolved groups and failed-write retries.
+- 6bce7ce: A Raw API request names only a model somebody chose (#395). The built-in fallbacks are gone and no newer name replaces them: the run's model, the saved `harnesses.<id>.default_model` and then that instance's own `CLAUDEXOR_RAWAPI_MODEL` or `CLAUDEXOR_OPENROUTER_MODEL` decide, before admission and sizing, and the same id reaches the request and its receipt. With no choice the run refuses `model_selection_required` before anything is sent, naming the remedy, and no other model or route stands in. An environment model is now judged by the catalog like any explicit model: a known absence refuses, and an unavailable catalog still forwards it with its note.
+- 8905c72: Add exact thread export (`claudexor thread export`, `GET /v2/threads/:id/export`) and conditional retirement against that export (`claudexor thread-retire`, `POST /v2/threads/:id/retire`), with `POST /v2/threads/:id/retire/abandon` to settle an unanswered operation and `GET /v2/threads/:id/retirement` (`claudexor thread retirement`) to read its outcome. A partial export names each gap and cannot retire. Retirement reaches only what a recorded real session proved, currently Claude 2.1.316 transcripts and spilled tool output on Darwin; any other host platform or session material is a named gap, exported byte-exact only where its harness declares its layout. A name the bundle's volume cannot hold is kept by item id, with the complete name in the manifest and the place in the receipt. `thread-retire` re-hashes and syncs every byte its bundle received, and the directories above it, before it sends a new operation, keeps that request in the bundle until an answer settles it, and names it in every unknown answer, so repeating the command repeats that operation. A purged thread admits no new work: a turn's create or retry, Exact Retry and decision rerun answer 409 `thread_purged`, while a command the thread accepted still answers its replay and a run's retained result can still be applied, discarded or reverted. Stop ends an export's journal or transcript read at its next chunk, and a restart's replay of an open retirement cleanup between lane entries. An export observes the thread's closure in the store maintenance worker's read-only snapshot, off the request thread, and an export read cancelled by Stop answers 503 `daemon_stopping` (retryable); the retirement decision still rereads the closure synchronously inside its transaction, at a cost that grows with the closure.
+- 2e8b440: A run stopped by its max-turns cap now ends `interrupted` with the new reason `turn_limit_reached` (label "Turn limit reached", ACP stop reason `max_turn_requests`), and the caller decides what happens next (#299). Claude Code ends a capped turn with an `error_max_turns` result and exits 1; Claudexor read that exit as a process crash, resumed the same session under the same cap until the retry budget ran out, and reported a generic harness failure. Claude and Grok now report the capped turn as one error carrying the typed `turn_limit` field, whatever the exit code, so consumers that only read errors (the thread summary pass, the auth capability smoke, the reviewer engine) never take the partial narration for an answer. Nothing re-runs the work implicitly: the attempt is not resumed, moved to another account or replayed under the same cap, and neither the Ask `fallback_model` replay nor the solo Plan fallback to the next harness runs after it. The partial output stays in `final/retained-output.md` and is never written as the answer. An Agent run keeps its unfinished tree where the run keeps stopped work, and Agent and Ask terminals carry `resumable.cause: turn_limit` for an explicit `continueFrom`; Plan reports the same reason without in-run continuation facts, and an interrupted Plan attempt with no error of its own is described in the same words as Agent and Ask. The macOS app names the stop "Turn limit reached". New wire values: `RunReason` `turn_limit_reached`, `ResumableCause` `turn_limit` and `HarnessEvent.turn_limit`, so strict readers of those enums need the additions. The read-only terminals now also report a typed limit on an attempt whose CLI exited non-zero: an Ask whose Claude context was exhausted ends `interrupted / context_capacity_exhausted` instead of `failed / harness_failed`. Verified through the core run loop with a stand-in process that prints Claude Code 2.1.316's capped frames; no live capped run was made, and the Grok mapping is tested on synthetic frames only.
+- 0d2d858: Run receipts now say what Web Off and an access profile actually did on each route, without changing either (#118, #413). Just before dispatching an adapter, the per-spawn gate records a `route_controls` receipt of what was prepared: the route's own web switch (`native`, `tools`, `uncontrolled` or `none`), the access profile, the vendor access arguments the adapter passes (for example Cursor `--force --sandbox enabled --trust --mode ask`, Codex `sandbox=read-only approvalPolicy=never approvalsReviewer=auto_review`) and the access mechanism, where only `fs_sandbox`, the vendor's own sandbox, declares an OS file boundary and `native_settings` (`inherit_native`) leaves it unknown. `native_session_started` reports whether the attempt's native session was reported started, so a pre-spawn refusal or a stop stays distinct from a launch; `false` never proves that no process ran. The gate checks Stop again after recording the receipt, so a stop that lands at the receipt keeps it and never dispatches the adapter. Agent attempts also carry their applied HOME fact, where `false` means the engine did not replace HOME; Ask and Plan record none, so none is claimed. The web evidence states its scope (`observation`: typed web tool calls and engine Browser calls; network traffic not measured), so `attempted: false` no longer reads as "no network". The run summary projects the distinct routes as `routeControls` together with `webEvidence.verification` and `webEvidence.observation`, and `claudexor inspect` prints `access route`, `web route`, `web retrieval` and `web scope` lines. Retrieval strength now says what came back. A verified result carries `verified_content`: Claude's WebFetch and a Browser navigation or snapshot of a loaded http(s) page are a `page`, while Claude's WebSearch is `search_results`, which is not a fetched page; its strength and the required-web gate are unchanged. A Browser page read that got an HTTP error status is `dispatched`, and a Browser call that read no web page (closing, clicking, listing tabs, an `about:blank` or `data:` page) carries no retrieval stamp: it still counts as completed web activity for the unchanged required-web gate, but the strength stays `none`. The Browser rule is checked against recorded replies of the pinned Browser MCP, and a denied or cancelled Claude web call is no longer stamped as a verified retrieval. The macOS run facts show "Web verified" for a verified page, "Web searched" for verified search results, "Web reached" for a web call without a typed result and "Web tools used" when completed web tools retrieved nothing or the engine sent no strength; for Web Off they show "Web tools off" only when a route reported a native session under the off switch, otherwise "Web Off requested"; and they describe access by its native setting and declared boundary instead of "enforced".
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+
 ## 5.0.2
 
 ### Patch Changes

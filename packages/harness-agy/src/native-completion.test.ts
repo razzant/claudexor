@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { runCliHarness } from "@claudexor/core";
 import type { HarnessEvent } from "@claudexor/schema";
-import { HarnessEvent as EventSchema, RunEvent } from "@claudexor/schema";
+import { HarnessEvent as EventSchema, HarnessRunSpec, RunEvent } from "@claudexor/schema";
 import { createAgyNativeCompletion } from "./native-completion.js";
 import { parseAgyEvent } from "./parse.js";
 
@@ -291,5 +292,60 @@ describe("AGY explicit not-retryable record (vendor stderr `AGY_ERROR` line)", (
       { stderr_tail: line, harness_reported_error: true, exit_signal: "SIGKILL" },
     ])
       expect(refusals(await replay([event({ payload })]))).toEqual([]);
+  });
+});
+
+describe("AGY CLI without session settings (#653)", () => {
+  // The 1.5.0 shape of an unknown flag (recorded with a made-up flag): the
+  // rejection line, then usage text long enough to evict it from the run
+  // loop's 1000-character exit detail. Exit 2, no stdout.
+  const usage = Array.from(
+    { length: 30 },
+    (_, i) => `  --flag-${i}    help text ${"·".repeat(60)}`,
+  );
+  async function exitWith(firstLine: string) {
+    const completion = createAgyNativeCompletion();
+    const out: HarnessEvent[] = [];
+    for await (const e of completion.wrap(
+      runCliHarness({
+        bin: process.execPath,
+        args: [
+          "-e",
+          `process.stderr.write(${JSON.stringify([firstLine, "Usage of agy:", ...usage].join("\n") + "\n")}); process.exit(2);`,
+        ],
+        input: "",
+        spec: HarnessRunSpec.parse({
+          session_id: "s",
+          intent: "explain",
+          prompt: "x",
+          cwd: process.cwd(),
+        }),
+        label: "agy",
+        observeStderr: completion.observeStderr,
+        parseStderrFailure: completion.parseStderrFailure,
+        parseEvent: () => [],
+      }),
+    ))
+      out.push(e);
+    return out;
+  }
+
+  it("names the missing session settings instead of the usage tail", async () => {
+    const out = await exitWith("flags provided but not defined: -settings");
+    const errors = out.filter((e) => e.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      payload: { code: "agy_session_settings_unsupported" },
+      error: expect.stringContaining("readonly runs need agy 1.4.10 or newer"),
+    });
+    expect(out.at(-1)?.type).toBe("completed");
+  });
+
+  it("leaves any other rejected flag to the run loop's own exit error", async () => {
+    const out = await exitWith("flags provided but not defined: -claudexor-unknown-flag");
+    const errors = out.filter((e) => e.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.error).toMatch(/^agy exited with code 2: /);
+    expect(errors[0]!.payload?.["code"]).toBeUndefined();
   });
 });

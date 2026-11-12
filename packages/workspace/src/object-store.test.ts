@@ -39,10 +39,57 @@ const ENV = {
   GIT_COMMITTER_NAME: "t",
   GIT_COMMITTER_EMAIL: "t@example.invalid",
 };
-const git = (repo: string, args: string[], env: Record<string, string> = {}, input?: string) =>
-  execFileSync("git", ["-C", repo, ...args], { env: { ...ENV, ...env }, input, maxBuffer: 1 << 26 })
-    .toString("utf8")
-    .trim();
+// #650: synchronous fixture Git must not block the worker past testTimeout.
+const GIT_BOUND_MS = 30_000;
+type GitFailure = NodeJS.ErrnoException & {
+  status: number | null;
+  signal: string | null;
+  stderr: Buffer | null;
+};
+const gitWithin =
+  (timeoutMs: number) =>
+  (repo: string, args: string[], env: Record<string, string> = {}, input?: string) => {
+    const argv = ["-C", repo, ...args];
+    try {
+      return execFileSync("git", argv, {
+        env: { ...ENV, ...env },
+        input,
+        stdio: "pipe", // diagnostics reach the error, not the run log
+        maxBuffer: 1 << 26,
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+      })
+        .toString("utf8")
+        .trim();
+    } catch (error) {
+      // The same error, its fields kept: the command and its ending lead the message.
+      const failure = error as GitFailure;
+      const { code, status, signal } = failure;
+      const ending = code === "ETIMEDOUT" ? `timed out after ${timeoutMs} ms` : "failed";
+      failure.message = `git ${argv.join(" ")} ${ending} (status ${status}, signal ${signal}): ${failure.message}`;
+      throw failure;
+    }
+  };
+const git = gitWithin(GIT_BOUND_MS);
+
+/** Whether `repo` holds `oid`. Absence is exactly `cat-file -e` finishing with
+ * status 1 and no diagnostics; any other ending is a failed read and throws. */
+function holdsObject(
+  repo: string,
+  oid: string,
+  env: Record<string, string> = {},
+  run = git,
+): boolean {
+  try {
+    run(repo, ["cat-file", "-e", oid], env);
+    return true;
+  } catch (error) {
+    // `code` comes first: a timed-out child can still carry status 1 beside it.
+    const { code, status, stderr } = error as GitFailure;
+    if (code === undefined && status === 1 && stderr?.length === 0) return false;
+    throw error;
+  }
+}
 
 function userRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "claudexor-store-user-"));
@@ -151,14 +198,12 @@ describe("project object store (rev 12/14 D)", () => {
     rmSync(source.objectsDir, { recursive: true, force: true });
     git(repo, ["reflog", "expire", "--expire=now", "--all"]);
     git(repo, ["gc", "-q", "--prune=now"]);
-    expect(spawnSync("git", ["-C", repo, "cat-file", "-e", tree], { env: ENV }).status).not.toBe(0);
+    expect(holdsObject(repo, tree)).toBe(false);
     const imported = await importIntoRepository({ projectRoot: repo, repo, roots: [tree] });
     expect(imported.missing).toEqual([]);
     const commit = git(repo, ["commit-tree", tree, "-p", head, "-m", "result"]);
     git(repo, ["update-ref", "refs/heads/result", commit]);
-    expect(spawnSync("git", ["-C", repo, "fsck", "--connectivity-only"], { env: ENV }).status).toBe(
-      0,
-    );
+    git(repo, ["fsck", "--connectivity-only"]);
     git(repo, ["gc", "-q", "--prune=now"]);
     expect(git(repo, ["show", `result:new.txt`])).toBe("candidate bytes");
   });
@@ -213,10 +258,7 @@ describe("project object store (rev 12/14 D)", () => {
     expect(pass.freedBytes).toBeGreaterThan(0);
     const env = storeEnv(store);
     expect(git(store, ["cat-file", "-t", live.tree], env)).toBe("tree");
-    expect(
-      spawnSync("git", ["-C", store, "cat-file", "-e", dead.tree], { env: { ...ENV, ...env } })
-        .status,
-    ).not.toBe(0);
+    expect(holdsObject(store, dead.tree, env)).toBe(false);
   });
 
   it("streams a wanted subset of a pack (bounded memory) when the pack cannot be adopted whole", async () => {
@@ -243,10 +285,7 @@ describe("project object store (rev 12/14 D)", () => {
     expect(git(dest, ["cat-file", "-t", wanted], { GIT_DIR: dest })).toBe("blob");
     // Only the wanted object travelled; the rest of the pack stayed behind.
     const unwanted = git(repo, ["rev-parse", "HEAD:one.txt"]);
-    expect(
-      spawnSync("git", ["-C", dest, "cat-file", "-e", unwanted], { env: { ...ENV, GIT_DIR: dest } })
-        .status,
-    ).not.toBe(0);
+    expect(holdsObject(dest, unwanted, { GIT_DIR: dest })).toBe(false);
   });
 
   it("adopts a capture's big-blob pack by hard link instead of copying it", async () => {
@@ -311,10 +350,7 @@ describe("pending custody and the prune lock under concurrency", () => {
       for (const name of readdirSync(join(objects, fan))) age(join(objects, fan, name), 3 * hour);
     return { store, tree: capture.tree };
   }
-  const present = (store: string, oid: string) =>
-    spawnSync("git", ["-C", store, "cat-file", "-e", oid], {
-      env: { ...ENV, ...storeEnv(store) },
-    }).status === 0;
+  const present = (store: string, oid: string) => holdsObject(store, oid, storeEnv(store));
   const pendingDir = (store: string) => join(store, "claudexor", "pending");
   function writePending(store: string, record: Record<string, unknown>, ageMs: number): string {
     const path = join(pendingDir(store), `${String(record["pid"])}-${Math.random()}.json`);
@@ -412,5 +448,64 @@ describe("pending custody and the prune lock under concurrency", () => {
     } finally {
       clearTimeout(released);
     }
+  });
+});
+
+describe("this file's Git reads are bounded, and a failed read is no absent object (#650)", () => {
+  const oid = "1".repeat(40);
+  function standIn(script: string) {
+    const bin = mkdtempSync(join(tmpdir(), "claudexor-store-bin-"));
+    dirs.push(bin);
+    writeFileSync(join(bin, "git"), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+    return { bin, env: { PATH: `${bin}:${process.env["PATH"] ?? ""}` } };
+  }
+
+  it("answers present and absent for what a real repository holds", () => {
+    const repo = userRepo();
+    expect(holdsObject(repo, git(repo, ["rev-parse", "HEAD"]))).toBe(true);
+    expect(holdsObject(repo, oid)).toBe(false);
+  });
+
+  it("fails the read of a directory Git cannot open as a repository", () => {
+    const empty = mkdtempSync(join(tmpdir(), "claudexor-store-empty-"));
+    dirs.push(empty);
+    expect(() => holdsObject(empty, oid, { GIT_DIR: empty })).toThrow(
+      expect.objectContaining({
+        status: 128,
+        message: expect.stringContaining(
+          `git -C ${empty} cat-file -e ${oid} failed (status 128, signal null): `,
+        ),
+      }),
+    );
+  });
+
+  it.each([
+    ["exits 1 with a diagnostic", "echo broken >&2\nexit 1", "failed (status 1, signal null)"],
+    ["dies by a signal", "kill -KILL $$", "failed (status null, signal SIGKILL)"],
+  ])("fails the read when Git %s", (_ending, script, outcome) => {
+    const { bin, env } = standIn(script);
+    expect(() => holdsObject(bin, oid, env)).toThrow(
+      expect.objectContaining({
+        message: expect.stringContaining(`git -C ${bin} cat-file -e ${oid} ${outcome}: `),
+      }),
+    );
+  });
+
+  it.each([
+    ["never exits", "trap '' TERM\nexec sleep 20", 500, "(status null, signal SIGKILL)"],
+    // A process Git started keeps its output open: status 1 or 0 arrives beside ETIMEDOUT.
+    // A new script can take hundreds of milliseconds to start, so its bound lets it exit first.
+    ["exits 1 while its child holds its output open", "sleep 5 &\nexit 1", 2_000, "(status "],
+    ["exits 0 while its child holds its output open", "sleep 5 &\nexit 0", 2_000, "(status "],
+  ])("fails the read at the bound when Git %s", (_ending, script, bound, outcome) => {
+    const { bin, env } = standIn(script);
+    expect(() => holdsObject(bin, oid, env, gitWithin(bound))).toThrow(
+      expect.objectContaining({
+        code: "ETIMEDOUT",
+        message: expect.stringContaining(
+          `git -C ${bin} cat-file -e ${oid} timed out after ${bound} ms ${outcome}`,
+        ),
+      }),
+    );
   });
 });

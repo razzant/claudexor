@@ -1,98 +1,9 @@
 import Foundation
 
-/// One rendered unit of a turn's live transcript. The reducer folds the raw
-/// `harness.event` SSE stream into these so the chat shows working progress
-/// (reasoning + tools) as it happens, not just the final answer.
-public enum TranscriptBlock: Identifiable, Sendable, Equatable {
-    /// One merged reasoning SEGMENT (consecutive thinking between other
-    /// blocks); `seconds` is the segment's observed wall-clock span from the
-    /// events' own timestamps (0 while unknown — the UI hides the timer).
-    case thinking(id: String, text: String, seconds: Double = 0)
-    case message(id: String, text: String)
-    case tool(id: String, ToolBlock)
-    /// An engine-authored receipt (e.g. what an isolated copy was prepared with).
-    case notice(id: String, TranscriptNotice)
-
-    public var id: String {
-        switch self {
-        case .thinking(let id, _, _): return id
-        case .message(let id, _): return id
-        case .tool(let id, _): return id
-        case .notice(let id, _): return id
-        }
-    }
-}
-
-public struct ToolBlock: Sendable, Equatable {
-    /// `unconfirmed`: the result did not establish that the command finished
-    /// (moved to a background shell, timed out, or an unrecognized outcome,
-    /// #450). It is never shown as success and no later event resolves it.
-    public enum Status: String, Sendable { case running, ok, error, unconfirmed }
-
-    /// The typed `command_outcome` facts of a result (#450), as far as the
-    /// transcript shows them.
-    public struct CommandOutcome: Sendable, Equatable {
-        public enum State: String, Sendable { case exited, timedOut = "timed_out", backgrounded, unknown }
-        public enum BackgroundReason: String, Sendable { case timeout, requested }
-        public var state: State
-        public var timeoutMs: Int?
-        public var backgroundReason: BackgroundReason?
-        public var shellId: String?
-        public var pid: Int?
-
-        public init(state: State, timeoutMs: Int? = nil, backgroundReason: BackgroundReason? = nil,
-                    shellId: String? = nil, pid: Int? = nil) {
-            self.state = state
-            self.timeoutMs = timeoutMs
-            self.backgroundReason = backgroundReason
-            self.shellId = shellId
-            self.pid = pid
-        }
-
-        /// Present facts; an unrecognized state is `unknown`, never an exit
-        /// (mirrors the schema's `commandOutcomeUnconfirmed`).
-        init?(_ value: JSONValue?) {
-            guard let value, value != .null else { return nil }
-            func integer(_ key: String, minimum: Double) -> Int? {
-                guard let number = value[key]?.doubleValue, number >= minimum,
-                      number == number.rounded(), number <= 9_007_199_254_740_991 else { return nil }
-                return Int(number)
-            }
-            state = value["state"]?.stringValue.flatMap(State.init(rawValue:)) ?? .unknown
-            timeoutMs = integer("timeout_ms", minimum: 0)
-            backgroundReason = value["background_reason"]?.stringValue.flatMap(BackgroundReason.init(rawValue:))
-            shellId = value["shell_id"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
-            pid = integer("pid", minimum: 1)
-        }
-
-        public var unconfirmed: Bool { state != .exited }
-    }
-
-    public var name: String
-    public var kind: String?
-    public var target: String?
-    public var status: Status
-    public var detail: String?      // content_summary / error_summary
-    public var exitCode: Int?
-    public var commandOutcome: CommandOutcome?
-
-    public init(name: String, kind: String? = nil, target: String? = nil,
-                status: Status, detail: String? = nil, exitCode: Int? = nil,
-                commandOutcome: CommandOutcome? = nil) {
-        self.name = name
-        self.kind = kind
-        self.target = target
-        self.status = status
-        self.detail = detail
-        self.exitCode = exitCode
-        self.commandOutcome = commandOutcome
-    }
-}
-
 /// Pure fold of SSE envelopes into transcript blocks. No UI, no I/O — unit
 /// tested. Idempotent by `seq` (a replayed event never duplicates a block);
-/// consecutive `thinking` blocks merge; a `tool_result` updates the matching
-/// `tool_call` by `use_id` (fallback: the last open tool of the same name).
+/// consecutive `thinking` blocks merge; a `tool_result` updates its own try's `tool_call`
+/// of that `use_id` (id-less: its try's one open id-less call of that name), else stands alone.
 public struct TranscriptReducer: Sendable {
     public private(set) var blocks: [TranscriptBlock] = []
     /// Number of oldest blocks dropped to stay under `cap` (shown as "N earlier…").
@@ -107,8 +18,12 @@ public struct TranscriptReducer: Sendable {
 
     /// Highest seq already folded — idempotent replay without an unbounded Set.
     private var lastSeq: Int = -1
-    private var toolIndexByUseId: [String: Int] = [:]
-    private var lastOpenToolByName: [String: Int] = [:]
+    /// Tool cards by their try's stream: open calls by `use_id`, id-less calls by bounded name,
+    /// and settled background handoffs a `command_outcome_refined` row may update once (#546).
+    private struct ToolKey: Hashable, Sendable { let stream: StreamKey; let id: String }
+    private var openToolByUseId: [ToolKey: Int] = [:]
+    private var openIdlessToolsByName: [ToolKey: [Int]] = [:]
+    private var handoffToolIndexByUseId: [ToolKey: Int] = [:]
     /// Wall-clock start of the OPEN thinking segment (from the events' own
     /// `ts`), so the merged block can disclose how long the reasoning ran.
     private var openThinkingStart: Date?
@@ -238,7 +153,7 @@ public struct TranscriptReducer: Sendable {
                       let speech = payload["speech"]?["key"]?.stringValue {
                 streams[StreamKey(payload)]?.abandon(speech)
             }
-            return false
+            return applyRefinement(payload)
         case "thinking":
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
             let eventAt = Self.isoDate(payload["ts"]?.stringValue)
@@ -294,6 +209,14 @@ public struct TranscriptReducer: Sendable {
                 return true
             }
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
+            // #628: an async message (a question asked while the agent keeps
+            // working) is its own visible item and never the turn's answer, so it
+            // is not the final's twin candidate: the ordinary message before it
+            // that the final repeats still drops, and the question stays.
+            if payload["payload"]?["delivery"]?.stringValue == "async" {
+                append(.message(id: "msg-\(seqKey)", text: boundHead(text)))
+                return true
+            }
             let speech = payload["speech"]?["key"]?.stringValue
             // Live deltas (W-C4) grow ONE streaming block; after a final the
             // stream is SEALED (a late stray delta is dropped). A delta
@@ -355,15 +278,16 @@ public struct TranscriptReducer: Sendable {
             )
             let id = "tool-\(seqKey)"
             append(.tool(id: id, block))
-            let idx = blocks.count - 1
-            if let useId = tool?["use_id"]?.stringValue { toolIndexByUseId[useId] = idx }
-            lastOpenToolByName[block.name] = idx
+            let idx = blocks.count - 1, stream = StreamKey(payload)
+            if let useId = tool?["use_id"]?.stringValue { openToolByUseId[ToolKey(stream: stream, id: useId)] = idx }
+            else if let name = tool?["name"]?.stringValue, name.count <= toolFieldCap { openIdlessToolsByName[ToolKey(stream: stream, id: name), default: []].append(idx) }
             return true
         case "tool_result":
-            let tool = payload["tool"]
+            let tool = payload["tool"], stream = StreamKey(payload)
             let useId = tool?["use_id"]?.stringValue
             let name = tool?["name"]?.stringValue
-            let idx = (useId.flatMap { toolIndexByUseId[$0] }) ?? (name.flatMap { lastOpenToolByName[$0] })
+            let idx: Int? = if let useId { openToolByUseId[ToolKey(stream: stream, id: useId)] }
+                else { name.flatMap { openIdlessToolsByName[ToolKey(stream: stream, id: $0)] }.flatMap { $0.count == 1 ? $0[0] : nil } }
             let statusStr = tool?["status"]?.stringValue
             // #450: an ok result whose command end is unconfirmed (background
             // handoff, elapsed timeout, unknown outcome) is not a success.
@@ -385,19 +309,43 @@ public struct TranscriptReducer: Sendable {
                 textChars += (outcome?.shellId?.count ?? 0) - (b.commandOutcome?.shellId?.count ?? 0)
                 b.commandOutcome = outcome
                 blocks[i] = .tool(id: id, b)
-                if let useId { toolIndexByUseId.removeValue(forKey: useId) }
-                if let name { lastOpenToolByName.removeValue(forKey: name) }
+                if let useId { openToolByUseId.removeValue(forKey: ToolKey(stream: stream, id: useId)) }
+                else if let name { openIdlessToolsByName.removeValue(forKey: ToolKey(stream: stream, id: name)) }
+                if let useId, outcome?.state == .backgrounded { handoffToolIndexByUseId[ToolKey(stream: stream, id: useId)] = i }
                 enforceBudget()
             } else {
                 // A result with no matching call (e.g. reconnect mid-tool): show it standalone.
                 var block = boundedTool(name: name ?? "tool", kind: tool?["kind"]?.stringValue, target: tool?["target"]?.stringValue, status: status, detail: detail, exitCode: exit)
                 block.commandOutcome = outcome
                 append(.tool(id: "tool-\(seqKey)", block))
+                if let useId, outcome?.state == .backgrounded { handoffToolIndexByUseId[ToolKey(stream: stream, id: useId)] = blocks.count - 1 }
             }
             return true
         default:
             return false
         }
+    }
+
+    /// #546: a `command_outcome_refined` row replaces the command facts of the card whose result
+    /// handed the command to a background shell, found by its own try and exact use id only (never
+    /// by name), once, even after a later native turn. It must be a reported completion with a
+    /// defined status: a status row cannot prove an exit, so it never changes the card's status,
+    /// adds no card and sets no exit code. Anything else leaves the handoff.
+    private mutating func applyRefinement(_ payload: JSONValue) -> Bool {
+        guard payload["payload"]?["code"]?.stringValue == "command_outcome_refined",
+              let key = payload["tool"]?["use_id"]?.stringValue.map({ ToolKey(stream: StreamKey(payload), id: $0) }),
+              let i = handoffToolIndexByUseId[key], i < blocks.count,
+              case .tool(let id, var b) = blocks[i],
+              let reported = ToolBlock.CommandOutcome(payload["tool"]?["command_outcome"]),
+              reported.state == .completionReported, reported.completionStatus != nil,
+              let outcome = boundedOutcome(reported)
+        else { return false }
+        handoffToolIndexByUseId.removeValue(forKey: key)
+        textChars += (outcome.shellId?.count ?? 0) - (b.commandOutcome?.shellId?.count ?? 0)
+        b.commandOutcome = outcome
+        blocks[i] = .tool(id: id, b)
+        enforceBudget()
+        return true
     }
 
     /// Fold one engine receipt, once per `id` (live, replayed or restored from
@@ -428,8 +376,7 @@ public struct TranscriptReducer: Sendable {
         }
         blocks.insert(block, at: 0)
         textChars += chars(of: block)
-        toolIndexByUseId = toolIndexByUseId.mapValues { $0 + 1 }
-        lastOpenToolByName = lastOpenToolByName.mapValues { $0 + 1 }
+        shiftToolIndices { $0 + 1 }
         enforceBudget()
         return true
     }
@@ -511,8 +458,14 @@ public struct TranscriptReducer: Sendable {
         // to match (clearing them would orphan still-open tools so their
         // tool_result lands as a duplicate block — review r2 #5). Entries that
         // fell out of the window are dropped.
-        toolIndexByUseId = toolIndexByUseId.compactMapValues { $0 - drop >= 0 ? $0 - drop : nil }
-        lastOpenToolByName = lastOpenToolByName.compactMapValues { $0 - drop >= 0 ? $0 - drop : nil }
+        shiftToolIndices { $0 - drop >= 0 ? $0 - drop : nil }
+    }
+
+    /// Re-point every tool card index after blocks moved; nil drops one that left the window.
+    private mutating func shiftToolIndices(_ move: (Int) -> Int?) {
+        openToolByUseId = openToolByUseId.compactMapValues(move)
+        openIdlessToolsByName = openIdlessToolsByName.compactMapValues { let kept = $0.compactMap(move); return kept.isEmpty ? nil : kept }
+        handoffToolIndexByUseId = handoffToolIndexByUseId.compactMapValues(move)
     }
 
     /// Remove the finalization TWIN — the candidate message block, but only when
@@ -533,8 +486,7 @@ public struct TranscriptReducer: Sendable {
               text == clip(finalText, cap: blockCharCap, keepTail: false) else { return }
         textChars -= text.count
         blocks.remove(at: i)
-        toolIndexByUseId = toolIndexByUseId.compactMapValues { $0 > i ? $0 - 1 : $0 }
-        lastOpenToolByName = lastOpenToolByName.compactMapValues { $0 > i ? $0 - 1 : $0 }
+        shiftToolIndices { $0 > i ? $0 - 1 : $0 }
     }
 
     private mutating func append(_ block: TranscriptBlock) {

@@ -12,9 +12,10 @@
             "accept_risk",
             "override_needs_human",
             "revert_run",
-            "discard"
+            "discard",
+            "taken"
           ],
-          "description": "Operator decision: apply an accepted result, rerun with feedback, accept risk, override needs-human, revert a recorded Git effect, or discard remaining copied files without applying them."
+          "description": "Operator decision: apply an accepted result, rerun with feedback, accept risk, override needs-human, revert a recorded Git effect, acknowledge a captured terminal patch result, or discard remaining copied files without applying them."
         },
         "findingIds": {
           "type": "array",
@@ -85,6 +86,11 @@
             }
           ],
           "description": "Delivery target for accept_clean_patch."
+        },
+        "reason": {
+          "type": "string",
+          "const": "captured_result",
+          "description": "Reason for the taken decision; required only for action=taken."
         }
       },
       "required": [

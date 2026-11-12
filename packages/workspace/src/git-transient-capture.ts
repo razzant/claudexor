@@ -23,6 +23,7 @@ import {
   untrackedNestedRepositories,
 } from "./git-nested-repositories.js";
 import { gitObserved, GitOperationError, proofStallMs, treeBlobBytes } from "./git-observed.js";
+import { addKeptPaths } from "./git-snapshot.js";
 import {
   makeGitObjectResult,
   repositoryObjectFormat,
@@ -84,6 +85,8 @@ export interface TransientCaptureOptions {
   viewLimitBytes?: number;
   /** Path whose existence keeps the result's objects in the store (the run directory). */
   owner?: string;
+  /** Paths an accepted raw patch wrote: captured whatever the ignore rules say (#594). */
+  keep?: readonly string[];
 }
 
 function alternates(paths: string[]): string {
@@ -150,17 +153,10 @@ export async function captureWorkingTreeTransient(
       [".", ...pathExcludes],
       "transient diff",
     );
+    const excludes = [...pathExcludes, ...nestedRepositoryExcludes(nested)];
     await gitObserved(
       repo,
-      [
-        ...SCRATCH_INDEX_CONFIG,
-        "add",
-        "-A",
-        "--",
-        ".",
-        ...pathExcludes,
-        ...nestedRepositoryExcludes(nested),
-      ],
+      [...SCRATCH_INDEX_CONFIG, "add", "-A", "--", ".", ...excludes],
       // A tracked file whose blob the base already holds is re-hashed without a sign
       // (no output, no new object), so the silent read is bounded by the base's bytes.
       {
@@ -170,6 +166,7 @@ export async function captureWorkingTreeTransient(
         stallMs: proofStallMs(await treeBlobBytes(repo, baseSha, env)),
       },
     );
+    await addKeptPaths(repo, env, options.keep ?? [], excludes, progress, "cwd");
     const tree = (
       await gitObserved(repo, [...SCRATCH_INDEX_CONFIG, "write-tree"], {
         env,

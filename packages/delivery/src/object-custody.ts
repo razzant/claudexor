@@ -1,9 +1,15 @@
 import { WorkspaceError } from "@claudexor/core";
-import type { GitDeliveryPair, GitObjectFormat, GitResultRefusal } from "@claudexor/schema";
+import type {
+  GitDeliveryPair,
+  GitObjectFormat,
+  GitObjectResult,
+  GitResultRefusal,
+} from "@claudexor/schema";
 import {
   git,
   gitFaultRefusalCode,
   GitOperationError,
+  heldBy,
   importIntoRepository,
   pairPaths,
   readRevertAnchor,
@@ -82,6 +88,27 @@ export async function importOrRefuse(
       "the result's objects could not be imported, so nothing was written",
     );
   }
+}
+
+/**
+ * How one delivery reads its target, alike for the preimage and the later recheck.
+ * Apply reads the result's paths by content; commit-class trusts the real index's stat
+ * cache. A later Apply may edit an accepted Raw path the target's ignore rules hide (a
+ * second edit of a delivered `result.log`). What the result's base held must also be in
+ * the target preimage, or the clean verification clone omits it and refuses "does not
+ * exist in index". A path the result only adds stays out: an ignored file of the user's
+ * there is refused as occupied, never merged.
+ */
+export async function targetSnapshots(
+  repoRoot: string,
+  top: string,
+  result: GitObjectResult,
+  byContent: boolean,
+): Promise<() => Promise<string>> {
+  const exact = byContent ? await pairPaths(top, result.base_tree, result.candidate_tree) : [];
+  const held = await heldBy(top, result.base_tree, exact);
+  const keep = exact.filter((path) => held.has(path));
+  return () => snapshotTree(repoRoot, exact, keep);
 }
 
 /** Store T and M beyond T's boundary under `owner` so revert survives the user's
@@ -163,7 +190,10 @@ export async function revertDeliveredPairUnlocked(
     // What the delivery changed is read by content, never taken from the stat cache:
     // a file that kept its size and times still holds what it holds.
     const exact = await pairPaths(top, pair.pre_tree, pair.post_tree);
-    current = await treeOf(top, await snapshotTree(repoRoot, exact));
+    // Revert must include explicitly accepted ignored additions in its current
+    // preimage; otherwise the pair sees the target without the delivered file
+    // and cannot prove or remove the postimage on the next Apply/Revert cycle.
+    current = await treeOf(top, await snapshotTree(repoRoot, exact, exact));
   } catch (error) {
     return failed(storeFaultRefusal(error, "the revert could not run, so nothing was restored"));
   }
@@ -306,7 +336,7 @@ export async function revertAnchorUnlocked(repo: string, anchorId: string, proje
   let anchor: { pair: GitDeliveryPair } | { patch: string };
   try {
     const pair = readRevertPair(projectRoot, anchorId);
-    anchor = pair ? { pair } : { patch: readRevertAnchor(repo, anchorId) };
+    anchor = pair ? { pair } : { patch: readPatchAnchor(projectRoot, repo, anchorId) };
   } catch (error) {
     const cause = redactSecrets(error instanceof Error ? error.message : String(error));
     const why =
@@ -348,4 +378,15 @@ export function afterWriteRefusal(
         ? `${refusal.message}; ${gone}`
         : `${refusal.message}; the write could not be taken back (${stays}); ${RECOVERY_REQUIRED}`,
   };
+}
+
+/** A legacy patch anchor: the project's namespace keeps current ones (#503); an older one
+ * may sit under the target's own namespace. A missing first location reads the second. */
+function readPatchAnchor(projectRoot: string, repo: string, anchorId: string): string {
+  try {
+    return readRevertAnchor(projectRoot, anchorId);
+  } catch (error) {
+    if (projectRoot === repo || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return readRevertAnchor(repo, anchorId);
+  }
 }

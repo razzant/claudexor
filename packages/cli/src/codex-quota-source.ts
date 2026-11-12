@@ -1,3 +1,4 @@
+import { resolveCodexBin } from "@claudexor/harness-codex";
 import { prepareHarnessCommand, killOwnedProcessTree } from "@claudexor/core";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -34,8 +35,6 @@ import {
 } from "./quota-refresh-diagnostics.js";
 
 export { parseCodexRateLimitsResponse } from "@claudexor/harness-codex";
-
-const CODEX_BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
 
 /** One subject per logged-in CODEX_HOME: the default native home (subject null)
  * plus every enabled codex config_dir_login profile (subject = profile_id).
@@ -237,10 +236,10 @@ export async function requestCodexAccount(
       reason,
       nativeRpcCode,
       ...(outcome === "started"
-        ? { binary: harnessBinaryIdentity(bin ?? CODEX_BIN, invocation.env) }
+        ? { binary: harnessBinaryIdentity(bin ?? resolveCodexBin(), invocation.env) }
         : {}),
     });
-  const command = prepareHarnessCommand(bin ?? CODEX_BIN, invocation.args, invocation.env);
+  const command = prepareHarnessCommand(bin ?? resolveCodexBin(), invocation.args, invocation.env);
   const child = start(command.binary, command.args, {
     stdio: ["pipe", "pipe", "pipe"],
     env: command.env,

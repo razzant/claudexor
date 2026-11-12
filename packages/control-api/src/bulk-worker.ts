@@ -82,9 +82,9 @@ export function projectBulkJob(
           pending,
           cursor,
           validRunOperatorDecision(record, operator),
-          children.map(({ record: child, pending: waitingOnUser }) => ({
+          children.map(({ record: child, attention }) => ({
             ...summaryOrDiagnostic(child),
-            waitingOnUser,
+            ...attention,
           })),
           problem,
         );

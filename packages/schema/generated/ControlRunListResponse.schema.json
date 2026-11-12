@@ -521,6 +521,17 @@
                   {
                     "type": "object",
                     "properties": {
+                      "lastVendorError": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "requestRefusal": {
                         "anyOf": [
                           {
@@ -1145,6 +1156,11 @@
                         "items": {
                           "type": "object",
                           "properties": {
+                            "lastVendorError": {
+                              "type": "string",
+                              "maxLength": 1000,
+                              "description": "Last vendor diagnostic line, bounded and redacted; never classified."
+                            },
                             "harnessId": {
                               "type": "string",
                               "minLength": 1,
@@ -1732,7 +1748,7 @@
               },
               "effectiveAccess": {
                 "$ref": "#/definitions/ControlRunListResponse/properties/runs/items/properties/access",
-                "description": "Access profile actually enforced by the engine."
+                "description": "Access profile the engine resolved and passed to its routes; routeControls names each route's native setting."
               },
               "externalContextPolicy": {
                 "type": "string",
@@ -1750,7 +1766,7 @@
               },
               "webMode": {
                 "$ref": "#/definitions/ControlRunListResponse/properties/runs/items/properties/externalContextPolicy",
-                "description": "Web policy actually executed by the selected route."
+                "description": "Web policy given to the selected route, after disclosed upgrades; not proof that a native session ran."
               },
               "webEvidence": {
                 "type": "object",
@@ -1768,12 +1784,12 @@
                   "effectiveMode": {
                     "$ref": "#/definitions/ControlRunListResponse/properties/runs/items/properties/externalContextPolicy",
                     "default": "auto",
-                    "description": "Policy the selected route actually executed (disclosed upgrades, e.g. cached to live)."
+                    "description": "Policy given to the selected route, after disclosed upgrades (e.g. cached to live); not proof that a native session ran."
                   },
                   "attempted": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Whether any web activity was attempted."
+                    "description": "Whether a web tool call or engine Browser call was observed; not a network measurement."
                   },
                   "satisfied": {
                     "type": "boolean",
@@ -1791,6 +1807,62 @@
                     ],
                     "default": "none",
                     "description": "Observed web status; satisfied does not prove retrieved content was verified."
+                  },
+                  "verification": {
+                    "type": "string",
+                    "enum": [
+                      "verified",
+                      "dispatched",
+                      "none"
+                    ],
+                    "default": "none",
+                    "description": "Retrieval-proof strength: verified when a typed result shows a retrieval (verifiedContent says of what); dispatched when a web call completed without one; none when no search or page retrieval was observed, though a Browser action may have completed."
+                  },
+                  "verifiedContent": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "page",
+                          "search_results"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "What the verified retrieval returned: page (a fetched or loaded page) or search_results (a web search's results, not a fetched page); null when nothing was verified or the engine did not record it."
+                  },
+                  "observation": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "evidence": {
+                            "type": "string",
+                            "const": "tool_calls",
+                            "description": "Web evidence comes from typed web tool calls and engine Browser MCP calls."
+                          },
+                          "network": {
+                            "type": "string",
+                            "const": "not_measured",
+                            "description": "Process network traffic is not measured: vendor API traffic, shell commands and other tools can use the network without appearing here."
+                          }
+                        },
+                        "required": [
+                          "evidence",
+                          "network"
+                        ],
+                        "additionalProperties": false,
+                        "description": "Scope of the web evidence: observed tool calls only, never a network measurement."
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "What the evidence covers (tool calls; network not measured); null when no telemetry was recorded.",
+                    "default": null
                   },
                   "tool": {
                     "type": [
@@ -1833,6 +1905,141 @@
                 "additionalProperties": false,
                 "description": "Web evidence projected onto a run summary from the telemetry artifact.",
                 "default": {}
+              },
+              "routeControls": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "harnessId": {
+                      "type": "string",
+                      "description": "Harness of the route."
+                    },
+                    "webMode": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "auto",
+                        "cached",
+                        "live"
+                      ],
+                      "description": "Web policy given to the route."
+                    },
+                    "webMechanism": {
+                      "type": "string",
+                      "enum": [
+                        "native",
+                        "tools",
+                        "uncontrolled",
+                        "none"
+                      ],
+                      "description": "How the route's own web tools are switched."
+                    },
+                    "browser": {
+                      "type": "boolean",
+                      "description": "Whether the engine Browser MCP was handed to the route (prepared; not a connection)."
+                    },
+                    "browserStartup": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "ready",
+                                "failed",
+                                "cancelled",
+                                "starting",
+                                "not_observed"
+                              ],
+                              "description": "Startup state when the first model request was allowed: ready (Codex reported the server started), failed, cancelled, starting (still starting when the hold ended: Codex's 90 s limit plus a 5 s grace for its status), or not_observed (no startup status at all)."
+                            },
+                            "waitedMs": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "description": "How long the first model request was held for this outcome."
+                            },
+                            "error": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "The vendor's own reason for a failed or cancelled startup, masked."
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "waitedMs",
+                            "error"
+                          ],
+                          "additionalProperties": false,
+                          "description": "The selected Browser's reported startup outcome on one route (#215)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The Browser's startup as the route reported it before the first model request; null when it reported none, so an armed Browser was only prepared.",
+                      "default": null
+                    },
+                    "access": {
+                      "type": "string",
+                      "enum": [
+                        "readonly",
+                        "workspace_write",
+                        "full",
+                        "inherit_native"
+                      ],
+                      "description": "Access profile handed to the route."
+                    },
+                    "nativeAccess": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "The vendor access setting prepared for the route; null when none or undisclosed."
+                    },
+                    "accessMechanism": {
+                      "type": "string",
+                      "enum": [
+                        "fs_sandbox",
+                        "permission_deny",
+                        "tool_allowlist",
+                        "tool_policy",
+                        "native_settings",
+                        "none"
+                      ],
+                      "description": "How the route's access profile reaches the harness: fs_sandbox (the vendor's own file-system sandbox, as the vendor applies it), permission_deny, tool_allowlist or tool_policy (vendor tool permissions; the manifest declares no OS file boundary), native_settings (inherit_native: Claudexor passes no access profile, so the harness's own configuration decides and what it confines is unknown here), or none (full access, or a route that declares no control)."
+                    },
+                    "nativeSessionStarted": {
+                      "type": "boolean",
+                      "description": "Whether an adapter reported a native session started under these controls. False means none was observed (refused before launch, or stopped or ended before a start was reported); it does not prove that no process ran."
+                    },
+                    "homeScoped": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "Applied HOME fact: true when the engine assigned the child a Claudexor-owned HOME, false when the engine did not replace HOME, so the child inherits the engine's own environment; null when the route recorded none."
+                    }
+                  },
+                  "required": [
+                    "harnessId",
+                    "webMode",
+                    "webMechanism",
+                    "browser",
+                    "access",
+                    "nativeAccess",
+                    "accessMechanism",
+                    "nativeSessionStarted",
+                    "homeScoped"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Native web and access controls prepared for one route of the run; Claudexor adds no outer boundary."
+                },
+                "default": [],
+                "description": "Distinct routes of the run: the native web/access controls prepared for each and whether a native session was reported started."
               },
               "requestRequirements": {
                 "type": "array",
@@ -2218,6 +2425,11 @@
                 "default": false,
                 "description": "True while at least one interactive question awaits answer, timeout, run-terminal, or interruption release."
               },
+              "asyncQuestionsOnly": {
+                "type": "boolean",
+                "default": false,
+                "description": "True while questions are pending and every one is async: the agent keeps working and the questions are attention only. False when none is pending or any pending question is blocking."
+              },
               "processScope": {
                 "anyOf": [
                   {
@@ -2278,6 +2490,58 @@
                   }
                 ],
                 "description": "Compact process-scope outcome from final/process_scope.yaml (settled, coverage, completeness, survivors, unreadable, census). Always present in this engine's responses: null means unknown (the run is live, or the record is missing, unreadable or invalid), never clean. Engines that predate the field omit the key, which is equally unknown.",
+                "default": null
+              },
+              "processScopeLater": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "settled": {
+                        "$ref": "#/definitions/ControlRunListResponse/properties/runs/items/properties/processScope/anyOf/0/properties/settled"
+                      },
+                      "coverage": {
+                        "$ref": "#/definitions/ControlRunListResponse/properties/runs/items/properties/processScope/anyOf/0/properties/coverage"
+                      },
+                      "completeness": {
+                        "$ref": "#/definitions/ControlRunListResponse/properties/runs/items/properties/processScope/anyOf/0/properties/completeness"
+                      },
+                      "census": {
+                        "$ref": "#/definitions/ControlRunListResponse/properties/runs/items/properties/processScope/anyOf/0/properties/census"
+                      },
+                      "survivors": {
+                        "$ref": "#/definitions/ControlRunListResponse/properties/runs/items/properties/processScope/anyOf/0/properties/survivors"
+                      },
+                      "unreadable": {
+                        "$ref": "#/definitions/ControlRunListResponse/properties/runs/items/properties/processScope/anyOf/0/properties/unreadable"
+                      },
+                      "attempt": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0
+                      },
+                      "at": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "settled",
+                      "coverage",
+                      "completeness",
+                      "census",
+                      "survivors",
+                      "unreadable",
+                      "attempt",
+                      "at"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Compact process-scope outcome of a terminal run (full artifact: final/process_scope.yaml)."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Latest later, separately bounded settlement attempt of this finished run's scope (final/process_scope_later.yaml), beside the unchanged terminal processScope. Null when none ran or it is unreadable: unknown, never clean.",
                 "default": null
               },
               "route": {

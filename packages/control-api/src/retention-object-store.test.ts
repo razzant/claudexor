@@ -1,9 +1,10 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -36,10 +37,50 @@ const ENV = {
   GIT_COMMITTER_NAME: "t",
   GIT_COMMITTER_EMAIL: "t@example.invalid",
 };
-const git = (repo: string, args: string[], env: Record<string, string> = {}, input?: string) =>
-  execFileSync("git", ["-C", repo, ...args], { env: { ...ENV, ...env }, input })
-    .toString("utf8")
-    .trim();
+// #650: a synchronous child blocks this worker, so Vitest's testTimeout cannot
+// fire while it runs. Each Git child therefore has its own bound and is ended
+// with SIGKILL, which it cannot ignore. The bound ends that child only.
+const GIT_BOUND_MS = 10_000;
+
+/** One Git child that exited by itself within `timeoutMs`, its output complete;
+ * anything else throws. */
+function runGit(
+  repo: string,
+  args: string[],
+  env: Record<string, string> = {},
+  input?: string,
+  timeoutMs = GIT_BOUND_MS,
+): SpawnSyncReturns<string> {
+  const command = ["git", "-C", repo, ...args].join(" ");
+  const result = spawnSync("git", ["-C", repo, ...args], {
+    env: { ...ENV, ...env },
+    input,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
+  });
+  // The error comes first: Git that exited 0 still times out while a process it
+  // started holds Git's output open past the bound, and that output is cut off.
+  const error = result.error as NodeJS.ErrnoException | undefined;
+  if (error?.code === "ETIMEDOUT")
+    throw new Error(
+      result.status === null
+        ? `${command} did not finish within ${timeoutMs} ms and was killed; processes it started may still run`
+        : `${command} exited ${result.status}, but its output was still open at ${timeoutMs} ms and was cut off; processes it started may still run`,
+      { cause: error },
+    );
+  if (error)
+    throw new Error(`${command} did not run to completion: ${error.message}`, { cause: error });
+  if (result.signal) throw new Error(`${command} was terminated by ${result.signal}`);
+  return result;
+}
+
+const git = (repo: string, args: string[], env: Record<string, string> = {}, input?: string) => {
+  const result = runGit(repo, args, env, input);
+  if (result.status !== 0)
+    throw new Error(`git -C ${repo} ${args.join(" ")} exited ${result.status}: ${result.stderr}`);
+  return result.stdout.trim();
+};
 const NOW = Date.parse("2026-07-17T00:00:00.000Z");
 const daysAgo = (days: number) => new Date(NOW - days * 24 * 60 * 60 * 1000).toISOString();
 
@@ -96,9 +137,32 @@ function ageStoreObjects(store: string): void {
       utimesSync(join(objects, fan, name), then, then);
 }
 
-const inStore = (store: string, oid: string) =>
-  spawnSync("git", ["-C", store, "cat-file", "-e", oid], { env: { ...ENV, ...storeEnv(store) } })
-    .status === 0;
+/** Whether the store holds `oid`. Absence is exactly `cat-file -e` exit 1 with no
+ * diagnostics; any other answer is a failed read, never an absent object. */
+function inStore(store: string, oid: string): boolean {
+  const result = runGit(store, ["cat-file", "-e", oid], storeEnv(store));
+  if (result.status === 0) return true;
+  if (result.status === 1 && result.stderr === "") return false;
+  throw new Error(`git cat-file -e ${oid} in ${store} exited ${result.status}: ${result.stderr}`);
+}
+
+/** Whether the process `pid` still exists (a zombie counts). */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+/** The pid a hook recorded in `file`, if any; never 0 or negative, which
+ * `process.kill` reads as a process group. */
+function recordedPid(file: string): number | undefined {
+  const pid = existsSync(file) ? Number(readFileSync(file, "utf8").trim()) : Number.NaN;
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+}
 
 describe("retention reclaims object-store custody of retired runs (F3)", () => {
   it.each([
@@ -150,4 +214,72 @@ describe("retention reclaims object-store custody of retired runs (F3)", () => {
     // The dry run reported exactly what the real pass then freed.
     expect(dry.freed_bytes).toBe(real.freed_bytes);
   });
+});
+
+describe("this file's Git children are bounded and read honestly (#650)", () => {
+  it("reads a failed object query as an error, never as an absent object", () => {
+    const repo = userRepo();
+    const store = join(repo, ".git");
+    const tree = git(repo, ["rev-parse", "HEAD^{tree}"]);
+    // A well-formed id of bytes no repository here holds.
+    const absent = git(repo, ["hash-object", "--stdin"], {}, "never written\n");
+    expect(inStore(store, tree)).toBe(true);
+    expect(inStore(store, absent)).toBe(false);
+    // A directory Git cannot open as a store used to read as "absent" too.
+    const notAStore = mkdtempSync(join(tmpdir(), "cx-retention-store-empty-"));
+    dirs.push(notAStore);
+    expect(() => inStore(notAStore, tree)).toThrow(/exited 128/);
+  });
+
+  it("ends a direct child that ignores SIGTERM at its bound", () => {
+    // A stand-in for a blocked Git that only SIGKILL can end.
+    const bin = mkdtempSync(join(tmpdir(), "cx-retention-store-bin-"));
+    dirs.push(bin);
+    writeFileSync(join(bin, "git"), "#!/bin/sh\ntrap '' TERM\nexec sleep 20\n", { mode: 0o755 });
+    const started = Date.now();
+    expect(() =>
+      runGit(bin, ["status"], { PATH: `${bin}:${process.env["PATH"] ?? ""}` }, undefined, 500),
+    ).toThrow(/did not finish within 500 ms and was killed/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it.each([
+    [
+      // Git waits for this hook, so the commit never finishes by itself.
+      "is killed while it waits for its hook",
+      (pidFile: string) => `echo $$ > '${pidFile}'\nexec sleep 30`,
+      /did not finish within 2000 ms and was killed; processes it started may still run/,
+    ],
+    [
+      // Git commits and exits 0, but the hook's child keeps Git's output open:
+      // status 0 arrives beside ETIMEDOUT, and the output is cut off.
+      "exits 0 while its hook's child holds Git's output open",
+      (pidFile: string) => `sleep 30 &\necho $! > '${pidFile}'`,
+      /exited 0, but its output was still open at 2000 ms and was cut off; processes it started may still run/,
+    ],
+  ] as const)(
+    "returns at the bound when Git %s, and the hook's process lives on",
+    (_ending, script, thrown) => {
+      const repo = userRepo();
+      const hooks = join(repo, ".git", "hooks");
+      const pidFile = join(repo, ".git", "hook.pid");
+      mkdirSync(hooks, { recursive: true });
+      writeFileSync(join(hooks, "pre-commit"), `#!/bin/sh\n${script(pidFile)}\n`, { mode: 0o755 });
+      try {
+        const started = Date.now();
+        expect(() =>
+          runGit(repo, ["commit", "--allow-empty", "-qm", "blocked"], {}, undefined, 2_000),
+        ).toThrow(thrown);
+        expect(Date.now() - started).toBeLessThan(10_000);
+        // A bounded return is not tree cleanup: the process the hook left still runs.
+        const hook = recordedPid(pidFile);
+        expect(hook).toBeDefined();
+        expect(alive(hook!)).toBe(true);
+      } finally {
+        // Also after any failed assertion: this test's own hook process, by the pid it recorded.
+        const hook = recordedPid(pidFile);
+        if (hook !== undefined && alive(hook)) process.kill(hook, "SIGKILL");
+      }
+    },
+  );
 });

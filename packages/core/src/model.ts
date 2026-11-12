@@ -1,3 +1,5 @@
+import { observeHarnessProgram, assertSameProgram } from "./program-observation.js";
+import type { HarnessProgramIdentity } from "@claudexor/schema";
 import type {
   HarnessCapabilities,
   HarnessModel,
@@ -114,26 +116,33 @@ export interface ModelListDetail {
 
 /** A catalog read as consumers hold it. `failSoft` marks a legacy `models()`
  * answer, whose [] may be a failed read and is therefore no catalog evidence. */
-export type ModelCatalogRead =
+export type ModelCatalogRead = { sourceProgram: HarnessProgramIdentity | null } & (
   | {
       status: "listed";
       models: HarnessModel[];
       failSoft: boolean;
       credential?: ModelCatalogCredential;
     }
-  | { status: "unavailable"; failure: ModelCatalogFailure; credential?: ModelCatalogCredential };
+  | { status: "unavailable"; failure: ModelCatalogFailure; credential?: ModelCatalogCredential }
+);
 
 /** The one way consumers read a live catalog: a producer that types its
  * failures answers through `modelCatalog`; a fail-soft `models()` answer passes
  * through unchanged, and a throw from it still propagates as before. */
 export async function readModelCatalog(
-  adapter: Pick<HarnessAdapter, "models" | "modelCatalog">,
+  adapter: Pick<HarnessAdapter, "models" | "modelCatalog" | "program">,
   spec?: HarnessModelSpec,
 ): Promise<ModelCatalogRead> {
-  if (!adapter.modelCatalog)
-    return { status: "listed", models: (await adapter.models?.(spec)) ?? [], failSoft: true };
-  const read = await adapter.modelCatalog(spec);
-  return read.status === "listed" ? { ...read, failSoft: false } : read;
+  const before = await observeHarnessProgram(adapter.program, spec?.env, undefined, {
+    fresh: spec?.fresh,
+  });
+  const read = adapter.modelCatalog
+    ? await adapter.modelCatalog(spec)
+    : { status: "listed" as const, models: (await adapter.models?.(spec)) ?? [] };
+  assertSameProgram(before, await observeHarnessProgram(adapter.program, spec?.env));
+  return read.status === "listed"
+    ? { ...read, failSoft: !adapter.modelCatalog, sourceProgram: before.program }
+    : { ...read, sourceProgram: before.program };
 }
 
 const DISPATCH_MODEL_CATALOG = "dispatchModelCatalog";

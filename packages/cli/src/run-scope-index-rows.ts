@@ -7,6 +7,7 @@
 import {
   birthEpochSeconds,
   isKnownProcessIdentity,
+  isRunScopeMarkerName,
   type CapturedProcess,
   type KnownProcessIdentity,
   type ScopeReapOutcome,
@@ -22,6 +23,10 @@ export interface RunScopeOutcomeSummary {
   reused_groups: number[];
   restricted: boolean;
   completeness: ScopeReapOutcome["completeness"];
+  /** The attempt's single deadline expired before every source was read (#613). */
+  incomplete: boolean;
+  completeness_reason: string | null;
+  duration_ms: number;
 }
 
 /**
@@ -45,6 +50,7 @@ export interface RunScopeEntry {
   owner: KnownProcessIdentity | null;
   state: "open" | "unresolved";
   opened_at: string;
+  /** First settlement, never advanced by a retry: the recorded group's upper birth bound. */
   settled_at?: string;
   /** Birth floor of the scope: the earliest harness root's `lstart`. */
   scope_start: string | null;
@@ -52,6 +58,9 @@ export interface RunScopeEntry {
   root_groups: RunScopeRootGroup[];
   captured: CapturedProcess[];
   outcome?: RunScopeOutcomeSummary;
+  /** Later, separately bounded attempts this owner made after the terminal (#613). */
+  late_attempts?: number;
+  last_attempt_at?: string;
 }
 
 export function summarize(outcome: ScopeReapOutcome): RunScopeOutcomeSummary {
@@ -65,7 +74,22 @@ export function summarize(outcome: ScopeReapOutcome): RunScopeOutcomeSummary {
     reused_groups: outcome.reusedGroups,
     restricted: outcome.restricted,
     completeness: outcome.completeness,
+    incomplete: outcome.incomplete,
+    completeness_reason: outcome.completenessReason,
+    duration_ms: outcome.durationMs,
   };
+}
+
+/** A persisted outcome steers later attempts; fields newer than its writer may be absent. */
+function validOutcome(value: unknown): value is RunScopeOutcomeSummary {
+  if (!value || typeof value !== "object") return false;
+  const outcome = value as Partial<RunScopeOutcomeSummary>;
+  const pidList = (list: unknown) =>
+    list === undefined || (Array.isArray(list) && list.every(Number.isSafeInteger));
+  return (
+    ["ok", "failed", "unsupported"].includes(outcome.census as string) &&
+    [outcome.survivors, outcome.unreadable, outcome.reused_groups].every(pidList)
+  );
 }
 
 /** One strictly validated index row; null for anything malformed. */
@@ -74,6 +98,7 @@ export function parseEntry(value: unknown): RunScopeEntry | null {
   const entry = value as Partial<RunScopeEntry>;
   if (
     typeof entry.marker !== "string" ||
+    !isRunScopeMarkerName(entry.marker) ||
     typeof entry.run_id !== "string" ||
     (entry.state !== "open" && entry.state !== "unresolved")
   )
@@ -116,6 +141,11 @@ export function parseEntry(value: unknown): RunScopeEntry | null {
       return null;
     captured.push({ pid: row.pid as number, pgid: row.pgid as number, birth: row.birth });
   }
+  // Later-attempt facts (#613) likewise: a present malformed one is never normalized away.
+  const attempts = entry.late_attempts;
+  if (attempts !== undefined && !(Number.isSafeInteger(attempts) && attempts >= 0)) return null;
+  if (entry.last_attempt_at !== undefined && typeof entry.last_attempt_at !== "string") return null;
+  if (entry.outcome !== undefined && !validOutcome(entry.outcome)) return null;
   return {
     marker: entry.marker,
     run_id: entry.run_id,
@@ -126,7 +156,9 @@ export function parseEntry(value: unknown): RunScopeEntry | null {
     scope_start: typeof entry.scope_start === "string" ? entry.scope_start : null,
     root_groups: rootGroups,
     captured,
-    ...(entry.outcome ? { outcome: entry.outcome } : {}),
+    ...(entry.outcome !== undefined ? { outcome: entry.outcome } : {}),
+    ...(attempts !== undefined ? { late_attempts: attempts } : {}),
+    ...(entry.last_attempt_at !== undefined ? { last_attempt_at: entry.last_attempt_at } : {}),
   };
 }
 
@@ -136,6 +168,7 @@ export function reapSources(entry: RunScopeEntry) {
     captured: entry.captured,
     scopeStart: entry.scope_start,
     scopeStartAt: entry.opened_at || null,
+    settledAt: entry.settled_at ?? null,
     rootGroups: entry.root_groups.map((g) => ({
       pgid: g.pgid,
       leaderPid: g.leader_pid,

@@ -122,15 +122,19 @@ export async function preflightRunGitRequirement(
   });
 }
 
-/** Refuse requests that no selected lane can satisfy before a run or turn is created. */
+/** Refuse requests that no selected lane can satisfy before a run or turn is created.
+ * `heldBy`: the accepted owner reading its own refs (an accepted turn's first dispatch). */
 export function createRunRequirementsPreflight(
   resources: Pick<ResourceStorePort, "resolve">,
   noProjectRoot: string,
   dependencies: RunRequirementsPreflightDependencies = {},
   policy: RunRequirementsPreflightPolicy = {},
-): (request: ControlRunStartRequest) => Promise<void> {
+): (
+  request: ControlRunStartRequest,
+  heldBy?: Parameters<ResourceStorePort["resolve"]>[1],
+) => Promise<void> {
   const requirements = new RequestRequirementsResolver();
-  return async (request) => {
+  return async (request, heldBy) => {
     const cwd = request.scope.kind === "project" ? request.scope.root : noProjectRoot;
     const access = resolveRunAccess(
       request,
@@ -224,7 +228,7 @@ export function createRunRequirementsPreflight(
 
     // Static lane facts only: account readiness, quota and model admission
     // stay with execution, which checks them before any provider starts.
-    const attachments = resources.resolve(request.attachments ?? []);
+    const attachments = resources.resolve(request.attachments ?? [], heldBy);
     const refusals: Error[] = [];
     const manifests = await Promise.all(
       harnessIds.map(async (harnessId) => {

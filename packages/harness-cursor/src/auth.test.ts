@@ -142,7 +142,7 @@ describe("cursor auth status parsing", () => {
         capture as never,
       ),
     ).resolves.toEqual({ kind: "authenticated", email: "profile@example.com" });
-    expect(calls).toEqual([["status", "--format", "json"]]);
+    expect(calls).toEqual([["--disable-auto-update", "status", "--format", "json"]]);
 
     await expect(
       probeCursorNativeAuth(
@@ -171,7 +171,10 @@ describe("cursor auth status parsing", () => {
       }) as never,
     );
     expect(result).toEqual({ kind: "authenticated", email: "fallback@example.com" });
-    expect(calls).toEqual([["status", "--format", "json"], ["status"]]);
+    expect(calls).toEqual([
+      ["--disable-auto-update", "status", "--format", "json"],
+      ["--disable-auto-update", "status"],
+    ]);
   });
 
   it("does not turn a signalled JSON probe into authenticated text fallback", async () => {
@@ -187,7 +190,7 @@ describe("cursor auth status parsing", () => {
       }) as never,
     );
     expect(result).toEqual({ kind: "unknown", error: "cursor-agent status failed (SIGTERM)" });
-    expect(calls).toEqual([["status", "--format", "json"]]);
+    expect(calls).toEqual([["--disable-auto-update", "status", "--format", "json"]]);
   });
 
   it("reports a probe killed by its OWN budget timer as an unanswered, unknown login state (#363)", async () => {
@@ -254,7 +257,10 @@ describe("cursor auth status parsing", () => {
         }) as never,
         20,
       );
-      expect(calls).toEqual([["status", "--format", "json"], ["status"]]);
+      expect(calls).toEqual([
+        ["--disable-auto-update", "status", "--format", "json"],
+        ["--disable-auto-update", "status"],
+      ]);
       return result;
     };
     expect(await run("budget")).toEqual({
@@ -368,7 +374,7 @@ describe("cursor auth status parsing", () => {
       }) as never,
     );
     expect(result).toEqual({ kind: "unknown", error: "cursor-agent status failed (2)" });
-    expect(calls).toEqual([["status", "--format", "json"]]);
+    expect(calls).toEqual([["--disable-auto-update", "status", "--format", "json"]]);
   });
 
   it("keeps successful unrecognized profile JSON and diagnostics unknown", async () => {
@@ -1752,5 +1758,91 @@ describe("models() under a pinned credential profile (INV-135 x INV-104)", () =>
     });
 
     expect(models).toEqual([]);
+  });
+});
+
+describe("API smoke observation identity", () => {
+  it("retains A, B, A per-credential entries without hashing secret bytes", async () => {
+    const { smokeCursorApiKey } = await import("./smoke.js");
+    const cache = new Map();
+    const smoke = vi.fn(async (_key: string | null) => ({ ok: true, detail: "fixture" }));
+    const deps = {
+      smokeIsolatedApiKey: smoke,
+      apiSmokeCache: cache,
+      apiSmokeCacheTtlMs: 1000,
+      apiSmokeFailureCacheTtlMs: 1000,
+      nowMs: () => 0,
+    };
+    await smokeCursorApiKey(deps, "synthetic-key-a");
+    const first = [...cache.keys()][0]!;
+    expect(JSON.parse(first)[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(first).not.toContain("synthetic-key");
+    await smokeCursorApiKey(deps, "synthetic-key-a");
+    expect(smoke).toHaveBeenCalledTimes(1);
+    await smokeCursorApiKey(deps, "synthetic-key-b");
+    expect(smoke).toHaveBeenCalledTimes(2);
+    await smokeCursorApiKey(deps, "synthetic-key-a");
+    expect(smoke).toHaveBeenCalledTimes(2);
+    expect(cache.has(first)).toBe(true);
+    expect(cache.size).toBe(2);
+  });
+  it("a late answer for A never lands under B", async () => {
+    const { smokeCursorApiKey } = await import("./smoke.js");
+    let release!: (result: { ok: boolean; detail: string }) => void;
+    const smoke = vi.fn(async (_key: string | null) => ({ ok: true, detail: "new" }));
+    smoke.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const cache = new Map();
+    const deps = {
+      smokeIsolatedApiKey: smoke,
+      apiSmokeCache: cache,
+      apiSmokeCacheTtlMs: 1000,
+      apiSmokeFailureCacheTtlMs: 1000,
+      nowMs: () => 0,
+    };
+    const old = smokeCursorApiKey(deps, "synthetic-old");
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await smokeCursorApiKey(deps, "synthetic-new");
+    release({ ok: true, detail: "old" });
+    await old;
+    expect(cache.size).toBe(2);
+    expect(await smokeCursorApiKey(deps, "synthetic-new")).toEqual({ ok: true, detail: "new" });
+    expect(await smokeCursorApiKey(deps, "synthetic-old")).toEqual({ ok: true, detail: "old" });
+    expect(smoke).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("per-credential smoke expiry", () => {
+  it("expires only the failed key and leaves fresh reads outside retained entries", async () => {
+    const { smokeCursorApiKey } = await import("./smoke.js");
+    let now = 0;
+    const smoke = vi.fn(async (key: string | null) => ({ ok: key === "A", detail: key! }));
+    const deps = {
+      smokeIsolatedApiKey: smoke,
+      apiSmokeCache: new Map(),
+      apiSmokeCacheTtlMs: 3_600_000,
+      apiSmokeFailureCacheTtlMs: 30_000,
+      nowMs: () => now,
+    };
+    await smokeCursorApiKey(deps, "A");
+    await smokeCursorApiKey(deps, "B");
+    now = 29_999;
+    await smokeCursorApiKey(deps, "B");
+    await smokeCursorApiKey(deps, "A");
+    expect(smoke).toHaveBeenCalledTimes(2);
+    now = 30_001;
+    await smokeCursorApiKey(deps, "B");
+    await smokeCursorApiKey(deps, "A");
+    expect(smoke).toHaveBeenCalledTimes(3);
+    smoke.mockResolvedValueOnce({ ok: false, detail: "fresh refusal" });
+    expect((await smokeCursorApiKey(deps, "A", true)).ok).toBe(false);
+    expect((await smokeCursorApiKey(deps, "A")).ok).toBe(true);
+    expect(smoke).toHaveBeenCalledTimes(4);
   });
 });

@@ -38,6 +38,7 @@ export function projectHistoryRun(
   record: DaemonRunRecord,
   input: {
     waitingOnUser: boolean;
+    asyncQuestionsOnly: boolean;
     operator: ControlOperatorDecisionRecord | null;
     childRunIds: string[];
   },
@@ -169,6 +170,7 @@ export function projectHistoryRun(
     spendUsd: budget.spendUsd,
     spendEstimated: budget.estimated,
     waitingOnUser: input.waitingOnUser,
+    asyncQuestionsOnly: input.asyncQuestionsOnly,
     outputReadyState: outputReadyStateForPrimary(record, failure, facts.runFacts, output),
     delegation: telemetry?.delegation ?? null,
     delegatedChildRunIds: input.childRunIds,

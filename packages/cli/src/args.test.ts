@@ -124,7 +124,7 @@ describe("cli args", () => {
 });
 
 describe("boolean flags never eat positionals", () => {
-  it("the Codex release-tested install choice stays boolean and vendor-version stays exact-valued", () => {
+  it("a retired release-tested flag stays parseable for a loud refusal; vendor-version takes a value", () => {
     const baseline = parseArgs(["harness", "install", "codex", "--release-tested", "--dry-run"]);
     expect(baseline._).toEqual(["harness", "install", "codex"]);
     expect(flagBool(baseline, "release-tested")).toBe(true);

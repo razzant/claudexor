@@ -29,6 +29,27 @@ vi.mock("node:fs", async (original) => {
 });
 
 const ids = vi.hoisted(() => ({ counters: new Map<string, number>() }));
+const writeFault = vi.hoisted(() => ({ enospcSuffix: "", closes: 0 }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      if (writeFault.enospcSuffix && String(args[0]).endsWith(writeFault.enospcSuffix)) {
+        const close = handle.close.bind(handle);
+        handle.write = (async () => {
+          throw Object.assign(new Error("full"), { code: "ENOSPC" });
+        }) as typeof handle.write;
+        handle.close = (async () => {
+          writeFault.closes += 1;
+          return close();
+        }) as typeof handle.close;
+      }
+      return handle;
+    },
+  };
+});
 vi.mock("@claudexor/util", async (original) => ({
   ...(await original<object>()),
   newId: (prefix: string) => {
@@ -66,6 +87,8 @@ afterEachClosed(async () => {
   vi.mocked(fs.writeSync).mockReset();
   vi.mocked(fs.openSync).mockReset();
   vi.mocked(fs.closeSync).mockReset();
+  writeFault.enospcSuffix = "";
+  writeFault.closes = 0;
   for (const f of fixtures.splice(0)) await f.close();
   return () => {
     for (const path of ownedRoots) fs.rmSync(path, { recursive: true, force: true });
@@ -126,15 +149,13 @@ describe("SQL ResourceStore contract", () => {
     );
     expect(f.store.prepare("SELECT 1 FROM upload").get()).toBeUndefined();
     const initial = f.resources.create(uploadRequest, "stream-full");
-    vi.mocked(fs.writeSync).mockImplementationOnce(() => {
-      throw Object.assign(new Error("full"), { code: "ENOSPC" });
-    });
-    const closed = vi.mocked(fs.closeSync).mockClear();
+    writeFault.closes = 0;
+    writeFault.enospcSuffix = `${initial.uploadId}.part`;
     await expect(f.resources.write(initial.uploadId, chunks("test"))).rejects.toMatchObject({
       code: "store_full",
       status: 507,
     });
-    expect(closed).toHaveBeenCalledOnce();
+    expect(writeFault.closes).toBe(1);
     expect(f.resources.status(initial.uploadId)).toMatchObject({
       state: "cancelled",
       receivedBytes: 0,
@@ -284,16 +305,16 @@ describe("SQL ResourceStore contract", () => {
     expect(fs.readFileSync(attachment!.path, "utf8")).toBe(text);
   });
 
-  it("commits chunk progress, observes cancellation during the stream and closes before protected unlink", async () => {
+  it("answers status during a stream without a per-chunk receipt, then cancels and unlinks", async () => {
     const f = await fixture();
     const initial = f.resources.create(uploadRequest, "progress");
     async function* stream() {
       yield Buffer.from("te");
       expect(f.resources.status(initial.uploadId)).toMatchObject({
         state: "uploading",
-        receivedBytes: 2,
+        receivedBytes: 0,
       });
-      expect(readUploadRow(f.store, initial.uploadId)?.status.receivedBytes).toBe(2);
+      expect(readUploadRow(f.store, initial.uploadId)?.status.receivedBytes).toBe(0);
       expect(f.resources.cancel(initial.uploadId).state).toBe("cancelled");
       expect(fs.existsSync(join(f.store.paths.uploads, `${initial.uploadId}.part`))).toBe(true);
       yield Buffer.from("st");

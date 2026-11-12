@@ -15,7 +15,8 @@ afterAll(() => {
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function tempDir(name: string): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), `claudexor-${name}-`)));
+  // Diagnostic labels must leave room for daemon.sock in a long private TMPDIR.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), `ra-${name.slice(0, 6)}-`)));
   reapDirs.push(dir);
   return dir;
 }

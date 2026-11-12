@@ -4,7 +4,179 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
-- **Unreleased:** CX590 stops run preparation from creating an implicit `CLAUDE.md` in a durable project root. The compatibility bridge, when needed, is envelope-local; existing user files are never removed or rewritten, and file-creation events no longer imply that a model read the instructions. Project-instruction documentation and INV-113 now state the route and evidence boundaries explicitly.
+- **v6.0.0** (2026-11-11): **Vendor program maintenance.** People and authorized
+  hosts can inspect, install and update all seven local harness programs through
+  their adapter-declared vendor commands, under the installation HOME. Use
+  `claudexor harness inspect --latest --json` to read selected paths, the programs'
+  own versions and published versions; `claudexor harness install <id> --yes`
+  installs a missing program, and `claudexor harness update <id> --yes` runs the
+  selected program's updater or installs when missing. Add
+  `--vendor-version <exact>` where the adapter offers an exact-version command;
+  omit it for the vendor's current update. The inventory supplies action command
+  previews, release-note links where declared, and `updateAvailable` as `yes`,
+  `no` or `cannot_tell`. The engine applies the adapter's version scheme; hosts
+  do not compare version strings, and an installed build ahead of the published
+  pointer is not an available update. Public version lookups run on request,
+  including opening the view that shows versions; there is no lookup timer.
+
+  **Breaking CLI and host contract.** Installation `--target` and
+  `--release-tested`, maintenance `baseline`/`previous` targets and
+  `--vendor-version latest` are refused with the supported spelling. Hosts use
+  the `selection`/`newest`/`actions` inventory and shared maintenance receipts;
+  old verification classes and pinned-version disclosure fields are absent.
+  `harness install --dry-run --json` returns that maintenance disclosure.
+  Hosts supply no npm installer. The maintenance API retains durable operation
+  handles, idempotency, cancellation and one active operation per harness.
+  Receipts retain the requester, actual command and script hash, installation
+  HOME, before/after program evidence, exit status, bounded redacted vendor
+  lines, partial effects and active-run count. Final verification determines the
+  result: a missing version answer gets one immediate second read, with a
+  limitation if it succeeds; no vendor command is repeated. Active runs do not
+  gate an update.
+  The SSH app reads the same capabilities and receipts. **Application floor:**
+  local and SSH runtime manifests require Claudexor.app 6.0.0. An older app
+  reports that an application update is required and keeps its working engine;
+  the floor is not an embedding-host compatibility promise. The control
+  protocol major is 3 and the engine store schema is 8. **Upgrade:** opening an
+  existing engine store migrates it from schema 7 to 8, which adds each
+  question's `delivery` (`blocking` for earlier rows) and an index of pending
+  questions (#628); the migration is forward-only. An older engine refuses
+  a data root served by this release; replacing its executable is not rollback.
+  (Corrected after publication: the notes published with v6.0.0 said schema 7.)
+
+  **Program identity and conversion.** Runs, probes and inventory share one
+  selection, including Copilot's Windows MSI folder without an engine restart.
+  Program-derived model catalogs carry `sourceProgram` path/version. Passive
+  reads reuse the same file identity and remembered answer, including no answer;
+  a failed ask preserves an earlier answer for that identity. A program replaced
+  behind an unchanged wrapper is detected when an inventory read, fresh read or
+  native start-up frame obtains a different version; passive polls and continued
+  missing answers do not reveal the replacement. Claude, Codex and Copilot report
+  start-up versions; Cursor, Antigravity, Grok and OpenCode use remembered
+  evidence or one first version ask. Native attempt records label that source,
+  and credential-pool exhaustion retains the last bounded redacted vendor error.
+  Product-made npm copies of Claude, Codex, Copilot and OpenCode convert on
+  Update only after a replacement answers its version, is not known older and
+  belongs to any declared major line. Receipts retain installer failures even
+  when an acceptable replacement completes conversion. A stale PATH shadow is
+  named, and interrupted package hides recover on the next explicit maintenance.
+  Arbitrary wrappers and personal npm installations are not claimed for removal.
+  Cursor children disable self-update; explicit maintenance removes enumerated
+  profile copies only when the selected program answers with the copy hidden,
+  restoring it when needed and recovering interrupted hides on the next request.
+
+  **Maintenance limits.** Windows has vendor installation routes for Claude,
+  Codex, Antigravity, Grok and Copilot. Cursor on Windows (#667), OpenCode's
+  second major line and unattended Windows installation (#668) are unsupported;
+  OpenCode stays on 1.x. A package-manager copy's own update command may only
+  advise: the engine returns that advice and does not choose a package manager
+  to execute it. Copilot's declared Windows installer is `winget`. Vendors own
+  their program storage and pruning; there is no offline rollback guarantee.
+  `copilot update` can receive GitHub's unauthenticated rate-limit refusal, and
+  the vendor's sentence is the result. Claudexor starts program maintenance only
+  on a person’s or authorized caller’s request, with no automatic update/retry
+  chain or model-to-version table. Real-vendor CI checks installation, native
+  selection, own updates and real npm conversion; a failed update counts as a
+  vendor refusal only if the same command also fails directly. Release freshness
+  checks fetch declared sources and report absent program help checks as skipped.
+
+  **Questions and live input (#628, #536, #622, #651).** Questions declare
+  `delivery: blocking | async`; an omitted field means blocking. Async questions
+  keep the agent working, set `waitingOnUser`, wake `claudexor_run_wait`, accept
+  answers through the ordinary routes and leave live messaging and the inactivity
+  watchdog running. `asyncQuestionsOnly` distinguishes runs with only async
+  questions. CLI follow, ACP and the app present that distinction, prioritize
+  blocking questions and send nothing for silence or expiry. ACP answer prompts
+  do not hold cancellation or the turn's terminal, and close when answered
+  elsewhere, expired or outlived by the run; a failed prompt fails the turn.
+  The app removes question controls at termination, counts down deadlines and
+  explains refused late answers. A failed question read remains a typed problem;
+  a failed answer channel records `interaction_answer_unavailable`, not a user's
+  decline. Codex async questions retain native question ids and options, and a
+  committed answer steers the asking turn once with an `interaction_answer_steer`
+  receipt. Turn end and Stop withdraw open questions without sending; sub-agent
+  questions are not answerable. This mapping is source-based, not qualified by a
+  live Codex turn. Claude tracks an identified prompt through its own result or
+  lifecycle, preserving live input across foreign results from a resumed session;
+  foreign failures and answers are evidence, not this prompt's outcome. Builds
+  and results without command identity retain the documented first-result limits.
+  Claude question failures retain the vendor detail, native input and answer
+  transport cause; real declines and expiry remain benign. Interaction text is
+  complete, bounded previews end visibly in an ellipsis without splitting a
+  character, oversized approval refusals name the measured limit, an oversized
+  question wakes `claudexor_run_wait` with `wakeReason: interactions`, and ACP
+  multi-select rounds show every option and its description.
+
+  **Failure evidence and model calls (#633, #635, #648, #649, #604).** A failed
+  attempt's message quotes its own vendor record, including Codex app-server
+  errors when the rollout has none. That cause leads the selected candidate's
+  failure, a non-converged repair's summary and the `summary.md` Failure line;
+  losing or earlier attempts supply no substitute cause. Typed remedies, retry
+  policy and account routing remain evidence-driven. A delegated attempt that
+  fails before home preparation ends with its own cause while a healthy sibling
+  can win; missing evidence from an adapter that actually ran remains a refusal.
+  Failed, interrupted and queued-cancelled model operations expose
+  `problem.context.requestedModel`; `route.model` names only a provider-reported
+  model. Execution uses parsed request bytes; a pre-read failure uses the command's
+  saved parameter, which a raw enqueue caller can supply without verification.
+  A queued cancel reports `model_operation_cancelled`, `not_started`, and no
+  response, usage or cost. `claudexor_run_continue` accepts `effort` and a
+  harness-keyed `efforts` map: a lane uses its map entry, then scalar effort,
+  then Settings. Continuation inherits no effort implicitly; invalid levels
+  refuse before sending, and host skills list the controls to restate.
+
+  **Retention and work products (#637, #638, #594).** Model-operation receipts
+  and idempotency bindings last 30 days after termination, without the Agent
+  history count cap; active operations, unacknowledged result pickup and unsettled
+  resources remain protected. An expired receipt can be absent, which proves
+  neither non-dispatch nor zero cost, and new bytes under an expired key make a
+  new request. Retention inventories scan bounded windows of relevant command
+  rows without a schema or index migration or blanket pruning of history,
+  resources or native profiles. Files written by accepted Raw API patches remain
+  in candidate trees, subsequent rounds, continuations, recovery, thread turns,
+  Apply and Revert even when ignored by Git. Exact-path records in the envelope's
+  repository bind that inclusion; unrelated ignored files, native/gate output
+  and ignored nested repositories stay out. Failed record writes or reads refuse
+  the operation; Git before 2.43 cannot distinguish a failed lookup from absence.
+  Rejected and losing candidates do not alter the thread's files or record.
+
+  **Antigravity and quota handling (#653, #318, #558).** Antigravity read-only
+  runs require agy 1.4.10 or newer and use session settings that deny commands
+  and file writes while preserving the profile's allow/deny/ask rules. A denied
+  call returns a tool error so the model can continue reading and answering;
+  unreadable profile settings refuse before the model starts. Inputs over
+  128 KiB, including summary inputs, are saved unchanged in the run context and
+  referenced by a bounded bootstrap; missing storage or read access refuses
+  before sending. Failed tool calls retain error results. Antigravity inference
+  quota refusals carry typed unknown-reopening evidence and the vendor's words,
+  without a transport retry or an inferred reset time. A Codex usage refusal
+  without a reopening time lasts until its own five-minute recheck; quota reads
+  neither clear nor extend it, and only the next requested run tries afterward.
+  Claude's exact `oauth_not_allowed_for_organization` code maps to
+  `oauth_org_not_allowed`, preserving the vendor cause and setting that account
+  aside for its existing refusal period, up to an hour or until sign-in or a
+  later success. A pinned run does not rotate or fall back to an API key.
+
+- **v5.1.0** (2026-11-07): Adds managed lifetimes for new uploaded run data,
+  explicit scanner preparation for npm installs, exact thread export and
+  conditional retirement, and a typed `turn_limit_reached` outcome for runs
+  stopped by their turn cap. This release also carries the merged fixes for
+  request-thread disk work, model-catalog invalidation, continuation evidence,
+  raw-API model selection and diagnostics, web-access receipts, partial/shallow
+  clone refusal, daemon-stop admission fencing, and Windows writer identity.
+  It also carries main's retention fixes: durable completion history and
+  latched hold causes, anchor deferral, ephemeral-lane cleanup, no-change
+  capture retention, stronger retention integration guards, and the typed,
+  idempotent `taken` decision for captured terminal patch results. Vendor
+  script installers run with Bash (#639), the MCP Accounts tool projects
+  newer engines' responses through its published schema, and the macOS
+  Accounts row shows a model-scoped quota window when no account-wide one is
+  reported. New runs no longer write the duplicate `run_facts` mirror into
+  `final/telemetry.yaml`; `final/run_facts.yaml` stays the canonical record,
+  and older telemetry files stay readable.
+  **Upgrade:** opening an existing engine store migrates it from schema 6 to
+  7; the migration is forward-only, and returning to an older binary does not
+  undo it. Protocol major 3 and the minimum app version 4.0.0 remain unchanged.
 
 - **v5.0.2** (2026-11-02): The daemon's control loop no longer spends its time on work that has not changed, and HTTP requests, Stop and stream heartbeats no longer wait behind large durable writes when the disk is slow (#582). A quiet run event stream (`GET /v2/runs/:id/events`) no longer queues a history replay on the shared bulk worker and rehydrates the job every 250 ms: it re-reads the run's `events.jsonl` while the run's live writer holds events the client does not have (a log without a live writer is still polled), and on a host with change notices it re-reads the job's state body-free only after a committed change of that job; a stream whose log is missing reads it again only after the writer appends or a change for that run is published, and once its job is terminal it ends with `event: error` (`run_event_not_found`, retryable, or `run_expired_by_retention`, not retryable). `GET /v2/agent-capabilities` and the MCP `claudexor_capabilities` tool now use the daemon's existing status-projection cache: concurrent and in-window reads share one harness sweep, a computed catalog is served for 15 seconds with its build time in `generatedAt`, a global config change recomputes it at once, and the daemon's credential mutations and setup logins invalidate it; a change made outside the daemon, such as a vendor CLI login, can take about 30 seconds (not OK to OK) or 105 seconds (OK to broken) to show, plus sweep time, and `claudexor capabilities` still composes the catalog in-process. Large stored bodies (over 64 KiB) whose bytes are known before their database commit, and a run's terminal receipts (`final/run_facts.yaml`, `final/telemetry.yaml`) with any event-log rewrite the terminal needs, are now written as write-through temp files on Node's file worker pool before the commit, so the synchronous commit only registers or renames files that already exist; durability, ordering and the stored bytes are unchanged, anything that could not be staged is written by the commit as before, and a body staged for a request that is then refused or held stays on disk until the orphan sweep at the next daemon start. An external file write that becomes one of the 32 worst synchronous sections in `GET /v2/daemon/status` is also logged as one `store.external_write` line with what it carried, its byte count and how its time split. `EventLog.flushDeferredTerminal()` is removed; `await log.commitDeferredTerminal()` commits a held terminal. An isolated copy of an ordinary folder (directory mode without `--in-place`) is no longer deleted when the run's final capture refuses, for example on an unreadable file or a FIFO in the copy (#563 through #566): the copy is kept under the same per-attempt custody as a refused isolated Git source, the failure names its path, no exact result, apply or revert is offered, and the run's `discard` decision releases it; in a best-of run a candidate whose copy could not be retained durably is excluded while a healthy sibling still wins. Before the executor starts, a new `workspace.prepared` run event (on the run timeline, in the macOS turn transcript and in the CLI follow output) and a matching line in the executor's prompt state which folder the copy was prepared from, which paths were selected, how many files, directories and symbolic links were copied, and which selected paths were not found. **Compatibility:** the control protocol major stays 3, the engine store schema stays 6 and the minimum app version stays 4.0.0; the run event type list gains `workspace.prepared` with its generated `WorkspacePreparedPayload` schema, so a consumer that pins the generated JSON schemas must update them.
 - **v5.0.1** (2026-11-01): The first published release of the 5.0 line. v5.0.0 was tagged, but its release candidate stopped at a test in the macOS release gates, so it was never published; everything listed under v5.0.0 ships here with the limits stated there. **Breaking**, as described under v5.0.0: (1) `pr` delivery needs the pinned open-source scanner Betterleaks 1.9.0 (#555); an npm-installed CLI bundles no scanner, so its `pr` refuses with `publication_scan_unavailable` until `CLAUDEXOR_BETTERLEAKS_PATH` points at the pinned build or `node scripts/provision-betterleaks.mjs` provisions it. (2) Credential-shaped text in your own work is no longer refused or masked (#555), and the typed `inline_secret_rejected` error is gone. (3) `claudexor review --delta-scope` is retired (#257). (4) For a Git result, a `commit`, `branch` or `pr` delivery that fails after writing answers an HTTP 409 problem with a typed code on `POST /v2/runs/:id/apply` and `accept_clean_patch`, where 4.8.2 answered HTTP 200 `applied:false`. **Highlights** include large results kept exactly as Git objects without a size ceiling (#535) and the others listed under v5.0.0. **Fixed:** release verification no longer fails on Git 2.55 and newer when a test lists a repository's object directory right after committing to that repository itself. Since Git 2.55, maintenance that `git commit` starts in the background keeps `objects/maintenance.lock` until it finishes; the two affected test files now let that maintenance finish before each of their own Git commands returns and still compare the complete object directory. Only those two test files changed. **Compatibility:** the control protocol major stays 3, the engine store schema stays 6 and the minimum app version stays 4.0.0.

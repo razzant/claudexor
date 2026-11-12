@@ -4,6 +4,7 @@ import {
   type CommandBackend,
   type ObservationListener,
   type EngineStore,
+  type RunObservationOptions,
   type createSqlDaemonServices,
 } from "@claudexor/daemon";
 import { readTaskGroupRuns } from "@claudexor/control-api";
@@ -59,7 +60,11 @@ export function sqlControlReadSources(
         signal,
       );
     },
-    runObservations: async (ids: readonly string[], signal?: AbortSignal) => {
+    runObservations: async (
+      ids: readonly string[],
+      signal?: AbortSignal,
+      options?: RunObservationOptions,
+    ) => {
       const identity = storeId();
       if (!identity)
         throw Object.assign(
@@ -71,7 +76,14 @@ export function sqlControlReadSources(
           },
         );
       const graph = current();
-      return readRunObservations(graph.commands.queries, graph.interactions, identity, ids, signal);
+      return readRunObservations(
+        graph.commands.queries,
+        graph.interactions,
+        identity,
+        ids,
+        signal,
+        options,
+      );
     },
     runObservationChanges: (listener: ObservationListener) =>
       current().store.observations.subscribe(listener),

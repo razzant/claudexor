@@ -2,14 +2,17 @@ import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
 import { InputTokenUsage } from "@claudexor/schema";
 import { turnLimitError } from "@claudexor/core";
 import { nowIso } from "@claudexor/util";
+import { BROWSER_MCP_SERVER, browserPageRetrieval } from "@claudexor/core";
 import {
   claudeCompactBoundaryEvents,
   claudeRateLimitEvents,
   claudeResultMessageEvents,
   claudeTerminalContextEvent,
 } from "./context-signals.js";
+import { isSuccessResultFrame } from "./interactive.js";
 import { requiredMcpStartupReceipts } from "./required-mcp.js";
-import { summarizeToolResultContent } from "./tool-output.js";
+import { createClaudeQuestionTracker, type ClaudeQuestionInput } from "./question-outcome.js";
+import { summarizeToolResultContent, toolResultText } from "./tool-output.js";
 import { claudeApiRetryEvents, claudeEntitlementEvents } from "./retry-signals.js";
 import {
   claudeCompletion,
@@ -23,6 +26,7 @@ import {
 type Json = any;
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+const BROWSER_TOOL_PREFIX = `mcp__${BROWSER_MCP_SERVER}__`;
 
 function toolKindFor(name: string): ToolKind {
   if (name === "WebSearch" || name === "WebFetch") return "web";
@@ -38,6 +42,8 @@ export type ClaudeEventParser = (obj: Json, sessionId: string) => HarnessEvent[]
 export interface ClaudeParserOptions {
   deniedTools?: Iterable<string>;
   requiredMcpServers?: Iterable<string>;
+  /** The session input Claudexor holds right now (question-outcome.ts, #622). */
+  questionInput?: () => ClaudeQuestionInput;
 }
 
 /**
@@ -55,6 +61,7 @@ export function createClaudeParser(opts: ClaudeParserOptions = {}): ClaudeEventP
   const requiredMcpServers = new Set(opts.requiredMcpServers ?? []);
   const turns: ClaudeTurnState = { results: 0, cumulativeCostUsd: null };
   const speech = createClaudeSpeechState();
+  const questions = createClaudeQuestionTracker(opts.questionInput);
   return (obj: Json, sessionId: string): HarnessEvent[] | null =>
     parseClaudeEventStateful(
       obj,
@@ -64,6 +71,7 @@ export function createClaudeParser(opts: ClaudeParserOptions = {}): ClaudeEventP
       requiredMcpServers,
       turns,
       speech,
+      questions,
     );
 }
 
@@ -167,6 +175,7 @@ function parseClaudeEventStateful(
   requiredMcpServers = new Set<string>(),
   turns: ClaudeTurnState = { results: 0, cumulativeCostUsd: null },
   speech: ClaudeSpeechState = createClaudeSpeechState(),
+  questions = createClaudeQuestionTracker(),
 ): HarnessEvent[] | null {
   const ts = nowIso();
   const type = obj?.type;
@@ -273,6 +282,7 @@ function parseClaudeEventStateful(
           target: toolTarget(name, input),
         };
         if (tool.use_id) pendingTools.set(tool.use_id, tool);
+        if (name === "AskUserQuestion") questions.asked(tool.use_id);
         if (EDIT_TOOLS.has(name)) {
           const path = input.file_path ?? input.path ?? input.notebook_path;
           out.push({
@@ -366,13 +376,12 @@ function parseClaudeEventStateful(
         const origin = useId ? pendingTools.get(useId) : undefined;
         if (useId) pendingTools.delete(useId);
         // ExitPlanMode and AskUserQuestion are Claude's interactive FLOW
-        // CONTROL tools, not work tools. A headless (or declined / timed-out)
-        // is_error result is their documented way of ending the interaction —
-        // translate it to a benign thinking event (detail preserved, the
-        // question text stays in the timeline) instead of a blocking error
-        // tool_result. Recovery-by-same-tool is impossible by construction for
-        // these tools, so the generic unrecovered-tool-error rule must never
-        // fail a run over them (CLAUDEXOR_BIBLE §5).
+        // CONTROL tools, not work tools. Their is_error result ends the
+        // interaction: a benign thinking event (detail preserved, the question
+        // text stays in the timeline) instead of a blocking error tool_result.
+        // Recovery-by-same-tool is impossible by construction for these tools,
+        // so the generic unrecovered-tool-error rule must never fail a run over
+        // them (INV-048). A question's error is not a decline (#622).
         if (origin?.name === "ExitPlanMode" && isError) {
           out.push({
             type: "thinking",
@@ -383,18 +392,19 @@ function parseClaudeEventStateful(
           });
           continue;
         }
-        if (origin?.name === "AskUserQuestion" && isError) {
-          out.push({
-            type: "thinking",
-            session_id: sessionId,
-            ts,
-            text: `clarifying questions declined (no user answer); the model continues with assumptions${detail ? `: ${detail}` : ""}`,
-            payload: { tool: "AskUserQuestion", tool_use_id: useId },
-          });
+        const question =
+          origin?.name === "AskUserQuestion"
+            ? questions.result(useId, isError, detail, sessionId, ts)
+            : null;
+        if (question) {
+          out.push(question);
           continue;
         }
         const denied = isError && origin?.name !== undefined && deniedTools.has(origin.name);
         const status: ToolRef["status"] = denied ? "denied" : isError ? "error" : "ok";
+        const browserTool = origin?.name.startsWith(BROWSER_TOOL_PREFIX)
+          ? origin.name.slice(BROWSER_TOOL_PREFIX.length)
+          : null;
         const tool: ToolRef = {
           name: origin?.name ?? "tool",
           kind: origin?.kind ?? "other",
@@ -406,11 +416,25 @@ function parseClaudeEventStateful(
             (origin?.kind === "mcp" ? summarizeToolResultContent(block.content, true) : detail) ||
             undefined,
           // QA-042: claude WebSearch/WebFetch return TYPED content with an
-          // is_error flag, so a successful web result is a VERIFIED retrieval
-          // (content present), not dispatch-only — unlike codex, which cannot
-          // expose the fetch outcome. A typed error is a failed retrieval.
-          ...(origin?.kind === "web"
-            ? { web_retrieval: status === "error" ? ("failed" as const) : ("verified" as const) }
+          // is_error flag, so a successful web result is a VERIFIED retrieval,
+          // not dispatch-only — unlike codex, which cannot expose the fetch
+          // outcome. #118: WebFetch returns a page; WebSearch returns search
+          // results, which are not a fetched page. A typed error is a failed
+          // retrieval; a denied or cancelled call retrieved nothing.
+          ...(origin?.kind === "web" && status === "ok"
+            ? {
+                web_retrieval: "verified" as const,
+                web_content:
+                  origin.name === "WebSearch" ? ("search_results" as const) : ("page" as const),
+              }
+            : origin?.kind === "web" && status === "error"
+              ? { web_retrieval: "failed" as const }
+              : {}),
+          // #118: a successful Browser call is verified only when its whole reply
+          // shows a page (the bounded summary above can cut a long one short),
+          // and one that read no web page carries no retrieval stamp at all.
+          ...(browserTool && status === "ok"
+            ? browserPageRetrieval(browserTool, toolResultText(block.content))
             : {}),
         };
         out.push({
@@ -480,7 +504,7 @@ function parseClaudeEventStateful(
     // rides as a `status` event (A3 deliverable hygiene) and the context event
     // below marks it. The final-message emission (structured_output / result /
     // side_tool) lives in context-signals.ts.
-    const successResult = (!obj.subtype || obj.subtype === "success") && obj.is_error !== true;
+    const successResult = isSuccessResultFrame(obj);
     for (const ev of claudeResultMessageEvents(obj, successResult, sessionId, ts)) out.push(ev);
     // A1: type the org-disabled entitlement prose of a non-success result
     // (oauth_org_not_allowed) alongside the status event carrying the prose.
@@ -529,9 +553,10 @@ function parseClaudeEventStateful(
   if (type === "system") return [];
 
   // Control-protocol plumbing frames. Incoming control_requests are consumed
-  // by the interactive session handler BEFORE this parser; responses to OUR
-  // initialize handshake (and cancel acks) are recognized plumbing, never
-  // counted as dropped events.
+  // by the interactive session handler BEFORE this parser, so one that reaches
+  // it found no open session input; responses to OUR initialize handshake (and
+  // cancel acks) are recognized plumbing, never counted as dropped events.
+  if (type === "control_request") return questions.unroutedRequest(obj, sessionId);
   if (type === "control_response" || type === "control_cancel_request") return [];
 
   // Stdin-message lifecycle frames (`command_lifecycle`: queued / started /

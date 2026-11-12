@@ -537,7 +537,10 @@ extension AppModel {
                 taskChanged = true
                 let summary = pending.questions.map(\.question).joined(separator: " | ")
                 box.appendActivity(ActivityEvent(.system, "Question: \(String(summary.prefix(200)))", at: .now))
-                Notifier.post(title: "Claudexor needs your answer", body: String(summary.prefix(120)))
+                // An async question leaves the agent working: it asks, it does not wait.
+                Notifier.post(
+                    title: pending.delivery == .async ? "The agent asked a question" : "Claudexor needs your answer",
+                    body: String(summary.prefix(120)))
             }
         } else if ["interaction.answered", "interaction.timeout", "interaction.withdrawn"].contains(type) {
             if let interactionId = payload["interaction_id"]?.stringValue {
@@ -550,7 +553,8 @@ extension AppModel {
                 .system,
                 Self.interactionResolutionActivityTitle(
                     type: type,
-                    reason: payload["reason"]?.stringValue),
+                    reason: payload["reason"]?.stringValue,
+                    delivery: Self.interactionDelivery(from: payload)),
                 at: .now))
         } else if type == "route.profile.rotated" {
             // Auto-balance (INV-135): the engine hit a quota limit and switched

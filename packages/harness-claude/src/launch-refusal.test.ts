@@ -242,6 +242,7 @@ describe("a relative PATH entry", () => {
     const { runCapture } = await import("@claudexor/core");
     await probeClaudeHelp(undefined, path);
     await runCapture("claude", ["--help"], { env: { PATH: path }, cwd: work }).catch(() => null);
-    expect(observer.attempts).toEqual([fallback, fallback]);
+    // Help cache identity first reads --version, then help; the run resolves the same entry.
+    expect(observer.attempts).toEqual([fallback, fallback, fallback]);
   });
 });

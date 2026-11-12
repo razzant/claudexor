@@ -51,8 +51,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A job that neither signs nor publishes is bounded at about twice its slowest
+  # successful run, never below ten minutes, so a hang fails visibly instead of
+  # holding the release, and main, for GitHub's six-hour default. package-macos
+  # also signs, notarizes and attests, so only its gates step is bounded. npm and
+  # GitHub Release publication stay unbounded: a cut-off publication is worse.
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       mode: ${{ steps.release.outputs.mode }}
       sha: ${{ steps.release.outputs.sha }}
@@ -104,6 +110,7 @@ jobs:
     name: Build or promote authoritative Windows ConPTY bytes
     needs: prepare
     runs-on: windows-2022
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -358,7 +365,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Deterministic release gates
+        id: gates
         shell: bash
+        timeout-minutes: 100
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
@@ -390,6 +399,15 @@ jobs:
           pnpm canary
           pnpm release:verify:swift
           node scripts/verify-version-parity.mjs "$VERSION"
+
+      - name: Check vendor program freshness
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/harness-program-freshness.mjs
+
+      - name: List processes left after the release gates failed or timed out
+        if: failure() && steps.gates.outcome == 'failure'
+        run: ps axww -o user,pid,ppid,pgid,stat,etime,command | awk -v user="$(id -un)" 'NR == 1 || $1 == user'
 
       - name: Build shared engine resources before app packaging
         if: needs.prepare.outputs.mode == 'candidate'
@@ -456,10 +474,10 @@ jobs:
           cli_install="$(env -i HOME="$cli_home" PATH="/usr/bin:/bin" \
             "$zipstage/Claudexor.app/Contents/Resources/node" \
             "$zipstage/Claudexor.app/Contents/Resources/claudexor.bundle.cjs" \
-            harness install codex --target local --release-tested --dry-run --json)"
+            harness inspect codex --json)"
           node -e '
             const help = JSON.parse(process.argv[1]);
-            const install = JSON.parse(process.argv[2]);
+            const inventory = JSON.parse(process.argv[2]);
             const expectedVersion = process.argv[3];
             const harness = Array.isArray(help.commands)
               ? help.commands.find((command) => command?.id === "harness")
@@ -467,12 +485,8 @@ jobs:
             if (
               help.ok !== true ||
               help.version !== expectedVersion ||
-              !harness?.flags?.includes("target") ||
-              install.ok !== true ||
-              install.dryRun !== true ||
-              install.harness !== "codex" ||
-              install.target !== "local" ||
-              install.installLocation !== "~/.claudexor/node/bin"
+              !harness?.flags?.includes("vendor-version") ||
+              !inventory.harnesses?.some(row => row.harness === "codex" && row.actions?.install && row.actions?.update)
             ) {
               throw new Error(`candidate CLI help mismatch: ${JSON.stringify(help)}`);
             }
@@ -593,10 +607,10 @@ jobs:
           cli_install="$(env -i HOME="$cli_home" PATH="/usr/bin:/bin" \
             "$promoted_app/Claudexor.app/Contents/Resources/node" \
             "$promoted_app/Claudexor.app/Contents/Resources/claudexor.bundle.cjs" \
-            harness install codex --target local --release-tested --dry-run --json)"
+            harness inspect codex --json)"
           node -e '
             const help = JSON.parse(process.argv[1]);
-            const install = JSON.parse(process.argv[2]);
+            const inventory = JSON.parse(process.argv[2]);
             const expectedVersion = process.argv[3];
             const harness = Array.isArray(help.commands)
               ? help.commands.find((command) => command?.id === "harness")
@@ -604,12 +618,8 @@ jobs:
             if (
               help.ok !== true ||
               help.version !== expectedVersion ||
-              !harness?.flags?.includes("target") ||
-              install.ok !== true ||
-              install.dryRun !== true ||
-              install.harness !== "codex" ||
-              install.target !== "local" ||
-              install.installLocation !== "~/.claudexor/node/bin"
+              !harness?.flags?.includes("vendor-version") ||
+              !inventory.harnesses?.some(row => row.harness === "codex" && row.actions?.install && row.actions?.update)
             ) {
               throw new Error(`promoted CLI help mismatch: ${JSON.stringify(help)}`);
             }
@@ -854,9 +864,10 @@ jobs:
           subject-path: ${{ runner.temp }}/release-assets/*
 
   windows-conpty-candidate-smoke:
-    name: Execute assembled Windows ConPTY bytes (Node 24.16)
+    name: Execute assembled Windows ConPTY bytes (Node 24.22)
     needs: [prepare, windows-conpty-authority, package-macos]
     runs-on: windows-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -879,7 +890,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.16.0
+          node-version: 24.22.3
           cache: pnpm
 
       - name: Install and build portable runtime code
@@ -997,6 +1008,7 @@ jobs:
     name: Exercise the promoted Linux runtime over OpenSSH
     needs: [prepare, package-macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -1103,10 +1115,11 @@ jobs:
     needs: [prepare, publish-npm]
     if: needs.prepare.outputs.mode == 'publish'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        node-version: [24.15.0, 24.16.0]
+        node-version: [24.15.0, 24.22.3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

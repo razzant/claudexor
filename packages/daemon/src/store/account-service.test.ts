@@ -221,9 +221,10 @@ describeStore("durable last-served facts (engine store schema v2)", () => {
     // Version 2 adds account_last_service; version 3 adds task-group indexes.
     // Version 4 adds deferred_message and its four indexes; v5 adds turn_plan_answer.
     // Version 6 moves task-group membership into a column and rebuilds both group
-    // indexes on it.
+    // indexes on it. Version 8 adds the question-delivery column and its covering
+    // pending index.
     expect([...ENGINE_TABLES].sort()).toEqual(
-      [...V1_TABLES, "account_last_service", "deferred_message"].sort(),
+      [...V1_TABLES, "account_last_service", "deferred_message", "resource_use"].sort(),
     );
 
     const upgraded = await openGraph(root);
@@ -231,7 +232,7 @@ describeStore("durable last-served facts (engine store schema v2)", () => {
       applicationId: ENGINE_APPLICATION_ID,
       userVersion: ENGINE_SCHEMA_VERSION,
     });
-    expect(ENGINE_SCHEMA_VERSION).toBe(6);
+    expect(ENGINE_SCHEMA_VERSION).toBe(8);
     expect(
       upgraded.store
         .prepare(
@@ -249,6 +250,9 @@ describeStore("durable last-served facts (engine store schema v2)", () => {
         "deferred_message_predecessor",
         "deferred_message_successor",
         "deferred_message_body",
+        "resource_use_owner",
+        "resource_use_sha",
+        "interaction_pending_delivery",
       ].sort(),
     );
     const after = dump(upgraded.store.db, V1_TABLES);

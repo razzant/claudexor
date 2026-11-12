@@ -1,8 +1,16 @@
-import { InputTokenUsage, WorkReport, type HarnessEvent, type ToolRef } from "@claudexor/schema";
+import {
+  InputTokenUsage,
+  WorkReport,
+  type HarnessEvent,
+  type ToolRef,
+  type VendorFailureEvidence,
+} from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
+import { BROWSER_MCP_SERVER, browserPageRetrieval } from "@claudexor/core";
+import { isCodexAsyncAgentMessage } from "./async-questions.js";
 import { codexFileChangeEvents } from "./file-change.js";
 import { applyCodexRateLimit, applyCodexTransient, codexReconnectStatus } from "./retry-signals.js";
-import { mcpToolOutcome, summarizeCodexOutput } from "./tool-output.js";
+import { mcpResultText, mcpToolOutcome, summarizeCodexOutput } from "./tool-output.js";
 
 type Json = any;
 
@@ -43,6 +51,9 @@ export interface CodexParseState {
   /** The current root turn's typed usage refusal (#558), kept on arrival by the
    * run loop's root-only `observeCodexRootError`. */
   usageRefusal?: NonNullable<HarnessEvent["rate_limit"]>;
+  /** The current root turn's own failure record as the app-server wire carried
+   * it, kept the same way; opaque evidence for the terminal. */
+  rootFailure?: VendorFailureEvidence;
 }
 
 /**
@@ -300,6 +311,19 @@ export function parseCodexEvent(
     switch (item.type) {
       case "agent_message": {
         const text = String(item.text ?? "");
+        // #628: a message delivered asynchronously (a question asked while the
+        // agent keeps working) stays visible, but it is never the turn's
+        // finality candidate and never an output-schema envelope.
+        if (isCodexAsyncAgentMessage(item))
+          return [
+            {
+              type: "message",
+              session_id: sessionId,
+              ts,
+              text,
+              payload: { delivery: "async", item_id: item.id },
+            },
+          ];
         // Keep the RAW text as the turn's finality candidate: the orchestrator
         // un-nests the FINAL `{work_report, output}` envelope downstream, so the
         // final message must stay raw. Only the VISIBLE intermediate copy below
@@ -345,13 +369,20 @@ export function parseCodexEvent(
       }
       case "mcp_tool_call": {
         const outcome = mcpToolOutcome(item);
+        // #118: a successful Browser call is verified only when its whole reply
+        // shows a page (the bounded summary can cut a long one short), and one
+        // that read no web page carries no retrieval stamp at all.
+        const retrieval =
+          item.server === BROWSER_MCP_SERVER && outcome.status === "ok"
+            ? browserPageRetrieval(String(item.tool), mcpResultText(item.result))
+            : {};
         return [
           {
             type: "tool_result",
             session_id: sessionId,
             ts,
             text: outcome.status === "error" ? "tool_result: error" : "tool_result",
-            tool: { ...mcpToolRef(item), ...outcome },
+            tool: { ...mcpToolRef(item), ...outcome, ...retrieval },
             payload: {
               server: item.server,
               tool: item.tool,

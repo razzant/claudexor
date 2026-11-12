@@ -41,6 +41,8 @@ describe("pending interaction projection", () => {
         harnessId: null,
         sourceTool: null,
         timeoutAt: null,
+        // A row without `delivery` (an older engine) keeps its meaning: the agent waits.
+        delivery: "blocking",
         questions: [{ ...pending.questions[0], header: null, multi_select: false }],
       },
     ]);

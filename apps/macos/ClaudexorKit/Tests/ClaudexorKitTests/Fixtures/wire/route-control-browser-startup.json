@@ -1,0 +1,19 @@
+{
+  "schema": "ControlRouteControl",
+  "value": {
+    "harnessId": "codex",
+    "webMode": "live",
+    "webMechanism": "native",
+    "browser": true,
+    "browserStartup": {
+      "status": "failed",
+      "waitedMs": 812,
+      "error": "browser launcher exited"
+    },
+    "access": "full",
+    "nativeAccess": "sandbox=danger-full-access approvalPolicy=never approvalsReviewer=auto_review",
+    "accessMechanism": "none",
+    "nativeSessionStarted": true,
+    "homeScoped": true
+  }
+}

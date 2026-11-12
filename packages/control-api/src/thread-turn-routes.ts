@@ -11,9 +11,11 @@ import type { ResourceAttachmentRef, TurnEnqueueProblem } from "@claudexor/schem
 import type { DaemonFacadeClient, DaemonRunRecord } from "./daemon-server.js";
 import { delegatedThreadExecution } from "./thread-delegated-execution.js";
 import {
+  errCode,
   errStatus,
   preStartRefusalStatus,
   problemFromError,
+  RESOURCE_RELEASED,
   turnEnqueueProblemResponse,
 } from "./thread-turn-problems.js";
 import type { RunStartNormalizationOptions } from "./run-start.js";
@@ -30,6 +32,12 @@ import {
   assertPlanAnswerSubmission,
 } from "./thread-plan-answer.js";
 
+/** `heldBy`: the accepted turn reading its own refs (a released ID it holds still resolves). */
+type TurnRequirementsPreflight = (
+  request: ControlRunStartRequest,
+  heldBy?: { owner: "turn"; id: string },
+) => Promise<void>;
+
 export interface ThreadTurnRouteCtx {
   json(res: ServerResponse, status: number, body: unknown): void;
   storeId?: () => string | undefined;
@@ -43,9 +51,9 @@ export interface ThreadTurnRouteCtx {
     parsed: ControlRunStartRequest,
     options?: RunStartNormalizationOptions,
   ): ControlRunStartRequest;
-  preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
+  preflightRunRequirements?: TurnRequirementsPreflight;
   /** Non-durable request checks for a thread turn; Git runs inside its daemon job. */
-  preflightThreadRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
+  preflightThreadRunRequirements?: TurnRequirementsPreflight;
   /** True for terminal job states (the server's TERMINAL_STATES set). */
   isTerminalState(state: string): boolean;
   daemon: DaemonFacadeClient;
@@ -145,6 +153,16 @@ async function respondToTurnJob(
   );
 }
 
+/** The durable key of a turn create. Its read-only lookup derives the same turn and command
+ * bindings from it, so the two can never disagree about one request. */
+export function threadTurnCreateIdempotency(
+  threadId: string,
+  body: import("@claudexor/schema").ControlThreadTurnRequest,
+  key: string,
+) {
+  return { key, client: "control-api", request: { threadId, body } };
+}
+
 /**
  * POST /threads/:id/turns — create the turn record FIRST (single-writer), then
  * enqueue its run. Per-thread serialization: concurrent turns on one thread
@@ -163,11 +181,7 @@ export function handleThreadTurnCreate(
     // response that a reloading client never sees.
     let createdTurnId: string | null = null;
     try {
-      const idempotency = {
-        key: idempotencyKey,
-        client: "control-api",
-        request: { threadId, body },
-      };
+      const idempotency = threadTurnCreateIdempotency(threadId, body, idempotencyKey);
       const replay = await inspectThreadTurnCreateReplay(ctx.daemon, ctx, threadId, idempotency);
       const detail = replay.detail;
       if (replay.accepted && replay.existingId) {
@@ -356,7 +370,12 @@ export function handleThreadTurnCreate(
       // refusal now has a turnId to land on, so the outer catch persists it via
       // setTurnEnqueueError and the app renders an inline refusal card instead
       // of raw JSON with no turn to attach to.
-      await (ctx.preflightThreadRunRequirements ?? ctx.preflightRunRequirements)?.(params);
+      // The accepted turn already holds its resolved refs (#249): its own dispatch
+      // reads them as that holder, so a release during this await never refuses it.
+      await (ctx.preflightThreadRunRequirements ?? ctx.preflightRunRequirements)?.(params, {
+        owner: "turn",
+        id: turn.id,
+      });
       // The turn stores resolved immutable resources; enqueue carries no duplicate refs.
       const { attachments: _att, ...enqueueParams } = params;
       // ENQUEUE phase: a typed refusal recorded no job (retryable:false); a lost
@@ -439,8 +458,11 @@ export function handleThreadTurnRetry(
       const turn = turns.find((t) => t["id"] === turnId);
       if (!turn)
         throw Object.assign(new Error(`no such turn on this thread: ${turnId}`), { status: 404 });
-      const recorded = turn["enqueue_error"] as { retryable?: unknown } | null | undefined;
-      if (!turn["run_id"] && recorded?.retryable === false) {
+      const recorded = turn["enqueue_error"] as
+        { retryable?: unknown; code?: unknown } | null | undefined;
+      // A released resource's refusal is the exception: its job exists, so a repeat
+      // still resolves an accepted key and otherwise asks the owner that refused it.
+      if (!turn["run_id"] && recorded?.retryable === false && recorded.code !== RESOURCE_RELEASED) {
         // No job exists to replay, and a purged thread takes no new message either.
         assertThreadAdmitsWork(threadId, detail.thread);
         throw Object.assign(
@@ -517,9 +539,10 @@ export function handleThreadTurnRetry(
         });
       } catch (err) {
         // A failed replay ENQUEUE is a fresh refusal — but the ORIGINAL job
-        // params remain in the registry, so the turn STAYS replayable.
+        // params remain in the registry, so the turn STAYS replayable, unless a
+        // resource they name was released, which no replay can ever pass (#249).
         // Untyped throws are infra failures — 500 (matching POST /runs).
-        const problem = problemFromError(err, true);
+        const problem = problemFromError(err, errCode(err) !== RESOURCE_RELEASED);
         try {
           ctx.setTurnEnqueueError?.(turnId, problem);
         } catch {

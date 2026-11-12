@@ -35,14 +35,16 @@ import { createRunTimeLimit } from "../run-time-limit.js";
 
 type Cleanups = Array<() => void | Promise<void>>;
 
-/** One fixture run: its directory, the run's abort signal and the
- * orchestrator's interaction channel for the fixture's harness. */
+/** One fixture run: its directory, the run's abort signal, the
+ * orchestrator's interaction channel for the fixture's harness and the run's
+ * one event log, which that channel writes too. */
 interface FixtureRun {
   params: Record<string, unknown>;
   runId: string;
   runDir: string;
   signal: AbortSignal;
   channel: InteractionChannel;
+  log: EventLog;
 }
 
 export async function startInteractionDaemon(options: {
@@ -60,7 +62,7 @@ export async function startInteractionDaemon(options: {
 }) {
   const { cleanups } = options;
   const waitMs = options.waitMs ?? 5_000;
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-interaction-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-i-")));
   options.removals.push(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, "workspace");
   mkdirSync(workspace);
@@ -87,13 +89,14 @@ export async function startInteractionDaemon(options: {
     ctx.onRunStart({ runId, taskId, runDir });
     limit.started({ runId, taskId, runDir });
     // The orchestrator's own channel, bound to the daemon's durable registry.
+    const log = new EventLog(join(runDir, "events.jsonl"), runId, taskId);
     const channel = interactionChannelFor(
       {
         onInteraction: (pending) => graph.interactions.register(pending, params),
         interactionTimeoutMs: p.interactionTimeoutMs ?? null,
         signal: limit.signal,
       },
-      new EventLog(join(runDir, "events.jsonl"), runId, taskId),
+      log,
       runId,
       taskId,
       "a01",
@@ -103,7 +106,7 @@ export async function startInteractionDaemon(options: {
     let events: HarnessEvent[] = [];
     try {
       events = await options.execute(
-        { params: p, runId, runDir, signal: limit.signal, channel },
+        { params: p, runId, runDir, signal: limit.signal, channel, log },
         workspace,
       );
     } finally {

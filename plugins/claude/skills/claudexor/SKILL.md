@@ -192,15 +192,16 @@ When `oversizedEvent` is set, read that event with `claudexor_run_event_read`
 part by part until `nextOffset` equals `totalBytes`, then resume after its `seq`.
 For an authorized correction to active work, use `claudexor_run_message` with
 an explicit message `idempotencyKey`; `accepted` is not observed delivery, and
-a pending question refuses the message. Keep the same key and body after an
-unknown outcome.
+a pending blocking question refuses the message (an async one does not; no
+message answers a question). Keep the same key and body after an unknown
+outcome.
 Use `claudexor_run_continue` for an authorized successor of a terminal run. Its
 optional prompt may be empty. Only mode, scope, execution, harness, model and
 prompt-cache lifetime carry over (another lifetime, Default included, needs a
-new run): restate access, web, account, budget, time limit and review settings
-the successor must keep. Retain its handle and use the same key and arguments
-to recover an unknown response. These controllers do not restart a daemon or
-expand Delegate access.
+new run): restate access, web, account, effort, budget, time limit and review
+settings the successor must keep. Retain its handle and use the same key and
+arguments to recover an unknown response. These controllers do not restart a
+daemon or expand Delegate access.
 
 Use `claudexor_next_message` only for an authorized operator-owned one-shot
 Agent/Ask follow-up on a supporting engine. Ordinary controller-owned workers
@@ -253,7 +254,10 @@ worker asks, grant session-wide access, or treat delivery as proof of execution.
 A refused answer keeps its code (`not_found`, `already_resolved`, `rejected`);
 `already_resolved` does not prove your answer was the one delivered.
 `Authorize one retry` starts one more worker turn and guarantees nothing.
-Ordinary questions need answers supplied or approved by the user.
+Ordinary questions need answers supplied or approved by the user. A question
+with `delivery: async` does not pause the worker: answer it when you can, and
+the answer reaches the worker as its next message; silence or expiry sends
+nothing.
 Use `claudexor_run_cancel` only when cancellation is requested.
 
 Use `claudexor_run_time_limit` to read, set, extend or disable an active run's

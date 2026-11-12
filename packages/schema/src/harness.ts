@@ -1,9 +1,11 @@
+import { HarnessProgramIdentity, NativeProgramEvidence } from "./harness-program.js";
 import { EffortHint, EffortResolution, ModelEffortCapability } from "./effort.js";
 import { z } from "zod/v3";
 import { AuthSourceKind, AuthSourceReadiness, CredentialRoute } from "./auth.js";
 import { CredentialProfile } from "./credential-profile.js";
 import { ToolRef } from "./tool-ref.js";
 import { AccessControlCapabilities, IsolationCapabilities } from "./harness-confinement.js";
+import { RouteControls, WebPolicySupport } from "./route-controls.js";
 export {
   AccessControlCapabilities,
   ReadonlyMechanism,
@@ -64,22 +66,6 @@ export const HarnessKind = z
   .enum(["local_cli", "remote_api", "fake"])
   .describe("Kind of harness adapter: a local vendor CLI, a remote API, or a fake used for tests.");
 export type HarnessKind = z.infer<typeof HarnessKind>;
-
-/**
- * How a harness can honor the external web policy:
- * - `native`: web modes are a native config surface (codex web_search).
- * - `tools`: web runs through permissioned tools the adapter can allow/deny (claude).
- * - `uncontrolled`: the harness CAN reach the web but exposes no enforceable
- *   switch — incompatible only with strict `off`. cursor/opencode today.
- * - `none`: the harness has NO web access at all — trivially satisfies `off`,
- *   while non-off policies remain optional preferences. raw-api/fake.
- */
-export const WebPolicySupport = z
-  .enum(["native", "tools", "uncontrolled", "none"])
-  .describe(
-    "How a harness can honor the external web policy: native (a native config surface), tools (permissioned tools the adapter can allow/deny), uncontrolled (can reach the web but exposes no enforceable switch), or none (no web access at all).",
-  );
-export type WebPolicySupport = z.infer<typeof WebPolicySupport>;
 
 /**
  * Declared capabilities the ENGINE actually consumes (intent gating, routing,
@@ -383,6 +369,7 @@ export type HarnessCapabilityProfile = z.infer<typeof HarnessCapabilityProfile>;
 
 export const HarnessManifest = z
   .object({
+    sourceProgram: HarnessProgramIdentity.nullable().optional(),
     id: Id.describe("Harness id (codex, claude, cursor, opencode, raw-api, ...)."),
     display_name: z.string().describe("Human display name of the harness."),
     kind: HarnessKind,
@@ -399,7 +386,7 @@ export const HarnessManifest = z
     access_profiles_supported: z
       .array(AccessProfile)
       .default([])
-      .describe("Access profiles the adapter can enforce."),
+      .describe("Access profiles the adapter can translate to its harness."),
   })
   .describe(
     "Static manifest an adapter declares for its harness: identity, kind, capabilities, auth modes, and access profiles.",
@@ -431,6 +418,7 @@ export type AdapterStatus = z.infer<typeof AdapterStatus>;
 
 export const ConformanceReport = z
   .object({
+    sourceProgram: HarnessProgramIdentity.nullable().optional(),
     harness_id: Id.describe("Harness the report is about."),
     status: AdapterStatus,
     checks: z.array(ConformanceCheck).default([]).describe("Individual probe results."),
@@ -532,6 +520,13 @@ export const HarnessRunSpec = z
         "Caller-supplied system-level instructions for task-producing lanes; delivered natively (append-system-prompt-file / developer_instructions) or as a delimited prompt prefix.",
       ),
     cwd: z.string().describe("Working directory the harness process runs in."),
+    input_file_dir: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "The run's own context directory, outside every worktree and retired with the run: an adapter whose native input transport cannot carry the whole input keeps exact copies there for the agent to read. Null = none; such an adapter refuses that input instead of cutting it.",
+      ),
     access: AccessProfile.default("workspace_write"),
     auxiliary_writable_roots: AuxiliaryWritableRoots,
     external_context_policy: ExternalContextPolicy.default("auto"),
@@ -692,11 +687,13 @@ export type InputTokenUsage = z.infer<typeof InputTokenUsage>;
 /** Normalized event emitted by every adapter (the SSOT of adapter output). */
 export const HarnessEvent = z
   .object({
+    program: NativeProgramEvidence.optional(),
     request_refusal: HarnessRequestRefusal.optional(),
     effort_resolution: EffortResolution.optional(),
     processing: ProcessingReceipt.optional(),
     processing_cost_basis: ProcessingCostBasis.optional(),
     prompt_cache_ttl: PromptCacheTtlReceipt.optional(),
+    route_controls: RouteControls.optional(),
     type: z
       .enum([
         "started",
@@ -732,8 +729,11 @@ export const HarnessEvent = z
         "True on the harness's typed final-answer message (vendor terminal result); mid-run narration never sets it.",
       ),
     ...HarnessSpeechEventFields,
-    /** Typed tool info; set on `tool_call` and `tool_result` events. */
-    tool: ToolRef.optional().describe("Typed tool info; set on tool_call and tool_result events."),
+    /** Typed tool info; set on `tool_call` and `tool_result` events, and on the
+     * `command_outcome_refined` status that refines an earlier call (#546). */
+    tool: ToolRef.optional().describe(
+      "Typed tool info; set on tool_call and tool_result events, and on a status event with payload.code command_outcome_refined, where it names the earlier call (use_id) and carries its refined command_outcome.",
+    ),
     /** Set on `interaction_requested` events. */
     interaction: InteractionRequest.optional().describe("Set on interaction_requested events."),
     patch_envelope: RawGitPatchEnvelope.optional().describe(

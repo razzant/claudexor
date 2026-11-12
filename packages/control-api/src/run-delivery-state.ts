@@ -4,6 +4,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   ControlRunResult,
   RunDeliveryState,
+  type RunTakenReason,
   WorkProduct,
   type WorkspaceFilesManifest,
 } from "@claudexor/schema";
@@ -127,6 +128,8 @@ export function markRunApplyState(
     const next = RunDeliveryState.parse({
       appliedPaths: appliedPaths ?? prev?.appliedPaths,
       discardedAt: state === "discarded" ? nowIso() : prev?.discardedAt,
+      takenAt: prev?.takenAt,
+      takenReason: prev?.takenReason,
       applyState: state,
       deliveredAt: state === "applied" ? nowIso() : (prev?.deliveredAt ?? null),
       revertAnchorId:
@@ -153,6 +156,41 @@ export function markRunApplyState(
     if (required) throw error;
     /* best-effort: the revert succeeded regardless of this metadata flip */
   }
+}
+
+/** Record that the caller has captured a terminal patch result. This is a
+ * delivery-state overlay, not a second retention disposition: the immutable
+ * work product and exact patch remain available until ordinary retention. */
+export function markRunTaken(rec: DaemonRunRecord, reason: RunTakenReason): void {
+  if (!rec.runDir) throw new Error("cannot record taken result without a run directory");
+  const root = safeArtifactRoot(rec.runDir);
+  if (!root) throw new Error("cannot record taken result outside the run artifact root");
+  const dsPath = join(root, "final", "delivery_state.yaml");
+  const prev = existsSync(dsPath)
+    ? (RunDeliveryState.safeParse(parseYaml(readFileSync(dsPath, "utf8"))).data ?? null)
+    : null;
+  const wp = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
+  const meta = (wp?.meta ?? {}) as Record<string, unknown>;
+  const next = RunDeliveryState.parse({
+    applyState: prev?.applyState ?? controlRunResult(rec).applyState,
+    appliedPaths: prev?.appliedPaths,
+    discardedAt: prev?.discardedAt,
+    deliveredAt: prev?.deliveredAt ?? null,
+    revertAnchorId:
+      prev?.revertAnchorId !== undefined
+        ? prev.revertAnchorId
+        : typeof meta["revert_anchor_id"] === "string"
+          ? meta["revert_anchor_id"]
+          : null,
+    postTurnSha:
+      prev?.postTurnSha ??
+      (typeof meta["post_turn_sha"] === "string" ? meta["post_turn_sha"] : null),
+    takenAt: prev?.takenAt ?? nowIso(),
+    takenReason: prev?.takenReason ?? reason,
+  });
+  const tmp = `${dsPath}.tmp-${process.pid}`;
+  writeFileSync(tmp, stringifyYaml(next), "utf8");
+  renameSync(tmp, dsPath);
 }
 
 /** A files result is applied once every deliverable change of its manifest is. */

@@ -23,6 +23,15 @@ const RELEASE_WORKFLOW_PATH = ".github/workflows/release.yml";
 const RELEASE_REPOSITORY = "razzant/claudexor";
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 const NPM_NOT_FOUND = /E404|is not in this registry/i;
+const PUBLISH_RETRY_DELAYS_MS = [15_000, 45_000];
+const NETWORK_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ECONNREFUSED",
+  "EPIPE",
+]);
 const SIGNATURE_AUDIT_STEPS = [
   ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--legacy-peer-deps"],
   ["audit", "signatures"],
@@ -107,29 +116,11 @@ async function main() {
       workflowPath: RELEASE_WORKFLOW_PATH,
       ref,
     };
-    const existing = view(spec);
-    if (existing) {
-      await verifyPublished(existing, expected, spec, { allowSameSourceRebuild: true });
-      console.log(`npm already published with verified provenance: ${spec}`);
-      continue;
+    try {
+      await publishNpmPackage(tarball, expected);
+    } catch (error) {
+      fail(`${spec}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    run("npm", ["publish", tarball, "--access", "public", "--provenance"], root);
-    // npm indexing after publish is eventually consistent and has been
-    // observed to lag by MINUTES (v2.1.0 postmortem: a 10s window failed a
-    // release whose publish had succeeded, and the burned version could
-    // never be re-published). Poll for up to 10 minutes before declaring
-    // the publish unexposed.
-    let published = null;
-    for (let attempt = 0; attempt < 60 && !published; attempt += 1) {
-      published = view(spec);
-      if (!published) {
-        if (attempt % 6 === 5) console.log(`waiting for npm to expose ${spec}…`);
-        await new Promise((resolveWait) => setTimeout(resolveWait, 10_000));
-      }
-    }
-    if (!published) fail(`npm did not expose ${spec} after publish`);
-    await verifyPublished(published, expected, spec);
-    console.log(`npm published with provenance: ${spec}`);
   }
   verifyRegistrySignatures(packed);
   moveNextChannel(packed);
@@ -261,11 +252,80 @@ function pack(pkg) {
   }
 }
 
-function view(spec) {
-  const result = spawnSync("npm", ["view", spec, "--json"], { cwd: root, encoding: "utf8" });
-  if (result.status === 0) return JSON.parse(result.stdout);
-  if (NPM_NOT_FOUND.test(result.stderr)) return null;
-  fail(`npm view failed for ${spec}: ${npmFailureText(result.stderr)}`);
+/** Retry only a named network failure, never an arbitrary npm/auth/provenance error. */
+function networkFailure(value) {
+  const code =
+    value?.error?.code ??
+    value?.cause?.code ??
+    value?.code ??
+    String(value?.stderr ?? "").match(/^npm (?:error|ERR!) code (\S+)/m)?.[1];
+  return NETWORK_CODES.has(code);
+}
+
+async function view(spec, io, deadline = io.now() + RECONCILE_EXPOSURE_WINDOW_MS) {
+  for (let attempt = 0; ; attempt += 1) {
+    const remaining = deadline - io.now();
+    if (remaining <= 0) throw new Error(`npm view exposure window expired for ${spec}`);
+    const result = io.spawn("npm", ["view", spec, "--json"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: Math.max(1, Math.min(REGISTRY_READ_TIMEOUT_MS, Math.ceil(remaining))),
+    });
+    if (result.status === 0) return JSON.parse(result.stdout);
+    if (NPM_NOT_FOUND.test(result.stderr ?? "")) return null;
+    if (!networkFailure(result) || attempt === PUBLISH_RETRY_DELAYS_MS.length) {
+      throw new Error(`npm view failed for ${spec}: ${npmFailureText(result.stderr)}`);
+    }
+    await io.sleep(Math.min(PUBLISH_RETRY_DELAYS_MS[attempt], Math.max(0, deadline - io.now())));
+  }
+}
+
+/** One packed package, at most three network-only publish attempts. npm versions
+ * are immutable: a repeated PUT cannot overwrite accepted bytes. A failed request
+ * may nevertheless have landed; re-read before retrying and verify strict original
+ * integrity after any attempt. An acknowledgement switches permanently to reads. */
+export async function publishNpmPackage(tarball, expected, io = registryIo()) {
+  const spec = `${expected.packageName}@${expected.version}`;
+  let metadata = await view(spec, io);
+  if (metadata) {
+    await verifyPublished(metadata, expected, spec, io, { allowSameSourceRebuild: true });
+    io.log(`npm already published with verified provenance: ${spec}`);
+    return;
+  }
+  for (let attempt = 0; ; attempt += 1) {
+    const result = io.spawn("npm", ["publish", tarball, "--access", "public", "--provenance"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.status === 0) {
+      io.log(`npm publish acknowledged: ${spec}; verifying registry exposure and provenance`);
+      break;
+    }
+    if (!networkFailure(result)) {
+      throw new Error(`npm publish failed for ${spec}: ${npmFailureText(result.stderr)}`);
+    }
+    if (attempt === PUBLISH_RETRY_DELAYS_MS.length) {
+      metadata = await view(spec, io);
+      if (metadata) break;
+      throw new Error(
+        `npm publish outcome unresolved for ${spec} after ${attempt + 1} attempts: ${npmFailureText(result.stderr)}`,
+      );
+    }
+    io.log(`npm publish network failure for ${spec}; rechecking before another attempt`);
+    await io.sleep(PUBLISH_RETRY_DELAYS_MS[attempt]);
+    metadata = await view(spec, io);
+    if (metadata) break;
+  }
+  // An accepted publish must never be repeated merely because indexing lags.
+  const deadline = io.now() + RECONCILE_EXPOSURE_WINDOW_MS;
+  while (!metadata && io.now() < deadline) {
+    metadata = await view(spec, io, deadline);
+    if (!metadata) await io.sleep(Math.min(RECONCILE_POLL_MS, Math.max(0, deadline - io.now())));
+  }
+  if (!metadata) throw new Error(`npm did not expose ${spec} after publish; outcome unresolved`);
+  await verifyPublished(metadata, expected, spec, io);
+  io.log(`npm published with provenance: ${spec}`);
 }
 
 /** Where npm serves a version's signed attestations; only the npm registry itself is trusted. */
@@ -284,32 +344,64 @@ function trustedAttestationUrl(metadata) {
   return { url: parsedUrl };
 }
 
-async function verifyPublished(metadata, expected, spec, { allowSameSourceRebuild = false } = {}) {
+async function verifyPublished(
+  metadata,
+  expected,
+  spec,
+  io,
+  { allowSameSourceRebuild = false } = {},
+) {
   const attestations = trustedAttestationUrl(metadata);
-  if (attestations.problem) fail(`${attestations.problem} for ${spec}`);
+  if (attestations.problem) throw new Error(`${attestations.problem} for ${spec}`);
   const parsedUrl = attestations.url;
   // npm's attestation endpoint is eventually consistent like the version
   // listing (v2.1.1 postmortem: fresh publishes 404 here for minutes while
   // the tarball itself is already served). Poll 404s with the same bounded
-  // 10-minute window; any other failure — and a still-missing attestation
-  // after the deadline — stays a loud hard failure.
+  // 10-minute window. Named network failures and temporary HTTP failures are reads
+  // only; they never cause another publication. A mismatch is never retried.
   let response = null;
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    response = await fetch(parsedUrl, { headers: { accept: "application/json" } });
-    if (response.status !== 404) break;
-    if (attempt % 6 === 5) console.log(`waiting for npm attestations for ${spec}…`);
-    await new Promise((resolveWait) => setTimeout(resolveWait, 10_000));
+  let networkError;
+  let attestationDocument;
+  const deadline = io.now() + RECONCILE_EXPOSURE_WINDOW_MS;
+  while (io.now() < deadline) {
+    try {
+      response = await io.fetch(parsedUrl, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(
+          Math.max(1, Math.min(REGISTRY_READ_TIMEOUT_MS, Math.ceil(deadline - io.now()))),
+        ),
+      });
+      if (response.ok) {
+        attestationDocument = await response.json();
+        break;
+      }
+      if (![404, 408, 429, 500, 502, 503, 504].includes(response.status)) break;
+    } catch (error) {
+      // Native fetch reports a closed response body through Undici's socket code.
+      // This is a read-only retry, never another npm publish.
+      if (
+        !networkFailure(error) &&
+        error?.cause?.code !== "UND_ERR_SOCKET" &&
+        error?.name !== "TimeoutError"
+      )
+        throw error;
+      networkError = error;
+      response = null;
+    }
+    await io.sleep(Math.min(RECONCILE_POLL_MS, Math.max(0, deadline - io.now())));
   }
-  if (!response?.ok) fail(`npm provenance fetch failed for ${spec}: HTTP ${response?.status}`);
-  const attestationDocument = await response.json();
+  if (!response?.ok)
+    throw new Error(
+      `npm provenance fetch failed for ${spec}: ${response ? `HTTP ${response.status}` : (networkError?.message ?? "unavailable")}`,
+    );
   const validation = validatePublishedProvenance({
+    ...expected,
     metadata,
     attestationDocument,
     allowSameSourceRebuild,
-    ...expected,
   });
   if (!validation.ok)
-    fail(`npm publication mismatch for ${spec}: ${validation.reasons.join("; ")}`);
+    throw new Error(`npm publication mismatch for ${spec}: ${validation.reasons.join("; ")}`);
 }
 
 export function validatePublishedProvenance(input) {
@@ -434,7 +526,7 @@ function signatureAuditManifest(versions) {
  * verdict. Resolves to the exit code: 0 only when every selected version
  * verified and the audit passed.
  */
-export async function reconcileNpmPublications(args, io = reconcileIo()) {
+export async function reconcileNpmPublications(args, io = registryIo()) {
   let selection;
   let registryArgs;
   try {
@@ -471,7 +563,7 @@ export async function reconcileNpmPublications(args, io = reconcileIo()) {
   return 0;
 }
 
-function reconcileIo() {
+function registryIo() {
   return {
     spawn: spawnSync,
     fetch: (url, init) => fetch(url, init),

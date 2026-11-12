@@ -83,6 +83,12 @@ function resources(): ModelPayloadStore {
       expect(row.ref).toEqual(ref);
       return row.bytes;
     },
+    async readModelAsync(ref) {
+      const row = bodies.get(ref.resourceId);
+      if (!row) throw new Error("released payload");
+      expect(row.ref).toEqual(ref);
+      return row.bytes;
+    },
     releaseModel(ref) {
       bodies.delete(ref.resourceId);
     },
@@ -218,6 +224,7 @@ describe("Q2 model dispatch", () => {
       if (mode === "success") {
         expect(posts).toBe(1);
         expect(receipt.lifecycle).toBe("succeeded");
+        expect(receipt.problem).toBeNull();
       } else if (mode === "cancel_before_dispatch" || mode === "cancel_after_dispatch") {
         expect(posts).toBe(mode === "cancel_after_dispatch" ? 1 : 0);
         expect(receipt).toMatchObject({
@@ -225,15 +232,23 @@ describe("Q2 model dispatch", () => {
           dispatch: {
             state: mode === "cancel_after_dispatch" ? "unknown" : "not_started",
             startedAt: NOW,
-            route: { credentialProfileId: "fixture" },
+            // The unsent attempt keeps its selected route; a sent one reports what was observed.
+            route: {
+              credentialProfileId: "fixture",
+              model: mode === "cancel_after_dispatch" ? null : "fixture-model",
+            },
           },
+          problem: { context: { requestedModel: "fixture-model" } },
         });
       } else {
         expect(posts).toBe(0);
         expect(receipt).toMatchObject({
           lifecycle: "failed",
           dispatch: { state: "not_started", startedAt: NOW, route: { model: "fixture-model" } },
-          problem: { code: "store_flush_unavailable" },
+          problem: {
+            code: "store_flush_unavailable",
+            context: { requestedModel: "fixture-model" },
+          },
         });
       }
       const generation = f.store.facts().flusher.generation;

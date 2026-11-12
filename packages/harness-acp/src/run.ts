@@ -1,6 +1,9 @@
 import * as acp from "@agentclientprotocol/sdk";
 import {
   abortSignalFromSpec,
+  selectProgramLauncher,
+  prepareNativeProgram,
+  type NativeProgramRun,
   effortResolutionEvent,
   HarnessUnavailableError,
   maskHarnessEventDiagnostics,
@@ -66,6 +69,7 @@ export function acpRunner(entry: AcpEntry) {
       await active.get(sessionId)?.();
     },
     async *run(spec: HarnessRunSpec, options: AcpRunOptions = {}): AsyncGenerator<HarnessEvent> {
+      let program: NativeProgramRun | undefined;
       const events = new AcpEvents(spec.session_id, entry.disabledToolsNotice);
       const queue = new Channel<HarnessEvent>();
       const abort = new AbortController();
@@ -123,6 +127,13 @@ export function acpRunner(entry: AcpEntry) {
               "ACP MCP injection is not supported in stage 1",
             );
           prepared = prepareAcpEnv(entry, token, spec.env);
+          program = await prepareNativeProgram(
+            entry.program,
+            selectProgramLauncher(entry.program),
+            spec,
+            prepared.env,
+            true,
+          );
           // The adapter owns the receipt exactly when it owns a knob; a knob-less
           // entry declares no effortParameter and the engine records `omitted`.
           if (entry.effortLevels.length) await emit(effortResolutionEvent(spec.session_id, effort));
@@ -137,7 +148,7 @@ export function acpRunner(entry: AcpEntry) {
           );
           await emit(events.event("status", { text: ACP_DISCLOSURE }));
           transport = connectAcp({
-            binary: process.env[entry.binaryEnv] ?? entry.binary,
+            binary: program.bin,
             args,
             env: prepared.env,
             spec,
@@ -161,6 +172,8 @@ export function acpRunner(entry: AcpEntry) {
           if (initialized.protocolVersion !== acp.PROTOCOL_VERSION)
             throw new AcpFailure("protocol_version", "ACP v1 negotiation failed");
           observation.version = initialized.agentInfo?.version;
+          program.observeVersion(observation.version);
+          await emit(events.event("status", { program: program.evidence() }));
           observation.session = await agent.request(acp.methods.agent.session.new, {
             cwd: spec.cwd,
             mcpServers: [],
@@ -235,7 +248,8 @@ export function acpRunner(entry: AcpEntry) {
         }
       })();
       try {
-        for await (const event of queue.read()) yield acpStoredEvent(event, token);
+        for await (const event of queue.read())
+          yield acpStoredEvent(program?.event(event) ?? event, token);
       } finally {
         queue.close();
         try {

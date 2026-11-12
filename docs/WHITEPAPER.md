@@ -63,7 +63,7 @@ while the caller decides when to update and whether to continue its work.
 Model content and authorization are distinct responsibilities. The caller's model
 payload keeps its supplied content, including examples that resemble credentials;
 the adapter's own authorization never enters that payload. Temporary exchange
-bytes support result recovery, while compact receipts retain operation identity.
+bytes support recovery; compact receipts keep operation identity for 30 days after termination.
 The calling application remains responsible for conversation history. This narrow
 content boundary does not change the protections on Agent tasks and attachments.
 
@@ -445,7 +445,9 @@ marker, is captured as real work rather than discarded.
 A completed run settles the processes it owns before publishing its terminal
 event, then exposes a best-effort process-scope receipt separately from the
 answer. Unavailable cleanup evidence remains unknown; it never becomes a clean
-receipt or rewrites a substantive review verdict. Native output is drained
+receipt or rewrites a substantive review verdict. While its daemon lives, a scope
+left unresolved gets separately bounded later attempts, recorded beside the
+unchanged terminal receipt. Native output is drained
 within a bound after process exit, with forced truncation disclosed. Codex
 rechecks late root lifecycle events before delivering a final answer, including
 after confirmed cleanup. A Windows limitation in proving tree death alone may

@@ -45,6 +45,7 @@ enum HistoryRunPresentation {
         task.planQuestions = run.planQuestions
         task.delegation = run.delegation
         task.waitingOnUser = run.waitingOnUser
+        task.serverAsyncQuestionsOnly = run.asyncQuestionsOnly ?? false
         task.outputReadyState = run.outputReadyState
         task.applyState = run.result.applyState
         task.adopted = run.result.adopted == true

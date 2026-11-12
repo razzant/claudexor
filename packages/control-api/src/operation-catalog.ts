@@ -14,6 +14,7 @@ import { MODEL_OPERATION_DRAFTS } from "./model-routes.js";
 import { MAINTENANCE_OPERATION_DRAFTS } from "./maintenance-routes.js";
 import { PROJECT_OPERATION_DRAFTS } from "./project-operation-descriptors.js";
 import { RUN_EVENT_PART_OPERATION_DRAFTS } from "./run-event-part-routes.js";
+import { START_OPERATION_DRAFTS, TURN_LOOKUP_OPERATION_DRAFTS } from "./run-start-routes.js";
 import { descriptor, jsonOperation as j } from "./operation-descriptor.js";
 import { TASK_GROUP_RUNS_OPERATION_DRAFTS } from "./task-group-routes.js";
 
@@ -61,6 +62,15 @@ const operations: ControlOperationDescriptor[] = [
     {
       idempotency: "key_required",
     },
+  ),
+  // Its presence also marks the managed import lifetime (`lifetime: "managed"`).
+  j(
+    "POST",
+    "/v2/resources/:id/release",
+    "mutating",
+    "ControlResourceReleaseRequest",
+    "ControlResourceRelease",
+    { idempotency: "natural" },
   ),
   j("POST", "/v2/handshake", "read_only", "ControlHandshakeRequest", "ControlHandshakeResponse", {
     parameters: [STORE_IDENTITY_HEADER],
@@ -215,11 +225,7 @@ const operations: ControlOperationDescriptor[] = [
       }),
     ],
   }),
-  j("POST", "/v2/runs", "mutating", "ControlRunStartRequest", "ControlRunStartResponse", {
-    completion: "durable_handle",
-    idempotency: "key_required",
-    parameters: [STORE_IDENTITY_HEADER],
-  }),
+  ...START_OPERATION_DRAFTS.map(descriptor),
   j("POST", "/v2/runs/wait-many", "read_only", "RunWaitManyInput", "RunWaitManyResult"),
   j("GET", "/v2/runs/:id", "read_only", null, "ControlRunDetail"),
   j("GET", "/v2/runs/:id/time-limit", "read_only", null, "RunTimeLimitSnapshot"),
@@ -347,6 +353,7 @@ const operations: ControlOperationDescriptor[] = [
       parameters: [STORE_IDENTITY_HEADER],
     },
   ),
+  ...TURN_LOOKUP_OPERATION_DRAFTS.map(descriptor),
   j("POST", "/v2/threads/:id/turns/:id/retry", "mutating", null, "ControlThreadTurnResponse", {
     idempotency: "key_required",
     parameters: [STORE_IDENTITY_HEADER],

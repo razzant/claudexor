@@ -84,8 +84,9 @@ function within<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
 
 /** Private root, credential-free environment and exact custody of every child. */
 function createFixture() {
-  const root = realpathSync.native(mkdtempSync(join(realpathSync.native(tmpdir()), "cxwb-")));
-  const [home, config, temp] = ["home", "config", "tmp"].map((name) => join(root, name)) as [
+  // The default daemon socket must also fit beneath a long private TMPDIR on macOS.
+  const root = realpathSync.native(mkdtempSync(join(realpathSync.native(tmpdir()), "wb-")));
+  const [home, config, temp] = ["h", "c", "t"].map((name) => join(root, name)) as [
     string,
     string,
     string,

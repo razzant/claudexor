@@ -24,7 +24,7 @@ import { pruneProjectObjectStore } from "@claudexor/workspace";
 export { readRunTombstone } from "./run-tombstone.js";
 import { treeReclaimableBytes } from "./retention-bytes.js";
 import { ageStampOf, runKeepReason } from "./retention-candidates.js";
-import { survivingAnchorIds, pruneRunAnchors } from "./retention-anchors.js";
+import { survivingAnchorIds, pruneRunAnchors, retentionDeferral } from "./retention-anchors.js";
 import { pruneEmptyRuntimeDirectories } from "./retention-directories.js";
 import { scanDataRootUnrecognized, type DataRootMode } from "./retention-data-root.js";
 import {
@@ -50,6 +50,9 @@ export interface RetentionProject {
   /** False when inventory proves this namespace has no remaining project owner.
    * Omitted by older embedders preserves their existing keep-last protection. */
   keepLastRuns?: boolean;
+  /** False for a store that is not a namespace of its own (the folderless Ask store
+   * lives in the config root): its runs retire, its runtime is never pruned. */
+  namespaceMaintenance?: boolean;
 }
 
 export interface RetentionRunRecord {
@@ -69,8 +72,12 @@ export interface RetentionDeps {
   referencedRunIds: () => Set<string>;
   /** Fresh proof that asynchronous inventory still describes the SQL owners. */
   referencesCurrent?: () => boolean;
+  /** The observer's latched reason for a failed current proof, when available. */
+  referencesHeld?: () => string | null;
   /** Reread changed owners cooperatively before the synchronous final proof. */
   refreshReferences?: () => Promise<void>;
+  /** Runtime namespaces whose registration changed during the pass: held, not deleted. */
+  deferredRuntimes?: () => ReadonlySet<string>;
   now?: () => number;
   /** Bounded batches: one pass deletes at most this many trees (disclosed). */
   maxDeletionsPerPass?: number;
@@ -131,13 +138,29 @@ export async function runRetentionPass(
   let deletions = 0;
   let truncated = false;
   let invalidated = false;
+  let invalidationReason = "retention references changed during inventory";
+  // A committed finish that throws may already have removed part of its tree: the
+  // receipt then reports freed_bytes as a lower bound, never a measured total.
+  let effectsUnknown = false;
+  const finish = async (retirement: Retirement) => {
+    try {
+      return await retirement.finish();
+    } catch (error) {
+      effectsUnknown = true;
+      throw error;
+    }
+  };
   const proofCurrent = () => {
     if (invalidated || deps.signal?.aborted) return false;
     try {
-      if (deps.referencesCurrent?.() === false) invalidated = true;
+      if (deps.referencesCurrent?.() === false) {
+        invalidated = true;
+        invalidationReason = deps.referencesHeld?.() ?? invalidationReason;
+      }
     } catch (error) {
       invalidated = true;
-      errors.push(`retention reference recheck failed: ${String(error)}`);
+      invalidationReason = `retention reference recheck failed: ${String(error)}`;
+      errors.push(invalidationReason);
     }
     return !invalidated;
   };
@@ -147,9 +170,12 @@ export async function runRetentionPass(
       await deps.refreshReferences?.();
     } catch (error) {
       invalidated = true;
-      errors.push(`retention reference refresh failed: ${String(error)}`);
+      invalidationReason = `retention reference refresh failed: ${String(error)}`;
+      errors.push(invalidationReason);
     }
   };
+  const deferral = retentionDeferral(deps, holds, proofCurrent);
+  const { deferred, anchorsCurrent } = deferral;
   const recoverPending = async (parent: string, kind: "runs" | "reviews", projectRoot: string) => {
     for await (const retirement of pendingRetirements(parent, kind, dryRun, errors, deps.signal)) {
       if (deps.signal?.aborted) break;
@@ -162,7 +188,7 @@ export async function runRetentionPass(
         const planned = new Map(dryRun ? plannedUnlinks : undefined);
         const bytes = await retirement.reclaimableBytes(planned);
         if (!dryRun) {
-          errors.push(...(await retirement.finish()));
+          errors.push(...(await finish(retirement)));
         } else for (const [key, value] of planned) plannedUnlinks.set(key, value);
         if (kind === "runs")
           deletedRuns.push({
@@ -184,6 +210,7 @@ export async function runRetentionPass(
     if (deps.signal?.aborted) break;
     await refreshProof();
     if (!proofCurrent()) break;
+    if (deferred(project)) continue;
     await recoverPending(project.runsDir, "runs", project.root);
     if (truncated || deps.signal?.aborted) break;
     const candidates: {
@@ -194,11 +221,12 @@ export async function runRetentionPass(
       ino: number;
     }[] = [];
     for (const runId of await listSubdirs(project.runsDir)) {
+      const root = join(project.runsDir, runId);
+      // Already reclaimed: a compact receipt costs no proof refresh (most entries).
+      if (existsSync(join(root, TOMBSTONE))) continue;
       await yieldToAdmission();
       await refreshProof();
       if (!proofCurrent()) break runProjects;
-      const root = join(project.runsDir, runId);
-      if (existsSync(join(root, TOMBSTONE))) continue; // already reclaimed
       examined += 1;
       const record = recordsById.get(runId);
       const reason = runKeepReason(root, runId, record, referenced, runCutoff, (error) =>
@@ -244,6 +272,8 @@ export async function runRetentionPass(
           );
         await refreshProof();
         if (!proofCurrent()) break runProjects;
+        if (deferred(project)) continue runProjects;
+        // No await from here to commit: the proof just checked is the one that holds.
         // Re-read every mutable filesystem guard after the asynchronous walk.
         // SQL-backed callers reread changed owners; older embedders
         // without that proof supply fresh references/records here instead.
@@ -276,7 +306,7 @@ export async function runRetentionPass(
         }
         if (retirement) {
           retirement.commit();
-          errors.push(...(await retirement.finish()));
+          errors.push(...(await finish(retirement)));
         }
         if (dryRun) for (const [key, value] of planned) plannedUnlinks.set(key, value);
         deletedRuns.push({
@@ -310,6 +340,7 @@ export async function runRetentionPass(
     await yieldToAdmission();
     await refreshProof();
     if (!proofCurrent()) break;
+    if (deferred(project)) continue;
     // No reviews dir (the no-project root has none) — skip THIS project only.
     // Checked BEFORE the cap so a project with nothing to sweep never makes
     // the pass claim it was truncated.
@@ -351,7 +382,7 @@ export async function runRetentionPass(
         const bytes = await treeReclaimableBytes(path, planned, deps.signal);
         if (!dryRun) retirement = await prepareRetirement(reviewsDir, name, null);
         await refreshProof();
-        if (!proofCurrent()) break;
+        if (!proofCurrent() || deferred(project)) break;
         const currentFence = canonicalInRepoReviewsDir(project);
         if (
           currentFence.verdict !== "ok" ||
@@ -362,7 +393,7 @@ export async function runRetentionPass(
           continue;
         if (retirement) {
           retirement.commit();
-          errors.push(...(await retirement.finish()));
+          errors.push(...(await finish(retirement)));
         }
         if (dryRun) for (const [key, value] of planned) plannedUnlinks.set(key, value);
         deletedReviews.push({ path, freed_bytes: bytes });
@@ -383,7 +414,7 @@ export async function runRetentionPass(
     }
   }
   let namedAnchors: Set<string> | undefined;
-  if (!deps.anchorsHeld && !invalidated && !deps.signal?.aborted) {
+  if (!deps.anchorsHeld && proofCurrent()) {
     try {
       namedAnchors = await survivingAnchorIds(
         projects,
@@ -407,6 +438,7 @@ export async function runRetentionPass(
       if (invalidated || deps.signal?.aborted) break;
       await refreshProof();
       if (!proofCurrent()) break;
+      if (project.namespaceMaintenance === false || deferred(project)) continue;
       if (namedAnchors)
         freedBytes += await pruneRunAnchors({
           runtime: dirname(project.runsDir),
@@ -414,7 +446,7 @@ export async function runRetentionPass(
           cutoff: runCutoff,
           dryRun,
           planned: plannedUnlinks,
-          current: proofCurrent,
+          current: anchorsCurrent,
           signal: deps.signal,
         });
       freedBytes += await prunePatchObjects(
@@ -431,7 +463,11 @@ export async function runRetentionPass(
           .map((run) => join(project.runsDir, run.run_id)),
       );
       freedBytes += (
-        await pruneProjectObjectStore(dirname(project.runsDir), { dryRun, retiredOwners })
+        await pruneProjectObjectStore(dirname(project.runsDir), {
+          dryRun,
+          retiredOwners,
+          retireEmpty: true,
+        })
       ).freedBytes;
       if (!dryRun && proofCurrent())
         pruneEmptyRuntimeDirectories(
@@ -443,6 +479,8 @@ export async function runRetentionPass(
             ),
         );
     } catch (error) {
+      // Its anchor, patch-object and object-store steps may already have deleted bytes.
+      if (!dryRun) effectsUnknown = true;
       errors.push(`runtime cleanup: ${error instanceof Error ? error.message : String(error)}`);
     }
     await yieldToAdmission();
@@ -458,7 +496,7 @@ export async function runRetentionPass(
     holds.push({
       class: "references_changed",
       count: 1,
-      example: "remaining candidates kept; retry with a fresh snapshot",
+      example: invalidationReason,
     });
     deps.onTruncated?.();
     errors.push(
@@ -505,9 +543,10 @@ export async function runRetentionPass(
     deleted_runs: deletedRuns,
     kept,
     holds,
-    truncated: truncated || invalidated || deps.signal?.aborted === true,
+    truncated: truncated || deferral.anchorDeferral || invalidated || deps.signal?.aborted === true,
     deleted_reviews: deletedReviews,
     freed_bytes: freedBytes,
+    ...(effectsUnknown ? { effects: "unknown" } : {}),
     errors,
     ...(dataRootUnrecognized === undefined ? {} : { data_root_unrecognized: dataRootUnrecognized }),
   });

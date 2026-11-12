@@ -244,6 +244,12 @@ at every wire boundary.
   semantic request and the first declared digest in the existing upload and
   idempotency tables, checks the saved store id first and publishes verified
   bytes on replay; the one-call MCP/CLI client asks before it reads its source.
+  An import may opt in to a managed lifetime: a release
+  (`POST /v2/resources/:id/release`, `packages/daemon/src/store/resource-release.ts`)
+  only changes the resource row, while accepted commands, turns and next messages
+  hold its bytes through typed `resource_use` rows written in their own acceptance
+  transaction and dropped by their existing retirement (`resource-uses.ts`); the
+  blob owner predicate counts them.
   MCP public/belt runs and thread turns forward strict resource refs;
   local import owns only a bounded host-file descriptor, never durable upload
   state. The [ingress contract](INTEGRATIONS.md#document-ingress-and-resource-references)
@@ -363,11 +369,18 @@ restart-interrupted turn proves nothing about that (see Daemon lifecycle).
 The active access profiles are `readonly`, `workspace_write`, `full`, and
 `inherit_native`. Each adapter translates that request to its own native
 permission mode; the generic run loop invokes the adapter command directly.
-Claudexor adds no outer Seatbelt or other OS filesystem boundary. A scoped
+Claudexor adds no outer Seatbelt or other OS filesystem boundary; each spawn
+records the native setting prepared for it
+([route controls receipt](#route-controls-receipt)). A scoped
 `HOME` or named vendor profile selects credentials and keeps vendor-written
 state separate, but it is not containment and does not prevent same-user host
 access. New delegated attempt and candidate evidence records this deliberate
-absence with null mechanism/proof fields. Historical proven Seatbelt evidence
+absence with null mechanism/proof fields; a delegated mutating run refuses
+(`delegated_evidence_incomplete`) to end while an attempt that reached its
+adapter lacks it. An attempt whose preparation failed before its HOME was decided
+started no child: the catch that saw it marks it, its record keeps the gap and
+its own failure stands (race siblings continue, convergence ends with it); a
+record's missing fields never exempt it. Historical proven Seatbelt evidence
 and the retired `external_sandbox_full` literal remain decoder-only so old
 runs stay inspectable.
 
@@ -407,6 +420,49 @@ likewise requires an active PATCH or turn override. Browser and Delegate use
 the selected adapter's existing native MCP-injection access requirement:
 Claude can host Browser or the belt under `workspace_write`, while Codex needs
 explicit trusted `full`; no access rewrite hides that difference.
+
+#### Route controls receipt
+
+Every routed spawn passes the per-spawn gate, which records, just before it
+dispatches the adapter, what the engine prepared for that route
+(`HarnessEvent.route_controls`, folded into `attempts[].route_controls` of
+`final/telemetry.yaml`): `web_mechanism` (the route's declared `web_policy`),
+`access` (the profile handed over), `native_access` (the vendor's own access
+arguments or request parameters, from the same adapter helper that passes them;
+Codex, Claude, Cursor and Antigravity disclose it, other adapters leave it null)
+and `access_mechanism` (the manifest's `readonly_mechanism` or `write_mechanism`
+for that profile, `none` for `full`, `native_settings` for `inherit_native`).
+A Stop observed before this receipt suppresses the receipt. The gate checks Stop
+again after it, so a Stop that lands while it is read keeps the receipt and
+never calls the adapter. The receipt is not proof that anything ran: an adapter
+can still refuse before launching, as a logged-out Cursor or Claude's unsupported
+readonly profile does, and a stop can still land after dispatch. So
+`native_session_started` beside it reports whether any try of the attempt emitted
+the typed `started` event, which such a refusal never does. `false` means none was
+observed, not that no process ran: events after Stop are stored but not folded,
+so a child stopped after its dispatch can have run briefly. Raw API routes
+emit `started` just before their POST and have no native process.
+
+The receipt changes nothing the harness receives. Only `fs_sandbox` declares an OS
+file boundary, the vendor's own as the vendor applies it; Claudexor does not verify
+its coverage. The other mechanisms declare none, which is what the manifest says,
+not a measurement: Cursor's `--sandbox enabled` still appears verbatim in
+`native_access`. `native_settings` means Claudexor passes no access profile, so the
+harness's own configuration decides and what it confines is unknown here, including
+any confinement of its own.
+
+An attempt whose lane records the applied HOME fact (Agent attempts) also carries
+`harness_home_isolated`. `true` means the engine assigned its child a Claudexor-owned HOME: an
+isolated envelope, a delegated run, or a named account's `childHome` (Cursor,
+Antigravity, Grok). `false` means the engine did not replace HOME, as for an
+in-place readonly Agent, so the child inherits the engine's own environment; that
+is the operator's HOME unless a host started the engine with another, and an adapter
+can still relocate vendor state. Ask and Plan spawns run in a scoped route-context
+or lane HOME but record no such fact, so nothing is claimed for them. The run summary
+projects the distinct routes as `routeControls`, and `claudexor inspect` prints them.
+A route handed the engine Browser also carries `browserStartup`: the startup its
+adapter reported before the first model request (Codex today), or null when it
+reported none, so an armed Browser that was only prepared never reads as connected.
 
 ## 4. Routing
 
@@ -792,10 +848,17 @@ tells the caller to enable web or choose an off-enforceable harness. Per-route
 upgrades (Claude has no cached web index, so `cached` runs as `live`) are
 disclosed via `policy.web.upgraded` events and recorded in telemetry. Adapters
 map the policy to native controls: Claude Code gets explicit
-`WebSearch`/`WebFetch` allow/deny arguments, Codex gets `web_search` config, and
-managed Cursor readonly uses Ask + `--force` + sandbox enabled for non-off
-policies while `off` and `inherit_native` receive no injected force.
-Command/network sandboxing remains separate.
+`WebSearch`/`WebFetch` allow/deny arguments, Codex gets its `web_search`
+setting, and Cursor has no web switch, so a run lane under `off` refuses it.
+Cursor's access arguments are `--sandbox enabled --trust` plus Ask mode for
+`readonly`, with `--force` (which also approves Cursor's own web tools) whenever
+web is not `off`; `workspace_write` passes `--force --sandbox enabled --trust`,
+`full` passes `--force --sandbox disabled --trust`, and `inherit_native` passes
+only `--trust`. Ask mode withholds Cursor's write and shell tools, a vendor tool
+allowlist rather than a declared OS file boundary. None of these web controls is
+a network switch: the vendor API connection stays open and an allowed shell
+command can still reach the network. Each spawn records what was prepared for its
+route ([route controls receipt](#route-controls-receipt)).
 
 `access=full` (unsandboxed) requested by an operator at a surface additionally
 requires `allow_full_access: true` in the USER-LEVEL trust config
@@ -975,7 +1038,10 @@ failure or a cancellation, releases them then), because the copy's Git reads the
 candidate's objects there.
 
 Cursor and AGY prompts use the shared CLI loop's one-shot stdin. AGY omits
-print flags so its native stdin reader selects print mode. Claude one-shot uses
+print flags so its native stdin reader selects print mode; AGY input over a
+conservative 128 KiB limit, below the 192,000-byte cut observed on its stdin,
+rides exact files in the run's `context/` named by a bootstrap that does not
+grow with the input ([INTEGRATIONS](INTEGRATIONS.md)). Claude one-shot uses
 text stdin; interactive/image runs retain their sole stream-json stdin owner.
 Claude instructions append through an adapter-owned UTF-8 file, removed when
 the child ends, never through argv or user-role text (`instructions-file.ts`).
@@ -1063,7 +1129,22 @@ without valid recovery identity refuses cleanup rather than orphaning the child
 by deleting its only proof.
 
 `auto`, `cached`, and `live` permit web tools where the harness supports them
-and record whether web was attempted and at what verification strength. For
+and record whether web was attempted and at what verification strength. Web
+evidence comes only from typed web tool calls and engine Browser calls
+(`web.observation: {evidence: tool_calls, network: not_measured}`), so
+`attempted: false` never means that no network was used. `verified` needs a
+typed retrieval, and `verified_content` says what it returned: a `page` for
+Claude's WebFetch or a Browser navigation or snapshot whose own Page section shows
+a loaded http(s) page without an HTTP error status, or `search_results` for
+Claude's WebSearch, which is not a fetched page. The adapter stamps a Browser
+result through `browserPageRetrieval` from the whole reply of the pinned Browser
+MCP, before the bounded `content_summary` can cut a long one; recorded replies of
+that pin back the rule and a pin bump re-records them. A completed web call
+without a typed retrieval, such as Codex `web_search` or a Browser page read that
+got an HTTP error status, is `dispatched`. A Browser call that read no web page
+(closing, clicking, listing tabs, an `about:blank` or `data:` page) carries no
+retrieval stamp: it still counts as completed web activity (`satisfied`), so the
+policy below is unchanged, while the strength stays `none`. For
 ordinary contracts, web is optional: unused, denied, unavailable, or errored
 activity remains warning/evidence telemetry and neither decides terminal
 success nor starts route fallback. Only an explicitly persisted
@@ -1202,7 +1283,8 @@ and adopts the canonical name, avoiding Apple's user search-list side effect
 for a direct `create-keychain .../login.keychain-db` call. It never bridges the
 host Keychain or copies credential bytes. Before every agy child the adapter
 also ensures the profile's vendor `settings.json` allows `read_file(*)`, so
-reads outside the workspace are not auto-denied in headless runs
+reads outside the workspace are not auto-denied in headless runs, and a
+readonly child gets session-only settings that deny commands and writes
 ([INTEGRATIONS](INTEGRATIONS.md)).
 Linux keeps the config-file/HOME route.
 On Windows the credential is an OS-user-scoped vendor Keychain item: the named
@@ -1753,9 +1835,11 @@ blocked only for that cooldown's own bounded default and its end is a recheck
 instant, never a reset. While active and applicable it decides the account's
 verdict whatever else blocks the account: another window's reset, a vendor retry
 delay or a vendor reset day keeps its meaning for that window alone and promises
-nothing about the account. Like the generic refusal it names no window, so a
-newer recognized primary read retires it under the reconciliation rules below,
-which permits the next attempt. No transport retry replays the refused account,
+nothing about the account. Unlike the generic refusal, no quota read retires or
+moves it (#318): an empty, unknown or measured read does not show that the
+refused usage or credits returned. Its own recheck alone admits the next demanded
+attempt; nothing probes the vendor, and demand at that instant is not serialized.
+No transport retry replays the refused account,
 a reviewer seat's included, even when the refusal's words also read as a broken
 stream. A vendor-dated window with no such refusal
 beside it keeps its existing code and reset. A pinned account refused this way,
@@ -1839,7 +1923,8 @@ bounded, in-memory `CredentialUnusableLedger`. Its scope follows what the vendor
 typed category proves, with one owner (`credentialStreamRefusal`) for the observer
 and the differential probe: an auth rejection, or a denial of subscription access on
 the observed subscription route that the adapter proved (`entitlement_denied`: the
-vendor's exact `oauth_org_not_allowed` code or its recorded result), covers every
+vendor's exact `oauth_org_not_allowed` code, its recorded result, or the stdout
+result's exact `oauth_not_allowed_for_organization` API code, #318), covers every
 model of that exact subject and route and never another route, row or harness. Any
 other capability refusal covers only the model the run requested, including prose the
 parser's fallback files under the same category, which keeps its diagnostics and retry
@@ -1970,10 +2055,10 @@ its file is named `.env`, `credentials.json`, `*.pem` or `secrets/…`.
   the partial output of any other non-success result stay exact; the Codex
   adapter masks the text and native fields of an in-turn retry notice and of a
   native warning where it creates them. Claude
-  `AskUserQuestion` questions, headers, option labels and descriptions reach
-  every answering surface exactly, whatever their length (ACP shows headers and
-  descriptions as permission prompt content); answers are keyed by the native
-  question text, and free text reaches the CLI byte-identical. Tool calls keep unmasked targets (command, path, query, URL) within the adapter's existing bounds, and
+  `AskUserQuestion` questions, headers, option labels and descriptions, and the
+  worker output a Codex access question quotes, reach every answering surface
+  exactly, whatever their length; answers are keyed by the native question
+  text, and free text reaches the CLI byte-identical. Tool calls keep unmasked targets (command, path, query, URL) within the adapter's existing bounds, and
   tool results keep unmasked summaries of their output (`content_summary`, and
   a failed tool's own `error_summary`) within each adapter's existing bound and
   whitespace normalization: for a completed tool that summary is the only copy
@@ -2415,7 +2500,18 @@ from its tool-call `status`: when it does not report an observed exit (the
 command was moved to a background shell, its timeout elapsed, or the outcome is
 unknown), the result is not a finished command, never recovers an earlier
 failure, and is not itself a tool error, so it neither discards nor downgrades a
-delivered answer. Optional web denial/error is warning evidence and does
+delivered answer. A later `status` event with `payload.code:
+command_outcome_refined` names the same call (`tool.use_id`) and carries its
+refined `command_outcome`: a vendor-reported completion of a background command
+without an exit code (`completion_reported`, #546), never anything that claims
+an exit. It replaces what the transcript, the ACP call and the continuation
+packet say about that command, never changes the call's status and is not a
+result, so it recovers nothing either. The attempt's telemetry keeps each report
+as a command fact (`reported_command_outcomes`, the latest reports and their true
+count) apart from its tool errors: a reported `error` or `aborted` adds no tool
+error, warning, terminal failure or ranking penalty, because a deliberately
+stopped dev server may simply have finished correctly. Optional web
+denial/error is warning evidence and does
 not trigger route fallback or terminal failure; a read-only route is judged on
 its answer and the ordinary harness/contract axes.
 
@@ -2555,7 +2651,15 @@ workspace work; they are never ignored or silently redirected.
 
 Envelope semantics are strict. Project runs execute under
 `~/.claudexor/v3/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
-the harness `cwd` is the envelope worktree. That worktree is a complete checkout of
+the harness `cwd` is the envelope worktree. That is the project's namespace also
+when another tree executes (an isolated thread worktree, a delegated workspace):
+the envelope's `owner.json` records that `execution_root`, and recovery, adoption
+and release act on the base its scoped HOME records, so an adopted envelope keeps
+its path and a missing execution root never redirects cleanup to the project. A
+one-shot run of an explicitly ephemeral root (`scope.ephemeral`) keeps its envelopes in
+`~/.claudexor/v3/one-shot/workspaces/`, beside, never inside, its run trees.
+Legacy envelopes under an execution root's own namespace stay readable and are
+swept there; nothing migrates. That worktree is a complete checkout of
 its base commit or the run does not start: when no object directory holds the
 content of some of its files (what a partial clone never fetched, or a sparse
 checkout of one left out), or Git cannot copy a shallow source because its branches
@@ -2592,7 +2696,27 @@ states each delivered file's blob figures and why any other is left out. So a la
 round, or a raw round after a native one, reads what the earlier round left, new
 files carry their own blobs, and identity and content are one object. The patch applies only
 if the worktree still holds that exact tree (`raw_patch_base_mismatch` otherwise); capture stays base to
-candidate, so the final result holds every round. A refused patch is the attempt's
+candidate, so the final result holds every round. The envelope records what it accepted
+in per-worktree refs of its own repository: `refs/worktree/claudexor/raw-accepted` names a tree
+of only the paths accepted patches wrote, as last written. Before a patch's first byte reaches
+the worktree one transaction writes `raw-pending` (that tree with this patch's paths; renamed
+or deleted ones leave) and `raw-pending-result` (the exact tree the patch leaves); another
+then makes the pending tree accepted. A file either names beyond the base enters the next
+round's tree and the envelope's captures by exact path while it is still a file, even when an
+ignore rule matches it, so the result, Apply, Revert and the next round carry it; each view
+keeps its own exclusions (nested repositories, so a file inside one stays out; in the capture,
+the generated `CLAUDE.md` bridge). In a persistent thread each turn starts from the worktree's
+record and files, and only the adopted winner's record replaces it. The record goes with a kept envelope, so a fresh manager, an
+adopting `continueFrom` successor and the settlement and crash-sweep change checks see the
+file too; no other ignored file, a gate's or a native round's, enters, even one a later patch's
+ignore rule comes to match. A record that cannot be written, or a pending one an earlier patch
+never completed (unless the worktree holds exactly its result: that promotion is finished
+first), refuses the patch as `raw_patch_requires_isolation` before anything is written; a
+patch that fails past `git apply --check` is refused the same way, its pending record still
+naming what it wrote. A record that cannot be read is never read as nothing accepted: the
+capture refuses (`capture_refused`, source kept), and the change checks count it as a change;
+Git before 2.43 (no `show-ref --exists`) cannot tell a failed lookup from a missing ref and
+reads it as absence. A refused patch is the attempt's
 typed failure (`RunFailure.code`), never a crashed process or a same-prompt retry.
 The code names what is wrong, not whether a request was sent: a patch intent
 without its packet (`raw_patch_missing_evidence`) and an over-window request are
@@ -2776,7 +2900,11 @@ terminal: in the failure message, summary and decision evidence, with the record
 and inspection action; with a winner, in the summary and any blocked record's next actions. An
 all-uncaptured race, an uncaptured in-place candidate, an isolated Git source
 whose retention setup failed, or an injected Delegate-belt failure remains
-terminal for the race.
+terminal for the race. A winner whose harness failed after it changed files
+leads its failure record and the returned summary with its own cause line, then
+arbitration's ranking line, unless a review or check block decides the terminal
+(summary.md names it as `- Failure:` either way); the phase stays `arbitration`,
+and no loser's cause leads.
 
 ### Agent --attempts / --until-clean
 
@@ -2786,7 +2914,9 @@ convergence, cancellation, budget/quota exhaustion, or no-progress stall after
 eligible harness rotation.
 Explicit review-off capped repair keeps deterministic gates, policy findings,
 and work-report completion as its convergence conditions; it does not wait for
-a model review that was never requested.
+a model review that was never requested. A loop that ends `not_converged` on an
+errored last attempt leads with that attempt's own cause line and vendor
+evidence, as an errored race winner does; phase and category are unchanged.
 
 ### Plan
 
@@ -3044,15 +3174,15 @@ the official CLI for an expired-token refresh and the raw account's model
 catalog. Discovery varies with the declared client version, so a missing row
 proves no minimum-version or entitlement refusal. The transport declares ITS OWN
 verified level, `CODEX_HTTP_CLIENT_VERSION` (`http-client-version.ts`), raised to
-a newer selected Codex CLI and never below the constant. The release-tested
-native baseline is a different fact from this HTTP minimum and from the
-managed install target. Installing a newer selected CLI CAN raise the HTTP
+a newer selected Codex CLI and never below the constant. The native fixture stamp is a different fact from this HTTP minimum and from
+the selected vendor program version. Installing a newer selected CLI CAN raise the HTTP
 catalog's declared client version and change which model rows the same account
 sees; that visibility is not proof of entitlement or generation. The account
-view carries each catalog's declared `clientVersion` and source. Selected-account discovery can negotiate `includeAdmission=true` with
+view carries each catalog's declared `clientVersion` and source, plus
+`sourceProgram` for the program path/version that supplied the observation. Selected-account discovery can negotiate `includeAdmission=true` with
 `requestedModel` for those facts and `admission: {requestedModel,
 inventoryAbsence}`, which permits an attempt without a synthetic model row or
-generation claim; the legacy query keeps its exact shape. The
+generation claim; the basic query omits admission metadata. The
 constant moves with a recorded catalog fixture pair (`fixtures/models-http-*.json`)
 whose shared rows must stay identical. Refresh work is serialized per canonical
 managed home; a cancelled caller cannot release another past a still-live
@@ -3194,26 +3324,30 @@ original payload stays in the caller's history. The live transport continuation
 binds to the model the terminal response named, so a turn another model answered
 is not replayed under the requested model, and an unknown model leaves it unbound.
 
-`ModelOperations` uses the existing daemon command store, idempotency lookup,
-queue capacity, cancellation and terminal boundary. Model runners use their class
-limit and any explicit global limit described in [Main Execution Paths](#6-main-execution-paths);
-their permit stays occupied until runner settlement, including cancellation, but
-not while awaiting a client's result-digest ACK, and they are not Agent Runs. The command store holds content hashes and resource references, not the
-conversation. A model-purpose upload uses `ResourceStore`'s atomic finalization;
-its contents are delivered exactly like every other working input (INV-146),
-and it cannot resolve as an ordinary Agent attachment. Engine authorization
-never enters the model payload.
+`ModelOperations` reuses daemon commands, idempotency, queue capacity,
+cancellation and terminal state. Model runners obey their class and explicit
+global limits ([Main Execution Paths](#6-main-execution-paths)); permits last
+through runner settlement, cancellation included, but not the result-digest ACK
+wait. They are not Agent Runs. Commands hold content hashes and resource refs,
+not conversations. Model uploads use `ResourceStore` atomic finalization and
+exact input delivery (INV-146); they cannot become Agent attachments. Create and
+dispatch read request bytes off the request thread; result GET is synchronous,
+so ACK cannot interleave. Engine authorization never enters the payload.
 
 Result GET returns exact digest-bound bytes without acknowledging them. A client
 accepts custody before ACK and recovers a lost local reply through the same
 operation identity. Request bytes are released at terminal state, response bytes
 after ACK and unacknowledged responses 30 days after readiness; existing
-maintenance reclaims crash residue. A recorded response expiry stays the release
+maintenance reclaims crash residue, then calls the daemon's `pruneHistory`
+owner (including cancellation-set cleanup) through both runtime compositions. A recorded response expiry stays the release
 timestamp through delayed cleanup and restart, while an ordinary ACK uses its
 actual release time. Redundant uploads on an idempotent create are released
-without touching another live command's input. Compact model receipts and
-idempotency bindings are excluded from Agent history age/cap pruning, so an
-expired or acknowledged result cannot trigger another generation. A provider
+without touching another live command's input. Outside the Agent history cap, a
+model receipt and its idempotency binding leave 30 days after the terminal once
+response and resources settle; until then a same-key create replays without
+another generation. Later reads answer `model_operation_not_found` (a released
+request `resource_not_found`), proving neither non-dispatch nor cost; new bytes
+under the old key are a new request. A provider
 refusal, a never-dispatched operation and an unknown outcome after engine death
 are separate facts. A crash after response bytes are published but before the
 terminal SQL commit keeps an unknown outcome; uncommitted bytes cannot certify a
@@ -3286,6 +3420,18 @@ exhaustion. Legacy selected-account catalog reads obey the same current quota ad
 without starting a generation. The opt-in account view enumerates enabled
 inventories separately, as described [above](#processing-and-account-catalogs).
 
+A failed or interrupted operation, or one cancelled before starting, names its
+requested model as problem context `requestedModel` when known; `route.model`
+stays provider-observed or null. Execution names the model of the request bytes
+it read, none if they do not parse. A terminal before that read or without an
+execution receipt (queued cancel, unreadable input, restart recovery) names the
+params `requestedModel`, kept outside idempotency identity: create's parsed
+bytes, or an unverified raw `claudexor.enqueue` claim. A queued cancel reports
+`model_operation_cancelled` with dispatch `not_started` and no response; records
+without the name read as before. An older release refuses a root this one served
+([semantic floor](#upgrade-backup-and-restore)); only an older build of the same
+version could open it, and it reports such operations as not found.
+
 A terminal response may disclose a model other than the requested one, with no
 error and nothing in the account's quota. The result then carries the optional
 `modelMismatch` fact (`requested`, `observed`), set only for a completed or
@@ -3357,7 +3503,12 @@ validator dump, and validates the per-run SSE cursor as a nonnegative integer
 for 65 s (longer than clients' idle-reuse windows, such as httpx's 5 s, which
 would otherwise race the server's close), allows 66 s for request headers, and
 does not bound the receipt of a request body, so a large upload during a busy
-period is not cut; none of these limits applies to responses or SSE streams.
+period is not cut. The PUT writes its bytes on the libuv pool, and the request
+thread can answer other control requests while that write is in flight.
+Concurrent PUTs share a gate that leaves pool threads for DNS and other
+filesystem work; a PUT holds a slot only while one of its writes is in the
+pool, not while it waits for the body. None of
+these limits applies to responses or SSE streams.
 Once stopping, it closes each kept-alive socket as soon as its response finishes,
 so the longer keep-alive window never delays shutdown.
 
@@ -3429,7 +3580,7 @@ failure groups, keyed by the typed failure category, sub-code and the first
 line of the display-safe message (redacted, at most 160 characters). The
 harness is the run's settled route harness from telemetry, else its failure's
 harness, else its primary harness, else `unknown`; the access profile is the
-one the engine enforced (telemetry, else the task contract), else `unknown`,
+one the engine passed to its routes (telemetry, else the task contract), else `unknown`,
 and the retired `external_sandbox_full` counts as `full`. Routes are sorted by
 harness, then access. The answer is computed on demand from the retained run
 records: no store and no background job. The window is a creation cohort
@@ -3476,7 +3627,7 @@ an answer). A route line keeps its counts; its rounded failed share reads
 
 `POST /v2/handshake` returns top-level `storeId`, the durable engine store's UUID (stable across restarts, absent when unavailable), only to a request sending `X-Claudexor-Store-Identity: 1`, so older strict same-major clients keep the legacy shape; a run 404 is meaningful only together with the same `storeId`.
 
-A run lookup and its admission can name that store, so another store's answer cannot pass for absence. `GET /v2/runs/:id` adds `context.storeId`, the store just read, to its `http_404` problem whenever that store has an identity. With the same request header, which leaves the shape older strict clients parse alone (the queued thread-turn handle is a strict object), `POST /v2/runs`, `POST /v2/runs/:id/retry`, the `rerun_with_feedback` decision, `POST /v2/threads/:id/turns` and its retry name the store that served the accepted job back: top level on a handle, in `context` on a pre-run refusal. A task-group receipt always does. An admission whose store has no identity is still accepted and claims nothing, and so is one whose start could not be read back. A caller keeps the receipt's store and compares it with the 404's. A different or missing store leaves the run unknown. The same store proves only that it retains no such record, never that the run did not start, because retention can remove a record. `claudexor inspect` reports the answering store in its message and `context`. The CLI and MCP send the header, so the CLI's `--json` and NDJSON results, MCP launch and continuation results and `claudexor_thread_turn` handles carry the accepting store. Other run-scoped 404 routes do not name a store, so only this lookup can speak for a store's absence.
+A run lookup and its admission can name that store, so another store's answer cannot pass for absence. `GET /v2/runs/:id` adds `context.storeId`, the store just read, to its `http_404` problem whenever that store has an identity. With the same request header, which leaves the shape older strict clients parse alone (the queued thread-turn handle is a strict object), `POST /v2/runs`, `POST /v2/runs/:id/retry`, the `rerun_with_feedback` decision, `POST /v2/threads/:id/turns` and its retry name the store that served the accepted job back: top level on a handle, in `context` on a pre-run refusal. A task-group receipt always does. An admission whose store has no identity is still accepted and claims nothing, and so is one whose start could not be read back. A caller keeps the receipt's store and compares it with the 404's. A different or missing store leaves the run unknown. The same store proves only that it retains no such record, never that the run did not start, because retention can remove a record. `claudexor inspect` reports the answering store in its message and `context`. The CLI and MCP send the header, so the CLI's `--json` and NDJSON results, MCP launch and continuation results and `claudexor_thread_turn` handles carry the accepting store. Other run-scoped 404 routes do not name a store, so only this lookup and the [start lookups](#7-control-api), whose answers always name their store, can speak for a store's absence.
 
 Retained task-group reads are composed by `sqlControlReadSources` and
 `readTaskGroupRuns`. The `taskGroupPage` method of `SqlCommandQueries` selects group membership
@@ -3560,6 +3711,7 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `POST /v2/recovery/partitions/:id/export`
 - `POST /v2/recovery/partitions/:id/quarantine`
 - `POST /v2/recovery/partitions/:id/validate`
+- `POST /v2/resources/:id/release`
 - `GET /v2/run-applicability`
 - `GET /v2/runs`
 - `POST /v2/runs`
@@ -3580,6 +3732,7 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `GET /v2/runs/:id/run-again`
 - `GET /v2/runs/:id/time-limit`
 - `PATCH /v2/runs/:id/time-limit`
+- `POST /v2/runs/lookup`
 - `POST /v2/runs/next-message`
 - `GET /v2/runs/next-message/:id`
 - `POST /v2/runs/wait-many`
@@ -3615,6 +3768,7 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `POST /v2/threads/:id/turns`
 - `GET /v2/threads/:id/turns/:id/prompt`
 - `POST /v2/threads/:id/turns/:id/retry`
+- `POST /v2/threads/:id/turns/lookup`
 - `GET /v2/trust`
 - `POST /v2/trust`
 - `POST /v2/uploads`
@@ -3981,10 +4135,36 @@ not retry automatically.
   are serialized per thread, bind a turn to at most one run, preserve
   frozen-plan hash/override provenance on Exact Retry, and emit decision/rerun
   audit side effects only for the request that first accepted the command.
+- `POST /v2/runs/lookup` and `POST /v2/threads/:id/turns/lookup` are the
+  read-only twins of those creates for a caller whose create answer was lost.
+  The same body and `Idempotency-Key`, canonicalized exactly as create replay
+  (continuation inheritance included: once retention removed the predecessor,
+  `410 continuation_predecessor_not_retained`), are read against the command and
+  turn bindings without admission, preflight, enqueue, turn creation or a start
+  wait. A read answers HTTP 200 `ControlStartLookupResponse` naming the store it
+  read: `found` is the job handle as it stands (`runId` null before a run) with
+  any recorded refusal as `problem`; `turn_only` is a retained turn binding
+  without a retained command (refused before enqueue, or its command pruned),
+  with the turn's exact `runId` or null and its `enqueueError`, whatever the
+  conversation tail; `not_found` says only that this store's partition retains
+  no binding. It proves neither that the original was never accepted nor that a
+  new create is safe, and no lookup falls back to creating. Conflicts, malformed
+  input, `404 project_not_registered`, `404 thread_not_found` and the retryable
+  `503 idempotency_status_unavailable` keep their typed problems; a store
+  without identity, or one replaced during the read, answers
+  `503 store_identity_unavailable`. An engine without the routes answers a bare 404.
 - `GET /v2/trust` + `POST /v2/trust` are the user-level trust surface: the GET
   enumerates per-repo trust files (`~/.claudexor/v3/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
-  pre-provenance files show a null root), and the POST accepts `repoRoot` plus
+  pre-provenance files show a null root). A scoped GET does not walk that
+  directory. Its `source` is `default` only when no trust file exists at that
+  repo's path, and `file` whenever one does, including an empty, comment-only
+  or unreadable file whose values read as the schema default. A path that
+  cannot be checked also reports `file`. A caller can therefore tell a missing
+  grant from an explicit refusal, and granting on `default` never overwrites a
+  file the daemon could not read. Older daemons and the unscoped list omit
+  `source`. The unscoped list reads the directory
+  off the request thread. The POST accepts `repoRoot` plus
   `allowFullAccess` and/or `accessDefault` (strict — unknown fields are 400) to
   update one repo. Versioned project test commands are canonical typed argv,
   never implicit shell text. Their external grant binds the project/config/
@@ -4024,7 +4204,12 @@ not retry automatically.
   `revert_run` uses an immutable external content-addressed anchor and restores
   only recorded postimage bytes that still match; overlapping later user edits
   are refused instead of overwritten. The anchor remains reachable independently
-  of Git garbage collection.
+  of Git garbage collection. `action: taken` with `reason: captured_result` is
+  the caller-owned acknowledgement for a terminal `kind: patch` result it has
+  already captured: it is idempotent, records the mutable delivery-state
+  overlay and audit reason, refuses `run_taken_non_terminal`,
+  `run_taken_continuable`, `run_taken_needs_decision` and `run_taken_not_patch`, and leaves the engine copy
+  under the existing age/keep-last retention window.
 - `GET /v2/runs/:id/produced` and `GET /v2/runs/:id/produced/<path>` serve the
   project's PRODUCED outputs — the repo `artifacts/` dir, the macOS workspace
   Artifacts-tab source — distinct from the run-internal `GET /v2/runs/:id/artifacts` tree.
@@ -4711,8 +4896,10 @@ once-only terminal-preparation hook also builds and validates the immutable
 `RunFacts` receipt in memory and embeds that exact object in the terminal
 event. One SQL transaction commits the command result, immutable `run_terminal`
 event, scoped event copies and a `pending` terminal-files obligation. The file
-owner then materializes telemetry, `final/run_facts.yaml` and the per-run terminal
-line before best-effort live publication. Before that synchronous commit, a held
+owner then materializes the canonical `final/run_facts.yaml` receipt and the
+per-run terminal line before best-effort live publication; it does not write or
+rebuild `final/telemetry.yaml`, whose per-attempt evidence remains owned by the
+orchestrator. Before that synchronous commit, a held
 or fallback terminal is prepared once (canonical type, receipt and outcome frozen)
 and its durable bytes are staged off the request thread: large command and
 journal bodies as content-addressed files, the receipts and any needed per-run
@@ -4871,12 +5058,22 @@ its queued/running/in-flight command authority, the composition root checks the
 setup authority, including terminal jobs whose process termination remains
 unconfirmed, and only an idle result enters `beginShutdown`, whose
 synchronous prefix fences setup, Control API, and daemon admission before any
-shutdown await. Busy is a retryable `runtime_replacement_busy`; unreadable or
+shutdown await. Every trigger shares that order: the daemon participant calls
+`DaemonServer.stop()` before it awaits an in-flight retention pass. An enqueue with
+a new key that still reaches the dispatcher, in process or from an HTTP request
+already past the gate, refuses `daemon_stopping`; an accepted key that reaches it
+replays its receipt. Once the listener has closed, a socket client gets a closed
+connection or `daemon_unavailable`, an outcome the daemon did not decide, and
+neither a refusal nor a replay reaches it. The listener closes while the pass
+drains and the process keeps the journal and writer lease; a live lease without a
+socket stays `runtime_activity_unknown` for a later caller, never permission to
+restart. Busy is a retryable `runtime_replacement_busy`; unreadable or
 missing authority is `runtime_activity_unknown`; either refusal leaves the
 serving daemon and every ingress open. A lost, untyped, or incompatible RPC
 response may passively prove that the pinned daemon exited, but only an exact
-`{ok:true,fenced:true}` admission receipt grants SIGKILL authority; uncertainty
-therefore cannot turn an old or newly busy daemon into a replacement casualty.
+`{ok:true,fenced:true,targetBound:true}` admission receipt grants SIGKILL
+authority; uncertainty therefore cannot turn an old or newly busy daemon into a
+replacement casualty.
 Explicit operator shutdown keeps its forceful semantics. The daemon records its
 birth identity in the writer lease at startup; `claudexor daemon stop` then CONFIRMS death
 (released lease, gone pid, or identity-verified SIGKILL escalation — a
@@ -5029,20 +5226,37 @@ engine-owned runtime artifacts — per-project run trees and standalone
 (never blocking boot), then hourly, with a one-second continuation after a capped
 500-tree pass. Shutdown and store recovery stop the timer and drain its current pass.
 It enumerates plain hashed project directories under the owned runtime root, including
-unregistered and archived projects. A private SQL reference read spans all retained
+unregistered and archived projects, plus the two run stores outside project namespaces:
+the folderless Ask store (`<config>/runs`, its own keep-last group, never pruned as a
+namespace) and the one-shot store of runs on explicitly ephemeral roots (`<config>/one-shot/runs`,
+no keep-last, like any unregistered namespace). Native-session references and
+`claudexor inspect` read the same list (`globalRunStores`). A private SQL reference read spans all retained
 generations (including archived threads and pending interactions); unreadable references
 fail closed, and unavailable project generations protect their namespaces. Unknown
 project roots are disclosed as their runtime namespace. Bulk inventory yields
-to admission; SQL history uses rowid-keyset pages without holding a cursor or
-transaction across a yield. Each run deletion rereads changed SQL owners and mutable filesystem protections
-after its asynchronous byte walk and retirement preparation. Connection-local TEMP
-triggers observe row identities while the pass runs; no durable schema or writer is
-added. Typed reference reads are shared with the initial inventory. Each distinct immutable command request is parsed once per pass by its content digest, including changed-owner refreshes. Combined run/native retention shares one SQL inventory and observer; standalone native retention owns and closes its own inventory. No durable schema changes. Quota/event
+to admission; rowid-keyset pages hold no cursor or transaction across yields.
+Command SQL reads only product/delivery rows in windows of 1,000 existing rows.
+After its async byte walk and retirement preparation, each run deletion rereads
+changed SQL owners and mutable filesystem protections. Connection-local TEMP
+triggers observe row identities during the pass, adding no durable schema or
+writer. Initial inventory and refresh share typed reference reads; immutable
+command requests are parsed once per pass by digest, including refreshes.
+Combined run/native retention shares one SQL inventory and observer; standalone
+native retention owns and closes its own. Quota/event
 writes and unrelated metadata do not restart it. References accumulate during a pass
 and lifecycle records refresh before the synchronous last proof and expiration marker.
-Large change batches yield between reads; an unreadable owner, changed project/generation
-topology, or a burst exceeding one final synchronous read page keeps remaining candidates
-and schedules a fresh pass. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
+Large change batches yield between reads. A partition first seen during the pass is read
+on demand, so a late registration's fresh generation contributes its owners through the
+observer instead of failing the pass; a project registered, relinked or re-generated
+during the pass keeps the namespaces of every old, intermediate and new root for this pass (their
+keep-last and ownership are unknown) while other namespaces progress. A partition entering pending recovery holds the whole pass with its named cause. An unreadable
+owner, a generation the pass excluded that becomes a retained owner (its rows were never
+inventoried), a registry status change, or a burst exceeding one final synchronous read
+page keeps every remaining candidate and schedules a fresh pass. An existing tombstone is
+skipped before any proof refresh, and no await separates a candidate's final proof from
+its expiration marker. A project's Git object store that ends a pass strictly empty (no
+root record, pending lease, object or recent entry) is retired under its prune lock; an
+import that raced it recreates the store. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. Upload-binding cleanup, which runs after the pass, checks it between its steps: a scan cut short keeps what it deleted, makes the pass truncated instead of completed (so its stored summary carries the preceding holds like any truncated pass), and the next scan starts again from the first key. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
 retirement rechecks directory identity and current link counts before unlink.
 It is also exposed as the schema-first control op
 `POST /v2/maintenance/gc` (dry-run first-class, typed receipt disclosing
@@ -5053,9 +5267,28 @@ non-preview pass without starting cleanup. The engine stores one summary (at mos
 failures of those outer steps. Its flusher barrier completes before the pass returns,
 and shutdown drains that barrier; persistence failures propagate to the caller.
 The summary carries `outcome` (`completed`, `held`, `truncated`, `failed`), start/end
-timestamps, freed bytes, run keep counts, separate counts of held roots and vetoed native homes,
+timestamps, freed bytes with `effects` (`measured`, or `unknown` when the pass stopped
+before its receipt, or when a committed deletion, a namespace maintenance step or native
+home retention stopped partway: the bytes are then only a lower bound, the receipt
+itself carries `effects: "unknown"` (stripped from a legacy request's reply) and
+`claudexor gc` prints "freed at least", and a failure message names thread purges it
+had already done), run keep counts, separate counts of held roots and vetoed native homes,
 per-class hold counts with one example and the first continuously held `since`,
-and error count/first error. A clean observed pass clears holds; previews never replace it.
+and error count/first error. Hold examples carry the available cause and affected owner,
+including registration changes, unreadable references, recovery partitions and latched
+generation/registry transitions. A failed proof without an owner-specific cause uses
+the generic references-changed message.
+`last_completed_at` retains the last successful completion across failed, held and
+truncated passes; it is null when no completion is known. `failed_or_held_streak`
+increments for each failed or held pass, survives truncation, and resets only on
+completion. A failed durability barrier preserves the preceding completion and counts
+as a failure. Older saved summaries default the history fields; a prior completed
+summary still supplies its finish time. `gc --last` prints both history fields so
+repeated failures cannot look like fresh successful cleanup.
+A clean observed pass clears holds; previews never replace it. A registration that
+arrives mid-pass defers its namespaces and schedules a fresh, truncated pass. Such
+truncation preserves the streak rather than incrementing it; a later clean pass
+clears the history. A one-pass registration hold is not by itself a stuck loop.
 A queued pass cancelled before it enters the runner writes nothing. A pass that
 starts but obtains no inventory preserves the preceding holds, held counts and
 `since` while reporting its own failure or truncation. A truncated pass also carries
@@ -5068,8 +5301,10 @@ unknown entries remain untouched and counted in `kept_unknown`. `held.native_hom
 counts vetoed homes only. Absence is `last: null`. An unreadable stored summary
 also returns `last: null` with a diagnostic shown by `gc --last`; it cannot prevent
 the next pass from replacing the record. Engines predating this read surface have no GET operation. New POST
-hold/truncation fields require `retention_report`, requested by a lockstep CLI;
-older receipts parse with zero/empty defaults. It deletes ONLY terminal, unreferenced, non-actionable trees past
+hold/truncation fields and `deleted_lanes` require `retention_report`, requested by a lockstep CLI;
+GET omits `last_completed_at` and `failed_or_held_streak` unless its query includes
+`retention_report=true`, which `gc --last` sends only when CLI and daemon versions match.
+Older receipts parse with zero/empty defaults. It deletes ONLY terminal, unreferenced, non-actionable trees past
 the configured age (`retention.*` in the global config: runs 30d, reviews
 14d, newest N for active registrations and archived registrations whose roots exist,
 and the built-in no-project scope): an orphaned namespace has no keep-last owner,
@@ -5080,7 +5315,29 @@ referenced by any non-purged thread's lineage or retained command dependencies
 Exact Retry sources and frozen plans, plus durable continuation source lists after
 command-history pruning), undelivered/applyable
 patches or copied-file results, and trees with no terminal evidence are protected
-fail-closed. Lane sweeping derives root ownership once from the shared thread inventory and synchronously rereads changed owners immediately before each root’s sweep, so unrelated writes do not starve cleanup or multiply global-thread parsing by root count. An invalid shared proof defers lane sweeping with one receipt line, including topology changes during the loop. A per-root ownership failure names only the skipped root.
+fail-closed. Lane sweeping visits inventoried runtime namespaces, including unregistered roots whose last thread was purged. Healthy registrations and unregistered namespaces use one globally unique thread-ID owner set from the shared inventory; archived and quarantined registrations keep their lanes, and quarantined IDs are read without decoding their bodies. This also protects a late ephemeral thread when the namespace inventory has no root name or a live thread’s root spelling later vanishes. The pass synchronously rereads changed owners immediately before each namespace’s sweep, so unrelated writes do not starve cleanup or multiply global-thread parsing by root count. An invalid shared proof defers lane sweeping with one receipt line, including recovery or unreadable changes during the loop. Project registration changes skip the affected roots and schedule a fresh pass. A per-root ownership failure names only the skipped root. Removed lane directories are counted in `deleted_lanes`; this sweep still skips previews, does not add their bytes to `freed_bytes`, and is outside the run/review deletion cap.
+
+The producer records `meta.capturedNoGitChange: true` only when a complete Git
+capture proves that the base and candidate trees are equal. Refused, missing or
+directory captures remain unknown, and a false or absent fact (including legacy
+rows) keeps a patch actionable; copied-file results remain actionable as well.
+Failed-check and blocked-review holds take precedence over the no-change fact.
+The caller-owned `action=taken` decision with `reason=captured_result` clears only
+the actionable hold for a terminal patch that the caller already captured. Legacy
+`kind: patch` rows with `result_kind: none` or `answer` remain eligible for this
+explicit decision; `result_kind: files` and non-patch work-product kinds are refused.
+It uses the existing `runs_max_age_days` and `keep_last_runs_per_project` window,
+with no second retention window, while the engine's copy remains until ordinary
+retention removes it.
+
+Residual: needs-decision patch runs (blocked review or failed checks) end only
+through the apply or accept workflow. `taken` refuses them with
+`run_taken_needs_decision`; it cannot clear those holds. A continuable run is
+refused with `run_taken_continuable` and names `continueFrom` as its remedy.
+Discarding a retained envelope does not remove the terminal resumable record,
+so it does not make that run eligible for `taken`.
+For a non-ephemeral run whose registration is retired, `taken` returns 404
+`project_not_registered`, so send `taken` before retiring that registration.
 
 A `quarantined` generation and project generations owned by its replaced global registry are retired journal evidence: its rows do not own references or keep unsettled commands active, and completed quarantine does not stop retention. Terminal metadata may still date its old payloads. Archived projects in the current registry remain reference owners. Pending or unknown recovery states hold all run namespaces, with one named partition/status hold per pending generation in `errors[]`: scope roots do not bound cross-project dependencies. Partial file delivery retains that protection; explicit discard
 ends pending delivery but does not delete artifacts immediately or bypass other
@@ -5106,8 +5363,11 @@ from run survivor counts.
 Private revert/exact-patch anchors are run-owned. After run retirement, a pass
 collects `meta.revert_anchor_id`, `meta.exact_patch_object` and delivery-state
 `revertAnchorId` from every surviving run across all runtime namespaces. Unreadable
-metadata or any skipped/held namespace preserves every anchor that pass. An
-unnamed anchor is unlinked only beyond `runs_max_age_days`, using a fresh mtime
+metadata or any skipped/held namespace preserves every anchor for that pass:
+anchors are held install-wide by any held namespace. A deferred namespace absent
+from the opening inventory still reports a `references_changed` anchor hold and
+requests a fresh, truncated pass. An unnamed anchor is unlinked
+only beyond `runs_max_age_days`, using a fresh mtime
 check immediately before synchronous unlink. Every anchor publication, create or
 reuse, touches its mtime; unlinking a sibling does not renew its age. Patch-cache
 names are then pruned at their last link; bytes count only when the inode loses
@@ -5161,7 +5421,7 @@ session capsule, and every retained run's typed resumable record protect their
 native session IDs across all homes of that harness. Archived threads and pinned
 account continuations retain that protection. Missing artifacts have no reference;
 malformed or unreadable references, linked artifact directories, unavailable
-project generations, uncertain command ownership, or active/unconfirmed setup work prevent
+project bindings, pending recovery, uncertain command ownership, or active/unconfirmed setup work prevent
 native pruning. SQL rows and filesystem inventory yield to admission. Active and
 queued product work protects its named sessions and continuation sources, without
 holding unrelated cold sessions. The pass rereads changed SQL owners and each active
@@ -5274,7 +5534,9 @@ after a fresh birth read (a member is the same process by its kernel birth even
 after it moved to another process group; signalling a whole group still requires
 its recorded leader in that group) — and attempted to write `final/process_scope.yaml` (what was
 ended, what survived, what was unreadable, which recorded groups were skipped
-as reused, `completeness`, and `incomplete` when the single settlement
+as reused (another birth at the group id proves the recorded group gone; any other
+skip lists its possibly owned live members as unreadable, unsignalled, so the scope
+stays unresolved), `completeness`, and `incomplete` when the single settlement
 deadline expired first — one absolute budget that starts when the daemon's
 custodian enters settlement for the run, also bounds the run's own pending
 seed refinement and never waits for another run's seeds; scanning and
@@ -5285,6 +5547,29 @@ finds the settlement done and, when the write succeeded, the record on disk. The
 write is best-effort evidence, not a gate: a write failure, or an outcome that
 fails its schema, is swallowed, the verdict is published unchanged, and that run
 has no record. Recording is attempted once, without a second write or retry.
+While the daemon that opened a FINISHED run's scope stays live, an `unresolved`
+entry gets later attempts (`run-scope-late-settlement.ts`), one at a time, each a
+fresh reap under the same identity, group and birth rules with its own absolute
+budget, spaced by that budget times the attempt number, started from the pids tick
+without delaying capture; their number is not capped. A later attempt never extends,
+resumes or signals for the
+expired terminal attempt and never touches an open run, another or an unreadable
+owner's entry, or a host without a census; it retires the entry only when settled.
+Each attempt is recorded beside the unchanged terminal record as
+`final/process_scope_later.yaml` (the latest attempt, JSON text) and projected as
+`summary.processScopeLater`; a settled one returns a next message held only for that
+unknown custody ([next messages](INTEGRATIONS.md#observing-and-directing-an-existing-run)).
+A report whose record or return failed is owed: each later tick of the same daemon
+repeats it to the listener that failed, before any new attempt. A settled report
+retired its entry, so it is never reaped again; an unsettled one is replaced by a
+newer attempt of its scope, so a failing listener never stops the reaping. The debt
+is not durable, so after a restart that draft stays held. The daemon and the runtime
+factory bind these reports in one place, `createSqlDaemonExecutors`: each store
+generation's executors bind them and their close ends that before the store closes
+or the daemon stops. While none is bound no attempt starts, so an entry is never
+retired with nobody told; it stays `unresolved` for the next binding or start. A
+reap already running when the last binding closes finishes and leaves its entry the
+same way, and a binding is told before an entry is recorded.
 `GET /v2/runs/:id` projects the record compactly as `summary.processScope`,
 which an engine that has the field always sends: the compact object for a
 terminal run whose record is readable and valid, otherwise an explicit `null`
@@ -5309,14 +5594,38 @@ member and receives no signal. Once known members settle, that discovery
 uncertainty limits completeness without forcing `settled` false; a host may
 release its copy under the known-member settlement policy while disclosing
 `not_provable`. Unsupported or failed census, surviving known members and
-unknown receipts do not certify that release.
+unknown receipts do not certify that release. Later attempts and startup re-reaps
+preserve the first `settled_at` and use it as an upper birth bound for recorded
+groups: if every live member was born after that settlement, the group is skipped
+without signals. Its potentially owned members remain unproven, keeping the scope
+unresolved under the same conservative rule as other unverified groups. An older
+surviving member still admits its later children. Individual measured identities
+and marker membership retain their authority. Repeated identical diagnostics stay
+silent; changes, recovery and retirement are logged. Each later attempt still
+publishes its counter, time and report under the mechanism above. A revision whose
+serialized index equals the last successful publication needs no filesystem write.
 A host cancel that arrives during the settlement barrier does not rewrite a
 completed run as cancelled: the cancellation decision is frozen when the
 strategy's terminal is held.
 `daemon/run-scopes.json` is a stable contract a host may read directly when
-the daemon is dead. Its compact schema, in the field names the daemon writes:
+the daemon is dead. It is written compactly (no indentation) and coalesced: changes
+that arrive during a write share the next one, and each open, seed and settlement
+still waits for a write that carries it. A failed write leaves the file as it was,
+whoever waited for it still sees it fail, and the daemon log says so once and once
+more when a write lands. The pids tick repeats the write with the current state and
+repeats nothing else, no reap and no report. Until one lands the file lags the daemon,
+and a restart before that reads the stale row and settles it again by identity, with no
+later report. A row this engine cannot parse, including
+one whose marker is not a run-scope marker or whose present `outcome` has no known
+`census`, stays in `entries` verbatim and is never acted on, so its obligations
+remain explicitly unknown beside the recognized rows; only an unusable file is
+moved aside. An
+`unresolved` entry's `outcome` carries `incomplete`, `completeness_reason` and
+`duration_ms`, and later attempts add `late_attempts` and `last_attempt_at`.
+Its compact schema, in the field names the daemon writes:
 `{ "schema_version": 1, "entries": [ ... ] }`; per entry `run_id`, `marker`,
-`state` (`open` | `unresolved`), `opened_at` (ISO time: the floor the daemon
+`state` (`open` | `unresolved`), optional `settled_at` (ISO time of the first
+settlement, preserved on retries), `opened_at` (ISO time: the floor the daemon
 uses while no `lstart` birth exists), `scope_start` (`lstart` text or null),
 `root_groups[{pgid, leader_pid, leader_birth | null, leader_identity?}]`
 (`leader_identity` is the daemon's opaque kernel birth token, comparable only
@@ -5328,8 +5637,9 @@ another `lstart` reading, never with the identity token. A host without the
 identity helper follows this rule when `leader_birth` is null: a live process
 with `pid == pgid` cannot be verified as the recorded leader, so the host
 skips that group; when no process with `pid == pgid` is alive, the group's
-remaining members born at or after the floor belong to the scope (the kernel
-does not hand out a pid that is still a live process-group id). The sweep covers orphaned envelopes (with their
+remaining members born at or after the floor belong to the scope, provided at
+least one was born by `settled_at` when it is recorded (the kernel does not hand
+out a pid that is still a live process-group id). The sweep covers orphaned envelopes (with their
 seeded-credential homes), dead per-attempt `claudexor/<task>/<attempt>`
 branches, leaked `claudexor/verify-*` branches, and stale
 `claudexor-ro-*`/`claudexor-verify-*` tmp dirs. Envelopes whose creating
@@ -5461,6 +5771,40 @@ kept only for cold import and an independent frozen copy kept for tests.
   whose sequence moved while it was staged) has no owner and is not collected
   until the orphan sweep of the next start reclaims it; this costs disk space
   only.
+  An upload part is that same write-through file, written incrementally on the
+  libuv pool. Concurrent incremental uploads share one gate of that process's
+  pool minus two threads (never below one). Each pool operation of a transfer
+  (the open, every chunk write, the close) takes one slot and releases it when
+  the operation returns, so a PUT waiting for its next bytes from the network,
+  however long, holds no slot and cannot hold up other uploads. A writer that
+  finds the gate full waits on the event loop, and cancellation wakes the wait;
+  the close still runs after a cancel. When the operator has not set
+  `UV_THREADPOOL_SIZE`, the daemon entry sets it from the host's available
+  parallelism (at least 8, at most libuv's 1024) before the rest of the daemon
+  graph is imported, and submits one stat so that libuv creates the pool at that
+  size at once (a later assignment would not resize it). The entry then keeps
+  the size in a process global for the gate and removes the variable again, so
+  harness children and what they start (MCP servers, test runners, a nested
+  daemon) inherit the user's environment rather than the daemon's pool size. An
+  operator-set value stays in the environment, and children inherit it. The
+  bound is the size of that pool, not a policy. Windows caveat, not verified on
+  a Windows host: libuv may read the C runtime's copy of the environment, which
+  an in-process assignment does not update there, so the pool may stay at
+  libuv's 4 while the gate assumes the host size and keeps no DNS reserve. That
+  is no worse than before the gate existed, and a value the operator sets before
+  the daemon starts applies on every platform. The request thread commits once
+  when the PUT begins and once when the bytes are durable; it does not commit
+  each chunk, and it calls no Node storage-sync primitive. `receivedBytes` is
+  the finished total, so a status read during the PUT reports `uploading` and
+  zero received bytes. This process keeps the sha256 of those bytes in memory
+  for the following finalize and does not store it in `upload.finalize_sha`,
+  which remains the publication's ownership reference. Finalize of a transfer
+  this process just wrote uses that digest and does not read the part again.
+  Finalize drops the in-memory copy as soon as its first commit records the
+  publication; a rejected `expectedSha256` keeps it for the next attempt. Dedup,
+  replay and recovery still read and check the bytes. A restart drops the
+  digest, so publication reads the part as before, and an unfinished PUT reopens
+  at byte zero.
 - Schema version 2 adds the INV-135 `account_last_service` table to the
   version-1 DDL in place; no other row changes. Opening the store applies it
   automatically, before startup advances the root-authority floor, and the
@@ -5530,6 +5874,19 @@ kept only for cold import and an independent frozen copy kept for tests.
   `sqlite_master`. Older readers refuse the upgraded file, and a cursor issued
   before the upgrade restarts with `stale_cursor`, because its view token used
   the case-sensitive domain.
+- Schema version 7 adds `resource_use` (resource, owner kind `command`, `turn`
+  or `deferred_message`, owner id, digest), the holders of managed ordinary
+  resources; `turn.dispatched_at`, the instant a turn's first product command was
+  accepted (written in that acceptance transaction and kept when command
+  retention prunes the command: a later dispatch is a new reference); and two
+  `deferred_message` columns: `held_revision`, the revision a hold was applied
+  at, and `resumed`, the visible return from a process-custody hold. The atomic
+  6→7 step only creates them; no existing row is rewritten, existing holds have
+  no `held_revision` and therefore never return by themselves, existing turns
+  have no dispatch fact (none of them names a managed resource), and existing
+  resources have no managed lifetime. Fresh DDL and
+  the migrated file run the same statements. Older readers refuse the upgraded
+  file.
 - The flusher worker owns the power-loss barrier. Every 200 ms it fsyncs each
   directory registered since the previous pass, reads `data_version`, runs a
   PASSIVE checkpoint for space, and — whenever anything was committed since
@@ -5686,7 +6043,20 @@ cleanup. Caller keys stay strict even with `purpose=model` or internal-looking
 names. The persisted presence flag disables the fallback when absent.
 Bindings expire 30 days after a resource's known release/expiry, never from a
 guessed file timestamp. An expired lookup deletes that target's SQL bindings
-before the historical read, so a damaged copy still refuses afterwards. Repair
+before the historical read, so a damaged copy still refuses afterwards.
+Retention reclaims the other expired bindings with a scan in key order. One
+synchronous step either reads a window of rows (the row window of the other
+filtered retention reads; a row past the lifetime adds two point reads) or
+confirms, by the lookup's own test, and deletes in one transaction a batch of
+at most 100 targets; the scan yields to admission
+after every step, so it never holds the event loop longer than one step whatever
+the store holds. A scan that reached the last key repeats at the hourly age
+revisit; passes that follow sooner (the continuation of a truncated pass, a
+manual `claudexor gc`) skip it. Its progress is in memory only, so a daemon that
+never lives long enough to finish one scan never reclaims the bindings late in
+key order. A binding created inside the lifetime (a historical receipt adopted
+after its resource's release) waits for a later scan. Every lookup applies the
+exact lifetime whatever the scan has reached. Repair
 before expiry replays the receipt; after it, the key is admitted as a new upload
 and an old finalize answers `upload_not_found`, not the expired receipt.
 Manually removing the historical directory can turn a later replay into a
@@ -5743,10 +6113,13 @@ stream-json questions and Codex app-server's native action approvals) can raise
 typed requests mid-run; the
 orchestrator OFFERS the interaction channel only to routes whose manifest
 declares `interactive`. The
-engine emits `interaction.requested` (questions, options, nullable timeout deadline),
-parks ONLY that attempt, and the daemon commits the pending interaction and its
+engine emits `interaction.requested` (questions, options, nullable timeout deadline,
+`delivery`), parks ONLY that attempt when the question is blocking, and the daemon commits the pending interaction and its
 event in the run's global or `project:<id>` partition generation before exposing it via
-`GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). Answers
+`GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). A failed
+read of those rows is unknown, never an empty list: a live run's own detail
+fails with the typed problem, a list row or child card degrades alone, and a
+finished run reports none, having no live question left. Answers
 arrive via `POST /v2/runs/:id/interactions/:id/answer` and are delivered into the
 live session only after the resolution is committed (`interaction.answered`).
 Before committing anything, the daemon checks the answers against the pending
@@ -5788,8 +6161,32 @@ announces that withdrawal once as `interaction.withdrawn` (never a timeout), so
 `claudexor follow` and the macOS card close the obsolete prompt instead of
 letting it block the next question; an answer accepted in the same tick is
 disclosed as `interaction.answer_discarded` (`request_withdrawn`).
+A question's `delivery` says how its asker waits: `blocking` (Claude questions,
+Codex approvals, every historical row) holds the native tool call as above;
+`async` (Codex `request_user_input_async`) holds nothing. An async question
+neither suspends the inactivity watchdog nor refuses live messages, still counts
+as `waitingOnUser` attention, and makes `asyncQuestionsOnly` true only while every
+pending question is async, so a blocking one is never hidden. Codex raises one per
+root native item; its text stays a visible message that answer assembly never takes
+as answer material, even in a turn with no other text. A committed answer is
+steered into the asking turn as the native reply envelope (client message id
+`interaction-answer:<id>`, one `interaction_answer_steer` receipt per send). That
+turn's end withdraws it, a sub-agent's question is not answerable, and silence,
+expiry and the run's end send nothing. When the answer surface itself fails, the
+channel rejects with
+`InteractionChannelError` (cause kept) instead of a decline: a question it never
+registered is not announced, and the adapter records why it went unanswered.
 Declined/timed-out interactive flow-control tools are benign timeline events,
-never blocking tool errors.
+never blocking tool errors. A Claude `AskUserQuestion` error result stays a
+neutral record with its native detail and the session input Claudexor held when
+it read the question, never the user's decline. When the adapter itself cannot
+obtain or send an answer, an `interaction_answer_unavailable` status names why,
+with the request and tool-use ids. Only the no-channel and failed-channel
+denies tell the model so; after a closed process, a response the session's
+`ChildStdin.send` reports unwritten (the child had exited, or the pipe refused
+the write) or a request read after stdin closed, the model sees at most the
+CLI's own error. If such a deny cannot be written either, a second status
+follows for it.
 
 Delegate children use this same interaction contract. A parent/list child
 summary may carry `waitingOnUser:true`, but it does not own the question body;
@@ -6009,8 +6406,10 @@ daemon abort closes the active harness stream and the process helper sends a
 cooperative interrupt with hard-kill fallback. (The former `interrupt` control
 kind was deleted as a fake knob — it mapped to the same daemon cancel.) For a
 run that already ended, the route asks the daemon (`deferredMessageStop`) to
-hold the run's waiting next message; for a live run the daemon cancel does it
-right after the ordinary stop and returns the same report. The hold is one
+hold the run's waiting next message, or to take over as its own a hold kept only
+for unknown process custody; for a live run the daemon cancel does it right after
+the ordinary stop and returns the same report. Both answer `applied`, naming the
+next message as now held. The hold is one
 synchronous step that promotion rechecks inside its acceptance transaction. The
 daemon fences the draft in memory before it writes the hold, so a hold that
 cannot be saved never sends the draft: a live run is still signalled, a restart
@@ -6263,15 +6662,23 @@ vendor pin (2.1.281) carries the same frames and flag; the pickup itself is
 recorded on 2.1.283. A
 message that arrives while the model composes its final text stays queued
 and runs as the NEXT native turn inside the same run: the run loop's
-`session.onIo` seam hands the adapter the live handle, `closeStdinOn` returns
-false while a message is written-but-unreceipted, `queued` or `started`, or a
+`session.onIo` seam hands the adapter the live handle (the adapter's own
+wrapper adds the uuid of the prompt frame it wrote), `closeStdinOn` returns
+false while that prompt is running (Claude Code identified commands, by a
+lifecycle frame naming the prompt or a result naming only commands the session
+never sent, and neither a result naming the prompt nor its own terminal state
+has arrived, so a resumed session's earlier result cannot close stdin in either
+order and, usage aside, reaches the run only as `foreign_result` status events,
+never as its error or answer; an error result naming no command ends it as the
+first result does on a CLI that names none), while a message is
+written-but-unreceipted, `queued` or `started`, or a
 run-owned background task is open (`system/task_started` with
 `is_backgrounded: true` … `system/task_notification`, so a background
 continuation is kept too), the second `system/init` folds into the one
 `started` (a `native_turn_started` status marks the turn), each result's
 `usage.cost_usd` is the delta of the cumulative `total_cost_usd`, and the last
 result's final text is the run's answer. No `queued` frame within 2 s answers
-`delivery_unknown`/`response_timeout` (the stdin handle swallows write errors,
+`delivery_unknown`/`response_timeout` (the message write is fire-and-forget,
 so a dead pipe surfaces this way), a session closed with the message still
 unreceipted `delivery_unknown`/`transport_lost`, and a `cancelled|discarded|
 refused` lifecycle state before consumption is typed `live_input_refused`
@@ -6576,7 +6983,8 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    proof that a model read the instructions.
    An envelope-only bridge emits no run event because the envelope is disposable
    and Claudexor-owned. Capture excludes it by exact path only when both the
-   created-this-run fact and byte equality with the generated content hold (A-3);
+   created-this-run fact and byte equality with the bytes its recorded writer
+   generation emitted hold (A-3);
    a candidate-authored or candidate-edited `CLAUDE.md` is captured as real work.
    Codex additionally gets `CLAUDE.md` as a project-doc fallback via config, and
    a CLAUDE.md-only project needs no write at all.
@@ -6907,15 +7315,16 @@ primary observation reconciles old reactive constraints at the registry write ow
 its witness and changed reactive snapshots commit in one SQL event transaction, even
 for timestamp-only re-observation. Reversed arrival uses the same witness, so a
 delayed old refusal cannot revive a retired block, and request-start timestamps
-keep an older in-flight poll from erasing a newer refusal. A generic unclassified block,
-like a usage refusal with no reopening time (`cooldown:reopening_unknown`), can yield to a
-successful response without measured windows (usage stays unknown),
+keep an older in-flight poll from erasing a newer refusal. A generic unclassified block
+can yield to a successful response without measured windows (usage stays unknown),
 while independently identified or model-scoped windows need matching measured
 replacement; a Codex refusal's text scope limits what it blocks, not which read
 retires it. The read permits the next attempt without promising the provider accepts it:
 a vendor that refuses again records the refusal again.
 This permits purchased or vendor-granted early resets without waiting for an obsolete
-timer. Malformed Codex responses never become successful empty observations.
+timer. A usage refusal with no reopening time (`cooldown:reopening_unknown`) yields to
+no read, so a refill is admitted only at its own recheck. Malformed Codex responses
+never become successful empty observations.
 
 Native Claude `rate_limit_event` measurements and Codex's execution app-server
 `account/rateLimits/updated` notifications use incremental sources
@@ -7079,7 +7488,9 @@ fail-soft from the run's own `CODEX_HOME` and bound to the turn this process ran
 (the record must be the last completion, match the last started turn when the
 rollout carries turn markers, and not predate the spawn second; any doubt yields
 nothing — disclosed residual: an earlier turn that failed within the same second
-as a resumed spawn that wrote no turn marker of its own). The orchestrator
+as a resumed spawn that wrote no turn marker of its own); when that yields
+nothing, the app-server wire's own record of the root turn (`codexErrorInfo` and
+its words, `codex_app_server`) stands. The orchestrator
 reads it from any completion the harness voiced its error on, with OS exit
 evidence or none (a Codex app-server turn ends with neither an exit code nor a
 signal); a signal kill and a cancelled completion carry none. It belongs to
@@ -7092,20 +7503,32 @@ ended without evidence, crashed or was cancelled never speaks with an earlier
 try's cause. The forwarded code is OPAQUE evidence with no mapping table: no
 consumer branches on its value, it is never an input to retry, rotation,
 cooldown or credential verdicts, and it never changes the record's
-`category`/`code`. The one translation is the adapter's own, from the native
-record it read: Codex's typed usage refusal (`usage_limit_exceeded` in the
-rollout, `usageLimitExceeded` on the app-server wire, whichever arrives first,
-once per try) also rides that event as a typed `rate_limit` with
-`reopening: unknown` and no reset. The one code covers a spent plan window and
-a workspace out of credits alike, so it never implies a window that a timer
-reopens. Decisions read that typed signal (see "In-run continuation" and the
-quota admission rules), never the forwarded code. The app-server run loop keeps
-that code on arrival for the root turn it belongs to, from a non-retrying `error`
-frame or a failed turn, and a new root turn clears it; the settled terminal error
-takes it once the process stopped, so a durable `systemError` loses it neither
-when the frame came first nor when the stopped process wrote it last, and nothing
-waits for a frame that may never come. A sub-agent thread's frames never limit
-the root. Every other harness, and any missing or unreadable record, yields `null`.
+`category`/`code`. An attempt's cause line in a failure message (and every
+text repeating it) quotes its last try's evidence after the error as
+`(vendor <source>: <code>, "<words>")`: words masked, cut to 240 characters and
+omitted when the error already carries them; per-try rows keep it as fields. An
+untyped `harness_error` record leads its next actions with one step to read it;
+a typed refusal keeps its own remedy. The one translation is the adapter's own,
+from the native record it read. Codex's typed usage refusal
+(`usage_limit_exceeded` in the rollout, `usageLimitExceeded` on the app-server
+wire, whichever arrives first, once per try) rides that event as a typed
+`rate_limit` with `reopening: unknown` and no reset. AGY's structured
+`result.error` refusal `Individual quota reached` is translated the same way:
+its original `vendor_failure` (`code`, exact words, `agy_result`) remains beside
+it, while no relative reset phrase is converted into an absolute reopening time.
+The Codex code covers a spent plan window and a workspace out of credits alike;
+the AGY phrase likewise does not imply a window that a timer reopens. Decisions
+read that typed signal (see "In-run continuation" and the quota admission
+rules), never the forwarded code. The app-server run loop keeps
+that code, and the turn's own record (a typed record outranks words alone), on
+arrival for the root turn they belong to, from a non-retrying `error` frame or a
+failed turn, and a new root turn clears both; the settled terminal takes them
+once the process stopped, so a durable `systemError` loses them neither when the
+frame came first nor when the stopped process wrote it last, and nothing waits
+for a frame that may never come. A sub-agent thread's frames never limit or
+speak for the root. Codex's carried-state rejection reads a record's code, never
+its source; the wire's camelCase codes match none of its tokens. Every other
+harness, and any missing or unreadable record, yields `null`.
 
 On every terminal path (zero exit, nonzero exit, abort), the shared CLI run
 loop attaches a bounded, adapter-redacted `stderr_tail` to the terminal
@@ -7455,7 +7878,11 @@ completed-only frames) is its own completed row with its target and outcome;
 an ambiguous, repeated or nameless result adds nothing. A closing result whose
 `command_outcome` reports no observed exit (#450: timed out, backgrounded or
 unknown) is listed as unconfirmed with that state, never as completed, whether
-it closed a call or stands as its own row. Edits are identified
+it closed a call or stands as its own row. A later `command_outcome_refined`
+status replaces the command facts of the one call its result closed as a
+background handoff in the same try, once, so the packet names a reported
+completion (still unconfirmed: no exit code) rather than the stale handoff; it
+closes nothing itself. Edits are identified
 by their complete recorded path (`payload.path`), never the 500-character
 display target. A typed start never closes anything, repeats add no row, a
 null target never closes a named start, the companion `file_change` of a call
@@ -7574,19 +8001,32 @@ that predate that artifact report `available: false` instead of recomputed
 guesses. Timeline projections include tool name, target/domain/path, error
 summary, severity, harness, attempt, and raw event reference, and are capped
 with an explicit truncation marker. A tool row whose `command_outcome` does not
-report an observed exit is a warning, decided by that typed fact.
+report an observed exit is a warning, decided by that typed fact; so is the
+`command_outcome_refined` row that later names the same command.
 
 ## 8. Artifact Layout
 
 Canonical project output lives under
 `~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/`; no-project Ask uses
-`~/.claudexor/v3/runs/<run_id>/`:
+`~/.claudexor/v3/runs/<run_id>/`, and a one-shot run of an explicitly ephemeral root uses
+`~/.claudexor/v3/one-shot/runs/<run_id>/` (saved patches in `one-shot/patches/`;
+its Git objects and revert anchors stay root-keyed in that root's project
+namespace). A thread created on such a root leaves it unregistered and keeps its
+commands in the global partition, but its turns are not one-shot runs: a thread's
+lanes, worktrees and purge are per root, so they share that root's unregistered
+project namespace as thread-owned state: retention keeps it while the thread
+references it. After the purge, runs retire, an envelope stays until its own
+owner ends it, and empty containers go. Two limits remain: a retired run's tombstone
+stays, and with it the namespace directory, and crash GC cannot reach an orphan
+envelope once the recorded root no longer exists. A run's
+recorded `runDir` is the address every reader uses:
 
 ```text
 events.jsonl
 context/task.yaml
 context/context_pack.yaml?
 context/processing_intent.yaml?   (routed lanes' frozen speed intent; Codex applies it, §7)
+context/agy-input-<sha256>/*.txt? (AGY input too large for its stdin, exact parts)
 attempts/aNN/attempt.yaml       (Agent candidate evidence)
 attempts/aNN/answer.md?         (selected answer, even if capture failed)
 attempts/<envelope-attempt>/retained-envelope.json? (inspection-source address)
@@ -7687,8 +8127,11 @@ plan without a deliverable, merge/reviewer roles inflating the planner count,
 configured tests presented as both `not_configured` and passed, or required
 actions that disagree with the terminal outcome. The orchestrator sanitizes
 and validates this object once. The terminal event carries that exact value;
-the terminal-files owner projects it into `RunTelemetry.run_facts` and the
-standalone receipt through its obligation after the SQL terminal commit.
+the terminal-files owner materializes it into the standalone receipt through
+its obligation after the SQL terminal commit. `RunTelemetry.run_facts` remains
+a nullable legacy-compatible field: the orchestrator may read existing
+telemetry with that mirror nulled for the terminal contract, but terminal-files
+neither projects `RunFacts` into it nor rewrites `telemetry.yaml`.
 `GET /v2/runs/:id` (`runFacts`),
 terminal CLI JSON/JSON-stream output, artifact-only `inspect --json`, MCP
 structured results, and ACP `_meta.claudexor` expose the same parsed object
@@ -7818,6 +8261,17 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   projections. Within that turn-start path, each post-await result is accepted
   only for that client/generation, while the explicitly offline thread-summary
   cache remains a separate lifetime.
+- Each `GatewayClient` (local or remote) holds its long-lived SSE (run events,
+  the global journal including the Accounts quota observer, setup jobs) in a
+  connection pool of its own, created from the request session's configuration
+  and released with the client; ordinary requests (history, runs, controls)
+  never queue behind open streams. The platform's per-host limit (6 observed
+  for loopback HTTP/1.1 on macOS 26.4) still applies among streams: a stream
+  beyond it waits for another stream to end, and the request timeout and the
+  stream's reconnect policy still apply to that wait. Opening or switching a
+  thread reads its history at once; the global run-list reconciliation for the
+  previous selection runs beside that read, and when `/v2/runs` answers it
+  preserves the off-page family of the local thread selected at that moment.
 - Delegate readiness comes from each harness row's engine-owned `delegation`
   projection. Run summaries carry the requested/effective/used/reason/remediation outcome
   and the narrow `delegatedFromRunId` child link. The exact composer and run-row
@@ -7872,10 +8326,14 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   `kind:"mcp"` (there is no `browser` ToolKind), so the attempt-telemetry web
   fold recognizes a browser tool call as trusted live-web activity by matching
   the ENGINE-INJECTED `browser` server namespace only (a user MCP server cannot
-  spoof it). A successful browser navigation records
-  `web.verification: verified` plus a typed
-  `browser: {attempted, satisfied, failed, unused}` receipt; a failed browser
-  call remains attributable warning evidence. Claude and Codex keep the
+  spoof it). A successful browser navigation or snapshot whose own reply shows a
+  loaded http(s) page records `web.verification: verified` with
+  `web.verified_content: page`; one that read no web page (closing, clicking,
+  tabs, `about:blank`) is satisfied activity with no retrieval strength (#118).
+  The attempt also carries a typed
+  `browser: {attempted, satisfied, failed, unused, startup}` receipt, where
+  `startup` is the selected Browser's startup as the adapter reported it (#215);
+  a failed browser call remains attributable warning evidence. Claude and Codex keep the
   browser's returned text (page URL, title, snapshot) with its line breaks as
   the result's bounded, unmasked `content_summary`, so the journal shows which
   page was read. The
@@ -7953,124 +8411,169 @@ Once that exact commit succeeds, a later final-probe mismatch is treated as a
 newer external pointer transition and fails the reconnect without rolling it
 back through the settled lease.
 
-Vendor harness CLIs land on a host only through the disclosed installer
-(`claudexor harness install`, reachable from Settings → Harnesses for a
-connected host). Claude, Copilot and OpenCode ensure their exact release
-baselines while preserving an already runnable newer managed copy; explicit
-maintenance installs the selected exact version. Codex's
-ordinary CLI install preserves an already runnable managed copy at or above its
-tested baseline; otherwise it resolves npm latest once into an exact semver
-before disclosure and installation (`cli/src/harness-install-version-selection.ts`
-owns that non-mutating choice before the install/proof owner mutates anything; it
-never installs or takes the lease, but proves an existing local managed copy
-with its bounded `--version`, and Codex's lookup is one bounded registry read,
-so a dry-run runs both). An unavailable/malformed registry answer
-refuses without silently substituting the baseline; the refusal names the two
-explicit choices and, in JSON mode, is repeated on stderr because an SSH caller
-of a failed dry-run receives only stderr. A missing bundled npm is refused as the
-local `embedded_npm_missing` before any lookup, with no registry-retry remedy.
-`--release-tested` selects that baseline explicitly instead of the latest
-lookup and also keeps a runnable managed copy at or above it; installing the
-baseline still needs the npm registry. `--vendor-version <exact>`
-selects an exact npm version for either target. A refusal before the default
-Codex selection discloses its harness, target and install location but no
-command, version or evidence class rather than the baseline. Every npm recipe installs an
-exact version, never a floating `@latest`; npm checks its integrity checksum.
-The vendor-version constant remains the release-tested EVIDENCE stamp, not the
-Codex install-default ceiling: model-hints and effort snapshots read it only
-as a statement of what was measured. For claude it is
-the effort-snapshot stamp, while the Claude known-model hint list keeps the
-literal version it was last actually re-verified against (a pin bump never
-restamps unrechecked ids). The pin records this release's verified baseline,
-not a verification claim about a newer selected CLI (a recording that needs a paid live run
-keeps the version it was captured from, as its fixture manifest states); the
-opencode pin is a deterministic install target, not a verification claim —
-no recorded fixture covers it yet, as its `vendor-cli-version.ts` discloses.
-Cursor ships no npm artifact and cannot be pinned:
-its vendor script is downloaded in full (`curl --fail`, never piped to a
-shell), its size and SHA-256 are printed, and it executes in the visible
-embedded PTY where the operator watches it — the human is the verifier, the
-same principle as interactive SSH auth. Nothing installs without disclosure:
-the CLI prints the exact selected package/version/destination install recipe
-(`~/.claudexor/remote/vendor/bin`, which the remote wrapper puts first on
-PATH) and requires a TTY confirmation or an explicit `--yes`, and the macOS
-confirmation dialog shows the remote CLI's own `--dry-run --json` disclosure
-before opening the terminal sheet. The app first reads the `current` pointer's
-immutable `versions/<id>` target (the runtime installer's validated owner),
-runs the dry-run through that closure's CLI and confirms through the SAME
-closure, so a runtime switch while the dialog is open cannot change which CLI
-executes. An npm dry-run of a current CLI carries
-`versionBinding: "vendor-version"` (dry-run only; executed receipts keep their
-keys), and the app then confirms with `--vendor-version` and the disclosed
-version rather than resolving latest again. An older runtime omits the field and
-rejects that flag, so it receives the legacy `--yes` confirmation and installs
-exactly the fixed release version it disclosed; an unknown or contradictory binding yields no
-prompt. A refused dry-run (for example `latest_unavailable`) is shown from the
-CLI's stderr, unclipped and selectable; a `current` that exists but is not the
-runtime symlink exits 73 with its own stderr reason rather than a blank refusal. An older app confirming against a current runtime cannot pin the
-looked-up version: that runtime resolves latest again at execution and prints
-its final disclosure in the terminal before running.
-The typed evidence class
-(`release_verified`, `deterministic_only`, or `human_observed`) that selects the
-same honest version wording as the CLI: `release_verified` applies only when
-the selected target equals the measured baseline; a newer latest is
-`deterministic_only` even when its package installation succeeds. A remote
-operator-watched npm exit does not prove installed version or native app-server
-compatibility. Failures are typed and loud — a
-failed or unreadable download refuses without executing, a non-zero installer
-exit never reads as success, and Harness Doctor verifies the result
-afterward. Every npm, curl, and vendor-script child receives the shared minimal
-runtime environment, including proxy and trust settings but no provider
-credential variables.
+Vendor program maintenance is declared beside each local adapter in its
+program declaration: launchers and folders, install/update/exact-version commands,
+installation inputs, one HTTPS newest-version source and pick rule, version
+scheme, optional release-notes address and observed child-updater controls.
+`cli/src/harness-programs.ts` derives the inventory from the adapter registry.
+Claude, Codex, Cursor, Antigravity, Copilot, OpenCode and Grok share this contract;
+missing commands become unavailable actions with a sentence on the inventory row.
 
-The installer recipe producer also accepts the explicit `local` target used by
-host integrations. Npm harnesses then install under the existing managed Node
-root (`~/.claudexor/node`, launchers in its `bin` on POSIX), which is already
-shared by local resolution and
-native harness PATH resolution; Cursor keeps its vendor-selected destination,
-and normalized harness discovery covers both `~/.local/bin` and
-`~/.cursor/bin`. An explicit `--target local --yes` is suitable for an
-unattended Connect action that already carries the user's authorization. Cursor
-is still unpinned in that flow: the typed evidence class is
-`unattended_unpinned`, and the execute receipt records the exact downloaded
-script's SHA-256 and byte length rather than claiming human observation. Local
-installs take a user-scoped cross-process lease and recheck both the selected
-exact npm target and its target-contained, non-empty launcher under that lease before
-mutating the shared prefix; a partial package without its shim is repaired.
-Every automatic selection (neither `--vendor-version` nor `--release-tested`)
-also keeps a runnable managed copy at or above the release-tested baseline that
-appeared after its selection read — for example from a concurrent Maintenance
-update — the same rule the selection applied; a selected copy that broke or fell
-below the baseline is reinstalled at its disclosed version. `--release-tested`
-keeps such a copy through the ensure rule and otherwise installs the baseline,
-and explicit versions still install exactly. Once npm ran, the executed receipt
-names the version it installed; a copy kept under the lease is reported as
-`installedVersion`.
-Before any success receipt, the absolute launcher must execute `--version` and
-prove the exact npm version. Cursor similarly rechecks the supported `cursor-agent`
-name through the target-aware normalized harness PATH, permits the vendor's
-official launcher symlink layout, and records its bounded non-empty version
-line. Child exit zero without this proof is the typed
-`install_verification_failed` outcome. A live owner gets a bounded wait. A dead
-or old owner-less lock fails closed as `install_lock_stale` with the exact lock
-path and a verify/remove/retry remedy; waiters never rename an observed stale
-pathname because a new owner could have replaced it between observation and
-mutation. An unexpected filesystem or child-process exception is normalized by
-the canonical CLI projector as `harness_install_failed`; JSON mode still emits
-one object containing every disclosure field already decided (before Codex's
-default selection: harness, target and install location only).
-On Windows the installer and harness resolver use the package's declared entrypoint:
-a native program runs directly and a standard npm Node entrypoint runs through
-its selected interpreter. Managed Codex and Claude installs and user npm prefixes
-on the effective PATH share this owner. The logical vendor entrypoint remains
-the identity shown by doctor and used by version/help/model probes; a Node
-runtime alone is not a vendor identity. Script bytes remain part of login
-executable evidence, with the selected invocation carried through the existing
-manifest and permit. Ordinary missing PATH candidates are silent; a present
-broken preferred entry remains diagnostic even when a usable fallback is found.
-Explicit executable overrides never select a different installation implicitly.
-Installer success still requires the declared version to execute, so a placeholder
-file left by an incomplete package install cannot certify success.
+`core/src/selected-program.ts` selects the entry that would run, its real path,
+its own bounded `--version` answer and explicit-override provenance. Runs,
+doctor, inventory and program-derived probes use this owner. It resolves at
+call time, including declared vendor folders, so a newly installed copy is found
+without restarting the daemon. Copilot declares the MSI folder
+`{localAppData}/GitHubCopilotCLI` on Windows; selection starts no registry process.
+Overrides remain exact; arbitrary wrappers and
+programs outside conventional folders receive their own declared update verb.
+Cursor prefers `cursor-agent` over `agent`, which Grok also uses. On Windows,
+standard npm launchers may still resolve an existing user's native or Node
+entrypoint; the logical vendor entry remains the identity, with its interpreter
+and arguments carried to execution. Custom batch files are not npm launchers.
+
+`claudexor harness install <id> --yes --json` installs a missing program at the
+vendor's current version. `harness update <id> --yes --json` runs the selected
+program's updater, or installs when missing. `--vendor-version <exact>` uses
+only an adapter-declared exact-version command. `harness inspect --latest --json`
+reads published versions on demand. A failed newest read does not block Update.
+Package-manager copies can answer with advice instead of
+changing anything; that vendor sentence is the result. The engine never chooses
+brew, winget or apt to update a copy whose own verb only advises. Copilot
+declares winget as its Windows installer. Windows decides whether external
+installer commands, including app execution aliases, can launch; an actual
+command-not-found launch reports that the command is unavailable. The shared
+availability predicate refuses pinned product npm overrides before downloading
+or invoking the installer. Repeating Install on a healthy program is a no-op.
+
+The CLI discloses commands and asks for confirmation unless `--yes` supplies
+explicit authorization. Script installers are downloaded completely, hashed and
+executed from a temporary file by their declared interpreter. A CLI dry-run
+prepares that disclosure without the install lease or mutation; it can probe the
+selected version and fetch the script. Maintenance uses the real installation
+HOME and the clean runtime environment, preserving declared installation inputs
+such as CODEX_HOME and XDG roots. A credential-profile HOME never chooses the
+installation. Successful execution re-resolves the entry and requires its own
+version answer. A missing answer gets one immediate second read before a
+verification decision, including the initial selection, conversion, cleanup and
+exact-version checks. Ordinary profile cleanup runs only after the result answers;
+its acknowledgment includes that observation. Interrupted-hide recovery still runs
+when the program does not answer.
+If the second read answers, the receipt records one limitation. The final
+observation after all mutations determines verification; no vendor command is
+repeated and no sleep is added; a second read can take its own ten-second limit.
+A zero child exit alone proves no runnable installation. A dry-run Install of an
+existing program requires the same version answer as a real Install.
+
+`harness-maintenance-service.ts` uses existing command admission, queue,
+idempotency, cancellation and retention. A repeated key/body rejoins the same
+operation; another body conflicts, and one operation per harness may be active.
+Work runs in a custodied CLI child. Before each mutation the durable command
+acknowledges requester, prepared command and before-evidence. The cross-process
+install lease serializes mutations; a SQLite write lock protects lease ownership
+and dead-owner reclamation from concurrent claimants. Active runs are counted at
+start as a fact, never an update gate. Before/after path and version, actual
+commands, script URL/size/hash, bounded redacted vendor lines, exit, effects and
+termination remain in the receipt even after cancellation. Outcomes distinguish
+changed, unchanged, an unselected copy changed, and unknown; none implies rollback.
+
+A product-made npm copy is converted during Update only when its package's bin
+entry proves the launcher's relation inside the product prefix. The operation
+runs the vendor installer, resolves with old launchers masked and requires a
+replacement that answers `--version` and is not known to be older by the adapter's
+version ordering before retiring the old package and launcher. An adapter
+with a declared major requires that line, including before an exact-version
+command; OpenCode 2.x cannot replace its product-made 1.x copy. An unorderable
+version is acceptable only when no declared major excludes it. The installer's status and lines remain in the receipt;
+a nonzero exit can complete conversion with a limitation when the resulting
+program passes the same proof. A vendor that already removed npm completes
+conversion when ordinary and masked resolution agree.
+An exact-version conversion verifies its second command before retirement too.
+An older-copy refusal names the path and version found first, the selected
+version, the possibility that it shadows the installer's copy, and that nothing
+was removed. A failed engine verification preserves any old copy the vendor
+left in place. Only Claude, Codex, Copilot and OpenCode declare old product npm
+packages; a person's Grok npm copy is not eligible for conversion. Folder
+containment or stale sibling metadata never authorizes removal of a hand-placed
+wrapper or symlink. Retirement hides the package at the fixed sibling
+`<package>.claudexor-converted`, keeping the launchers in place until removal.
+The next explicit maintenance restores a leftover and applies the same
+version/major/ordering proof to retire it or leave it restored. A linked HOME is
+accepted when the real package parent stays inside the real product prefix. Colliding or
+changed paths are preserved with a limitation; there is no journal or timer.
+
+The inventory exposes action command previews, newest observation time/failure,
+selected identity, last operation and optional release notes. The engine's
+adapter-declared scheme answers `updateAvailable` as yes, no or cannot_tell.
+An installed version ahead of the published pointer is not an available update;
+same-day unequal Cursor hashes cannot be ordered. Hosts never compare strings.
+Program-derived model lists carry `sourceProgram: {path, version}` from the same
+observation. The engine remembers each entry's last self-reported version by
+path, real path and stat identity. Passive account/status/catalog reads inspect
+that identity without spawning a version process; a first or changed identity
+asks once, concurrent askers share it, and inventory/fresh reads ask again.
+A failed ask never erases an earlier answer for the same file identity. An
+unanswered ask is remembered too: consumers may reuse observations under the
+same identity and the same answer, including no answer. Maintenance invalidates
+that memory; a fresh read or startup publication can replace it.
+Claude, Codex and Copilot report a version at startup (`vendor_stream`). Cursor,
+Antigravity, Grok and OpenCode do not; their native runs use `remembered` evidence
+when available, or ask once for an unknown entry (`version_probe`). No answer is
+labelled `unknown`. Reusing memory or receiving a startup frame adds no version
+process. A replacement behind an unchanged wrapper is detected when an
+inventory read, fresh read or native startup frame obtains a different version;
+passive polls and continued missing answers do not reveal the replacement. There is no version TTL; stale in-flight answers
+cannot overwrite newer observations. Fixture version constants stamp recorded evidence
+only. Native attempt records retain each invoked path/version, using the vendor
+startup frame where available, and exhausted credential pools retain the last
+bounded, redacted vendor error sentence alongside each try's original refusal.
+
+Engine-spawned Cursor children receive `--disable-auto-update`; Antigravity,
+Copilot and Grok keep their declared controls. Claude, Codex and OpenCode receive
+no added update switch. An unsupported Cursor switch returns its vendor error
+without a retry. Explicit Cursor maintenance enumerates registered profile homes
+and reversibly hides each `.local/share/cursor-agent` copy in the fixed sibling
+`.cursor-agent.claudexor-hidden`. The selected program is asked for its version
+through the resolver while the copy is hidden. An answering independent program
+authorizes retirement of that tree and its proven launcher links; otherwise the
+copy is restored and reported in use. Redirected, replaced or directly selected
+paths are preserved. The next explicit maintenance resolves a leftover hidden
+copy by the same observation before invoking the updater. The final selected
+program must still answer after cleanup. There is no journal or startup sweeper.
+There is no update timer, automatic failure/update/retry chain,
+model-to-version table or interpretation of a required version from vendor prose.
+
+Vendor installers own their storage and prune their versions according to vendor
+rules. Claudexor keeps no vendor version store and promises no offline rollback.
+The principal default paths are below; declared environment inputs can move them,
+and explicit overrides/PATH may select a different copy.
+
+| Program | POSIX launcher / vendor storage | Windows launcher / vendor storage |
+| --- | --- | --- |
+| Claude | `~/.local/bin/claude`; `~/.local/share/claude/versions` | `%USERPROFILE%\.local\bin\claude.exe`; `%USERPROFILE%\.local\share\claude` |
+| Codex | `~/.local/bin/codex`; `$CODEX_HOME/packages/standalone` (default `~/.codex`) | `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`; vendor side-by-side releases |
+| Cursor | `~/.local/bin/cursor-agent` (also `~/.cursor/bin`); `~/.local/share/cursor-agent` | Unsupported (#667) |
+| Antigravity | `~/.local/bin/agy` | `%LOCALAPPDATA%\agy\bin` |
+| Copilot | `~/.local/bin/copilot` | `%LOCALAPPDATA%\GitHubCopilotCLI\copilot.exe` for the MSI, declared for runs, probes and inventory; WinGet may also provide links |
+| OpenCode | `~/.opencode/bin/opencode` (also `~/.local/bin`) | Unattended installation unsupported (#668) |
+| Grok | `~/.local/bin/grok` (also `~/.grok/bin`) | `%USERPROFILE%\.local\bin` / `%USERPROFILE%\.grok\bin` |
+
+OpenCode stays on its 1.x installer/update line; its second line is outside this
+adapter (#668). The five Windows installation routes are Claude, Codex,
+Antigravity, Copilot and Grok. Their version proof does not establish login,
+model execution or app-server compatibility. Vendor pruning or OS file locks
+can affect running programs; Claudexor records the vendor's result rather than
+blocking maintenance on the run count. Copilot Update can be refused by GitHub's
+unauthenticated rate limit; that vendor sentence is the result.
+
+For a connected SSH host, the macOS install menu reads that host's inventory.
+Its confirmation dialog shows the prepared commands, script evidence and
+installation HOME. The app resolves `current` to an immutable runtime directory
+and uses that same closure for preview and confirmation. Current installation
+remains vendor-current at execution; scripts may change after preview, and the
+terminal's final receipt records the bytes actually run. Exact targets use
+`--vendor-version`. The app refreshes Harness Doctor after success.
+
 A `.exe`/`.com` the resolver would start (a PATH candidate, a standard launcher's
 declared native target, or a Node interpreter) must have the PE minimum shape: `MZ`,
 then `PE\0\0` at the header's offset, read through the descriptor that supplied
@@ -8096,42 +8599,17 @@ relative override resolves from the child's cwd. The shape is not loader validit
 an image for another architecture or with damaged headers still reaches the OS, an
 unreadable file or failed read is not proof. An incomplete header during an in-place
 update can be refused for that inspection; the next resolution rechecks it.
-POSIX executability rules are unchanged. The Windows
-smoke is `scripts/windows-local-install-smoke.mjs`; native Windows login and Agent
-execution are separate acceptance claims, not consequences of package resolution.
-The omitted target remains `remote`; the SSH installer's destination and PATH
-precedence are unchanged. With a current app and runtime, its approval binds the
-disclosed exact version, including when the CLI resolved npm latest for the
-initial dry-run. After any
-successful local install, the embedding host
-must request the existing fresh doctor/status projection before retrying login;
-it must not trust a pre-install readiness cache, and this needs no new setup-job
-or daemon API.
-
-Local CLI maintenance uses `harness inspect` and `harness update --vendor-version`
-(`cli/src/harness-maintenance.ts`), the same recipe/proof/lease as Ensure. Codex,
-Claude, Copilot and OpenCode support exact npm targets; latest is resolved once
-before installation by the shared bounded resolver in `cli/src/harness-latest.ts`,
-also used by an initial Codex CLI install. Cursor and Antigravity on supported POSIX installations run
-their native foreground updater at the selected canonical launcher under the
-installation HOME. They expose latest only: the vendor resolves the target, and
-unchanged version evidence never means "updated" or proves newest. External
-overrides are identified, not silently replaced by a managed copy. Existing
-Windows recipe limits remain.
-
-`harness-maintenance-service.ts` exposes `/v2/maintenance/harnesses` and the
-maintenance operation routes through existing command admission, queue,
-idempotency, cancellation and retention. Blocking work runs in a custodied CLI
-child. Before-version and target evidence precede mutation; failures, interruption
-and unconfirmed termination retain their real effects without automatic replay or
-rollback. Previous-version return uses retained proved before-evidence and
-reinstalls it, so it depends on package availability. Inspection separates selected
-version, managed copy, release baseline, available observation and supported
-targets; `canCheckLatest` prevents a native update-only recipe advertising an
-unimplemented check. Effects invalidate affected observations for on-demand reads.
-Active maintenance is visible in readiness; it neither restarts the daemon nor
-starts account probes, login or model generation. Operations use ordinary queue
-slots and may wait behind active work.
+POSIX executability rules are unchanged. The required cross-platform proof
+`scripts/vendor-program-smoke.mjs` installs, reads back, repeats Install as a
+no-op, invokes each updater, and converts previous releases made by real npm
+for the four declared product packages. Each installed route prepares a native
+run without login and checks that it selects the receipt's file. A failed Update
+is reported as a vendor refusal only while the program still answers and the
+same command also fails directly under the runner environment. A direct success
+or launch error fails the route. Every route is attempted before the proof fails. Windows
+phases share the actual ephemeral runner profile because winget/MSI ignore a
+fictitious LOCALAPPDATA; POSIX uses disposable homes. Native Windows login and
+Agent execution are separate acceptance claims.
 
 `claudexor remote bootstrap --json` starts or discovers the remote daemon and
 returns its loopback endpoint. The daemon remains bound to `127.0.0.1`; the app
@@ -8197,9 +8675,12 @@ resources the release gates smoke-tested while the archive itself needs no
 POSIX symlink semantics.
 `release/runtime-min-app-version.json` is the tracked `minAppVersion` floor
 (validated `<=` the release version by `scripts/verify-version-parity.mjs`), the
-app-vs-engine skew guard. Engine 4.0 requires application 4.0. An older app
-reports `appUpdateRequired` and keeps its current working engine; updating the
-app supplies the compatible decoder and Node before engine activation.
+app-vs-engine skew guard. The application must understand the vendor-program
+inventory and maintenance receipts used by remote harness setup. An older app
+reports `appUpdateRequired` and keeps its current working engine until the
+application is updated. The SSH runtime manifest uses the release version as
+its application floor; both manifests require application 6.0.0 for engine
+6.0.0. This floor does not establish compatibility for embedding hosts.
 
 **Host-owned embedding.** A non-app host reuses this SAME release archive; the
 existing signed manifest remains its upstream publication authority. There is
@@ -8214,12 +8695,8 @@ Node runtime. A host on another platform has no bundled scanner for `pr`: it
 sets `CLAUDEXOR_BETTERLEAKS_PATH` to the pinned build or provisions it under
 its config root, otherwise `pr` refuses `publication_scan_unavailable`.
 A host owns the install directory, config root, process, rollback, and exact
-reviewed pin. Its full Node toolchain is the exact version proven by that pin's
-closure smoke; POSIX consumers using local harness install must provide both
-`<node-root>/bin/node` and
-`<node-root>/lib/node_modules/npm/bin/npm-cli.js` (Windows: `node.exe` and its
-adjacent `node_modules\npm\bin\npm-cli.js`), with no ambient-PATH npm
-fallback. The root package's
+reviewed pin. Its Node runtime is the exact version proven by that pin's
+closure smoke; vendor maintenance requires no adjacent npm. The root package's
 supported runtime floor is Node 24.15.0, and the store checks bundled SQLite
 3.51.3 or newer before opening data. A supported version declaration alone is
 not proof of a release-built closure; embedders retain exact-toolchain smoke evidence. The pin also
@@ -8389,9 +8866,70 @@ the closure.
   to atomically prove idle and fence admission; busy or unknown activity keeps
   the compatible daemon alive and visibly defers reconciliation. A successful
   replacement retires the old client and re-reads
-  discovery before hydrating;
-  any failure after lifecycle work begins goes offline rather than reusing an
-  ambiguous process. An installed selection's probe must also equal the pointer's
+  discovery before hydrating. Before the stop, the reconciler `--probe`s the
+  saved copies that may still hold the serving build exactly: the contained
+  `versions/<version>` closure first, then the app-bundled script. A copy counts
+  only when its probe, under the app's current Node and with a nominal
+  20-second stage timeout, names that exact build; otherwise no saved copy could
+  be verified. If the selected
+  runtime then does not come up (its launch files are missing or no exact
+  handshake arrives within the boot window), a verified copy starts only when
+  nothing can run beside it. The launcher only schedules a spawn, behind its
+  heap probe, so each launch here carries a lifecycle permit that expires with
+  its poll and no queued spawn can run later. The target is stopped by exact
+  identity, which proves absence or the live owner's exit and refuses a live or
+  unknown writer-lease owner. That stop also passes before a booting child has
+  taken the lease, so the child this app launched must have exited too. The
+  restarted copy counts only with the previous exact identity and normal
+  admission. From the first stop, a failed replacement's stage timeouts add up
+  to about 245 seconds (30 to stop, 90 to boot, 30 to stop the target, 5 for its
+  child to exit, 90 for the copy to answer), after saved-copy probes with a
+  nominal budget of 40 seconds (20 for each copy); the app keeps its existing
+  connection state until the result arrives. These are budgets, not physical
+  bounds. At its timeout a stop or probe
+  child only receives SIGTERM and is then waited for, along with anything still
+  holding its output; a handshake in flight keeps its own request timeout; and a
+  spawn is an OS call made under the lifecycle lock, which reading the launch
+  handle waits for. Such a child or call holds the transaction, and its lease,
+  for as long as it lasts. This
+  return writes no pointer and lasts until that engine exits, when the launcher
+  starts its own selection again. Until then passive polls never stop a
+  compatible engine for that target, including after a first stop that could
+  not be confirmed. A reopened app reconciles afresh: a newer selected version
+  is replaced again once work is idle, while a build of the same version stays
+  until the explicit same-version switch, which also retries it in place. A
+  handshake proves the restarted daemon, not its helpers: the Browser MCP,
+  delegation belt, CLI entry, process-identity helper and publication scanner
+  resolve from that script's location, under the app's current Node, when used,
+  so the app reports a restart, never a restore. A different identity answering
+  the start, or the exact target answering only in recovery mode, is never
+  rolled back. If an engine this app started and saw answering stops answering
+  before any connection adopts it, the loop's start was already spent, so that
+  is reported as a lifecycle failure too. Without a verified saved copy, with
+  launch files missing, when an engine may still be running, when the saved
+  copy does not answer, or when such a started engine is lost, the app goes
+  Offline with that reason and an explicit Retry instead of reusing an
+  ambiguous process or starting an engine by itself. Retry is the Reconnect
+  connection, which may start the launcher's selection once. When remote
+  connections or cached remote threads keep the thread screen, the sidebar
+  shows the complete reason and the same Retry. A saved copy that answers only
+  in recovery mode (an older engine may not open data a newer one already
+  migrated; see [Upgrade backup and restore](#upgrade-backup-and-restore))
+  keeps the socket and writer lease, which the exact stop refuses and which
+  Reconnect or a reopen cannot take back. After about one pause Offline, the app
+  shows Connecting with that reason and the operator stop for its own root:
+  `CLAUDEXOR_CONFIG_DIR='<root>' CLAUDEXOR_DAEMON_SOCK=''
+  '<app>/Contents/Resources/node' '<app>/Contents/Resources/claudexor.bundle.cjs'
+  daemon stop`, with the root the app's discovery reads and the CLI it ships
+  (`claudexor` on `PATH` when the bundle has neither). The socket is explicit
+  too: the app's own `CLAUDEXOR_DAEMON_SOCK` when it has one, otherwise empty,
+  which the engine reads as that root's default socket, as did the engine the
+  app launched, so a Terminal's own override cannot send the stop elsewhere.
+  Operator shutdown is not gated by recovery admission and
+  deletes no stored data. Once that engine is gone the app is Offline with
+  Retry; the app itself never stops an engine it cannot identify as idle. That
+  notice is this session's memory: a reopened app shows plain Connecting, and
+  the same command still applies. An installed selection's probe must also equal the pointer's
   exact `{version,engineSha}` authority; the signed bundled selection uses its
   stamped probe as authority. The three-second identity poll retries deferred
   work when the daemon becomes idle. Reconciliation and in-app installation
@@ -8618,7 +9156,14 @@ code touching one of these areas must honor it or change it explicitly here.
   in roots the daemon never saw are reclaimed only by their own process. For a
   caller-owned `execution.workspaceRoot` recorded by a delegated command (global
   or project partition), it disposes only Claudexor's envelope scratch under that
-  root's runtime namespace; it never deletes the caller's tree or its Git refs.
+  root's runtime namespace; it never deletes the caller's tree or its Git refs. The
+  sweep follows no link below the config root, which may itself be a link: like the
+  lane, worktree and retention owners, it discloses and keeps a project namespace,
+  its `workspaces` or `threads`, a thread worktree, the one-shot store or a task or
+  attempt entry that is a link, before anything reads, recovers or disposes through
+  it, because that link may reach another store. A namespace kept this way keeps its
+  project's attempt branches too, since it hides which of them are owned. Moving this
+  tree means moving the whole root with `CLAUDEXOR_CONFIG_DIR`.
 - Web use is optional under `auto`, `cached`, and `live`; no
   did-this-task-NEED-web resolver or mandatory evidence gate is inferred from
   those policies. `off` remains the only strict external-context policy.
@@ -8661,9 +9206,11 @@ code touching one of these areas must honor it or change it explicitly here.
   never an alternate of the user's repository; `<runtime>` is the project's also
   when the run executes elsewhere (a delegated workspace, an isolated thread's
   worktree: Git runs there, the objects and pair anchors stay with the project,
-  where delivery and retention look for them, and only the envelope's scoped
-  directories stay under the execution root's namespace, where the orphan
-  sweeper finds them). One project therefore keeps one Git object format: a
+  where delivery and retention look for them, and so do the envelope's scoped
+  directories, whose `owner.json` names the execution root; a one-shot run's
+  envelopes on an explicitly ephemeral root live in the one-shot namespace, and legacy ones under
+  an execution root's namespace are still swept there). One project therefore
+  keeps one Git object format: a
   capture, envelope, check or delivery whose repository uses the other one
   (sha1 or sha256) is refused, typed and naming both formats, before anything
   is written or the store is mounted (`capture_failed` at capture and envelope

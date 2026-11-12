@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -25,8 +25,17 @@ import { StoreCorruptError, StoreFullError } from "./store/errors.js";
 import { DaemonLocalClient } from "./daemon-local-client.js";
 import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
 import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
+import {
+  DaemonRuntimeShutdown,
+  productionDaemonStop,
+} from "../../cli/src/daemon-runtime-shutdown.js";
 
 const SCOPE_MARKER = "CLAUDEXOR_SCOPE_0123456789abcdef0123456789abcdef";
+const REPLACEMENT_TARGET = {
+  version: "1.2.3",
+  buildSha: "a".repeat(40),
+  leaseOwner: { pid: 4242, token: "runtime-lease" },
+};
 const cleanups: Array<() => void | Promise<void>> = [];
 const removals: Array<() => void> = [];
 afterEachClosed(async () => {
@@ -54,6 +63,7 @@ async function fixture(
     outcome?: Record<string, unknown>;
     scope?: RunProcessScopeOutcome;
     maxConcurrent?: number;
+    replacement?: () => Promise<void>;
   } = {},
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-deferred-integration-")));
@@ -79,6 +89,13 @@ async function fixture(
     commands: sql.graph.commands,
     maxConcurrent: options.maxConcurrent ?? 2,
     deferredStart: () => ({ capture, validate }),
+    ...(options.replacement
+      ? {
+          runtimeIdentity: REPLACEMENT_TARGET,
+          runtimeLeaseOwner: REPLACEMENT_TARGET.leaseOwner,
+          onRuntimeReplacementRequested: options.replacement,
+        }
+      : {}),
     runner: async (params, ctx) => {
       started.push({ params, ctx });
       const runDir = join(root, ctx.jobId);
@@ -296,6 +313,86 @@ describe("deferred promotion in the existing daemon queue", () => {
     await vi.waitFor(() => expect(f.read(draft.draftId).hold?.code).toBe("settlement_unknown"));
     expect(f.validate).not.toHaveBeenCalled();
     expect(f.started).toHaveLength(1);
+  });
+  describe("a later settlement of the predecessor's scope (#613)", () => {
+    const writeLater = (runDir: string, settled: boolean) =>
+      writeFileSync(
+        join(runDir, "final/process_scope_later.yaml"),
+        JSON.stringify({
+          attempt: 1,
+          at: new Date().toISOString(),
+          outcome: RunProcessScopeOutcome.parse({
+            marker: SCOPE_MARKER,
+            coverage: "marker+capture",
+            census: "ok",
+            settled,
+            incomplete: !settled,
+            survivors: [],
+            unreadable: [],
+            completeness: "not_provable",
+          }),
+        }),
+      );
+    async function custodyHeld() {
+      const f = await fixture("ask", { custody: false });
+      const draft = (await f.create()).draft;
+      f.done.release();
+      await vi.waitFor(() => expect(f.read(draft.draftId).hold?.code).toBe("settlement_unknown"));
+      return { f, draft, runDir: join(f.root, f.initial.id) };
+    }
+
+    it("returns the unchanged draft visibly once its scope is proved empty", async () => {
+      const { f, draft, runDir } = await custodyHeld();
+      writeLater(runDir, false);
+      await f.daemon.deferred.processScopeSettled(f.initial.id);
+      expect(f.read(draft.draftId).state).toBe("held");
+      writeLater(runDir, true);
+      await f.daemon.deferred.processScopeSettled(f.initial.id);
+      await vi.waitFor(() => expect(f.read(draft.draftId).state).toBe("dispatched"));
+      expect(f.read(draft.draftId).resumed).toMatchObject({
+        from: { code: "settlement_unknown" },
+        reason: "process_scope_settled",
+      });
+      expect(f.validate).toHaveBeenCalledTimes(1);
+      expect(f.started).toHaveLength(2);
+    });
+
+    it("never returns a replaced revision", async () => {
+      const { f, draft, runDir } = await custodyHeld();
+      await f.mutate({
+        request: {
+          action: "replace",
+          draftId: draft.draftId,
+          expectedRevision: draft.revision,
+          prompt: "edited",
+          attachments: [],
+        },
+        idempotencyKey: "edit",
+      });
+      writeLater(runDir, true);
+      await f.daemon.deferred.processScopeSettled(f.initial.id);
+      expect(f.read(draft.draftId)).toMatchObject({
+        state: "held",
+        revision: draft.revision + 1,
+        hold: { code: "settlement_unknown" },
+      });
+      expect(f.started).toHaveLength(1);
+    });
+
+    it("keeps a Stop's hold: a Stop turns the custody hold into its own", async () => {
+      const { f, draft, runDir } = await custodyHeld();
+      // The Stop's effect is reported as its own hold, never as "nothing to stop".
+      expect(f.daemon.deferred.stop(f.initial.id)).toMatchObject({
+        held: true,
+        draft: { draftId: draft.draftId, state: "held", hold: { code: "stop_requested" } },
+      });
+      expect(f.read(draft.draftId).hold?.code).toBe("stop_requested");
+      writeLater(runDir, true);
+      await f.daemon.deferred.processScopeSettled(f.initial.id);
+      expect(f.read(draft.draftId).state).toBe("held");
+      expect(f.read(draft.draftId).resumed).toBeUndefined();
+      expect(f.started).toHaveLength(1);
+    });
   });
   it("reuses the freed slot while the next message's dispatch validation is pending", async () => {
     const f = await fixture("ask", { maxConcurrent: 1 });
@@ -590,6 +687,7 @@ describe("public Stop of a predecessor with a next message", () => {
       body: {
         accepted: true,
         status: "applied",
+        message: "cancel requested; its next message is now held",
         deferredMessage: {
           draftId: draft.draftId,
           state: "held",
@@ -631,6 +729,7 @@ describe("public Stop of a predecessor with a next message", () => {
         accepted: true,
         status: "applied",
         cascadeRunIds: [],
+        message: "run is succeeded; cancel now holds its next message",
         deferredMessage: {
           draftId: draft.draftId,
           state: "held",
@@ -694,6 +793,35 @@ describe("public Stop of a predecessor with a next message", () => {
       expect(f.started).toHaveLength(1);
     },
   );
+
+  it("applies a Stop that takes over an ended predecessor's custody hold (#613)", async () => {
+    const f = await fixture("ask", { custody: false });
+    const stop = await publicStop(f);
+    const draft = (await f.create()).draft;
+    f.done.release();
+    await vi.waitFor(() => expect(f.read(draft.draftId).hold?.code).toBe("settlement_unknown"));
+    expect(await stop(f.initial.id)).toMatchObject({
+      status: 200,
+      body: {
+        accepted: true,
+        status: "applied",
+        // The same accurate sentence as for a waiting draft: no claim it was waiting.
+        message: "run is succeeded; cancel now holds its next message",
+        deferredMessage: {
+          draftId: draft.draftId,
+          state: "held",
+          hold: { code: "stop_requested" },
+        },
+      },
+    });
+    const audit = readFileSync(join(f.root, f.initial.id, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => (JSON.parse(line) as { type: string }).type)
+      .filter((type) => type.startsWith("control."));
+    expect(audit).toEqual(["control.requested", "control.applied"]);
+    expect(f.started).toHaveLength(1);
+  });
 
   it("discloses an already held draft without claiming a new stop", async () => {
     const f = await fixture("ask", { failure: true });
@@ -949,3 +1077,126 @@ function sqlRetryEvent(f: Awaited<ReturnType<typeof fixture>>) {
     payload: { type: "api_retry", status: 429, willRetry: true },
   });
 }
+
+/** The participant production installs, around this file's real SQL daemon, with
+ * its retention await held so only the fence can decide these late acceptances. */
+describe("the production stop's fence while a retention pass is held (#603)", () => {
+  async function replaceable() {
+    const pass = barrier();
+    let runtime!: DaemonRuntimeShutdown;
+    const f = await fixture("ask", { replacement: () => runtime.beginRuntimeReplacement() });
+    runtime = new DaemonRuntimeShutdown({
+      daemon: productionDaemonStop({
+        abort: () => undefined,
+        server: () => f.daemon,
+        closeExecutors: () => undefined,
+        stopRetention: () => pass.promise,
+        opening: () => null,
+      }),
+      setup: {
+        hasActiveWork: () => false,
+        beginDrain: () => undefined,
+        shutdown: async () => undefined,
+      },
+      control: () => null,
+      journal: { close: () => undefined },
+      forceExit: () => undefined,
+      drainGraceMs: 60_000,
+    });
+    cleanups.push(() => {
+      pass.release();
+    });
+    const replace = () =>
+      f.daemon.dispatch("claudexor.shutdownForRuntimeReplacement", REPLACEMENT_TARGET);
+    return { f, pass, runtime, replace };
+  }
+  const idlePredecessor = async (f: Awaited<ReturnType<typeof fixture>>) => {
+    f.done.release();
+    await vi.waitFor(async () =>
+      expect(((await f.daemon.dispatch("claudexor.health", {})) as { active: number }).active).toBe(
+        0,
+      ),
+    );
+  };
+
+  it("refuses an enqueue whose acceptance staging outlasted the replacement receipt", async () => {
+    const { f, pass, runtime, replace } = await replaceable();
+    await idlePredecessor(f);
+    const staging = barrier();
+    const original = SqlCommandStore.prototype.stageAcceptance;
+    const stage = vi
+      .spyOn(SqlCommandStore.prototype, "stageAcceptance")
+      .mockImplementationOnce(async function (this: SqlCommandStore, input) {
+        await staging.promise;
+        return original.call(this, input);
+      });
+    const late = f.daemon
+      .dispatch("claudexor.enqueue", {
+        request: { mode: "ask", prompt: "late", execution: { isolation: "envelope" } },
+        clientId: "test",
+        idempotencyKey: "late",
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    await vi.waitFor(() => expect(stage).toHaveBeenCalled());
+    await expect(replace()).resolves.toEqual({ ok: true, fenced: true, targetBound: true });
+    staging.release();
+    expect(await late).toMatchObject({ code: "daemon_stopping" });
+    expect(f.sql.records()).toHaveLength(1);
+    pass.release();
+    await runtime.wait();
+    expect(f.sql.records()).toHaveLength(1);
+    expect(f.started).toHaveLength(1);
+  });
+
+  it.each(["validate", "stagePromotion"] as const)(
+    "holds a next message whose %s outlasted the replacement receipt",
+    async (step) => {
+      const { f, pass, runtime, replace } = await replaceable();
+      await idlePredecessor(f);
+      const holding = barrier();
+      const reached = vi.fn();
+      if (step === "validate")
+        f.validate.mockImplementationOnce(async () => {
+          reached();
+          await holding.promise;
+        });
+      else {
+        const original = SqlDeferredMessages.prototype.stagePromotion;
+        vi.spyOn(SqlDeferredMessages.prototype, "stagePromotion").mockImplementationOnce(
+          async function (this: SqlDeferredMessages, id, revision) {
+            reached();
+            await holding.promise;
+            return original.call(this, id, revision);
+          },
+        );
+      }
+      const creating = f.create();
+      await vi.waitFor(() => expect(reached).toHaveBeenCalled());
+      await expect(replace()).resolves.toEqual({ ok: true, fenced: true, targetBound: true });
+      holding.release();
+      const { draft } = await creating;
+      expect(f.read(draft.draftId)).toMatchObject({ state: "held", hold: { code: "shutdown" } });
+      expect(f.sql.records()).toHaveLength(1);
+      pass.release();
+      await runtime.wait();
+      expect(f.sql.records()).toHaveLength(1);
+      expect(f.started).toHaveLength(1);
+    },
+  );
+
+  it("holds a waiting next message and aborts its predecessor before the pass drains", async () => {
+    const { f, pass, runtime } = await replaceable();
+    const { draft } = await f.create();
+    expect(f.read(draft.draftId).state).toBe("waiting");
+    const stopping = runtime.beginShutdown("SIGTERM");
+    expect(f.read(draft.draftId)).toMatchObject({ state: "held", hold: { code: "shutdown" } });
+    expect(f.started[0]!.ctx.signal.reason).toBe("host_cancelled");
+    pass.release();
+    await stopping;
+    expect(f.sql.records()).toHaveLength(1);
+    expect(f.started).toHaveLength(1);
+  });
+});

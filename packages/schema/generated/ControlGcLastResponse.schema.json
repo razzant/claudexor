@@ -24,9 +24,31 @@
                 "finished_at": {
                   "type": "string"
                 },
+                "last_completed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null,
+                  "description": "Last completed non-preview pass time, or null when no completion is known."
+                },
+                "failed_or_held_streak": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 0,
+                  "description": "Failed or held passes since the last completion; truncated passes preserve the count. Only a completed pass resets it."
+                },
                 "freed_bytes": {
                   "type": "integer",
                   "minimum": 0
+                },
+                "effects": {
+                  "type": "string",
+                  "enum": [
+                    "measured",
+                    "unknown"
+                  ],
+                  "description": "measured: freed_bytes counts this pass's deletions; unknown: the pass stopped before its receipt, or a deletion stopped partway, so freed_bytes is only a lower bound and earlier steps may already have had effects. Absent on records written before the field."
                 },
                 "kept": {
                   "type": "object",

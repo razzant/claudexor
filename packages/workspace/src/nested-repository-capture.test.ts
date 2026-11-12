@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { captureWorkingTreeTransient, stashCreate } from "./git.js";
+import { rawAcceptedPaths, rawAwareSnapshot, RAW_ACCEPTED_REF } from "./raw-patch.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -148,6 +149,58 @@ it("names top-relative paths and still captures when the project root is a subdi
   expect(captured.patch).not.toContain("sub/scratch");
   expect(captured.patch).toContain("b/sub/vendor/lib");
   expect(captured.excludedNestedRepositories).toEqual(["sub/clone", "sub/scratch"]);
+});
+
+it("takes accepted ignored paths from a subdirectory by their top-relative names, within the view's scope", async () => {
+  const { root, git } = repository();
+  const output = (...args: string[]) =>
+    execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  writeFileSync(join(root, ".gitignore"), "*.log\n");
+  mkdirSync(join(root, "sub"));
+  mkdirSync(join(root, "other"));
+  writeFileSync(join(root, "sub", "file.txt"), "base\n");
+  git(root, "add", ".gitignore", "sub/file.txt");
+  git(root, ...identity, "commit", "-qm", "sub");
+  writeFileSync(join(root, "sub", "result.log"), "accepted\n");
+  writeFileSync(join(root, "sub", "noise.log"), "not accepted\n");
+  writeFileSync(join(root, "other", "outside.log"), "accepted elsewhere\n");
+  const sub = join(root, "sub");
+  const keep = ["sub/result.log", "other/outside.log"];
+
+  const names = (commit: string | null) =>
+    output("ls-tree", "-r", "--name-only", commit ?? "").split("\n");
+  // The snapshot's own add covers the whole tree from any directory.
+  expect(names(await stashCreate(sub, {}, [], keep))).toEqual(expect.arrayContaining(keep));
+  expect(names(await stashCreate(sub, {}, [], keep))).not.toContain("sub/noise.log");
+  // The capture's covers only its directory; an exclusion still wins over a kept path.
+  const captured = await captureWorkingTreeTransient(sub, "HEAD", [], { keep });
+  expect(captured.patch).toContain("b/sub/result.log");
+  expect(captured.patch).not.toContain("other/outside.log");
+  writeFileSync(join(root, "sub", "plain.txt"), "kept but excluded\n");
+  const excluded = await captureWorkingTreeTransient(
+    sub,
+    "HEAD",
+    [":(exclude,top,literal)sub/plain.txt"],
+    { keep: ["sub/plain.txt"] },
+  );
+  expect(excluded.captureIncomplete).toBe(false);
+  expect(excluded.result?.candidate_tree).toBe(excluded.result?.base_tree);
+
+  // A real record read from the subdirectory names the same top-relative paths.
+  const index = { ...process.env, GIT_INDEX_FILE: join(root, ".git", "record-index") };
+  const blob = output("hash-object", "-w", "sub/result.log");
+  execFileSync(
+    "git",
+    ["-C", root, "update-index", "--add", "--cacheinfo", `100644,${blob},sub/result.log`],
+    { env: index },
+  );
+  const tree = execFileSync("git", ["-C", root, "write-tree"], {
+    env: index,
+    encoding: "utf8",
+  }).trim();
+  git(root, "update-ref", RAW_ACCEPTED_REF, tree);
+  expect(await rawAcceptedPaths(sub, "HEAD")).toEqual(["sub/result.log"]);
+  expect(names(await rawAwareSnapshot(sub))).toContain("sub/result.log");
 });
 
 it("excludes a nested repository by its literal name, never as a glob over its siblings", async () => {

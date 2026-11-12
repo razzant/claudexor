@@ -5,6 +5,7 @@ import { legacyOracle as old } from "./legacy-oracle.js";
 import { DurableJournal } from "./fixtures/legacy/journal/index.js";
 import type { JournalRecord } from "./fixtures/legacy/journal/index.js";
 import { Comparisons, privateMap } from "./equivalence-evidence.js";
+import { legacyInteractionPort } from "./legacy-interaction-port.js";
 
 /** Load candidate owners from its built daemon, plus the exact setup source
  * through the existing tsx loader. The frozen closure stays independent. */
@@ -129,6 +130,7 @@ export async function comparePartition(input: {
   const threads = new old.daemonThreads.ThreadStore(journal);
   const decisions = new old.daemonOperatorDecisions.OperatorDecisionStore(journal);
   const interactions = new old.daemonInteractions.InteractionStore(journal);
+  const legacyInteractions = legacyInteractionPort(interactions);
   const records = journal.records();
   const ledger = new owners.SqlEventLedger(store, graph.blobs, generation);
   const sqlCommands = graph.commands.commandStore(generation);
@@ -197,7 +199,7 @@ export async function comparePartition(input: {
   for (const run of runs)
     c.equal(
       `pending:${name}:${run}`,
-      interactions.pendingForRun(run),
+      legacyInteractions.pendingForRun(run),
       sqlInteractions.pendingForRun(run),
     );
   for (const [run, value] of privateMap(decisions, "byRun"))

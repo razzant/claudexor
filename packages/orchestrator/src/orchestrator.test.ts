@@ -10221,7 +10221,7 @@ describe("Orchestrator", () => {
       path: "final/plan.md",
       producer_attempt_id: "p01",
     });
-    expect(JSON.stringify(telemetry?.run_facts)).toBe(JSON.stringify(runFacts));
+    expect(telemetry?.run_facts).toBeNull();
   });
 
   it("an untagged plan is DISCLOSED as unverified, never silently ready", async () => {
@@ -10820,7 +10820,7 @@ describe("Orchestrator", () => {
       { attempt_id: "p02", role: "planner" },
       { attempt_id: "p03", role: "merge" },
     ]);
-    expect(telemetry).toMatchObject({ run_facts: runFacts });
+    expect(telemetry).toMatchObject({ run_facts: null });
   });
 
   it("council discloses an estimate-headroom member refusal below the floor", async () => {
@@ -13191,22 +13191,29 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     });
   });
 
-  it("does not mutate an AGENTS.md-only live project during write preparation (CX590)", async () => {
-    const dir = reapMk(join(tmpdir(), "claudexor-agents-bridge-"));
-    writeFileSync(join(dir, "AGENTS.md"), "# project instructions\n");
-    const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
-    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
-      repoRoot: dir,
-      prompt: "x",
-      mode: "agent",
-      untilClean: true,
-      harnesses: ["impl"],
-      n: 1,
-    });
-    expect(existsSync(join(dir, "CLAUDE.md"))).toBe(false);
-    const events = readRunEvents(res.runDir);
-    expect(events.some((e) => e.type === "project.claude_bridge.created")).toBe(false);
-  });
+  it.each([
+    ["ordinary", false],
+    ["convergence", true],
+  ])(
+    "does not mutate an AGENTS.md-only live project during %s write preparation (CX590)",
+    async (_label, untilClean) => {
+      const dir = reapMk(join(tmpdir(), "claudexor-agents-bridge-"));
+      writeFileSync(join(dir, "AGENTS.md"), "# project instructions\n");
+      const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
+      const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
+        repoRoot: dir,
+        prompt: "x",
+        mode: "agent",
+        untilClean,
+        harnesses: ["impl"],
+        n: 1,
+      });
+      expect(existsSync(join(dir, ".git"))).toBe(true);
+      expect(existsSync(join(dir, "CLAUDE.md"))).toBe(false);
+      const events = readRunEvents(res.runDir);
+      expect(events.some((e) => e.type === "project.claude_bridge.created")).toBe(false);
+    },
+  );
 
   it("never overwrites an existing CLAUDE.md and emits no bridge event", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-agents-nobridge-"));
@@ -13508,12 +13515,18 @@ describe("interaction channel registration order", () => {
       true,
       20,
     );
-    const res = await channel!.request({
-      interaction_id: "int-2",
-      source_tool: "AskUserQuestion",
-      questions: [{ id: "q1", prompt: "?", options: [], allow_text: true }],
-    } as never);
-    expect(res).toBeNull();
+    // A throwing surface is not a decline (#622): the request rejects with it.
+    await expect(
+      channel!.request({
+        interaction_id: "int-2",
+        source_tool: "AskUserQuestion",
+        questions: [{ id: "q1", prompt: "?", options: [], allow_text: true }],
+      } as never),
+    ).rejects.toMatchObject({
+      name: "InteractionChannelError",
+      code: "answer_channel_failed",
+      message: "sync boom",
+    });
     expect(channel!.pendingCount!()).toBe(0); // suspension released
     expect(channel!.suspensionVersion!()).toBe(2); // begin + end are both observable
   });

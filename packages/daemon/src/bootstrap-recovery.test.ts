@@ -29,6 +29,7 @@ function pendingInteraction(): InteractionContext {
     request: {
       interaction_id: "question",
       source_tool: "AskUserQuestion",
+      delivery: "blocking",
       questions: [],
     },
     requestedAt: "2026-08-13T00:00:00.000Z",

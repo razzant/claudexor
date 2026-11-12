@@ -185,6 +185,20 @@ export interface LiveMessageResult {
  * logic. External adapters may implement this as an in-tree HarnessAdapter implementation (the out-of-tree JSON-RPC bridge package was removed in v0.9).
  */
 export interface HarnessAdapter {
+  readonly program?: import("@claudexor/schema").HarnessProgram;
+  /** Explicit maintenance only. The adapter enumerates obsolete profile program files, never credentials. */
+  planProfileProgramCleanup?(
+    profiles: readonly import("@claudexor/schema").CredentialProfile[],
+    selected: import("@claudexor/schema").SelectedHarnessProgram,
+    options?: { recoverOnly?: boolean },
+  ): {
+    paths: string[];
+    limitations: string[];
+    execute(observe: () => import("@claudexor/schema").SelectedHarnessProgram): {
+      removed: string[];
+      limitations: string[];
+    };
+  };
   readonly id: string;
   /** Native effort carrier the adapter resolves at its final route: a separate
    * flag (`--effort`, `model_reasoning_effort`), or `--model` when the level is
@@ -311,6 +325,19 @@ export interface HarnessAdapter {
    * `spec.env.HOME`.
    */
   childHome?(spec: HarnessRunSpec): string | null;
+  /**
+   * The vendor access setting this adapter passes for `spec`, in the vendor's
+   * own spelling, computed by the SAME helper that builds the argv or request
+   * (#413). Disclosure only, recorded on the per-spawn route receipt. Absent
+   * or null: the adapter passes no access setting or does not disclose it.
+   */
+  nativeAccess?(spec: HarnessRunSpec): string | null;
+}
+
+/** One display string for native arguments: empty or spaced tokens are quoted. */
+export function formatNativeArgs(args: readonly string[]): string | null {
+  if (args.length === 0) return null;
+  return args.map((arg) => (arg === "" || /\s/.test(arg) ? JSON.stringify(arg) : arg)).join(" ");
 }
 
 /** A recorded session's reach. It never extends to another version or entry. */
@@ -426,10 +453,16 @@ export interface HarnessContinuityCapability {
  *
  * The adapter calls `request()` when its native session raises a user
  * question (e.g. Claude's AskUserQuestion via the stream-json control
- * protocol) and BLOCKS that tool until the promise resolves:
+ * protocol). A blocking request holds that tool until the promise settles; an
+ * async one (`delivery: "async"`) is consumed without holding the event pump:
  * - resolved with answers -> the adapter delivers them into the live session;
- * - resolved with null (timeout / decline / no listener) -> the adapter
- *   declines benignly and the model continues with assumptions.
+ * - resolved with null (an explicit decline, an expiry, a withdrawal or the
+ *   run's end; the run's interaction events say which) -> nothing answers the
+ *   question: a blocking one declines benignly and the model continues with
+ *   assumptions, an async one sends nothing;
+ * - rejected with {@link InteractionChannelError} -> the answer surface itself
+ *   failed, so nobody was asked or no answer can arrive. That is never the
+ *   user's decline; the adapter says so in its own record.
  *
  * The channel is smuggled through `spec.extra` (duck-typed, same pattern as
  * the abort signal) because HarnessRunSpec is a serializable schema shape.
@@ -443,6 +476,24 @@ export interface InteractionChannel {
   /** Monotonic begin/end transition counter. Unlike a boolean poll, this lets
    * watchdogs detect a complete wait-and-answer cycle between timer ticks. */
   suspensionVersion?(): number;
+}
+
+/** The answer surface behind an InteractionChannel failed (it could not
+ * register or keep the question). `cause` is the surface's own failure. */
+export class InteractionChannelError extends Error {
+  readonly code = "answer_channel_failed" as const;
+
+  constructor(cause: unknown) {
+    super(
+      cause instanceof Error
+        ? cause.message
+        : typeof cause === "string" && cause
+          ? cause
+          : "the interaction answer surface failed",
+      { cause },
+    );
+    this.name = "InteractionChannelError";
+  }
 }
 
 export function interactionChannelFromSpec(spec: HarnessRunSpec): InteractionChannel | undefined {

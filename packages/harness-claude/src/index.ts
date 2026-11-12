@@ -1,3 +1,5 @@
+import { CLAUDE_PROGRAM } from "./program.js";
+import { randomUUID } from "node:crypto";
 import { claudeMcpArgs } from "./mcp-args.js";
 import {
   prepareClaudeSessionProcessing,
@@ -7,7 +9,6 @@ import {
 } from "./processing.js";
 import { claudePromptCacheObserver, withClaudePromptCacheTtl } from "./prompt-cache.js";
 import type {
-  AccessProfile,
   CredentialProfile,
   CredentialProfileStatus,
   EffortHint,
@@ -46,6 +47,12 @@ export {
   defaultNativeClaudeConfigDir,
   claudeNativeEnv,
 } from "./native-home.js";
+import {
+  claudeNativeAccess,
+  permissionArgs,
+  toolPermissionArgs,
+  toolPermissionSets,
+} from "./access-args.js";
 import { createClaudeParser } from "./parse.js";
 import { withClaudeApiFailureParser, withClaudeVendorFailure } from "./vendor-failure.js";
 import { probeClaudeCredentialProfile, resolveClaudeProfileRoute } from "./profile.js";
@@ -64,7 +71,7 @@ export {
 export type { ClaudeAuthStatusProbe } from "./auth-status.js";
 import { smokeIsolatedApiKey, smokeIsolatedOAuthToken } from "./smoke.js";
 import {
-  BIN,
+  resolveClaudeBin,
   CLAUDE_EFFORT_SNAPSHOT,
   CLAUDE_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
   claudeRunEffortResolution,
@@ -74,13 +81,12 @@ import {
   probeClaudeEffortLevels,
   probeClaudeHelp,
 } from "./effort-probe.js";
-export { BIN, CLAUDE_EFFORT_SNAPSHOT, detectClaudeVersion } from "./effort-probe.js";
+export { resolveClaudeBin, CLAUDE_EFFORT_SNAPSHOT, detectClaudeVersion } from "./effort-probe.js";
 export {
   CLAUDE_AUTH_REFRESH_TERMINATION_UNCONFIRMED,
   claudeOauthAccessTokenIsFresh,
   refreshClaudeNativeAuth,
 } from "./auth-refresh.js";
-export { CLAUDE_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 import {
   claudeAttachmentBlocks,
   handleControlRequestFrame,
@@ -99,30 +105,6 @@ export const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter(
 
 /** Exported for focused route-policy tests; runtime uses this exact selector. */
 export const selectClaudeRunAuthRoute = selectStrictAuthRoute;
-
-function permissionArgs(access: AccessProfile): string[] {
-  switch (access) {
-    case "readonly":
-      // Defense in depth: plan mode rejects mutation requests, setting sources
-      // prevent user/project policy from widening the route, strict MCP ignores
-      // project servers, and slash commands/Chrome are independent tool ingress.
-      return [
-        "--permission-mode",
-        "plan",
-        "--setting-sources",
-        "",
-        "--strict-mcp-config",
-        "--disable-slash-commands",
-        "--no-chrome",
-      ];
-    case "workspace_write":
-      return ["--permission-mode", "acceptEdits"];
-    case "full":
-      return ["--permission-mode", "bypassPermissions"];
-    case "inherit_native":
-      return [];
-  }
-}
 
 export interface ClaudeReadonlyProfileProbe {
   supported: boolean;
@@ -187,7 +169,7 @@ export interface ClaudeAuthStatusProbeOptions {
 }
 
 export async function probeAuthStatus(
-  bin: string = BIN,
+  bin: string = resolveClaudeBin(),
   options: ClaudeAuthStatusProbeOptions = {},
 ): Promise<ClaudeAuthStatusProbe> {
   try {
@@ -274,7 +256,9 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
   const live = createClaudeLiveInput();
   return {
     id: "claude",
+    program: CLAUDE_PROGRAM,
     effortParameter: "--effort",
+    nativeAccess: claudeNativeAccess,
     capabilityProfile: CLAUDE_CAPABILITY_PROFILE,
     prepareProcessing: prepareClaudeSessionProcessing,
     // Live input into a running interactive session (live-input.ts): typed
@@ -285,7 +269,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
       if (version === null) {
         throw new HarnessUnavailableError(
           claudeMissingDetail(
-            runtime.installation(BIN),
+            runtime.installation(resolveClaudeBin()),
             "claude CLI not found on PATH (set CLAUDEXOR_CLAUDE_BIN to override)",
           ),
         );
@@ -295,7 +279,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
       // The ladder belongs to the INSTALLED CLI, so read it from that binary
       // rather than declaring one version's list for every version.
       const efforts = await runtime.probeEffortLevels();
-      const native = await runtime.probeAuthStatus(BIN, { env: claudeNativeEnv() });
+      const native = await runtime.probeAuthStatus(resolveClaudeBin(), { env: claudeNativeEnv() });
       // A stale result is only bounded last-known-good evidence for an
       // already selected profile.  Discovery must not advertise it as a
       // currently authenticated default route.
@@ -395,20 +379,6 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
   };
 }
 
-/** Claude's native names for web-permissioned tools. This knowledge lives ONLY in the adapter. */
-const CLAUDE_WEB_TOOLS = ["WebSearch", "WebFetch"];
-const CLAUDE_READ_TOOLS = ["Read", "Glob", "Grep"];
-const CLAUDE_READONLY_BUILTIN_TOOLS = [...CLAUDE_READ_TOOLS, ...CLAUDE_WEB_TOOLS];
-const CLAUDE_READONLY_DENIED_TOOLS = [
-  "Bash",
-  "Write",
-  "Edit",
-  "MultiEdit",
-  "NotebookEdit",
-  "Agent",
-  "Skill",
-];
-
 export function claudeArgsForSpec(
   spec: HarnessRunSpec,
   interactive = false,
@@ -474,94 +444,6 @@ export function claudeArgsForSpec(
   return args;
 }
 
-/**
- * Map the external-context policy plus the user's per-harness tool allow/deny
- * lists to Claude flags. Uses the single comma-separated form: the repeated
- * variadic form is a known-fragile area of the Claude CLI.
- * Note `cached` executes as live web here (Claude has no cached web index);
- * the orchestrator discloses that upgrade via `policy.web.upgraded`.
- */
-function toolPermissionArgs(spec: HarnessRunSpec): string[] {
-  const { allow, deny } = toolPermissionSets(spec);
-  const args: string[] = [];
-  if (spec.access === "readonly") {
-    const builtins = CLAUDE_READONLY_BUILTIN_TOOLS.filter((tool) => allow.has(tool));
-    // AskUserQuestion rides --tools outside the allow filter (live-verified
-    // 2.1.221): in the constant it dies in the allow filter; in `allow` it
-    // would be pre-approved in --allowedTools, suppressing the very
-    // control_request the bridge needs. One-shot readonly = harmless no-op.
-    // A caller's explicit deny wins (never both --tools and --disallowedTools).
-    const asks = deny.has("AskUserQuestion") ? [] : ["AskUserQuestion"];
-    args.push("--tools", [...builtins, ...asks].join(","));
-  }
-  if (allow.size > 0) args.push("--allowedTools", [...allow].join(","));
-  if (deny.size > 0) args.push("--disallowedTools", [...deny].join(","));
-  return args;
-}
-
-function toolPermissionSets(spec: HarnessRunSpec): { allow: Set<string>; deny: Set<string> } {
-  const policy = spec.external_context_policy;
-  // A run may narrow readonly access but can never widen it. User/project
-  // Claude settings are independently suppressed by the readonly argv profile.
-  const allow = new Set(spec.access === "readonly" ? [] : spec.tool_permission_policy.allow);
-  const deny = new Set(spec.tool_permission_policy.deny);
-  if (spec.access === "readonly") {
-    for (const tool of CLAUDE_READ_TOOLS) {
-      if (!deny.has(tool)) allow.add(tool);
-    }
-    for (const tool of CLAUDE_READONLY_DENIED_TOOLS) {
-      deny.add(tool);
-      allow.delete(tool);
-    }
-  } else if (
-    (spec.access === "workspace_write" || spec.access === "full") &&
-    !deny.has("Bash") &&
-    ![...allow].some((tool) => tool.startsWith("Bash("))
-  ) {
-    // workspace_write/full ONLY: pre-approve Bash — under acceptEdits the
-    // bridge denied every non-edit command (pytest/node/curl), a silent
-    // capability loss on every daemon run; live-verified 2.1.221 (dontAsk
-    // hard-refuses pre-bridge, auto is a no-op, only the allowlist works).
-    // inherit_native must not be widened, and a caller's Bash(...) allow
-    // pattern is an explicit narrowing this must not undo. No FS/net
-    // sandbox exists, so this is BROADER than codex's seatbelt — disclosed
-    // as the typed write_mechanism capability (owner decision 2026-08-30).
-    allow.add("Bash");
-  }
-  const callerNarrowsReads = [...allow].some((entry) =>
-    CLAUDE_READ_TOOLS.some((tool) => entry.startsWith(`${tool}(`)),
-  );
-  if (spec.access === "workspace_write" && !callerNarrowsReads) {
-    // Under acceptEdits the bridge denies Read/Glob/Grep outside the working
-    // directory, so a run whose subject sits beside its working folder (a
-    // reviewer reading the reviewed folder in place) could read it only via
-    // Bash. Pre-approve them as readonly does; file-tool edits stay confined.
-    // A Read(...) allow pattern covers the whole read family, so it keeps them
-    // all out; deny rules win on their own and a bare deny skips its tool.
-    for (const tool of CLAUDE_READ_TOOLS.filter((t) => !deny.has(t))) allow.add(tool);
-  }
-  if (policy === "off") {
-    for (const tool of CLAUDE_WEB_TOOLS) {
-      deny.add(tool);
-      allow.delete(tool);
-    }
-  } else {
-    for (const tool of CLAUDE_WEB_TOOLS) {
-      if (!deny.has(tool)) allow.add(tool);
-    }
-  }
-  // A browser-tool run allows the injected MCP server's tools (claude names them
-  // `mcp__browser__*`; the server prefix `mcp__browser` allows the whole set).
-  // Gated on policy: under `off` the MCP is never injected (claudeMcpArgs is
-  // empty for browser), so this allow has no tool to match anyway.
-  if (spec.browser && policy !== "off") allow.add("mcp__browser");
-  // Every engine-injected extra MCP server (the delegation belt, etc.) gets its
-  // tool set allowed by server prefix. Extra servers are NOT web egress, so they
-  // are injected regardless of web policy (unlike the browser).
-  for (const server of spec.extra_mcp_servers ?? []) allow.add(`mcp__${server.name}`);
-  return { allow, deny };
-}
-
 async function* runClaude(
   spec: HarnessRunSpec,
   runtime: ClaudeRuntimeDeps,
@@ -595,6 +477,9 @@ async function* runClaude(
   // the interactive path even with no interaction channel (control frames then
   // auto-decline). claudeArgsForSpec(interactive) selects --input-format stream-json.
   const interactive = channel !== undefined || attachmentBlocks.length > 0;
+  // The prompt frame's uuid: live input tells this prompt's own result from
+  // a resumed session's earlier one by it (#536).
+  const promptUuid = randomUUID();
   const profile = spec.credential_profile;
   const authPreference = spec.auth_preference ?? "auto";
   let nativeEnv = claudeNativeEnv(spec.env);
@@ -618,7 +503,7 @@ async function* runClaude(
     const native: ClaudeAuthStatusProbe =
       authPreference === "api_key"
         ? { loggedIn: false, authed: false, authMethod: null, probeError: null }
-        : await runtime.probeAuthStatus(BIN, {
+        : await runtime.probeAuthStatus(resolveClaudeBin(), {
             env: nativeEnv,
             abortSignal,
           });
@@ -712,19 +597,31 @@ async function* runClaude(
   const observeProcessing =
     processing && claudeProcessingObserver(processing, spec.processing_cost_basis!);
   const observePromptCache = claudePromptCacheObserver(spec);
+  // Whether the session's stdin is still open, as the run loop reports it.
+  let inputOpen = false;
   const baseParser = withClaudeApiFailureParser(
     createClaudeParser({
       deniedTools: toolPermissionSets(spec).deny,
       requiredMcpServers: (spec.extra_mcp_servers ?? [])
         .filter((server) => server.required)
         .map((server) => server.name),
+      questionInput: () => (!interactive ? "none" : inputOpen ? "open" : "closed"),
     }),
-    resolveHarnessCommandOnPath(BIN, composeSpawnEnv(spec.env_inheritance, env).PATH ?? "").command
-      ?.entrypoint ?? null,
+    resolveHarnessCommandOnPath(
+      resolveClaudeBin(),
+      composeSpawnEnv(spec.env_inheritance, env).PATH ?? "",
+    ).command?.entrypoint ?? null,
   );
   const events = withClaudeInstructionsFile(spec.instructions, (instructionsPath) =>
     runtime.runCliHarness({
-      bin: BIN,
+      program: CLAUDE_PROGRAM,
+      programVersion: (raw) => {
+        const frame = raw as { type?: string; subtype?: string; claude_code_version?: unknown };
+        return frame?.type === "system" && frame.subtype === "init"
+          ? frame.claude_code_version
+          : null;
+      },
+      bin: resolveClaudeBin(),
       args: claudeArgsForSpec(
         spec,
         interactive,
@@ -754,12 +651,15 @@ async function* runClaude(
       ...(interactive
         ? {
             session: {
-              initialStdin: initialSessionFrames(spec.prompt, attachmentBlocks),
+              initialStdin: initialSessionFrames(spec.prompt, attachmentBlocks, promptUuid),
               matches: isControlRequestFrame,
               handle: (obj, io) => handleControlRequestFrame(obj, io, spec.session_id, channel),
               // Hold stdin while live messages or background work remain.
               closeStdinOn: (obj) => live.closeStdinOn(spec.session_id, obj),
-              onIo: live.onIo,
+              onIo: (io, sessionId) => {
+                inputOpen = io !== null;
+                live.onIo(io, sessionId, promptUuid);
+              },
             },
           }
         : { input: spec.prompt }),

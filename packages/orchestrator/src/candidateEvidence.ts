@@ -9,9 +9,11 @@ import type { AppliedAttemptFacts } from "./delegatedHome.js";
 import type { ProducedOmission } from "./candidateOutputs.js";
 import type { CaptureRefusal } from "./secretDiff.js";
 import { captureRefusedFacts } from "./captureRefusal.js";
+import { pickTelemetry, type TelemetryAttempt } from "./runTelemetryWriter.js";
 import { telemetrySummary, toolWarnings } from "./attemptTelemetry.js";
 import { directoryHasOutput, type DirectoryCandidate } from "./directoryCandidate.js";
 import { gatesPassed } from "@claudexor/review";
+import { withVendorCause } from "./harnessFailure.js";
 
 import type { ContinuityTerminalFacts } from "./continuity-terminal.js";
 import type { CandidateObjectFacts } from "./secretDiff.js";
@@ -31,7 +33,18 @@ export function hasCandidateChanges(run: Pick<CandidateRun, "diff" | "result" | 
 export function capturedNoGitChange(
   run: Pick<CandidateRun, "result" | "files" | "captureRefusal" | "continuationRefusal">,
 ): boolean {
-  if (run.files || run.captureRefusal || run.continuationRefusal || !run.result) return false;
+  return capturedNoGitChangeValue(run) === true;
+}
+
+/** The persisted form of the exact capture fact (#612). `null` means the
+ * producer cannot prove a Git capture was complete (directory output, missing
+ * result, or a refusal); a boolean is known only for a complete Git capture.
+ * Keeping unknown distinct from `false` prevents a failed capture from being
+ * mistaken for an unchanged tree by retention. */
+export function capturedNoGitChangeValue(
+  run: Pick<CandidateRun, "result" | "files" | "captureRefusal" | "continuationRefusal">,
+): boolean | null {
+  if (run.files || run.captureRefusal || run.continuationRefusal || !run.result) return null;
   return run.result.base_tree === run.result.candidate_tree;
 }
 
@@ -92,6 +105,10 @@ export interface CandidateRun extends ContinuityTerminalFacts, CandidateObjectFa
    * Present on success and per-slot failure so a delegated caller reads the
    * applied fact instead of inferring it from the request. */
   applied?: AppliedAttemptFacts;
+  /** Set only by the per-slot catch that saw this run's own attempt fail
+   * before its HOME was decided, so no child started (#648); never read back
+   * from a record. */
+  homeUndecided?: true;
 }
 
 /** Does a declared failure state a typed cause a terminal may speak with: a
@@ -223,19 +240,24 @@ export function partitionCandidates(runs: CandidateRun[]): {
     : runs.length > 0 && runs.every((r) => r.captureRefusal)
       ? captureRefusedFacts()
       : makeOutcomeFacts("failed", { reason: "harness_failed", noChanges });
-  const why = runs
-    .map((r) => {
-      const reason =
-        r.outcomeClass === "interrupted"
-          ? INTERRUPTION_DETAIL[interruptionOf(r)]
-          : (r.errors[0] ?? "failed before producing work");
-      const continued = r.continuationRefusal
-        ? `; its continuation ${r.continuationRefusal.attemptId}: ${r.continuationRefusal.refusal.detail}`
-        : "";
-      return `${r.attemptId}/${r.harnessId}: ${reason}${continued}`;
-    })
-    .join("; ");
-  return { working, facts, why };
+  return { working, facts, why: runs.map(candidateCause).join("; ") };
+}
+
+/** One candidate's own cause: its last try's error with the vendor's own
+ * failure for that try (#633), or its interruption, then any refused
+ * continuation. */
+export function candidateCause(run: CandidateRun): string {
+  const reason =
+    run.outcomeClass === "interrupted"
+      ? INTERRUPTION_DETAIL[interruptionOf(run)]
+      : withVendorCause(
+          run.errors[0] ?? "failed before producing work",
+          run.telemetry.vendorFailure,
+        );
+  const continued = run.continuationRefusal
+    ? `; its continuation ${run.continuationRefusal.attemptId}: ${run.continuationRefusal.refusal.detail}`
+    : "";
+  return `${run.attemptId}/${run.harnessId}: ${reason}${continued}`;
 }
 
 /** The typed limit an interrupted candidate stopped on (#299); context when unrecorded. */
@@ -247,14 +269,8 @@ export function interruptionOf(run: Pick<CandidateRun, "telemetry">): AttemptInt
  * `writeRunTelemetry` and the cancelled terminals consume. ONE owner so the
  * race lane's several hand-offs don't each re-spell the same map (behavior-
  * identical to the inline form). */
-export function candidateRoster(
-  runs: CandidateRun[],
-): { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] {
-  return runs.map((r) => ({
-    attemptId: r.attemptId,
-    harnessId: r.harnessId,
-    telemetry: r.telemetry,
-  }));
+export function candidateRoster(runs: CandidateRun[]): TelemetryAttempt[] {
+  return runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, ...pickTelemetry(r) }));
 }
 
 /** Candidate status projection shared by normal and cancelled race results. */

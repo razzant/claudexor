@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +18,7 @@ import {
   releaseEnvelopeCustody,
   retainForInspection,
 } from "@claudexor/workspace";
+import { writePatchObject } from "@claudexor/util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   runRetentionPass,
@@ -291,6 +293,55 @@ describe("runRetentionPass", () => {
       true,
     );
   });
+  it("retires a captured no-change patch but keeps non-empty, refused, files, and legacy results", async () => {
+    const { project } = sandbox();
+    const rows = [
+      [
+        "run-no-change",
+        "kind: patch\nmeta:\n  capturedNoGitChange: true\n  apply_state: not_applied\n",
+      ],
+      [
+        "run-changed",
+        "kind: patch\nmeta:\n  capturedNoGitChange: false\n  apply_state: not_applied\n",
+      ],
+      ["run-refused", "kind: patch\nmeta:\n  capture_refused: true\n  apply_state: not_applied\n"],
+      ["run-taken", "kind: patch\nmeta:\n  apply_state: not_applied\n"],
+      ["run-taken-young", "kind: patch\nmeta:\n  apply_state: not_applied\n"],
+      ["run-files", "kind: files\nmeta:\n  apply_state: not_applied\n"],
+      ["run-legacy", "kind: patch\nmeta:\n  apply_state: not_applied\n"],
+    ] as const;
+    for (const [runId, workProduct] of rows) {
+      const runDir = seedRun(project.runsDir, runId, { workProduct });
+      if (runId === "run-taken" || runId === "run-taken-young")
+        writeFileSync(
+          join(runDir, "final/delivery_state.yaml"),
+          "applyState: not_applied\ntakenAt: 2026-07-01T00:00:00.000Z\ntakenReason: captured_result\n",
+        );
+    }
+    const receipt = await runRetentionPass(
+      { ...POLICY, keepLastRunsPerProject: 0 },
+      { dry_run: false },
+      deps(project, {
+        records: () =>
+          rows.map(([runId]) => ({
+            runId,
+            state: "succeeded",
+            finishedAt: daysAgo(runId === "run-taken-young" ? 2 : 90),
+          })),
+      }),
+    );
+    expect(receipt.deleted_runs.map((row) => row.run_id).sort()).toEqual([
+      "run-no-change",
+      "run-taken",
+    ]);
+    expect(receipt.kept.actionable).toBe(4);
+    expect(receipt.kept.young).toBe(1);
+    expect(existsSync(join(project.runsDir, "run-taken-young", "final/work_product.yaml"))).toBe(
+      true,
+    );
+    for (const runId of ["run-changed", "run-refused", "run-files", "run-legacy"])
+      expect(existsSync(join(project.runsDir, runId, "final/work_product.yaml"))).toBe(true);
+  });
   it("deletes only old terminal unreferenced trees, keeps newest-N, leaves a tombstone", async () => {
     const { project } = sandbox();
     seedRun(project.runsDir, "run-old-a");
@@ -481,6 +532,43 @@ describe("runRetentionPass", () => {
     expect(receipt.deleted_reviews.map((d) => d.path)).toEqual([canonicalOldReview]);
     expect(existsSync(freshReview)).toBe(true);
     expect(existsSync(foreign)).toBe(true);
+  });
+
+  it("skips held patch, object and anchor cleanup through the shared deferred namespace proof", async () => {
+    const { project, root } = sandbox();
+    const old = new Date(NOW - 90 * DAY_MS);
+
+    const runtime = root;
+    const patch = join(runtime, "patches", `${"a".repeat(64)}.patch`);
+    mkdirSync(join(runtime, "patches"), { recursive: true });
+    writeFileSync(patch, "held patch");
+    utimesSync(patch, old, old);
+
+    const anchor = join(runtime, "anchors", "objects", `${"b".repeat(64)}.patch`);
+    writePatchObject(runtime, anchor, "held anchor");
+    utimesSync(anchor, old, old);
+
+    const store = join(runtime, "git-store");
+    execFileSync("git", ["init", "--bare", "-q", store]);
+    const objectId = execFileSync("git", ["--git-dir", store, "hash-object", "-w", "--stdin"], {
+      input: "held object\n",
+      encoding: "utf8",
+    }).trim();
+    const object = join(store, "objects", objectId.slice(0, 2), objectId.slice(2));
+    utimesSync(object, old, old);
+
+    const deferredRuntimes = () => new Set([root]);
+    const receipt = await runRetentionPass(
+      { ...POLICY, keepLastRunsPerProject: 0 },
+      { dry_run: false },
+      deps(project, { deferredRuntimes }),
+    );
+
+    expect(receipt.deleted_reviews).toEqual([]);
+    expect(receipt.errors).toEqual([]);
+    expect(existsSync(anchor)).toBe(true);
+    expect(existsSync(patch)).toBe(true);
+    expect(existsSync(object)).toBe(true);
   });
 
   it("bounded batches disclose truncation instead of silently stopping", async () => {

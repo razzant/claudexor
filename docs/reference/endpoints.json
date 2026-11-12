@@ -397,7 +397,20 @@
       "summary": "Read the durable last retention pass; never starts cleanup.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "retention_report",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "Include completion history fields; requested only by lockstep clients."
+        }
+      ],
       "response_schema": "ControlGcLastResponse",
       "error_schema": "ControlProblem"
     },
@@ -418,7 +431,7 @@
       "path": "/v2/maintenance/harnesses",
       "mutating": false,
       "applicability": "global",
-      "summary": "Inspect installed vendor CLIs: selected program and version, managed copy, tested pin and maintainability; never logs in or installs.",
+      "summary": "Read the selected vendor program, newest observation, available actions and last operation; never logs in or installs.",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [
@@ -429,7 +442,7 @@
           "repeatable": true,
           "enum": null,
           "schema_ref": null,
-          "description": "Restrict to these installable harness ids (repeat to select several)."
+          "description": "Restrict to these adapter program ids (repeat to select several)."
         },
         {
           "name": "fresh",
@@ -441,7 +454,7 @@
             "false"
           ],
           "schema_ref": null,
-          "description": "Re-inspect instead of returning the cached installation facts."
+          "description": "Selected programs are inspected on every read, including when this is false."
         },
         {
           "name": "checkLatest",
@@ -453,7 +466,7 @@
             "false"
           ],
           "schema_ref": null,
-          "description": "Also read the newest published version where the mechanism supports it; omitted keeps the last observation (null = not checked)."
+          "description": "Also perform the adapter's HTTPS newest-version read; omitted keeps the last typed observation (not_read, available or unavailable)."
         }
       ],
       "response_schema": "ControlHarnessMaintenanceInventory",
@@ -464,7 +477,7 @@
       "path": "/v2/maintenance/operations",
       "mutating": true,
       "applicability": "global",
-      "summary": "Accept one durable update/return of an installed vendor CLI; the 202 handle is not success.",
+      "summary": "Accept one durable vendor Update, Install when missing, or exact-version operation; the 202 handle is not completion.",
       "auth": "loopback_bearer",
       "request_schema": "ControlHarnessMaintenanceCreateRequest",
       "parameters": [],
@@ -974,6 +987,18 @@
       "error_schema": "ControlProblem"
     },
     {
+      "method": "POST",
+      "path": "/v2/resources/:id/release",
+      "mutating": true,
+      "applicability": "global",
+      "summary": "Release a managed ordinary resource: no new reference is admitted afterwards, while already accepted work keeps its bytes.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlResourceReleaseRequest",
+      "parameters": [],
+      "response_schema": "ControlResourceRelease",
+      "error_schema": "ControlProblem"
+    },
+    {
       "method": "GET",
       "path": "/v2/run-applicability",
       "mutating": false,
@@ -1143,7 +1168,7 @@
       "path": "/v2/runs/:id/decision",
       "mutating": true,
       "applicability": "run",
-      "summary": "Record an operator unblock/rerun decision on a run.",
+      "summary": "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, needs-decision, or non-patch results with typed reasons and is idempotent.",
       "auth": "loopback_bearer",
       "request_schema": "ControlRunDecisionRequest",
       "parameters": [
@@ -1330,6 +1355,18 @@
       "request_schema": "RunTimeLimitRequest",
       "parameters": [],
       "response_schema": "RunTimeLimitSnapshot",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/runs/lookup",
+      "mutating": false,
+      "applicability": "run",
+      "summary": "Read, without starting or waiting, the job a POST /v2/runs with this exact body and Idempotency-Key created: found or not_found in the answering store.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlRunStartRequest",
+      "parameters": [],
+      "response_schema": "ControlStartLookupResponse",
       "error_schema": "ControlProblem"
     },
     {
@@ -1988,6 +2025,18 @@
         }
       ],
       "response_schema": "ControlThreadTurnResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/threads/:id/turns/lookup",
+      "mutating": false,
+      "applicability": "thread",
+      "summary": "Read, without creating or waiting, the turn and job a turn create with this exact body and Idempotency-Key recorded: found, turn_only or not_found.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlThreadTurnRequest",
+      "parameters": [],
+      "response_schema": "ControlStartLookupResponse",
       "error_schema": "ControlProblem"
     },
     {

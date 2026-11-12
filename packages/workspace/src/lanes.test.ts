@@ -130,7 +130,7 @@ describe("lane lifecycle owners", () => {
     ensureLaneHomeEnv(rt, "th-live", "codex", null);
     ensureLaneHomeEnv(rt, "th-gone", "codex", null);
 
-    const actions = sweepOrphanLanes(repo, new Set(["th-live"]));
+    const actions = sweepOrphanLanes(projectRuntimeDir(repo), new Set(["th-live"]));
 
     expect(existsSync(join(rt, "lanes", "th-live"))).toBe(true);
     expect(existsSync(join(rt, "lanes", "th-gone"))).toBe(false);
@@ -143,7 +143,19 @@ describe("lane lifecycle owners", () => {
     writeFileSync(join(repo, "x"), "y");
     expect(() => purgeThreadLanes(repo, "th-1")).not.toThrow();
     expect(purgeProfileLanes(repo, "codex", "work")).toBe(0);
-    expect(sweepOrphanLanes(repo, new Set())).toEqual([]);
+    expect(sweepOrphanLanes(projectRuntimeDir(repo), new Set())).toEqual([]);
+  });
+
+  it("accepts an inventoried namespace without a project record and refuses foreign paths", () => {
+    const repo = join(configDir, "no-longer-recorded-project");
+    const runtime = projectRuntimeDir(repo);
+    ensureLaneHomeEnv(runtime, "th-orphan", "codex", null);
+    const foreign = reapMk(join(tmpdir(), "claudexor-lanes-foreign-"));
+    mkdirSync(join(foreign, "lanes", "th-user"), { recursive: true });
+    expect(() => sweepOrphanLanes(foreign, new Set())).toThrow("not an owned runtime namespace");
+    expect(existsSync(join(foreign, "lanes", "th-user"))).toBe(true);
+    expect(sweepOrphanLanes(runtime, new Set())).toHaveLength(1);
+    expect(existsSync(join(runtime, "lanes", "th-orphan"))).toBe(false);
   });
 
   it("all three refuse a lanes dir that links out of the runtime tree", () => {
@@ -157,7 +169,9 @@ describe("lane lifecycle owners", () => {
 
     expect(() => purgeThreadLanes(repo, "th-1")).toThrow(/link; refusing to follow/);
     expect(() => purgeProfileLanes(repo, "codex", "work")).toThrow(/link; refusing to follow/);
-    expect(() => sweepOrphanLanes(repo, new Set())).toThrow(/link; refusing to follow/);
+    expect(() => sweepOrphanLanes(projectRuntimeDir(repo), new Set())).toThrow(
+      /link; refusing to follow/,
+    );
     expect(readFileSync(join(user, "th-1", "SENTINEL"), "utf8")).toBe("user data");
     expect(existsSync(join(user, "th-1", "codex-work"))).toBe(true);
   });
@@ -190,7 +204,7 @@ describe("lane lifecycle owners", () => {
     writeFileSync(join(rt, "lanes", ".DS_Store"), "");
 
     expect(purgeProfileLanes(repo, "codex", "work")).toBe(2);
-    expect(sweepOrphanLanes(repo, new Set(["th-1"]))).toHaveLength(2);
+    expect(sweepOrphanLanes(projectRuntimeDir(repo), new Set(["th-1"]))).toHaveLength(2);
     purgeThreadLanes(repo, "th-1");
     expect(readdirSync(join(rt, "lanes"))).toEqual([]);
   });

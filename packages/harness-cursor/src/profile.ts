@@ -7,6 +7,7 @@ import {
   providerScrubEnv,
   type CredentialAccountProbeReceipt,
   type CredentialProfileProbeOptions,
+  formatNativeArgs,
 } from "@claudexor/core";
 import type { AuthPreference, CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
@@ -378,6 +379,7 @@ export async function probeCursorCredentialAccount(
 }
 
 // Ask + sandbox bound readonly; force approves optional native web unless it is off.
+// Disclosed verbatim by `cursorNativeAccess`; neither adds an OS file boundary.
 export function cursorAccessArgs(spec: HarnessRunSpec): string[] {
   if (spec.access === "readonly") {
     const force = spec.external_context_policy === "off" ? [] : ["--force"];
@@ -386,4 +388,22 @@ export function cursorAccessArgs(spec: HarnessRunSpec): string[] {
   if (spec.access === "workspace_write") return ["--force", "--sandbox", "enabled", "--trust"];
   if (spec.access === "inherit_native") return ["--trust"];
   return ["--force", "--sandbox", "disabled", "--trust"];
+}
+
+/**
+ * Native Plan's createPlan schema cannot carry D-16 WorkReport; native read-only
+ * Ask preserves prompt-owned plan intent and the model-authored final report.
+ * `readonly` access rides the SAME mode: Ask is the only mechanism this CLI has
+ * that withholds the write/shell tools (a tool allowlist, not a file boundary).
+ * Without it a readonly run is a full agent run — `--sandbox enabled` gates
+ * commands, not file edits (proven by a live probe: the agent created a file
+ * under exactly the previous readonly argv).
+ */
+export function cursorModeArgs(spec: HarnessRunSpec): string[] {
+  return spec.intent === "plan" || spec.access === "readonly" ? ["--mode", "ask"] : [];
+}
+
+/** #413: exactly the access arguments this adapter launches Cursor with, in argv order. */
+export function cursorNativeAccess(spec: HarnessRunSpec): string | null {
+  return formatNativeArgs([...cursorAccessArgs(spec), ...cursorModeArgs(spec)]);
 }

@@ -575,6 +575,7 @@ describe("withInactivityWatchdog useful-progress window", () => {
         interaction: {
           interaction_id: "i1",
           source_tool: "AskUserQuestion",
+          delivery: "blocking",
           questions: [],
         },
       } as HarnessEvent;

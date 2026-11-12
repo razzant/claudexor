@@ -36,11 +36,17 @@ function agyErrorRecord(line: string): Record<string, unknown> | null | undefine
 export function createAgyNativeCompletion() {
   let permission: string | undefined;
   let agyError: Record<string, unknown> | undefined;
+  let settingsRejected = false;
   const observeStderr = (text: string): void => {
     permission ??=
       /^jetski: no output produced — a tool required the "([a-z_]+)" permission that headless mode cannot prompt for, so it was auto-denied\./m.exec(
         text,
       )?.[1];
+    // A CLI without `--settings` rejects it while parsing arguments, before any
+    // model or account access: official 1.1.13, 1.3.4 and 1.4.9 print exactly
+    // this line, then usage text that evicts it from the exit detail. Another
+    // wording keeps the run loop's generic exit error.
+    settingsRejected ||= /^flags? provided but not defined: --?settings\b/m.test(text);
     // The last line with the marker decides, and an unreadable one leaves the
     // verdict unknown; a line without the marker changes nothing.
     for (const line of text.split("\n")) {
@@ -116,5 +122,17 @@ export function createAgyNativeCompletion() {
       yield event;
     }
   }
-  return { observeStderr, wrap };
+  /** The run loop's translation of a stderr-only nonzero exit. */
+  const parseStderrFailure = (_tail: string, sessionId: string): HarnessEvent | null =>
+    settingsRejected
+      ? {
+          type: "error",
+          session_id: sessionId,
+          ts: new Date().toISOString(),
+          error:
+            "agy rejected --settings before starting: readonly runs need agy 1.4.10 or newer, whose session-only settings deny commands and writes; update agy. Full and workspace_write runs do not need it.",
+          payload: { code: "agy_session_settings_unsupported" },
+        }
+      : null;
+  return { observeStderr, parseStderrFailure, wrap };
 }

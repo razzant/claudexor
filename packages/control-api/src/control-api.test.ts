@@ -5640,6 +5640,7 @@ describe("DaemonControlApiServer", () => {
       availableHarnesses: [],
       modes: ["ask", "plan", "agent"],
       runControlKeys: [],
+      runDecisionActions: [],
       outputSchemaDialects: [
         {
           dialect: "draft-07",
@@ -6842,11 +6843,120 @@ describe("DaemonControlApiServer", () => {
                   questions: [],
                   requestedAt: "t",
                   timeoutAt: null,
+                  delivery: "blocking",
                 },
               ]
             : [],
       },
     );
+  });
+
+  it("fails a live run's own detail on a failed pending read and degrades only rows of wider reads", async () => {
+    const { daemon, record } = fakeDaemon();
+    const row = (runId: string, state: string, delegatedFromRunId?: string): DaemonRunRecord => ({
+      id: `job-${runId}`,
+      runId,
+      state,
+      params: delegatedFromRunId ? { delegatedFromRunId } : {},
+    });
+    const records = [
+      record,
+      row("run-child-waiting", "running", "run-d1"),
+      row("run-child-broken", "running", "run-d1"),
+      row("run-live-broken", "running"),
+      row("run-done-broken", "succeeded"),
+    ];
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async list() {
+        return records;
+      },
+    };
+    const question = (runId: string) => ({
+      interactionId: `int-${runId}`,
+      runId,
+      attemptId: "a01",
+      harnessId: "claude",
+      sourceTool: "AskUserQuestion",
+      questions: [],
+      requestedAt: "t",
+      timeoutAt: null,
+      delivery: "blocking" as const,
+    });
+    let healed = false;
+    await withDaemonServer(
+      wrapped,
+      async (base) => {
+        const get = (path: string) =>
+          apiFetch(`${base}${path}`, { headers: { authorization: `Bearer ${token}` } });
+        // The addressed live run cannot report a list it could not read.
+        const live = await get("/runs/run-live-broken");
+        expect(live.status).toBe(503);
+        const problem = (await live.json()) as Record<string, unknown>;
+        expect(problem).toMatchObject({ code: "store_busy", retryable: true });
+        expect(problem).not.toHaveProperty("pendingInteractions");
+        // A finished run has no live question left: its results stay readable.
+        const done = await get("/runs/run-done-broken");
+        expect(done.status).toBe(200);
+        expect(
+          ((await done.json()) as { pendingInteractions: unknown[] }).pendingInteractions,
+        ).toEqual([]);
+        // A wider read keeps every row: only the unreadable row loses attention.
+        const list = await get("/runs");
+        expect(list.status).toBe(200);
+        const rows = ((await list.json()) as { runs: Array<Record<string, unknown>> }).runs;
+        expect(rows).toHaveLength(records.length);
+        expect(rows.find((run) => run["runId"] === "run-child-waiting")).toMatchObject({
+          waitingOnUser: true,
+        });
+        expect(rows.find((run) => run["runId"] === "run-live-broken")).toMatchObject({
+          waitingOnUser: false,
+        });
+        // One unreadable child does not take its parent's detail with it.
+        const parent = await get("/runs/run-d1");
+        expect(parent.status).toBe(200);
+        const children = ((await parent.json()) as { children: Array<Record<string, unknown>> })
+          .children;
+        expect(children.find((run) => run["runId"] === "run-child-waiting")).toMatchObject({
+          waitingOnUser: true,
+        });
+        expect(children.find((run) => run["runId"] === "run-child-broken")).toMatchObject({
+          waitingOnUser: false,
+        });
+        // The next healthy read reports the real list: nothing was cached.
+        healed = true;
+        const recovered = await get("/runs/run-live-broken");
+        expect(recovered.status).toBe(200);
+        expect(
+          ((await recovered.json()) as { pendingInteractions: unknown[] }).pendingInteractions,
+        ).toHaveLength(1);
+      },
+      undefined,
+      {
+        pendingInteractions: (runId) => {
+          if (runId.endsWith("-broken")) {
+            if (!healed)
+              throw Object.assign(new Error("engine store is busy: reading interactions"), {
+                status: 503,
+                code: "store_busy",
+                retryable: true,
+              });
+            return [question(runId)];
+          }
+          return runId === "run-child-waiting" ? [question(runId)] : [];
+        },
+      },
+    );
+    // A build without the pending-read service still has a real, empty answer.
+    await withDaemonServer(wrapped, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-live-broken`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(detail.status).toBe(200);
+      expect(
+        ((await detail.json()) as { pendingInteractions: unknown[] }).pendingInteractions,
+      ).toEqual([]);
+    });
   });
 
   it("returns queued job metadata when a daemon job has not produced run artifacts yet", async () => {
@@ -12393,14 +12503,17 @@ describe("DaemonControlApiServer", () => {
                 ],
                 requestedAt: "t",
                 timeoutAt: null,
+                delivery: "blocking",
               },
             ]
           : [],
       answerInteraction: (runId: string, interactionId: string, answers: unknown) => {
         delivered.push({ runId, interactionId, answers });
-        return interactionId === "int-1"
-          ? { status: "delivered" }
-          : { status: "not_found", message: "missing" };
+        if (interactionId === "int-1") return { status: "delivered" };
+        if (interactionId === "int-closed") return { status: "already_resolved" };
+        if (interactionId === "int-invalid")
+          return { status: "rejected", message: "question q needs an answer" };
+        return { status: "not_found", message: "missing" };
       },
     };
     await withDaemonServer(
@@ -12443,12 +12556,29 @@ describe("DaemonControlApiServer", () => {
           },
         });
 
-        const missing = await apiFetch(`${base}/runs/run-d1/interactions/int-404/answer`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ answers: [] }),
-        });
-        expect(missing.status).toBe(404);
+        // A refused answer is a ControlProblem whose context carries the reply;
+        // the macOS app's refusal tests decode these exact bodies.
+        for (const [id, status, message, answerStatus] of [
+          ["int-404", 404, "missing", "not_found"],
+          ["int-closed", 409, "request failed with status 409", "already_resolved"],
+          ["int-invalid", 409, "question q needs an answer", "rejected"],
+        ] as const) {
+          const refused = await apiFetch(`${base}/runs/run-d1/interactions/${id}/answer`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify({ answers: [] }),
+          });
+          expect(refused.status).toBe(status);
+          expect(await refused.json()).toEqual({
+            code: `http_${status}`,
+            message,
+            retryable: false,
+            fieldErrors: {},
+            requiredActions: [],
+            evidenceRefs: [],
+            context: { accepted: false, status: answerStatus },
+          });
+        }
       },
       undefined,
       services,

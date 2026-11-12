@@ -5,7 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "../../artifact-store/src/index.js";
 import * as eventLog from "../../event-log/src/index.js";
 import type { RunWaitManySummary } from "@claudexor/schema";
-import { InteractionRegistry, type InteractionContext } from "./interactions.js";
+import {
+  InteractionRegistry,
+  digestPendingIdentities,
+  type InteractionContext,
+} from "./interactions.js";
 import type { JobRecord } from "./job-record.js";
 import { readRunObservations } from "./run-observation.js";
 import { applyCommandInTx, prepareCommandRow } from "./store/command-rows.js";
@@ -35,13 +39,23 @@ afterEachClosed(async () => {
   };
 });
 
-function question(runId: string, id: string, timeoutAt: string | null = null): InteractionContext {
+function question(
+  runId: string,
+  id: string,
+  timeoutAt: string | null = null,
+  delivery: "blocking" | "async" = "blocking",
+): InteractionContext {
   return {
     runId,
     taskId: "task-a",
     attemptId: "a01",
     harnessId: "claude",
-    request: { interaction_id: id, source_tool: "AskUserQuestion", questions: [] },
+    request: {
+      interaction_id: id,
+      source_tool: "AskUserQuestion",
+      delivery,
+      questions: [],
+    },
     requestedAt: TIME,
     timeoutAt,
   };
@@ -78,7 +92,9 @@ async function fixture() {
   }
   const read = (ids: readonly string[], signal?: AbortSignal, storeId = STORE) =>
     readRunObservations(queries, registry, storeId, ids, signal);
-  return { ...f, root, generation, events, pending, registry, queries, seed, read };
+  const readBlocking = (ids: readonly string[], includeBlocking = true) =>
+    readRunObservations(queries, registry, STORE, ids, undefined, { includeBlocking });
+  return { ...f, root, generation, events, pending, registry, queries, seed, read, readBlocking };
 }
 
 function known(row: RunWaitManySummary | undefined, status: string, pending: boolean): string {
@@ -371,6 +387,134 @@ describe("readRunObservations over real SQLite", () => {
     known(rows[1], "running", true);
     f.registry.dropForRun("run-b");
     await expect(disabled).resolves.toEqual({ kind: "released", reason: "run_terminal" });
+  });
+});
+
+describe("the includeBlocking opt-in over real SQLite (#628)", () => {
+  async function questions() {
+    const f = await fixture();
+    for (const id of ["async", "mixed", "blocking", "legacy", "none", "bad"])
+      f.seed(`job-${id}`, { runId: `run-${id}` });
+    f.seed("job-queued", { state: "queued", runId: undefined });
+    const asked = [
+      f.registry.register(question("run-async", "a1", null, "async"), {}),
+      f.registry.register(question("run-async", "a2", null, "async"), {}),
+      f.registry.register(question("run-mixed", "m1", null, "async"), {}),
+      f.registry.register(question("run-mixed", "m2", null, "blocking"), {}),
+      f.registry.register(question("run-blocking", "b1"), {}),
+      f.registry.register(question("run-bad", "x1", null, "async"), {}),
+    ];
+    // A row an older engine wrote: the migration gave it the historical meaning.
+    f.store
+      .prepare("INSERT INTO interaction(id,pid,run_id,state,request) VALUES(?,?,?,'pending',?)")
+      .run("run-legacy\u0000l1", f.generation.pid, "run-legacy", Buffer.from("{}"));
+    const original = f.pending.pendingIdentityDigest.bind(f.pending);
+    vi.spyOn(f.pending, "pendingIdentityDigest").mockImplementation((runId) => {
+      if (runId === "run-bad") throw new Error("identities unreadable");
+      return original(runId);
+    });
+    const release = () => {
+      for (const id of ["async", "mixed", "blocking", "bad"]) f.registry.dropForRun(`run-${id}`);
+      return Promise.all(asked);
+    };
+    return { f, release };
+  }
+  const targets = [
+    "job-async",
+    "run-mixed",
+    "job-blocking",
+    "job-legacy",
+    "job-none",
+    "job-queued",
+    "missing",
+    "job-bad",
+  ];
+
+  it("returns the compact rows unchanged unless the caller asks, and then marks only pending rows", async () => {
+    const { f, release } = await questions();
+    const compact = await f.read(targets);
+    expect(JSON.stringify(compact)).not.toContain("blocking");
+    expect(compact.slice(0, 5).map((row) => [row.pending, Object.keys(row)])).toEqual([
+      [true, ["status", "pending", "token", "problem"]],
+      [true, ["status", "pending", "token", "problem"]],
+      [true, ["status", "pending", "token", "problem"]],
+      [true, ["status", "pending", "token", "problem"]],
+      [false, ["status", "pending", "token", "problem"]],
+    ]);
+    // An explicit false is the same read, byte for byte.
+    expect(JSON.stringify(await f.readBlocking(targets, false))).toBe(JSON.stringify(compact));
+    const marked = await f.readBlocking(targets);
+    expect(marked).toEqual([
+      { ...compact[0], blocking: false },
+      { ...compact[1], blocking: true },
+      { ...compact[2], blocking: true },
+      { ...compact[3], blocking: true },
+      compact[4],
+      compact[5],
+      problem("not_found"),
+      problem("snapshot_unavailable"),
+    ]);
+    // The opt-in never moves a token, so seen echoes stay valid across readers.
+    expect(marked.map((row) => row.token)).toEqual(compact.map((row) => row.token));
+    expect(Object.keys(marked[0]!)).toEqual(["status", "pending", "token", "problem", "blocking"]);
+    expect(Object.keys(marked[5]!)).toEqual(["status", "pending", "token", "problem"]);
+    await release();
+  });
+
+  it("follows the pending set: answering the blocking question leaves an async-only row", async () => {
+    const { f, release } = await questions();
+    const before = (await f.readBlocking(["job-mixed"]))[0]!;
+    expect(before).toMatchObject({ pending: true, blocking: true });
+    expect(f.registry.answer("run-mixed", "m2", { interaction_id: "m2", answers: [] }).status).toBe(
+      "delivered",
+    );
+    const after = (await f.readBlocking(["job-mixed"]))[0]!;
+    expect(after).toMatchObject({ pending: true, blocking: false });
+    expect(after.token).not.toBe(before.token);
+    expect(f.registry.answer("run-mixed", "m1", { interaction_id: "m1", answers: [] }).status).toBe(
+      "delivered",
+    );
+    const done = (await f.readBlocking(["job-mixed"]))[0]!;
+    expect(done).toEqual({ status: "running", pending: false, token: done.token, problem: null });
+    await release();
+  });
+
+  it("reads one identity pass per run and never a question body or registry detail", async () => {
+    const { f, release } = await questions();
+    const batch = vi.spyOn(f.registry, "snapshotPendingIdentities");
+    const bodies = [vi.spyOn(f.pending, "pendingForRun"), vi.spyOn(f.registry, "pendingForRun")];
+    const blobs = vi.spyOn(f.blobs, "read");
+    await f.readBlocking([...targets, ...targets]);
+    expect(batch).toHaveBeenCalledOnce();
+    expect(f.pending.pendingIdentityDigest).toHaveBeenCalledTimes(6);
+    for (const reader of [...bodies, blobs]) expect(reader).not.toHaveBeenCalled();
+    await release();
+  });
+
+  it("reads a port that cannot tell the kinds apart as blocking, and trusts a stated false", async () => {
+    const record = {
+      jobId: "job-a",
+      runId: "run-a",
+      partition: "global",
+      epoch: EPOCH,
+      state: "running" as const,
+      createdAt: TIME,
+    };
+    const observe = (digest: ReturnType<typeof digestPendingIdentities>) =>
+      readRunObservations(
+        { observationRecords: () => [record] },
+        { snapshotPendingIdentities: async (ids) => new Map(ids.map((id) => [id, digest])) },
+        STORE,
+        ["job-a"],
+        undefined,
+        { includeBlocking: true },
+      );
+    const unknownKind = digestPendingIdentities(["question-a"]);
+    expect((await observe(unknownKind))[0]).toMatchObject({ pending: true, blocking: true });
+    expect((await observe({ ...unknownKind, blocking: false }))[0]).toMatchObject({
+      blocking: false,
+    });
+    expect((await observe(digestPendingIdentities([])))[0]).not.toHaveProperty("blocking");
   });
 });
 

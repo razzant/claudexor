@@ -543,6 +543,13 @@ struct TaskRun: Identifiable, Hashable {
     var outputReadyState: String?
     var webEvidenceStatus: String?
     var webEvidenceDetail: String?
+    /// #118: retrieval strength, what a verified result returned, and evidence scope,
+    /// as the engine projected them.
+    var webVerification: String?
+    var webVerifiedContent: String?
+    var webObservation: WebObservation?
+    /// #118/#413: what was prepared for each route and whether it started; [] when unrecorded.
+    var routeControls: [RouteControlInfo] = []
     var browserRequirementDetail: String?
     var requestedAccess: String?
     var effectiveAccess: String?
@@ -570,6 +577,7 @@ struct TaskRun: Identifiable, Hashable {
     /// Live harness questions awaiting the user (waiting_on_user).
     var pendingInteractions: [PendingInteraction] = []
     var waitingOnUser: Bool = false
+    var serverAsyncQuestionsOnly: Bool = false
     /// Server-persisted operator unblock decision action (accept_risk/override), if any.
     var operatorDecisionAction: String?
     /// Honest in-place application state (projected from the run's work_product):

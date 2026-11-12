@@ -66,6 +66,36 @@
                 "type": "object",
                 "properties": {
                   "status": {
+                    "$ref": "#/definitions/RunWaitManyResult/properties/summaries/items/anyOf/0/properties/status"
+                  },
+                  "pending": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "token": {
+                    "$ref": "#/definitions/RunWaitManyResult/properties/summaries/items/anyOf/0/properties/token"
+                  },
+                  "problem": {
+                    "$ref": "#/definitions/RunWaitManyResult/properties/summaries/items/anyOf/0/properties/problem"
+                  },
+                  "blocking": {
+                    "type": "boolean",
+                    "description": "true while any pending question holds its agent until answered, or its kind is unknown; false when every pending question is async and the agent keeps working."
+                  }
+                },
+                "required": [
+                  "status",
+                  "pending",
+                  "token",
+                  "problem",
+                  "blocking"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
                     "type": "null"
                   },
                   "pending": {

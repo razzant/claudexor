@@ -14,9 +14,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { retainedOutput } from "@claudexor/event-log";
-import type { ResumableCause, RunEvent } from "@claudexor/schema";
+import { commandOutcomeRefinement, type ResumableCause, type RunEvent } from "@claudexor/schema";
+import { wholeCharPrefix } from "@claudexor/util";
 import {
-  wholeCharPrefix,
   type EvidenceIndexInput,
   type EvidenceIndexSources,
   type EvidenceSteering,
@@ -95,7 +95,10 @@ function close(entry: ToolEntry, tool: Row | null): void {
  * `started` never closes anything; repeats add no row. A null target never
  * closes a named start. The untyped companion of a call its result already
  * closed adds nothing; any other untyped edit frame proves neither completion
- * nor its absence ("completion not confirmed").
+ * nor its absence ("completion not confirmed"). A later
+ * `command_outcome_refined` status (#546) replaces the command facts of the
+ * one call its result closed as a background handoff in the same try, once; it
+ * closes nothing itself and names no other call.
  */
 export function toolCallIndex(events: readonly Row[]): EvidenceToolCall[] {
   const entries: ToolEntry[] = [];
@@ -108,6 +111,7 @@ export function toolCallIndex(events: readonly Row[]): EvidenceToolCall[] {
     const path = asRow(ev["payload"])?.["path"];
     const key = typeof path === "string" && path ? path : target;
     const session = ev["session_id"];
+    const refined = commandOutcomeRefinement(ev);
     const name =
       typeof tool?.["name"] === "string" && tool["name"].trim()
         ? tool["name"]
@@ -132,6 +136,12 @@ export function toolCallIndex(events: readonly Row[]): EvidenceToolCall[] {
         close(entry, tool);
         entry.closedByResult = true;
       }
+    } else if (refined) {
+      const named = entries.filter(
+        (entry) => entry.closedByResult && entry.id === refined.useId && entry.session === session,
+      );
+      if (named.length === 1 && asRow(named[0]!.call.commandOutcome)?.["state"] === "backgrounded")
+        named[0]!.call.commandOutcome = refined.outcome;
     } else if (ev["type"] === "file_change" && tool) {
       const sameId =
         id === null ? [] : entries.filter((entry) => entry.id === id && entry.session === session);

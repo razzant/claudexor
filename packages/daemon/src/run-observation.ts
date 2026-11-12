@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
-import { RunObservationRecord, type RunWaitManySummary } from "@claudexor/schema";
+import {
+  RunObservationRecord,
+  type RunWaitManyBlockingSummary,
+  type RunWaitManySummary,
+} from "@claudexor/schema";
 import { digestPendingIdentities, type InteractionRegistry } from "./interactions.js";
 import type { CommandQueries, PendingIdentityDigest } from "./store-contracts.js";
 import { StoreError } from "./store/errors.js";
@@ -16,17 +20,44 @@ function unavailable(
   return { status: null, pending: null, token: null, problem };
 }
 
+/** A caller that asks adds the blocking fact to rows with pending questions;
+ * every other row, and every row of a caller that does not ask, is unchanged. */
+export interface RunObservationOptions {
+  includeBlocking?: boolean;
+}
+
+type Queries = Pick<CommandQueries, "observationRecords">;
+type Interactions = Pick<InteractionRegistry, "snapshotPendingIdentities">;
+
 /** One body-free snapshot pass. It preserves caller positions, not a globally
  * atomic history; only completed observations replace not_observed rows. */
-export async function readRunObservations(
-  queries: Pick<CommandQueries, "observationRecords">,
-  interactions: Pick<InteractionRegistry, "snapshotPendingIdentities">,
+export function readRunObservations(
+  queries: Queries,
+  interactions: Interactions,
   storeId: string,
   ids: readonly string[],
   signal?: AbortSignal,
-): Promise<RunWaitManySummary[]> {
+): Promise<RunWaitManySummary[]>;
+export function readRunObservations(
+  queries: Queries,
+  interactions: Interactions,
+  storeId: string,
+  ids: readonly string[],
+  signal: AbortSignal | undefined,
+  options?: RunObservationOptions,
+): Promise<Array<RunWaitManySummary | RunWaitManyBlockingSummary>>;
+export async function readRunObservations(
+  queries: Queries,
+  interactions: Interactions,
+  storeId: string,
+  ids: readonly string[],
+  signal?: AbortSignal,
+  options: RunObservationOptions = {},
+): Promise<Array<RunWaitManySummary | RunWaitManyBlockingSummary>> {
   const requested = [...ids];
-  const summaries = requested.map(() => unavailable("not_observed"));
+  const summaries: Array<RunWaitManySummary | RunWaitManyBlockingSummary> = requested.map(() =>
+    unavailable("not_observed"),
+  );
   if (signal?.aborted) return summaries;
   const select = queries.observationRecords;
   if (!select)
@@ -90,6 +121,8 @@ export async function readRunObservations(
       summaries[i] = unavailable("snapshot_unavailable");
       continue;
     }
+    // The blocking fact never enters the token: it is fixed per pending
+    // question, whose identity the digest already names.
     const token = observationToken([
       "claudexor.run-observation",
       1,
@@ -101,7 +134,17 @@ export async function readRunObservations(
       record.state,
       pending.digest,
     ]);
-    summaries[i] = { status: record.state, pending: pending.pending, token, problem: null };
+    summaries[i] =
+      options.includeBlocking && pending.pending
+        ? {
+            status: record.state,
+            pending: true,
+            token,
+            problem: null,
+            // A port that cannot tell async from blocking keeps the historical meaning.
+            blocking: pending.blocking !== false,
+          }
+        : { status: record.state, pending: pending.pending, token, problem: null };
   }
   return summaries;
 }

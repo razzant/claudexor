@@ -45,6 +45,8 @@ const ROOT_OWNED_ENTRIES_BY_MODE: Record<DataRootMode, ReadonlySet<string>> = {
     "plugins",
     "quota",
     "workspaces",
+    // Explicitly ephemeral one-shot runs and their envelopes (#503).
+    "one-shot",
   ]),
 };
 /** Owned names the engine expects as plain FILES; every other owned name is a directory. */

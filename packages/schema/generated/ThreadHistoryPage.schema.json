@@ -739,6 +739,11 @@
                           "default": false,
                           "description": "True while an interactive question is awaiting the user's answer."
                         },
+                        "asyncQuestionsOnly": {
+                          "type": "boolean",
+                          "default": false,
+                          "description": "True while questions are pending and every one is async (the agent keeps working); false when none is pending or any is blocking."
+                        },
                         "finishedAt": {
                           "type": [
                             "string",
@@ -1144,6 +1149,9 @@
                       "waitingOnUser": {
                         "$ref": "#/definitions/ThreadHistoryPage/properties/header/properties/headRun/anyOf/0/properties/run/properties/waitingOnUser"
                       },
+                      "asyncQuestionsOnly": {
+                        "$ref": "#/definitions/ThreadHistoryPage/properties/header/properties/headRun/anyOf/0/properties/run/properties/asyncQuestionsOnly"
+                      },
                       "finishedAt": {
                         "$ref": "#/definitions/ThreadHistoryPage/properties/header/properties/headRun/anyOf/0/properties/run/properties/finishedAt"
                       },
@@ -1472,6 +1480,17 @@
                           {
                             "type": "object",
                             "properties": {
+                              "lastVendorError": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "maxLength": 1000
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
                               "requestRefusal": {
                                 "anyOf": [
                                   {
@@ -2096,6 +2115,11 @@
                                 "items": {
                                   "type": "object",
                                   "properties": {
+                                    "lastVendorError": {
+                                      "type": "string",
+                                      "maxLength": 1000,
+                                      "description": "Last vendor diagnostic line, bounded and redacted; never classified."
+                                    },
                                     "harnessId": {
                                       "type": "string",
                                       "minLength": 1,

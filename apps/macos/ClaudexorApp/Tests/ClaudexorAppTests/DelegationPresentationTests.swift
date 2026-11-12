@@ -144,7 +144,7 @@ import Foundation
             encoding: .utf8)
         let row = try #require(source.components(separatedBy: "struct DelegatedRunRow").last)
         #expect(row.contains("await model.hydrateDelegatedChildInteractions(child)"))
-        #expect(row.contains("ForEach(child.pendingInteractions)"))
+        #expect(row.contains("ForEach(child.openQuestions)"))
         #expect(row.contains("InteractionCard(interaction: pending)"))
         #expect(row.contains("Button(\"Retry\")"))
 

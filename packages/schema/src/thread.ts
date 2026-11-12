@@ -285,13 +285,13 @@ export const TurnEnqueueProblem = z
       ),
     /** Whether retry can REPLAY this turn: true when a job was recorded before
      * the failure (the registry holds the params to replay); false when the
-     * enqueue itself threw and no job exists — surfaces then offer "send a new
-     * message" instead of a doomed Retry. */
+     * enqueue itself threw and no job exists, or a managed resource it names was
+     * released — surfaces then offer "send a new message" instead of a doomed Retry. */
     retryable: z
       .boolean()
       .default(true)
       .describe(
-        "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay.",
+        "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay or a managed resource it names was released.",
       ),
     required_actions: z
       .array(z.string().min(1).max(512))

@@ -1,5 +1,48 @@
 # @claudexor/harness-raw-api
 
+## 6.0.0
+
+### Patch Changes
+
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/core@6.0.0
+  - @claudexor/util@6.0.0
+  - @claudexor/secrets@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- 46229c5: Raw API diagnostics are masked whole before they are cut to their bound (#172). The body of a non-OK HTTP answer other than 429 was cut to 500 UTF-16 units first, so a credential-shaped value crossing that cut could leave a fragment too short for the redactor to recognize in the run's events and journals. No raw-API bound splits a surrogate pair any more: the provider's completion error, a non-OK HTTP body, a failed model-catalog read's detail and the model's partial output end before an astral character the cut would split, within their unchanged 500 and 200 UTF-16-unit limits. The partial output stays exact and unmasked, its `partial_output_truncated` flag keeps its meaning, and a 429 still carries only its reset time.
+- 6bce7ce: A Raw API request names only a model somebody chose (#395). The built-in fallbacks are gone and no newer name replaces them: the run's model, the saved `harnesses.<id>.default_model` and then that instance's own `CLAUDEXOR_RAWAPI_MODEL` or `CLAUDEXOR_OPENROUTER_MODEL` decide, before admission and sizing, and the same id reaches the request and its receipt. With no choice the run refuses `model_selection_required` before anything is sent, naming the remedy, and no other model or route stands in. An environment model is now judged by the catalog like any explicit model: a known absence refuses, and an unavailable catalog still forwards it with its note.
+- 6bce7ce: A Raw API route reads no project files, so it no longer plans a project or reviews a change (#137). Change review is admitted only for a harness that declares it reads files itself, whatever it declares about review. An explicit project Plan, Council or reviewer panel on such a route refuses before any request is sent, and automatic selection skips the route with its reason, whether or not it has a saved account. Reviewers a library caller injects through `OrchestratorDeps.reviewers` or passes to `reviewCandidate` are held to the same test: one that does not declare `read_files: true`, or whose discovery fails, refuses the whole list before any reviewer or candidate runs. Ask without a project and Agent implementation stay supported, and a Council merge that cannot read its drafts is refused before it is paid for instead of after.
+- 6bce7ce: Convergence rounds now work on a Raw API route (#551). Each round is produced and applied against the exact candidate the earlier round left, including new files and a native round's work, while the run keeps one delivery base, so the final result from that base holds every round. A packet's file contents are now read from the tree the packet names, so a file that changes while the packet is prepared is never sent under the identity of another version; a file whose line endings Git converts on checkout is sent as the tree stores it, the form its patch applies to, and a file that is not UTF-8 text is left out, or refused if mandatory, instead of being sent with replaced bytes. A refused patch was recorded as a crashed process; it is now the attempt's typed failure with the received usage kept. A patch the model can correct reaches the next round through the ordinary revise prompt, and an impossible state, isolation or digest failure ends the run without a retry. Such a refused round applied nothing, so it never counts as a repeat of the earlier result: after an accepted round, an unapplicable or incomplete patch is followed by the correcting round instead of ending the run as `stuck_no_progress`. The correction spends one of the run's rounds, so `--attempts` and every other existing limit still bound it, the same refusal twice is a repeated failure, and the same accepted result twice against a failing gate still stops as `stuck_no_progress`.
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+  - @claudexor/core@5.1.0
+  - @claudexor/secrets@5.1.0
+
 ## 5.0.2
 
 ### Patch Changes

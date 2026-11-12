@@ -1,6 +1,6 @@
 export * from "./process-timing.js";
 export { CLAUDEXOR_VERSION } from "./version.js";
-export type { PinnedVendorCliVersion } from "./vendor-pin.js";
+export type { VendorCliVersionStamp } from "./vendor-version.js";
 export * from "./secret-names.js";
 export * from "./sensitive-resource.js";
 export * from "./delegation-env.js";
@@ -9,6 +9,7 @@ export * from "./retry-delay.js";
 export * from "./problem-safety.js";
 export * from "./patch-objects.js";
 export * from "./stream-echo.js";
+export * from "./text-preview.js";
 import { sensitiveResourcePolicy } from "./sensitive-resource.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -29,7 +30,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { open } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CLAUDEXOR_VERSION } from "./version.js";
 
@@ -385,8 +386,16 @@ export function projectRuntimeDir(repoRoot: string): string {
  * component or a file, so the walk stops there.
  */
 export function ownedProjectRuntimeDir(repoRoot: string, ...segments: string[]): string {
+  return ownedRuntimeNamespaceDir(projectRuntimeDir(repoRoot), ...segments);
+}
+
+/** The same lifecycle boundary for an inventoried namespace with no remaining root record. */
+export function ownedRuntimeNamespaceDir(runtime: string, ...segments: string[]): string {
+  const namespace = relative(join(userConfigDir(), "projects"), runtime);
+  if (!/^[0-9a-f]{64}$/.test(namespace))
+    throw new Error(`not an owned runtime namespace: ${runtime}`);
   const root = canonicalProjectRoot(userConfigDir());
-  const parts = ["projects", basename(projectRuntimeDir(repoRoot)), ...segments];
+  const parts = ["projects", namespace, ...segments];
   for (let depth = 1; depth <= parts.length; depth++) {
     const component = join(root, ...parts.slice(0, depth));
     const stat = lstatSync(component, { throwIfNoEntry: false });
@@ -517,3 +526,4 @@ export function engineBuildIdentity(): EngineBuildIdentity {
 export * from "./node-heap-args.js";
 export * from "./daemon-heap.js";
 export { readFileUtf8BoundedSync } from "./bounded-file-read.js";
+export * from "./run-stores.js";

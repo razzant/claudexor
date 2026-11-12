@@ -5,9 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CLAUDE_BRIDGE_CONTENT,
   CLAUDE_BRIDGE_MARKER,
+  CURRENT_CLAUDE_BRIDGE_GENERATION,
   LEGACY_CLAUDE_BRIDGE_CONTENT,
+  bridgeCreatedMarkerGeneration,
   ensureClaudeBridge,
   isGeneratedClaudeBridge,
+  writeBridgeCreatedMarker,
 } from "./claude-bridge.js";
 
 describe("ensureClaudeBridge (D-14 layer 3)", () => {
@@ -101,9 +104,16 @@ describe("isGeneratedClaudeBridge (A-3: byte-equality, not marker substring)", (
     expect(isGeneratedClaudeBridge(dir)).toBe(true);
   });
 
-  it("keeps pristine bridges from older runs excluded after an upgrade", () => {
+  it("matches each generation's exact bytes and never the other's", () => {
+    // A pristine bridge from before CX590 stays recognizable after an upgrade,
+    // but only as the legacy generation: a rewrite between generations is an edit.
     writeFileSync(join(dir, "CLAUDE.md"), LEGACY_CLAUDE_BRIDGE_CONTENT);
-    expect(isGeneratedClaudeBridge(dir)).toBe(true);
+    expect(isGeneratedClaudeBridge(dir, "legacy-v1")).toBe(true);
+    expect(isGeneratedClaudeBridge(dir, "envelope-v1")).toBe(false);
+    expect(isGeneratedClaudeBridge(dir)).toBe(false);
+    writeFileSync(join(dir, "CLAUDE.md"), CLAUDE_BRIDGE_CONTENT);
+    expect(isGeneratedClaudeBridge(dir, "legacy-v1")).toBe(false);
+    expect(isGeneratedClaudeBridge(dir, "envelope-v1")).toBe(true);
   });
 
   it("is FALSE for a candidate edit that keeps the marker (the A-3 work-loss bug)", () => {
@@ -123,5 +133,37 @@ describe("isGeneratedClaudeBridge (A-3: byte-equality, not marker substring)", (
     writeFileSync(join(dir, "target.md"), CLAUDE_BRIDGE_CONTENT);
     symlinkSync(join(dir, "target.md"), join(dir, "CLAUDE.md"));
     expect(isGeneratedClaudeBridge(dir)).toBe(false);
+  });
+});
+
+describe("bridgeCreatedMarkerGeneration (created-this-run fact names its bytes)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudexor-bridge-marker-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
+
+  const writeMarker = (marker: unknown) =>
+    writeFileSync(join(dir, "bridge-created.json"), JSON.stringify(marker) + "\n");
+
+  it("reads back the current generation the writer records", () => {
+    writeBridgeCreatedMarker(dir, "env-1");
+    expect(bridgeCreatedMarkerGeneration(dir, "env-1")).toBe(CURRENT_CLAUDE_BRIDGE_GENERATION);
+    expect(bridgeCreatedMarkerGeneration(dir, "env-2")).toBeNull();
+  });
+
+  it("treats an id-only marker as the pre-CX590 legacy writer", () => {
+    writeMarker({ envelope_id: "env-1", created_at: "2026-11-01T00:00:00.000Z" });
+    expect(bridgeCreatedMarkerGeneration(dir, "env-1")).toBe("legacy-v1");
+  });
+
+  it("fails toward capture on an unknown generation, a foreign id or no marker", () => {
+    expect(bridgeCreatedMarkerGeneration(dir, "env-1")).toBeNull();
+    writeMarker({ envelope_id: "env-1", generation: "envelope-v9" });
+    expect(bridgeCreatedMarkerGeneration(dir, "env-1")).toBeNull();
+    writeMarker({ envelope_id: "env-other", generation: CURRENT_CLAUDE_BRIDGE_GENERATION });
+    expect(bridgeCreatedMarkerGeneration(dir, "env-1")).toBeNull();
   });
 });

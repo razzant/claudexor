@@ -25,17 +25,15 @@ import { redactSecrets } from "@claudexor/util";
  */
 export const AGY_READ_ANYWHERE_RULE = "read_file(*)";
 
+/**
+ * The grant's state, and the profile's `permissions` object with the grant in
+ * it whenever the file could be read and parsed, so a session policy can be
+ * composed from the rules the vendor reads even when saving the grant failed.
+ * `permissions` is absent only when the settings themselves are unknown.
+ */
 export type AgyReadGrant =
-  { state: "present" | "added" } | { state: "unavailable"; reason: string };
-
-/** The readonly capability delta, disclosed in the child's own instructions. */
-export function agyReadonlyAccessNote(readGrant: AgyReadGrant): string {
-  const reads =
-    readGrant.state === "unavailable"
-      ? "A read outside the workspace folder may be refused without asking."
-      : "Your file tools may read any file or folder on this machine, inside or outside the workspace.";
-  return `ENGINE NOTE (read-only Antigravity run): ${reads} Shell commands are unavailable in this mode: a command is refused without asking and can end the run without an answer, so inspect files with your file tools instead.`;
-}
+  | { state: "present" | "added"; permissions: Record<string, unknown> }
+  | { state: "unavailable"; reason: string; permissions?: Record<string, unknown> };
 
 /** agy has no settings-path variable: the profile HOME selects this file. */
 export function agySettingsPath(profileHome: string): string {
@@ -46,8 +44,8 @@ export function agySettingsPath(profileHome: string): string {
  * Ensure the Claudexor-owned profile settings carry the read grant, keeping
  * every other key and rule. The file belongs to the whole profile, so the
  * grant applies to every run on it. Unreadable or unexpected settings are
- * never rewritten: the run proceeds with the vendor's own read policy and the
- * caller discloses the reason.
+ * never rewritten and the caller discloses the reason; a grant that could not
+ * be saved still returns the rules as read.
  */
 export function ensureAgyReadGrant(profileHome: string): AgyReadGrant {
   const path = agySettingsPath(profileHome);
@@ -75,17 +73,22 @@ export function ensureAgyReadGrant(profileHome: string): AgyReadGrant {
   if (!isRecord(permissions)) return unavailable("settings.json permissions is not an object");
   const allow = permissions["allow"] ?? [];
   if (!Array.isArray(allow)) return unavailable("settings.json permissions.allow is not a list");
-  if (allow.includes(AGY_READ_ANYWHERE_RULE)) return { state: "present" };
-  const next = {
-    ...settings,
-    permissions: { ...permissions, allow: [...allow, AGY_READ_ANYWHERE_RULE] },
-  };
+  if (allow.includes(AGY_READ_ANYWHERE_RULE)) return { state: "present", permissions };
+  const granted = { ...permissions, allow: [...allow, AGY_READ_ANYWHERE_RULE] };
   try {
-    writeAtomically(path, `${JSON.stringify(next, null, 2)}\n`, mode);
+    writeAtomically(
+      path,
+      `${JSON.stringify({ ...settings, permissions: granted }, null, 2)}\n`,
+      mode,
+    );
   } catch (error) {
-    return unavailable(`settings.json could not be written: ${message(error)}`);
+    return {
+      state: "unavailable",
+      reason: `settings.json could not be written: ${message(error)}`,
+      permissions: granted,
+    };
   }
-  return { state: "added" };
+  return { state: "added", permissions: granted };
 }
 
 /** Same-directory temp file + rename: a concurrent run reads the old or the

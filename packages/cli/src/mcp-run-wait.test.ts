@@ -284,6 +284,30 @@ describe("bounded durable run observation", () => {
     });
   });
 
+  it.each([
+    [70_000, "byte_limit"],
+    [200_000, "oversized_frame"],
+  ] as const)(
+    "wakes with interactions when the next event is a %i-character question no page holds (#651)",
+    async (chars, omission) => {
+      // Its body is past the pending budget too: claudexor_run_interactions returns it.
+      const question = { id: "q1", question: "q".repeat(40_000), options: [], multi_select: false };
+      fixture(
+        [frame(11) + frame(12, "q".repeat(chars), "interaction.requested")],
+        snapshot("running", 12, [{ ...interaction, questions: [question] }]),
+      );
+      expect(await runWaitQuery({ runId: "run-1", afterSeq: 10 })).toMatchObject({
+        nextSeq: 11,
+        eventOmission: omission,
+        oversizedEvent: { seq: 12, type: "interaction.requested" },
+        wakeReason: "interactions",
+        pendingInteractions: [],
+        pendingInteractionCount: 1,
+        omittedInteractions: 1,
+      });
+    },
+  );
+
   it("names a page-sized event without advancing, and keeps a fit event below the cap unnamed", async () => {
     fixture([frame(11, "x".repeat(70_000))]);
     expect(await runWaitQuery({ runId: "run-1", afterSeq: 10 })).toMatchObject({

@@ -18,9 +18,11 @@ import {
   type ContinuityTerminalFacts,
 } from "./continuity-terminal.js";
 import {
+  attemptCauseLines,
   attemptVendorFailure,
   dominantHarnessFailureCategory,
   harnessFailureNextActions,
+  withVendorCause,
 } from "./harnessFailure.js";
 import { poolFailure } from "./pool-attempt-evidence.js";
 import { writeFailure, type declaredFailure } from "./runTerminalResults.js";
@@ -74,9 +76,11 @@ export function readOnlyChainFailureResult(
       : null;
   // A typed limit that ended the last attempt is its outcome (#299), below budget and web.
   const interruption = budgetMapping || webBlocked ? null : attemptInterruption(last?.telemetry);
+  // The last attempt speaks, with the vendor's own failure for its last try (#633).
+  const vendor = attemptVendorFailure(attemptTelemetries, last?.attemptId);
   const { message: singleError, poolAttempts } = poolFailure(
     budgetMapping?.safeMessage ??
-      last?.error ??
+      (last?.error != null ? withVendorCause(last.error, vendor) : null) ??
       (budgetStopped ? "budget exhausted before any attempt" : "harness failed"),
     attempts,
   );
@@ -122,7 +126,7 @@ export function readOnlyChainFailureResult(
       resetsAt: roDeclared?.resetsAt ?? null,
       requestRefusal: roDeclared?.requestRefusal,
       quotaRefusal: roDeclared?.quotaRefusal,
-      vendorFailure: attemptVendorFailure(attemptTelemetries, last?.attemptId),
+      vendorFailure: vendor,
       poolAttempts,
       nextActions: interruption
         ? interruptionNextActions(interruption)
@@ -213,7 +217,7 @@ export function deepScanFailureResult(input: ReadonlyTerminalContext): Orchestra
   const { message, poolAttempts } = poolFailure(
     scanBudgetMapping
       ? scanBudgetMapping.safeMessage
-      : attempts.map((a) => `${a.attemptId}/${a.harnessId}: ${a.error ?? "failed"}`).join("\n"),
+      : attemptCauseLines(attempts, attemptTelemetries).join("\n"),
     attempts,
   );
   input.writeTelemetry();

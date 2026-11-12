@@ -26,20 +26,28 @@ import {
   createDirectoryEnvelope,
   type CapturedWorkspaceFiles,
 } from "./directory-workspace.js";
-import { processStartTime, readEnvelopeRecoveryRecord } from "./envelope-recovery.js";
+import {
+  envelopeBaseIn,
+  physicalEnvelopeBase,
+  processStartTime,
+  readEnvelopeRecoveryRecord,
+} from "./envelope-recovery.js";
 import {
   isRetainedEnvelope,
   liveEnvelopeCustody,
   writeEnvelopeCustody,
 } from "./envelope-custody.js";
 import { snapshotLegacyDirectoryBaseline } from "./plain-diff.js";
+import { rawAcceptedPaths, rawAwareSnapshot } from "./raw-patch.js";
 import { capturePlainDiff } from "./plain-diff-capture.js";
 import {
   CLAUDE_BRIDGE_BASENAME,
-  bridgeCreatedMarkerMatches,
+  CURRENT_CLAUDE_BRIDGE_GENERATION,
+  bridgeCreatedMarkerGeneration,
   ensureClaudeBridge,
   isGeneratedClaudeBridge,
   writeBridgeCreatedMarker,
+  type ClaudeBridgeGeneration,
 } from "./claude-bridge.js";
 import {
   branchDelete,
@@ -47,7 +55,6 @@ import {
   isolatedCloneAdd,
   isGitRepo,
   revParse,
-  snapshotTree,
   statusPorcelain,
   stashCreate,
   worktreePrune,
@@ -95,11 +102,8 @@ export interface CreateEnvelopeOptions {
   custody?: { runId: string; runDir: string };
 }
 
-/**
- * Manages WorkspaceEnvelopes: an isolated Git checkout plus scoped HOME and
- * per-harness config dirs, and dirty-tree handling. Claudexor owns these
- * envelopes (it does not rely on a harness's native --worktree).
- */
+/** Manages WorkspaceEnvelopes: an isolated Git checkout plus scoped HOME and per-harness
+ * config dirs, and dirty-tree handling; Claudexor owns them (no native --worktree). */
 export { processStartTime } from "./envelope-recovery.js";
 
 export class WorkspaceManager {
@@ -122,7 +126,7 @@ export class WorkspaceManager {
     this.runtimeRoot = options.runtimeRoot ?? projectRuntimeDir(repoRoot);
     this.projectRoot = options.projectRoot;
     this.artifactOwnership = new ArtifactOwnership((env) =>
-      join(this.envelopeBase(env.task_id, env.attempt_id), "artifact-created.json"),
+      join(this.baseOf(env), "artifact-created.json"),
     );
   }
 
@@ -130,27 +134,14 @@ export class WorkspaceManager {
     return join(this.runtimeRoot, "workspaces");
   }
 
-  /**
-   * The scoped envelope base for a task/attempt. The sole on-disk root we
-   * delete on dispose — so the ids MUST be path-safe segments and the resolved
-   * base MUST stay inside the workspaces dir (a crafted `../` id could
-   * otherwise turn dispose() into an arbitrary recursive delete).
-   */
+  /** The envelope base under this manager's namespace (ids fenced, `envelopeBaseIn`). */
   private envelopeBase(taskId: string, attemptId: string): string {
-    const idPattern = /^[A-Za-z0-9._-]+$/;
-    for (const [label, id] of [
-      ["taskId", taskId],
-      ["attemptId", attemptId],
-    ] as const) {
-      if (!idPattern.test(id) || id === "." || id === "..") {
-        throw new WorkspaceError(`${label} '${id}' is not a safe path segment`);
-      }
-    }
-    const base = join(this.workspacesDir(), taskId, attemptId);
-    if (!base.startsWith(this.workspacesDir() + sep)) {
-      throw new WorkspaceError(`envelope base escapes the workspaces dir: ${base}`);
-    }
-    return base;
+    return envelopeBaseIn(this.workspacesDir(), taskId, attemptId);
+  }
+
+  /** Where `env` physically is: its recorded engine-owned base, else this namespace's. */
+  private baseOf(env: WorkspaceEnvelope): string {
+    return physicalEnvelopeBase(env, this.workspacesDir());
   }
 
   ensureArtifactDirectory(env: WorkspaceEnvelope): string {
@@ -190,6 +181,7 @@ export class WorkspaceManager {
         envelope_id: envelopeId,
         workspace_mode: workspaceMode,
         workspace_kind: opts.workspaceKind,
+        execution_root: this.repoRoot,
       }) + "\n",
     );
 
@@ -221,7 +213,7 @@ export class WorkspaceManager {
           this.projectRoot,
           await repositoryObjectFormat(this.repoRoot),
         );
-      const baseSha = !readOnly && gitRepo ? await snapshotTree(this.repoRoot) : null;
+      const baseSha = !readOnly && gitRepo ? await rawAwareSnapshot(this.repoRoot) : null;
       if (!readOnly && !gitRepo) snapshotLegacyDirectoryBaseline(this.repoRoot, base);
       return WorkspaceEnvelopeSchema.parse({
         id: envelopeId,
@@ -251,16 +243,17 @@ export class WorkspaceManager {
 
     const porcelain = await statusPorcelain(this.repoRoot);
     const dirty = porcelain.trim().length > 0;
-    if (dirty) {
-      if (dirtyPolicy === "refuse") {
-        throw new WorkspaceError(
-          "working tree is dirty; commit/stash or set dirty_policy: snapshot",
-        );
-      }
+    if (dirty && dirtyPolicy === "refuse") {
+      throw new WorkspaceError("working tree is dirty; commit/stash or set dirty_policy: snapshot");
+    }
+    // A snapshot base holds what an accepted raw patch left in this tree: status
+    // cannot show an ignored one, and the next candidate would start without it (#594).
+    const keep = dirtyPolicy === "snapshot" ? await rawAcceptedPaths(this.repoRoot, baseRef) : [];
+    if (dirty || keep.length > 0) {
       // snapshot: a stash-create commit becomes the base SHA without touching
       // the live tree. (The include/stash aliases and the untested `copy`
       // variant were retired in the v0.15 triage.)
-      const snap = await stashCreate(this.repoRoot);
+      const snap = await stashCreate(this.repoRoot, {}, [], keep);
       if (snap) baseSha = snap;
     }
 
@@ -406,14 +399,15 @@ export class WorkspaceManager {
       // Non-git fallback: diff the best-effort cpSync baseline against the live
       // tree. Missing or failed capture is an INCOMPLETE capture, never a safe
       // no-change result.
-      const baseline = join(this.envelopeBase(env.task_id, env.attempt_id), "baseline");
+      const baseline = join(this.baseOf(env), "baseline");
       return capturePlainDiff(baseline, env.repo_root, artifactRelative);
     }
     // Exclude the envelope-local generated CLAUDE.md bridge (INV-113) from the
     // candidate patch — by EXACT path, and only when BOTH conditions hold: (1)
     // THIS run's prep actually created the bridge (the recorded created-this-run
-    // fact), and (2) the worktree file is still BYTE-IDENTICAL to the generated
-    // bridge content. A git pathspec cannot express either condition, so the
+    // fact), and (2) the worktree file is still BYTE-IDENTICAL to the bytes
+    // that fact says were written (current, or legacy for a pre-CX590
+    // envelope). A git pathspec cannot express either condition, so the
     // decision is computed in code here. Condition (1) closes the A-3 residual:
     // byte-equality alone cannot tell our freshly written bridge from a candidate
     // that rewrote a PRE-EXISTING committed CLAUDE.md to exactly the bridge bytes,
@@ -424,15 +418,18 @@ export class WorkspaceManager {
     // the marker-bound artifact-child exclusion. The fact survives a manager
     // restart via the persisted bridge-created.json marker (envelope-id-bound),
     // read only when the in-memory set lacks the id.
+    const bridgeGeneration = this.bridgeCreatedGeneration(env);
     const bridgeExcludes =
-      this.bridgeCreatedFact(env) && isGeneratedClaudeBridge(env.worktree_path)
+      bridgeGeneration !== null && isGeneratedClaudeBridge(env.worktree_path, bridgeGeneration)
         ? [`:(exclude,top)${CLAUDE_BRIDGE_BASENAME}`]
         : [];
+    // What an accepted raw patch wrote is the candidate's, ignored or not (#594).
+    const keep = await rawAcceptedPaths(env.worktree_path, env.base_sha ?? "HEAD");
     const captured = await captureWorkingTreeTransient(
       env.worktree_path,
       env.base_sha ?? "HEAD",
       [...artifactExcludes, ...bridgeExcludes],
-      { projectRoot: this.projectRoot ?? env.repo_root, owner },
+      { projectRoot: this.projectRoot ?? env.repo_root, owner, keep },
     );
     return {
       diff: captured.patch,
@@ -460,18 +457,19 @@ export class WorkspaceManager {
     const owned = this.ownedArtifactRelativeDirectory(env);
     return captureDirectoryWorkspace({
       executionRoot: env.worktree_path,
-      envelopeRoot: this.envelopeBase(env.task_id, env.attempt_id),
+      envelopeRoot: this.baseOf(env),
       runRoot,
       ...options,
       excludedPaths: owned ? [owned] : [],
     });
   }
 
-  /** The created-this-run bridge fact for diff(): in-memory set first, else
-   *  the persisted envelope-id-bound marker (survives manager recreation). */
-  private bridgeCreatedFact(env: WorkspaceEnvelope): boolean {
-    if (this.bridgeCreatedEnvelopes.has(env.id)) return true;
-    return bridgeCreatedMarkerMatches(this.envelopeBase(env.task_id, env.attempt_id), env.id);
+  /** The created-this-run bridge fact for diff(), naming the generation whose
+   *  bytes were written: in-memory set first (this process's writer), else the
+   *  persisted envelope-id-bound marker (survives manager recreation). */
+  private bridgeCreatedGeneration(env: WorkspaceEnvelope): ClaudeBridgeGeneration | null {
+    if (this.bridgeCreatedEnvelopes.has(env.id)) return CURRENT_CLAUDE_BRIDGE_GENERATION;
+    return bridgeCreatedMarkerGeneration(this.baseOf(env), env.id);
   }
 
   /** Keep this envelope on disk past `dispose()`: it holds the only exact copy
@@ -498,9 +496,7 @@ export class WorkspaceManager {
     const inPlace = env.worktree_path === env.repo_root;
     if (inPlace && !keepArtifacts) this.artifactOwnership.removeDirectory(env);
     if (!inPlace && env.workspace_kind !== "directory") {
-      const privateClone = existsSync(
-        join(this.envelopeBase(env.task_id, env.attempt_id), "private-clone-v1"),
-      );
+      const privateClone = existsSync(join(this.baseOf(env), "private-clone-v1"));
       if (!privateClone) {
         try {
           await worktreeRemove(this.repoRoot, env.worktree_path);
@@ -522,7 +518,7 @@ export class WorkspaceManager {
     // under the external runtime workspaces root, so deriving from ids prevents
     // dispose() from ever deleting the live tree.
     try {
-      rmSync(this.envelopeBase(env.task_id, env.attempt_id), { recursive: true, force: true });
+      rmSync(this.baseOf(env), { recursive: true, force: true });
     } catch {
       /* best-effort */
     }

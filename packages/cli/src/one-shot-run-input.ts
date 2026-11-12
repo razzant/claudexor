@@ -11,6 +11,8 @@ export function oneShotRunInput(p: ControlRunStartRequest): RunInput {
     mode: p.mode,
     instructions: p.instructions,
     executionRoot: p.execution.workspaceRoot,
+    // A declared one-shot root keeps its run state in the one-shot namespace (#503).
+    ephemeral: p.scope.kind === "project" && p.scope.ephemeral === true,
     inPlace: p.execution.isolation === "live",
     delegated: p.execution.delegated,
     workspaceKind: p.execution.workspaceKind,
