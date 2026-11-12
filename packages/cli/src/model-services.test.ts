@@ -3121,24 +3121,36 @@ describe("fresh decisions after catalog waits", () => {
       expect(reads(f)).toEqual(["a"]);
     },
   );
-  it.each(["unchanged", "exhausted"])(
-    "a pin whose own quota is %s during its read keeps the outcome of an immediate repeat",
-    async (quota) => {
+  it.each(["nothing", "its quota exhausted", "its harness disabled"])(
+    "a pin with %s during its read gets the typed outcome of an immediate repeat",
+    async (change) => {
       const f = await fixture({ lazy: true });
       const raw = f.catalog.getMockImplementation()!;
       f.catalog.mockImplementationOnce(async (context) => {
-        if (quota === "exhausted") f.quota.upsert(spent("codex", "a"));
+        if (change === "its quota exhausted") f.quota.upsert(spent("codex", "a"));
+        if (change === "its harness disabled")
+          f.cfg.harnesses.codex = GlobalConfig.parse({
+            harnesses: { codex: { enabled: false } },
+          }).harnesses.codex!;
         return raw(context);
       });
-      const first = await f.services.routes.modelCatalog("codex", "a").catch((e) => e);
-      const repeat = await f.services.routes.modelCatalog("codex", "a").catch((e) => e);
-      expect(first.problem).toEqual(repeat.problem);
-      if (quota === "unchanged") expect(first.credentialProfileId).toBe("a");
-      else
-        expect(first.problem).toMatchObject({
-          code: "subscription_window_exhausted",
-          context: { resetsAt: expect.any(String) },
-        });
+      const outcome = async () => {
+        const result = await f.services.routes.modelCatalog("codex", "a").catch((e) => e);
+        const { code, message, problem, credentialProfileId } = result;
+        return { code, message, problem, credentialProfileId };
+      };
+      const first = await outcome();
+      expect(first).toEqual(await outcome());
+      expect(first).toMatchObject(
+        change === "nothing"
+          ? { credentialProfileId: "a" }
+          : change === "its harness disabled"
+            ? { code: "model_source_unavailable" }
+            : {
+                code: "subscription_window_exhausted",
+                problem: { context: { resetsAt: expect.any(String) } },
+              },
+      );
     },
   );
   it.each(["a and b", "b"])(

@@ -1275,10 +1275,11 @@ invariant or operator decision before proceeding.
   renew the physical probe date; negative, unknown, failed or stale probes
   and display projections cannot admit through this rule. After each wait a
   consumer judges again only the account it waited for, from that account's
-  own live facts (enablement, quota and headroom, a revoked or unusable
-  credential, refusals, substitutions, capability marks); the selection keeps
-  its fresh catalogs and exclusions, and a change about another account never
-  restarts it or re-reads a catalog. Identical in-flight raw probes and
+  own live facts (enablement, live usage against the headroom threshold read
+  at admission, a revoked or unusable credential, refusals, substitutions,
+  capability marks); the selection keeps its fresh catalogs and exclusions,
+  and a change about another account never restarts it or re-reads a
+  catalog. Identical in-flight raw probes and
   catalog reads may share I/O, with independent waiter cancellation, but
   never share a selection or retain a completed admission catalog; different
   or unknown identities run as separate reads. A read ends when its last

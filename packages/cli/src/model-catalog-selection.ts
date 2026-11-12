@@ -16,7 +16,7 @@ import {
 import { describeCodexClientVersion } from "@claudexor/harness-codex";
 import { redactSecrets } from "@claudexor/util";
 import { bindModelAccountEvidence } from "./model-account-evidence.js";
-import { modelError } from "./model-service-refusals.js";
+import { modelError, refusalProblem } from "./model-service-refusals.js";
 
 type SoftObservation = Pick<
   PreProgressRefusalObservation,
@@ -53,8 +53,8 @@ export async function selectModelCatalog(args: {
   refusals?: () => readonly PreProgressRefusalObservation[] | undefined;
   /** Live served-model substitutions: that account answered this model with another one. */
   substitutions?: () => readonly SoftObservation[];
-  /** The picked account's own live facts after a wait: its refusal, or null. */
-  recheck: (profile: CredentialProfile) => Promise<ControlProblem | null>;
+  /** The picked account's own live facts after a wait: a pin's refusal, or null. */
+  recheck: (profile: CredentialProfile) => Promise<Error | null>;
   /** Set when the clean-alternative scan passes an account with no capability row:
    * a soft observation may belong to one request, so that account may still serve. */
   seen?: { capable: boolean };
@@ -70,9 +70,8 @@ export async function selectModelCatalog(args: {
   // it was for is judged again; unrelated facts never restart or re-read.
   const refusedNow = async (profile: CredentialProfile) => {
     const refusal = await args.recheck(profile);
-    if (refusal && args.account.mode === "pin")
-      throw Object.assign(modelError(refusal.code, refusal.message), { problem: refusal });
-    if (refusal) refusals.set(profile.profile_id, refusal);
+    if (refusal && args.account.mode === "pin") throw refusal;
+    if (refusal) refusals.set(profile.profile_id, refusalProblem(refusal));
     return refusal !== null;
   };
   for (;;) {

@@ -3214,9 +3214,10 @@ last leaving aborts, and shutdown or a change of that read's own credential
 generation or harness program ends it (a default-subject change moves no
 registered row's generation). After each wait a consumer judges again only the
 account it waited for (`liveAccountRefusal`: enablement, a revoked or unusable
-credential, and quota/headroom as a strict pin of that account is judged;
-refusals, substitutions and capability marks are re-read by the catalog
-stage). It keeps its fresh catalogs and exclusions: a change about another
+credential, and live usage against the headroom threshold read at admission, as
+a strict pin of that account is judged; refusals, substitutions and capability
+marks are re-read by the catalog stage). It keeps its fresh catalogs and
+exclusions: a change about another
 account neither restarts the selection nor re-reads a catalog, and an account
 whose read failed is not tried again. A pool refusal reports the causes of its
 own decision, so an account blocked now reports that block rather than an

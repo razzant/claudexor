@@ -16,8 +16,9 @@ pin and `last_positive_after_timeout` distinction is unchanged.
 Concurrent identical login probes and catalog HTTP reads share only raw I/O.
 Unknown or different identities never join and never cancel each other. After
 each wait a consumer rechecks only the account it waited for: its enablement,
-quota and headroom, a revoked or unusable credential, refusals, substitutions
-and capability marks. It keeps the catalogs it read and its exclusions; a change
+live usage against the headroom threshold read at admission, a revoked or
+unusable credential, refusals, substitutions and capability marks. It keeps the
+catalogs it read and its exclusions; a change
 about another account never restarts the selection or re-reads a catalog, and
 an account whose read failed is not tried again in that selection. Selection,
 capability binding/reservation and release remain its own work. The last

@@ -46,7 +46,7 @@ import { historyBoundTo, modelCapabilityOutcome } from "./model-capability-outco
 import { admitModelAccount, liveAccountRefusal } from "./model-account-admission.js";
 import { ModelLoginReadiness } from "./model-login-readiness.js";
 import { modelCredentialRead } from "./model-credential-read.js";
-import { modelError, poolExhausted } from "./model-service-refusals.js";
+import { modelError, poolExhausted, refusalProblem } from "./model-service-refusals.js";
 
 interface ModelSource {
   adapter: ModelAdapter;
@@ -225,7 +225,7 @@ export function createModelServices(deps: Dependencies) {
         const causes = new Map(catalogRefusals);
         for (const [id, refusal] of causes) {
           const live = await recheck(admitted, model, requestKind, id, currentQuota);
-          causes.set(id, live ?? refusal);
+          causes.set(id, live ? refusalProblem(live) : refusal);
         }
         throw poolExhausted(source.adapter.id, error, causes);
       }
@@ -235,7 +235,7 @@ export function createModelServices(deps: Dependencies) {
       if (pinnedProfile) return profile;
       const refusal = await recheck(admitted, model, requestKind, profile.profile_id);
       if (!refusal) return profile;
-      catalogRefusals.set(profile.profile_id, refusal);
+      catalogRefusals.set(profile.profile_id, refusalProblem(refusal));
       excluded.add(profile.profile_id);
     }
   };
