@@ -1,4 +1,9 @@
-import type { AdapterRegistry, ModelAdapter } from "@claudexor/core";
+import {
+  observeHarnessProgram,
+  type AdapterRegistry,
+  type ModelAdapter,
+  type ProgramObservation,
+} from "@claudexor/core";
 import type { CredentialUnusableLedger } from "@claudexor/daemon";
 import {
   probeCredentialProfileStatus,
@@ -50,6 +55,8 @@ export async function admitModelAccount(args: {
     account.mode === "pin" ? pinnedRow(cfg, harnessId, account.profileId) : null;
   readiness.prune(cfg.credential_profiles);
   const adapter = registry.get(harnessId);
+  // One program observation serves every profile of this selection.
+  let program: Promise<ProgramObservation> | undefined;
   const probe = adapter?.probeCredentialProfile
     ? async (profile: CredentialProfile) => {
         signal.throwIfAborted();
@@ -57,7 +64,8 @@ export async function admitModelAccount(args: {
         // needed to rediscover it, and the resolver still composes live evidence.
         if (credentialRefusal(source.adapter.id, profile, quotaEvidence(), unusable.live(), model))
           return probeCredentialProfileStatus(profile, undefined);
-        return readiness.probe(profile, adapter, signal);
+        program ??= observeHarnessProgram(adapter.program);
+        return readiness.probe(profile, adapter, signal, program);
       }
     : undefined;
   if (pinnedProfile) {

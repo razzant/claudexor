@@ -2899,7 +2899,7 @@ describe("admission-grade login readiness", () => {
     await f.call();
     expect(f.probe).toHaveBeenCalledTimes(2);
   });
-  it("invalidates pending probes on generation change and never retains their late positive", async () => {
+  it("a generation change ends a pending probe, asks once more under the new identity, and never retains the late answer", async () => {
     const f = await readinessFixture();
     const raw = f.probe.getMockImplementation()!;
     let release!: () => void;
@@ -2908,15 +2908,16 @@ describe("admission-grade login readiness", () => {
     });
     f.probe.mockImplementationOnce(async (profile, signal) => {
       await gate;
-      return raw(profile, signal);
+      return { ...(await raw(profile, signal)), detail: "late answer" };
     });
     const pending = f.call().catch((e) => e);
     await vi.waitFor(() => expect(f.probe).toHaveBeenCalledTimes(1));
     f.credentials.clearSubject("codex", "ready");
-    expect(await pending).toMatchObject({ code: "auth_changed" });
+    expect(await pending).toMatchObject({ availability: "available", verification: "passed" });
     expect(f.probe.mock.calls[0]![1]!.aborted).toBe(true);
+    expect(f.probe).toHaveBeenCalledTimes(2);
     release();
-    await f.call();
+    expect((await f.call()).detail).not.toBe("late answer");
     await f.call();
     expect(f.probe).toHaveBeenCalledTimes(2);
   });
@@ -2983,9 +2984,8 @@ describe("admission-grade login readiness", () => {
       invalidateProgramObservations(harness);
       await f.publishProgram();
       release();
-      expect(await pending).toMatchObject(
-        harness === "codex" ? { code: "auth_changed" } : { availability: "available" },
-      );
+      // Ended or not, the caller is answered: a Codex change by one probe under the new identity.
+      expect(await pending).toMatchObject({ availability: "available" });
       await vi.waitFor(() => expect(abortedWhileRunning).toBe(harness === "codex"));
       await f.call();
       expect(f.probe).toHaveBeenCalledTimes(harness === "codex" ? 2 : 1);
@@ -2993,6 +2993,50 @@ describe("admission-grade login readiness", () => {
       await f.publishProgram();
       await f.call();
       expect(f.probe).toHaveBeenCalledTimes(harness === "codex" ? 3 : 1);
+    },
+  );
+  it.each(["its login window closes", "its caller leaves"])(
+    "a pinned probe in flight when %s",
+    async (event) => {
+      const ready = await readinessFixture();
+      const f = await fixture({ lazy: true, nativeAdapter: ready.adapter });
+      f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
+      const raw = ready.probe.getMockImplementation()!;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let abortedWhileRunning: boolean | undefined;
+      ready.probe.mockImplementationOnce(async (profile, signal) => {
+        await gate;
+        abortedWhileRunning = signal!.aborted;
+        return raw(profile, signal);
+      });
+      let loginWindow = true;
+      bindCredentialMutationWindow(() => loginWindow);
+      try {
+        const caller = new AbortController();
+        const pending = f.services.routes
+          .modelCatalog("codex", "a", undefined, false, caller.signal)
+          .catch((e) => e);
+        await vi.waitFor(() => expect(ready.probe).toHaveBeenCalledTimes(1));
+        if (event === "its caller leaves") caller.abort(new Error("caller left"));
+        else {
+          loginWindow = false;
+          f.unusable.noteCredentialChange();
+        }
+        release();
+        const result = await pending;
+        await vi.waitFor(() => expect(abortedWhileRunning).toBe(true));
+        // A lifecycle is answered by one more probe under the new identity; a
+        // departed caller ends its probe as before, with no second one.
+        expect(result).toMatchObject(
+          event === "its caller leaves" ? { message: "caller left" } : { credentialProfileId: "a" },
+        );
+        expect(ready.probe).toHaveBeenCalledTimes(event === "its caller leaves" ? 1 : 2);
+      } finally {
+        bindCredentialMutationWindow(null);
+      }
     },
   );
 });

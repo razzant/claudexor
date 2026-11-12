@@ -1,10 +1,12 @@
 import {
   DOCTOR_TTL_MS,
+  ReadInvalidated,
   SharedRead,
   observeHarnessProgram,
   onProgramObservationChange,
   waitForRead,
   type HarnessAdapter,
+  type ProgramObservation,
 } from "@claudexor/core";
 import type { CredentialGeneration } from "@claudexor/daemon";
 import { CredentialProfileStatus, type CredentialProfile } from "@claudexor/schema";
@@ -22,6 +24,7 @@ export class ModelLoginReadiness {
   >();
   private readonly unsubscribe: () => void;
   private readonly programUnsubscribe: () => void;
+  private closed = false;
 
   constructor(private readonly credentials: CredentialGeneration) {
     // A program change ends only that harness's probes and positives.
@@ -46,24 +49,29 @@ export class ModelLoginReadiness {
   }
 
   close(): void {
+    this.closed = true;
     this.programUnsubscribe();
     this.unsubscribe();
     this.invalidate();
   }
 
+  /** `observed` may be one program observation shared by a selection's profiles;
+   * the check after a physical probe and a retry always observe again. */
   async probe(
     profile: CredentialProfile,
     adapter: HarnessAdapter,
     signal: AbortSignal,
+    observed?: Promise<ProgramObservation>,
+    retry = true,
   ): Promise<CredentialProfileStatus> {
     signal.throwIfAborted();
     const finish = startModelPreparation();
     const scope = scopeOf(profile.harness_id, profile.profile_id);
-    const identity = async () => {
+    const identity = async (current = observeHarnessProgram(adapter.program)) => {
       const generation = this.credentials.generation(profile.harness_id, profile.profile_id);
       const [files, program] = await Promise.all([
         adapter.credentialProfileIdentity?.(profile) ?? null,
-        observeHarnessProgram(adapter.program),
+        current,
       ]);
       return Number.isFinite(generation) &&
         generation === this.credentials.generation(profile.harness_id, profile.profile_id) &&
@@ -73,7 +81,7 @@ export class ModelLoginReadiness {
         ? JSON.stringify([profile, generation, files, program.key])
         : null;
     };
-    const key = await waitForRead(identity(), signal);
+    const key = await waitForRead(identity(observed), signal);
     const hit = this.positives.get(scope);
     const age = hit ? Date.now() - hit.at : -1;
     if (key !== null && hit?.key === key && age >= 0 && age < DOCTOR_TTL_MS) {
@@ -111,7 +119,14 @@ export class ModelLoginReadiness {
         }
         return status;
       })
-      .finally(() => finish("loginProbe"));
+      .finally(() => finish("loginProbe"))
+      .catch((error: unknown) => {
+        // A credential or program change, not this caller leaving, ended the
+        // probe: ask once more under the new identity. Nothing aborted is kept.
+        if (!retry || signal.aborted || this.closed || !(error instanceof ReadInvalidated))
+          throw error;
+        return this.probe(profile, adapter, signal, undefined, false);
+      });
     signal.throwIfAborted();
     return structuredClone(result);
   }

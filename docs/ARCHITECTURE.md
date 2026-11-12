@@ -3212,7 +3212,12 @@ identities never join and never cancel each other; completion/error removes
 entries. Each waiter has its own lifetime: one leaving preserves others, the
 last leaving aborts, and shutdown or a change of that read's own credential
 generation or harness program ends it (a default-subject change moves no
-registered row's generation). After each wait a consumer judges again only the
+registered row's generation). A login probe ended that way runs once more under
+the new identity (any login lifecycle moves every row's generation), so its
+caller still gets an answer; a catalog read ended that way fails its operation
+`auth_changed`, also when its own harness's login window left the generation
+unknown at its start or end, where the after-read check alone let it finish.
+After each wait a consumer judges again only the
 account it waited for (`liveAccountRefusal`: enablement, a revoked or unusable
 credential, and live usage against the headroom threshold read at admission, as
 a strict pin of that account is judged; refusals, substitutions and capability

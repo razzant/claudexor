@@ -11,6 +11,11 @@ export function waitForRead<T>(work: Promise<T>, signal: AbortSignal): Promise<T
   });
 }
 
+/** Why a read ends when its owner invalidates its scope (generation, program, shutdown). */
+export class ReadInvalidated extends Error {
+  readonly code = "auth_changed";
+}
+
 interface ReadEntry<T> {
   key: string | null;
   controller: AbortController;
@@ -65,9 +70,7 @@ export class SharedRead<T> {
       if (!matches(id)) continue;
       this.entries.delete(id);
       for (const entry of group)
-        entry.controller.abort(
-          Object.assign(new Error("Read epoch invalidated"), { code: "auth_changed" }),
-        );
+        entry.controller.abort(new ReadInvalidated("Read epoch invalidated"));
     }
   }
 
