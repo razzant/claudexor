@@ -85,7 +85,7 @@ export function readRunJournal(runDir) {
 }
 
 /**
- * The pinned Browser MCP (@playwright/mcp 0.0.83) writes a result as lines:
+ * The pinned Browser MCP (@playwright/mcp in packages/core) writes a result as lines:
  * `### <name>` opens a block, and code or snapshot text sits between ``` fence
  * lines. Its own `### Page` block names the current page: `- Page URL:`,
  * `- Page Title:`, then status lines, of which the probe page (status 200, no
