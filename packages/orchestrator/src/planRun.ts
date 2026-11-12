@@ -295,7 +295,7 @@ export async function runCouncilPlan(
   if (mergeOutcome.status !== "success" || !mergeOutcome.text) {
     // The merge itself failed despite surviving drafts — no unified plan
     // exists. Fail typed; the drafts remain as disclosed artifacts.
-    store.writeYaml(join(paths.root, "council", "membership.yaml"), councilProjection);
+    await store.writeYamlAsync(join(paths.root, "council", "membership.yaml"), councilProjection);
     return writePlanHarnessFailure(
       deps,
       {

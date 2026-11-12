@@ -513,7 +513,7 @@ export async function guardAnnouncedRun(
         let summaryPresent = readTextSafe(summaryPath) !== null;
         if (!summaryPresent) {
           try {
-            a.store.writeText(
+            await a.store.writeTextAsync(
               summaryPath,
               `# Run ${a.runId} (${a.mode})\n\n${redactSecrets(result.summary)}\n`,
             );

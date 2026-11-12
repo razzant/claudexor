@@ -248,7 +248,7 @@ export async function openContinuity(
       : spec.model_hint;
   const callerText = deps.workOrder;
   const workOrder = [pred.workOrder.trim(), callerText.trim()].filter(Boolean).join("\n\n");
-  store.writeText(join(deps.runDir, WORK_ORDER_FILE), `${workOrder}\n`);
+  await store.writeTextAsync(join(deps.runDir, WORK_ORDER_FILE), `${workOrder}\n`);
   // Another harness cannot resume this session: the evidence index carries it.
   const capsule = pred.capsule?.harness === deps.adapter.id ? pred.capsule : null;
   const targetId = spec.credential_profile?.profile_id ?? null;

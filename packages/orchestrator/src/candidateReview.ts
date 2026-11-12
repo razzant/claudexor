@@ -27,7 +27,7 @@ import {
   resolveRunReviewRequested,
   runStartStrategyViolations,
 } from "@claudexor/schema";
-import { writeText } from "@claudexor/util";
+import { writeTextAsync } from "@claudexor/util";
 import { scopeMarkerEnv } from "@claudexor/core";
 import {
   hasCandidateChanges,
@@ -195,7 +195,7 @@ export async function reviewCandidateRuns(
         directoryReview = await prepareDirectoryReview(run.files, candidateEvidenceDir);
         candidateCwd = directoryReview.cwd;
       }
-      writeText(
+      await writeTextAsync(
         join(candidateEvidenceDir, "TESTS.txt"),
         renderTestsEvidence(contract, run.gates).trim() + "\n",
       );
@@ -370,7 +370,7 @@ export async function reviewCandidateRuns(
       const noBlockers = !allFindings.some((f) => isBlocking(f));
       const reviewClean =
         result.crossFamilyHealthy && result.crossFamilyVerified && noBlockers && !inconclusive;
-      store.writeYaml(join(paths.reviewsDir, `${run.attemptId}.yaml`), {
+      await store.writeYamlAsync(join(paths.reviewsDir, `${run.attemptId}.yaml`), {
         attempt_id: run.attemptId,
         review_verified: candidateReviewVerified,
         final_review_clean: reviewClean,

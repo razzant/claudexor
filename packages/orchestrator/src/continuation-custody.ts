@@ -261,7 +261,7 @@ export async function flushContinuationTerminal(
       const resumable = RunResumable.safeParse(context.store.readYaml(path)).data;
       try {
         if (kept && resumable)
-          context.store.writeYaml(path, {
+          await context.store.writeYamlAsync(path, {
             ...resumable,
             workspace: { kind: "retained_envelope", root: kept.envelope.worktree_path },
           });

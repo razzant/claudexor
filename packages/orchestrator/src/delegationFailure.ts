@@ -218,7 +218,7 @@ export async function persistFailedInPlaceWorkProduct(input: FailedCandidateOutp
     // anchor can be produced, so the record says exactly that.
     const manualCleanup = refusal.disposition === "manual_cleanup";
     const facts = input.facts ?? captureRefusedFacts();
-    input.store.writeYaml(join(input.paths.finalDir, "work_product.yaml"), {
+    await input.store.writeYamlAsync(join(input.paths.finalDir, "work_product.yaml"), {
       id: newId("wp"),
       kind: input.kind,
       source_task_id: input.taskId,
