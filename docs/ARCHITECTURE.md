@@ -3235,10 +3235,14 @@ Operation receipts carry optional `preparation`; HTTP GET exposes it only with
 `includePreparation=true`, so strict earlier clients keep their DTO. It contains `totalMs`, `steps`
 and `process`, frozen at dispatch or a pre-dispatch failure. Each step records
 `count`, `totalMs`, `maxMs`: `payloadRead`, `payloadParse`, `admission`,
-`loginProbe`, `catalogRead`, `catalogTransport`, `selection`, `reserve`,
-`adapterAuth`, `adapterBody`. `catalogRead` covers the adapter read; its nested
-`catalogTransport` measures the vendor fetch/body wait, including a shared read.
-Login counts include readiness hits. Steps overlap and must not be summed.
+`loginProbe`, `loginReady`, `catalogRead`, `catalogTransport`, `selection`,
+`reserve`, `adapterAuth`, `adapterBody`. A step's `totalMs` is the summed waits
+of this operation: concurrent probes can sum above the elapsed `totalMs`, and a
+wait that joined a shared read measures only its remaining part. `catalogRead`
+covers the adapter read; its nested `catalogTransport` measures the vendor
+fetch/body wait, including a shared read. `loginProbe` counts physical login
+probes this operation launched or joined; `loginReady` counts readiness reused
+without a probe. Steps overlap and must not be summed.
 Process `eventLoopActiveMs`/`eventLoopIdleMs` use the same utilization source as
 loop-facts; `childLaunches`/`childLaunchMs` measure launches including synchronous
 leader identity capture. These process deltas include other concurrent work

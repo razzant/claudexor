@@ -6,6 +6,7 @@ export type PreparationStep =
   | "payloadParse"
   | "admission"
   | "loginProbe"
+  | "loginReady"
   | "catalogRead"
   | "catalogTransport"
   | "selection"
@@ -33,8 +34,9 @@ export function recordChildLaunch(milliseconds: number): void {
   launchMs += Math.max(0, milliseconds);
 }
 
-/** Operation wall-clock spans can overlap. Process deltas include concurrent
- * operations, like loop-facts: they are never attributed CPU cost. */
+/** Each step sums this operation's waits: concurrent waits can sum above the
+ * elapsed time, and a joined shared read counts only its remaining wait. Process
+ * deltas include concurrent operations, like loop-facts: never attributed CPU. */
 export class ModelPreparationTiming {
   private readonly started = performance.now();
   private readonly loop = performance.eventLoopUtilization();
@@ -71,27 +73,30 @@ export class ModelPreparationTiming {
   }
 }
 
+/** For a span whose step is known only when it ends (a readiness hit or a probe). */
+export function startModelPreparation(): (step: PreparationStep) => void {
+  const owner = active.getStore();
+  const start = performance.now();
+  return (step) => owner?.record(step, performance.now() - start);
+}
+
 export async function measureModelPreparation<T>(
   step: PreparationStep,
   work: () => Promise<T>,
 ): Promise<T> {
-  const owner = active.getStore();
-  if (!owner) return work();
-  const start = performance.now();
+  const finish = startModelPreparation();
   try {
     return await work();
   } finally {
-    owner.record(step, performance.now() - start);
+    finish(step);
   }
 }
 
 export function measureModelPreparationSync<T>(step: PreparationStep, work: () => T): T {
-  const owner = active.getStore();
-  if (!owner) return work();
-  const start = performance.now();
+  const finish = startModelPreparation();
   try {
     return work();
   } finally {
-    owner.record(step, performance.now() - start);
+    finish(step);
   }
 }

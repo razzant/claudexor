@@ -510,6 +510,7 @@ export const ModelPreparationTiming = z
         payloadParse: PreparationSamples.optional(),
         admission: PreparationSamples.optional(),
         loginProbe: PreparationSamples.optional(),
+        loginReady: PreparationSamples.optional(),
         catalogRead: PreparationSamples.optional(),
         catalogTransport: PreparationSamples.optional(),
         selection: PreparationSamples.optional(),
@@ -529,7 +530,7 @@ export const ModelPreparationTiming = z
   })
   .strict()
   .describe(
-    "Preparation wall times in milliseconds, frozen at dispatch or pre-dispatch failure. Steps overlap; counts describe waits, including shared reads and readiness hits. Process deltas include concurrent operations, not attributed CPU cost.",
+    "Preparation timings in milliseconds, frozen at dispatch or pre-dispatch failure. totalMs is elapsed time; each step's totalMs is the summed waits of this operation, so concurrent waits can sum above elapsed time and a wait that joined a shared read counts only its remaining part. Steps overlap. loginProbe counts physical login probes this operation launched or joined; loginReady counts reused readiness. Process deltas include concurrent operations, not attributed CPU cost.",
   );
 export type ModelPreparationTiming = z.infer<typeof ModelPreparationTiming>;
 

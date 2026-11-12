@@ -19,7 +19,6 @@ import {
   type QuotaRequestKind,
   type QuotaSnapshot,
 } from "@claudexor/schema";
-import { measureModelPreparation } from "@claudexor/util";
 import type { ModelLoginReadiness } from "./model-login-readiness.js";
 import { modelError } from "./model-service-refusals.js";
 
@@ -82,9 +81,7 @@ export async function admitModelAccount(args: {
           vendorCredentialObservation(quota, harnessId, profile.profile_id)?.outcome === "revoked"
         )
           return probeCredentialProfileStatus(profile, undefined);
-        return measureModelPreparation("loginProbe", () =>
-          readiness.probe(profile, adapter, signal),
-        );
+        return readiness.probe(profile, adapter, signal);
       }
     : undefined;
   const quota = quotaEvidence();

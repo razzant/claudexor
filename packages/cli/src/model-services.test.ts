@@ -3260,3 +3260,19 @@ it("keeps preparation timing inspection opt-in and exposes measured selection ph
     timed.preparation!.steps.catalogRead!.totalMs,
   );
 });
+
+it("counts reused login readiness apart from physical probes", async () => {
+  const ready = await readinessFixture();
+  const f = await fixture({ nativeAdapter: ready.adapter });
+  f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
+  const steps = async () => {
+    const done = await f.run({ mode: "pin", profileId: "a" });
+    return (await f.services.routes.getModelOperation(done.id, true)).preparation!.steps;
+  };
+  const probed = await steps();
+  expect(probed.loginProbe).toMatchObject({ count: 1 });
+  expect(probed).not.toHaveProperty("loginReady");
+  const reused = await steps();
+  expect(reused.loginReady).toMatchObject({ count: 1 });
+  expect(reused).not.toHaveProperty("loginProbe");
+});
