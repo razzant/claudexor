@@ -10,8 +10,8 @@ export const CODEX_RESPONSE_BOUNDS: ResponseBounds = {
 
 /** Which library timeout an error code is, and what the engine asks for. The
  * text says what the library reported, never what the provider did, and no
- * elapsed time: the library counts its own ticks, which stop while the
- * daemon's event loop is blocked. The code stays the fact. */
+ * elapsed time: on HTTP/1.1 the library counts its own ticks, and a blocked
+ * event loop counts as one. The code stays the fact. */
 const BOUND_REACHED: Record<string, string> = {
   UND_ERR_HEADERS_TIMEOUT: `a response-head timeout; the engine asks for ${CODEX_RESPONSE_BOUNDS.headMs / 1_000} s on this request`,
   UND_ERR_BODY_TIMEOUT: `a response-body timeout; the engine asks for ${CODEX_RESPONSE_BOUNDS.silenceMs / 1_000} s on this request`,

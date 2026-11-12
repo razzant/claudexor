@@ -35,14 +35,15 @@ export class RequestDelivery {
   }
 
   /** `bounds` replace the dispatcher's own head and body timeouts for this
-   * request only. They are the HTTP library's clocks, counted in its own ticks,
-   * which stop while this process's event loop is blocked: not wall-clock
-   * deadlines. On HTTP/1.1 the head clock starts with the request, restarts
-   * whenever the socket pushes back and when the last body byte is handed off;
-   * while the body is being written it ends the request only if the socket
-   * still holds undrained bytes. The body clock restarts on every chunk of the
-   * response. On HTTP/2 the body value is the stream's idle timeout and the
-   * head value is unused. */
+   * request only. They are the HTTP library's clocks, not wall-clock deadlines.
+   * On HTTP/1.1 both are counted in the library's ticks, and a stretch in which
+   * this process's event loop is blocked counts as one tick. The head clock
+   * starts with the request, restarts whenever the socket pushes back and when
+   * the last body byte is handed off; while the body is being written it ends
+   * the request only if the socket is still backpressured. The body clock
+   * restarts on every chunk of the response. On HTTP/2 the body value is the
+   * stream's idle timeout on the runtime's ordinary timer and the head value is
+   * unused. */
   request(bounds?: ResponseBounds): {
     body: ReadableStream<Uint8Array>;
     duplex: "half";

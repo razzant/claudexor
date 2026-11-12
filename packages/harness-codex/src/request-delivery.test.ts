@@ -33,19 +33,37 @@ const send = (url: string, delivery: RequestDelivery, bounds?: ResponseBounds) =
     redirect: "error",
     signal: AbortSignal.timeout(15_000),
   });
-/** A peer in another thread: it answers at once and keeps writing a chunk
- * every 100 ms, whatever the thread of the test does. Posts its port. */
-const SENDING_PEER = `
+/** A peer in another thread, so it keeps working whatever the thread of the
+ * test does. It answers at once; on `/once` it writes one chunk and falls
+ * silent, otherwise it writes a chunk every 100 ms and remembers when. Posts
+ * its port, then answers `{ from, to }` with how many chunks it wrote between. */
+const PEER = `
   const { createServer } = require("node:http");
   const { parentPort } = require("node:worker_threads");
+  const wrote = [];
   const server = createServer((req, res) => {
     req.resume();
     res.writeHead(200, { "content-type": "text/event-stream" });
-    const tick = setInterval(() => res.write(": keep-alive\\n\\n"), 100);
+    if (req.url === "/once") return void res.write(": keep-alive\\n\\n");
+    const tick = setInterval(() => {
+      res.write(": keep-alive\\n\\n");
+      wrote.push(Date.now());
+    }, 100);
     res.on("close", () => clearInterval(tick));
   });
   server.listen(0, "127.0.0.1", () => parentPort.postMessage(server.address().port));
+  parentPort.on("message", ({ from, to }) =>
+    parentPort.postMessage(wrote.filter((at) => at >= from && at <= to).length),
+  );
 `;
+const answer = <T>(peer: Worker, ask?: unknown) =>
+  new Promise<T>((resolve, reject) => {
+    peer.once("message", resolve);
+    peer.once("error", reject);
+    if (ask !== undefined) peer.postMessage(ask);
+  });
+/** Blocks this thread: nothing on its event loop runs meanwhile. */
+const stall = (ms: number) => void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 /** The code of the first error in a cause chain that has one. */
 const causeCode = (error: unknown): unknown => {
   for (let current = error; current && typeof current === "object";)
@@ -442,22 +460,51 @@ describe("request delivery proof on the existing dispatcher", () => {
     }
   });
 
-  it("does not end a stream whose reader stalled for longer than the body bound while the peer kept sending", async () => {
-    const peer = new Worker(SENDING_PEER, { eval: true });
+  it("does not end a stream whose reader stalled for longer than the body timeout while the peer kept sending", async () => {
+    const peer = new Worker(PEER, { eval: true });
     try {
-      const port = await new Promise<number>((resolve) => peer.once("message", resolve));
+      const port = await answer<number>(peer);
       const response = await send(`http://127.0.0.1:${port}/`, bodyOf("body"), {
         headMs: 60_000,
         silenceMs: 3_000,
       });
       const reader = response.body!.getReader();
       expect((await reader.read()).done).toBe(false);
-      // This thread does nothing for longer than the bound. The bound is the
-      // library's clock, counted in ticks that stop with this thread: it is not
-      // a wall-clock deadline, and the bytes that arrived meanwhile are read.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4_500);
+      const from = Date.now();
+      stall(4_500);
+      const to = Date.now();
+      // What arrived meanwhile is read; the stall alone ended nothing.
       for (let i = 0; i < 5; i += 1) expect((await reader.read()).done).toBe(false);
       await reader.cancel();
+      expect(await answer<number>(peer, { from, to })).toBeGreaterThanOrEqual(10);
+    } finally {
+      await peer.terminate();
+    }
+  }, 30_000);
+
+  it("reports the body timeout of a silent peer late by the reader's stall: its clock does not run meanwhile", async () => {
+    const peer = new Worker(PEER, { eval: true });
+    try {
+      const port = await answer<number>(peer);
+      const response = await send(`http://127.0.0.1:${port}/once`, bodyOf("body"), {
+        headMs: 60_000,
+        silenceMs: 3_000,
+      });
+      const reader = response.body!.getReader();
+      expect((await reader.read()).done).toBe(false);
+      const silentSince = Date.now();
+      // The timeout is already counting this silence when the thread stalls.
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      stall(3_000);
+      const error = await reader.read().then(
+        () => null,
+        (failure: unknown) => failure,
+      );
+      expect(causeCode(error)).toBe("UND_ERR_BODY_TIMEOUT");
+      // A wall clock would have reported about 4.2 s into the silence, as soon
+      // as the stall ended. The library's ticks stopped for the stall, so the
+      // report comes after the timeout's 3 s of ticks plus the stall.
+      expect(Date.now() - silentSince).toBeGreaterThanOrEqual(5_000);
     } finally {
       await peer.terminate();
     }
