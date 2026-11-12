@@ -122,7 +122,7 @@ export type SetupLoginManifest = z.infer<typeof SetupLoginManifest>;
  * `account/login/start` succeeds. Bound to the job + execution like the state
  * sidecar. The daemon reads it to overlay {@link SetupDeviceCodeDisclosure} on
  * snapshots/SSE; its `userCode` is NEVER journaled, logged, or copied into the
- * durable result receipt (INV-062 / D-17).
+ * durable result receipt (INV-146 / D-17).
  */
 export const SetupLoginDeviceCode = z
   .object({

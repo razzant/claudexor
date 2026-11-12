@@ -20,7 +20,10 @@ import {
 import { announcedRunContext } from "./runTerminalContext.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const evidence = (billing: CostEvidence["billing"]): CostEvidence => ({
   knowledge: billing === "subscription_entitlement" ? "exact" : "unknown",

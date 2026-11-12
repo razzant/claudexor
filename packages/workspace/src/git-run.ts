@@ -5,6 +5,26 @@ import {
   WorkspaceError,
 } from "@claudexor/core";
 
+/** A private operation decides from the bytes, whatever the user's configuration
+ * says: `core.ignoreStat` would mark every entry Git adds assume-valid, so a
+ * refresh and `diff-files` skip its content, and a filesystem monitor answers
+ * from its own last observation instead of looking. */
+export const STAT_TRUST_OFF = ["-c", "core.ignoreStat=false", "-c", "core.fsmonitor=false"];
+
+/** A scratch index is always written whole: never as a split index (whose
+ * shared part lives in the user's Git directory) and never sparse. It trusts no
+ * stat shortcut, and an index copied from the user's carries over neither its
+ * monitor state nor its untracked cache (both are dropped as it is read). */
+export const SCRATCH_INDEX_CONFIG = [
+  "-c",
+  "core.splitIndex=false",
+  "-c",
+  "index.sparse=false",
+  ...STAT_TRUST_OFF,
+  "-c",
+  "core.untrackedCache=false",
+];
+
 /** BYTE-FAITHFUL git capture: raw buffers, never readline — CR
  * bytes in CRLF diff content survive, and no trailing newline is fabricated
  * (trim-based consumers like revParse are unaffected: git ends its own
@@ -21,6 +41,12 @@ export async function git(
   });
   assertCaptureComplete(r);
   return r;
+}
+
+export async function revParse(repo: string, ref: string): Promise<string> {
+  const r = await git(repo, ["rev-parse", ref]);
+  if (r.code !== 0) throw new WorkspaceError(`git rev-parse ${ref} failed: ${r.stderr.trim()}`);
+  return r.stdout.trim();
 }
 
 /** `git` with extra environment (e.g. a scratch GIT_INDEX_FILE for snapshots). */

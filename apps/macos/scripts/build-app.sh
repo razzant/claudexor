@@ -225,12 +225,12 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   CLI_SMOKE_HOME="$(mktemp -d)"
   CLI_HELP_JSON="$(env -i HOME="$CLI_SMOKE_HOME" PATH="/usr/bin:/bin" \
     "$APP/Contents/Resources/node" "$CLI_JS" help --json)"
-  CLI_INSTALL_JSON="$(env -i HOME="$CLI_SMOKE_HOME" PATH="/usr/bin:/bin" \
+  CLI_INVENTORY_JSON="$(env -i HOME="$CLI_SMOKE_HOME" PATH="/usr/bin:/bin" \
     "$APP/Contents/Resources/node" "$CLI_JS" \
-    harness install codex --target local --release-tested --dry-run --json)"
+    harness inspect codex --json)"
   "$APP/Contents/Resources/node" -e '
     const help = JSON.parse(process.argv[1]);
-    const install = JSON.parse(process.argv[2]);
+    const inventory = JSON.parse(process.argv[2]);
     const expectedVersion = process.argv[3];
     const harness = Array.isArray(help.commands)
       ? help.commands.find((command) => command?.id === "harness")
@@ -238,18 +238,14 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
     if (
       help.ok !== true ||
       help.version !== expectedVersion ||
-      !harness?.flags?.includes("target") ||
-      install.ok !== true ||
-      install.dryRun !== true ||
-      install.harness !== "codex" ||
-      install.target !== "local" ||
-      install.installLocation !== "~/.claudexor/node/bin"
+      !harness?.flags?.includes("vendor-version") ||
+      !inventory.harnesses?.some(row => row.harness === "codex" && row.actions?.install && row.actions?.update)
     ) {
       throw new Error(`bundled CLI help contract mismatch: ${JSON.stringify(help)}`);
     }
-  ' "$CLI_HELP_JSON" "$CLI_INSTALL_JSON" "$VERSION"
+  ' "$CLI_HELP_JSON" "$CLI_INVENTORY_JSON" "$VERSION"
   if [ -n "$(find "$CLI_SMOKE_HOME" -mindepth 1 -print -quit)" ]; then
-    echo "ERROR: bundled CLI dry-run mutated its isolated HOME" >&2
+    echo "ERROR: bundled CLI inventory read mutated its isolated HOME" >&2
     find "$CLI_SMOKE_HOME" -mindepth 1 -maxdepth 3 -print >&2
     exit 1
   fi
@@ -361,28 +357,12 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
 
   # Boot smoke: the bundled daemon must actually START (a load-time crash in
   # the bundle shipped in v1.0.0 and survived every gate because nothing
-  # executed the bundle). Scratch HOME so the smoke never touches real state.
+  # executed the bundle). The helper gives the exact packaged Node and entry an
+  # empty environment with a scratch HOME, watches the root derived from that
+  # HOME, and reaps the daemon before deleting it.
   echo "==> Bundle boot smoke"
-  # Darwin limits Unix-domain socket paths to roughly 100 bytes. Keep the
-  # disposable HOME short so this smoke tests daemon boot, not mktemp's long
-  # /private/var/folders spelling.
-  SMOKE_HOME="$(cd "$(mktemp -d /tmp/claudexor-smoke.XXXXXX)" && pwd -P)"
-  ( HOME="$SMOKE_HOME" "$APP/Contents/Resources/node" "$ENGINE_JS" >/dev/null 2>"$SMOKE_HOME/smoke.err" & echo $! > "$SMOKE_HOME/pid" )
-  SMOKE_OK=0
-  for _ in $(seq 1 20); do
-    if [ -f "$SMOKE_HOME/.claudexor/v3/daemon/control-api.json" ]; then SMOKE_OK=1; break; fi
-    if ! kill -0 "$(cat "$SMOKE_HOME/pid")" 2>/dev/null; then break; fi
-    sleep 0.5
-  done
-  kill "$(cat "$SMOKE_HOME/pid")" 2>/dev/null || true
-  if [ "$SMOKE_OK" != "1" ]; then
-    echo "ERROR: bundled claudexord failed to boot; stderr:" >&2
-    cat "$SMOKE_HOME/smoke.err" >&2
-    rm -rf "$SMOKE_HOME"
-    exit 1
-  fi
-  rm -rf "$SMOKE_HOME"
-  echo "    bundled daemon boots (control-api discovery written)"
+  bash "$HERE/boot-smoke.sh" "$APP/Contents/Resources/node" "$ENGINE_JS"
+  echo "    bundled daemon publishes control-api discovery from a scrubbed scratch root"
   # D-2 integration proof (release-wave critical): the runtime-update closure
   # must be producible from THIS exact packaged app layout — the CI candidate
   # previously discovered a forbidden native addon only at release time.
@@ -442,6 +422,12 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
   if [ -x "$APP/Contents/Resources/native/claudexor-process-identity" ]; then
     codesign --verify --strict --verbose=2 "$APP/Contents/Resources/native/claudexor-process-identity"
   fi
+  # The bundled publication scanners were signed once by the engine-resource
+  # stage (their provenance records those exact bytes); verify, never re-sign.
+  for SCANNER in "$APP/Contents/Resources/native/betterleaks"/darwin-*/betterleaks; do
+    [ -f "$SCANNER" ] || continue
+    codesign --verify --strict --verbose=2 "$SCANNER"
+  done
   codesign --force --options runtime --timestamp \
     --entitlements "$PACKAGING/Claudexor.entitlements" \
     --sign "$SIGN_IDENTITY" "$APP"

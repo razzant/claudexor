@@ -31,7 +31,7 @@ contract throughout these steps, including repair and connection recovery.
    registered profiles, readiness,
    quota freshness, and `next_up` (the configured default model's verdict only;
    `routingEvidence` carries model-scoped recent refusals, temporary per-model
-   capability marks, and last service);
+   capability marks, model-scoped credential refusals, and last service);
    do not reconstruct a pool by joining
    `doctor`, `quota`, and profile-list responses yourself. `available/passed`
    on the exact named row describes its last observation; check its age before
@@ -117,7 +117,9 @@ contract throughout these steps, including repair and connection recovery.
    transport and `external_terminal` as `client_pty`; do not infer a
    harness-specific mechanism from the global setup operation. The same
    catalog is served at `GET /v2/agent-capabilities` on the daemon and by the MCP
-   `claudexor_capabilities` tool.
+   `claudexor_capabilities` tool, possibly from a recent composition dated by
+   `generatedAt` ([readiness projections](ARCHITECTURE.md#readiness-projections));
+   the CLI verb composes it live.
 4. **Check harness health.** `claudexor doctor` (human) or
    `claudexor doctor --json`. Doctor is the aggregate/default-store projection,
    not a universal admission veto. An unpinned request first uses the canonical
@@ -205,9 +207,15 @@ entries; do not invent an `@profile` mini-grammar.
   turns can change the live project tree. Choose `isolated` explicitly when you
   want a persistent thread worktree and a later Apply step. Standalone CLI/MCP
   candidate runs still use external isolated envelopes.
-- A secret-like value inside a prompt is hard-blocked at every ingress with
-  the typed `inline_secret_rejected` error. Store credentials with
-  `claudexor secrets set` and reference them; there is no bypass flag.
+- Prompts, instructions, messages and attachments reach the selected harness
+  exactly, including credential-shaped test fixtures, and stay in the local
+  run records. Claudexor does not refuse or mask them by pattern. Keys that
+  Claudexor itself uses belong in `claudexor secrets set`. Only `pr` delivery
+  checks content: the pinned Betterleaks scanner reads what would be pushed,
+  and a finding (`publication_scan_findings`), an unavailable scanner or a
+  failed scan refuses before anything is published. An install that does not
+  bundle the scanner prepares it with the explicit `claudexor scanner prepare`;
+  it is a machine-setup step, so ask before running it for someone else.
 
 ## After a mutating run
 
@@ -226,10 +234,10 @@ Every mutating result carries a `runId`. The decision tree:
    `GET /v2/runs/:id` — a usage limit, a crash, a cancel, a daemon restart, a
    question for you) → continue it, never restart it: `POST /v2/runs`
    `{continueFrom: <runId>, prompt: "<what next, may be empty>"}` (MCP:
-   `claudexor_run_continue`; restate access, web, account, budget, time and
-   review controls the successor must keep). The engine resumes the same vendor
-   session when it can and briefs a new one with the evidence otherwise; the
-   receipt says which.
+   `claudexor_run_continue`; restate access, web, account, effort, budget, time
+   and review controls the successor must keep). The engine resumes the same
+   vendor session when it can and briefs a new one with the evidence otherwise;
+   the receipt says which.
 5. Lost the handle? `claudexor inspect <runId>`, `claudexor follow <runId>`,
    or the MCP durable tools `claudexor_runs` / `claudexor_run_status` /
    `claudexor_run_result` / `claudexor_apply_check`. Launched them under a saved

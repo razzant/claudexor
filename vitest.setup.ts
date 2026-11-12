@@ -16,15 +16,24 @@ import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
 // W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+// Timeout 0 here and in every per-file W-h reaper (#376): the removal is
+// synchronous, so a deadline cannot stop it. It could only fail a removal that
+// finished late, skipping the later reapers. A removal that throws still fails
+// the file; a hook that closes resources first keeps its deadline.
 const __reapDirs: string[] = [];
 function reapMk(...args: Parameters<typeof mkdtempSync>): string {
   const dir = mkdtempSync(...args);
   __reapDirs.push(dir);
   return dir;
 }
+// WHY the 0: this hook is synchronous, so vitest's timer cannot interrupt it;
+// it measures the hook only after it returns and then fails the file if the
+// deletion took the global 10 s hookTimeout or more, after every test passed
+// and with the directories already gone. 0 disables only this hook's timer
+// (vitest runs a hook with timeout <= 0 untimed); no other hook or limit changes.
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0);
 
 // ALWAYS a fresh temp dir — an inherited CLAUDEXOR_CONFIG_DIR (e.g. a
 // developer shell pointing at the real ~/.claudexor) must not become the

@@ -1,13 +1,15 @@
 import type { ProjectThreadPort } from "@claudexor/daemon";
-import { PR_SECRET_LIKE_REFUSAL, verifyAndDeliver } from "@claudexor/delivery";
+import { verifyAndDeliver } from "@claudexor/delivery";
 import {
   advanceThreadWorktree,
   captureWorkingTreeTransient,
   captureFailureEvidence,
   git,
+  rawAcceptedPaths,
   snapshotTree,
 } from "@claudexor/workspace";
 import type { ControlDeliveryResponse } from "@claudexor/schema";
+import { dirname } from "node:path";
 
 export interface ThreadApplyOptions {
   mode: string;
@@ -43,7 +45,16 @@ export async function applyThreadDiff(
   }
   const projectRoot = thread.repo.root;
   const base = ws.base_sha ?? "HEAD";
-  const captured = await captureWorkingTreeTransient(ws.worktree_path, base);
+  // Raw API writes may be ignored by the project's rules, but their exact accepted
+  // membership belongs to this persistent thread and must survive Apply and realignment.
+  const keep = await rawAcceptedPaths(ws.worktree_path, base);
+  // The thread's own runtime directory keeps the captured objects in the store.
+  const owner = dirname(ws.worktree_path);
+  const captured = await captureWorkingTreeTransient(ws.worktree_path, base, [], {
+    projectRoot,
+    owner,
+    keep,
+  });
   if (captured.captureIncomplete) {
     const failure = captureFailureEvidence(captured.captureFailure);
     // Problem context is the existing wire/journal carrier of typed facts, so
@@ -58,7 +69,10 @@ export async function applyThreadDiff(
     );
   }
   const patch = captured.patch;
-  if (!patch.trim())
+  const changed = captured.result
+    ? captured.result.base_tree !== captured.result.candidate_tree
+    : patch.trim().length > 0;
+  if (!changed)
     return {
       applied: false,
       status: "empty",
@@ -76,23 +90,26 @@ export async function applyThreadDiff(
   }
   const mode = (["apply", "branch", "commit", "pr"].includes(opts.mode) ? opts.mode : "apply") as
     "apply" | "branch" | "commit" | "pr";
-  // INV-062: the thread applies its LIVE worktree capture (exact bytes), so a
+  // INV-146: the thread applies its LIVE worktree capture (exact bytes), so a
   // local apply/branch/commit keeps secret-like strings where the agent wrote
-  // them. Only `pr` refuses — inside the one delivery owner, before any push —
-  // for a text match and for a blob-only binary finding alike.
+  // them. Only `pr` refuses — inside the one delivery owner, before anything
+  // is created or pushed — when the publication scanner does not pass it.
   const delivered = await verifyAndDeliver(
     projectRoot,
-    patch,
+    captured.result
+      ? { result: captured.result, renderedPatch: captured.patchViewUnavailable ? null : patch }
+      : patch,
     {
       mode,
       branch: opts.branch,
       message: opts.message,
-      secretLikeBinary: captured.binarySecretPaths.length > 0,
+      projectRoot,
+      owner,
     },
     opts.gates ?? [],
   );
   if (delivered.applied) {
-    const targetSha = await snapshotTree(projectRoot);
+    const targetSha = await snapshotTree(projectRoot, [], keep);
     threads.setThreadWorktree(
       id,
       ws.worktree_path,
@@ -101,7 +118,7 @@ export async function applyThreadDiff(
     );
   }
   const status = !delivered.applied
-    ? delivered.detail === PR_SECRET_LIKE_REFUSAL
+    ? delivered.refused
       ? "rejected"
       : "conflict"
     : mode === "branch"
@@ -113,6 +130,9 @@ export async function applyThreadDiff(
             ? "pr_opened"
             : "branched"
           : "applied";
+  // `headStranded` is the delivery owner's fact for a run's revert anchor, not part
+  // of the strict receipt: `detail` is what names the way back.
+  const { headStranded: _internal, ...receipt } = delivered;
   return {
     applied: delivered.applied,
     status,
@@ -120,6 +140,6 @@ export async function applyThreadDiff(
     detail: delivered.detail ?? null,
     // #26: the receipt now carries a typed alreadyApplied flag (default false
     // for a fresh apply); normalize the optional producer field to the receipt.
-    delivery: { ...delivered, alreadyApplied: delivered.alreadyApplied ?? false },
+    delivery: { ...receipt, alreadyApplied: receipt.alreadyApplied ?? false },
   };
 }

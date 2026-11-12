@@ -19,7 +19,7 @@ function root(prefix: string): string {
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const value of roots.splice(0)) rmSync(value, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("Claude-only macOS Keychain bridge (INV-067)", () => {
   it("refuses a native-dir override outside the Claudexor-owned config root", () => {

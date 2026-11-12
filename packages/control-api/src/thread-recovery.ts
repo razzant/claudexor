@@ -59,6 +59,21 @@ export function assertLatestThreadTurn(turns: unknown[], turnId: string): void {
   }
 }
 
+/**
+ * A purged thread is terminal: every route asks this after its accepted-command
+ * replay lookup, so what the thread accepted still answers, and nothing new is
+ * recorded on it or admitted for it, a refused turn's replay included. New work
+ * answers 409 `thread_purged`, as the store's turn creation always has.
+ */
+export function assertThreadAdmitsWork(threadId: string, thread: unknown): void {
+  if ((thread as { state?: unknown } | null)?.state === "purged")
+    throw Object.assign(new Error(`thread ${threadId} was purged; it admits no new work`), {
+      code: "thread_purged",
+      status: 409,
+      retryable: false,
+    });
+}
+
 function assertExistingTurnIsRunless(turn: unknown, turnId: string): void {
   if (
     turn !== null &&
@@ -73,6 +88,19 @@ function assertExistingTurnIsRunless(turn: unknown, turnId: string): void {
       { code: "thread_turn_already_bound", status: 409, retryable: false },
     );
   }
+}
+
+/** The accepted-command query of a turn create: the thread routes it, the turn key binds it. */
+export function acceptedTurnCommandQuery(threadId: string, idempotency: ThreadTurnIdempotency) {
+  return [
+    { threadId },
+    {
+      idempotencyKey: idempotency.key,
+      clientId: idempotency.client,
+      operation: "thread.turn.create",
+      idempotencyRequest: idempotency.request,
+    },
+  ] as const;
 }
 
 /** Read-only admission for ordinary turn create: accepted handle or tail orphan. */
@@ -90,15 +118,7 @@ export async function inspectThreadTurnCreateReplay(
   const detail = await services.threadDetail(threadId);
   if (!existing) return { detail, existingId: null, accepted: null };
 
-  const accepted = await daemon.findAccepted?.(
-    { threadId },
-    {
-      idempotencyKey: idempotency.key,
-      clientId: idempotency.client,
-      operation: "thread.turn.create",
-      idempotencyRequest: idempotency.request,
-    },
-  );
+  const accepted = await daemon.findAccepted?.(...acceptedTurnCommandQuery(threadId, idempotency));
   if (accepted) return { detail, existingId: existing.id, accepted };
 
   const turn = (detail.turns as Array<Record<string, unknown>>).find(
@@ -146,6 +166,7 @@ export async function resolveThreadRecoveryTurn(
         !Array.isArray(candidate) &&
         (candidate as { id?: unknown }).id === existing.id,
     );
+    assertThreadAdmitsWork(threadId, detail.thread);
     assertExistingTurnIsRunless(turn, existing.id);
     assertLatestThreadTurn(detail.turns, existing.id);
   }

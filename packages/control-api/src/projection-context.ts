@@ -19,6 +19,11 @@ export function inRunProjection<T>(read: () => T): T {
   return current.getStore() ? read() : current.run(new ProjectionContext(), read);
 }
 
+/** True inside a projection scope (the bulk worker's jobs). */
+export function inProjectionScope(): boolean {
+  return current.getStore() !== undefined;
+}
+
 /** Mutation callers outside a projection retain their ordinary fresh-read behavior. */
 export function projectionRead<T>(owner: object | string, key: string, read: () => T): T {
   const context = current.getStore();

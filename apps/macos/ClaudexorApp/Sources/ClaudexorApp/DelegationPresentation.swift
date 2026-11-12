@@ -232,8 +232,8 @@ extension AppModel {
     /// hydrated earlier, then stop once the question payload is present.
     func hydrateDelegatedChildInteractions(_ child: TaskRun) async {
         guard DelegationPresentation.shouldHydrateChildInteractions(
-            waitingOnUser: child.waitingOnUser,
-            pendingInteractionCount: child.pendingInteractions.count
+            waitingOnUser: child.awaitingAnswer,
+            pendingInteractionCount: child.openQuestions.count
         ) else { return }
         await loadRunDetail(child.id)
     }

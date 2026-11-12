@@ -7,6 +7,7 @@ import {
   OUTPUT_SCHEMA_DIALECTS,
   RUN_START_CLIENT_REJECTED_KEYS,
   RunApplyState,
+  RunDecisionAction,
   WorkspaceMode,
   WorkspaceKind,
   type CatalogHarness,
@@ -80,6 +81,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
             models: [],
             source: "none",
             verifiedAgainst: null,
+            sourceProgram: null,
           } satisfies ControlHarnessModelsResponse,
           // An unreachable vendor CLI verifies nothing: the stored model is
           // reported invalid exactly as before, never admitted on a guess.
@@ -105,6 +107,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
           source: truth.source,
           count: truth.models.length,
           verifiedAgainst: truth.verifiedAgainst,
+          ...("problem" in truth && truth.problem ? { problem: truth.problem } : {}),
         },
         webPolicy: s.manifest?.capabilities.web_policy ?? "none",
         attachmentInputs: [...(profile?.attachment_inputs ?? [])],
@@ -142,6 +145,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
     availableHarnesses: harnesses.filter((h) => h.status === "ok" && h.enabled).map((h) => h.id),
     modes: [...ModeKind.options],
     runControlKeys,
+    runDecisionActions: [...RunDecisionAction.options],
     outputSchemaDialects: OUTPUT_SCHEMA_DIALECTS.map((dialect) => ({ ...dialect })),
     mutability: {
       workspaceKinds: [...WorkspaceKind.options],

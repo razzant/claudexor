@@ -3,8 +3,12 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { readRunEvents } from "@claudexor/event-log";
-import { RunContinuityReceipt, type ContinuationSources } from "@claudexor/schema";
-import { readContinuationSources } from "@claudexor/workspace";
+import type { ContinuationSources } from "@claudexor/schema";
+import {
+  continuedTryStarted,
+  readContinuationSources,
+  runExecutionFacts,
+} from "@claudexor/workspace";
 import { readTextSafe } from "@claudexor/util";
 import { steeringFromRunLog } from "./continuation-evidence-io.js";
 
@@ -35,9 +39,10 @@ export function unconfirmedContinuationInputs(sources: ContinuationSources): Unc
   let newerStarted = false;
   for (const [index, source] of sources.entries()) {
     const { events } = readRunEvents(join(source.runDir, "events.jsonl"));
-    const startedHere = events.some(
-      (event) => event.type === "harness.event" && event.payload["type"] === "started",
-    );
+    // Only a continued try (receipt joined to its own accepted start) was handed
+    // the notice; a reviewer, repair or unplanned process proves nothing.
+    const facts = runExecutionFacts(events);
+    const startedHere = continuedTryStarted(facts);
     // A stopped run's admitted steering without delivery proof is newer than its caller text.
     // The live run's own steering is read per attempt by `uncertainInputFor`.
     if (!newerStarted && source.state !== "running") {
@@ -53,29 +58,28 @@ export function unconfirmedContinuationInputs(sources: ContinuationSources): Unc
       continue;
     const text = events.find((event) => event.type === "run.created")?.payload["prompt"];
     if (typeof text !== "string" || !text.trim()) continue;
-    const settled = events
-      .map((event, index) => ({
-        index,
-        receipt:
-          event.type === "run.continuity"
-            ? RunContinuityReceipt.safeParse(event.payload["receipt"]).data
-            : undefined,
-      }))
-      .find((entry) => entry.receipt?.tryIndex === 0);
-    const receipt = settled?.receipt;
-    // A mismatched handshake is not delivery. A missing receipt (including a crash
-    // during the first try) leaves delivery unproved even if a session file exists.
-    const delivered =
-      receipt &&
-      !receipt.identityCheck.startsWith("mismatch") &&
-      events.some(
-        (event, index) =>
-          event.type === "harness.event" &&
-          index < settled!.index &&
-          event.payload["attempt_id"] === receipt.attemptId &&
-          event.payload["type"] === "started",
-      );
+    // Any continued first try (a fallback's included) that started proves delivery;
+    // a mismatched handshake or a missing receipt leaves it unproved.
+    const delivered = continuedTryStarted(facts, true);
     if (!delivered) uncertain.push({ text, runDir: source.runDir });
   }
   return uncertain;
+}
+
+/** What a first try that delivered nothing (it never started, or its handshake
+ * named another session) leaves to reconcile: a successor's individual
+ * undelivered callers newest first, this run's own correction included, else
+ * the run's own work order. Further undelivered tries keep these references. */
+export function undeliveredInputs(run: {
+  runDir: string;
+  runId: string;
+  workOrder: string;
+}): UncertainInput[] {
+  const sources = readContinuationSources(run.runDir);
+  return sources.length
+    ? unconfirmedContinuationInputs([
+        { runDir: run.runDir, runId: run.runId, state: "running" },
+        ...sources,
+      ])
+    : [{ text: run.workOrder, runDir: run.runDir }];
 }

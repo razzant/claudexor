@@ -72,7 +72,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 /** The resolver and spawn layer read `process.platform`; report win32 during `run`. */
 async function onWindows<T>(run: () => Promise<T>): Promise<T> {
@@ -242,6 +242,7 @@ describe("a relative PATH entry", () => {
     const { runCapture } = await import("@claudexor/core");
     await probeClaudeHelp(undefined, path);
     await runCapture("claude", ["--help"], { env: { PATH: path }, cwd: work }).catch(() => null);
-    expect(observer.attempts).toEqual([fallback, fallback]);
+    // Help cache identity first reads --version, then help; the run resolves the same entry.
+    expect(observer.attempts).toEqual([fallback, fallback, fallback]);
   });
 });

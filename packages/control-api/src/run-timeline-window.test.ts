@@ -102,7 +102,7 @@ describe("timelineEvents selects its display window before projecting", () => {
     }
   });
 
-  it("counts only displayed rows as omitted and keeps severity, redaction and text", () => {
+  it("counts only displayed rows as omitted and keeps severity and exact text", () => {
     const events = history(620);
     events.push(
       {
@@ -148,9 +148,9 @@ describe("timelineEvents selects its display window before projecting", () => {
       "warning",
       "warning",
     ]);
-    expect(rows.at(-7)?.detail).toBe("newest [redacted] ✓");
-    expect(rows.at(-5)?.title).toBe("to [redacted]");
-    expect(JSON.stringify(rows)).not.toContain(SECRET);
+    // The displayed rows carry the journaled text exactly (INV-146).
+    expect(rows.at(-7)?.detail).toBe(`newest ${SECRET} ✓`);
+    expect(rows.at(-5)?.title).toBe(`to ${SECRET}`);
   });
 
   // Corrupted-log behavior: a row whose projection throws (String() of an

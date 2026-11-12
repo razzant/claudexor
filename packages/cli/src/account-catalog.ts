@@ -9,6 +9,7 @@ import {
 } from "@claudexor/orchestrator";
 import {
   ControlProblem,
+  REOPENING_UNKNOWN_REFUSAL_CODE,
   type AccountCatalogAvailability,
   type CredentialProfile,
   type CredentialUnusableObservation,
@@ -127,9 +128,15 @@ async function accountAvailability(
     ...row,
     availability: blocked ? "unavailable" : "available",
     problem: blocked
-      ? catalogProblem("subscription_window_exhausted", "The account has an active quota limit", {
-          resetsAt: blocked.resets_at,
-        })
+      ? blocked.reopening === "unknown"
+        ? catalogProblem(
+            REOPENING_UNKNOWN_REFUSAL_CODE,
+            "The vendor refused further usage on this account, with no reopening time named",
+            { resetsAt: null },
+          )
+        : catalogProblem("subscription_window_exhausted", "The account has an active quota limit", {
+            resetsAt: blocked.resets_at,
+          })
       : null,
     // Quota blocks inference, not a read of the account's inventory.
     canReadCatalog: true,
@@ -156,6 +163,8 @@ export async function enumerateAccountCatalogs<T>(input: {
           input.observationKey,
           profile,
           () => input.read(profile, canReadCatalog),
+          false,
+          input.adapter?.program,
         );
         return catalog === null && facts.problem === null
           ? {

@@ -1,7 +1,7 @@
 import {
+  accountResourceSourceHarnesses,
   quotaRefreshDemandHarnesses,
   quotaSourceTraits,
-  ACCOUNT_RESOURCE_REFRESH_SOURCES,
   type AccountResourceSnapshot,
   type QuotaSnapshot,
   type QuotaSubject,
@@ -9,9 +9,10 @@ import {
 import { quotaSnapshotDueAt } from "./quota-registry-support.js";
 import { resourceRefreshEvidence } from "./quota-resource-demand.js";
 
+// API-key resource sources refresh only on explicit request: no poll demand.
 const REFRESH_CAPABLE_HARNESSES = new Set<string>([
   ...quotaRefreshDemandHarnesses(),
-  ...Object.values(ACCOUNT_RESOURCE_REFRESH_SOURCES).map((entry) => entry.harness),
+  ...accountResourceSourceHarnesses("account"),
 ]);
 
 /** Demand identity is a credential subject, not its current route or source. */

@@ -8,6 +8,7 @@ import {
   type RunOutcomeFacts,
   type WorkState,
   type RunTelemetry,
+  type ControlRouteInfo,
 } from "@claudexor/schema";
 import type { DaemonRunRecord } from "./run-record.js";
 import { safeReadStructuredArtifact } from "./run-artifact-read.js";
@@ -89,4 +90,35 @@ export function projectAuthRoute(telemetry: RunTelemetry | null) {
         modelMismatch: telemetry.auth_route.model_mismatch,
       }
     : null;
+}
+
+/**
+ * Run-level route evidence: observed model comes ONLY from telemetry (the
+ * harness stream's own disclosure); the requested model from run params.
+ * `verified` is never inferred from the request alone.
+ */
+export function controlRoute(
+  telemetry: RunTelemetry | null,
+  p: Record<string, unknown>,
+): ControlRouteInfo | null {
+  if (!telemetry) return null;
+  const finalAttempt = telemetry.final_attempt_id
+    ? telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)
+    : undefined;
+  const observed =
+    finalAttempt?.observed_model ??
+    telemetry.attempts.find((a) => a.observed_model)?.observed_model ??
+    null;
+  const harnessId =
+    finalAttempt?.harness_id ??
+    telemetry.attempts.find((a) => a.observed_model)?.harness_id ??
+    null;
+  return {
+    // Scalar-only by design until per-candidate route evidence lands:
+    // map-only pool members show requestedModel null here, honestly.
+    requestedModel: typeof p["model"] === "string" ? p["model"] : null,
+    observedModel: observed,
+    harnessId,
+    verified: observed !== null,
+  };
 }

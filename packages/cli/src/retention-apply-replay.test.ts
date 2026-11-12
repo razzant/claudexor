@@ -11,7 +11,7 @@ import {
   handleRunApplyRoutes,
   type RunApplyRouteContext,
 } from "../../control-api/src/run-apply-routes.js";
-import { readExactRunPatch } from "../../control-api/src/run-exact-patch.js";
+import { readExactRunPatch, runDeliverable } from "../../control-api/src/run-exact-patch.js";
 import { createRetentionRunner } from "./retention-service.js";
 
 it("replays the durable delivery receipt while HTTP Apply requires its retained patch", async () => {
@@ -100,6 +100,8 @@ it("replays the durable delivery receipt while HTTP Apply requires its retained 
           response = { status: failure.status ?? 500, message: failure.message };
         },
         readPatch: (record) => readExactRunPatch(record, repo),
+        readDeliverable: (record) => runDeliverable(record, repo),
+        projectRoot: () => repo,
         targetRoot: () => repo,
         gateError: () => null,
         gateSpecs: () => [],

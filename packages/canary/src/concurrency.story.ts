@@ -220,7 +220,7 @@ describe("startup concurrency acceptance", () => {
   afterEach(() => {
     sandbox?.dispose();
     sandbox = undefined;
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it(
     "default product admission has no hidden cap at the twenty-fifth fake worker",

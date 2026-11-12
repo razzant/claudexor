@@ -62,6 +62,13 @@ export const RunWaitManyInput = z
           .min(1)
           .max(RUN_WAIT_MANY_MAX_TARGETS),
         waitMs: z.number().int().min(0).max(50_000).default(25_000),
+        // Opt-in, so a reader that never asks keeps the exact strict rows below.
+        includeBlocking: z
+          .boolean()
+          .optional()
+          .describe(
+            "true adds `blocking` to each summary with pending questions; omitted or false returns the compact rows unchanged.",
+          ),
       })
       .strict(),
   )
@@ -70,18 +77,33 @@ export const RunWaitManyInput = z
   );
 export type RunWaitManyInput = z.infer<typeof RunWaitManyInput>;
 
-export const RunWaitManySummary = z.union([
-  z.object({ status: ControlRunState, pending: z.boolean(), token, problem: z.null() }).strict(),
-  z
-    .object({
-      status: z.null(),
-      pending: z.null(),
-      token: z.null(),
-      problem: z.enum(["not_found", "snapshot_unavailable", "not_observed"]),
-    })
-    .strict(),
-]);
+const observed = z
+  .object({ status: ControlRunState, pending: z.boolean(), token, problem: z.null() })
+  .strict();
+const unobserved = z
+  .object({
+    status: z.null(),
+    pending: z.null(),
+    token: z.null(),
+    problem: z.enum(["not_found", "snapshot_unavailable", "not_observed"]),
+  })
+  .strict();
+/** The compact row every reader gets unless it asks for `includeBlocking`; task-group members too. */
+export const RunWaitManySummary = z.union([observed, unobserved]);
 export type RunWaitManySummary = z.infer<typeof RunWaitManySummary>;
+
+/** A row with pending questions, answered to `includeBlocking: true`. */
+export const RunWaitManyBlockingSummary = observed
+  .extend({
+    pending: z.literal(true),
+    blocking: z
+      .boolean()
+      .describe(
+        "true while any pending question holds its agent until answered, or its kind is unknown; false when every pending question is async and the agent keeps working.",
+      ),
+  })
+  .strict();
+export type RunWaitManyBlockingSummary = z.infer<typeof RunWaitManyBlockingSummary>;
 
 export const RunWaitManyResult = z
   .object({
@@ -95,7 +117,10 @@ export const RunWaitManyResult = z
           .max(RUN_WAIT_MANY_MAX_TARGETS - 1),
       )
       .max(RUN_WAIT_MANY_MAX_TARGETS),
-    summaries: z.array(RunWaitManySummary).min(1).max(RUN_WAIT_MANY_MAX_TARGETS),
+    summaries: z
+      .array(z.union([observed, RunWaitManyBlockingSummary, unobserved]))
+      .min(1)
+      .max(RUN_WAIT_MANY_MAX_TARGETS),
   })
   .strict()
   .superRefine((value, ctx) => {

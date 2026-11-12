@@ -1,19 +1,6 @@
-import {
-  closeSync,
-  constants,
-  cpSync,
-  existsSync,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  readdirSync,
-} from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { cpSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { parseUnifiedDiff } from "@claudexor/core";
-import { containsSecretLikeToken } from "@claudexor/util";
-
-const MAX_BINARY_SECRET_SCAN_BYTES = 32 * 1024 * 1024;
 
 /** Legacy live convergence capture only. Explicit directory workspaces use a selected footprint. */
 export function snapshotLegacyDirectoryBaseline(repoRoot: string, base: string): void {
@@ -126,43 +113,4 @@ export function excludePlainDiffPathPrefix(text: string, relativeDir: string): s
     if (!pathsAreOwned(paths)) filtered += block;
   }
   return filtered;
-}
-
-/** `diff -ruN` carries no binary payload, so inspect each live binary
- * postimage directly and name the ones a persisted copy must disclose.
- * Oversized, non-regular, or unreadable bytes are unprovable and are named too. */
-export function plainDiffFlaggedBinaries(text: string, liveRoot: string): string[] {
-  const root = resolve(liveRoot);
-  const flagged: string[] = [];
-  for (const file of parseUnifiedDiff(text).files) {
-    if (!file.binaryStub || file.deleted || !file.newPath) continue;
-    const source = resolve(root, file.newPath);
-    if (source !== root && !source.startsWith(root + sep)) {
-      flagged.push(file.newPath);
-      continue;
-    }
-    let fd: number;
-    try {
-      fd = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") flagged.push(file.newPath);
-      continue;
-    }
-    try {
-      const stat = fstatSync(fd);
-      const bytes =
-        stat.isFile() && stat.size <= MAX_BINARY_SECRET_SCAN_BYTES ? readFileSync(fd) : null;
-      if (
-        bytes === null ||
-        bytes.length > MAX_BINARY_SECRET_SCAN_BYTES ||
-        containsSecretLikeToken(bytes.toString("latin1"))
-      )
-        flagged.push(file.newPath);
-    } catch {
-      flagged.push(file.newPath);
-    } finally {
-      closeSync(fd);
-    }
-  }
-  return flagged;
 }

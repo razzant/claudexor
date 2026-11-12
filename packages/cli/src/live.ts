@@ -2,20 +2,20 @@ import { controlApiAddress, type ControlApiAddress } from "./control-api-address
 export { controlApiAddress, type ControlApiAddress } from "./control-api-address.js";
 import { laneOf, truncate } from "./live-format.js";
 import { randomUUID } from "node:crypto";
-import type { InteractionQuestion } from "@claudexor/schema";
 import type { RunOutcomeFacts } from "@claudexor/schema";
 import {
-  InteractionQuestion as InteractionQuestionSchema,
   RunOutcomeFacts as RunOutcomeFactsSchema,
   continuityLabel,
   laneSwitchedFromPayload,
   outcomeExitCode,
   processExitCode,
   runOutcomeLabel,
+  WorkspacePreparedPayload,
+  workspacePreparationSummary,
 } from "@claudexor/schema";
 import { CliError, handshakeRefusalError } from "./cli-error.js";
 import { consumeHandshakeIdentity, recordEngineSkew, type EngineIdentity } from "./engine-skew.js";
-import { promptQuestionsOnTty } from "./interaction-prompt.js";
+import { answerInteractionFromTty, asyncDelivery } from "./interaction-prompt.js";
 export { collectInteractionAnswers } from "./interaction-prompt.js";
 
 const print = (s: string): void => {
@@ -84,7 +84,10 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
         const tool = p["tool"] as Record<string, unknown>;
         return `[${who}] tool ${String(tool["name"] ?? "?")}${tool["target"] ? ` — ${truncate(String(tool["target"]), 100)}` : ""}`;
       }
-      if (sub === "interaction_requested") return `[${who}] waiting on your answer…`;
+      if (sub === "interaction_requested")
+        return asyncDelivery(p["interaction"])
+          ? `[${who}] asked a question and keeps working (answer any time)`
+          : `[${who}] waiting on your answer…`;
       return null;
     }
     case "session.continuity": {
@@ -99,13 +102,18 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       return line;
     }
     case "interaction.requested":
-      return `[${who}] QUESTION pending (interaction ${String(p["interaction_id"] ?? "?")})`;
+      return `[${who}] QUESTION pending (interaction ${String(p["interaction_id"] ?? "?")})${asyncDelivery(p) ? " — the agent keeps working" : ""}`;
     case "interaction.answered":
-      return `[${who}] answer delivered`;
+      // Handed to the running session; not proof that the model read it.
+      return asyncDelivery(p)
+        ? `[${who}] answer handed to the running agent (sent as its next message)`
+        : `[${who}] answer delivered`;
     case "interaction.timeout":
       return p["reason"] === "cancelled"
         ? `[${who}] question wait cancelled`
-        : `[${who}] no answer in time — continuing with assumptions`;
+        : asyncDelivery(p)
+          ? `[${who}] question expired unanswered — nothing was sent; the agent kept working`
+          : `[${who}] no answer in time — continuing with assumptions`;
     case "interaction.withdrawn":
       return `[${who}] question withdrawn by the agent — no answer needed`;
     case "harness.completed":
@@ -170,6 +178,14 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       )}, continuation ${String(p["continuation_count"] ?? "?")})`;
     case "workspace.retained":
       return `[${String(p["attempt_id"] ?? "?")}] stopped work kept for continueFrom`;
+    case "workspace.prepared": {
+      const prepared = WorkspacePreparedPayload.safeParse(p);
+      if (!prepared.success) return null;
+      const { warning, text } = workspacePreparationSummary(prepared.data);
+      return `[${prepared.data.attempt_id}] ${warning ? "WARNING: " : ""}${text}`;
+    }
+    case "workspace.settlement_failed":
+      return `[${String(p["attempt_id"] ?? "?")}] WARNING: workspace settlement failed (${String(p["stage"] ?? "?")}): ${truncate(String(p["cause"] ?? "unknown"), 200)}; the run outcome stands and the tree may remain at ${String(p["root"] ?? "?")}`;
     case "run.continuation.denied":
       return `[${String(p["from_attempt"] ?? "?")}] continuation refused — budget lease denied (${String(
         p["reason"] ?? "budget",
@@ -242,7 +258,9 @@ export function createRunEventLineFormatter(): (ev: Record<string, unknown>) => 
 import { CONTROL_PROTOCOL_MAJOR } from "@claudexor/schema";
 export { CONTROL_PROTOCOL_MAJOR };
 
-/** One control-plane transport boundary for CLI, MCP and ACP projections. */
+/** One control-plane transport boundary for CLI, MCP and ACP projections.
+ * It owns the Authorization bearer: a caller-supplied value is overwritten, so
+ * callers pass only their own headers. Standalone fetches set their own. */
 export function controlApiFetch(
   addr: ControlApiAddress,
   path: string,
@@ -333,10 +351,13 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
   let sawTerminal = false;
   let lastSeq = 0;
   const maxReconnects = 5;
-  const promptControllers = new Map<string, AbortController>();
+  const promptControllers = new Map<
+    string,
+    { controller: AbortController; ev: Record<string, unknown>; async: boolean }
+  >();
   let promptTail = Promise.resolve();
   const stopPrompts = () => {
-    for (const controller of promptControllers.values()) controller.abort();
+    for (const prompt of promptControllers.values()) prompt.controller.abort();
   };
   const finish = async (code: number): Promise<number> => {
     stopPrompts();
@@ -346,24 +367,36 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
   const queueInteractionPrompt = (ev: Record<string, unknown>) => {
     const interactionId = eventInteractionId(ev);
     if (!interactionId || promptControllers.has(interactionId)) return;
+    const async = asyncDelivery(ev["payload"]);
+    // A blocking question never waits behind a non-blocking prompt: open async
+    // prompts are set aside and asked again after it, still unanswered.
+    const setAside: Record<string, unknown>[] = [];
+    if (!async)
+      for (const [id, open] of promptControllers) {
+        if (!open.async) continue;
+        promptControllers.delete(id);
+        open.controller.abort({ kind: "yield_to_blocking" });
+        setAside.push(open.ev);
+      }
     const controller = new AbortController();
-    promptControllers.set(interactionId, controller);
+    promptControllers.set(interactionId, { controller, ev, async });
     const runPrompt = async () => {
       try {
         if (!controller.signal.aborted) {
-          await answerInteractionFromTty(addr, runId, ev, controller.signal);
+          await answerInteractionFromTty(controlApiFetch, addr, runId, ev, controller.signal);
         }
       } catch {
         // Prompt delivery is a best-effort TTY projection. The run stream and
         // its terminal remain authoritative; transport errors are surfaced by
         // the ordinary interaction/readback paths without breaking follow.
       } finally {
-        if (promptControllers.get(interactionId) === controller) {
+        if (promptControllers.get(interactionId)?.controller === controller) {
           promptControllers.delete(interactionId);
         }
       }
     };
     promptTail = promptTail.then(runPrompt, runPrompt);
+    for (const later of setAside) queueInteractionPrompt(later);
   };
   // One formatter for the whole follow, reconnects included: a resumed stream
   // replays from Last-Event-ID, and the dedup state has to span that seam.
@@ -393,7 +426,9 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
     ) {
       const interactionId = eventInteractionId(ev);
       if (interactionId) {
-        promptControllers.get(interactionId)?.abort({ kind: "interaction_resolved", event: type });
+        promptControllers
+          .get(interactionId)
+          ?.controller.abort({ kind: "interaction_resolved", event: type });
       }
     }
     if (type === "run.completed" || type === "run.failed" || type === "run.blocked") {
@@ -425,7 +460,6 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
     try {
       res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/events`, {
         headers: {
-          Authorization: `Bearer ${addr.token}`,
           Accept: "text/event-stream",
           ...(lastSeq > 0 ? { "Last-Event-ID": String(lastSeq) } : {}),
         },
@@ -485,78 +519,4 @@ function eventInteractionId(ev: Record<string, unknown>): string | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const interactionId = (payload as Record<string, unknown>)["interaction_id"];
   return typeof interactionId === "string" && interactionId.length > 0 ? interactionId : null;
-}
-
-async function answerInteractionFromTty(
-  addr: ControlApiAddress,
-  runId: string,
-  ev: Record<string, unknown>,
-  signal: AbortSignal,
-): Promise<void> {
-  const p = (ev["payload"] ?? {}) as Record<string, unknown>;
-  const interactionId = typeof p["interaction_id"] === "string" ? p["interaction_id"] : null;
-  if (!interactionId) return;
-  if (signal.aborted) return;
-  const questions = Array.isArray(p["questions"])
-    ? p["questions"]
-        .map((q) => InteractionQuestionSchema.safeParse(q))
-        .filter((r): r is { success: true; data: InteractionQuestion } => r.success)
-        .map((r) => r.data)
-    : [];
-  if (questions.length === 0) return;
-  // Replay safety: the events stream replays from seq 1, so historical
-  // interaction.requested events arrive for questions long answered or timed
-  // out. Only prompt when the daemon still reports this interaction pending
-  // (the registry is populated before the event reaches any subscriber, so a
-  // LIVE question is always visible here). On a detail fetch failure, fall
-  // through — the expired-deadline guard in promptQuestionsOnTty still holds.
-  try {
-    const detailRes = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { Authorization: `Bearer ${addr.token}` },
-      signal,
-    });
-    if (detailRes.ok) {
-      const detail = (await detailRes.json()) as {
-        summary?: { state?: string };
-        pendingInteractions?: { interactionId?: string }[];
-      };
-      const state = detail.summary?.state ?? "";
-      const active = state === "running" || state === "queued";
-      const stillPending = (detail.pendingInteractions ?? []).some(
-        (pi) => pi.interactionId === interactionId,
-      );
-      if (!active || !stillPending) return;
-    }
-  } catch {
-    if (signal.aborted) return;
-    /* fall through to the deadline guard */
-  }
-  const answers = await promptQuestionsOnTty(
-    interactionId,
-    questions,
-    typeof p["timeout_at"] === "string" ? p["timeout_at"] : undefined,
-    signal,
-  );
-  if (!answers || signal.aborted) return;
-  const body = {
-    answers: answers.answers.map((a) => ({
-      questionId: a.question_id,
-      selectedLabels: a.selected_labels,
-      freeText: a.free_text,
-    })),
-  };
-  const res = await controlApiFetch(
-    addr,
-    `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/answer`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    },
-  );
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    print(`(answer not delivered: ${res.status}${detail ? ` ${truncate(detail, 120)}` : ""})`);
-  }
 }

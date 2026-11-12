@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,8 +14,11 @@ vi.mock("@claudexor/secrets", async (importOriginal) => ({
   resolveSecret: () => null,
 }));
 
+import { appendHarnessEvent } from "@claudexor/core";
 import { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
+import { redactSecrets } from "@claudexor/util";
 import { createRawApiAdapter } from "./index.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -27,7 +31,10 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
+
+// The route invents no model (#395): this suite is the operator who chose one.
+process.env.CLAUDEXOR_RAWAPI_MODEL = "operator/chosen";
 
 async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
   const out: T[] = [];
@@ -1133,7 +1140,7 @@ describe("raw-api terminal provider completions", () => {
     expect(JSON.stringify(error)).not.toContain("unknown top-level sentinel");
   });
 
-  it("redacts a secret that straddles the diagnostic boundary before slicing", async () => {
+  it("redacts a provider diagnostic that straddles the bound before slicing; partial output stays exact", async () => {
     const secret = ["sk", "or", "v1"].join("-") + `-${"z".repeat(48)}`;
     const straddlingPartialOutput = `${"p".repeat(480)} ${secret}`;
     vi.stubGlobal(
@@ -1142,6 +1149,7 @@ describe("raw-api terminal provider completions", () => {
         responseFor({
           content: straddlingPartialOutput,
           finishReason: "error",
+          error: { code: 502, message: `${"m".repeat(480)} ${secret}` },
         }),
       ),
     );
@@ -1149,13 +1157,15 @@ describe("raw-api terminal provider completions", () => {
     const events = await collect(createRawApiAdapter().run(runSpec("review", "straddling-secret")));
     const error = events.find((event) => event.type === "error");
     const payload = error?.payload as {
+      provider_error?: { message?: string };
       partial_output?: string;
       partial_output_truncated?: boolean;
     };
-    const partialOutput = payload.partial_output;
-    expect(partialOutput).toBe(`${"p".repeat(480)} [redacted]`);
-    expect(payload.partial_output_truncated).toBe(false);
-    expect(JSON.stringify(error)).not.toContain(secret);
+    // The provider's message is a diagnostic: masked before it is bounded.
+    expect(payload.provider_error?.message).toBe(`${"m".repeat(480)} [redacted]`);
+    // The model's partial text is working content: bounded, never masked (INV-146).
+    expect(payload.partial_output).toBe(straddlingPartialOutput.slice(0, 500));
+    expect(payload.partial_output_truncated).toBe(true);
   });
 
   it.each([
@@ -1255,12 +1265,12 @@ describe("raw-api terminal provider completions", () => {
       const messageEvents = await collect(
         createRawApiAdapter().run(runSpec("explain", `${finishReason}-message`)),
       );
-      expect(messageEvents.map((event) => event.type)).toEqual([
-        "started",
-        "message",
-        "usage",
-        "completed",
-      ]);
+      // A cut answer stays an answer (#144) and says it was cut (#147).
+      expect(messageEvents.map((event) => event.type)).toEqual(
+        finishReason === "length"
+          ? ["started", "message", "status", "usage", "completed"]
+          : ["started", "message", "usage", "completed"],
+      );
 
       vi.stubGlobal(
         "fetch",
@@ -1287,7 +1297,16 @@ describe("raw-api terminal provider completions", () => {
       ),
     );
 
-    expect(events.map((event) => event.type)).toEqual(["started", "message", "usage", "completed"]);
+    expect(events.map((event) => event.type)).toEqual([
+      "started",
+      "message",
+      "status",
+      "usage",
+      "completed",
+    ]);
+    expect(events.find((event) => event.type === "status")?.payload).toEqual({
+      finish_reason: "length",
+    });
     expect(events.some((event) => event.type === "error")).toBe(false);
     expect(events.find((event) => event.type === "usage")?.usage).toStrictEqual({
       input_tokens: 7,
@@ -1315,4 +1334,406 @@ describe("raw-api terminal provider completions", () => {
     expect(error?.payload).not.toHaveProperty("partial_output");
     expect(error?.payload).not.toHaveProperty("partial_output_truncated");
   });
+});
+
+/**
+ * INV-146: a failed completion's partial text is the model's own output, and
+ * the only copy Claudexor keeps of it. Through the real adapter over HTTP and
+ * the shared journal writer it stays exact; the provider's error report stays
+ * a masked diagnostic, and the completion stays failed (no answer message).
+ */
+describe("raw-api failed completion keeps the model's partial output exact", () => {
+  const ORIGINAL_ENV = { ...process.env };
+  let server: Server | undefined;
+  const journalRoots: string[] = [];
+  afterEachClosed(async () => {
+    // This test's folder and server, taken before the close: the file-end reaper and a later
+    // test never reach them.
+    const ownedRoots = journalRoots.splice(0);
+    const ownedServer = server;
+    server = undefined;
+    await new Promise<void>((resolve) =>
+      ownedServer ? ownedServer.close(() => resolve()) : resolve(),
+    );
+    return () => {
+      process.env = { ...ORIGINAL_ENV };
+      for (const root of ownedRoots) __rmSyncReap(root, { recursive: true, force: true });
+    };
+  });
+
+  it("is exact in the live event and the journal, with the provider error masked", async () => {
+    const work = ["sk", "or", "v1"].join("-") + `-${"W0rk".repeat(12)}`;
+    const vendor = ["sk", "or", "v1"].join("-") + `-${"V3nd".repeat(12)}`;
+    const partial = `Partial answer so far: export OPENROUTER_API_KEY=${work}`;
+    server = createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          model: "provider-model",
+          choices: [
+            {
+              message: { role: "assistant", content: partial },
+              finish_reason: "error",
+              error: { code: 502, message: `upstream rejected ${vendor}` },
+            },
+          ],
+          usage: { prompt_tokens: 7, completion_tokens: 3 },
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no port");
+    process.env.CLAUDEXOR_TEST_RAWAPI_KEY = "fixture-key";
+    const adapter = createRawApiAdapter({
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      keyEnv: "CLAUDEXOR_TEST_RAWAPI_KEY",
+    });
+    const events: HarnessEvent[] = [];
+    for await (const event of adapter.run(
+      HarnessRunSpec.parse({
+        session_id: "partial-output",
+        intent: "explain",
+        prompt: "x",
+        cwd: process.cwd(),
+        access: "readonly",
+        external_context_policy: "auto",
+        tool_permission_policy: { web: "auto", allow: [], deny: [] },
+      }),
+    ))
+      events.push(event);
+
+    // The completion stays failed and the partial text never becomes the answer.
+    expect(events.map((event) => event.type)).toEqual(["started", "error", "usage", "completed"]);
+    const live = events.find((event) => event.type === "error")!;
+    expect(live.payload?.["partial_output"]).toBe(partial);
+    expect(live.payload?.["partial_output_truncated"]).toBe(false);
+    expect(JSON.stringify(live)).not.toContain(vendor);
+
+    const journalRoot = mkdtempSync(join(tmpdir(), "raw-api-partial-"));
+    journalRoots.push(journalRoot);
+    const journal = join(journalRoot, "events.jsonl");
+    for (const event of events) appendHarnessEvent(journal, event);
+    const stored = readFileSync(journal, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as HarnessEvent);
+    const error = stored.find((event) => event.type === "error")!;
+    expect(error.payload?.["partial_output"]).toBe(partial);
+    expect(error.payload?.["provider_error"]).toEqual({
+      code: 502,
+      message: "upstream rejected [redacted]",
+    });
+    expect(stored.some((event) => event.type === "message")).toBe(false);
+    expect(readFileSync(journal, "utf8")).not.toContain(vendor);
+  });
+});
+
+/**
+ * #172: a raw-API diagnostic is masked whole and only then cut to its bound,
+ * and no bound separates the two halves of a surrogate pair. Cutting first can
+ * leave a head of a credential too short for the redactor to recognize; a cut
+ * inside an astral character leaves a lone surrogate. The model's partial text
+ * is cut the same way and never masked (INV-146). Each case runs the real
+ * adapter against a local HTTP endpoint and journals its events through the
+ * shared writer.
+ */
+describe("raw-api diagnostics are masked whole, then bounded without splitting a character (#172)", () => {
+  const ORIGINAL_ENV = { ...process.env };
+  const token = `ghp_${"a".repeat(36)}`;
+  const x = (count: number) => "x".repeat(count);
+  let server: Server | undefined;
+  const journalRoots: string[] = [];
+
+  afterEachClosed(async () => {
+    // This test's folder and server, taken before the close: the file-end reaper and a later
+    // test never reach them.
+    const ownedRoots = journalRoots.splice(0);
+    const ownedServer = server;
+    server = undefined;
+    await new Promise<void>((resolve) =>
+      ownedServer ? ownedServer.close(() => resolve()) : resolve(),
+    );
+    return () => {
+      process.env = { ...ORIGINAL_ENV };
+      for (const root of ownedRoots) __rmSyncReap(root, { recursive: true, force: true });
+    };
+  });
+
+  async function runAgainst(status: number, body: string, headers: Record<string, string> = {}) {
+    server = createServer((_req, res) => {
+      res.writeHead(status, headers);
+      res.end(body);
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no port");
+    process.env.CLAUDEXOR_TEST_RAWAPI_KEY = "fixture-key";
+    const adapter = createRawApiAdapter({
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      keyEnv: "CLAUDEXOR_TEST_RAWAPI_KEY",
+    });
+    const live = await collect(
+      adapter.run(
+        HarnessRunSpec.parse({
+          session_id: "raw-diagnostic",
+          intent: "review",
+          prompt: "x",
+          cwd: process.cwd(),
+          access: "readonly",
+          external_context_policy: "auto",
+          tool_permission_policy: { web: "auto", allow: [], deny: [] },
+        }),
+      ),
+    );
+    const journalRoot = mkdtempSync(join(tmpdir(), "raw-api-diagnostic-"));
+    journalRoots.push(journalRoot);
+    const journal = join(journalRoot, "events.jsonl");
+    for (const event of live) appendHarnessEvent(journal, event);
+    const text = readFileSync(journal, "utf8");
+    const stored = text
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as HarnessEvent);
+    return { live, stored, text };
+  }
+
+  it("uses a token the redactor masks whole and no longer recognizes once cut", () => {
+    const body = `${x(479)} ${token} after`;
+    expect(redactSecrets(body)).toBe(`${x(479)} [redacted] after`);
+    // Cutting first keeps 20 units of the token, a head no rule matches.
+    expect(redactSecrets(body.slice(0, 500))).toBe(body.slice(0, 500));
+  });
+
+  const httpCases: Array<{
+    name: string;
+    status: number;
+    body: string;
+    expected: string;
+    transient?: HarnessEvent["transient"];
+  }> = [
+    {
+      name: "a token straddling the cut",
+      status: 400,
+      body: `${x(479)} ${token} after`,
+      expected: `${x(479)} [redacted] after`,
+    },
+    {
+      name: "a token straddling the cut, typed transient",
+      status: 503,
+      body: `${x(479)} ${token} after`,
+      expected: `${x(479)} [redacted] after`,
+      transient: { kind: "service_unavailable", retry_delay_ms: null },
+    },
+    {
+      name: "an astral character across the cut",
+      status: 400,
+      body: `${x(499)}😀tail`,
+      expected: x(499),
+    },
+    {
+      name: "an astral character ending at the cut",
+      status: 400,
+      body: `${x(498)}😀tail`,
+      expected: `${x(498)}😀`,
+    },
+    { name: "ASCII below the bound", status: 400, body: x(499), expected: x(499) },
+    { name: "ASCII at the bound", status: 400, body: x(500), expected: x(500) },
+    { name: "ASCII above the bound", status: 400, body: x(501), expected: x(500) },
+  ];
+
+  it.each(httpCases)(
+    "keeps an HTTP $status body masked and bounded: $name",
+    async ({ status, body, expected, transient }) => {
+      const { live, stored, text } = await runAgainst(status, body);
+      expect(live.map((event) => event.type)).toEqual(["started", "error", "completed"]);
+      for (const events of [live, stored]) {
+        const error = events.find((event) => event.type === "error")!;
+        expect(error.error).toBe(`raw-api HTTP ${status}`);
+        expect(error.payload).toEqual({ body: expected });
+        expect(error.transient).toEqual(transient);
+        expect(error).not.toHaveProperty("rate_limit");
+      }
+      expect(text).not.toContain("ghp_");
+    },
+  );
+
+  it("keeps a 429 a typed rate limit whose payload carries no body", async () => {
+    const { live, stored, text } = await runAgainst(429, `${x(479)} ${token} after`, {
+      "retry-after": "7",
+    });
+    expect(live.map((event) => event.type)).toEqual(["started", "error", "completed"]);
+    for (const events of [live, stored]) {
+      const error = events.find((event) => event.type === "error")!;
+      const resetsAt = error.rate_limit?.resets_at;
+      expect(resetsAt).toEqual(expect.any(String));
+      expect(error.payload).toEqual({ resets_at: resetsAt });
+      expect(error.rate_limit).toEqual({ resets_at: resetsAt, retry_delay_ms: 7000 });
+      expect(error.transient).toEqual({ kind: "service_unavailable", retry_delay_ms: 7000 });
+    }
+    expect(text).not.toContain(x(479));
+  });
+
+  it("cuts a failed completion's report and partial text before a split character; the partial text stays exact", async () => {
+    // 55 units, then 444 more: the astral character starts at unit 499.
+    const kept = `Working text: ${token} ${"p".repeat(444)}`;
+    const { live, stored } = await runAgainst(
+      200,
+      JSON.stringify({
+        model: "provider-model",
+        choices: [
+          {
+            message: { role: "assistant", content: `${kept}😀tail` },
+            finish_reason: "error",
+            error: {
+              code: 502,
+              message: `${x(499)}😀tail`,
+              metadata: { error_type: "provider_unavailable" },
+            },
+          },
+        ],
+        usage: { prompt_tokens: 7, completion_tokens: 3 },
+      }),
+      { "content-type": "application/json" },
+    );
+    expect(live.map((event) => event.type)).toEqual(["started", "error", "usage", "completed"]);
+    for (const events of [live, stored]) {
+      const error = events.find((event) => event.type === "error")!;
+      expect(error.payload).toEqual({
+        finish_reason: "error",
+        provider_error: { code: 502, message: x(499), error_type: "provider_unavailable" },
+        // Working content: the secret-shaped token is kept, never masked.
+        partial_output: kept,
+        partial_output_truncated: true,
+      });
+      expect(error.transient).toEqual({ kind: "service_unavailable", retry_delay_ms: null });
+    }
+  });
+});
+
+describe("raw-api names only a model somebody chose (#395)", () => {
+  const ORIGINAL_ENV = { ...process.env };
+  const fetchMock = vi.fn(async () => new Response("{}", { status: 500 }));
+  const spec = (fields: Record<string, unknown> = {}) =>
+    HarnessRunSpec.parse({
+      session_id: "model-choice",
+      intent: "explain",
+      prompt: "x",
+      cwd: "/repo",
+      access: "readonly",
+      external_context_policy: "auto",
+      tool_permission_policy: { web: "auto", allow: [], deny: [] },
+      ...fields,
+    });
+
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.OPENAI_API_KEY = "sk-test";
+    delete process.env.CLAUDEXOR_RAWAPI_MODEL;
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it.each([null, "", "   "])(
+    "a %j model hint with no instance choice requests nothing",
+    async (hint) => {
+      const adapter = createRawApiAdapter();
+      const events = await collect(adapter.run(spec({ model_hint: hint })));
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(events.map((event) => event.type)).toEqual(["error", "completed"]);
+      expect(events[0]?.error).toContain("raw-api needs a model and none is selected");
+      expect(events[0]?.error).toContain("CLAUDEXOR_RAWAPI_MODEL");
+      expect(adapter.rawRequestCapacity!(spec({ model_hint: hint }), [])).toBeNull();
+    },
+  );
+
+  it("each instance reads only its own variable, and an instance argument comes first", () => {
+    process.env.CLAUDEXOR_RAWAPI_MODEL = "operator/raw";
+    process.env.CLAUDEXOR_OTHER_MODEL = "operator/other";
+    expect(createRawApiAdapter().modelRequirement).toEqual({
+      instanceChoice: { model: "operator/raw", source: "CLAUDEXOR_RAWAPI_MODEL" },
+      env: "CLAUDEXOR_RAWAPI_MODEL",
+    });
+    expect(createRawApiAdapter({ id: "named" }).modelRequirement).toEqual({ instanceChoice: null });
+    expect(
+      createRawApiAdapter({ id: "named", modelEnv: "CLAUDEXOR_OTHER_MODEL" }).modelRequirement
+        ?.instanceChoice,
+    ).toEqual({ model: "operator/other", source: "CLAUDEXOR_OTHER_MODEL" });
+    expect(
+      createRawApiAdapter({ defaultModel: "operator/arg" }).modelRequirement?.instanceChoice,
+    ).toEqual({ model: "operator/arg", source: "the instance configuration" });
+    process.env.CLAUDEXOR_RAWAPI_MODEL = "   ";
+    expect(createRawApiAdapter().modelRequirement?.instanceChoice).toBeNull();
+  });
+
+  it("the doctor says whether the instance chose a model, and spends nothing to say it", async () => {
+    const check = async (adapter: ReturnType<typeof createRawApiAdapter>) =>
+      (await adapter.doctor({ cwd: "/repo" })).checks.find((row) => row.id === "instance_model");
+    expect(await check(createRawApiAdapter())).toEqual({
+      id: "instance_model",
+      status: "skip",
+      detail: "no instance model: a run or harness.raw-api.default_model must name one",
+    });
+    process.env.CLAUDEXOR_RAWAPI_MODEL = "operator/raw";
+    expect(await check(createRawApiAdapter())).toEqual({
+      id: "instance_model",
+      status: "pass",
+      detail: "model operator/raw from CLAUDEXOR_RAWAPI_MODEL",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("raw-api declares only what a remote endpoint can do (#137)", () => {
+  const ORIGINAL_ENV = { ...process.env };
+  beforeEach(() => {
+    process.env.OPENAI_API_KEY = "sk-test";
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("reads no files and reviews no change; Ask and implementation stay declared", async () => {
+    const adapter = createRawApiAdapter();
+    const manifest = await adapter.discover();
+    expect(manifest.capabilities).toMatchObject({
+      read_files: false,
+      review: false,
+      plan: true,
+      implement: true,
+    });
+    const report = await adapter.doctor({ cwd: "/repo" });
+    expect(report.enabled_intents).toEqual(["implement", "plan", "spec", "synthesize", "explain"]);
+    expect(report.disabled_intents).toContain("review");
+  });
+
+  it.each(["implement", "synthesize"] as const)(
+    "a %s without its packet is refused before the request, not after paying for it",
+    async (intent) => {
+      const fetchMock = vi.fn(async () => new Response("{}", { status: 500 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const events = await collect(
+        createRawApiAdapter({ defaultModel: "operator/arg" }).run(
+          HarnessRunSpec.parse({
+            session_id: "packetless",
+            intent,
+            prompt: "x",
+            cwd: "/repo",
+            access: "readonly",
+            external_context_policy: "auto",
+            tool_permission_policy: { web: "auto", allow: [], deny: [] },
+          }),
+        ),
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(events.find((event) => event.type === "error")?.refusal_code).toBe(
+        "raw_patch_missing_evidence",
+      );
+      expect(events.at(-1)?.type).toBe("completed");
+    },
+  );
 });

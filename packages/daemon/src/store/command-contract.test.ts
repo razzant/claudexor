@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { DurableJournal } from "./test-support/fixtures/legacy/journal/index.js";
 import { ControlRunStartRequest as PreGroupRunStartRequest } from "./test-support/fixtures/legacy/schema/control.js";
 import { ControlRunStartRequest, RunEvent, type CommandListQuery } from "@claudexor/schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BlobFiles, deleteUnownedInlineInTx } from "./blob-files.js";
 import { SqlCommandStore } from "./commands.js";
 import { applyCommandPruneInTx, SqlCommandPruner } from "./command-prune.js";
@@ -32,18 +32,25 @@ import { parseDecisionMutation } from "../operator-decisions.js";
 import type { JobRecord } from "../job-record.js";
 import { DaemonServer } from "../server.js";
 import type { CommandBackend } from "../command-authority.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const TIME = "2026-10-10T00:00:00.000Z";
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 const wire = (value: unknown) => JSON.parse(JSON.stringify(value));
 
 async function fixture() {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-sql-command-")));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../../dist/store/flusher-worker.js"),
@@ -397,8 +404,10 @@ describe("SQL command authority", () => {
       expect(interactions.status("run-success", id)).toBe(
         oldInteractions.status("run-success", id),
       );
+    // The frozen oracle predates question delivery; an imported row states the
+    // historical blocking meaning and is otherwise identical.
     expect(interactions.pendingForRun("run-success")).toEqual(
-      oldInteractions.pendingForRun("run-success"),
+      oldInteractions.pendingForRun("run-success").map((row) => ({ ...row, delivery: "blocking" })),
     );
     expect(decisions.findByIdempotency("run-success", source.lookups.decision)).toEqual(
       oldDecisions.findByIdempotency("run-success", source.lookups.decision),
@@ -420,10 +429,23 @@ describe("SQL command authority", () => {
     const evidence = {
       lifecycle: "succeeded",
       phase: "settled",
-      mechanism: "managed_npm",
       target: { kind: "version", version: "2.0.0" },
-      before: { version: "1.0.0", binary: "/fixture/vendor", selection: "managed", proved: true },
+      requester: { source: "control-api", requestId: "fixture" },
+      installationHome: "/fixture",
+      commands: [],
+      before: {
+        path: "/fixture/vendor",
+        realPath: "/fixture/vendor",
+        version: "1.0.0",
+        versionOutput: "1.0.0",
+        overrideEnv: null,
+        overrideValue: null,
+      },
       after: null,
+      elsewhere: null,
+      activeRunsAtStart: 0,
+      exitCode: 0,
+      outcome: "changed",
       mutation: "applied",
       termination: "not_applicable",
       limitations: [],
@@ -455,6 +477,11 @@ describe("SQL command authority", () => {
     const read = vi.spyOn(f.blobs, "read"),
       prepare = vi.spyOn(f.store, "prepare");
     expect(f.queries.maintenanceForHarness("codex")).toEqual(expected);
+    expect(expected[0]?.evidence).toMatchObject({
+      phase: "settled",
+      target: { kind: "version", version: "2.0.0" },
+      mutation: "applied",
+    });
     expect(f.queries.maintenanceForHarness("unknown")).toEqual([]);
     expect(read).not.toHaveBeenCalled();
     const query = prepare.mock.calls.find(([sql]) =>
@@ -712,9 +739,15 @@ describe("SQL interaction and decision authority", () => {
       harnessId: "codex",
       requestedAt: TIME,
       timeoutAt: null,
-      request: { interaction_id: "question", source_tool: "AskUserQuestion", questions: [] },
+      request: {
+        interaction_id: "question",
+        source_tool: "AskUserQuestion",
+        delivery: "blocking" as const,
+        questions: [],
+      },
     };
-    expect(interactions.request(ctx)).toEqual(legacy.request(ctx));
+    // The legacy oracle predates delivery; the SQL row states the historical blocking meaning.
+    expect(interactions.request(ctx)).toEqual({ ...legacy.request(ctx), delivery: "blocking" });
     interactions.request({ ...ctx, runId: "run-two" });
     expect(interactions.resolve("run-one", "question", "answered")).toBe("resolved");
     expect(interactions.resolve("run-one", "question", "answered")).toBe("already_resolved");

@@ -35,7 +35,7 @@ import {
 const reapDirs: string[] = [];
 afterAll(() => {
   for (const dir of reapDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-}, 30_000);
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 async function initRepo(): Promise<string> {
   const repo = mkdtempSync(join(tmpdir(), "claudexor-scope-"));
@@ -112,7 +112,7 @@ function recordingReviewer(
         display_name: id,
         kind: "local_cli",
         provider_family: family,
-        capabilities: { review: true },
+        capabilities: { review: true, read_files: true },
       });
     },
     async doctor() {

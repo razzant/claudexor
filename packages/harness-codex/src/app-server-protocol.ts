@@ -10,12 +10,14 @@ import type {
   HarnessRunSpec,
   HarnessRequestRefusal,
 } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
+import { nowIso, redactSecrets } from "@claudexor/util";
+import { CODEX_MCP_STARTUP_TIMEOUT_SEC, codexBrowserInjected } from "./app-server-mcp-startup.js";
+import { codexNativeWarningEvents, isCodexNativeWarningMethod } from "./app-server-warnings.js";
 import { codexEffortFor } from "./effort-probe.js";
 import { parseCodexEvent, type CodexParseState } from "./parse.js";
 import { codexRateLimitEvents } from "./quota.js";
 import { CodexRpcError } from "./rpc-error.js";
-import { codexSandboxMode } from "./sandbox.js";
+import { codexAppServerAccessParams } from "./sandbox.js";
 export { CodexRpcError } from "./rpc-error.js";
 
 export type JsonObject = Record<string, unknown>;
@@ -33,6 +35,8 @@ export interface CodexAppServerRunInput {
   cancelDeadlineMs?: number;
   /** Bound on the vendor's `turn/steer` answer (default 30 s); see createCodexSteer. */
   steerDeadlineMs?: number;
+  /** Backstop on selected Browser's startup status; see waitForCodexBrowser. */
+  browserStartupDeadlineMs?: number;
 }
 
 export class CodexServerRequestRefusal extends Error {
@@ -88,32 +92,6 @@ export function asObject(value: unknown): JsonObject | null {
 
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** Startup is not ready while a required MCP server is still initializing. */
-export function codexRequiredMcpStatuses(spec: HarnessRunSpec) {
-  return new Map<string, { status: "starting" | "ready" | "failed" | "cancelled"; error?: string }>(
-    spec.extra_mcp_servers
-      .filter((server) => server.required)
-      .map((server) => [server.name, { status: "starting" }] as const),
-  );
-}
-
-export async function waitForCodexMcp(
-  statuses: Map<string, { status: "starting" | "ready" | "failed" | "cancelled"; error?: string }>,
-  nextNotification: (method: string) => Promise<JsonObject>,
-): Promise<void> {
-  while (statuses.size) {
-    const failed = [...statuses].filter(
-      ([, value]) => value.status === "failed" || value.status === "cancelled",
-    );
-    if (failed.length)
-      throw new Error(
-        `required MCP servers failed to initialize: ${failed.map(([name, value]) => `${name}: ${value.error ?? value.status}`).join(", ")}`,
-      );
-    if ([...statuses.values()].every((value) => value.status === "ready")) return;
-    await nextNotification("mcpServer/startupStatus/updated");
-  }
 }
 
 /** Native machine evidence, never a match against the vendor's error wording. */
@@ -403,12 +381,12 @@ export function codexAppServerThreadParams(
   effort: EffortHint | null = codexEffortFor(undefined, spec.model_hint, spec.effort_hint),
 ): JsonObject {
   const mcpServers: Record<string, JsonObject> = {};
-  if (spec.browser && spec.external_context_policy !== "off") {
+  if (spec.browser && codexBrowserInjected(spec)) {
     const browser = browserMcpCommand(spec.browser);
     mcpServers["browser"] = {
       command: browser.command,
       args: browser.args,
-      startup_timeout_sec: 90,
+      startup_timeout_sec: CODEX_MCP_STARTUP_TIMEOUT_SEC,
       tool_timeout_sec: 120,
     };
   }
@@ -418,7 +396,7 @@ export function codexAppServerThreadParams(
       args: server.args,
       env: server.env,
       required: server.required,
-      startup_timeout_sec: 90,
+      startup_timeout_sec: CODEX_MCP_STARTUP_TIMEOUT_SEC,
       tool_timeout_sec: 120,
     };
   }
@@ -434,22 +412,12 @@ export function codexAppServerThreadParams(
   };
   if (effort) config["model_reasoning_effort"] = effort;
   if (spec.processing?.submittedNative) config["service_tier"] = spec.processing.submittedNative;
-  const sandbox = codexSandboxMode(spec.access);
   return {
     cwd: spec.cwd,
     model: spec.model_hint,
-    ...(sandbox ? { sandbox } : {}),
-    ...codexAppServerApprovalParams(spec),
+    ...codexAppServerAccessParams(spec),
     ...(spec.instructions?.trim() ? { developerInstructions: spec.instructions } : {}),
     config,
-  };
-}
-
-export function codexAppServerApprovalParams(spec: HarnessRunSpec): JsonObject {
-  return {
-    // Native automatic review needs an interactive policy to receive requests.
-    approvalPolicy: spec.access === "workspace_write" ? "on-request" : "never",
-    approvalsReviewer: "auto_review",
   };
 }
 
@@ -492,8 +460,13 @@ export function codexAppServerEvents(
   const params = asObject(notification["params"]);
   if (!params) return null;
   if (method === "account/rateLimits/updated") return codexRateLimitEvents(params, sessionId);
+  if (isCodexNativeWarningMethod(method))
+    return codexNativeWarningEvents(method, params, sessionId);
   if (method === "error" && params["willRetry"] === true) {
-    const message = asObject(params["error"])?.["message"];
+    // A vendor transport error is an engine diagnostic, masked where it is
+    // created (INV-146); it is not the user's working content.
+    const safe = JSON.parse(redactSecrets(JSON.stringify(params))) as JsonObject;
+    const message = asObject(safe["error"])?.["message"];
     return [
       {
         type: "status",
@@ -501,7 +474,7 @@ export function codexAppServerEvents(
         ts: nowIso(),
         ...(typeof message === "string" ? { text: message } : {}),
         status: { kind: "api_retry" },
-        payload: params,
+        payload: safe,
       },
     ];
   }

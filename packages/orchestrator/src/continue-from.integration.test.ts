@@ -47,7 +47,10 @@ import { oneShotRunInput } from "../../cli/src/one-shot-run-input.js";
 import { createInProcessRunScopeCustodian, failedScopeOutcome } from "./runScope.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const WORK_ORDER = "WORK-ORDER-7f3a: build the dashboard";
 const RESET = "2026-10-06T21:00:00.000Z";
@@ -828,7 +831,9 @@ describe("continueFrom successor: first try", () => {
     const { succ } = await chain(f);
     const tries = f.spawns.filter((s) => s.phase === "successor");
     expect(tries.map((s) => s.resume)).toEqual(["sid-A", "sid-A"]);
-    expect(tries[1]!.prompt).toContain("The previous process stopped (the process died)");
+    expect(tries[1]!.prompt).toContain(
+      "The previous process stopped (an error without a typed cause)",
+    );
     expect(succ.result.lifecycle, succ.result.summary).toBe("succeeded");
     expect(succ.receipts.map((r) => [r["tryIndex"], r["carrier"], r["cause"]])).toEqual([
       [0, "native", "pool_exhausted"],
@@ -1065,9 +1070,11 @@ describe("continueFrom through an unadopted head", () => {
       }
       expect(c.result.lifecycle, c.result.summary).toBe("succeeded");
       expect(f.spawns.at(-1)).toMatchObject({ resume: "sid-A", cwd: held.envelope.worktree_path });
+      // #411(d): the receipt names the actual source; the preflight head left no
+      // carrier, so the source is its ancestor, while `continueFrom` keeps the head.
       expect(c.receipts[0]).toMatchObject({
         carrier: "native",
-        from: { runId: b.result.runId },
+        from: { runId: middle === "preflight" ? a.result.runId : b.result.runId },
         workspace: "same_root",
       });
       expect(f.spawns.at(-1)!.prompt).not.toContain("different working tree");

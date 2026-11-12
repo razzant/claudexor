@@ -13,6 +13,9 @@ export interface CliFlagSpec {
   readonly kind: CliFlagKind;
   readonly valueHint?: string;
   readonly help: string | null;
+  /** Still parsed only so its command refuses every use, with or without a
+   * value, by naming the replacement. */
+  readonly retired?: true;
 }
 
 /** Controls that have the same meaning in every run mode. */
@@ -109,11 +112,14 @@ const FROZEN_REVIEW_FLAGS: readonly CliFlagSpec[] = [
     "<sha256>",
     "Expected SHA-256 identity of the sealed packet manifest",
   ),
-  valueFlag(
-    "delta-scope",
-    "<baseSha>",
-    "Owner-amended sol-lane scope (INV-125 second amendment): the contract's sol lane reviews the packet's sealed DELTA.patch since this base SHA (verified against the sealed FINGERPRINTS)",
-  ),
+  {
+    ...valueFlag(
+      "delta-scope",
+      "<baseSha>",
+      "Retired; always errors (sealed review covers the full packet; review a chosen delta with --diff)",
+    ),
+    retired: true,
+  },
 ];
 
 export const FROZEN_REVIEW_FLAG_NAMES = FROZEN_REVIEW_FLAGS.map((flag) => flag.name);
@@ -133,6 +139,18 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag("state", "<state>", "task-group-runs: filter retained members by lifecycle"),
   valueFlag("cursor", "<cursor>", "Opaque cursor from the prior returned page"),
   valueFlag("expected-store-id", "<id>", "Refuse a different durable store"),
+  valueFlag("out", "<dir>", "thread export: new or empty directory to copy the exact closure into"),
+  valueFlag(
+    "export",
+    "<dir>",
+    "thread-retire: the verified export directory this retirement binds",
+  ),
+  valueFlag(
+    "operation-id",
+    "<id>",
+    "thread-retire, thread retirement: the one retirement operation",
+  ),
+  booleanFlag("abandon", "thread-retire: settle an unanswered operation so it can never accept"),
   valueFlag("targets-json", "<array>", "runs-wait: JSON array of {runId, seen?} targets (1..1000)"),
   valueFlag(
     "wait-ms",
@@ -149,11 +167,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "<local_session|api_key>",
     "Credential route filter for route-annotated model lists (models command)",
   ),
-  valueFlag(
-    "target",
-    "<local|remote>",
-    "Harness install destination: local managed toolchain or remote runtime prefix (default: remote)",
-  ),
+  { ...valueFlag("target", "<retired>", null), retired: true },
   valueFlag(
     "mode",
     "<mode>",
@@ -344,6 +358,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "profiles add: human-readable label for the new credential profile",
   ),
   valueFlag("from-env", "<VAR>", null),
+  valueFlag(
+    "from-archive",
+    "<file>",
+    "scanner prepare: use this official archive instead of downloading it; both digests are checked",
+  ),
   booleanFlag("allow-full-access", null),
   booleanFlag("revoke-full-access", null),
   valueFlag("access-default", "<profile>", null),
@@ -353,20 +372,22 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   booleanFlag("override", null),
   booleanFlag("revert", null),
   booleanFlag("discard", "Discard a retained directory result without claiming rollback"),
+  booleanFlag("taken", "Acknowledge a captured terminal patch result"),
   booleanFlag("accept-clean-patch", null),
   booleanFlag("rerun", null),
   valueFlag("apply-mode", "<m>", null),
   valueFlag("feedback", '"<text>"', null),
   valueFlag(
     "vendor-version",
-    "<exact|latest>",
-    "harness install: approved exact version; update: exact version or resolve latest once",
+    "<exact>",
+    "harness install/update: request an exact vendor version where supported",
   ),
-  booleanFlag(
-    "release-tested",
-    "harness install: select this release's tested vendor baseline instead of npm latest; a runnable managed copy at or above it is kept",
-  ),
+  { ...booleanFlag("release-tested", null), retired: true },
   booleanFlag("latest", "harness inspect: also read the newest published vendor version"),
+  booleanFlag(
+    "purge-trashed-threads",
+    "project remove: also purge the project's threads already in the trash",
+  ),
   booleanFlag("help", "Show this help"),
   booleanFlag("version", "Print the CLI version"),
 ];
@@ -374,10 +395,10 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
 /** Every flag the CLI accepts anywhere (the unknown-flag preflight set). */
 export const KNOWN_FLAGS: ReadonlySet<string> = new Set(CLI_FLAGS.map((f) => f.name));
 
-/** Flags that require a non-empty value. */
-export const VALUE_FLAGS: readonly string[] = CLI_FLAGS.filter((f) => f.kind === "value").map(
-  (f) => f.name,
-);
+/** Flags that require a non-empty value (a retired flag is refused by its command instead). */
+export const VALUE_FLAGS: readonly string[] = CLI_FLAGS.filter(
+  (f) => f.kind === "value" && f.retired !== true,
+).map((f) => f.name);
 
 /** Flags that never consume a following token as a value. */
 export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(

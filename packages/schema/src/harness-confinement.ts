@@ -88,7 +88,7 @@ export type IsolationCapabilities = z.infer<typeof IsolationCapabilities>;
 export const ReadonlyMechanism = z
   .enum(["fs_sandbox", "permission_deny", "tool_allowlist", "none"])
   .describe(
-    "How read-only access is enforced for a harness: a filesystem sandbox, permission denial, a tool allowlist, or none (read-only intent is advisory).",
+    "How a harness applies read-only access: a filesystem sandbox, permission denial, a tool allowlist, or none (read-only intent is advisory).",
   );
 export type ReadonlyMechanism = z.infer<typeof ReadonlyMechanism>;
 

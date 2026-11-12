@@ -112,7 +112,11 @@ struct HarnessModelOverrideField: View {
                         .help("Reload the \(family.label) model catalog to verify this override.")
                 }
             }
-            .help("Could not load the \(family.label) model catalog; the override stays as-is. Retry after reconnecting to verify it.")
+            // The engine decides per read (#393, decision A); the copy states the rule.
+            .help(models?.problem.map {
+                "\(family.label): \($0.message). The override stays as-is; a run sends it unverified unless the API key is missing or rejected."
+            }
+                ?? "Could not load the \(family.label) model catalog; the override stays as-is. Retry after reconnecting to verify it.")
     }
 
     /// Catalog fetch failed with no stored override: offer Retry and do NOT
@@ -127,7 +131,8 @@ struct HarnessModelOverrideField: View {
                         .help("Reload the \(family.label) model catalog.")
                 }
             }
-            .help("Could not load the \(family.label) model catalog. Retry after reconnecting.")
+            .help(models?.problem.map { "\(family.label): \($0.message)." }
+                ?? "Could not load the \(family.label) model catalog. Retry after reconnecting.")
     }
 
     private func modelPickerHelp(_ models: HarnessModelsResponse) -> String {
@@ -142,7 +147,8 @@ struct HarnessModelOverrideField: View {
 
     private func loadModels(force: Bool = false) async {
         if force { models = nil }
-        guard models == nil, !loadingModels else { return }
+        // A failed live read (#393) is shown, never kept as truth: read it again.
+        guard models == nil || models?.problem != nil, !loadingModels else { return }
         loadingModels = true
         loadFailed = false
         defer { loadingModels = false }

@@ -2,7 +2,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { armOrphanExit, labelStreams, runCaptureRaw, spawnProcess } from "./proc.js";
+import {
+  armOrphanExit,
+  labelStreams,
+  runCaptureRaw,
+  spawnProcess,
+  type ChildStdin,
+  type SpawnOptions,
+} from "./proc.js";
 import { ProcessGroupService } from "./process-group.js";
 import type { ProcessIdentity, ProcessIdentityReader } from "./process-identity.js";
 
@@ -16,7 +23,7 @@ function tempDir(): string {
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("spawnProcess", () => {
   it("exposes child closure to bidirectional session handlers", async () => {
@@ -433,6 +440,84 @@ describe("spawnProcess", () => {
 // death, spawnProcess must DISCLOSE it as a typed `termination_unconfirmed` event
 // on the active stream (not only the optional callback). The reap is injected so
 // the unconfirmed outcome is deterministic.
+describe("spawnProcess stdin send: what became of a frame", () => {
+  /** Spawn a session child; resolves its live stdin handle, stdout lines and exit. */
+  function session(script: string, opts: SpawnOptions = {}) {
+    const lines: string[] = [];
+    let markExited!: () => void;
+    const exited = new Promise<void>((resolve) => (markExited = resolve));
+    let markSpawned!: (io: ChildStdin) => void;
+    const spawned = new Promise<ChildStdin>((resolve) => (markSpawned = resolve));
+    const done = (async () => {
+      for await (const ev of spawnProcess(process.execPath, ["-e", script], {
+        ...opts,
+        keepStdinOpen: true,
+        onSpawn: markSpawned,
+        onExit: () => markExited(),
+      }))
+        if (ev.type === "stdout") lines.push(ev.line);
+    })();
+    const line = async (text: string): Promise<void> => {
+      while (!lines.includes(text)) await new Promise((resolve) => setTimeout(resolve, 5));
+    };
+    return { spawned, exited, done, lines, line };
+  }
+
+  it("reports a frame the live child's pipe accepted as written, and nothing after stdin was ended", async () => {
+    const child = session(
+      "require('node:readline').createInterface({input:process.stdin}).on('line',(l)=>console.log('echo:'+l))",
+    );
+    const io = await child.spawned;
+    await expect(io.send!("ping\n")).resolves.toEqual({ outcome: "written" });
+    await child.line("echo:ping");
+    io.end();
+    await expect(io.send!("late\n")).resolves.toEqual({ outcome: "not_written", reason: "ended" });
+    await child.done;
+    expect(child.lines).toEqual(["echo:ping"]);
+  });
+
+  it("writes nothing once the direct child exited, though a descendant still holds every pipe and `closed` has not settled", async () => {
+    // The descendant inherits stdin, stdout and stderr: a plain write would
+    // land in a pipe that only it holds and nobody reads.
+    const child = session(
+      "require('node:child_process').spawn(process.execPath,['-e','setTimeout(()=>{},1500)'],{stdio:'inherit'});process.exit(0)",
+    );
+    const io = await child.spawned;
+    await child.exited;
+    let closed = false;
+    void io.closed.then(() => (closed = true));
+    expect(() => io.write("lost\n")).not.toThrow();
+    await expect(io.send!("lost\n")).resolves.toEqual({ outcome: "not_written", reason: "exited" });
+    expect(closed).toBe(false);
+    await child.done;
+    expect(closed).toBe(true);
+  }, 15_000);
+
+  // POSIX pipe semantics: a reader-less pipe refuses the write with EPIPE.
+  it.skipIf(process.platform === "win32")(
+    "reports the error of a write the child's closed stdin refused",
+    async () => {
+      const abort = new AbortController();
+      const child = session(
+        // Never wraps fd 0 in process.stdin, so the OS read end really closes.
+        "require('node:fs').closeSync(0);console.log('stdin-closed');setTimeout(()=>{},10000)",
+        { abortSignal: abort.signal },
+      );
+      const io = await child.spawned;
+      await child.line("stdin-closed");
+      const sent = await io.send!("refused\n");
+      abort.abort();
+      await child.done;
+      expect(sent).toEqual({
+        outcome: "not_written",
+        reason: "failed",
+        error: expect.stringContaining("EPIPE"),
+      });
+    },
+    15_000,
+  );
+});
+
 describe("spawnProcess termination_unconfirmed disclosure", () => {
   const quickChild = [
     "console.log('ready')",

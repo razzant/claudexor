@@ -36,6 +36,7 @@ import type {
 } from "@claudexor/schema";
 import { AccountsUnifiedMigrationFile as MigrationFileSchema } from "@claudexor/schema";
 import { migrateDefaultLanes, rollbackProfileLanes } from "@claudexor/workspace";
+import { EXTERNAL_DAEMON_REMEDY } from "./daemon-owner.js";
 import { invalidateStatusProjections } from "./status-projection-cache.js";
 import { noProjectRepoRoot, nowIso, userConfigDir } from "@claudexor/util";
 
@@ -136,6 +137,13 @@ export function removeAccountsMigrationRecord(harnessId: string): void {
   writeAccountsMigrationFile(file);
 }
 
+/** The CLI spelling of the rollback for one harness. Naming the harness keeps
+ * the instruction scoped: the harness-less form reverses EVERY migrated
+ * harness, including ones whose migration is complete. */
+function rollbackCommand(harnessId: string): string {
+  return `claudexor profiles rollback-migration ${harnessId}`;
+}
+
 /**
  * Typed per-harness run refusal while this harness's migration is incomplete
  * (plan §L.3): a crash between phases must not let runs route against
@@ -156,14 +164,18 @@ export function accountsMigrationGate(harnessId: string): { reason: string } | n
     return {
       reason:
         `${harnessId} is blocked by an interrupted unified-accounts rollback; ` +
-        `re-run the rollback command (\`claudexor accounts-migration-rollback\`) to finish it`,
+        `re-run the rollback command (\`${rollbackCommand(harnessId)}\`) to finish it`,
     };
   }
+  // This runs in the daemon, but CLAUDEXOR_DAEMON_OWNER belongs to the attaching
+  // CLI: an owning application need not give it to its daemon. The text therefore
+  // names both owners instead of consulting this process's environment.
   return {
     reason:
       `${harnessId} is blocked by an incomplete unified-accounts migration ` +
-      `(phase: ${record.phase}); restart the daemon (\`claudexor daemon stop\`, then any command) ` +
-      `to finish it, or roll it back (\`claudexor accounts-migration-rollback\`)`,
+      `(phase: ${record.phase}); a daemon restart finishes it (standalone: ` +
+      `\`claudexor daemon stop\`, then any command; externally owned: ${EXTERNAL_DAEMON_REMEDY}); ` +
+      `to reverse it instead, run \`${rollbackCommand(harnessId)}\``,
   };
 }
 
@@ -322,7 +334,7 @@ export function runAccountsUnifiedMigration(
       // rollback command finishes it; the run gate names that instruction.
       stores.log?.(
         `unified-accounts migration: ${harnessId} has an interrupted rollback; ` +
-          `re-run \`claudexor accounts-migration-rollback\` to finish it`,
+          `re-run \`${rollbackCommand(harnessId)}\` to finish it`,
       );
       continue;
     }
@@ -457,7 +469,7 @@ export function rollbackAccountsUnifiedMigration(
   const targets = harnessId ? [harnessId] : Object.keys(readAccountsMigrationFileStrict());
   for (const target of targets) {
     const file = readAccountsMigrationFileStrict();
-    const record = file[target];
+    const record = Object.prototype.hasOwnProperty.call(file, target) ? file[target] : undefined;
     if (!record) continue;
     const rowId = record.row_id;
     // Phase ROLLING_BACK persists BEFORE the first reverse step: a crash

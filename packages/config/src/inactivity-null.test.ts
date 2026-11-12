@@ -8,7 +8,7 @@ const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("persisted disabled inactivity watchdog", () => {
   it("round-trips null through YAML and honors an explicit numeric environment override", () => {

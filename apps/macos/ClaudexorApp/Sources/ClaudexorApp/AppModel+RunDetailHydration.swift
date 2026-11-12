@@ -132,10 +132,14 @@ extension AppModel {
             let failure = detail.failure ?? detail.summary.failure
             task.engineError = failure?.safeMessage ?? detail.summary.error
             task.failureCategory = failure?.category
+            task.failureCode = failure?.code
+            task.failureRecord = failure
+            task.rawContext = detail.summary.rawContext
             task.runDir = detail.summary.runDir ?? failure?.runDir ?? task.runDir
             task.outputReadyState = detail.summary.outputReadyState
             task.pendingInteractions = detail.pendingInteractions
             task.waitingOnUser = detail.summary.waitingOnUser ?? !detail.pendingInteractions.isEmpty
+            task.serverAsyncQuestionsOnly = detail.summary.asyncQuestionsOnly ?? false
             if let route = detail.summary.route {
                 task.observedModel = route.observedModel
                 task.routeProof = route.verified == true ? .verified : .unverified
@@ -148,10 +152,12 @@ extension AppModel {
             task.reviewRequested = detail.summary.review
             task.reviewerPanel = detail.summary.reviewerPanel
             task.protectedPathApprovals = detail.summary.protectedPathApprovals
-            task.browserRequirementDetail = browserRequirementDetail(detail.summary.requestRequirements)
+            task.browserRequirementDetail = browserRequirementDetail(detail.summary.requestRequirements,
+                                                                     routes: detail.summary.routeControls ?? [])
+            task.applyRouteFacts(detail.summary)
             if detail.summary.webEvidence?.available == false {
                 task.webEvidenceStatus = nil
-                task.webEvidenceDetail = "Web/tool telemetry unavailable for this run (predates telemetry.yaml or still running)."
+                task.webEvidenceDetail = RouteControlsPresentation.telemetryUnavailable
             } else {
                 task.webEvidenceStatus = detail.summary.webEvidence?.status
                 task.webEvidenceDetail = Self.webEvidenceDetail(detail.summary.webEvidence)
@@ -212,6 +218,7 @@ extension AppModel {
             // Diff bytes are TAB-DEMAND payload (INV-136): hydration records
             // artifact existence; TaskDetail loads/parses only when Diff opens.
             if !detail.timeline.isEmpty {
+                foldTimelineNotices(id, detail.timeline)
                 task.activity = detail.timeline.map(Self.activityEvent(from:))
                 // A STREAMING run's feed lives in its box (views read the box
                 // overlay): the snapshot timeline is authoritative up to

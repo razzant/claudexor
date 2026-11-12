@@ -34,8 +34,10 @@ describe("quota refresher composition", () => {
     // membership (claude evidence -> claude lane) is asserted directly.
     for (const { source, vendor } of QUOTA_REFRESHER_REGISTRATIONS) {
       const demandHarness =
-        source === "cursor_dashboard"
-          ? ACCOUNT_RESOURCE_REFRESH_SOURCES[source].harness
+        source in ACCOUNT_RESOURCE_REFRESH_SOURCES
+          ? ACCOUNT_RESOURCE_REFRESH_SOURCES[
+              source as keyof typeof ACCOUNT_RESOURCE_REFRESH_SOURCES
+            ].harness
           : quotaSourceTraits(QuotaSource.parse(source)).refreshDemandHarness;
       if (demandHarness !== null) expect(vendor).toBe(demandHarness);
     }

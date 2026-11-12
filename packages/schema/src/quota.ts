@@ -133,6 +133,23 @@ export const REACTIVE_COOLDOWN_SOURCE: Partial<Record<string, QuotaSource>> = {
   grok: "grok_rate_limit",
 };
 
+/** The engine-owned identity of the reactive cooldown a typed usage refusal
+ * with no reopening time leaves (`rate_limit.reopening: unknown`, #558), in
+ * the same identity channel as the generic `cooldown` and the vendor-window
+ * `cooldown:<id>`. It records no usage (none was measured) and no reset (none
+ * was named): its `cooldown_until` is the engine's own bounded recheck, never a
+ * time the account reopens. Unlike the generic refusal, no quota read retires
+ * or moves it (#318): an empty, unknown or measured read does not show that the
+ * refused usage or credits returned, so only that recheck ends the block. */
+export const REOPENING_UNKNOWN_COOLDOWN_ID = "cooldown:reopening_unknown";
+
+/** What that refusal travels under: the engine's existing name for a typed
+ * vendor limit, in `ControlProblem.code` and `resumable.limitCode` (free
+ * strings). Deliberately NOT a `RunFailureCode`: the run record keeps `code: null`,
+ * since `subscription_window_exhausted` tells every reader that waiting cures it
+ * and a new enum member would make an old strict reader drop the whole record. */
+export const REOPENING_UNKNOWN_REFUSAL_CODE = "vendor_limit_rejected";
+
 /** Durable-journal source label the strict v3.2.0 rollback runtime can parse.
  * `cursor_rate_limit` postdates that enum, so a base upsert record carrying it
  * would crash a rolled-back engine's replay; the base record carries the

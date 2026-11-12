@@ -1,0 +1,15 @@
+{
+  "schema": "ControlRouteControl",
+  "value": {
+    "harnessId": "cursor",
+    "webMode": "auto",
+    "webMechanism": "uncontrolled",
+    "browser": false,
+    "browserStartup": null,
+    "access": "readonly",
+    "nativeAccess": "--force --sandbox enabled --trust --mode ask",
+    "accessMechanism": "tool_allowlist",
+    "nativeSessionStarted": true,
+    "homeScoped": false
+  }
+}

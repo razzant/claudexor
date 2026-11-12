@@ -76,6 +76,7 @@ export function sqlRecoveryProjections(
             prompt: blobs.read(row.prompt_sha).toString("utf8"),
           });
         bindings("thread", "thread");
+        bindings("thread_retire", "thread");
         bindings("turn", "turn");
       },
     },

@@ -9,12 +9,19 @@ enum RunDiffLoadOutcome {
     /// or a fetched zero-byte canonical patch. Distinct from `.failed`: Retry can
     /// never make an immutable empty terminal artifact non-empty (QA-008).
     case empty
+    /// #535: an exact result with no rendered patch view (too large to render, or
+    /// its render failed); the result itself stays applyable and revertable.
+    case tooLarge(String)
     case failed(String)
 }
 
 extension TaskRun {
     var hasPatchArtifact: Bool {
+        // A changed result without final/patch.diff can be an unrendered object
+        // result (#535): fetch it so the engine answers its typed 413 (a
+        // directory result answers 404, read as no patch in loadRunDiff).
         !diff.isEmpty || artifactPaths.contains("final/patch.diff")
+            || (outcomeFacts?.noChanges == false && artifactPaths.contains("final/work_product.yaml"))
     }
 }
 
@@ -51,6 +58,17 @@ extension AppModel {
             patch = try await requestClient.artifactText(
                 runId: runId, path: "final/patch.diff")
         } catch {
+            if case GatewayError.http(413, let body) = error,
+               let unrendered = ArtifactFetchError.unrenderedPatchMessage(body: body) {
+                return .tooLarge(unrendered)
+            }
+            // Fetched only for that typed answer: a directory result also has
+            // final/work_product.yaml and never a patch view, so the engine has
+            // no final/patch.diff to answer, which is no patch to show.
+            if case GatewayError.http(404, _) = error,
+               !task.artifactPaths.contains("final/patch.diff") {
+                return .unavailable
+            }
             return .failed("final/patch.diff: \(userMessage(for: error))")
         }
         // A successfully fetched EMPTY patch is an honest no-change result, not a

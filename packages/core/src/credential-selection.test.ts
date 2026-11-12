@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HarnessRunSpec, type CredentialProfile } from "@claudexor/schema";
 import {
+  credentialProfilePinned,
   credentialProfileUnpinned,
   stampCredentialProfileSelection,
 } from "./credential-selection.js";
@@ -54,5 +55,22 @@ describe("credential profile selection stamp (INV-135 #363)", () => {
     stampCredentialProfileSelection(s, { pinned: false });
     expect(s.extra).toEqual({});
     expect(credentialProfileUnpinned(s)).toBe(false);
+    stampCredentialProfileSelection(s, { pinned: true });
+    expect(s.extra).toEqual({});
+    expect(credentialProfilePinned(s)).toBe(false);
+  });
+
+  it("reads pinned only for the profile the engine stamped as an explicit pin (#532)", () => {
+    const pinned = spec(profile("a"));
+    stampCredentialProfileSelection(pinned, { pinned: true });
+    expect(credentialProfilePinned(pinned)).toBe(true);
+    expect(credentialProfileUnpinned(pinned)).toBe(false);
+    // An unstamped spec is strict but is not an explicit pin.
+    expect(credentialProfilePinned(spec(profile("a")))).toBe(false);
+    expect(credentialProfilePinned({ ...pinned, credential_profile: profile("b") })).toBe(false);
+    // A later unpinned stamp replaces the pin.
+    stampCredentialProfileSelection(pinned, { pinned: false });
+    expect(credentialProfilePinned(pinned)).toBe(false);
+    expect(credentialProfileUnpinned(pinned)).toBe(true);
   });
 });

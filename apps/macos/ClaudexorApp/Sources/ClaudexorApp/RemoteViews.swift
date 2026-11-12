@@ -129,6 +129,7 @@ struct RemoteDirectoryBrowser: View {
                 Button("Cancel") { model.dismissRemoteDirectoryBrowser(request) }
                 Button("Choose Folder") { chooseCurrent() }
                     .buttonStyle(.borderedProminent)
+                    .tint(Theme.accentSolid)
                     .disabled(listing == nil || loading)
             }
             .padding()

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { HarnessEvent as EventSchema, HarnessRunSpec } from "@claudexor/schema";
+import { HarnessEvent as EventSchema, HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import { runCliHarness } from "@claudexor/core";
 import { createClaudeAdapter } from "./index.js";
 import { createClaudeParser } from "./parse.js";
@@ -83,18 +83,25 @@ describe("Claude native API failure evidence", () => {
     },
   );
 
-  it.each(["error_max_turns", "error_max_structured_output_retries"])(
-    "preserves %s control semantics",
-    (subtype) => {
-      const frame = { ...recording("2.1.288").at(-1), subtype };
-      const parsed = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
-        frame,
-        "fixture",
-      )!;
-      expect(parsed.some((event) => event.type === "thinking")).toBe(true);
-      expect(parsed.some((event) => event.request_refusal || event.type === "error")).toBe(false);
-    },
-  );
+  it("preserves error_max_structured_output_retries control semantics", () => {
+    const frame = {
+      ...recording("2.1.288").at(-1),
+      subtype: "error_max_structured_output_retries",
+    };
+    const parsed = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(frame, "fixture")!;
+    expect(parsed.some((event) => event.type === "thinking")).toBe(true);
+    expect(parsed.some((event) => event.request_refusal || event.type === "error")).toBe(false);
+  });
+
+  it("keeps error_max_turns its own typed stop, never an API failure or a version refusal (#299)", () => {
+    // The recorded frame carries api_error_status and claude_code_version_too_old.
+    const frame = { ...recording("2.1.288").at(-1), subtype: "error_max_turns" };
+    const parsed = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(frame, "fixture")!;
+    const errors = parsed.filter((event) => event.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.turn_limit?.native_code).toBe("error_max_turns");
+    expect(parsed.some((e) => e.request_refusal || e.payload?.["vendor_failure"])).toBe(false);
+  });
 
   it.each([401, 429, 500])("HTTP %s alone is never the version stop", (status) => {
     const frame = { ...recording("2.1.165").at(-1), api_error_status: status };
@@ -103,6 +110,83 @@ describe("Claude native API failure evidence", () => {
     expect(events.find((event) => event.type === "error")?.payload?.["api_error_status"]).toBe(
       status,
     );
+  });
+
+  it("masks the parser's status copy of API-failure prose and keeps event order (INV-146)", () => {
+    const secret = ["sk-ant-api03", "Cl4udeStatusCopy7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2"].join("-");
+    const frame = { ...recording("2.1.165").at(-1), result: `API Error: 401 key ${secret}` };
+    const plain = createClaudeParser()(frame, "fixture")!;
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(frame, "fixture")!;
+    expect(events.map((event) => event.type)).toEqual([
+      ...plain.filter((event) => event.type !== "error").map((event) => event.type),
+      "error",
+    ]);
+    expect(JSON.stringify(events)).not.toContain(secret);
+    expect(events.find((event) => event.payload?.["non_success_result"])?.text).toBe(
+      "API Error: 401 key [redacted]",
+    );
+    // A structured-output status is the model's own JSON, not the failure prose.
+    const so = { answer: `exact ${secret}` };
+    const structured = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      { ...frame, structured_output: so },
+      "fixture",
+    )!;
+    expect(structured.find((event) => event.payload?.["structured_output"])?.text).toBe(
+      JSON.stringify(so),
+    );
+  });
+
+  it.each(["2.1.288", "2.1.165"])(
+    "masks the CLI's synthetic API-error turn (%s) but never a model's message",
+    (version) => {
+      const secret = ["sk-ant-api03", "Cl4udeSyntheticTurn7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0"].join("-");
+      const synthetic = structuredClone(recording(version)[1]!);
+      expect(synthetic.message.model).toBe("<synthetic>");
+      synthetic.message.content[0].text = `API Error: 401 key ${secret}`;
+      const parse = withClaudeApiFailureParser(createClaudeParser(), binaryPath);
+      expect(parse(synthetic, "fixture")!.find((event) => event.type === "message")?.text).toBe(
+        "API Error: 401 key [redacted]",
+      );
+      const model = {
+        type: "assistant",
+        message: {
+          model: "claude-fable-5-1",
+          content: [{ type: "text", text: `const key = "${secret}";` }],
+        },
+      };
+      expect(parse(model, "fixture")!.find((event) => event.type === "message")?.text).toBe(
+        `const key = "${secret}";`,
+      );
+    },
+  );
+
+  it("a context-terminal API failure keeps its context owner and masks both prose copies", () => {
+    const secret = ["sk-ant-api03", "Cl4udeContextTerminal7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5"].join("-");
+    const frames = readFileSync(
+      new URL("../fixtures/signals/terminal-prompt-too-long.jsonl", import.meta.url),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, any>);
+    const prose = `Prompt is too long; request authorized by ${secret}`;
+    frames[1]!.message.content[0].text = prose;
+    frames[2]!.result = prose;
+    expect(frames[2]).toMatchObject({ is_error: true, api_error_status: 400 });
+    const plain = frames.flatMap((frame) => createClaudeParser()(frame, "fixture") ?? []);
+    const parse = withClaudeApiFailureParser(createClaudeParser(), binaryPath);
+    const events = frames.flatMap((frame) => parse(frame, "fixture") ?? []);
+    expect(JSON.stringify(events)).not.toContain(secret);
+    // Same events as the context owner emits: no added error, context kept.
+    expect(events.map((event) => event.type)).toEqual(plain.map((event) => event.type));
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.find((event) => event.type === "context")?.context).toMatchObject({
+      kind: "capacity_exhausted",
+      cause: "prompt_too_long",
+    });
+    const masked = "Prompt is too long; request authorized by [redacted]";
+    expect(events.find((event) => event.payload?.["non_success_result"])?.text).toBe(masked);
+    expect(events.find((event) => event.type === "message")?.text).toBe(masked);
   });
 
   it("an API failure with an error subtype keeps the native cause, not the subtype label", () => {
@@ -189,4 +273,130 @@ describe("Claude native API failure evidence", () => {
       expect(out.at(-1)?.payload?.["vendor_failure"]).toBeUndefined();
     },
   );
+});
+
+/** #318: the stdout result for a Claude subscription its organization does not
+ * allow this client to use. The exact API error code is the evidence; the words
+ * (neutral synthetic remedy text) only explain it. */
+const DENIED_CODE = "oauth_not_allowed_for_organization";
+const DENIED_WORDS =
+  "Claude Code can't use your Claude subscription, usually because a payment is past due · fixture remedy";
+const denied = (extra: Record<string, unknown> = {}) => ({
+  ...recording("2.1.288").at(-1),
+  api_error_status: 403,
+  api_error_code: DENIED_CODE,
+  result: DENIED_WORDS,
+  ...extra,
+});
+const typedDenials = (events: HarnessEvent[]) =>
+  events.filter((event) => event.status?.error_category === "oauth_org_not_allowed");
+
+describe("Claude's exact subscription-denied API code (#318)", () => {
+  it("is the existing typed subscription denial beside the vendor's own record, never transport", () => {
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      denied(),
+      "fixture",
+    )!;
+    for (const event of events) EventSchema.parse(event);
+    const [denial, ...more] = typedDenials(events);
+    expect(more).toEqual([]);
+    expect(denial).toMatchObject({
+      type: "status",
+      text: `entitlement: ${DENIED_WORDS}`,
+      status: { kind: "api_retry", error_category: "oauth_org_not_allowed" },
+      payload: { entitlement_denied: true },
+    });
+    const errors = events.filter((event) => event.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.error).toBe(DENIED_WORDS);
+    expect(errors[0]!.request_refusal).toBeUndefined();
+    expect(errors[0]!.payload).toEqual({
+      api_error_status: 403,
+      vendor_failure: { code: DENIED_CODE, message: DENIED_WORDS, source: "claude_stdout" },
+    });
+    expect(events.indexOf(denial!)).toBeLessThan(events.indexOf(errors[0]!));
+    expect(events.some((event) => event.final || event.transient || event.rate_limit)).toBe(false);
+  });
+
+  it.each([
+    ["the same words with no code", { api_error_code: undefined }],
+    ["the same words under another code", { api_error_code: "permission_error" }],
+    ["the code on an ordinary answer", { is_error: false }],
+  ])("%s is no denial: the words are never read for a cause", (_name, extra) => {
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      denied(extra),
+      "fixture",
+    )!;
+    expect(typedDenials(events)).toEqual([]);
+  });
+
+  it("with the org-disabled words as well, is still one denial", () => {
+    const words =
+      "Your organization has disabled Claude subscription access for Claude Code · fixture remedy";
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      denied({ result: words }),
+      "fixture",
+    )!;
+    expect(typedDenials(events)).toHaveLength(1);
+    expect(events.find((event) => event.type === "error")?.payload?.["vendor_failure"]).toEqual({
+      code: DENIED_CODE,
+      message: words,
+      source: "claude_stdout",
+    });
+  });
+
+  it("masks a secret in the denial's copy of the words (INV-146)", () => {
+    const secret = ["sk-ant-api03", "Cl4udeDeniedCopy7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2"].join("-");
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      denied({ result: `${DENIED_WORDS} ${secret}` }),
+      "fixture",
+    )!;
+    expect(JSON.stringify(events)).not.toContain(secret);
+    expect(typedDenials(events)[0]?.text).toBe(`entitlement: ${DENIED_WORDS} [redacted]`);
+  });
+
+  it("the real adapter/run loop carries the denial and the terminal vendor evidence", async () => {
+    const [init, synthetic] = recording("2.1.288");
+    const turn = structuredClone(synthetic!);
+    turn.message.content[0].text = DENIED_WORDS;
+    const records = [init!, turn, denied()];
+    const adapter = createClaudeAdapter({
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+      probeEffortLevels: async () => ({ levels: [], live: true }),
+      runCliHarness: (options) =>
+        runCliHarness({
+          ...options,
+          bin: process.execPath,
+          args: [
+            "-e",
+            `process.stdout.write(${JSON.stringify(records.map((row) => JSON.stringify(row)).join("\n") + "\n")},()=>{process.exitCode=1})`,
+          ],
+        }),
+    });
+    const events: HarnessEvent[] = [];
+    for await (const event of adapter.run(
+      HarnessRunSpec.parse({
+        session_id: "replay",
+        intent: "implement",
+        prompt: "fixture",
+        cwd: process.cwd(),
+        access: "full",
+        auth_preference: "subscription",
+      }),
+    ))
+      events.push(event);
+    expect(typedDenials(events)).toMatchObject([{ payload: { entitlement_denied: true } }]);
+    expect(events.at(-1)?.payload).toMatchObject({
+      exit_code: 1,
+      harness_reported_error: true,
+      vendor_failure: { code: DENIED_CODE, message: DENIED_WORDS, source: "claude_stdout" },
+    });
+  });
 });

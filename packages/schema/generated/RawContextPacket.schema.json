@@ -13,13 +13,113 @@
           "minLength": 1,
           "description": "Content hash in algo:hex form, e.g. \"sha256:abcd...\"."
         },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "estimator": {
+              "type": "string",
+              "const": "chars_div_4"
+            },
+            "basis": {
+              "type": "string",
+              "enum": [
+                "model_context_window",
+                "assumed_ceiling"
+              ]
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Model whose catalog row was consulted; null when the producer reported none."
+            },
+            "context_window": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "output_allowance_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "framing_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Estimated tokens of the request outside this packet; null when unmeasured."
+            },
+            "selection_limit_tokens": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "description": "Limit the optional selection honoured: the packet's share of the window, or the assumed ceiling on file contents."
+            },
+            "estimated_packet_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "omitted_for_budget": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional files left out to honour selection_limit_tokens (listed in omissions)."
+            },
+            "mandatory_paths": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Project mandatory files, each delivered complete in readable_files."
+            }
+          },
+          "required": [
+            "estimator",
+            "basis",
+            "model",
+            "context_window",
+            "output_allowance_tokens",
+            "framing_tokens",
+            "selection_limit_tokens",
+            "estimated_packet_tokens",
+            "omitted_for_budget",
+            "mandatory_paths"
+          ],
+          "additionalProperties": false,
+          "description": "Sizing evidence for a raw context packet; disclosed, never a tokenizer count."
+        },
         "base_commit_sha": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The run's delivery base commit; every round of a run names the same one."
         },
         "base_tree_sha": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The exact tree this request describes and its patch applies to: the delivery base's tree on a first round, afterwards the candidate an earlier round left."
         },
         "readable_files": {
           "type": "array",
@@ -33,12 +133,12 @@
               },
               "mode": {
                 "type": "string",
-                "description": "Git object mode at the bound base tree."
+                "description": "Git object mode in the packet's exact tree."
               },
               "blob_oid": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Git blob oid at the bound base tree."
+                "description": "Git blob oid in the packet's exact tree."
               },
               "content_hash": {
                 "$ref": "#/definitions/RawContextPacket/properties/packet_hash"

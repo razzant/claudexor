@@ -27,21 +27,62 @@
  * model is forwarded to the vendor unchanged and disclosed once by the
  * per-spawn gate. An authoritative harness (the declaration a silent manifest
  * gets) refuses as before, and no gate ever swaps one list for another to
- * admit a model.
+ * admit a model. A live read that FAILED is not a list at all (#393, owner
+ * decision A): a missing or rejected credential refuses the explicit model at
+ * both gates with the read's typed cause (`ModelCatalogUnavailableError`, core
+ * `validateModelOnUnreadCatalog`); any other failure forwards it unverified on
+ * the same key, disclosed once by the per-spawn gate. A declared refused
+ * variant is refused either way.
+ *
+ * A failure never erases what this run already read: the route keeps its most
+ * recent successful read, and a later failed read at the SAME credential
+ * identity is answered by that earlier read (its rows, presence and windows),
+ * disclosed as such. That identity is the profile AND the key: both reads must
+ * carry the producer's same key fingerprint, because a stored secret or key
+ * variable replaced mid-run keeps its profile id. Nothing is read again for it
+ * and nothing outlives the route; another identity, a read that names no key,
+ * or a credential failure never borrows it.
+ *
+ * The per-spawn gate reads the catalog ONCE per spawn, at the identity the
+ * vendor process receives, and that one read serves every consumer of the
+ * spawn: the explicit model, the size of a RawContextPacket the request inlines
+ * (#147) and the adapter's own disclosures (#146), so none of them can judge
+ * the request by another read. Where the producer binds its key to the read
+ * (`credential`), the request sends that same key: one replaced while the
+ * packet is prepared is first read, and sent, by the next spawn.
+ *
+ * A route that must name a model and has none refuses here too (#395), for any
+ * dispatch that did not come through run admission: nothing is read or sent. When
+ * the model it sends is the instance's own choice, the run says where that came from.
  */
-import { billingKnowledgeForAuthRoute } from "@claudexor/budget";
+import { RoutingPreflightError, billingKnowledgeForAuthRoute } from "@claudexor/budget";
 import type { AuthVerification, EffortResolution, PaidFallback } from "@claudexor/schema";
-import type { HarnessAdapter } from "@claudexor/core";
+import type {
+  HarnessAdapter,
+  ModelCatalogFailure,
+  ModelCatalogObservation,
+  RawRequestCapacity,
+} from "@claudexor/core";
 import {
   HarnessUnavailableError,
+  ModelCatalogUnavailableError,
+  ModelSelectionRequiredError,
+  RawContextRefusalError,
+  abortSignalFromSpec,
   effortResolutionEvent,
+  modelCatalogFailureRefuses,
+  modelCatalogFailureText,
+  missingRouteModel,
+  readModelCatalog,
   resolveEffortEvidence,
   validateModel,
+  validateModelOnUnreadCatalog,
   hasModelInventoryForRoute,
   prepareHarnessProcessing,
   admitPreparedProcessing,
   observeCredentialExecution,
   observedModelCatalogMatch,
+  withDispatchModelCatalog,
 } from "@claudexor/core";
 import {
   knownModelIdsForRoute,
@@ -53,20 +94,41 @@ import {
   type KnownModelEntry,
   type ModelInventoryAbsence,
   type ProcessingReceipt,
+  type RawContextPacket,
 } from "@claudexor/schema";
+import { nowIso } from "@claudexor/util";
+import { ProcessingBudgetAdmissionError } from "./processing-dispatch.js";
+import { routeControlsEvent, type RouteControlSource } from "./routeControls.js";
 
-export interface ModelGovernedRoute {
+export interface ModelGovernedRoute extends Omit<RouteControlSource, "adapter"> {
   adapter: HarnessAdapter;
   /** Manifest model truth source (used when the adapter has no live models()). */
   knownModels: readonly KnownModelEntry[];
   /** The adapter's declared live-inventory contract, read from its manifest:
-   * WHICH credential routes its `models()` producer answers for, and WHAT its
+   * WHICH credential routes its `models()` producer answers for, WHAT its
    * answer proves about a model it does not list (`model_inventory_absence`;
-   * omitted = `authoritative` = today's refusal). Both halves travel together
-   * so a caller cannot supply one and silently lose the other. */
+   * omitted = `authoritative` = today's refusal), and which request-time
+   * routing suffixes a listed row admits (#145). They travel together so a
+   * caller cannot supply one and silently lose another. */
   modelInventory?: Readonly<
-    Pick<HarnessCapabilities, "model_inventory_routes" | "model_inventory_absence">
+    Pick<
+      HarnessCapabilities,
+      | "model_inventory_routes"
+      | "model_inventory_absence"
+      | "model_routing_variants"
+      | "model_refused_variants"
+    >
   >;
+  /** The most recent successful typed catalog read on this route, and the
+   * credential identity it was read under (profile id, null = the engine
+   * default; the producer's key fingerprint, null = it named none). Written by
+   * the gates of this run only (see the file comment). */
+  lastListedCatalog?: {
+    profileId: string | null;
+    credentialFingerprint: string | null;
+    models: HarnessModel[];
+    observedAt: string;
+  };
   /** Pre-spawn credential-route estimate: route-annotated manifest models are
    * filtered by it, and stay EXCLUDED when it is null (fail-closed — a
    * route-scoped model never passes the gate on an undecidable route). */
@@ -89,6 +151,16 @@ type ModelTruth = {
   /** The harness's own declaration (INV-104), honoured for the live list and
    * the manifest hints alike; no list is ever substituted to admit a model. */
   absence: ModelInventoryAbsence;
+  /** Set when the live read failed: `list` is then empty and proves nothing. */
+  failure?: ModelCatalogFailure;
+  /** The list is a typed successful read (its [] is an empty catalog). */
+  catalogRead: boolean;
+  /** That typed read itself, rows with their metadata or its failure; absent
+   * for a manifest list or a fail-soft producer. */
+  observation?: ModelCatalogObservation;
+  /** This read failed and the route's earlier successful read at the same
+   * identity answers instead: the failure, and when that earlier read was. */
+  earlierRead?: { failure: ModelCatalogFailure; observedAt: string };
 };
 
 /** A pinned profile decides the route by its credential kind; without one the
@@ -114,17 +186,50 @@ async function modelTruthForRoute(
   if (
     hasModelInventoryForRoute(routed.adapter, routed.modelInventory?.model_inventory_routes, route)
   ) {
-    const inventory = await routed.adapter.models({
+    const read = await readModelCatalog(routed.adapter, {
       cwd: query.cwd,
       ...(query.env ? { env: query.env } : {}),
       ...(query.authPreference ? { authPreference: query.authPreference } : {}),
       ...(query.profile ? { credentialProfile: query.profile } : {}),
     });
+    const profileId = query.profile?.profile_id ?? null;
+    // The key this read sent travels with every observation the gate hands
+    // on, so the spawn's request sends that key (see the file comment).
+    const credential = read.credential;
+    if (read.status === "listed" && !read.failSoft)
+      routed.lastListedCatalog = {
+        profileId,
+        credentialFingerprint: credential?.fingerprint ?? null,
+        models: read.models,
+        observedAt: nowIso(),
+      };
+    const earlier = routed.lastListedCatalog;
+    if (
+      read.status === "unavailable" &&
+      !modelCatalogFailureRefuses(read.failure) &&
+      credential &&
+      earlier?.profileId === profileId &&
+      earlier.credentialFingerprint === credential.fingerprint
+    )
+      return {
+        list: earlier.models.map((model) => model.id),
+        source: "api",
+        route,
+        absence: routed.modelInventory?.model_inventory_absence ?? "authoritative",
+        catalogRead: true,
+        observation: { status: "listed", models: earlier.models, credential },
+        earlierRead: { failure: read.failure, observedAt: earlier.observedAt },
+      };
     return {
-      list: inventory.map((model) => model.id),
+      list: read.status === "listed" ? read.models.map((model) => model.id) : [],
       source: "api",
       route,
       absence: routed.modelInventory?.model_inventory_absence ?? "authoritative",
+      ...(read.status === "unavailable" ? { failure: read.failure, observation: read } : {}),
+      catalogRead: read.status === "listed" && !read.failSoft,
+      ...(read.status === "listed" && !read.failSoft
+        ? { observation: { status: "listed" as const, models: read.models, credential } }
+        : {}),
     };
   }
   // The manifest hint list is judged under the SAME declaration as the live
@@ -135,6 +240,7 @@ async function modelTruthForRoute(
     source: "manifest",
     route,
     absence: routed.modelInventory?.model_inventory_absence ?? "authoritative",
+    catalogRead: false,
   };
 }
 
@@ -148,12 +254,28 @@ function assertModelsAllowed(
   profile: CredentialProfile | null,
 ): string[] {
   const unverified: string[] = [];
+  const refusedVariants = routed.modelInventory?.model_refused_variants ?? [];
   for (const { role, model } of candidates) {
-    const check = validateModel(model, truth.list, truth.source, truth.absence);
+    const check = truth.failure
+      ? validateModelOnUnreadCatalog(model, truth.failure, truth.absence, { refusedVariants })
+      : validateModel(model, truth.list, truth.source, truth.absence, {
+          catalogRead: truth.catalogRead,
+          routingVariants: routed.modelInventory?.model_routing_variants ?? [],
+          refusedVariants,
+        });
     if (check.status === "ok") {
       if (check.unverified && check.message) unverified.push(check.message);
       continue;
     }
+    if (check.catalogFailure)
+      throw new ModelCatalogUnavailableError(
+        `harness '${routed.adapter.id}' refused ${role} '${model}' (truth source: api): ${check.message}`,
+        check.catalogFailure,
+      );
+    if (check.refusedVariant)
+      throw new HarnessUnavailableError(
+        `harness '${routed.adapter.id}' refused ${role} '${model}': ${check.message}`,
+      );
     // A pinned profile OWNS this inventory: sending the operator to the
     // profile-less `claudexor models` would print a different account's list.
     // Observations only — which account supplied which list — never a cause
@@ -236,19 +358,48 @@ export async function admitCurrentProfileDispatch(
   if (typeof markStarted === "function") (markStarted as () => void)();
 }
 
+/** What `runModelGovernedRoute` refuses with BEFORE anything is sent: budget
+ * or routing admission, no model on a route that must name one, an unreadable
+ * catalog, an undeliverable packet. An
+ * attempt records it as its declared failure, never as a crashed harness. */
+export type DispatchRefusal =
+  | ProcessingBudgetAdmissionError
+  | RoutingPreflightError
+  | ModelCatalogUnavailableError
+  | ModelSelectionRequiredError
+  | RawContextRefusalError;
+
+export function isDispatchRefusal(err: unknown): err is DispatchRefusal {
+  return (
+    err instanceof ProcessingBudgetAdmissionError ||
+    err instanceof RoutingPreflightError ||
+    err instanceof ModelCatalogUnavailableError ||
+    err instanceof ModelSelectionRequiredError ||
+    err instanceof RawContextRefusalError
+  );
+}
+
 /**
  * Authoritative per-spawn model gate. Admission validates the initially routed
  * account early; this guard rebinds the same strict truth contract to the
  * profile, auth preference, cwd, and mutable state HOME the vendor process will
  * actually receive. Every routed spawn funnels through this generator, so a
  * quota rotation or fallback-model preflight cannot reuse another account's
- * inventory. The spec is passed to the adapter byte-identical: the gate reads
- * the run's identity, it never rewrites it.
+ * inventory. The gate reads the run's identity, it never rewrites it; what it
+ * adds is this spawn's own catalog read and, for a `rawContext` caller, the
+ * packet sized from it.
  */
 export async function* runModelGovernedRoute(
   routed: ModelGovernedRoute,
   spec: HarnessRunSpec,
+  /** `rawContext` builds this spawn's RawContextPacket for the capacity of the
+   * gate's own catalog read (#147); the caller keeps the packet it returns. */
+  dispatch: {
+    rawContext?: (capacity: RawRequestCapacity | null) => Promise<RawContextPacket>;
+  } = {},
 ): AsyncIterable<HarnessEvent> {
+  const missingModel = missingRouteModel(routed.adapter, spec.model_hint);
+  if (missingModel) throw new ModelSelectionRequiredError(missingModel);
   let nativeModel: string | null = null;
   let preparedEffort: EffortResolution | undefined;
   let catalog: readonly HarnessModel[] = [];
@@ -274,14 +425,27 @@ export async function* runModelGovernedRoute(
   }
   const model = spec.model_hint?.trim();
   const unverified: string[] = [];
-  if (model) {
-    const profile = spec.credential_profile ?? null;
-    const truth = await modelTruthForRoute(routed, {
-      cwd: spec.cwd,
-      env: spec.env,
-      authPreference: spec.auth_preference,
-      profile,
-    });
+  const instanceChoice = routed.adapter.modelRequirement?.instanceChoice;
+  if (instanceChoice && instanceChoice.model === spec.model_hint)
+    unverified.push(`model "${instanceChoice.model}" is set by ${instanceChoice.source}`);
+  const profile = spec.credential_profile ?? null;
+  const truth =
+    model || dispatch.rawContext
+      ? await modelTruthForRoute(routed, {
+          cwd: spec.cwd,
+          env: spec.env,
+          authPreference: spec.auth_preference,
+          profile,
+        })
+      : null;
+  // Said before any model note: which read the notes and the packet stand on.
+  if (truth?.earlierRead)
+    unverified.push(
+      `${modelCatalogFailureText(truth.earlierRead.failure)} at dispatch; this run's earlier ` +
+        `catalog read with the same credentials (${truth.earlierRead.observedAt}) answers for ` +
+        "the model and its limits",
+    );
+  if (model && truth) {
     unverified.push(...assertModelsAllowed(routed, [{ role: "model", model }], truth, profile));
     if (nativeModel && nativeModel !== model) {
       unverified.push(
@@ -293,6 +457,12 @@ export async function* runModelGovernedRoute(
         ),
       );
     }
+  }
+  if (dispatch.rawContext) {
+    // Sized before admission: a packet that cannot be delivered spends nothing.
+    const rows = truth?.observation?.status === "listed" ? truth.observation.models : [];
+    const capacity = routed.adapter.rawRequestCapacity?.(spec, rows) ?? null;
+    spec = { ...spec, raw_context_packet: await dispatch.rawContext(capacity) };
   }
   await admitCurrentProfileDispatch(routed, spec);
   if (spec.processing?.reason === "processing_control_unavailable") {
@@ -327,12 +497,22 @@ export async function* runModelGovernedRoute(
       resolveEffortEvidence(spec.effort_hint, [], [], "adapter", null),
     );
   }
+  // The disclosures above are yields; a run stopped at one of them is not
+  // dispatched when its consumer keeps reading to drain teardown evidence.
+  if (abortSignalFromSpec(spec)?.aborted) return;
+  // #118/#413: what the engine prepared for this spawn's web and file access. The
+  // adapter below may still refuse before launching; its `started` reports a launch.
+  const controls = routeControlsEvent(routed, spec);
+  if (controls) yield controls;
+  // The receipt is a yield too: a run stopped while it was read is not dispatched.
+  if (abortSignalFromSpec(spec)?.aborted) return;
+  const sent = truth?.observation ? withDispatchModelCatalog(spec, truth.observation) : spec;
   const events = stampObservedModelCatalogMatch(
-    routed.adapter.run(spec),
+    routed.adapter.run(sent),
     catalog,
-    spec.credential_profile?.profile_id ?? null,
+    sent.credential_profile?.profile_id ?? null,
   );
-  yield* observeCredentialExecution(routed.adapter.id, spec, events);
+  yield* observeCredentialExecution(routed.adapter.id, sent, events);
 }
 
 /**

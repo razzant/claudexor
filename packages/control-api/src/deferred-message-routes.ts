@@ -4,7 +4,6 @@ import {
   DeferredMessageReceipt,
   DeferredMessageDetail,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues } from "@claudexor/util";
 import type { DaemonFacadeClient } from "./run-record.js";
 import { requiredIdempotencyKey } from "./run-start.js";
 
@@ -37,7 +36,6 @@ export async function handleDeferredMessageRoute(
           code: "delegation_forbidden",
           status: 403,
         });
-      assertNoInlineSecretValues(body, "$", "deferred message");
       const request = DeferredMessageMutation.parse(body);
       const result = await ctx.daemon.deferredMessage({
         request,

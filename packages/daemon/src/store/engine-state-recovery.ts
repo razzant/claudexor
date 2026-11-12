@@ -6,7 +6,6 @@ import {
   ControlJournalInspection,
   ControlJournalQuarantineReceipt,
   ControlJournalValidation,
-  type ControlJournalEvent,
 } from "@claudexor/schema";
 import type { JournalRecoveryState } from "./errors.js";
 import { ensureCanonicalPrivateDirectory, fsyncDirectory } from "@claudexor/util";
@@ -128,7 +127,7 @@ export class EngineStateRecovery implements PartitionControlPort {
       ],
     });
   }
-  events(): ControlJournalEvent[] {
+  events(): never {
     throw typedError(
       "recovery_events_unavailable",
       409,

@@ -9,6 +9,7 @@ import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { builtWorker } from "../../daemon/src/store/test-support/resource-fixture.js";
 import { MaintenanceController } from "../../daemon/dist/store/maintenance.js";
 import { decodeJournalCursor, encodeJournalCursor } from "../../daemon/src/store/cursors.js";
+import { readJournalEvents } from "../../daemon/dist/store/cursors.js";
 import type { SqlEventLedger } from "../../daemon/dist/store/event-store.js";
 import { DaemonControlApiServer, type DaemonFacadeClient } from "./daemon-server.js";
 
@@ -125,7 +126,7 @@ it("keeps global, project and setup SSE cursors usable during SQL maintenance an
     daemon,
     pollMs: 2,
     services: {
-      journalEvents: async (partition, cursor) => sql.graph.journalEvents(partition, cursor),
+      journalEvents: async (partition, request) => sql.graph.journalEvents(partition, request),
       setupJobStatus: async () => setup.status("setup-background-fixture"),
       setupJobEvents: async (input) =>
         setup.events("setup-background-fixture", (input as { afterCursor?: string }).afterCursor),
@@ -224,7 +225,7 @@ it("keeps global, project and setup SSE cursors usable during SQL maintenance an
     expect(ControlJournalEvent.parse(await globalStream.next()).type).toBe("fixture.after");
     expect(ControlJournalEvent.parse(await projectStream.next()).type).toBe("fixture.after");
     const histories = ["global", `project:${projectId}`].map((name) =>
-      sql.graph.journalEvents(name),
+      readJournalEvents(sql.store, name, undefined, sql.graph.blobs),
     );
     await Promise.all(streams.splice(0).map((stream) => stream.close()));
     await maintenance.stop();
@@ -233,9 +234,11 @@ it("keeps global, project and setup SSE cursors usable during SQL maintenance an
     global = sql.graph.globalEvents;
     project = sql.graph.threads.ledger(sql.graph.projects.partition(projectId)!);
     setup = new SqlSetupJobStore(root, sql.store, global);
-    expect(["global", `project:${projectId}`].map((name) => sql.graph.journalEvents(name))).toEqual(
-      histories,
-    );
+    expect(
+      ["global", `project:${projectId}`].map((name) =>
+        readJournalEvents(sql.store, name, undefined, sql.graph.blobs),
+      ),
+    ).toEqual(histories);
     const resumedGlobal = await connect("/global/events", lastGlobal),
       resumedProject = await connect(projectPath, lastProject);
     expect(ControlJournalEvent.parse(await resumedGlobal.next()).type).toBe("fixture.after");

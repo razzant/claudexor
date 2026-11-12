@@ -92,6 +92,33 @@ export const ControlDirectoryListing = z
   .describe("A home-contained server directory listing for the remote project picker.");
 export type ControlDirectoryListing = z.infer<typeof ControlDirectoryListing>;
 
+/** The exact `trashedThreads` query opt-in of DELETE /v2/projects/:id (#333). */
+export const ControlProjectRemoveTrashedThreads = z
+  .enum(["purge"])
+  .describe(
+    "purge: also purge the threads already in the project's trash, in the same removal. Omission keeps the default refusal while any non-purged thread remains.",
+  );
+export type ControlProjectRemoveTrashedThreads = z.infer<typeof ControlProjectRemoveTrashedThreads>;
+
+/** One trashed thread purged by an opted-in project removal (#333). The purge
+ * is committed with the removal; its directory cleanup is reported separately. */
+export const ControlProjectPurgedThread = z
+  .object({
+    threadId: Id.describe("The thread that was in the project's trash and is now purged."),
+    cleanup: z
+      .enum(["completed", "pending"])
+      .describe(
+        "completed: every directory the thread purge owns is deleted. pending: the purge is committed but that deletion did not finish; the engine retries it when the daemon next starts.",
+      ),
+    cleanupError: z
+      .string()
+      .nullable()
+      .describe("Why the deletion did not finish; null when cleanup completed."),
+  })
+  .strict()
+  .describe("A trashed thread purged together with its project.");
+export type ControlProjectPurgedThread = z.infer<typeof ControlProjectPurgedThread>;
+
 /**
  * Receipt for DELETE /v2/projects/:id (QA-049). Removing a durable project
  * retires the global-registry entry and ARCHIVES the project's journal
@@ -99,7 +126,9 @@ export type ControlDirectoryListing = z.infer<typeof ControlDirectoryListing>;
  * non-destructive move the partition-quarantine path uses). Run artifact trees
  * are left in place for normal GC/retention; remove never deletes them or the
  * user's project directory. Refused with a typed 409 while any non-purged
- * thread or live/queued run still references the project.
+ * thread or live/queued run still references the project; with the explicit
+ * `trashedThreads=purge` opt-in, threads already in the trash are purged in the
+ * same transaction instead (#333).
  */
 export const ControlProjectRemoveReceipt = z
   .object({
@@ -128,6 +157,12 @@ export const ControlProjectRemoveReceipt = z
       .literal("snapshot")
       .describe(
         "How the live/queued-run fence was evaluated. Always 'snapshot': the daemon reads its in-process activity projection and removes the project in the same synchronous turn, with no await between the snapshot and registry/partition mutation.",
+      ),
+    purgedThreads: z
+      .array(ControlProjectPurgedThread)
+      .optional()
+      .describe(
+        "Present only when the request opted in with trashedThreads=purge: every thread that was in the project's trash, purged in the same store transaction that retired the project. Absent on a default removal.",
       ),
   })
   .strict()

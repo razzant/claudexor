@@ -1,4 +1,8 @@
 import { getEventListeners } from "node:events";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import AjvModule from "ajv";
 import {
   Agent,
   request,
@@ -17,9 +21,17 @@ import {
   type ControlRunState,
   type RunObservationRecord,
 } from "@claudexor/schema";
-import { digestPendingIdentities } from "../../daemon/src/interactions.js";
+import { InteractionRegistry, digestPendingIdentities } from "../../daemon/src/interactions.js";
 import { readRunObservations } from "../../daemon/src/run-observation.js";
+import { applyCommandInTx, prepareCommandRow } from "../../daemon/src/store/command-rows.js";
+import { SqlCommandQueries } from "../../daemon/src/store/command-queries.js";
 import { StoreBusyError } from "../../daemon/src/store/errors.js";
+import { SqlEventLedger } from "../../daemon/src/store/event-store.js";
+import { setGlobalGenerationInTx } from "../../daemon/src/store/generations.js";
+import { SqlInteractionStore } from "../../daemon/src/store/interactions.js";
+import { runMutation } from "../../daemon/src/store/mutation.js";
+import { createPartition } from "../../daemon/src/store/partitions.js";
+import { resourceFixture } from "../../daemon/src/store/test-support/resource-fixture.js";
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "./daemon-server.js";
 import { RefusedBodies } from "./request-body.js";
 import type { RunObservationListener } from "./run-wait-many.js";
@@ -722,5 +734,186 @@ describe("POST /v2/runs/wait-many over real HTTP", () => {
       summaries: await f.read(["ж"]),
     });
     expect(f.snapshot.mock.calls[0]![0]).toEqual(["ж"]);
+  });
+});
+
+const Ajv = AjvModule.default ?? (AjvModule as unknown as typeof AjvModule.default);
+/** The published 5.1.0 RunWaitManyResult, byte-for-byte as generated then: the
+ * strict reader of an older same-major client that never asks for the opt-in. */
+const RESULT_5_1_0 = JSON.parse(
+  '{"$ref":"#/definitions/RunWaitManyResult","definitions":{"RunWaitManyResult":{"type":"object","properties":{"wakeReason":{"type":"string","enum":["attention","problems","timeout","aborted"]},"attention":{"type":"array","items":{"type":"integer","minimum":0,"maximum":999},"maxItems":1000},"summaries":{"type":"array","items":{"anyOf":[{"type":"object","properties":{"status":{"type":"string","enum":["queued","running","succeeded","failed","cancelled","interrupted"]},"pending":{"type":"boolean"},"token":{"type":"string","minLength":43,"maxLength":43,"pattern":"^[A-Za-z0-9_-]{43}$"},"problem":{"type":"null"}},"required":["status","pending","token","problem"],"additionalProperties":false},{"type":"object","properties":{"status":{"type":"null"},"pending":{"type":"null"},"token":{"type":"null"},"problem":{"type":"string","enum":["not_found","snapshot_unavailable","not_observed"]}},"required":["status","pending","token","problem"],"additionalProperties":false}]},"minItems":1,"maxItems":1000}},"required":["wakeReason","attention","summaries"],"additionalProperties":false}},"$schema":"http://json-schema.org/draft-07/schema#"}',
+);
+const readAs5_1_0 = new Ajv({ strict: false }).compile(RESULT_5_1_0);
+
+/** The daemon's own composition: real SQL store, interaction registry and producer. */
+async function sqlServer() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-wait-many-blocking-")));
+  const store = await resourceFixture(root, { manualTick: true });
+  const generation = store.store.transaction(() => {
+    const value = createPartition(store.store, "global", { epoch: "1".repeat(32) });
+    setGlobalGenerationInTx(store.store, value.pid);
+    return value;
+  });
+  const pending = new SqlInteractionStore(
+    store.store,
+    new SqlEventLedger(store.store, store.blobs, generation),
+  );
+  const registry = new InteractionRegistry({ forRequest: () => pending, forRun: () => pending });
+  const queries = new SqlCommandQueries(store.store, store.blobs);
+  const snapshot = vi.fn(
+    (ids: readonly string[], signal?: AbortSignal, options?: { includeBlocking: true }) =>
+      readRunObservations(queries, registry, "store-under-test", ids, signal, options),
+  );
+  const refuse = vi.fn(async () => {
+    throw new Error("observer used a mutating or projection service");
+  });
+  const server = new DaemonControlApiServer({
+    token,
+    daemon: { list: refuse, status: refuse, enqueue: refuse, cancel: refuse },
+    services: {},
+    runObservations: snapshot,
+    runObservationChanges: (listener) => store.store.observations.subscribe(listener),
+  });
+  const { host, port } = await server.start();
+  const asked: Array<Promise<unknown>> = [];
+  const runs = new Set<string>();
+  fixtureCleanups.push(async () => {
+    await bounded(server.stop());
+    for (const runId of runs) registry.dropForRun(runId);
+    await Promise.all(asked);
+    await store.close();
+    rmSync(root, { recursive: true, force: true });
+    expect(refuse).not.toHaveBeenCalled();
+  });
+  return {
+    snapshot,
+    seed(jobId: string, runId: string) {
+      const row = prepareCommandRow(
+        {
+          id: jobId,
+          state: "running",
+          runId,
+          createdAt: "2026-11-09T00:00:00.000Z",
+          params: { mode: "agent" },
+        },
+        { pid: generation.pid, live: true, operation: "agent", clientId: "fixture" },
+        (bytes) => store.blobs.prepareBody(bytes),
+      );
+      runMutation(store.store, (tx) => applyCommandInTx(tx, row, "accept"));
+    },
+    /** Asked through the live registry, the same path a harness question takes. */
+    ask(runId: string, id: string, delivery: "blocking" | "async") {
+      runs.add(runId);
+      asked.push(
+        registry.register(
+          {
+            runId,
+            taskId: "task",
+            attemptId: "a01",
+            harnessId: "codex",
+            request: { interaction_id: id, source_tool: "fixture", delivery, questions: [] },
+            requestedAt: "2026-11-09T00:00:00.000Z",
+            timeoutAt: null,
+          },
+          {},
+        ),
+      );
+    },
+    /** A pending row an older engine wrote before delivery existed. */
+    legacy(runId: string, id: string) {
+      store.store
+        .prepare("INSERT INTO interaction(id,pid,run_id,state,request) VALUES(?,?,?,'pending',?)")
+        .run(`${runId}\u0000${id}`, generation.pid, runId, Buffer.from("{}"));
+    },
+    async post(body: unknown) {
+      const response = await bounded(
+        fetch(`http://${host}:${port}/v2/runs/wait-many`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        }),
+      );
+      return { status: response.status, body: await response.text() };
+    },
+  };
+}
+
+describe("includeBlocking from the real SQL producer over real HTTP (#628)", () => {
+  async function asked() {
+    const f = await sqlServer();
+    for (const id of ["async", "mixed", "quiet", "legacy"]) f.seed(`job-${id}`, `run-${id}`);
+    f.ask("run-async", "a1", "async");
+    f.ask("run-mixed", "m1", "async");
+    f.ask("run-mixed", "m2", "blocking");
+    f.legacy("run-legacy", "l1");
+    const targets = ["job-async", "job-mixed", "job-quiet", "run-legacy", "missing"].map(
+      (runId) => ({ runId }),
+    );
+    return { f, targets };
+  }
+
+  it("answers an omitted or false opt-in with the old strict bytes and the opt-in with blocking", async () => {
+    const { f, targets } = await asked();
+    const plain = await f.post({ targets, waitMs: 0 });
+    expect(plain.status).toBe(200);
+    expect(plain.body).not.toContain("blocking");
+    expect(readAs5_1_0(JSON.parse(plain.body))).toBe(true);
+    const parsed = RunWaitManyResult.parse(JSON.parse(plain.body));
+    expect(plain.body).toBe(JSON.stringify(parsed));
+    expect(parsed.attention).toEqual([0, 1, 3]);
+    const unasked = await f.post({ targets, waitMs: 0, includeBlocking: false });
+    expect(unasked).toEqual(plain);
+    expect(f.snapshot.mock.calls.every((call) => call.length === 2)).toBe(true);
+
+    const marked = await f.post({ targets, waitMs: 0, includeBlocking: true });
+    expect(marked.status).toBe(200);
+    const result = RunWaitManyResult.parse(JSON.parse(marked.body));
+    expect(marked.body).toBe(JSON.stringify(result));
+    expect(result).toEqual({
+      wakeReason: "attention",
+      attention: [0, 1, 3],
+      summaries: [
+        { ...parsed.summaries[0], blocking: false },
+        { ...parsed.summaries[1], blocking: true },
+        parsed.summaries[2],
+        { ...parsed.summaries[3], blocking: true },
+        { status: null, pending: null, token: null, problem: "not_found" },
+      ],
+    });
+    // The opt-in shape is exactly what an older strict reader refuses.
+    expect(readAs5_1_0(JSON.parse(marked.body))).toBe(false);
+    expect(f.snapshot.mock.calls.at(-1)![2]).toEqual({ includeBlocking: true });
+  });
+
+  it("wakes an opted-in wait for a newly asked async question and keeps tokens shared", async () => {
+    const { f, targets } = await asked();
+    const first = RunWaitManyResult.parse(
+      JSON.parse((await f.post({ targets, waitMs: 0, includeBlocking: true })).body),
+    );
+    const seen = targets.map(({ runId }, index) => ({
+      runId,
+      seen: first.summaries[index]!.token,
+    }));
+    const waiting = f.post({ targets: seen, waitMs: 1500, includeBlocking: true });
+    await vi.waitFor(() => expect(f.snapshot).toHaveBeenCalledTimes(2));
+    f.ask("run-quiet", "q1", "async");
+    const woke = RunWaitManyResult.parse(JSON.parse((await waiting).body));
+    expect(woke.wakeReason).toBe("attention");
+    expect(woke.attention).toEqual([2]);
+    expect(woke.summaries[2]).toMatchObject({ status: "running", pending: true, blocking: false });
+    const plain = RunWaitManyResult.parse(
+      JSON.parse((await f.post({ targets: seen, waitMs: 0 })).body),
+    );
+    // One token per observation: a reader without the opt-in sees the same change.
+    expect(plain.attention).toEqual([2]);
+    expect(plain.summaries.map((row) => row.token)).toEqual(woke.summaries.map((row) => row.token));
+  });
+
+  it.each(["true", 1, null])("refuses includeBlocking %j before any read", async (value) => {
+    const { f, targets } = await asked();
+    const response = await f.post({ targets, waitMs: 0, includeBlocking: value });
+    expect(response.status).toBe(400);
+    ControlProblem.parse(JSON.parse(response.body));
+    expect(f.snapshot).not.toHaveBeenCalled();
   });
 });

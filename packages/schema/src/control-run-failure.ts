@@ -1,5 +1,7 @@
 import { z } from "zod/v3";
+import { CaptureChangeInventory } from "./capture-inventory.js";
 import { HarnessRequestRefusal } from "./harness-input.js";
+import { RawContextShortfall } from "./raw.js";
 import { HarnessFailureCategory } from "./telemetry.js";
 
 /**
@@ -28,10 +30,42 @@ export const RunFailureCode = z
      * member reopens — or null when any member's reset is unknown. */
     "credential_pool_exhausted",
     "input_too_large",
+    /* A raw-api packet refused before its request was sent (#147): a project
+     * mandatory file is missing/unreadable/sensitive or absent from the bound
+     * base tree, or the mandatory content cannot fit the model's KNOWN window. */
+    "raw_context_mandatory_unavailable",
+    "raw_context_exceeds_window",
+    /* An explicit model whose authoritative live catalog read found no usable
+     * credential or had it rejected (HTTP 401/403): refused with that typed
+     * cause, never reported as absent. Other failed reads forward the model
+     * unverified on the same key (#393, owner decision A). */
+    "model_catalog_unavailable",
+    /* A route whose request must name a model (#395) has no run, saved or
+     * instance choice: nothing was sent, and no other model or route stands in. */
+    "model_selection_required",
+    /* A raw patch, or the evidence it needs, the engine refused (#551). The code
+     * names what is wrong, never whether a request was sent or paid: a patch
+     * intent without its packet is refused before any request, the others after
+     * an answer. The attempt's own usage evidence says what was sent, and the
+     * category says who can repair it. */
+    "raw_patch_requires_isolation",
+    "raw_patch_missing_evidence",
+    "raw_patch_digest_mismatch",
+    "raw_patch_base_mismatch",
+    "raw_patch_path_traversal",
+    "raw_patch_outside_scope",
+    "raw_patch_stale_preimage",
+    "raw_patch_binary_unsupported",
+    "raw_patch_truncated",
+    "raw_patch_apply_failed",
     "vendor_cli_too_old",
     /* The vendor's own startup frame reported a credential source other than
      * the session login a subscription route requires (Grok `apiKeySource`). */
     "credential_source_unconfirmed",
+    /* The vendor's own machine record of the failed request marked it not
+     * retryable (Antigravity's stderr `AGY_ERROR` line, `retryable: false`):
+     * no retry, continuation or account rotation follows. */
+    "vendor_not_retryable",
     /* Active scoped-HOME/evidence refusals plus the historical confinement
      * decoder code. Attempt-loop failures must be listed here or
      * `declaredFailure` drops them to `code: null` and the terminal states less
@@ -49,8 +83,11 @@ export const RunFailureCode = z
 export type RunFailureCode = z.infer<typeof RunFailureCode>;
 
 /** A vendor's OWN typed failure, forwarded as evidence. `code` is opaque: no
- * Claudexor code path may branch on its value; retry, rotation, cooldown and
- * credential verdicts never read it. `source` is an open vocabulary rather than
+ * consumer of this evidence may branch on its value; retry, rotation, cooldown
+ * and credential verdicts never read it. Only the adapter that read the native
+ * record may also translate a native code it knows into a typed signal on the
+ * same event (Codex `usage_limit_exceeded` → `rate_limit.reopening: unknown`),
+ * and decisions read that signal. `source` is an open vocabulary rather than
  * an enum because every surface projects the whole `RunFailure` parse-or-null:
  * a closed member list would make an older client drop the entire failure
  * record the day a second producer appears. */
@@ -90,6 +127,11 @@ export const WorkspaceCaptureFailure = z.object({
     "capture_output_exceeded",
     "capture_output_incomplete",
     "capture_preview_truncated",
+    "capture_space_insufficient",
+    "capture_git_stalled",
+    "capture_git_signal",
+    "capture_read_failed",
+    "capture_object_missing",
     "capture_failed",
   ]),
   message: z.string(),
@@ -97,7 +139,12 @@ export const WorkspaceCaptureFailure = z.object({
   bufferBudgetBytes: z.number().int().nonnegative().optional(),
   stream: z.enum(["stdout", "stderr"]).optional(),
   drain: z.literal("truncated").optional(),
+  requiredBytes: z.number().int().nonnegative().optional(),
+  availableBytes: z.number().int().nonnegative().optional(),
+  signal: z.string().max(32).optional(),
+  stallMs: z.number().int().nonnegative().optional(),
   cleanup: z.object({ code: z.string().nullable(), message: z.string() }).optional(),
+  inventory: CaptureChangeInventory.optional(),
 });
 export type WorkspaceCaptureFailure = z.infer<typeof WorkspaceCaptureFailure>;
 
@@ -106,6 +153,11 @@ export type WorkspaceCaptureFailure = z.infer<typeof WorkspaceCaptureFailure>;
  * and a selected successor that never started has no row. */
 export const PoolAttemptFailure = z
   .object({
+    lastVendorError: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe("Last vendor diagnostic line, bounded and redacted; never classified."),
     harnessId: z.string().min(1).describe("Harness the try ran on."),
     profileId: z
       .string()
@@ -143,29 +195,57 @@ export const PoolAttemptFailure = z
   .describe("Per-try account attribution of a failed execution try (diagnostic evidence only).");
 export type PoolAttemptFailure = z.infer<typeof PoolAttemptFailure>;
 
+/** Why quota admission refused an account: the owner's saved headroom reserve
+ * (the provider may still serve it) or the provider's own observed limit. */
+export const QuotaRefusalBasis = z.enum(["owner_reserve", "provider_window", "provider_cooldown"]);
+export type QuotaRefusalBasis = z.infer<typeof QuotaRefusalBasis>;
+
+export const QuotaRefusal = z
+  .object({
+    basis: QuotaRefusalBasis.describe(
+      "owner_reserve: usage reached the saved headroom_threshold below 100% while the provider reports quota left; provider_window: the provider reports the window spent; provider_cooldown: a provider rate-limit cooldown is in force.",
+    ),
+    constraintId: z.string().nullable().describe("The refusing quota window, when known."),
+    usedRatio: z.number().min(0).max(1).nullable().describe("Its observed usage, when known."),
+    threshold: z
+      .number()
+      .nullable()
+      .describe("The headroom_threshold the decision applied, when it applied one."),
+  })
+  .describe(
+    "Machine-readable basis of a quota-admission refusal; it is not an authentication or billing verdict.",
+  );
+export type QuotaRefusal = z.infer<typeof QuotaRefusal>;
+
+/** The typed category axis of a run failure, shared by the failure record and
+ * the route-health groups that count failures by it. Described at each use. */
+export const RunFailureCategory = z.enum([
+  "validation",
+  "project",
+  "auth",
+  "harness_unavailable",
+  "harness_error",
+  "config_error",
+  "budget",
+  "policy",
+  "cancelled",
+  "internal",
+  "unknown",
+]);
+export type RunFailureCategory = z.infer<typeof RunFailureCategory>;
+
 export const RunFailure = z
   .object({
+    lastVendorError: z.string().max(1000).nullable().optional(),
     requestRefusal: HarnessRequestRefusal.optional(),
+    rawContextShortfall: RawContextShortfall.optional().describe(
+      "Typed sizes behind code raw_context_exceeds_window: the window, the request's parts and every mandatory file, so surfaces never read them from safeMessage.",
+    ),
     captureFailure: WorkspaceCaptureFailure.optional(),
     phase: z.string().default("unknown").describe("Pipeline phase where the failure happened."),
-    category: z
-      .enum([
-        "validation",
-        "project",
-        "auth",
-        "harness_unavailable",
-        "harness_error",
-        "config_error",
-        "budget",
-        "policy",
-        "cancelled",
-        "internal",
-        "unknown",
-      ])
-      .default("unknown")
-      .describe(
-        "Typed failure category (validation, project, auth, harness, config, budget, policy, cancelled, internal, unknown). config_error is a settings/routing misconfiguration (e.g. quality routing with no comparable tier), corrected by changing configuration, not by re-auth or waiting for a harness.",
-      ),
+    category: RunFailureCategory.default("unknown").describe(
+      "Typed failure category (validation, project, auth, harness, config, budget, policy, cancelled, internal, unknown). config_error is a settings/routing misconfiguration (e.g. quality routing with no comparable tier), corrected by changing configuration, not by re-auth or waiting for a harness.",
+    ),
     code: RunFailureCode.nullable()
       .default(null)
       .describe(
@@ -207,6 +287,9 @@ export const RunFailure = z
       .describe(
         "When the refused window reopens (a spent subscription quota window), or null when the failure has no such time. Callers schedule a retry off this field, never off safeMessage.",
       ),
+    quotaRefusal: QuotaRefusal.optional().describe(
+      "Present when quota admission or a typed provider limit refused the account: with code subscription_window_exhausted it separates the owner's saved reserve from provider exhaustion; with a null code the provider refused usage and no reopening time is known, so no timer is implied. Absent on other failures and on records written before this field existed.",
+    ),
     vendorFailure: VendorFailureEvidence.nullable()
       .default(null)
       .describe(

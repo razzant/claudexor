@@ -15,6 +15,8 @@ export interface CaptureProjection {
 }
 interface RawCaptureOptions extends SpawnOptions {
   stdoutProjection?: CaptureProjection;
+  /** Called for every chunk of output, buffered or projected: the child is working. */
+  onOutput?: () => void;
 }
 
 /**
@@ -109,6 +111,7 @@ export async function runCaptureRaw(
   };
   const collect = (stream: "stdout" | "stderr", chunk: Buffer): void => {
     if (captureFailed) return;
+    opts.onOutput?.();
     try {
       if (stream === "stdout" && opts.stdoutProjection) opts.stdoutProjection.write(chunk);
       else buffers.append(stream, chunk);

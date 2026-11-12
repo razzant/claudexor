@@ -2,6 +2,7 @@ import type { ServerResponse } from "node:http";
 import { ControlRunDecisionResponse } from "@claudexor/schema";
 import { nowIso, sha256 } from "@claudexor/util";
 import type { ControlOperatorDecisionRecord, DaemonRunRecord } from "./run-record.js";
+import { runGitResult } from "./run-exact-patch.js";
 
 export type RiskDecisionBody = {
   action: "accept_risk" | "override_needs_human";
@@ -90,8 +91,10 @@ export function acceptRiskDecision(
             : `run is ${rec.state}; risk overrides only unblock needs-decision runs (use rerun_with_feedback instead)`,
       });
     }
-    const patch = ctx.readPatch(rec);
-    if (patch === null) {
+    // An object result binds by its digest v1 (#535); its view may be absent.
+    const resultDigest = runGitResult(rec)?.digest ?? null;
+    const patch = resultDigest ? null : ctx.readPatch(rec);
+    if (resultDigest === null && patch === null) {
       return ctx.json(res, 409, {
         error: "no patch artifact; there is nothing to unblock for apply",
       });
@@ -109,7 +112,7 @@ export function acceptRiskDecision(
         action: body.action,
         findingIds: body.findingIds,
         acceptedRisks: body.acceptedRisks,
-        patchSha256: sha256(patch),
+        patchSha256: resultDigest ?? sha256(patch ?? ""),
         decidedAt: nowIso(),
       },
       idempotency,

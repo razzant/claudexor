@@ -164,7 +164,10 @@ export class BulkExecutor {
       });
       return;
     }
-    processTiming.recordBulk(entry.job.kind, message.queueMs, message.projectionMs);
+    // Route-health fact reads stay out of the status timing facts: their bulk
+    // kinds are a closed set that older strict clients validate.
+    if (entry.job.kind !== "route-facts")
+      processTiming.recordBulk(entry.job.kind, message.queueMs, message.projectionMs);
     this.running = undefined;
     entry.cleanup();
     if (!entry.cancelled) {

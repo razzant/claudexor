@@ -11,13 +11,14 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { beforeEach, expect, it } from "vitest";
 import { CredentialProfile, SessionCapsule } from "@claudexor/schema";
 import { createCodexAdapter } from "@claudexor/harness-codex";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { writeContinuationSources } from "@claudexor/workspace";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { createNativeHomeRetention } from "./native-home-retention.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 let root: string;
 let before: string | undefined;
 let sql: Awaited<ReturnType<typeof sqlFixture>>;
@@ -32,11 +33,13 @@ beforeEach(async () => {
   sql = await sqlFixture(join(root, "sql"));
   busy = false;
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   await sql?.close();
-  if (before === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
-  else process.env.CLAUDEXOR_CONFIG_DIR = before;
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    if (before === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = before;
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 function profile() {
   return CredentialProfile.parse({

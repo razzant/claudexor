@@ -1,6 +1,7 @@
 import { DeferredMessageDetail, DeferredMessageProjection } from "@claudexor/schema";
 import type { EngineStore } from "./store.js";
 import type { BlobFiles } from "./blob-files.js";
+import type { MutationContext } from "./mutation.js";
 
 export interface DeferredMessageRow {
   id: string;
@@ -13,6 +14,51 @@ export interface DeferredMessageRow {
   successor_job_id: string | null;
   dispatched_revision: number | null;
   created_at: string;
+  /** The revision its current hold was applied at (#613); a replace keeps the old value. */
+  held_revision?: number | null;
+  /** Why the draft left a process-custody hold by itself (#613); schema 7. */
+  resumed?: Uint8Array | null;
+}
+
+const json = (bytes: Uint8Array) => JSON.parse(Buffer.from(bytes).toString("utf8")) as unknown;
+
+/** Held only for unknown process custody, at exactly this revision, and not replaced
+ * since that hold was applied (#613). Rows held before schema 7 never qualify. */
+export function heldForProcessCustody(row: DeferredMessageRow, revision: number): boolean {
+  if (row.state !== "held" || row.revision !== revision || !row.hold) return false;
+  if (row.held_revision !== row.revision) return false;
+  try {
+    return (json(row.hold) as { code?: unknown } | null)?.code === "settlement_unknown";
+  } catch {
+    return false;
+  }
+}
+
+/** The one row writer; `resumed` is history and is never cleared once set. */
+export function writeDraftRowInTx(tx: MutationContext, row: DeferredMessageRow): void {
+  tx.prepare(
+    `INSERT INTO deferred_message(id,pid,predecessor_job_id,revision,state,body_sha,hold,
+    successor_job_id,dispatched_revision,created_at,held_revision,resumed)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,state=excluded.state,
+    body_sha=excluded.body_sha,hold=excluded.hold,successor_job_id=excluded.successor_job_id,
+    dispatched_revision=excluded.dispatched_revision,
+    held_revision=COALESCE(excluded.held_revision,deferred_message.held_revision),
+    resumed=COALESCE(excluded.resumed,deferred_message.resumed)`,
+  ).run(
+    row.id,
+    row.pid,
+    row.predecessor_job_id,
+    row.revision,
+    row.state,
+    row.body_sha,
+    row.hold,
+    row.successor_job_id,
+    row.dispatched_revision,
+    row.created_at,
+    row.held_revision ?? null,
+    row.resumed ?? null,
+  );
 }
 
 /** Compact reads select identities only, never hydrate a command's full result. */
@@ -37,7 +83,8 @@ export function deferredMessageProjection(
     predecessorJobId: row.predecessor_job_id,
     predecessorRunId,
     predecessorResult: `/v2/runs/${predecessorRunId ?? row.predecessor_job_id}`,
-    hold: row.hold ? JSON.parse(Buffer.from(row.hold).toString("utf8")) : null,
+    hold: row.hold ? json(row.hold) : null,
+    ...(row.resumed ? { resumed: json(row.resumed) } : {}),
     dispatchedRevision: row.dispatched_revision,
     successorJobId: row.successor_job_id,
     successorRunId: run(row.successor_job_id),

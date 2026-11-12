@@ -5,11 +5,17 @@
  * codex VOICED its own error (`harness_reported_error`), read that record once,
  * after the process exited, and attach it to the terminal `completed` payload
  * as `vendor_failure`. Evidence only: the adapter translates, the orchestrator
- * forwards it to the failure record, and nothing branches on the code.
+ * forwards it to the failure record, and no consumer branches on the code.
+ * The adapter itself translates the one native code it knows, the typed usage
+ * refusal (#558), into the typed limit on the same event, once per try: the
+ * app-server wire may already have carried it. A record the app-server wire
+ * already attached (`codex_app_server`) stays when the rollout yields
+ * none; a readable rollout record replaces it.
  *
  * A separate module because `index.ts` sits at its complexity-ratchet baseline.
  */
 import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
+import { codexUsageRefusal } from "./retry-signals.js";
 import { codexTranscriptVendorFailure } from "./transcript.js";
 
 export async function* withCodexVendorFailure(
@@ -21,7 +27,9 @@ export async function* withCodexVendorFailure(
   // Taken before the child is spawned: `events` is a lazy generator that only
   // starts when the loop below first pulls from it.
   const spawnedNotBeforeMs = Date.now();
+  let refusalCarried = false;
   for await (const ev of events) {
+    refusalCarried ||= ev.rate_limit?.reopening === "unknown";
     if (
       ev.type === "completed" &&
       !ev.aborted &&
@@ -36,7 +44,12 @@ export async function* withCodexVendorFailure(
         spawnedNotBeforeMs,
       );
       if (vendor) {
-        yield { ...ev, payload: { ...ev.payload, vendor_failure: vendor } };
+        const refusal = refusalCarried ? null : codexUsageRefusal(vendor.code);
+        yield {
+          ...ev,
+          ...(refusal ? { rate_limit: refusal } : {}),
+          payload: { ...ev.payload, vendor_failure: vendor },
+        };
         continue;
       }
     }

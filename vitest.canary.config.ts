@@ -13,6 +13,8 @@ export default defineConfig({
     environment: "node",
     passWithNoTests: false,
     testTimeout: 120_000,
-    hookTimeout: 60_000,
+    // mcp-task-groups disposes two sandboxes sequentially. Each Windows disposal
+    // allows 65s + 95s + 65s, plus 15s for local cleanup. Vitest times sync hooks too.
+    hookTimeout: process.platform === "win32" ? 2 * 240_000 : 60_000,
   },
 });

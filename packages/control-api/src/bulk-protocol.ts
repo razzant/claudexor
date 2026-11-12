@@ -7,6 +7,7 @@ import type { ArtifactReadRequest, ArtifactReadResult } from "./artifact-read.js
 import type { EventReplayRequest, EventReplayResult } from "./event-replay-batch.js";
 import type { ControlOperatorDecisionRecord, DaemonRunRecord } from "./run-record.js";
 import type { RunListFingerprint } from "./run-list-fingerprint.js";
+import type { RouteHealthFacts } from "./route-health-facts.js";
 
 export const BULK_WORKER_ROLE = "claudexor-control-bulk";
 export interface SummarySnapshot {
@@ -18,7 +19,11 @@ export interface DetailRead {
   cursor: number;
   pending: ControlPendingInteraction[];
   operator: ControlOperatorDecisionRecord | null;
-  children: { record: DaemonRunRecord; pending: boolean }[];
+  /** Each child's question attention, derived by pendingQuestionAttention. */
+  children: {
+    record: DaemonRunRecord;
+    attention: { waitingOnUser: boolean; asyncQuestionsOnly: boolean };
+  }[];
   deferred?: DeferredMessageProjection | null;
 }
 export interface BulkInputs {
@@ -27,6 +32,7 @@ export interface BulkInputs {
   summary: { record: DaemonRunRecord; cached?: SummarySnapshot };
   "event-replay": EventReplayRequest;
   artifact: ArtifactReadRequest;
+  "route-facts": { record: DaemonRunRecord };
 }
 export interface BulkResults {
   cursor: number;
@@ -34,6 +40,7 @@ export interface BulkResults {
   summary: SummarySnapshot | { summary: ControlRunSummary };
   "event-replay": EventReplayResult;
   artifact: ArtifactReadResult;
+  "route-facts": RouteHealthFacts;
 }
 export type BulkKind = keyof BulkInputs;
 export type BulkJob<K extends BulkKind = BulkKind> = {

@@ -6,6 +6,7 @@ import {
   RunContinuityReceipt,
   RunFactsInvalidError,
   RunResumable,
+  ObjectResultDisclosure,
   SecretLikeDisclosure,
   type RunOutcomeFacts,
 } from "@claudexor/schema";
@@ -51,10 +52,10 @@ export function projectImmediateRunDetail(
 }
 
 /**
- * INV-062 disclosure as a consumable fact. `run_result` answers with the
- * primary output first, so the summary.md disclosure line never reaches an MCP
- * host; this projects the same record from `workProduct.meta`. Null when the
- * run hid nothing (or the record is absent/malformed).
+ * Historical disclosure as a consumable fact: runs written under the retired
+ * INV-062 masked their saved copies and recorded what they hid in
+ * `workProduct.meta.secret_like`. Current runs save exact bytes (INV-146) and
+ * record nothing, so this is null for them (and for an absent/malformed record).
  */
 export function projectSecretLikeDisclosure(
   detail: Record<string, unknown> | null,
@@ -72,6 +73,27 @@ export function projectSecretLikeDisclosure(
     mediaWithheld: finding?.["media_withheld"] ?? [],
     persistedPatch: redactedCopy ? "redacted" : "exact",
     exactPatchRecorded: redactedCopy ? typeof meta?.["exact_patch_object"] === "string" : null,
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+/** #535 object result as a consumable fact (from `workProduct.meta`); null without one. */
+export function projectObjectResultDisclosure(
+  detail: Record<string, unknown> | null,
+): ObjectResultDisclosure | null {
+  const meta = (detail?.["workProduct"] as { meta?: Record<string, unknown> } | null | undefined)
+    ?.meta;
+  const result = meta?.["git_result"] as { digest?: unknown } | undefined;
+  if (!result) return null;
+  const view = meta?.["patch_view"] as Record<string, unknown> | undefined;
+  const inventory = meta?.["change_inventory"] as { changedFiles?: unknown } | undefined;
+  const unavailable = view?.["available"] === false;
+  const parsed = ObjectResultDisclosure.safeParse({
+    digest: result.digest,
+    patchView: unavailable ? "unavailable" : "rendered",
+    reason: unavailable ? (view?.["reason"] ?? null) : null,
+    estimatedBytes: unavailable ? (view?.["estimatedBytes"] ?? null) : null,
+    changedFiles: unavailable ? (inventory?.changedFiles ?? null) : null,
   });
   return parsed.success ? parsed.data : null;
 }
@@ -168,6 +190,7 @@ export function projectRecoveryRunDetail(
         : null,
     ...projectContinuationFacts(summary),
     secretLike: projectSecretLikeDisclosure(detail),
+    objectResult: projectObjectResultDisclosure(detail),
     deferredMessage: DeferredMessageProjection.nullable().parse(detail["deferredMessage"] ?? null),
   };
   if (mode !== "__run_result") {
@@ -231,6 +254,7 @@ export function projectDegradedRecoveryRunDetail(
     delegatedFromRunId: null,
     delegation: null,
     secretLike: null,
+    objectResult: null,
     detailProblem: describeRunDetailProblem(error),
   };
 }

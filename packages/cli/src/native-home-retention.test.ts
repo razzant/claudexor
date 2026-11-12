@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { beforeEach, expect, it } from "vitest";
 import { CredentialProfile, SessionCapsule, RunResumable } from "@claudexor/schema";
 import { createCodexAdapter, defaultNativeCodexHome } from "@claudexor/harness-codex";
 import { ArtifactStore } from "@claudexor/artifact-store";
@@ -19,6 +19,7 @@ import { createNativeHomeRetention } from "./native-home-retention.js";
 import { createRetentionRunner } from "./retention-service.js";
 import { buildRegistry } from "./registry.js";
 import { recordLastRetention, readLastRetention } from "./retention-last-pass.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 let root: string;
 let before: string | undefined;
 let sql: Awaited<ReturnType<typeof sqlFixture>>;
@@ -33,11 +34,13 @@ beforeEach(async () => {
   sql = await sqlFixture(join(root, "sql"));
   busy = false;
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   await sql?.close();
-  if (before === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
-  else process.env.CLAUDEXOR_CONFIG_DIR = before;
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    if (before === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = before;
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 function profile() {
   return CredentialProfile.parse({
@@ -208,7 +211,7 @@ it("keeps homes during setup work, then retires after setup settles", async () =
   expect((await gc(request())).freedBytes).toBe(9);
 });
 
-it.each(["SQL session", "completed run capsule", "active setup"])(
+it.each(["SQL session", "new project session", "completed run capsule", "active setup"])(
   "keeps newly owned rollouts when %s appears during an asynchronous profile scan",
   async (kind) => {
     const held = seed(4);
@@ -218,11 +221,15 @@ it.each(["SQL session", "completed run capsule", "active setup"])(
       admitted = true;
       if (kind === "active setup") busy = true;
       else {
+        const repoRoot = kind === "new project session" ? join(root, "late-project") : undefined;
+        if (repoRoot) mkdirSync(repoRoot);
         const thread = sql.graph.threads.createThread({
+          ...(repoRoot ? { repoRoot } : {}),
           title: "Concurrent admission",
           workspace: "in_place",
         });
-        if (kind === "SQL session") sql.graph.threads.recordSession(thread.id, "codex", id(4));
+        if (kind === "SQL session" || kind === "new project session")
+          sql.graph.threads.recordSession(thread.id, "codex", id(4));
         else {
           const path = capsule(4);
           const commands = sql.graph.commands.current();

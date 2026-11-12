@@ -203,6 +203,7 @@ struct PlanQuestionCard: View {
                     Spacer()
                     Button(sending ? "Sending…" : "Submit answers") { submit() }
                         .buttonStyle(.borderedProminent)
+                        .tint(Theme.accentSolid)
                         .controlSize(.small)
                         .disabled(
                             !complete || sending

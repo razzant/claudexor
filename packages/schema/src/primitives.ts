@@ -164,8 +164,9 @@ export const FallbackReason = z
     /** No usable auth source for the route (native session + api key both absent). */
     "auth_unavailable",
     /** Auto routing selected a doctor/smoke-proven route over another available
-     * auth source; used to disclose cost/readiness tradeoffs without implying the
-     * other source was missing. */
+     * auth source, or over a requested primary that is degraded (usable only by
+     * explicit selection); used to disclose cost/readiness tradeoffs without
+     * implying the other source was missing. */
     "readiness_preferred",
     "manual",
   ])

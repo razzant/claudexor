@@ -12,7 +12,7 @@ import { runCodexAppServer, codexAppServerThreadParams } from "./app-server-run.
 import { startCodexTurn } from "./app-server-start.js";
 
 const root = mkdtempSync(join(tmpdir(), "claudexor-codex-documents-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+afterAll(() => rmSync(root, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const mimes = [
   "text/plain",
   "text/markdown",

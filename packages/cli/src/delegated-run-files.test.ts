@@ -19,7 +19,7 @@ const png = (text: string) => Buffer.concat([PNG_MAGIC, Buffer.from(text)]);
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function fixture() {
   const base = mkdtempSync(join(tmpdir(), "cx-delegated-files-"));

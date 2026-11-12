@@ -16,8 +16,8 @@ import {
   type RunOutcomeFacts,
   type RunParticipant,
 } from "@claudexor/schema";
-import { nowIso, readTextSafe, redactSecrets, sha256 } from "@claudexor/util";
-import { resolveExactPatch } from "@claudexor/workspace";
+import { nowIso, readTextSafe, sha256 } from "@claudexor/util";
+import { resolveExactPatch, verifiedGitObjectResult } from "@claudexor/workspace";
 import type { AnnouncedRunContext } from "./runTerminals.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import { readReviewArtifacts } from "./runFactsReview.js";
@@ -450,8 +450,8 @@ export function buildRunFacts(
   const operatorDecision = ctx.store.readYaml<Record<string, unknown>>(
     join(ctx.paths.arbitrationDir, "operator_decision.yaml"),
   );
-  // INV-062: digests and eligibility bind to the EXACT patch. A saved copy with
-  // hidden secret-like strings resolves through the private exact patch object.
+  // Digests and eligibility bind to the EXACT patch. A historical saved copy
+  // with hidden secret-like strings resolves through its private exact object.
   const savedPatch = readTextSafe(join(ctx.paths.finalDir, "patch.diff")) ?? "";
   const exactPatch = resolveExactPatch({
     savedCopy: savedPatch,
@@ -459,6 +459,12 @@ export function buildRunFacts(
     roots: [contract?.repo.root, workProduct?.meta["execution_root"] as string | undefined],
   });
   const patch = exactPatch.ok ? exactPatch.patch : savedPatch;
+  // An object result (#535) binds and applies by its trees; its view is optional.
+  const gitResult =
+    workProduct?.kind === "files" ? null : verifiedGitObjectResult(workProduct?.meta["git_result"]);
+  const resultChanged = gitResult
+    ? gitResult.base_tree !== gitResult.candidate_tree
+    : patch.trim().length > 0;
   const manifestText =
     workProduct?.kind === "files" && workProduct.files.manifest
       ? readTextSafe(join(ctx.paths.root, workProduct.files.manifest))
@@ -469,12 +475,12 @@ export function buildRunFacts(
   const manifestSha256 = manifestText ? sha256(manifestText) : undefined;
   const operatorDecisionMatchesPatch =
     !!operatorDecision &&
-    (patch.trim().length > 0 || filesManifest !== undefined) &&
+    (resultChanged || filesManifest !== undefined) &&
     (operatorDecision["action"] === "accept_risk" ||
       operatorDecision["action"] === "override_needs_human") &&
     (filesManifest
       ? operatorDecision["manifest_sha256"] === manifestSha256
-      : operatorDecision["patch_sha256"] === sha256(patch));
+      : operatorDecision["patch_sha256"] === (gitResult?.digest ?? sha256(patch)));
   const deliverable = canonicalDeliverable({
     ctx,
     mode: ctx.mode,
@@ -511,12 +517,12 @@ export function buildRunFacts(
   });
   const decisionWithCanonicalFacts = decision ? { ...decision, facts: outcome } : null;
   const applyEligibility =
-    (patch.trim() || filesManifest) && contract && decisionWithCanonicalFacts
+    (resultChanged || filesManifest) && contract && decisionWithCanonicalFacts
       ? deriveApplyEligibility({
           state: outcome.lifecycle,
           decision: decisionWithCanonicalFacts,
           workProduct,
-          ...{ patch, exactPatchUnavailable: !exactPatch.ok },
+          ...{ patch, gitResult, exactPatchUnavailable: gitResult ? false : !exactPatch.ok },
           filesManifest,
           manifestSha256,
           originalRepoRoot: contract.repo.root,
@@ -560,6 +566,9 @@ export function buildRunFacts(
     required_actions: requiredActionsFor(outcome, operatorDecisionPresent),
     generated_at: nowIso(),
   };
-  // Redact once so every surface can preserve exact object identity.
-  return validateRunFactsInvariants(JSON.parse(redactSecrets(JSON.stringify(rawFacts))) as unknown);
+  // One normalized object every surface preserves, kept exact (INV-146). Its
+  // strings are ids (external identifiers as given), run-relative paths and
+  // typed reasons, plus the model's work_state required inputs (working
+  // content); it carries no engine diagnostics, so nothing in it is masked.
+  return validateRunFactsInvariants(JSON.parse(JSON.stringify(rawFacts)) as unknown);
 }

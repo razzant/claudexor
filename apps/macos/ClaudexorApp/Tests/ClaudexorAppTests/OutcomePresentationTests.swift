@@ -69,6 +69,19 @@ import ClaudexorKit
         #expect(line.tone == .failure)
     }
 
+    /// A refused capture names what is missing, never a missing workspace, and
+    /// live changes it could not capture still read as applied and review-blocked.
+    @Test func captureRefusedNamesTheMissingCaptureBesideLiveChanges() throws {
+        let live = RunResult(kind: "none", diffStat: nil, blockers: 0, adopted: true,
+                             applyState: "applied_review_blocked")
+        let line = try #require(OutcomePresentation.line(
+            phase: .failed, reason: "capture_refused", result: live, reviewVerdict: .notRun
+        ))
+        #expect(line.headline == "Changes not captured · Applied · review blocked")
+        #expect(line.tone == .failure)
+        #expect(RunReasonLabel.label("capture_refused") == "Changes not captured")
+    }
+
     @Test func cancelledIsNeutralNotRed() throws {
         let line = try #require(OutcomePresentation.line(
             phase: .cancelled, reason: nil, result: patch(applyState: "not_applied"), reviewVerdict: .notRun
@@ -180,7 +193,13 @@ import ClaudexorKit
         task.applyState = "applied"
         task.adopted = true
         task.waitingOnUser = true
-        let facts = RunFacts.headerPrimary(task)
+        // A finished run's questions were released with it (#628): no question fact.
+        var facts = RunFacts.headerPrimary(task)
+        #expect(facts.map(\.id) == ["auth_route", "apply"])
+        #expect(facts.map(\.text) == ["API key", "Winner applied"])
+        // While the run is live, its pending question is the third material fact.
+        task.phase = .running
+        facts = RunFacts.headerPrimary(task)
         #expect(facts.map(\.id) == ["auth_route", "apply", "needs_answer"])
         #expect(facts.map(\.text) == ["API key", "Winner applied", "Needs your answer"])
         #expect(facts.count <= 4)

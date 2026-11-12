@@ -9,17 +9,11 @@
  * `isolation_locator` (named by the engine under the neutral
  * `CLAUDEXOR_PROFILE_LOCATOR` key) or the default native home. A move copies
  * every part to the SAME relative path under the target home, verifies, then
- * retires the sources — never `auth.json`, never credentials.
+ * retires the sources — never `auth.json`, never credentials. Location and copy
+ * share the transcript readers' boundary (`rollout-file.ts`): a part that is a
+ * link or lies below one is still located, and a move refuses it typed.
  */
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  realpathSync,
-  rmSync,
-  statSync,
-} from "node:fs";
+import { lstatSync, mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import {
   CONTINUITY_PROFILE_LOCATOR_ENV,
@@ -28,6 +22,7 @@ import {
 } from "@claudexor/core";
 import { defaultNativeCodexHome } from "./auth.js";
 import { canonicalCodexProfileHome } from "./profile.js";
+import { codexRolloutParts, copyCodexRolloutPart, rolloutLogicalPart } from "./rollout-file.js";
 
 /** The vendor's own code for a rejected carried reasoning item (its CLI sniffs the same token). */
 const CARRIED_STATE_REJECTIONS = ["invalid_encrypted_content", "Request blocked."];
@@ -39,51 +34,18 @@ export function codexStoreHome(env: EnvMap): string {
   return defaultNativeCodexHome(env);
 }
 
-function dirsOf(dir: string): string[] {
-  try {
-    return readdirSync(dir).filter((name) => {
-      try {
-        return statSync(join(dir, name)).isDirectory();
-      } catch {
-        return false;
-      }
-    });
-  } catch {
-    return [];
-  }
-}
-
-/** Every rollout part of a thread, found by filename (`.jsonl` and `.jsonl.zst`), newest day first. */
-export function findCodexRolloutParts(sessionsDir: string, threadId: string): string[] {
-  const parts: string[] = [];
-  if (!existsSync(sessionsDir)) return parts;
-  for (const y of dirsOf(sessionsDir)) {
-    for (const m of dirsOf(join(sessionsDir, y))) {
-      for (const d of dirsOf(join(sessionsDir, y, m))) {
-        const dayDir = join(sessionsDir, y, m, d);
-        try {
-          for (const name of readdirSync(dayDir)) {
-            if (name.includes(threadId) && (name.endsWith(".jsonl") || name.endsWith(".jsonl.zst")))
-              parts.push(join(dayDir, name));
-          }
-        } catch {
-          /* unreadable day dir: keep scanning */
-        }
-      }
-    }
-  }
-  return parts;
-}
-
 export const codexContinuity: HarnessContinuityCapability = {
   async locate(ref, env) {
-    const parts = findCodexRolloutParts(join(codexStoreHome(env), "sessions"), ref.nativeSessionId);
+    const parts = codexRolloutParts(codexStoreHome(env), ref.nativeSessionId).map((p) => p.path);
     if (parts.length === 0) return { found: false };
-    const file = parts.find((part) => part.endsWith(".jsonl")) ?? parts[0]!;
+    // The holder is the newest logical part, as its `.jsonl` sibling when it has
+    // one; every part, compressed history included, is still a sidecar to move.
+    const newest = rolloutLogicalPart(parts[0]!);
+    const file = parts.includes(newest) ? newest : parts[0]!;
     return {
       found: true,
       file,
-      mtimeMs: Math.max(...parts.map((part) => statSync(part).mtimeMs)),
+      mtimeMs: Math.max(...parts.map((part) => lstatSync(part).mtimeMs)),
       sidecars: parts.filter((part) => part !== file),
     };
   },
@@ -92,20 +54,22 @@ export const codexContinuity: HarnessContinuityCapability = {
     const fromHome = codexStoreHome(fromEnv);
     const toHome = codexStoreHome(toEnv);
     const sid = located.nativeSessionId ?? rolloutThreadId(located.file);
-    if (fromHome === toHome) return { ok: true, resumeRef: { nativeSessionId: sid } };
+    // Two spellings of one store (the default home through a link and a
+    // profile registered at its real path) are the same home; copying there
+    // would write each part onto itself.
+    if (sameStore(fromHome, toHome)) return { ok: true, resumeRef: { nativeSessionId: sid } };
     const sources = [located.file, ...located.sidecars];
     const copied: string[] = [];
     try {
+      const fromRoot = realpathSync(fromHome);
       for (const source of sources) {
-        const rel = relative(fromHome, realpathSync(source));
+        const rel = relative(fromRoot, realpathSync(source));
         if (rel.startsWith("..") || !rel.startsWith("sessions"))
           throw new Error(`rollout part outside the source sessions dir: ${source}`);
         const dest = join(toHome, rel);
         mkdirSync(dirname(dest), { recursive: true });
+        copyCodexRolloutPart(fromHome, source, dest); // removes its own partial copy
         copied.push(dest);
-        copyFileSync(source, dest);
-        if (statSync(dest).size !== statSync(source).size)
-          throw new Error("rollout copy size mismatch");
       }
     } catch (err) {
       for (const dest of copied) rmSync(dest, { force: true });
@@ -123,7 +87,8 @@ export const codexContinuity: HarnessContinuityCapability = {
 
   /** The vendor's own rejection of carried reasoning: the typed rollout code
    * when the adapter attached one, else the same code token the CLI itself
-   * reports in its error text. */
+   * reports in its error text. Only the code is read, never its `source`; the
+   * app-server wire spells codes in camelCase, so its record matches no token. */
   rejectsCarriedState(ev) {
     if (ev.type !== "error" && ev.type !== "completed") return false;
     const vendor = ev.payload?.["vendor_failure"] as { code?: unknown } | undefined;
@@ -132,6 +97,18 @@ export const codexContinuity: HarnessContinuityCapability = {
     return CARRIED_STATE_REJECTIONS.some((token) => code === token || text.includes(token));
   },
 };
+
+/** One directory by identity; a destination home that does not exist yet is another store. */
+function sameStore(fromHome: string, toHome: string): boolean {
+  if (fromHome === toHome) return true;
+  try {
+    const from = statSync(fromHome);
+    const to = statSync(toHome);
+    return from.dev === to.dev && from.ino === to.ino;
+  } catch {
+    return false;
+  }
+}
 
 /** The thread id embedded in a rollout filename (`rollout-<ts>-<uuid>.jsonl[.zst]`). */
 function rolloutThreadId(file: string): string {

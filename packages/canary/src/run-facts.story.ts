@@ -11,7 +11,7 @@ beforeEach(() => {
 
 afterEach(() => {
   sandbox.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("RunFacts canary", () => {
   it("[INV-122:run-facts-surface-parity] terminal JSON, API, inspect, artifact, and telemetry expose one receipt", async () => {
@@ -52,7 +52,7 @@ describe("RunFacts canary", () => {
 
     const canonical = JSON.stringify(stored);
     expect(JSON.stringify(terminal.runFacts)).toBe(canonical);
-    expect(JSON.stringify(telemetry.run_facts)).toBe(canonical);
+    expect(telemetry.run_facts).toBeNull();
     expect(JSON.stringify(detail.runFacts)).toBe(canonical);
     expect(JSON.stringify(inspectJson.runFacts)).toBe(canonical);
     expect(stored).toMatchObject({

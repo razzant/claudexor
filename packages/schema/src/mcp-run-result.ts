@@ -25,9 +25,9 @@ export const RunDetailProblem = z
 export type RunDetailProblem = z.infer<typeof RunDetailProblem>;
 
 /**
- * INV-062 disclosure for a run whose output held secret-like strings: the
- * changes were kept and only Claudexor's saved/served copies hide them. Paths,
- * rule ids and counts — never a matched value.
+ * Historical disclosure for a run written under the retired INV-062, whose
+ * saved/served copies hid secret-like strings. Paths, rule ids and counts —
+ * never a matched value. Current runs save exact bytes (INV-146) and leave it null.
  */
 export const SecretLikeDisclosure = z
   .object({
@@ -64,9 +64,46 @@ export const SecretLikeDisclosure = z
   })
   .strict()
   .describe(
-    "What a run's saved copies hide: secret-like strings kept in the work, hidden on disk.",
+    "What a historical (INV-062) run's saved copies hide: secret-like strings kept in the work, hidden on disk.",
   );
 export type SecretLikeDisclosure = z.infer<typeof SecretLikeDisclosure>;
+
+/**
+ * #535: the run's result as Git objects, exact whatever its size, and whether
+ * a patch VIEW of it exists. An unrendered result is still verifiable,
+ * applyable and revertable; only its one-patch rendering is absent.
+ */
+export const ObjectResultDisclosure = z
+  .object({
+    digest: z
+      .string()
+      .regex(/^sha256:[0-9a-f]{64}$/)
+      .describe("Result digest v1 (sha256 of the canonical object descriptor)."),
+    patchView: z
+      .enum(["rendered", "unavailable"])
+      .describe("Whether final/patch.diff holds a rendered view of the result."),
+    reason: z
+      .string()
+      .nullable()
+      .describe("Why no view was rendered (for example exceeds_view_limit); null when rendered."),
+    estimatedBytes: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .describe(
+        "Estimate of the view size from blob sizes, not an upper bound; just above the view limit when the render itself overflowed; null when rendered or unknown.",
+      ),
+    changedFiles: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .describe("Changed paths of an unrendered result (from its inventory); null otherwise."),
+  })
+  .strict()
+  .describe("The exact object result of a run and whether its patch view exists.");
+export type ObjectResultDisclosure = z.infer<typeof ObjectResultDisclosure>;
 
 /**
  * The structured result shape MCP run tools return (structuredContent).
@@ -148,6 +185,12 @@ export const McpRunToolResult = z
     parentRunId: z.string().nullable().default(null),
     delegatedFromRunId: z.string().nullable().default(null),
     delegation: RunDelegationInfo.nullable().default(null),
+    /** The text trailer of a run tool states this fact; its structured mirror too. */
+    objectResult: ObjectResultDisclosure.nullable()
+      .default(null)
+      .describe(
+        "#535: the exact Git-object result and whether its patch view exists; null for a run without an object result.",
+      ),
   })
   .describe("Structured MCP tool result for Claudexor run tools.");
 export type McpRunToolResult = z.infer<typeof McpRunToolResult>;
@@ -267,7 +310,12 @@ export const McpRunHandleResult = z
     secretLike: SecretLikeDisclosure.nullable()
       .default(null)
       .describe(
-        "INV-062 disclosure: secret-like strings kept in the work but hidden in saved copies (paths and counts only); null when nothing was hidden.",
+        "Historical disclosure of a run written under the retired INV-062 that hid secret-like strings in its saved copies (paths and counts only); null for current runs, which save exact bytes.",
+      ),
+    objectResult: ObjectResultDisclosure.nullable()
+      .default(null)
+      .describe(
+        "#535: the exact Git-object result and whether its patch view exists; null for a run without an object result.",
       ),
   })
   .strict()

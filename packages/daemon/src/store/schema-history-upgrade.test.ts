@@ -13,9 +13,11 @@ const roots: string[] = [];
 const connections: DatabaseSync[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
+  // This test's folders, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const db of connections.splice(0)) db.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+  for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function connect() {
   const root = mkdtempSync(join(tmpdir(), "cx-schema-history-"));
   roots.push(root);
@@ -59,7 +61,10 @@ function seed(db: DatabaseSync) {
   db.exec(
     "INSERT INTO event(pid,seq,time,type,payload) VALUES(1,1,'2026-10-26','fixture',x'7b7d')",
   );
-  const insert = db.prepare("INSERT INTO turn VALUES(?,1,'thread',?,?,'2026-10-26','prompt',?)");
+  const insert = db.prepare(
+    `INSERT INTO turn(id,pid,thread_id,ordinal,run_id,created_at,prompt_sha,body)
+    VALUES(?,1,'thread',?,?,'2026-10-26','prompt',?)`,
+  );
   const bodies = [
     { answers_plan_run_id: "plan", run_id: "run" },
     { answers_plan_run_id: "plan", run_id: null },
@@ -123,10 +128,10 @@ describe.skipIf(!sqlite)("thread-history schema v5", () => {
   it("creates a fresh current store with deferred messages and a minimal answer-present index", () => {
     const db = connect();
     ensureSchema(db);
-    expect(ENGINE_SCHEMA_VERSION).toBe(6);
-    expect(readSchemaIdentity(db).userVersion).toBe(6);
+    expect(ENGINE_SCHEMA_VERSION).toBe(8);
+    expect(readSchemaIdentity(db).userVersion).toBe(8);
     expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({
-      value: "6",
+      value: "8",
     });
     seed(db);
     seedDeferredMessages(db);
@@ -145,16 +150,46 @@ describe.skipIf(!sqlite)("thread-history schema v5", () => {
         previousSchema = schema(db);
       ensureSchema(db);
       expect(readSchemaIdentity(db).userVersion).toBe(ENGINE_SCHEMA_VERSION);
-      expect({ ...rows(db), meta: [] }).toEqual({ deferred_message: [], ...before, meta: [] });
+      // Version 7 adds two nullable next-message columns, the nullable dispatch fact of
+      // turns and an empty holder table.
+      const drafts = ((before.deferred_message ?? []) as Record<string, unknown>[]).map((row) => ({
+        ...row,
+        held_revision: null,
+        resumed: null,
+      }));
+      const turns = ((before.turn ?? []) as Record<string, unknown>[]).map((row) => ({
+        ...row,
+        dispatched_at: null,
+      }));
+      expect({ ...rows(db), meta: [] }).toEqual({
+        ...before,
+        deferred_message: drafts,
+        turn: turns,
+        resource_use: [],
+        meta: [],
+      });
       expect(rows(db).meta).toEqual(
         (before.meta as { key: string; value: string }[]).map((row) =>
           row.key === "schema_version" ? { ...row, value: String(ENGINE_SCHEMA_VERSION) } : row,
         ),
       );
-      // Version 6 adds the membership column and rebuilds both group indexes on it.
-      const replaced = new Set(["command", "command_task_group", "command_task_group_state"]);
+      // Version 6 adds the membership column and rebuilds both group indexes on it;
+      // version 7 adds the resource holders and alters the next-message and turn tables;
+      // version 8 adds the question-delivery column and its covering pending index.
+      const replaced = new Set([
+        "command",
+        "command_task_group",
+        "command_task_group_state",
+        "deferred_message",
+        "interaction",
+        "turn",
+      ]);
       const added = new Set([
         ...replaced,
+        "resource_use",
+        "resource_use_owner",
+        "resource_use_sha",
+        "interaction_pending_delivery",
         ...(version < 5 ? ["turn_plan_answer"] : []),
         ...(version === 3
           ? [

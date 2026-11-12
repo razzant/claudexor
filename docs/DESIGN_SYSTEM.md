@@ -76,10 +76,14 @@ Four owner-locked rules every surface obeys:
    plus a whole-chip `.fixedSize()`); chips that render their own label
    (`HarnessChip`, `FilterChip`, `HarnessAccountChip`'s harness segment, the
    receipt identity capsule and attention chip) apply the two modifiers on the
-   label `Text` directly. The ONE documented exception is
-   `HarnessAccountChip`'s account segment: a credential display name (often a
-   long email) is intentionally capped (`maxWidth` + `.truncationMode(.tail)`),
-   which still never wraps — it truncates.
+   label `Text` directly. Two documented exceptions: `HarnessAccountChip`'s
+   account segment, where a credential display name (often a long email) is
+   intentionally capped (`maxWidth` + `.truncationMode(.tail)`) and still never
+   wraps — it truncates; and the option and header chips of the live
+   `InteractionCard`, whose text is harness-authored and of any length: the
+   option row is a `FlowLayout(wrapsWideSubviews: true)`, so a label wider than
+   the card wraps, and the header chip wraps inside the width it is given; both
+   use a chip-radius rectangle instead of a capsule and are never cut.
 
 ---
 
@@ -135,6 +139,14 @@ Harness-family palette (functional color-coding of candidates/findings/routes):
   `harness/agy` and `harness/codex` are the palette's closest pair; agy is pushed toward
   blue and clears AA against `surface/raised` in both themes (6.4:1 dark, 5.1:1 light),
   and no surface ever conveys harness identity by hue alone.
+  A harness without its own hue (OpenRouter, GitHub Copilot, any future id) has separate
+  text and fill colours. Its chip tints, strokes and dots (`Theme.harnessFill`) use
+  `accentSolid`, which reads only 2.6:1 as Dark text. Its text, `harness/fallback`, is the
+  brand steel-blue, lifted in Dark Mode and deepened in Light Mode: 6.3:1 dark and 7.4:1
+  light against `surface/raised`, and at least 5.3:1 dark and 5.7:1 light inside its 13–18%
+  chips on that surface (#545). Those are solid-surface figures. A capsule on a translucent
+  card or on the composer glass sits over whatever the wallpaper puts behind the glass, so its
+  contrast moves with the wallpaper; the ink keeps headroom above 4.5:1 for that reason.
   Used for candidate chips, race lanes, route-proof, per-harness budget, and harness dots.
   These are the ONLY place we use multiple strong hues.
 
@@ -146,6 +158,12 @@ Status semantics (shared across badges, pipeline, lists):
   `status/exhausted` (red/blocked blend), `status/not-converged` (amber),
   `status/unknown` (neutral warning).
 - Always pair color with a glyph + label (never color alone — accessibility).
+- A status colour (`Theme.status`) is the tone's foreground: label text, glyphs and the
+  tinted chips that carry that text. Solid status dots and severity bars use
+  `Theme.statusFill`, which is the same colour except for `status/blocked` in Light
+  Mode: its dots and bars keep the vivid amber, which reads 2.8:1 as text on white,
+  while its text uses a deeper amber ink that clears 4.5:1 on every light surface token
+  and inside its own 10–14% chip tint (#545). Dark Mode uses one amber for both.
 
 **Color discipline (the one rule that keeps it from looking "mixed").** Strong hues are
 *budgeted*: harness hues appear only in harness UI, status hues only on state, and
@@ -277,8 +295,10 @@ disciplines call sites kept getting wrong, so they cannot get them wrong again:
   inline badges) + zero or more detail lines. Every detail is rendered
   **single-line** (`AlignedRowText.singleLine` collapses all whitespace/newline
   runs) with `.truncationMode(.tail)`, and the full text is always reachable via
-  `.help`. A detail can therefore never wrap into fragments that interleave the
-  trailing controls. The identity cell absorbs the row's slack
+  `.help`. The one exception is a call site that bounds a wrap for a fact a single
+  truncated line would hide (`lineLimit`, today only the Accounts refusal detail);
+  it wraps inside its own Grid cell. A detail can therefore never wrap into
+  fragments that interleave the trailing controls. The identity cell absorbs the row's slack
   (`.frame(maxWidth: .infinity, alignment: .leading)` +
   `.gridColumnAlignment(.leading)`).
 - **Trailing controls share a column edge via ONE Grid, owned by the container.**
@@ -565,11 +585,20 @@ frequency and volume are. The contracts:
   measurements. A new gesture or explicit navigation cancels a pending restore.
   Following continues to pin the bottom and ends only on the reader's own upward scroll
   (wheel, trackpad, scroller or keys) or on focus, selection and navigation, never on
-  placement, anchoring or growth. A message never scrolls the feed because its size
-  changed: AppKit's request to keep a resized text view's selection in view, which on
-  macOS 26.6 moves a followed feed to a growing answer's first line, is dropped.
-  Full-prompt sheets own independent prose:
-  they inherit neither the feed registry nor a turn’s selection/focus identity.
+  placement, anchoring or growth. Prose never scrolls because its size changed:
+  AppKit's own reveal from inside a text view's frame change, which on macOS 26.6
+  moves a followed feed to a growing answer's first line, is dropped everywhere,
+  including the one a window's live resize triggers when it ends.
+  Outside the feed (Run details, file previews) a non-empty selection the reader
+  can see keeps its height in the viewport instead. It is captured as scrolling and
+  selection change and restored once a width change settles, outside layout. An
+  insertion point or a selection scrolled out of view repositions nothing (a column
+  that gets shorter is still clamped as usual), and the reader's own scrolling or a
+  new selection cancels a pending restore. A selection, caret or scroll key in another
+  host of a split answer also ends the earlier host's keeping; focus moving on does not.
+  Full-prompt and file-preview sheets own independent prose:
+  they inherit neither the feed registry nor a turn’s selection/focus identity, so
+  Copy message in a preview copies the previewed Markdown.
 - **Per-row readable measure (D-13 C).** The 680pt conversation measure
   (`conversationMeasure()`) is applied PER ROW (each `TurnCard`), not as a
   double-frame around the whole history page; a sidebar drag / width change
@@ -579,7 +608,9 @@ frequency and volume are. The contracts:
   run release their heavy feed and transcript arrays on route/thread change;
   the history page restores settled receipts and answers; explicit workspace
   inspection can read the run timeline (`loadRunDetail`).
-  Live/streaming runs are never evicted.
+  Live/streaming runs are never evicted. A remote run's transcript store holds
+  only its bounded preparation receipts and is released with its location, not
+  per run, so it grows with the remote runs visited until that teardown.
 
 ---
 
@@ -649,7 +680,7 @@ frequency and volume are. The contracts:
     The sidebar's BOTTOM-LEFT
     carries ONE compact accounts control (Claude-Code style, INV-135): a quiet
     single-line trigger — worst-readiness dot + the account name (or "N
-    accounts") + worst quota % + chevron — that opens a popover to manage
+    accounts") + worst account-wide quota % + chevron — that opens a popover to manage
     accounts in-app — no commands to copy. The engine's setupLogin capability
     selects the supported transport: an in-app setup job or an attached external
     terminal. Codex device auth remains in-app; a harness that declares external
@@ -659,7 +690,8 @@ frequency and volume are. The contracts:
     a legacy default-store login appears as the ordinary `<harness>-default`
     row): a readiness dot (ready means that exact source is
     `available + passed`, never aggregate harness health), its name, ONE compact
-    quota line (worst window % + reset), one "Log in" / "Manage" action, an
+    quota line (worst account-wide text window % + reset, or the scoped fallback
+    below), one "Log in" / "Manage" action, an
     **Enabled** toggle that includes/excludes the account from the harness's
     routing pool (a disabled account is never routable; there is NO user-settable
     "active" account — an unpinned run routes through the quota-aware pool of
@@ -697,6 +729,15 @@ frequency and volume are. The contracts:
     api_key_route`); an unpinned composer chip stays
     "Automatic" because next-up may rotate. Auth remains the key management surface.
 
+    The compact quota line's percent comes from the worst account-wide text
+    window, the only kind the trigger's percent reads. An account that reports
+    no account-wide text window shows its worst measured model-scoped text
+    window instead, with that scope after the percent. If that window's own
+    snapshot is not fresh, the line starts with "Last known: ". Existing
+    resource-status overrides, scoped-limit warnings, exhausted/cooling-down
+    lines, readiness and routing are unchanged. A narrow row can truncate the
+    line; hover help and the Resources window list keep the full scope.
+
     A current credential-wide refusal uses that same compact readiness status and
     its detail, retaining the account name, email and last-known quota. A refusal
     scoped to one model does not mark the whole row failed; the engine applies it
@@ -707,9 +748,20 @@ frequency and volume are. The contracts:
     row adds at most two quiet detail lines from that separate read:
     "Recent refusal · <model>, …" (caution) for its live pre-progress refusal
     marks and "Last served · <model> · <age>; …" for its latest service per
-    requested model, the harness default labelled "default model". They are
-    ordering evidence, not readiness: they never change the status dot, the
-    Enabled control or the row order. The evidence is held apart from the
+    requested model, the harness default labelled "default model". A live typed
+    refusal of one model on the row (`credentialUnusable`, asked for with
+    `includeCredentialUnusable=true`; an engine that answers 400 is read once
+    more without it, and no other failure is retried) leads the same refusal
+    line as a dated observation, "<model> (<vendor reason or typed code>, <age>)",
+    most recent first, and absorbs a pre-progress mark of that same model. So the
+    ordinary row states the model, reason and age, this line alone wraps within
+    the identity cell, to at most three lines; beyond that it truncates and hover
+    help keeps the full text. It never reads as "unavailable", and a
+    credential-wide refusal stays in the readiness status instead. A pre-progress
+    mark and last service only order the pool; a typed refusal makes routing
+    refuse that account for exactly that model until it clears. None of them is
+    readiness: they never change the status dot, the Enabled control or the row
+    order. The evidence is held apart from the
     profile rows, so an Enabled PATCH keeps it; an engine without the read shows
     nothing new; a failed read shows one caption notice and never hides or fails
     the rows. Only the newest read of a location publishes (an older one
@@ -879,7 +931,23 @@ frequency and volume are. The contracts:
   A queued button action retains its displayed pair and cannot adopt a later
   poll's offer. If replacement proof fails, canonical offline cleanup retires
   stale projections and discovery keeps waiting for a late engine without a
-  second fallback launch.
+  second fallback launch. When the selected runtime did not come up and the
+  previous build was restarted from its saved copy (see ARCHITECTURE), the
+  notice names both builds, says the previous engine was restarted (never
+  restored) and when the selected one is tried again: at that engine's exit,
+  after a reopen for a newer version, or through this button for a build of the
+  same version. Passive polls and Reconnect keep it, and this button stays
+  limited to builds of one version. When no engine serves after such a failure,
+  including an engine this app started that stopped answering before it was
+  used, the Offline placeholder shows the reason, says that Claudexor keeps
+  checking but will not start an engine on its own, and offers **Retry**, the
+  same action as Reconnect; an ordinary outage keeps the automatic-reconnect
+  wording. One `LocalEngineRetry` owner decides that offer for both surfaces:
+  when remote connections or cached remote threads keep the thread screen, the
+  sidebar notice is shown whole with the same explanation and a mini Retry. A
+  restarted copy that answers only in recovery mode shows Connecting with the
+  reason and the exact operator stop for the app's own engine root, selectable
+  for Terminal; Retry appears once that engine is gone.
   Installation disables it with an explanatory tooltip. It never grants a
   downgrade or makes passive polling switch builds. Newer or unorderable serving
   versions retain the compatible connection with an explanatory notice.
@@ -901,8 +969,13 @@ views in the shared design-system files; screens compose them.
   3. ONE persistent RECEIPT row — status glyph · harness identity · quiet state
      word · outcome/attention chip when present · live elapsed · cash-$ · the
      tool/file counter «9 tools · 3 files» · an expand chevron. Attention states
-     raise ONE loud chip only when they exist ("Needs your answer" > the red
-     terminal label); success carries no chip. The WHOLE receipt row is the
+     raise ONE loud chip only when they exist ("Needs your answer" for a blocking
+     question > "Needs input"/"Incomplete" for a succeeded run whose attested `work_state` is
+     unfinished, whatever its reason > "Needs you" for a review decision > the
+     red terminal label); success carries no chip. The status dot follows: caution
+     for unfinished work, a blocked review or failed checks, decided or not,
+     neutral beside a reason this build has no words for, which the state word
+     spells from its code. The WHOLE receipt row is the
      click target → it toggles the inline activity transcript (auto-expanded
      while the run is active, collapsed after unless the user pins it: progress
      never disappears, it becomes the log). A trailing "workspace" affordance
@@ -947,7 +1020,24 @@ views in the shared design-system files; screens compose them.
     `TranscriptPresentation`): one line per tool (status glyph + typed-kind
     icon + humane title — a command shows its binary's basename, the full
     command line is the subtitle); a FAILED tool stands alone and carries its
-    error summary (or "exit N") as a second dimmed line; runs of MORE THAN
+    error summary (or "exit N") as a second dimmed line; an UNCONFIRMED command
+    (handed to a background shell, timed out, a completion reported without an
+    exit code, or an unknown outcome) never shows the success check: it stands
+    alone with the amber warning triangle
+    (`exclamationmark.triangle.fill`, caution tone) and its typed
+    state as a second secondary line («Handed off to background after its 30s
+    timeout; completion not observed · shell 3 · pid 4242»), worded by the
+    engine's command-outcome label. A result lands on its own try's call of its
+    tool-use id; one whose call never arrived gets its own row and never closes
+    another open call, and an id-less result closes only the one open id-less call
+    of its exact name in its try when the name fits the existing tool-field limit.
+    Longer names are shown bounded but left unpaired, never matched by a clipped prefix.
+    A later `command_outcome_refined` status updates that same row in place,
+    found by its try and exact tool-use id and never by name
+    («Completion reported; exit code unknown · handed off to background
+    after its 30s timeout · shell 3 · pid 4242», or «Completion reported
+    (error); …» for a negative report); it adds no row, keeps the caution tone,
+    can never turn the row green and leaves other rows untouched; runs of MORE THAN
     THREE consecutive same-name OK tools collapse into one quiet group row
     («Read · 6 calls»); thinking is a single timer row («◐ Thinking · 12s» —
     the reasoning text and full tool output live only in the inspector); zero
@@ -957,7 +1047,13 @@ views in the shared design-system files; screens compose them.
     answer bubble); typed `status` events (e.g. claude api_retry) fold into
     the status line's state word, never the reasoning disclosure; with
     `stream_deltas` the current message grows live and the complete text
-    replaces it. Agent images render inline ONLY inside the thread's
+    replaces it. Each physical try (attempt, harness and session) is its own
+    stream: its typed final seals only that stream, and concurrent candidates'
+    text never joins; a typed `native_turn_started` status (Claude's next turn
+    in the same session) reopens only that stream. Text of a speech the harness
+    states abandoned (Claude's text before an API retry) stays as streamed, and
+    a keyed complete text replaces only a block holding just its own speech.
+    Agent images render inline ONLY inside the thread's
     repoRoot / run dir (canonical-path scope, bounded decode, disclosed
     refusal outside the scope). Local file links use the same gate: safe formats
     open from a staged snapshot in Markdown/source/Quick Look, unsupported in-scope files
@@ -1168,11 +1264,42 @@ views in the shared design-system files; screens compose them.
   (`pending/finalizing/ready/diagnostic`), requested/effective access, web policy,
   web evidence (`none/attempted/satisfied/failed/unverified`), tool errors,
   budget source, artifact path, and route fallback. Badges are projections of
-  Control API fields, not UI-invented state. Raw wire strings are humanized
-  ("Web verified", not `satisfied`); `unverified` web evidence gets a distinct
-  warning treatment from a benign `attempted`; telemetry-unavailable runs say
-  so instead of guessing. Engine-typed event severity (info/warning/error)
-  tints timeline rows.
+  Control API fields, not UI-invented state. Raw wire strings are humanized;
+  `satisfied` reads "Web verified" (success tone) only for a verified page
+  (`webEvidence.verification` `verified` with `verifiedContent` `page`, or an older
+  record that does not say which), "Web searched" (success tone) for verified search
+  results, which are not a fetched page, "Web reached" (neutral) for a web call
+  without a typed result, and "Web tools used" (neutral) when completed web tools
+  retrieved nothing (a Browser close or click) or the engine sent no strength. `unverified` web evidence gets a distinct warning treatment
+  from a benign `attempted`; telemetry-unavailable runs say so instead of
+  guessing, and so does Diagnostics (and Copy Diagnostics, which carries the same
+  text): it keeps the requested mode and requirement and prints
+  `observed: unavailable` instead of the placeholder observation values. A Web Off
+  run without web evidence shows "Web tools off" (`network.slash`)
+  only when a route reported a native session under the off switch; otherwise
+  "Web Off requested", because a request alone proves no tool was switched off.
+  Every web badge's help separates what was requested, what was observed (or that
+  telemetry is missing), each route's own web switch from `routeControls` ("prepared
+  only" when no native start was reported), whether the engine Browser was handed to
+  it, and, when the engine states it, that evidence counts tool calls and network
+  traffic is not measured. The access badge reads the access label plus one qualifier
+  from the routes that reported a native session ("vendor sandbox", "no OS file
+  boundary declared", "harness settings" for `inherit_native`, or "OS boundary varies
+  by route") and no qualifier when none did. Its help names each route's native
+  setting, mechanism and, only where recorded, its HOME ("Claudexor-owned" or "not
+  scoped by Claudexor", never "your own"), and never says "enforced". The Browser
+  badge (`globe`, neutral tone) keeps an admission refusal as resolved ("browser
+  unavailable (<reason>)"); otherwise it states what the harness's routes reported
+  about the Browser's startup (#215): "browser prepared" when nothing was reported
+  or the engine sends no such fact, "browser ready", "browser startup failed",
+  "browser startup cancelled" or "browser startup unconfirmed" (still starting
+  when the hold ended, or no status), the least confirmed one when routes differ.
+  "ready" is Codex's own startup state, never a claim that the Browser worked, and
+  no state reads as a failed run. Its help adds each route's report ("ready before
+  the first model request", "failed to start: <reason>", "still starting after N
+  s") or "startup not reported".
+  `RouteControlsPresentation` is their one presenter. Engine-typed event
+  severity (info/warning/error) tints timeline rows.
 - **Read-only report surfaces.** Ask (the answer, or the `--deep-scan` research
   sweep) primary output appears in
   Outcome as markdown. Technical artifacts (`context/task.yaml`, `events.jsonl`)
@@ -1231,7 +1358,9 @@ views in the shared design-system files; screens compose them.
   - "Override needs-human" → `override_needs_human`, destructive-styled with
     an explicit confirmation dialog (it unblocks apply past a needs-human
     escalation; a mutated patch invalidates the override).
-  Apply is offered through the server-gated apply bar once unblocked. The
+  On unfinished work (an attested `needs_input` or `incomplete` `work_state`) the
+  engine refuses both risk decisions before it looks at review or checks, so the
+  bar offers only Rerun. Apply is offered through the server-gated apply bar once unblocked. The
   unblocked state is server-derived (a persisted decision from ANY surface
   collapses the bar) — never a local accept/unblock flag. The turn's
   apply-state is shown honestly: `applied` is green and includes **not reviewed**
@@ -1251,7 +1380,41 @@ views in the shared design-system files; screens compose them.
   the run's TYPED failure category as a small chip; diagnostics preserve any
   machine-readable failure sub-code, including Delegate child-drain timeout.
   The auth route the turn actually ran under comes from the route receipt —
-  never inferred from prose.
+  never inferred from prose. A request the engine refused before sending
+  (`RunFailure.code` `raw_context_exceeds_window`,
+  `raw_context_mandatory_unavailable`, `model_catalog_unavailable`, now meaning a
+  missing or rejected API key, or `model_selection_required`, no model chosen for
+  the harness) shows the card even when a
+  transcript exists, headed by `RunFacts.refusal` with a raised-hand glyph. The
+  labels describe the refused request only: "Not sent: …", or "Retry not sent: …"
+  when the record's typed `poolAttempts` lists earlier tries that failed after
+  dispatch. A row does not say whether its request reached the provider (a
+  connection that never opened is a row too), so no label calls an earlier try
+  sent, and none says nothing in the run was. The same code adds one
+  failure-toned run fact, and the receipt's attention chip reads "Not sent" or
+  "Retry not sent" instead of the generic failed reason. An over-window refusal
+  whose record carries `rawContextShortfall` (#147) replaces the paragraph with
+  one summary line built from those typed sizes (the model's window, the
+  request's total, and its parts: mandatory files, the rest of the request, the
+  room kept for the answer, so they add up; then "This request was not sent." or
+  "This retry was not sent; N earlier tries failed."), a two-column table of the
+  five largest mandatory files (paths in the code face, ≈ estimates on the right
+  edge, a closing "N more files" row with the remainder) and the record's typed
+  `nextActions` as arrow lines; the engine's complete message is the summary's
+  hover help. Without those sizes the body stays the engine's message verbatim.
+  A refused raw-API patch (`RunFailure.code` `raw_patch_*`) is no such refusal:
+  the same code can follow an answer the provider was paid for, so its card keeps
+  the failure triangle and is headed "Patch refused: …" naming what was wrong
+  (`RunFacts.patchRefusalTitle`), never "Not sent" and never a claim that it was
+  paid; the attempt's usage evidence says what was sent.
+  The raw-API request the final attempt last prepared adds two compact run facts
+  from the run summary's typed `rawContext`, which is receipted just before the
+  POST, so its help says "prepared", never "sent": "Context ≈159k of 200k tokens
+  · estimated" against a window the
+  catalog gave for that model ("… · window unknown, assumed 200k" in the
+  warning tone when none was known), and "N optional files left out" when the
+  budget omitted any; their hover help says the figures are characters ÷ 4
+  estimates. Nothing is read from the adapter's status sentence.
 - **Delegate outcome + child rows.** A requested Delegate run that the engine
   continued before injection renders a persistent amber “Done with warnings ·
   continued without Delegate” receipt with the typed cause and remedy; it is
@@ -1320,6 +1483,19 @@ views in the shared design-system files; screens compose them.
   already-submitted answer as a read-only receipt from the durable answer-turn
   relation. Implement is a separate Agent action: its row names the effective
   write scope before the click and the request is bound to that disclosed scope.
+- **Live question card (`InteractionCard`).** A harness's mid-run questions
+  render in their own card (an async question's header says the agent keeps
+  working and its expiry sends nothing), which keeps its header row and Send action fixed
+  around the same max-height middle as plan question cards. Questions, header
+  chips and option labels appear in full, exactly as asked: a long option label
+  wraps inside its chip, a long header chip wraps too, a header that does not fit
+  beside its question sits above it, long content scrolls, and a short question
+  keeps a compact card. Option descriptions show on hover. Each question takes
+  its chips or one line of the operator's own words, and Send is enabled once any
+  question has an answer: unlike the plan card there is no all-required gate, so
+  questions left empty are sent as a partial answer. A run that has ended shows no
+  card and no question state, even while its last snapshot still lists a question;
+  a late answer the engine refuses says plainly that it was not sent.
 - **Budget cockpit (Settings tab).** Spend, circuit breaker, portfolio weights,
   pre-exhaustion warnings — a Settings tab, not a top-level screen; the live per-run meter
   rides the receipt row.
@@ -1479,7 +1655,8 @@ views in the shared design-system files; screens compose them.
   (or another positive finite number of minutes), or **No automatic expiry**.
   The latter persists the existing `interaction_timeout_ms` as `null`; it has no
   blank/reset or magic-duration representation. A pending `InteractionCard`
-  shows its finite countdown or the literal "No automatic expiry". Answer,
+  shows its finite countdown (updated when its words change) or the literal
+  "No automatic expiry". Answer,
   Stop/cancel, an outer run deadline, terminal cleanup, or daemon restart can
   still end an unbounded wait.
 - **Connections (remote execution locations).** The Connections tab lists the
@@ -1540,8 +1717,12 @@ views in the shared design-system files; screens compose them.
   guessing.
 - **Harness chips.** Chips reflect Gateway status for the active mode intent. A
   harness that is not installed, not authenticated, degraded without the required
-  intent, or unable to enforce read-only is visible but disabled, with a hover
-  reason and a path to Harness Doctor/Auth setup.
+  intent, or unable to apply read-only is visible but disabled, with a hover
+  reason and a path to Harness Doctor/Auth setup. An explicit chip reads the
+  status's `enabledIntents` (the app's `HarnessInfo` keeps it as `intents`), so
+  a degraded harness that still enables the intent stays selectable and shows
+  its degradation reason; `routableIntents` answers only whether the Auto pool
+  may choose the harness.
 - **Onboarding.** First run is native-first: explain native auth for Codex,
   Claude, Cursor, and Antigravity
   and expose daemon-owned native-login jobs, then offer API-key fallback
@@ -1562,6 +1743,20 @@ views in the shared design-system files; screens compose them.
   setup complete, or skip, but it must not invent app-only auth state. Offline or unimplemented
   surfaces show honest empty states — there is no sample/demo data mode; every surface
   reflects live engine truth.
+- **Key allowance.** When the engine negotiates API-key rows and publishes one for the
+  family, the Auth sheet shows a **Key allowance** panel after the API-key field.
+  Key entry comes first so a growing allowance list cannot push keyboard focus out
+  of view. Each key a request can send has one block (default first); each block
+  names its key except a lone default key, so a lone registered key stays distinct. A block
+  shows the cadence title ("Monthly key limit"), "$37.66 left of $50.00" with a native
+  progress bar of the spent share, then spend for the window, the reset and the read age
+  ("read 2m ago"). No cap reads "No limit set" with no bar; a key never read reads "Not
+  read yet"; older or failed data keeps "Last known:" figures and one caution-glyph line
+  with the read age and plain cause. Dollars keep the provider's digits (whole cents
+  padded, never rounded to zero). One scope sentence says the limit is not the account
+  balance and never affects routing. **Refresh** reads exactly the shown keys;
+  `KeyAllowancePresentation` owns the vocabulary and `KeyAllowancePanel` is the leaf.
+  The API-key field stores on Return like **Store Key**.
 
 ### 5.1 Component contracts (SSOT for the smallest details)
 
@@ -1578,6 +1773,11 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   prominent action). SOLID `accentSolid` capsule + white text (NOT system
   `.glassProminent`, which can vanish on light-mode glass); dims to
   `accentSolid.opacity(0.35)` when disabled.
+- **System prominent buttons** (`.borderedProminent`) always carry
+  `.tint(Theme.accentSolid)`. Their label is white, so the fill must be the solid fill
+  token: in a key window white reads 6.4:1 on it in Light and 4.6:1 in Dark, against
+  5.5:1 and 3.1:1 on the window's root tint `Theme.accent`, which stays the
+  tint/link colour (#545).
 - **`ComposerInputCopy` — composer copy truth (QA-012).** The composer's
   placeholder + accessibility strings key ONLY on whether a thread is selected,
   and tell the truth about what Send does: a DRAFT reads "…the first message
@@ -1684,6 +1884,34 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   mid-string, and every menu item renders through `HarnessModelPresentation.menuTitle`
   (one capped "label (id)" derivation, middle ellipsis) — the OPEN `Picker` menu is an
   NSMenu sized by its widest item, which no closed-control frame can bound (issue #53).
+- **Model catalog problems and declared input (#393, #146).** A models response
+  with `problem` (code `model_catalog_unavailable`) is a failed live read, not an
+  empty catalog: the composer row says "Catalog unavailable" (Retry only when the
+  problem is `retryable`), the Settings model override shows its existing "model
+  catalog unavailable" state (never "not in this harness's model list"), the hover
+  carries the engine's message and says a run sends the stored model unverified
+  unless the API key is missing or rejected (#393 decision A), and the next
+  appearance reads it again.
+  `HarnessModel.input_modalities` and `max_output_tokens` decode verbatim;
+  absent means unknown. When an image is attached and a presented
+  lane's selected (or configured default) model has a cached catalog row that
+  declares input modalities without `image`, the composer adds one non-blocking
+  line naming the model and its declared input. A selected routing variant
+  (`m:nitro`) finds its listed row through the `routingVariants` the same models
+  response declares, never by guessing at the name. Unknown metadata adds
+  nothing, and nothing is fetched for the note.
+- **`HarnessPoolSection` (composer "⋯" harness pool, #133).** The Auto chip and
+  the harnesses whose `routableIntents` contain the intent form the first row.
+  Harnesses whose `enabledIntents` (`HarnessInfo.intents`) contain it but whose
+  `routableIntents` do not sit under a quiet "Manual only — Auto won't pick these"
+  caption as ordinary `FilterChip`s, each with the doctor's first reason verbatim
+  on its own line. Selecting one from Auto makes Auto's harnesses plus that one the
+  thread's explicit pool (`HarnessPoolPresentation.toggling` keeps ids outside
+  Auto's set), which the engine runs as an explicit selection. A project-scoped
+  Ask or Plan on a harness whose manifest declares `read_files: false` is disabled with a
+  visible line ("Can't read project files. Ask without a project, or choose a
+  harness that reads files."), matching the engine's pre-dispatch refusal;
+  not-installed or otherwise blocked harnesses keep their hover reason.
 - **`composerGlass()`** — the floating-panel glass modifier: static `.glassEffect(.regular)`
   (NOT `.interactive()` — see §3.1) with a `surfaceRaised` solid fallback under Reduce
   Transparency. Chrome only.
@@ -1691,9 +1919,17 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   ONE capsule with two menu segments. The harness segment (brand mark + label + chevron `Menu`)
   switches the thread's sticky primary harness (a change applies from the next turn); the
   account segment shows the thread's pinned profile or the stable label "Automatic"; the shared
-  AccountsSurface owns the computed next-up disclosure. Picking pins the thread's credential profile
+  AccountsSurface owns the computed next-up disclosure. Both segment labels use the primary
+  label colour, applied as each Menu's `.tint`: a borderless `Menu` draws its label in the
+  tint and ignores `foregroundStyle`, so without it the labels drew the root accent. The
+  harness identity rides the monochrome brand mark, the name and the family-fill capsule; a
+  pin reads semibold beside its pin glyph. Picking pins the thread's credential profile
   (the per-thread override — the accounts popover owns the global Enabled set that next-up routing
-  draws from).
+  draws from). Inside an Auto pool the harness segment is a preference, not an explicit
+  selection: the request carries only `primaryHarness`, and when the engine runs another harness
+  the receipt's `route.primary.diverged` note says why. For `readiness_preferred` it reads
+  "preferred X → ran on Y. Auto runs only ready harnesses;" followed by the engine's detail (the
+  doctor's reason) verbatim, so it never implies a strict choice was overridden.
 
 - **Titles / H1.** Headed surfaces (Settings tabs) use the shared title recipe
   (`.title2.weight(.bold)` + optional `.callout` secondary subtitle); never
@@ -1719,7 +1955,9 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   optional leading SF Symbol `.imageScale(.small)`, optional trailing count `.caption2`
   semibold secondary; padding horizontal `Spacing.md` / vertical `Spacing.sm`; selected fill
   via `selectedChip(active:tint:)`. `tint` defaults to `accent`; pass a status/severity color
-  ONLY when the chip *is* that status/severity. The row that hosts the chips
+  ONLY when the chip *is* that status/severity. A harness chip passes its text colour as
+  `tint` and `fill: family.fill`, which draws the selected background and outline. The
+  row that hosts the chips
   owns the gutter (token spacing, not per-chip margins). Never hand-roll a chip
   with a different font/padding.
 - **Toolbar.** There is exactly ONE window toolbar, defined in `RootView`
@@ -1827,6 +2065,13 @@ thread (the Counter Lab long thread) and stand in for the deterministic gates:
   no unbounded growth (the nested `LazyVStack`-in-`LazyVStack` loop). The
   deterministic backstop is `expandedTranscriptReadPathIsAlwaysReducerCapped`
   (the rendered array is reducer-capped at 200 blocks).
+- **A selected passage survives a narrower inspector or preview (#520).** In Run
+  details select a sentence low in the answer, then drag the inspector divider to
+  its narrowest width and back: once each drag settles the selection is at the same
+  height again. Repeat without a selection (no selection-driven repositioning; a
+  shorter answer may still clamp the offset as before), with a selection scrolled
+  out of view (no pull back), and in a Markdown file preview with legacy scroll bars
+  at its minimum width.
 - **Sidebar drag / width change stays smooth (D-13 C/E).** Drag the sidebar
   resize handle across a long thread: the scroll position stays anchored and the
   whole column does not visibly reflow as one unit (per-row measure), and a

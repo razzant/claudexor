@@ -12,17 +12,13 @@ import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   brokenInstallAdvisory,
-  embeddedNpmCli,
   harnessBinaryIdentity,
   harnessBinaryIdentityOnPath,
   managedNodeRoot,
   managedRunnerNodeDir,
-  managedWindowsNativeImageDirs,
   normalizedHarnessPath,
   npmGlobalPackagesDir,
   resolveHarnessBinary,
-  windowsNativeImageDir,
-  windowsNativeImageSegments,
 } from "./runtime-env.js";
 
 /** Windows starts a `.exe`/`.com` only with the PE shape: `MZ`, then `PE\0\0` at e_lfanew. */
@@ -43,7 +39,7 @@ describe("resolveHarnessBinary", () => {
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   function fakeBin(dir: string, name: string): string {
     mkdirSync(dir, { recursive: true });
@@ -90,14 +86,6 @@ describe("resolveHarnessBinary", () => {
     const env = { HOME: home, PATH: onlyDir } as NodeJS.ProcessEnv;
     expect(resolveHarnessBinary("claude-x", env)).toBe(bin);
     expect(resolveHarnessBinary("missing-bin", env)).toBeNull();
-  });
-
-  it("resolves Cursor's vendor-owned ~/.cursor/bin destination", () => {
-    const home = join(root, "cursor-home");
-    const cursorBin = join(home, ".cursor", "bin");
-    const installed = fakeBin(cursorBin, "cursor-agent");
-    const env = { HOME: home, PATH: "" } as NodeJS.ProcessEnv;
-    expect(resolveHarnessBinary("cursor-agent", env, "/no/such/node")).toBe(installed);
   });
 
   it("passes absolute paths through only when they exist", () => {
@@ -364,7 +352,7 @@ describe("managedRunnerNodeDir (QA-022 grandchild-shell Node anchor)", () => {
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   function fakeNode(dir: string): string {
     mkdirSync(dir, { recursive: true });
@@ -463,111 +451,15 @@ describe("managedRunnerNodeDir (QA-022 grandchild-shell Node anchor)", () => {
   });
 });
 
-describe("Windows npm layout and the package-native image (issue #191)", () => {
-  let root: string;
-
-  beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "runtime-env-win-"));
-  });
-
-  afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  it("spells npm's global prefix layout and the embedded npm-cli.js once per platform", () => {
+describe("existing npm prefix layout", () => {
+  it("locates old packages for launcher proof without an image allowlist", () => {
     expect(npmGlobalPackagesDir("/p", "linux")).toBe(join("/p", "lib", "node_modules"));
-    expect(npmGlobalPackagesDir("/p", "darwin")).toBe(join("/p", "lib", "node_modules"));
     expect(npmGlobalPackagesDir("/p", "win32")).toBe(join("/p", "node_modules"));
-    expect(embeddedNpmCli("/runtime/node/bin/node", "linux")).toBe(
-      join("/runtime", "node", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    const home = "/example/home";
+    const entries = normalizedHarnessPath({ HOME: home, PATH: "" }, "/absent/node", "win32").split(
+      delimiter,
     );
-    expect(embeddedNpmCli("/runtime/node/node.exe", "win32")).toBe(
-      join("/runtime", "node", "node_modules", "npm", "bin", "npm-cli.js"),
-    );
+    expect(entries).toContain(managedNodeRoot(home));
+    expect(entries.some((entry) => entry.includes("node_modules"))).toBe(false);
   });
-
-  it("knows the codex platform package image dir per architecture and nothing else", () => {
-    expect(windowsNativeImageSegments("@openai/codex", "x64")).toEqual([
-      "@openai",
-      "codex",
-      "node_modules",
-      "@openai",
-      "codex-win32-x64",
-      "vendor",
-      "x86_64-pc-windows-msvc",
-      "bin",
-    ]);
-    expect(windowsNativeImageSegments("@openai/codex", "arm64")).toEqual([
-      "@openai",
-      "codex",
-      "node_modules",
-      "@openai",
-      "codex-win32-arm64",
-      "vendor",
-      "aarch64-pc-windows-msvc",
-      "bin",
-    ]);
-    // No verified layout: an unsupported architecture, or a pin whose platform
-    // package layout was never read from the real package.
-    expect(windowsNativeImageSegments("@openai/codex", "ia32")).toBeNull();
-    expect(windowsNativeImageSegments("@anthropic-ai/claude-code", "x64")).toBeNull();
-    expect(windowsNativeImageSegments("opencode-ai", "x64")).toBeNull();
-    expect(windowsNativeImageDir("/prefix", "@openai/codex", "x64")).toBe(
-      join(
-        "/prefix",
-        "node_modules",
-        "@openai",
-        "codex",
-        "node_modules",
-        "@openai",
-        "codex-win32-x64",
-        "vendor",
-        "x86_64-pc-windows-msvc",
-        "bin",
-      ),
-    );
-    expect(windowsNativeImageDir("/prefix", "@anthropic-ai/claude-code", "x64")).toBeNull();
-    expect(managedWindowsNativeImageDirs("/home/u", "x64")).toEqual([
-      windowsNativeImageDir(managedNodeRoot("/home/u"), "@openai/codex", "x64"),
-    ]);
-    expect(managedWindowsNativeImageDirs("/home/u", "ia32")).toEqual([]);
-  });
-
-  it("puts the managed npm prefix before the legacy native image fallback on win32 only", () => {
-    const home = join(root, "home");
-    const env = { HOME: home, PATH: "" } as NodeJS.ProcessEnv;
-    const win = normalizedHarnessPath(env, "/no/such/node", "win32", "x64").split(delimiter);
-    const managedBin = join(managedNodeRoot(home), "bin");
-    const imageDir = windowsNativeImageDir(managedNodeRoot(home), "@openai/codex", "x64")!;
-    expect(win.indexOf(managedNodeRoot(home))).toBe(win.indexOf(managedBin) + 1);
-    expect(win.indexOf(imageDir)).toBe(win.indexOf(managedNodeRoot(home)) + 1);
-    for (const platform of ["darwin", "linux"] as const) {
-      const posix = normalizedHarnessPath(env, "/no/such/node", platform, "x64");
-      expect(posix.split(delimiter).some((entry) => entry.includes("node_modules"))).toBe(false);
-    }
-  });
-
-  it("resolves a bare `codex` to the package-native codex.exe, never the npm shim", () => {
-    const arch = process.arch;
-    const home = join(root, "home");
-    const prefix = managedNodeRoot(home);
-    const imageDir = windowsNativeImageDir(prefix, "@openai/codex", arch);
-    if (imageDir === null) return; // no verified image for this host architecture
-    // npm's own Windows layout: shims in the prefix root, no image anywhere.
-    fakeBin(prefix, "codex");
-    fakeBin(prefix, "codex.cmd");
-    const env = { HOME: home, PATH: "" } as NodeJS.ProcessEnv;
-    expect(resolveHarnessBinary("codex", env, "/no/such/node", "win32")).toBeNull();
-    const image = fakeBin(imageDir, "codex.exe");
-    expect(resolveHarnessBinary("codex", env, "/no/such/node", "win32")).toBe(image);
-    expect(harnessBinaryIdentityOnPath("codex", imageDir, "win32")?.path).toBe(realpathSync(image));
-  });
-
-  function fakeBin(dir: string, name: string): string {
-    mkdirSync(dir, { recursive: true });
-    const p = join(dir, name);
-    writeFileSync(p, /\.(?:exe|com)$/i.test(name) ? windowsImage() : "#!/bin/sh\nexit 0\n");
-    chmodSync(p, 0o755);
-    return p;
-  }
 });

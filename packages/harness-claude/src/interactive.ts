@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ChildStdin, InteractionChannel } from "@claudexor/core";
+import type { ChildStdin, ChildStdinSend, InteractionChannel } from "@claudexor/core";
 import { readVerifiedAttachmentBytes } from "@claudexor/core";
 import type {
   HarnessEvent,
@@ -8,7 +8,13 @@ import type {
   InteractionQuestion,
   InteractionRequest,
 } from "@claudexor/schema";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { interactionAnswerContent, interactionAnswerSetViolation } from "@claudexor/schema";
+import { displayPreview, nowIso } from "@claudexor/util";
+import {
+  questionUnavailableEvent,
+  unavailableDenyMessage,
+  type NativeQuestionIds,
+} from "./question-outcome.js";
 
 type Json = any;
 
@@ -44,6 +50,12 @@ export function isControlRequestFrame(obj: Json): boolean {
 
 export function isResultFrame(obj: Json): boolean {
   return obj?.type === "result";
+}
+
+/** A result that ends its turn successfully: subtype `success` (or none) and
+ * not `is_error` (a `prompt_too_long` error result is still labelled success). */
+export function isSuccessResultFrame(obj: Json): boolean {
+  return isResultFrame(obj) && (!obj.subtype || obj.subtype === "success") && obj.is_error !== true;
 }
 
 /** A Claude stream-json image content block (base64 source). Claude carries
@@ -124,53 +136,69 @@ export function initialUserMessageFrame(
 export function initialSessionFrames(
   prompt: string,
   attachments: ClaudeAttachmentBlock[] = [],
+  promptUuid: string = randomUUID(),
 ): string {
   const initialize = JSON.stringify({
     type: "control_request",
     request_id: CLAUDE_INIT_REQUEST_ID,
     request: { subtype: "initialize" },
   });
-  return initialize + "\n" + initialUserMessageFrame(prompt, attachments);
+  return initialize + "\n" + initialUserMessageFrame(prompt, attachments, promptUuid);
 }
 
-/** Map the native AskUserQuestion input into the typed InteractionRequest. */
+/** Map the native AskUserQuestion input into the typed InteractionRequest.
+ * Question, header, option label and description are the native text exactly,
+ * whatever their length: every answering surface shows what the model asked
+ * and a selected label goes back byte-identical (INV-146). */
 export function interactionRequestFromNative(requestId: string, input: Json): InteractionRequest {
   const rawQuestions: Json[] = Array.isArray(input?.questions) ? input.questions : [];
   const questions: InteractionQuestion[] = rawQuestions.map((q, idx) => ({
     id: `q${idx + 1}`,
-    question: redactSecrets(String(q?.question ?? "")).slice(0, 2000),
-    header: typeof q?.header === "string" ? redactSecrets(q.header).slice(0, 100) : null,
+    question: String(q?.question ?? ""),
+    header: typeof q?.header === "string" ? q.header : null,
     options: (Array.isArray(q?.options) ? q.options : []).map((o: Json) => ({
-      label: redactSecrets(String(o?.label ?? "")).slice(0, 500),
-      description:
-        typeof o?.description === "string" ? redactSecrets(o.description).slice(0, 1000) : null,
+      label: String(o?.label ?? ""),
+      description: typeof o?.description === "string" ? o.description : null,
     })),
     multi_select: q?.multiSelect === true,
   }));
-  return { interaction_id: requestId, questions, source_tool: "AskUserQuestion" };
+  // AskUserQuestion holds its tool call until the control_response arrives.
+  return {
+    interaction_id: requestId,
+    questions,
+    source_tool: "AskUserQuestion",
+    delivery: "blocking",
+  };
 }
 
 /**
- * Build the allow control_response carrying the user's answers.
+ * Build the allow control_response carrying the user's answers, or null when
+ * the set answers nothing: an explicit decline (no rows) or a set this request
+ * cannot accept (`interactionAnswerSetViolation`) is never sent as an allow.
  * Per the documented contract, `answers` maps the QUESTION TEXT to the
  * selected label, multi-select labels joined with ", ", free text passed
- * through verbatim.
+ * through verbatim. The key is the native question text, so a long question
+ * still matches its answer.
  */
 export function allowResponseFrame(
   requestId: string,
   nativeInput: Json,
   request: InteractionRequest,
   answers: InteractionAnswerSet,
-): string {
+): string | null {
+  if (answers.answers.length === 0 || interactionAnswerSetViolation(request, answers)) return null;
   const byId = new Map(answers.answers.map((a) => [a.question_id, a]));
   const answerMap: Record<string, string> = {};
-  for (const q of request.questions) {
+  const nativeQuestions: Json[] = Array.isArray(nativeInput?.questions)
+    ? nativeInput.questions
+    : [];
+  for (const [index, q] of request.questions.entries()) {
     const a = byId.get(q.id);
-    if (!a) continue;
-    const labels = a.selected_labels.filter((l) => l.trim().length > 0);
-    const value =
-      a.free_text && a.free_text.trim().length > 0 ? a.free_text.trim() : labels.join(", ");
-    if (value) answerMap[q.question] = value;
+    const content = a ? interactionAnswerContent(a) : null;
+    if (!content) continue;
+    const native = nativeQuestions[index]?.question;
+    answerMap[typeof native === "string" ? native : q.question] =
+      content.freeText ?? content.labels.join(", ");
   }
   return (
     JSON.stringify({
@@ -187,7 +215,7 @@ export function allowResponseFrame(
   );
 }
 
-/** Deny control_response: benign decline; the model continues with assumptions. */
+/** Deny control_response: the model continues without an answer; `message` tells it why. */
 export function denyResponseFrame(requestId: string, message: string): string {
   return (
     JSON.stringify({
@@ -211,15 +239,47 @@ export function errorResponseFrame(requestId: string, error: string): string {
   );
 }
 
+/** The benign decline for a channel that returned no answer (declined, expired
+ * or released); its typed interaction events carry which, when known. */
 export const DECLINE_MESSAGE =
   "No user answer is available (declined or timed out). Continue with your best assumptions and state them explicitly.";
+
+type QuestionWait =
+  | { kind: "answer"; answers: InteractionAnswerSet | null }
+  | { kind: "failed"; error: unknown }
+  | { kind: "closed" };
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : typeof error === "string" ? error : "unknown";
+}
+
+/** Write a response and learn whether it could reach the process: `send` where
+ * the handle reports it (the run loop's), else a plain write, whose throw is
+ * the only failure it can show. The process closing ends the wait. */
+async function sendResponse(io: ChildStdin, frame: string): Promise<ChildStdinSend> {
+  if (!io.send) {
+    try {
+      io.write(frame);
+      return { outcome: "written" };
+    } catch (error) {
+      return { outcome: "not_written", reason: "failed", error: errorText(error) };
+    }
+  }
+  return Promise.race([
+    io.send(frame),
+    io.closed.then((): ChildStdinSend => ({ outcome: "not_written", reason: "exited" })),
+  ]);
+}
 
 /**
  * Handle one control_request frame. AskUserQuestion is routed through the
  * orchestrator's InteractionChannel (pausing only this tool); every other
  * permission request is DENIED — flag-based permission modes already encode
  * the run's policy, and headless print-mode behavior (no interactive approver)
- * must not be silently liberalized by the control channel.
+ * must not be silently liberalized by the control channel. When Claudexor
+ * itself cannot obtain or send an answer (no channel, a failed channel, a
+ * closed process, a failed write) it records that as a status event and never
+ * presents it to the model or the run as the user's decline (#622).
  */
 export async function* handleControlRequestFrame(
   obj: Json,
@@ -239,15 +299,29 @@ export async function* handleControlRequestFrame(
   }
 
   const toolName = String(request?.tool_name ?? "");
-  if (toolName !== "AskUserQuestion" || !channel) {
-    io.write(
-      denyResponseFrame(
-        requestId,
-        toolName === "AskUserQuestion"
-          ? DECLINE_MESSAGE
-          : "Not permitted by Claudexor policy for this run.",
-      ),
-    );
+  if (toolName !== "AskUserQuestion") {
+    io.write(denyResponseFrame(requestId, "Not permitted by Claudexor policy for this run."));
+    return;
+  }
+
+  const ids: NativeQuestionIds = {
+    interactionId: requestId,
+    toolUseId: typeof request?.tool_use_id === "string" ? request.tool_use_id : null,
+  };
+  // A response that cannot reach the process is recorded as its own status; an
+  // optional question never fails the run loop.
+  const respond = async function* (frame: string): AsyncGenerator<HarnessEvent> {
+    const sent = await sendResponse(io, frame);
+    if (sent.outcome === "written") return;
+    yield sent.reason === "exited"
+      ? questionUnavailableEvent(sessionId, ids, "process_closed")
+      : questionUnavailableEvent(sessionId, ids, "response_write_failed", {
+          error: sent.error ?? "stdin was already ended",
+        });
+  };
+  if (!channel) {
+    yield questionUnavailableEvent(sessionId, ids, "no_answer_channel");
+    yield* respond(denyResponseFrame(requestId, unavailableDenyMessage("no_answer_channel")));
     return;
   }
 
@@ -256,33 +330,44 @@ export async function* handleControlRequestFrame(
     type: "interaction_requested",
     session_id: sessionId,
     ts: nowIso(),
-    text: interaction.questions
-      .map((q) => q.question)
-      .join(" | ")
-      .slice(0, 500),
+    // A marked display label; answers are keyed from the native input below.
+    text: displayPreview(interaction.questions.map((q) => q.question).join(" | "), 500),
     interaction,
+    // Joins this interaction to the tool call and its result (#622).
+    ...(ids.toolUseId ? { payload: { tool_use_id: ids.toolUseId } } : {}),
   };
 
-  const answer = Promise.resolve(channel.request(interaction)).then(
-    (answers): { kind: "answer"; answers: InteractionAnswerSet | null } => ({
-      kind: "answer",
-      answers,
-    }),
-    (): { kind: "answer"; answers: null } => ({ kind: "answer", answers: null }),
-  );
+  let answer: Promise<QuestionWait>;
+  try {
+    answer = Promise.resolve(channel.request(interaction)).then(
+      (answers): QuestionWait => ({ kind: "answer", answers }),
+      (error: unknown): QuestionWait => ({ kind: "failed", error }),
+    );
+  } catch (error) {
+    // A channel that throws synchronously failed like one that rejects.
+    answer = Promise.resolve({ kind: "failed", error });
+  }
   const result = await Promise.race([
     answer,
-    io.closed.then((): { kind: "closed" } => ({ kind: "closed" })),
+    io.closed.then((): QuestionWait => ({ kind: "closed" })),
   ]);
   // The process owns this protocol channel. Once it is gone there is nowhere
-  // to deliver even a benign deny frame; returning lets runloop consume the
-  // already-queued exit and terminal cleanup release the durable question.
-  if (result.kind === "closed") return;
-  const answers = result.answers;
-
-  if (answers && answers.answers.length > 0) {
-    io.write(allowResponseFrame(requestId, request?.input ?? {}, interaction, answers));
-  } else {
-    io.write(denyResponseFrame(requestId, DECLINE_MESSAGE));
+  // to deliver even a benign deny frame; runloop consumes the already-queued
+  // exit and terminal cleanup releases the durable question.
+  if (result.kind === "closed") {
+    yield questionUnavailableEvent(sessionId, ids, "process_closed");
+    return;
   }
+  if (result.kind === "failed") {
+    yield questionUnavailableEvent(sessionId, ids, "answer_channel_failed", {
+      error: errorText(result.error),
+    });
+    yield* respond(denyResponseFrame(requestId, unavailableDenyMessage("answer_channel_failed")));
+    return;
+  }
+  const answers = result.answers;
+  const allow = answers
+    ? allowResponseFrame(requestId, request?.input ?? {}, interaction, answers)
+    : null;
+  yield* respond(allow ?? denyResponseFrame(requestId, DECLINE_MESSAGE));
 }

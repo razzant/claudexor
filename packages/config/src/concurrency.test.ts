@@ -28,7 +28,7 @@ describe("concurrency configuration contract", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("round-trips explicit defaults while unrelated saves omit implicit defaults", () => {
     updateGlobalConfig((cfg) => cfg);

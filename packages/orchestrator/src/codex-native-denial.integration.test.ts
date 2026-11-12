@@ -29,7 +29,7 @@ type Turn = {
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const envelope = (state: "completed" | "incomplete", output: string) =>
   JSON.stringify({ work_report: { state, required_inputs: [] }, output });

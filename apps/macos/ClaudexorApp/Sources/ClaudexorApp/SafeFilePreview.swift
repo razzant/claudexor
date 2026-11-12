@@ -278,6 +278,14 @@ struct SafeFilePreviewSheet: View {
             .padding(Theme.Spacing.lg)
         }
         .frame(minWidth: 720, minHeight: 520)
+        // Like the full-prompt sheet, a preview owns its prose whoever presents it: opened from a
+        // chat answer it joins neither the feed's reading position nor that turn's selection and
+        // focus, and Copy message copies the previewed Markdown rather than the presenting message.
+        .environment(\.conversationReadingPosition, nil)
+        .environment(\.proseMessageID, nil)
+        .environment(\.conversationComposerInput, nil)
+        .environment(\.proseMessageCopyAction, nil)
+        .environment(\.proseMessageSource, nil)
     }
 
     @ViewBuilder private var preview: some View {

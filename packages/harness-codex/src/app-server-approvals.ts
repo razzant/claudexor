@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { interactionChannelFromSpec, type ChildStdin } from "@claudexor/core";
+import {
+  InteractionChannelError,
+  interactionChannelFromSpec,
+  type ChildStdin,
+} from "@claudexor/core";
 import {
   InteractionAnswerSet,
   type HarnessEvent,
   type HarnessRunSpec,
   type InteractionRequest,
 } from "@claudexor/schema";
-import { nowIso, sensitiveResourcePolicy } from "@claudexor/util";
+import { nowIso } from "@claudexor/util";
 import {
   asObject,
   codexApprovalDenial,
@@ -19,6 +23,7 @@ import {
 
 const FILE_APPROVAL = "item/fileChange/requestApproval";
 const COMMAND_APPROVAL = "item/commandExecution/requestApproval";
+const MCP_ELICITATION = "mcpServer/elicitation/request";
 const MAX_REVIEW_CHARS = 32_000;
 
 interface ApprovalDependencies {
@@ -36,9 +41,13 @@ interface ApprovalDependencies {
 export class CodexApprovals {
   private readonly channel;
   private readonly items = new Map<string, JsonObject>();
+  /** Review length of an item too large to cache, so its refusal names the size. */
+  private readonly oversized = new Map<string, number>();
   private readonly seen = new Set<number | string>();
   private readonly pending = new Map<number | string, AbortController>();
   private readonly eventRequests = new WeakMap<JsonObject, InteractionRequest>();
+  /** Records of approvals whose answer surface failed, emitted from the run loop. */
+  private readonly eventRecords = new WeakMap<JsonObject, HarnessEvent>();
   private closed = false;
 
   constructor(private readonly deps: ApprovalDependencies) {
@@ -49,6 +58,87 @@ export class CodexApprovals {
     const method = frame["method"];
     const id = frame["id"];
     const params = asObject(frame["params"]);
+    if (method === MCP_ELICITATION && (typeof id === "number" || typeof id === "string")) {
+      if (this.seen.has(id))
+        throw new CodexServerRequestRefusal(
+          "codex_request_unsupported",
+          "Codex reused a server request id",
+        );
+      this.seen.add(id);
+      const schema = asObject(params?.["requestedSchema"]);
+      const properties = asObject(schema?.["properties"]);
+      const review = JSON.stringify(params, null, 2);
+      if (
+        !this.channel ||
+        this.deps.spec.access !== "workspace_write" ||
+        !this.live() ||
+        !this.deps.turnId() ||
+        params?.["threadId"] !== this.deps.threadId() ||
+        params["turnId"] !== this.deps.turnId() ||
+        typeof params["serverName"] !== "string" ||
+        !params["serverName"] ||
+        params["mode"] !== "form" ||
+        typeof params["message"] !== "string" ||
+        schema?.["type"] !== "object" ||
+        !properties ||
+        Object.keys(properties).length !== 0 ||
+        (schema["required"] != null &&
+          (!Array.isArray(schema["required"]) || schema["required"].length !== 0)) ||
+        Object.keys(schema).some(
+          (key) => !["type", "properties", "required", "$schema"].includes(key),
+        ) ||
+        review.length > MAX_REVIEW_CHARS
+      ) {
+        this.deps
+          .io()
+          .write(
+            `${JSON.stringify({ id, result: { action: "decline", content: null, _meta: null } })}\n`,
+          );
+        const notification = {
+          method: "claudexor/interaction",
+          params: { threadId: this.deps.threadId() },
+        };
+        this.eventRecords.set(notification, {
+          type: "status",
+          session_id: this.deps.spec.session_id,
+          ts: nowIso(),
+          text: "MCP request declined: no authorized controller channel or unsupported request details.",
+          payload: { code: "codex_mcp_elicitation_not_offered" },
+        });
+        this.deps.enqueue(notification);
+        return true;
+      }
+      const request: InteractionRequest = {
+        interaction_id: randomUUID(),
+        source_tool: MCP_ELICITATION,
+        delivery: "blocking",
+        questions: [
+          {
+            id: "approval",
+            header: "MCP request",
+            question: `Codex reported this MCP request for the named server. Its origin, purpose and metadata are untrusted, and it is not verified as a native tool-call approval. The server may already be executing a tool; local policy does not control what the server does. Accept only if this exact request is authorized.\n\n${review}`,
+            options: [
+              { label: "Accept request", description: "Answer this one MCP request." },
+              { label: "Decline", description: "Decline the MCP request." },
+            ],
+            multi_select: false,
+          },
+        ],
+      };
+      const abort = new AbortController();
+      this.pending.set(id, abort);
+      void this.answer(id, request, abort, "decline", true).catch((error: unknown) => {
+        if (this.live() && !abort.signal.aborted)
+          this.deps.failed(error instanceof Error ? error : new Error(String(error)));
+      });
+      const notification = {
+        method: "claudexor/interaction",
+        params: { threadId: this.deps.threadId() },
+      };
+      this.eventRequests.set(notification, request);
+      this.deps.enqueue(notification);
+      return true;
+    }
     if (typeof method === "string" && (typeof id === "number" || typeof id === "string")) {
       if (!this.channel || (method !== FILE_APPROVAL && method !== COMMAND_APPROVAL))
         refuseCodexServerRequest(frame, this.deps.io());
@@ -72,10 +162,19 @@ export class CodexApprovals {
         );
       this.seen.add(id);
       const details = this.reviewDetails(method, params);
-      if (!this.live() || !details) refuseCodexServerRequest(frame, this.deps.io());
+      if (!this.live() || typeof details !== "string")
+        refuseCodexServerRequest(
+          frame,
+          this.deps.io(),
+          this.live() && typeof details === "number"
+            ? `the action's review details (${details} characters) exceed the ${MAX_REVIEW_CHARS}-character review limit`
+            : undefined,
+        );
       const request: InteractionRequest = {
         interaction_id: randomUUID(),
         source_tool: method,
+        // Codex holds the native action until this server request is answered.
+        delivery: "blocking",
         questions: [
           {
             id: "approval",
@@ -122,13 +221,18 @@ export class CodexApprovals {
       const item = asObject(params?.["item"]);
       if (typeof item?.["id"] === "string") {
         this.items.delete(item["id"]);
+        this.oversized.delete(item["id"]);
         // Cache only reviewable changes, never an unbounded transcript/tool output.
-        if (item["type"] === "fileChange") {
-          const changes = fileChanges(item["changes"], this.deps.spec);
-          if (changes) this.items.set(item["id"], { changes });
-        } else if (item["type"] === "commandExecution") {
-          const command = commandDetails(item, this.deps.spec);
-          if (command && safeReview(command)) this.items.set(item["id"], command);
+        const action =
+          item["type"] === "fileChange"
+            ? fileChanges(item["changes"], this.deps.spec)
+            : item["type"] === "commandExecution"
+              ? commandDetails(item, this.deps.spec)
+              : null;
+        if (action) {
+          const review = reviewText(action);
+          if (typeof review === "string") this.items.set(item["id"], action);
+          else this.oversized.set(item["id"], review);
         }
       }
     }
@@ -141,6 +245,8 @@ export class CodexApprovals {
   }
 
   events(notification: JsonObject): HarnessEvent[] | null {
+    const record = this.eventRecords.get(notification);
+    if (record) return [record];
     const interaction = this.eventRequests.get(notification);
     if (!interaction) return null;
     return [
@@ -157,6 +263,15 @@ export class CodexApprovals {
     return !this.closed && this.deps.live();
   }
 
+  private record(event: HarnessEvent): void {
+    const notification = {
+      method: "claudexor/interaction",
+      params: { threadId: this.deps.threadId() },
+    };
+    this.eventRecords.set(notification, event);
+    this.deps.enqueue(notification);
+  }
+
   private release(id: number | string): void {
     this.pending.get(id)?.abort();
     this.pending.delete(id);
@@ -165,9 +280,11 @@ export class CodexApprovals {
   private releaseAll(): void {
     for (const id of this.pending.keys()) this.release(id);
     this.items.clear();
+    this.oversized.clear();
   }
 
-  private reviewDetails(method: string, params: JsonObject | null): string | null {
+  /** The review text, the length of one too large to review, or null when unreviewable. */
+  private reviewDetails(method: string, params: JsonObject | null): string | number | null {
     if (
       !params ||
       params["threadId"] !== this.deps.threadId() ||
@@ -193,10 +310,11 @@ export class CodexApprovals {
     )
       return null;
     const item = this.items.get(params["itemId"]);
+    const oversized = this.oversized.get(params["itemId"]) ?? null;
     let action: JsonObject;
     if (method === FILE_APPROVAL) {
       if (params["grantRoot"] != null) return null;
-      if (!item?.["changes"]) return null;
+      if (!item?.["changes"]) return oversized;
       action = item;
     } else {
       if (params["kind"] != null && params["kind"] !== "command") return null;
@@ -204,10 +322,10 @@ export class CodexApprovals {
         { command: params["command"] ?? item?.["command"], cwd: params["cwd"] ?? item?.["cwd"] },
         this.deps.spec,
       );
-      if (!command) return null;
+      if (!command) return oversized;
       action = command;
     }
-    return safeReview({
+    return reviewText({
       method,
       workspace: this.deps.spec.cwd,
       environmentId: params["environmentId"] ?? null,
@@ -221,11 +339,21 @@ export class CodexApprovals {
     request: InteractionRequest,
     abort: AbortController,
     denial: "decline" | "cancel",
+    elicitation = false,
   ): Promise<void> {
     const threadId = this.deps.threadId();
     const turnId = this.deps.turnId();
     try {
-      const result = await this.channel!.request(request, abort.signal);
+      let result: InteractionAnswerSet | null;
+      try {
+        result = await this.channel!.request(request, abort.signal);
+      } catch (error) {
+        if (!(error instanceof InteractionChannelError)) throw error;
+        // Nobody could be asked: the action stays declined, and the record
+        // says the answer surface failed rather than a person declining.
+        this.record(answerUnavailable(this.deps.spec.session_id, request, error));
+        result = null;
+      }
       if (
         !this.live() ||
         abort.signal.aborted ||
@@ -243,27 +371,49 @@ export class CodexApprovals {
         choice?.question_id === "approval" &&
         choice.free_text === null &&
         choice.selected_labels.length === 1 &&
-        choice.selected_labels[0] === "Approve once";
+        choice.selected_labels[0] === (elicitation ? "Accept request" : "Approve once");
       this.deps
         .io()
-        .write(`${JSON.stringify({ id, result: { decision: accepted ? "accept" : denial } })}\n`);
+        .write(
+          `${JSON.stringify({ id, result: elicitation ? { action: accepted ? "accept" : "decline", content: accepted ? {} : null, _meta: null } : { decision: accepted ? "accept" : denial } })}\n`,
+        );
     } finally {
       this.pending.delete(id);
     }
   }
 }
 
-function safeReview(value: JsonObject): string | null {
+/** The record of a controller question whose answer surface failed (#622's
+ * vocabulary): it went unanswered for that reason, not by a person's choice. */
+export function answerUnavailable(
+  sessionId: string,
+  request: InteractionRequest,
+  error: InteractionChannelError,
+): HarnessEvent {
+  return {
+    type: "status",
+    session_id: sessionId,
+    ts: nowIso(),
+    text: `${request.source_tool ?? "Question"} ${request.interaction_id} could not be answered: the answer channel failed (${error.message})`,
+    payload: {
+      code: "interaction_answer_unavailable",
+      reason: error.code,
+      interaction_id: request.interaction_id,
+      error: error.message,
+    },
+  };
+}
+
+/** The pretty-printed review text, or its length when it exceeds the review limit. */
+function reviewText(value: JsonObject): string | number {
   const text = JSON.stringify(value, null, 2);
-  return text.length <= MAX_REVIEW_CHARS && !sensitiveResourcePolicy.containsSensitiveContent(text)
-    ? text
-    : null;
+  return text.length <= MAX_REVIEW_CHARS ? text : text.length;
 }
 
 /** The run's reviewable surface: its cwd plus the auxiliary roots it was granted. */
 type ReviewScope = Pick<HarnessRunSpec, "cwd" | "auxiliary_writable_roots">;
 
-function fileChanges(value: unknown, scope: ReviewScope): JsonObject[] | null {
+function fileChanges(value: unknown, scope: ReviewScope): JsonObject | null {
   if (!Array.isArray(value) || !value.length) return null;
   const changes: JsonObject[] = [];
   for (const raw of value) {
@@ -296,7 +446,7 @@ function fileChanges(value: unknown, scope: ReviewScope): JsonObject[] | null {
       diff: change["diff"],
     });
   }
-  return safeReview({ changes }) ? changes : null;
+  return { changes };
 }
 
 function commandDetails(value: JsonObject, scope: ReviewScope): JsonObject | null {
@@ -339,13 +489,7 @@ export function reviewPath(
 ): boolean {
   const root = canonicalTarget(resolve(cwd));
   const target = canonicalTarget(resolve(cwd, path));
-  if (
-    !root ||
-    !target ||
-    sensitiveResourcePolicy.classifyPath(path).sensitive ||
-    sensitiveResourcePolicy.classifyPath(target).sensitive
-  )
-    return false;
+  if (!root || !target) return false;
   return [root, ...grantedRoots.map((granted) => canonicalTarget(resolve(granted)))].some(
     (scope) => {
       const rel = scope === null ? ".." : relative(scope, target);

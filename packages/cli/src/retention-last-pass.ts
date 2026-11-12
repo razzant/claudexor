@@ -5,6 +5,25 @@ import { finalizeRetention, type RetentionRunner } from "./retention-lifetime.js
 
 const KEY = "retention_last_pass";
 
+function passHistory(
+  outcome: GcLastPass["outcome"],
+  finishedAt: string,
+  previous: GcLastPass | null,
+) {
+  return {
+    last_completed_at:
+      outcome === "completed"
+        ? finishedAt
+        : (previous?.last_completed_at ??
+          (previous?.outcome === "completed" ? previous.finished_at : null)),
+    failed_or_held_streak:
+      outcome === "completed"
+        ? 0
+        : (previous?.failed_or_held_streak ?? 0) +
+          (outcome === "failed" || outcome === "held" ? 1 : 0),
+  };
+}
+
 export function readLastRetention(
   store: EngineStore,
   onUnreadable?: (diagnostic: string) => void,
@@ -50,21 +69,27 @@ function summarize(
     held.roots = Math.max(held.roots, previous?.held.roots ?? 0);
     held.native_homes = Math.max(held.native_homes, previous?.held.native_homes ?? 0);
   }
+  const outcome = cancelled
+    ? "truncated"
+    : failed
+      ? "failed"
+      : receipt?.truncated
+        ? "truncated"
+        : holds.size || held.roots || held.native_homes
+          ? "held"
+          : errors.length
+            ? "failed"
+            : "completed";
+  const finishedAt = new Date().toISOString();
   return GcLastPass.parse({
-    outcome: cancelled
-      ? "truncated"
-      : failed
-        ? "failed"
-        : receipt?.truncated
-          ? "truncated"
-          : holds.size || held.roots || held.native_homes
-            ? "held"
-            : errors.length
-              ? "failed"
-              : "completed",
+    outcome,
     started_at: startedAt,
-    finished_at: new Date().toISOString(),
+    finished_at: finishedAt,
+    ...passHistory(outcome, finishedAt, previous),
     freed_bytes: receipt?.freed_bytes ?? 0,
+    // Without a receipt, or with a deletion that stopped partway, nothing was fully
+    // measured; never a claim that nothing happened.
+    effects: receipt ? (receipt.effects ?? "measured") : "unknown",
     kept: receipt?.kept ?? GcKeepCounts.parse({}),
     held,
     holds: [...holds.values()].map((hold) => ({
@@ -96,6 +121,7 @@ function writeLastRetention(store: EngineStore, record: GcLastPass): void {
 export function recordLastRetention(run: RetentionRunner, store: EngineStore): RetentionRunner {
   return finalizeRetention(run, async (request, result) => {
     if (request.dry_run) return;
+    const previous = readLastRetention(store);
     const record = summarize(
       result.startedAt,
       result.receipt,
@@ -103,7 +129,7 @@ export function recordLastRetention(run: RetentionRunner, store: EngineStore): R
       result.failed,
       result.cancelled,
       result.inventoryObserved,
-      readLastRetention(store),
+      previous,
     );
     writeLastRetention(store, record);
     try {
@@ -114,6 +140,7 @@ export function recordLastRetention(run: RetentionRunner, store: EngineStore): R
       // failure to POST. This diagnostic write cannot promise durability either.
       record.outcome = "failed";
       record.finished_at = new Date().toISOString();
+      Object.assign(record, passHistory("failed", record.finished_at, previous));
       record.errors.count += 1;
       record.errors.first ??= redactSecrets(String(error)).slice(0, 512);
       try {

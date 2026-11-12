@@ -80,7 +80,7 @@ describe("ACP run-control projection", () => {
 const tempDirs: string[] = [];
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const addr = { baseUrl: "http://127.0.0.1:1", token: "t" } as never;
 
@@ -492,6 +492,71 @@ describe("acpSessionQuery terminal RunFacts binding", () => {
       });
       expect(result["runFacts"]).toEqual(failedRunFacts);
       expect(result).not.toHaveProperty("detailProblem");
+    } finally {
+      ensureSpy.mockRestore();
+      detailSpy.mockRestore();
+      controlSpy.mockRestore();
+    }
+  });
+});
+
+describe("ACP prompt with an async question (#628)", () => {
+  it("collects the terminal while an async answer prompt is still open, then closes that prompt", async () => {
+    const daemonRun = await import("./daemon-run.js");
+    const live = await import("./live.js");
+    const { makeCancelBridge, makeInteractionBridge } = await import("./mcp-runner.js");
+    const status = vi
+      .fn()
+      .mockResolvedValueOnce({ state: "running", runId: "run-async" })
+      .mockResolvedValue({ state: "succeeded", runId: "run-async", runDir: "/runs/run-async" });
+    const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
+      client: { status },
+      addr,
+    } as never);
+    const detailSpy = vi.spyOn(daemonRun, "fetchRunDetail").mockResolvedValue(null);
+    const controlSpy = vi.spyOn(live, "controlApiFetch").mockImplementation(async (_addr, path) => {
+      if (path === "/threads/thread-async")
+        return Response.json({ thread: { id: "thread-async", repoRoot: "/repo" } });
+      if (path === "/threads/thread-async/turns") return Response.json({ jobId: "job-async" });
+      if (path === "/runs/run-async")
+        return Response.json({
+          pendingInteractions: [
+            {
+              interactionId: "async-1",
+              questions: [
+                {
+                  id: "q1",
+                  question: "Who is it for?",
+                  header: null,
+                  options: [],
+                  multi_select: false,
+                },
+              ],
+              timeoutAt: null,
+              delivery: "async",
+            },
+          ],
+        });
+      throw new Error(`unexpected request ${path}`);
+    });
+    const asked: any[] = [];
+    try {
+      const result = (await acpSessionQuery(
+        { mode: "__acp_session_prompt", sessionId: "thread-async", prompt: "work" },
+        {
+          // The ACP client never answers: the prompt stays open.
+          onInteraction: (ctx: any) => {
+            asked.push(ctx);
+            return new Promise(() => undefined);
+          },
+        },
+        { cancel: makeCancelBridge, interactions: makeInteractionBridge },
+      )) as Record<string, unknown>;
+      expect(result).toMatchObject({ runId: "run-async", status: "succeeded" });
+      expect(asked).toHaveLength(1);
+      expect(asked[0].request).toMatchObject({ interaction_id: "async-1", delivery: "async" });
+      // The runner stopped observing the run, so the open prompt was closed.
+      expect(asked[0].signal.aborted).toBe(true);
     } finally {
       ensureSpy.mockRestore();
       detailSpy.mockRestore();

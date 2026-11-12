@@ -223,10 +223,7 @@ export function normalizeThrowable(
     const code = typeof anyErr["code"] === "string" ? (anyErr["code"] as string) : undefined;
     const status = typeof anyErr["status"] === "number" ? (anyErr["status"] as number) : undefined;
     const category: CliErrorCategory =
-      status === 400 ||
-      status === 422 ||
-      code === "inline_secret_rejected" ||
-      code === "invalid_argument"
+      status === 400 || status === 422 || code === "invalid_argument"
         ? "usage"
         : code && ERRNO_RE.test(code)
           ? "operational"

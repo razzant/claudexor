@@ -17,12 +17,25 @@ import { assertOnlyQueryParams, optionalBooleanQuery, singleQuery } from "./quer
 import { requiredIdempotencyKey } from "./run-start.js";
 import { queryParam, QUOTA_READ_PARAMETERS } from "./operation-parameters.js";
 
+/** Selectors a resources route hands its service beside the request body. */
+export interface ResourceRead {
+  view?: "resources";
+  includeApiKeys?: boolean;
+}
+/** Negotiated API-key rows: strict clients that omit it keep the account-only resources. */
+const INCLUDE_API_KEYS_PARAMETER = queryParam({
+  name: "includeApiKeys",
+  enum: ["true", "false"],
+  description:
+    "With a resources view, add API-key rows: each harness's default API-key route (target.profile_id null) and its enabled registered API-key accounts, bound to the key a request would send now. A row read with another key is never shown. Omitted or false preserves account-only resources for strict clients.",
+});
 const parameters = [
   queryParam({
     name: "view",
     enum: ["resources"],
     description: "Opt in to typed account resources alongside quota.",
   }),
+  INCLUDE_API_KEYS_PARAMETER,
 ];
 const readParameters = [
   ...QUOTA_READ_PARAMETERS,
@@ -32,6 +45,7 @@ const readParameters = [
     description:
       "Opt in to typed resources, per-constraint freshness, or resources_freshness combining both with an explicit availability_scope echo. Omitted preserves the legacy shape. Does not refresh quota.",
   }),
+  INCLUDE_API_KEYS_PARAMETER,
 ];
 export const ACCOUNT_RESOURCE_OPERATION_DRAFTS: OperationDraft[] = [
   {
@@ -42,13 +56,19 @@ export const ACCOUNT_RESOURCE_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlAccountRoutingEvidenceResponse",
     responseKind: "json",
     summary:
-      "Read live model-scoped refusal marks, temporary capability marks, and the durable last-served order; no probe or quota refresh.",
+      "Read live model-scoped refusal marks, temporary capability marks, model-scoped credential refusals, and the durable last-served order; no probe or quota refresh.",
     parameters: [
       queryParam({
         name: "includeCapabilities",
         enum: ["true", "false"],
         description:
           "Add the temporary account x model capability marks (capabilities[]). Omitted or false preserves the legacy response shape for strict clients.",
+      }),
+      queryParam({
+        name: "includeCredentialUnusable",
+        enum: ["true", "false"],
+        description:
+          "Add the registered rows' live model-scoped credential refusals (credentialUnusable[]): dated evidence for one model that never changes the account's status. Omitted or false preserves the earlier response shape for strict clients.",
       }),
     ],
   },
@@ -70,6 +90,7 @@ export const ACCOUNT_RESOURCE_OPERATION_DRAFTS: OperationDraft[] = [
         enum: ["true", "false"],
         description: "Return one fresh server-authored Accounts snapshot epoch.",
       }),
+      INCLUDE_API_KEYS_PARAMETER,
     ],
   },
   {
@@ -137,20 +158,28 @@ export async function handleAccountResourceRoute(
 ): Promise<boolean> {
   try {
     if (method === "GET" && path === "/accounts/routing-evidence") {
-      assertOnlyQueryParams(url, ["includeCapabilities"]);
-      const payload = await required(ctx.services?.accountRoutingEvidence)(
-        optionalBooleanQuery(url, "includeCapabilities") === true,
-      );
+      assertOnlyQueryParams(url, ["includeCapabilities", "includeCredentialUnusable"]);
+      const payload = await required(ctx.services?.accountRoutingEvidence)({
+        capabilities: optionalBooleanQuery(url, "includeCapabilities") === true,
+        credentialUnusable: optionalBooleanQuery(url, "includeCredentialUnusable") === true,
+      });
       ctx.json(res, 200, ControlAccountRoutingEvidenceResponse.parse(payload));
       return true;
     }
     if ((method === "GET" && path === "/quota") || (method === "POST" && path === "/quota")) {
-      assertOnlyQueryParams(url, method === "GET" ? ["view", "requestKind", "model"] : ["view"]);
+      assertOnlyQueryParams(
+        url,
+        method === "GET"
+          ? ["view", "requestKind", "model", "includeApiKeys"]
+          : ["view", "includeApiKeys"],
+      );
       const view = method === "GET" ? quotaReadViewQuery(url) : resourceViewQuery(url);
+      const includeApiKeys = optionalBooleanQuery(url, "includeApiKeys") === true;
       const input =
         method === "GET"
           ? ControlQuotaReadRequest.parse({
               ...(view ? { view } : {}),
+              ...(includeApiKeys ? { includeApiKeys } : {}),
               ...(singleQuery(url, "requestKind") !== undefined
                 ? { requestKind: singleQuery(url, "requestKind") }
                 : {}),
@@ -175,6 +204,7 @@ export async function handleAccountResourceRoute(
           : await required(ctx.services?.refreshQuota)({
               ...ControlQuotaRefreshRequest.parse(await ctx.readBody(req)),
               ...(view === "resources" ? { view } : {}),
+              ...(includeApiKeys ? { includeApiKeys } : {}),
             });
       ctx.json(res, 200, schema.parse(payload));
       return true;

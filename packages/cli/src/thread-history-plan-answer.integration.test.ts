@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ThreadHistoryInput,
   THREAD_HISTORY_PROMPT_BYTES,
@@ -12,18 +12,25 @@ import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { applyCommandInTx, prepareCommandRow } from "../../daemon/src/store/command-rows.js";
 import { assertPlanAnswerSubmission } from "../../control-api/src/thread-plan-answer.js";
 import { sqlThreadHistoryReads } from "./sql-thread-history.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const cleanup: (() => Promise<void>)[] = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0);
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0)) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "cx-history-plan-"));
   const f = await sqlFixture(root);
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   cleanup.push(async () => {
     await f.close();
-    rmSync(root, { recursive: true, force: true });
   });
   const thread = f.graph.threads.createThread({ title: "plan history" });
   const pid = f.graph.threads.generationForThread(thread.id)!.pid;

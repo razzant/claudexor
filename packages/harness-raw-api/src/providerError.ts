@@ -39,7 +39,9 @@ export function providerCompletionErrorEvent(
     payload["provider_error"] = providerError;
   }
   if (result.diagnostic_text) {
-    const partialOutput = redactAndBound(result.diagnostic_text);
+    // The model's own partial text: working content, bounded but exact
+    // (INV-146). It is evidence only and never becomes the answer.
+    const partialOutput = bound(result.diagnostic_text);
     payload["partial_output"] = partialOutput.value;
     payload["partial_output_truncated"] = partialOutput.truncated;
   }
@@ -63,10 +65,29 @@ export function providerCompletionErrorEvent(
   return event;
 }
 
-function redactAndBound(value: string): { value: string; truncated: boolean } {
-  const redacted = redactSecrets(value);
-  return {
-    value: redacted.slice(0, PROVIDER_DIAGNOSTIC_MAX_CHARS),
-    truncated: redacted.length > PROVIDER_DIAGNOSTIC_MAX_CHARS,
-  };
+/**
+ * This adapter's one masked-diagnostic bound: a provider's completion error, a
+ * non-OK HTTP body and a failed catalog read's detail. The whole value is
+ * masked first; masking a cut value could leave a credential's head that no
+ * rule recognizes.
+ */
+export function redactAndBound(
+  value: string,
+  max = PROVIDER_DIAGNOSTIC_MAX_CHARS,
+): { value: string; truncated: boolean } {
+  return bound(redactSecrets(value), max);
+}
+
+/** At most `max` UTF-16 code units of `value`. A cut never separates a high
+ * surrogate from the low one after it: an astral character is kept or dropped
+ * whole, so a well-formed value stays well formed. */
+function bound(
+  value: string,
+  max = PROVIDER_DIAGNOSTIC_MAX_CHARS,
+): { value: string; truncated: boolean } {
+  if (value.length <= max) return { value, truncated: false };
+  const high = value.charCodeAt(max - 1);
+  const low = value.charCodeAt(max);
+  const splitsPair = high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+  return { value: value.slice(0, splitsPair ? max - 1 : max), truncated: true };
 }

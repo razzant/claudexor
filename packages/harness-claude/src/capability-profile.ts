@@ -33,23 +33,6 @@ export const CLAUDE_KNOWN_MODELS: readonly string[] = [
   "claude-haiku-4-5",
 ];
 
-/** Translate the vendor quota API's family display name (currently e.g.
- * `Fable`) into the same model ids/aliases the harness manifest admits. The
- * known-model list remains the SSOT: a newly verified full id automatically
- * joins its family without another quota-router patch. */
-export function claudeQuotaModelAliases(displayName: string): string[] {
-  const family = displayName.trim().toLowerCase();
-  if (!family) return [];
-  const aliases = CLAUDE_KNOWN_MODELS.filter(
-    (model) => model === family || model.startsWith(`claude-${family}-`),
-  );
-  // Preserve an honest model-scoped constraint even before a newly surfaced
-  // family joins the verified manifest. It will not exclude a different known
-  // model or refuse an intentional native-default route before the vendor has
-  // disclosed which model it actually selected.
-  return [...new Set([...(aliases.length > 0 ? aliases : [family]), "best"])];
-}
-
 /**
  * Installed vendor CLI the known-model list above was last ACTUALLY verified
  * against. A frozen literal on purpose, no longer an alias of the installer pin

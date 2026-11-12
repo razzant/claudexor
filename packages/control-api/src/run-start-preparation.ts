@@ -1,5 +1,4 @@
 import { ControlRunStartRequest } from "@claudexor/schema";
-import { assertNoInlineSecretValues } from "@claudexor/util";
 import { normalizeRunStart } from "./run-start.js";
 
 export interface RunStartPreparation {
@@ -13,7 +12,6 @@ export async function prepareRunStart(
   raw: unknown,
   services: RunStartPreparation,
 ): Promise<ControlRunStartRequest> {
-  assertNoInlineSecretValues(raw);
   const request = normalizeRunStart(ControlRunStartRequest.parse(raw));
   await services.validateResources?.(request.attachments ?? []);
   if (!request.threadId) await services.preflightRunRequirements?.(request);

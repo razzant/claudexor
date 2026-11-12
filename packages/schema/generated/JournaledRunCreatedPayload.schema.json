@@ -16,12 +16,12 @@
         "prompt_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
-          "description": "sha256 hex digest of the redacted prompt text."
+          "description": "sha256 hex digest of the prompt text."
         },
         "prompt_bytes": {
           "type": "integer",
           "minimum": 0,
-          "description": "UTF-8 byte length of the redacted prompt text."
+          "description": "UTF-8 byte length of the prompt text."
         }
       },
       "required": [

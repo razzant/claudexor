@@ -8,7 +8,12 @@
  * found envelope under a daemon-known project root is an orphan.
  *
  * Reach is honest: only roots recorded in the command journal (plus their thread
- * trees) are sweepable — a project never run through this daemon is not.
+ * trees) and the one-shot namespace are sweepable — a project never run through
+ * this daemon is not. Each envelope is disposed against the execution root its
+ * owner record names (#503); a legacy record belongs to its namespace's own root,
+ * and an envelope with neither is kept: cleanup never moves to another tree. Below
+ * the config root, which may itself be a link, the sweep follows none: what a link
+ * leads to may be another store's, so it stays, with the branches it hides the owner of.
  *
  * LIVE-OWNER GUARD: envelopes carry owner.json (pid + kernel start time);
  * a live owner's envelopes survive the sweep. When start-time recycling
@@ -23,16 +28,18 @@
  * discard; an envelope whose holder run died mid-attempt with changed files is
  * kept the same way (`host_restart`), so the interrupted run can be continued.
  */
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   WorkspaceManager,
   git,
   processStartTime,
+  readEnvelopeCustody,
+  readEnvelopeRecoveryRecord,
   recoverOrphanCustody,
 } from "@claudexor/workspace";
-import { projectRuntimeDir } from "@claudexor/util";
+import { oneShotRuntimeDir, ownedProjectRuntimeDir, projectRuntimeDir } from "@claudexor/util";
 
 const RO_HOME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -52,18 +59,57 @@ export async function sweepOrphanWorkspaces(input: SweepInput): Promise<string[]
   const roots = knownProjectRoots(input.knownProjectRoots);
 
   for (const root of roots) {
-    const trees = [root, ...threadTreesUnder(root)];
-    for (const tree of trees) {
-      actions.push(...(await sweepEnvelopesUnder(tree)));
-      actions.push(...(await sweepAttemptBranches(tree)));
+    const project = projectRuntimeDir(root);
+    for (const tree of [root, ...threadTreesUnder(root, actions)]) {
+      const swept = await sweepTreeNamespace(tree, actions);
+      // A current envelope of an isolated thread lives in its project's namespace. One
+      // that cannot be walked hides which branches are owned, so they all stay.
+      if (swept && !runtimeLink(root, "workspaces"))
+        actions.push(...(await sweepAttemptBranches(tree, [projectRuntimeDir(tree), project])));
     }
   }
   const executionRoots = knownProjectRoots(input.knownExecutionRoots ?? (() => []));
   for (const root of executionRoots.filter((candidate) => !roots.includes(candidate))) {
-    actions.push(...(await sweepEnvelopesUnder(root)));
+    await sweepTreeNamespace(root, actions);
   }
+  // Explicitly ephemeral runs keep their envelopes in the one-shot namespace (#503).
+  // Like retention, this never follows a linked store: it may hold another one's envelopes.
+  const oneShot = oneShotRuntimeDir();
+  const linked = [oneShot, join(oneShot, "workspaces")].find(presentButNotPlainDirectory);
+  if (linked) actions.push(`kept namespace ${linked}: not a plain directory`);
+  else actions.push(...(await sweepEnvelopeNamespace(oneShot, null)));
   actions.push(...sweepReadOnlyHomes());
   return actions;
+}
+
+/** The refusal to walk these segments of a tree's namespace: a link below the config root.
+ * Only a check: every path stays as recorded, so a linked config root keeps its spelling. */
+function runtimeLink(tree: string, ...segments: string[]): string | null {
+  try {
+    ownedProjectRuntimeDir(tree, ...segments);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function sweepTreeNamespace(tree: string, actions: string[]): Promise<boolean> {
+  const runtime = projectRuntimeDir(tree);
+  const link = runtimeLink(tree, "workspaces");
+  if (link) {
+    actions.push(`kept namespace ${runtime}: ${link}`);
+    return false;
+  }
+  actions.push(...(await sweepEnvelopeNamespace(runtime, tree)));
+  return true;
+}
+
+function presentButNotPlainDirectory(path: string): boolean {
+  try {
+    return !lstatSync(path).isDirectory();
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
 }
 
 /** Project roots this daemon has ever run against (command journal scope roots).
@@ -84,26 +130,53 @@ function knownProjectRoots(read: () => readonly string[]): string[] {
 }
 
 /** Isolated-thread worktrees live in the external per-project runtime namespace. */
-function threadTreesUnder(root: string): string[] {
+function threadTreesUnder(root: string, actions: string[]): string[] {
   const threadsDir = join(projectRuntimeDir(root), "threads");
   if (!existsSync(threadsDir)) return [];
+  const link = runtimeLink(root, "threads");
+  if (link) {
+    actions.push(`kept thread trees of ${root}: ${link}`);
+    return [];
+  }
   try {
-    return readdirSync(threadsDir)
-      .map((tid) => join(threadsDir, tid, "tree"))
-      .filter((tree) => existsSync(tree));
+    return readdirSync(threadsDir).flatMap((tid) => {
+      const treeLink = runtimeLink(root, "threads", tid, "tree");
+      if (treeLink) actions.push(`kept thread tree ${tid} of ${root}: ${treeLink}`);
+      const tree = join(threadsDir, tid, "tree");
+      return !treeLink && existsSync(tree) ? [tree] : [];
+    });
   } catch {
     return [];
   }
 }
 
-async function sweepEnvelopesUnder(execRoot: string): Promise<string[]> {
+/** Envelopes of one engine runtime namespace; `legacyRoot` is the tree a record
+ * without `execution_root` was created for (null: none can be assumed). */
+async function sweepEnvelopeNamespace(
+  runtimeRoot: string,
+  legacyRoot: string | null,
+): Promise<string[]> {
   const actions: string[] = [];
-  const workspacesDir = join(projectRuntimeDir(execRoot), "workspaces");
+  const workspacesDir = join(runtimeRoot, "workspaces");
   if (!existsSync(workspacesDir)) return actions;
-  const wsm = new WorkspaceManager(execRoot);
   for (const taskId of safeReaddir(workspacesDir)) {
     const taskDir = join(workspacesDir, taskId);
+    // Every path below this one is read, recovered or removed, so a link here would
+    // carry all of that into whatever it reaches (#503). Checked before anything is.
+    if (presentButNotPlainDirectory(taskDir)) {
+      actions.push(`kept envelope ${taskId} under ${runtimeRoot}: not a plain directory`);
+      continue;
+    }
     for (const attemptId of safeReaddir(taskDir)) {
+      if (presentButNotPlainDirectory(join(taskDir, attemptId))) {
+        actions.push(
+          `kept envelope ${taskId}/${attemptId} under ${runtimeRoot}: not a plain directory`,
+        );
+        continue;
+      }
+      const execRoot =
+        readEnvelopeRecoveryRecord(join(taskDir, attemptId))?.executionRoot ?? legacyRoot;
+      const where = execRoot ?? runtimeRoot;
       // LIVE-OWNER GUARD: an envelope created by a still-running process
       // (in-process CLI run, MCP/ACP serve, another daemon) is NOT an orphan.
       // The startup premise "nothing can own an envelope" only covers
@@ -112,19 +185,28 @@ async function sweepEnvelopesUnder(execRoot: string): Promise<string[]> {
       const owner = envelopeOwner(join(taskDir, attemptId));
       if (owner) {
         actions.push(
-          `kept envelope ${taskId}/${attemptId} under ${execRoot}: live owner pid ${owner}`,
+          `kept envelope ${taskId}/${attemptId} under ${where}: live owner pid ${owner}`,
         );
         continue;
       }
       const held = await recoverOrphanCustody(join(taskDir, attemptId));
       if (held) {
+        // A capture-refused source is kept for inspection only, not continuation.
+        const purpose =
+          readEnvelopeCustody(join(taskDir, attemptId))?.continuation_eligible === false
+            ? "for inspection"
+            : "for continueFrom";
         actions.push(
-          `${held === "kept" ? "kept retained" : "retained interrupted"} envelope ${taskId}/${attemptId} under ${execRoot} for continueFrom`,
+          `${held === "kept" ? "kept retained" : "retained interrupted"} envelope ${taskId}/${attemptId} under ${where} ${purpose}`,
         );
         continue;
       }
+      if (!execRoot) {
+        actions.push(`kept envelope ${taskId}/${attemptId} under ${where}: no execution root`);
+        continue;
+      }
       try {
-        await wsm.disposeOrphan(taskId, attemptId);
+        await new WorkspaceManager(execRoot, { runtimeRoot }).disposeOrphan(taskId, attemptId);
         actions.push(`disposed orphan envelope ${taskId}/${attemptId} under ${execRoot}`);
       } catch (err) {
         actions.push(
@@ -195,7 +277,7 @@ function envelopeOwner(envelopeBase: string): number | null {
  * deleted out-of-band). Persistent thread branches are lifecycle-owned and
  * are removed only by explicit purge, never by this generic debris sweep.
  */
-async function sweepAttemptBranches(execRoot: string): Promise<string[]> {
+async function sweepAttemptBranches(execRoot: string, namespaces: string[]): Promise<string[]> {
   const actions: string[] = [];
   const branches = await git(execRoot, [
     "branch",
@@ -222,8 +304,19 @@ async function sweepAttemptBranches(execRoot: string): Promise<string[]> {
     }
     const [taskId, attemptId] = rest.split("/");
     if (!taskId || !attemptId) continue;
-    const envelopeBase = join(projectRuntimeDir(execRoot), "workspaces", taskId, attemptId);
-    if (existsSync(envelopeBase)) continue; // still owned (sweep order: envelopes first)
+    // A kept link can be dangling: it hides ownership, it does not prove absence.
+    if (
+      namespaces.some((runtime) => {
+        const task = join(runtime, "workspaces", taskId);
+        const attempt = join(task, attemptId);
+        return (
+          presentButNotPlainDirectory(task) ||
+          presentButNotPlainDirectory(attempt) ||
+          existsSync(attempt)
+        );
+      })
+    )
+      continue;
     const del = await git(execRoot, ["branch", "-D", branch]);
     if (del.code === 0) actions.push(`deleted orphan attempt branch ${branch} under ${execRoot}`);
   }

@@ -133,3 +133,42 @@ describe("resolveRunInputDefaults route freeze", () => {
     );
   });
 });
+
+describe("resolveRunInputDefaults model choice (#395)", () => {
+  const withInstance = (
+    input: Partial<RunInput>,
+    instance: Record<string, string>,
+    harnesses: Record<string, { default_model?: string }> = {},
+  ) =>
+    resolveRunInputDefaults(
+      { repoRoot: "/tmp/project", prompt: "test", mode: "agent", ...input },
+      {
+        config: config({ harnesses }),
+        registryIds: ["raw"],
+        instanceModel: (id) => instance[id] ?? null,
+      },
+    );
+
+  it("freezes run, then saved, then the instance's own choice", () => {
+    const instance = { raw: "operator/env" };
+    const saved = { raw: { default_model: "saved/model" } };
+    expect(withInstance({ models: { raw: "run/model" } }, instance, saved).models).toEqual({
+      raw: "run/model",
+    });
+    expect(withInstance({}, instance, saved).models).toEqual({ raw: "saved/model" });
+    expect(withInstance({}, instance).models).toEqual({ raw: "operator/env" });
+    expect(withInstance({}, {}).models).toEqual({});
+  });
+
+  it("treats a blank model as no choice, falling through to the next one", () => {
+    const instance = { raw: "operator/env" };
+    expect(withInstance({ models: { raw: "   " } }, instance).models).toEqual({
+      raw: "operator/env",
+    });
+    expect(withInstance({}, instance, { raw: { default_model: "  " } }).models).toEqual({
+      raw: "operator/env",
+    });
+    expect(withInstance({ models: { raw: "" } }, {}).models).toEqual({});
+    expect(withInstance({ model: "  ", harnesses: ["raw"] }, {}).models).toEqual({});
+  });
+});

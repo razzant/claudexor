@@ -23,9 +23,10 @@ const CAUSE_PHRASE: Record<ResumableCause, string> = {
   vendor_limit: "a usage limit on the previous account",
   pool_exhausted: "every account's usage limit",
   pinned_limit: "the pinned account's usage limit",
-  transport: "the process died",
+  transport: "an error without a typed cause",
   permission_denied: "a native tool permission was refused (no automatic privilege escalation)",
   context_exhausted: "the context window was exhausted",
+  turn_limit: "the max-turns limit set for it was reached",
   wall_clock: "the wall-clock deadline",
   cancelled: "a cancel",
   host_restart: "a host restart",
@@ -71,17 +72,20 @@ export function evidenceIndexPointer(
   return `${prior} Its evidence index is at: ${path} — read it before continuing. The same index follows:\n\n${inlineMarkdown}`;
 }
 
-/** The packet carrier's prompt: original prompt (constraints included) + notice + evidence index. */
+/** The packet carrier's prompt: original prompt (constraints included) + notice + evidence
+ * index; a route that cannot read files also gets the complete work order the index cuts. */
 export function packetContinuationPrompt(input: {
   originalPrompt: string;
   notice: string;
   evidencePath: string;
   evidenceMarkdown: string;
   completed?: boolean;
+  workOrder?: string | null;
 }): string {
   return [
     input.originalPrompt,
     input.notice,
+    ...(input.workOrder ? [`The complete work order:\n\n${input.workOrder}`] : []),
     evidenceIndexPointer(input.evidencePath, input.evidenceMarkdown, input.completed),
   ].join("\n\n");
 }

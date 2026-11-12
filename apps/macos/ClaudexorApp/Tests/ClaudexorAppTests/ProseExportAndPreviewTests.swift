@@ -59,6 +59,33 @@ struct ProseExportAndPreviewTests {
         #expect(presentation.selectedMessages.isEmpty && presentation.focusedMessages.isEmpty)
     }
 
+    /// A chat answer's file link presents the preview inside the feed's environment (#520 found the
+    /// preview registered with the feed, paused its following and copied the presenting message).
+    @Test func filePreviewSheetDoesNotJoinThePresentingFeedOrMessage() async throws {
+        let policy = NSApplication.shared.activationPolicy()
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        defer { NSApplication.shared.setActivationPolicy(policy) }
+        let position = ConversationReadingPosition()
+        let presentation = ConversationPresentation()
+        let markdown = "# Notes\n\n" + String(repeating: "Previewed file words. ", count: 400)
+        let request = SafeFilePreviewRequest(
+            url: FileManager.default.temporaryDirectory.appendingPathComponent("notes.md"), kind: .markdown,
+            source: SafeFilePreviewRequest.BoundedSource(bytes: Data(markdown.utf8), wasTruncated: false))
+        let root = SafeFilePreviewSheet(request: request)
+            .environment(\.conversationReadingPosition, position).environment(\.proseMessageID, "feed-turn")
+            .environment(\.proseMessageSource, "The presenting answer").environment(presentation)
+        let (host, window) = window(root)
+        defer { window.close() }
+        await settle(host)
+        let prose = try #require(views(host).compactMap { $0 as? ProseTextView }.first {
+            $0.string.contains("Previewed file words") })
+        #expect(prose.readingPosition == nil && prose.messageID == nil)
+        #expect(prose.messageSource == markdown)
+        #expect(window.makeFirstResponder(prose))
+        prose.setSelectedRange(NSRange(location: 0, length: 10))
+        #expect(presentation.selectedMessages.isEmpty && presentation.focusedMessages.isEmpty)
+    }
+
     @Test(arguments: [false, true])
     func collapsedSourceEndsOnAWordAndFillsTheWideFold(prompt: Bool) async throws {
         let policy = NSApplication.shared.activationPolicy()

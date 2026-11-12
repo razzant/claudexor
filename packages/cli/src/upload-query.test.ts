@@ -3,23 +3,39 @@ import {
   fstatSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { dirname, join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { sensitiveResourcePolicy } from "@claudexor/util";
 import { uploadQuery } from "./upload-query.js";
 import { openDocumentSource } from "./local-document-source.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const mocks = vi.hoisted(() => ({
   fetch: vi.fn(),
   connect: vi.fn(),
   descriptors: [] as number[],
-  handles: [] as Array<{ fd: number }>,
+  handles: [] as Array<{ fd: number; close(): Promise<void> }>,
+  /** Runs once a real descriptor is open, before its opener sees it. */
+  opened: vi.fn(),
+  /** Runs before the real open, after the opener's pre-open snapshot. */
+  beforeOpen: vi.fn(),
+  roots: [] as string[],
 }));
+vi.mock("@claudexor/util", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@claudexor/util")>();
+  const { fixtureResourcePolicy } = await import("./test-support/fixture-resource-policy.js");
+  return {
+    ...actual,
+    sensitiveResourcePolicy: fixtureResourcePolicy(actual.SensitiveResourcePolicy, mocks.roots),
+  };
+});
 vi.mock("./daemon-run.js", () => ({ connectDaemonIfRunning: mocks.connect }));
 vi.mock("./live.js", () => ({ controlApiFetch: mocks.fetch }));
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -27,8 +43,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...actual,
     async open(...args: Parameters<typeof actual.open>) {
+      await mocks.beforeOpen();
       const handle = await actual.open(...args);
       mocks.handles.push(handle);
+      await mocks.opened();
       return handle;
     },
   };
@@ -44,9 +62,9 @@ vi.mock("./local-document-source.js", async (importOriginal) => {
     },
   };
 });
-const roots: string[] = [];
+const roots = mocks.roots;
 function file(name = "note.txt", bytes = "document") {
-  const root = mkdtempSync(join(tmpdir(), "ingress-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ingress-")));
   roots.push(root);
   const path = join(root, name);
   writeFileSync(path, bytes);
@@ -58,11 +76,28 @@ const status = (state = "open") => ({
   receivedBytes: state === "uploaded" ? 8 : 0,
   expectedBytes: 8,
 });
-afterEach(() => {
-  for (const fd of mocks.descriptors.splice(0)) expect(() => fstatSync(fd)).toThrow();
-  for (const handle of mocks.handles.splice(0)) expect(handle.fd).toBe(-1);
-  vi.resetAllMocks();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
+  // Record leaks, release them, clean up, then assert: a descriptor left open
+  // (even by a deliberately broken product) fails only the test that leaked it.
+  const openDescriptors = mocks.descriptors.splice(0).filter((fd) => {
+    try {
+      fstatSync(fd);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const openHandles = mocks.handles.splice(0).filter((handle) => handle.fd !== -1);
+  const leakedHandleFds = openHandles.map((handle) => handle.fd);
+  for (const handle of openHandles) await handle.close();
+  return () => {
+    vi.resetAllMocks();
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+    expect(openDescriptors, "source descriptors left open").toEqual([]);
+    expect(leakedHandleFds, "file handles left open").toEqual([]);
+  };
 });
 function connect() {
   mocks.connect.mockResolvedValue({ addr: { baseUrl: "http://fixture", token: "t" } });
@@ -316,10 +351,33 @@ describe("thin upload translation and recovery", () => {
 describe("explicit local document descriptor", () => {
   it("closes a descriptor when selection changes before open validation completes", async () => {
     const path = file();
-    const pending = openDocumentSource(path, 8);
-    renameSync(path, `${path}.old`);
-    writeFileSync(path, "replaced");
-    await expect(pending).rejects.toMatchObject({ code: "attachment_source_changed" });
+    const dir = dirname(path);
+    roots.push(`${dir}.old`);
+    // Once the selected file is open, its path comes to name another file. Its directory
+    // moves, so the open file itself is untouched: only the check after open sees it.
+    mocks.opened.mockImplementationOnce(() => {
+      renameSync(dir, `${dir}.old`);
+      mkdirSync(dir);
+      writeFileSync(path, "replaced");
+    });
+    await expect(openDocumentSource(path, 8)).rejects.toMatchObject({
+      code: "attachment_source_changed",
+    });
+    expect(mocks.handles).toHaveLength(1);
+    expect(mocks.handles[0]?.fd).toBe(-1);
+  });
+  it("closes a descriptor when a same-size file replaces the selection before open (#534)", async () => {
+    const path = file();
+    // The replacement lands after the selection snapshot but before open(): the
+    // descriptor and the pathname then both name the new file, so only the
+    // comparison with the pre-open snapshot can see it.
+    mocks.beforeOpen.mockImplementationOnce(() => {
+      renameSync(path, `${path}.old`);
+      writeFileSync(path, "replaced");
+    });
+    await expect(openDocumentSource(path, 8)).rejects.toMatchObject({
+      code: "attachment_source_changed",
+    });
     expect(mocks.handles).toHaveLength(1);
     expect(mocks.handles[0]?.fd).toBe(-1);
   });
@@ -336,14 +394,17 @@ describe("explicit local document descriptor", () => {
     await expect(openDocumentSource(sensitive, 8)).rejects.toMatchObject({
       code: "sensitive_resource_rejected",
     });
-    const store = join(root, ".aws");
-    mkdirSync(store);
-    writeFileSync(join(store, "data.txt"), "document");
-    const alias = join(root, "ordinary");
-    symlinkSync(store, alias);
-    await expect(openDocumentSource(join(alias, "data.txt"), 8)).rejects.toMatchObject({
-      code: "sensitive_resource_rejected",
-    });
+    for (const name of [".aws", ".claude"]) {
+      const store = join(root, name);
+      mkdirSync(store);
+      writeFileSync(join(store, "data.txt"), "document");
+      const alias = join(root, `ordinary-${name.slice(1)}`);
+      symlinkSync(store, alias);
+      await expect(openDocumentSource(join(alias, "data.txt"), 8)).rejects.toMatchObject({
+        code: "sensitive_resource_rejected",
+      });
+    }
+    expect(sensitiveResourcePolicy.classifyPath("/outside/.claude/file.txt").sensitive).toBe(true);
   });
   it("detects same-size replacement and in-place mutation, and closes its descriptor", async () => {
     for (const replace of [false, true]) {

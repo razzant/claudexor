@@ -39,8 +39,20 @@ export interface MaintenanceRouteContext {
   requestError(res: ServerResponse, error: unknown, fallbackStatus?: 400 | 500): void;
 }
 
-/** The maintenance route family's catalog entries, kept beside the routes. */
+/** The maintenance route family's catalog entries, kept beside the routes,
+ * plus the daemon-status family's route-health read (daemon-status-routes.ts),
+ * which shares this operator-diagnostics list. */
 export const MAINTENANCE_OPERATION_DRAFTS: OperationDraft[] = [
+  {
+    method: "GET",
+    path: "/v2/daemon/route-health",
+    mutability: "read_only",
+    requestSchema: null,
+    responseSchema: "ControlRouteHealth",
+    responseKind: "json",
+    summary:
+      "Count the last seven days of terminal runs per harness and effective access profile, with each route's most frequent failures; computed on demand from retained run records, facts without thresholds.",
+  },
   {
     method: "GET",
     path: "/v2/maintenance/gc",
@@ -49,6 +61,13 @@ export const MAINTENANCE_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlGcLastResponse",
     responseKind: "json",
     summary: "Read the durable last retention pass; never starts cleanup.",
+    parameters: [
+      queryParam({
+        name: "retention_report",
+        enum: ["true", "false"],
+        description: "Include completion history fields; requested only by lockstep clients.",
+      }),
+    ],
   },
   {
     method: "POST",
@@ -67,23 +86,23 @@ export const MAINTENANCE_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlHarnessMaintenanceInventory",
     responseKind: "json",
     summary:
-      "Inspect installed vendor CLIs: selected program and version, managed copy, tested pin and maintainability; never logs in or installs.",
+      "Read the selected vendor program, newest observation, available actions and last operation; never logs in or installs.",
     parameters: [
       queryParam({
         name: "harness",
         repeatable: true,
-        description: "Restrict to these installable harness ids (repeat to select several).",
+        description: "Restrict to these adapter program ids (repeat to select several).",
       }),
       queryParam({
         name: "fresh",
         enum: ["true", "false"],
-        description: "Re-inspect instead of returning the cached installation facts.",
+        description: "Selected programs are inspected on every read, including when this is false.",
       }),
       queryParam({
         name: "checkLatest",
         enum: ["true", "false"],
         description:
-          "Also read the newest published version where the mechanism supports it; omitted keeps the last observation (null = not checked).",
+          "Also perform the adapter's HTTPS newest-version read; omitted keeps the last typed observation (not_read, available or unavailable).",
       }),
     ],
   },
@@ -95,7 +114,7 @@ export const MAINTENANCE_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlHarnessMaintenanceOperation",
     responseKind: "json",
     summary:
-      "Accept one durable update/return of an installed vendor CLI; the 202 handle is not success.",
+      "Accept one durable vendor Update, Install when missing, or exact-version operation; the 202 handle is not completion.",
     idempotency: "key_required",
     completion: "durable_handle",
   },
@@ -131,11 +150,26 @@ export async function handleMaintenanceRoute(
   const services = ctx.services;
   if (method === "GET" && path === "/maintenance/gc") {
     if (!services?.lastRetention) return false;
+    const report = await routeValue(ctx, res, 400, () => {
+      const query = new URL(req.url ?? "/", "http://localhost");
+      assertOnlyQueryParams(query, ["retention_report"]);
+      return optionalBooleanQuery(query, "retention_report") === true;
+    });
+    if (!report.ok) return true;
     const value = await routeValue(ctx, res, 500, () => services.lastRetention!());
     if (!value.ok) return true;
-    return serviceResponse(ctx, res, "lastRetention", () =>
-      ctx.json(res, 200, ControlGcLastResponse.parse(value.value)),
-    );
+    return serviceResponse(ctx, res, "lastRetention", () => {
+      const parsed = ControlGcLastResponse.parse(value.value);
+      if (report.value || !parsed.last) ctx.json(res, 200, parsed);
+      else {
+        const {
+          last_completed_at: _completed,
+          failed_or_held_streak: _streak,
+          ...last
+        } = parsed.last;
+        ctx.json(res, 200, { ...parsed, last });
+      }
+    });
   }
   if (method === "POST" && path === "/maintenance/gc") {
     const service = services?.runRetention;
@@ -150,7 +184,14 @@ export async function handleMaintenanceRoute(
       const parsed = ControlGcReceipt.parse(receipt.value);
       if (request.value.retention_report) ctx.json(res, 200, parsed);
       else {
-        const { held: _held, holds: _holds, truncated: _truncated, ...legacy } = parsed;
+        const {
+          held: _held,
+          holds: _holds,
+          truncated: _truncated,
+          effects: _effects,
+          deleted_lanes: _deletedLanes,
+          ...legacy
+        } = parsed;
         ctx.json(res, 200, legacy);
       }
     });

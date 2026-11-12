@@ -243,6 +243,60 @@
                       "null"
                     ],
                     "description": "Vendor CLI version the manifest hints were last verified against (null for api/none sources)."
+                  },
+                  "problem": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "message": {
+                        "type": "string"
+                      },
+                      "retryable": {
+                        "type": "boolean"
+                      },
+                      "fieldErrors": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "default": {}
+                      },
+                      "requiredActions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "default": []
+                      },
+                      "evidenceRefs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "default": []
+                      },
+                      "context": {
+                        "type": "object",
+                        "additionalProperties": {},
+                        "default": {},
+                        "description": "Typed route-specific recovery context; never a duplicate error message."
+                      }
+                    },
+                    "required": [
+                      "code",
+                      "message",
+                      "retryable"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Present only when the live catalog read failed: count is then 0 and is NOT an empty catalog."
                   }
                 },
                 "required": [
@@ -338,7 +392,7 @@
                   ],
                   "description": "Active filesystem/command access profile for a run: readonly (no writes), workspace_write (use the harness's native workspace-write policy), full (unrestricted; requires the per-repo trust allow for a run an operator starts at a surface, not for an execution.delegated run), inherit_native (defer to the harness's own native settings)."
                 },
-                "description": "Access profiles the adapter can enforce."
+                "description": "Access profiles the adapter can translate to its harness."
               },
               "readonlyMechanism": {
                 "type": "string",
@@ -348,7 +402,7 @@
                   "tool_allowlist",
                   "none"
                 ],
-                "description": "HOW read-only is enforced (fs_sandbox | permission_deny | tool_allowlist | none) — none means read-only intent is advisory for this harness."
+                "description": "HOW a harness applies read-only (fs_sandbox | permission_deny | tool_allowlist | none) — none means read-only intent is advisory for this harness."
               },
               "writeMechanism": {
                 "type": "string",
@@ -501,6 +555,23 @@
             "type": "string"
           },
           "description": "Accepted POST /runs request keys (derived from the ControlRunStartRequest schema; the CLI/MCP/ACP surfaces project subsets of these)."
+        },
+        "runDecisionActions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "accept_clean_patch",
+              "rerun_with_feedback",
+              "accept_risk",
+              "override_needs_human",
+              "revert_run",
+              "discard",
+              "taken"
+            ],
+            "description": "Operator decision: apply an accepted result, rerun with feedback, accept risk, override needs-human, revert a recorded Git effect, acknowledge a captured terminal patch result, or discard remaining copied files without applying them."
+          },
+          "description": "Actions accepted by POST /runs/:id/decision; taken acknowledges a captured terminal patch result."
         },
         "outputSchemaDialects": {
           "type": "array",
@@ -686,6 +757,7 @@
         "availableHarnesses",
         "modes",
         "runControlKeys",
+        "runDecisionActions",
         "outputSchemaDialects",
         "mutability",
         "cliCommands",

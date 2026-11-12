@@ -71,9 +71,9 @@ function instrumented(real: HarnessAdapter): HarnessAdapter {
       count(`${id}.doctor`);
       return real.doctor(spec);
     },
-    probeCredentialProfile: async (profile, signal) => {
+    probeCredentialProfile: async (profile, signal, options) => {
       count(`${id}.probe`);
-      return real.probeCredentialProfile!(profile, signal);
+      return real.probeCredentialProfile!(profile, signal, options);
     },
     async *run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
       const profile = spec.credential_profile ?? null;

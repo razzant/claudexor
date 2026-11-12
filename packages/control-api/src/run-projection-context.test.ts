@@ -173,7 +173,7 @@ function readCount(record: DaemonRunRecord, relativePath: string): number {
 afterEach(() => {
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("one request context for complete run projection", () => {
   it.each([true, false])(
@@ -304,7 +304,9 @@ describe("one request context for complete run projection", () => {
           cursor: parent.events.length - 1,
           pending: [],
           operator: null,
-          children: [{ record: child.record, pending: true }],
+          children: [
+            { record: child.record, attention: { waitingOnUser: true, asyncQuestionsOnly: true } },
+          ],
         },
       },
       publish,
@@ -313,7 +315,7 @@ describe("one request context for complete run projection", () => {
     expect(eventsParseCountForTests()).toBe(2);
     expect(detail.summary.spendUsd).toBe(3.25);
     expect(detail.children).toMatchObject([
-      { runId: child.record.runId, spendUsd: 1.5, waitingOnUser: true },
+      { runId: child.record.runId, spendUsd: 1.5, waitingOnUser: true, asyncQuestionsOnly: true },
     ]);
     expect(detail.lastSeq).toBe(parent.events.length - 1);
     expect(detail.timeline.at(-1)?.title).toBe("progress 749");

@@ -101,6 +101,7 @@ export function applyGateInputFor(
     decision: terminal.decision,
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct, maxBytes),
     patch,
+    gitResult: exactPatch.runGitResult(rec, maxBytes),
     ...(files ? { filesManifest: files.manifest, manifestSha256: files.manifestSha256 } : {}),
     originalRepoRoot: runExecutionRoot(rec, runRepoRoot(rec, maxBytes)),
     targetRepoRoot,
@@ -136,11 +137,19 @@ export function applyEligibilityFor(
     maxBytes,
   );
   const files = readFilesWorkProduct(rec, maxBytes);
-  if (!files && (patch === null || patch.trim() === "")) return null;
+  // An object result is applyable by its trees, whether or not a view was rendered.
+  const result = files ? null : exactPatch.runGitResult(rec, maxBytes);
+  if (
+    result
+      ? result.base_tree === result.candidate_tree
+      : !files && (patch === null || patch.trim() === "")
+  )
+    return null;
   if (!root) return null;
   return deriveApplyEligibility({
     ...applyGateInputFor(rec, patch ?? "", root, operatorDecision, maxBytes),
-    exactPatchUnavailable: unavailable,
+    // The exact view of an object result is optional; its objects are the exact bytes.
+    exactPatchUnavailable: result ? false : unavailable,
   });
 }
 

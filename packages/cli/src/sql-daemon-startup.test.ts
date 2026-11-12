@@ -21,7 +21,8 @@ import {
   type ControlJournalInspection,
   type ControlJournalQuarantineReceipt,
 } from "@claudexor/schema";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 import { daemonStoreLine } from "./daemon-status-report.js";
 import {
   DurableJournal,
@@ -288,20 +289,27 @@ class Fixture {
     expect(child.exitCode, this.stderr).toBe(0);
     expect(() => process.kill(child.pid!, 0)).toThrow();
   }
-  async dispose() {
+  /** Stops and checks this fixture; its removal comes back for the hook's tail. */
+  async dispose(): Promise<() => void> {
     try {
       await this.stop();
       expect(readFileSync(join(this.config, "config.yaml"), "utf8")).toBe(this.settings);
       expect(existsSync(join(this.config, "migration", "accounts-unified.json"))).toBe(false);
     } finally {
       if (this.child && live(this.child)) throw new Error("refusing to remove a live fixture root");
-      rmSync(this.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
+    return () => {
+      rmSync(this.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    };
   }
 }
 
-afterEach(async () => {
-  for (const fixture of fixtures.splice(0).reverse()) await fixture.dispose();
+afterEachClosed(async () => {
+  const removals: Array<() => void> = [];
+  for (const fixture of fixtures.splice(0).reverse()) removals.push(await fixture.dispose());
+  return () => {
+    for (const remove of removals) remove();
+  };
 }, 30_000);
 
 function seedCopiedJournal(f: Fixture, count = 1, promptBytes = 16) {

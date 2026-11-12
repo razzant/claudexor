@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -12,17 +12,24 @@ import { SqlEventLedger } from "../../daemon/src/store/event-store.js";
 import { BlobFiles } from "../../daemon/src/store/blob-files.js";
 import { createPartition, currentGeneration } from "../../daemon/src/store/partitions.js";
 import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 // Offline reproduction of the independent review's real producer/SQL/HTTP falsifiers.
 const roots: string[] = [],
   stores: EngineStore[] = [],
   servers: DaemonControlApiServer[] = [];
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a late close or a later test never reaches
+  // another test's.
+  const ownedRoots = roots.splice(0);
+  const ownedStores = stores.splice(0);
   vi.restoreAllMocks();
   vi.useRealTimers();
   for (const server of servers.splice(0)) await server.stop();
-  for (const store of stores.splice(0)) await store.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const store of ownedStores) await store.close();
+  return () => {
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+  };
 });
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "cursor-pipeline-"));

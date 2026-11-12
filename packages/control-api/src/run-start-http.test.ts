@@ -2,11 +2,12 @@ import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ControlProblem, type ControlRunStartRequest } from "@claudexor/schema";
 import { DaemonTransportError } from "../../daemon/src/client-errors.js";
 import { DaemonControlApiServer, type DaemonFacadeClient } from "./daemon-server.js";
 import { normalizeRunStartRequest } from "./run-start.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const roots: string[] = [];
 const stores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
@@ -15,10 +16,16 @@ const token = "run-start-test-token";
 const sameKeyAction = "Retry the same operation with the same Idempotency-Key.";
 type Route = "create" | "retry";
 
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a late close or a later test never reaches
+  // another test's.
+  const ownedRoots = roots.splice(0);
+  const ownedStores = stores.splice(0);
   for (const server of servers.splice(0)) await server.stop();
-  for (const sql of stores.splice(0)) await sql.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const sql of ownedStores) await sql.close();
+  return () => {
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+  };
 });
 
 /** Real HTTP and SQL command authority, with no daemon process or harness execution. */

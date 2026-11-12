@@ -8,6 +8,7 @@ import { detailFor, summarizeRun } from "./run-projection.js";
 import { validRunOperatorDecision } from "./run-apply-projection.js";
 import { inRunProjection } from "./projection-context.js";
 import { prepareInterruptedOutput } from "./retained-output.js";
+import { routeHealthFactsOf } from "./route-health-facts.js";
 import { summaryFingerprint } from "./run-list-fingerprint.js";
 import { paramsRecord, type DaemonRunRecord } from "./run-record.js";
 import {
@@ -54,6 +55,8 @@ export function projectBulkJob(
         return readArtifact(job.input);
       case "event-replay":
         return readEventReplayBatch(job.input);
+      case "route-facts":
+        return routeHealthFactsOf(job.input.record);
       case "summary": {
         const { record, cached } = job.input;
         try {
@@ -79,9 +82,9 @@ export function projectBulkJob(
           pending,
           cursor,
           validRunOperatorDecision(record, operator),
-          children.map(({ record: child, pending: waitingOnUser }) => ({
+          children.map(({ record: child, attention }) => ({
             ...summaryOrDiagnostic(child),
-            waitingOnUser,
+            ...attention,
           })),
           problem,
         );

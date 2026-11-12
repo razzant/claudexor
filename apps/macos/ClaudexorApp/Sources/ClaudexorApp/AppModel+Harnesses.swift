@@ -247,6 +247,7 @@ extension AppModel {
             let attachmentInputs = Self.attachmentInputs(manifest: status.manifest)
             let acceptsBrowser =
                 status.manifest?["capabilities"]?["browser_tool"]?.boolValue ?? false
+            let readsFiles = status.manifest?["capabilities"]?["read_files"]?.boolValue
             let effortLevels: [String] = {
                 // Schema truth: HarnessCapabilities.effort_levels lives under
                 // manifest.capabilities.
@@ -277,6 +278,7 @@ extension AppModel {
                 reasons: status.reasons ?? [], readiness: status.readiness,
                 attachmentInputs: attachmentInputs,
                 acceptsBrowser: acceptsBrowser,
+                readsFiles: readsFiles,
                 delegation: status.delegation,
                 setupLogin: status.setupLogin,
                 effortLevels: effortLevels,

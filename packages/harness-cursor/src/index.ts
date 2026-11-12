@@ -1,10 +1,12 @@
-import { cursorAccessArgs } from "./profile.js";
+import { planCursorProfileProgramCleanup } from "./profile-program-cleanup.js";
+import { CURSOR_PROGRAM } from "./program.js";
+import { cursorAccessArgs, cursorModeArgs, cursorNativeAccess } from "./profile.js";
+import { cursorSpawnPinFacts } from "./profile.js";
 import {
   cursorProcessingMethods,
   applyCursorRunProcessing,
   cursorProcessingParser,
 } from "./processing.js";
-import { createHash } from "node:crypto";
 import type {
   AuthPreference,
   ConformanceReport,
@@ -20,7 +22,6 @@ import {
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
   abortSignalFromSpec,
-  credentialProfileUnpinned,
   HarnessUnavailableError,
   promptWithInstructions,
   providerScrubEnv,
@@ -33,7 +34,6 @@ export { parseCursorModelList } from "./parse.js";
 import {
   cursorObservationAuthenticated,
   cursorObservationError,
-  probeCursorNativeAuth,
   selectCursorAuthRoute,
   shouldDiscloseCursorAutoApiRoute,
   shouldSmokeCursorApiKey,
@@ -42,6 +42,7 @@ import {
 } from "./auth.js";
 import { probeCursorDoctorForAccounts } from "./doctor.js";
 import { coordinatedCursorNativeAuth, cursorFileStoreEnv } from "./status-cache.js";
+import type { CursorStatusRead } from "./status-cache.js";
 export { clearCursorStatusCache } from "./status-cache.js";
 import {
   cursorChildHome,
@@ -56,7 +57,12 @@ export { readCursorDashboard, CursorDashboardError } from "./quota.js";
 import { prepareCursorMcpInjection } from "./mcp-config.js";
 import { detectCursorVersion, resolveCursorBin } from "./bin.js";
 export { resolveCursorBin } from "./bin.js";
-import { smokeIsolatedApiKey, unsmokedApiSmoke, type CursorApiSmokeResult } from "./smoke.js";
+import {
+  smokeIsolatedApiKey,
+  unsmokedApiSmoke,
+  smokeCursorApiKey,
+  type CursorApiSmokeDeps,
+} from "./smoke.js";
 import {
   listCursorModelsFromReadyRoute,
   queryCursorModels,
@@ -135,41 +141,15 @@ function cursorApiKey(env?: Record<string, string | null | undefined>): string |
   );
 }
 
-type CursorApiSmokeCacheEntry = { result: CursorApiSmokeResult; expiresAtMs: number };
-type CursorRuntimeDeps = {
+type CursorRuntimeDeps = CursorApiSmokeDeps & {
   detectVersion: typeof detectCursorVersion;
-  nativeAuthOk: typeof probeCursorNativeAuth;
+  nativeAuthOk: CursorStatusRead;
   cursorApiKey: typeof cursorApiKey;
   listCursorModels: CursorModelLister;
-  smokeIsolatedApiKey: typeof smokeIsolatedApiKey;
-  apiSmokeCache: Map<string, CursorApiSmokeCacheEntry>;
-  apiSmokeCacheTtlMs: number;
-  apiSmokeFailureCacheTtlMs: number;
-  nowMs: () => number;
   runCliHarness: typeof runCliHarnessDefault;
-  /** INV-062: profile secrets are resolved transiently, never logged. */
+  /** INV-146: profile secrets are resolved transiently, never logged. */
   resolveProfileSecret: (ref: string) => string | null;
 };
-
-function cursorApiSmokeCacheKey(key: string): string {
-  return createHash("sha256").update(key).digest("hex");
-}
-
-async function smokeCursorApiKey(
-  deps: CursorRuntimeDeps,
-  key: string,
-  fresh = false,
-): Promise<CursorApiSmokeResult> {
-  const cacheKey = cursorApiSmokeCacheKey(key);
-  const now = deps.nowMs();
-  const cached = fresh ? undefined : deps.apiSmokeCache.get(cacheKey);
-  if (cached && cached.expiresAtMs > now) return cached.result;
-  if (cached) deps.apiSmokeCache.delete(cacheKey);
-  const result = await deps.smokeIsolatedApiKey(key);
-  const ttlMs = result.ok ? deps.apiSmokeCacheTtlMs : deps.apiSmokeFailureCacheTtlMs;
-  if (!fresh && ttlMs > 0) deps.apiSmokeCache.set(cacheKey, { result, expiresAtMs: now + ttlMs });
-  return result;
-}
 
 function cursorBaseEnv(env?: EnvMap): EnvMap {
   return { ...(env ?? {}), ...providerScrubEnv() };
@@ -258,7 +238,10 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
       reason: "Cursor session/index storage has no proven independent pruning contract.",
     },
     id: "cursor",
+    program: CURSOR_PROGRAM,
+    planProfileProgramCleanup: planCursorProfileProgramCleanup,
     childHome: cursorChildHome,
+    nativeAccess: cursorNativeAccess,
     // The level is a token of the compound model id: `prepareProcessing` selects the
     // listed variant of the requested family from this account's list, with its receipt.
     effortParameter: "--model",
@@ -354,8 +337,8 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
       return runCursor(spec, runtime);
     },
 
-    async probeCredentialProfile(profile, abortSignal) {
-      return probeCursorCredentialProfile(profile, runtime, abortSignal);
+    async probeCredentialProfile(profile, abortSignal, options) {
+      return probeCursorCredentialProfile(profile, runtime, abortSignal, options);
     },
 
     async probeCredentialAccount(profile, abortSignal) {
@@ -368,15 +351,15 @@ async function* runCursor(
   spec: HarnessRunSpec,
   deps: CursorRuntimeDeps,
 ): AsyncIterable<HarnessEvent> {
-  const args = ["-p", "--output-format", "stream-json", ...cursorAccessArgs(spec)];
-  // Native Plan's createPlan schema cannot carry D-16 WorkReport; native read-only
-  // Ask preserves prompt-owned plan intent and the model-authored final report.
-  // `readonly` access rides the SAME mode: Ask is the only mechanism this CLI
-  // has that actually withholds the write/shell tools. Without it a readonly
-  // run is a full agent run — `--sandbox enabled` gates commands, not file
-  // edits (proven by a live probe: the agent created a file under exactly the
-  // previous readonly argv).
-  if (spec.intent === "plan" || spec.access === "readonly") args.push("--mode", "ask");
+  // Access argv then Ask mode, exactly as `cursorNativeAccess` discloses them.
+  const args = [
+    ...(CURSOR_PROGRAM.childUpdateArgs ?? []),
+    "-p",
+    "--output-format",
+    "stream-json",
+    ...cursorAccessArgs(spec),
+  ];
+  args.push(...cursorModeArgs(spec));
   // W-C4 live deltas (engine-gated; the parser applies the documented taxonomy).
   if (spec.stream_deltas) args.push("--stream-partial-output");
 
@@ -396,7 +379,7 @@ async function* runCursor(
     ({ cursorApiKey, ...input }) =>
       resolveCursorAuthRoute(cursorApiKey ? { ...deps, cursorApiKey } : deps, input),
     abortSignalFromSpec(spec),
-    { admitLastPositive: credentialProfileUnpinned(spec) }, // #363: the engine's pin fact
+    cursorSpawnPinFacts(spec), // #363/#532: the engine's pin facts
   );
   if ("refusal" in resolved) {
     yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: resolved.refusal };
@@ -478,6 +461,7 @@ async function* runCursor(
     spec.model_hint,
   );
   yield* deps.runCliHarness({
+    program: CURSOR_PROGRAM,
     bin: resolveCursorBin(),
     args,
     spec,

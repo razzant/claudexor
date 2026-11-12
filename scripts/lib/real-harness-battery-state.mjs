@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -254,6 +254,104 @@ export function automaticBatteryHarnesses(harnessIds, readinessByHarness, doctor
  * and need only their selected profile's available+passed readiness. */
 export function nativeBatteryRowReady({ defaultHarnessReady, requiresProfile, profileEntry }) {
   return requiresProfile ? batteryProfileReady(profileEntry) : defaultHarnessReady === true;
+}
+
+/** First-party harnesses whose readonly promise the battery must exercise.
+ * Agy routes only through named accounts, so its row pins the named profile. */
+export const READONLY_CAPABILITY_HARNESSES = ["codex", "claude", "cursor", "agy"];
+
+/** Readonly keeps what its callers rely on: reading files outside the project
+ * and listing a directory there. A write-denial probe and an echo prompt both
+ * passed while agy plan mode refused every outside read (claudexor#525), so a
+ * row asks for content only a real outside read can produce. */
+export function readonlyCapabilityRows(named = {}) {
+  return READONLY_CAPABILITY_HARNESSES.map((harness) => {
+    const requiresProfile = harness === "agy";
+    return {
+      id: `${harness}-${requiresProfile ? "named" : "default"}-readonly-capability`,
+      name: `${harness[0].toUpperCase()}${harness.slice(1)} readonly reads outside the project`,
+      harness,
+      access: "readonly",
+      ...(requiresProfile
+        ? { profileId: named[harness]?.profile?.profile_id, requiresProfile: true }
+        : {}),
+    };
+  });
+}
+
+/** One row's outside facts: a random secret word and three to six files whose
+ * names are random lowercase letters. The word, the count and the
+ * alphabetically first name each come only from a real read or listing. */
+export function readonlyCapabilityFixture() {
+  // randomInt draws each letter uniformly; a byte modulo 26 would favour a-v.
+  const letters = (length) =>
+    Array.from({ length }, () => String.fromCharCode(97 + randomInt(26))).join("");
+  const names = new Set();
+  const count = randomInt(3, 7);
+  while (names.size < count) names.add(`entry-${letters(8)}.txt`);
+  const listing = [...names];
+  return {
+    word: `word-${randomBytes(4).toString("hex")}`,
+    listing,
+    fileCount: listing.length,
+    firstName: [...listing].sort()[0],
+  };
+}
+
+/** The probe prompt: a secret word in a file outside the project, the number of
+ * files in an outside directory and the alphabetically first of their names. */
+export function readonlyCapabilityPrompt({ secretPath, listingDir }) {
+  return (
+    `Read the file ${secretPath}, which is outside this project, and list the files in the ` +
+    `directory ${listingDir}. Do not edit anything. Answer in one line exactly: ` +
+    "WORD=<the secret word>; FILES=<number of files>; FIRST=<alphabetically first file name>."
+  );
+}
+
+/** The run body of one capability row: an Ask run with readonly access. It
+ * carries no reviewerModels, which only Agent runs accept: the shared run-start
+ * admission answers such a body with HTTP 400 before any harness starts. */
+export function readonlyCapabilityRequest({ row, prompt, projectRoot, modelId, maxUsd }) {
+  return {
+    prompt,
+    mode: "ask",
+    scope: { kind: "project", root: projectRoot },
+    harnesses: [row.harness],
+    primaryHarness: row.harness,
+    access: "readonly",
+    ...(row.profileId ? { credentialProfileId: row.profileId } : {}),
+    ...(modelId ? { model: modelId } : {}),
+    web: "auto",
+    effort: "low",
+    paidBudget: { kind: "finite", maxUsd: Number(maxUsd) },
+    maxSeconds: 15 * 60,
+  };
+}
+
+/** The one value after `KEY=`, or undefined when the key is missing or given
+ * twice. Wrapping quotes, backticks or asterisks and a closing period or comma
+ * are formatting, not part of the value. */
+function answerValue(text, key) {
+  const values = [...text.matchAll(new RegExp(`\\b${key}\\s*=\\s*([^\\s;]+)`, "g"))].map((match) =>
+    match[1]
+      .replace(/[.,]+$/, "")
+      .replace(/^[`'"*]+|[`'"*]+$/g, "")
+      .replace(/[.,]+$/, ""),
+  );
+  return values.length === 1 ? values[0] : undefined;
+}
+
+/** All three facts must match; an answer that never read or listed cannot hold
+ * them. The count is a plain integer given once (FILES=4.5 or two counts fail)
+ * and FIRST is the exact name, so a guessed count alone never passes. */
+export function evaluateReadonlyCapabilityAnswer(answer, { word, fileCount, firstName }) {
+  const text = typeof answer === "string" ? answer : "";
+  const files = answerValue(text, "FILES");
+  return {
+    wordFound: text.includes(word),
+    filesMatch: files !== undefined && /^\d+$/.test(files) && Number(files) === fileCount,
+    firstMatch: typeof firstName === "string" && answerValue(text, "FIRST") === firstName,
+  };
 }
 
 function sqlitePrimary(path) {

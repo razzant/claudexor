@@ -5,7 +5,6 @@ import type { ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "yaml";
-import { redactSecrets } from "@claudexor/util";
 import { RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
 import { readArtifact, type ArtifactReadResult } from "./artifact-read.js";
 import { handleArtifactServeRoute, type ArtifactServeContext } from "./artifact-serve-routes.js";
@@ -29,7 +28,7 @@ describe("finite artifact bulk reads", () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "cx-artifact-read-"));
   });
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  afterEach(() => rmSync(root, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("keeps list ordering, MIME, hidden git exclusion and both response envelopes", () => {
     mkdirSync(join(root, "sub"));
@@ -65,30 +64,21 @@ describe("finite artifact bulk reads", () => {
     ).toEqual({ runId: "none", artifacts: [] });
   });
 
-  it("keeps whole-text redaction and refuses credential, patch and binary secrets", () => {
+  it("serves credential-shaped text, patch, binary and `.env` artifacts exactly (INV-146)", () => {
     const secret = "sk-proj-" + "a".repeat(48);
     const source = `const token = '${secret}';\n`;
     writeFileSync(join(root, "note.ts"), source);
-    expect(text(readArtifact({ kind: "fetch", root, relative: "note.ts" }))).toBe(
-      redactSecrets(source),
-    );
-    expect(text(readArtifact({ kind: "fetch", root, relative: "note.ts" }))).not.toContain(secret);
-    for (const relative of ["patch.diff", "binary.bin", ".env"]) {
+    expect(text(readArtifact({ kind: "fetch", root, relative: "note.ts" }))).toBe(source);
+    for (const relative of ["patch.diff", ".env"]) {
       writeFileSync(join(root, relative), secret);
-      expect(readArtifact({ kind: "fetch", root, relative })).toMatchObject({
-        kind: "error",
-        status: 409,
-      });
+      expect(text(readArtifact({ kind: "fetch", root, relative }))).toBe(secret);
     }
-    writeFileSync(join(root, "patch.diff"), "--- old\n+++ new\n");
-    expect(text(readArtifact({ kind: "fetch", root, relative: "patch.diff" }))).toBe(
-      "--- old\n+++ new\n",
-    );
-    writeFileSync(join(root, "binary.bin"), new Uint8Array([0, 255, 2]));
+    const bytes = new Uint8Array([0, ...Buffer.from(secret), 255]);
+    writeFileSync(join(root, "binary.bin"), bytes);
     expect(readArtifact({ kind: "fetch", root, relative: "binary.bin" })).toMatchObject({
       kind: "body",
       contentType: "application/octet-stream",
-      body: new Uint8Array([0, 255, 2]),
+      body: bytes,
     });
   });
 
@@ -159,7 +149,7 @@ describe("artifact routes delegate bulk work", () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "cx-artifact-route-"));
   });
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  afterEach(() => rmSync(root, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   function context(read: ArtifactServeContext["readArtifact"]): ArtifactServeContext {
     return {

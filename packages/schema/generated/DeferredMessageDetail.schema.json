@@ -85,7 +85,7 @@
                     "retryable": {
                       "type": "boolean",
                       "default": true,
-                      "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay."
+                      "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay or a managed resource it names was released."
                     },
                     "required_actions": {
                       "type": "array",
@@ -116,13 +116,51 @@
                 "code"
               ],
               "additionalProperties": false,
-              "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation."
+              "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
             },
             {
               "type": "null"
             }
           ],
-          "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation."
+          "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
+        },
+        "resumed": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/hold/anyOf/0/properties/code"
+                },
+                "problem": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/hold/anyOf/0/properties/problem"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false,
+              "description": "The hold the draft was returned from."
+            },
+            "reason": {
+              "type": "string",
+              "const": "process_scope_settled",
+              "description": "A later settlement of the predecessor's run proved its processes gone; the draft was unchanged, not cleared, replaced or stopped."
+            },
+            "at": {
+              "type": "string",
+              "minLength": 1,
+              "description": "ISO-8601 timestamp string."
+            }
+          },
+          "required": [
+            "from",
+            "reason",
+            "at"
+          ],
+          "additionalProperties": false,
+          "description": "Why this draft left its hold automatically. It then took the existing revision and admission path; any other reason holds it again."
         },
         "dispatchedRevision": {
           "anyOf": [
@@ -777,7 +815,7 @@
                               "null"
                             ],
                             "default": null,
-                            "description": "Per-harness default model; null = the harness's own default."
+                            "description": "Per-harness default model; null = the harness's own default, or no model on a route whose request must name one."
                           },
                           "effort": {
                             "anyOf": [
@@ -882,9 +920,7 @@
         "capturedAt": {
           "anyOf": [
             {
-              "type": "string",
-              "minLength": 1,
-              "description": "ISO-8601 timestamp string."
+              "$ref": "#/definitions/DeferredMessageDetail/properties/resumed/properties/at"
             },
             {
               "type": "null"

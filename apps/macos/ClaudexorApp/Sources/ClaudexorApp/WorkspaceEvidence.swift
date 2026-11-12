@@ -58,9 +58,9 @@ struct RunEvidenceSection: View {
                 HStack(spacing: Theme.Spacing.sm) {
                     Image(systemName: "stethoscope").foregroundStyle(.secondary)
                     Text("Run \(String(runId.suffix(6)))").font(.callout.weight(.medium))
-                    if let phase = run?.phase {
-                        Circle().fill(phase.color).frame(width: 7, height: 7)
-                        Text(phase.label).font(.caption2).foregroundStyle(.secondary)
+                    if let run {
+                        Circle().fill(Theme.statusFill(run.terminalTone)).frame(width: 7, height: 7)
+                        Text(run.terminalWord).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             } content: {

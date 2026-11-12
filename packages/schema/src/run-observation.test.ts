@@ -99,6 +99,19 @@ describe("RunWaitManyInput", () => {
     });
   });
 
+  it("keeps includeBlocking an optional boolean that is absent unless the caller sent it", () => {
+    const targets = [{ runId: "a" }];
+    expect(RunWaitManyInput.parse({ targets, waitMs: 0 })).not.toHaveProperty("includeBlocking");
+    for (const includeBlocking of [true, false])
+      expect(RunWaitManyInput.parse({ targets, waitMs: 0, includeBlocking })).toEqual({
+        targets,
+        waitMs: 0,
+        includeBlocking,
+      });
+    for (const includeBlocking of ["true", 1, 0, null, {}])
+      expect(RunWaitManyInput.safeParse({ targets, includeBlocking }).success).toBe(false);
+  });
+
   it("accepts every base64url character without padding or trimming tokens", () => {
     const seen = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0_-";
     expect(RunWaitManyInput.parse({ targets: [{ runId: "a", seen }], waitMs: 0 })).toEqual({
@@ -205,6 +218,47 @@ describe("RunWaitManySummary and RunWaitManyResult", () => {
     expect(RunWaitManyResult.safeParse(result).success).toBe(false);
   });
 
+  it("admits blocking only on a pending row of a wait-many result, never in the compact summary", () => {
+    for (const blocking of [true, false]) {
+      const row = { status: "running", pending: true, token: TOKEN, problem: null, blocking };
+      const result = { wakeReason: "attention", attention: [0], summaries: [row] };
+      const parsed = RunWaitManyResult.parse(result);
+      expect(parsed).toEqual(result);
+      // The additive key keeps the compact order and comes last.
+      expect(Object.keys(parsed.summaries[0]!)).toEqual([
+        "status",
+        "pending",
+        "token",
+        "problem",
+        "blocking",
+      ]);
+      // Task-group members and every reader without the opt-in keep the old strict row.
+      expect(RunWaitManySummary.safeParse(row).success).toBe(false);
+    }
+    const compact = { status: "running", pending: true, token: TOKEN, problem: null };
+    expect(
+      Object.keys(
+        RunWaitManyResult.parse({ wakeReason: "timeout", attention: [], summaries: [compact] })
+          .summaries[0]!,
+      ),
+    ).toEqual(["status", "pending", "token", "problem"]);
+  });
+
+  it.each([
+    { ...observed, blocking: false },
+    { ...observed, blocking: true },
+    { ...unavailable, blocking: true },
+    { ...unavailable, blocking: false },
+    { ...observed, pending: true, blocking: null },
+    { ...observed, pending: true, blocking: "false" },
+    { ...observed, pending: true, blocking: 0 },
+  ])("rejects blocking without pending questions or as a non-boolean: %j", (row) => {
+    expect(
+      RunWaitManyResult.safeParse({ wakeReason: "timeout", attention: [], summaries: [row] })
+        .success,
+    ).toBe(false);
+  });
+
   it("retains the independently reproduced 113944-byte maximum logical response", () => {
     const result = {
       wakeReason: "attention",
@@ -215,6 +269,23 @@ describe("RunWaitManySummary and RunWaitManyResult", () => {
     const parsed = RunWaitManyResult.parse(result);
     expect(parsed).toEqual(result);
     expect(Buffer.byteLength(JSON.stringify(parsed), "utf8")).toBe(113_944);
+    expect(Buffer.byteLength(JSON.stringify(parsed), "utf8")).toBeLessThanOrEqual(131_072);
+  });
+
+  it("fits the opt-in maximum, 1000 pending async interrupted rows, in 129944 bytes", () => {
+    // The longest lifecycle, every index in attention and the longer `false`.
+    const result = {
+      wakeReason: "attention",
+      attention: Array.from({ length: 1000 }, (_, i) => i),
+      summaries: Array.from({ length: 1000 }, () => ({
+        ...observed,
+        pending: true,
+        blocking: false,
+      })),
+    };
+    expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBe(129_944);
+    const parsed = RunWaitManyResult.parse(result);
+    expect(JSON.stringify(parsed)).toBe(JSON.stringify(result));
     expect(Buffer.byteLength(JSON.stringify(parsed), "utf8")).toBeLessThanOrEqual(131_072);
   });
 });

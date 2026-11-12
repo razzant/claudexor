@@ -147,7 +147,7 @@ struct OnboardingView: View {
                     Label("Smoke Test Ask", systemImage: "checkmark.seal")
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .tint(Theme.accentSolid)
                 .disabled(model.availableHarnesses(for: .ask, selected: routableHarnesses).isEmpty)
                 .help("Run a no-project read-only Ask smoke test with the first ready harness.")
             }
@@ -171,7 +171,7 @@ struct OnboardingView: View {
                 Label(step == 2 ? "Finish" : "Continue", systemImage: step == 2 ? "checkmark" : "chevron.right")
             }
             .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
+            .tint(Theme.accentSolid)
         }
         .padding(Theme.Spacing.lg)
     }

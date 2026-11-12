@@ -8,20 +8,27 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DurableJournal,
   journalPartitionDirectory,
 } from "../../daemon/src/store/test-support/fixtures/legacy/journal/index.js";
 import { openSqlStoreAfterTransport } from "./sql-startup-storage.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 function fixture() {
   const daemonDir = realpathSync.native(mkdtempSync(join(tmpdir(), "sql-startup-")));
-  cleanup.push(() => rmSync(daemonDir, { recursive: true, force: true }));
+  removals.push(() => rmSync(daemonDir, { recursive: true, force: true }));
   return {
     daemonDir,
     advanceFloor: vi.fn(),
@@ -76,6 +83,9 @@ describe("SQL startup storage publication", () => {
     });
     cleanup.push(() => again.close());
     expect(again.prepare("SELECT id FROM command").all()).toEqual([{ id: "job" }]);
+    // Every ordinary open raises the serving floor to the running release, so an
+    // older release refuses a root a newer one served (#649 relies on it).
+    expect(f.advanceFloor).toHaveBeenCalledTimes(2);
   });
   it("creates a durable fresh global generation and never serves an orphan temporary import as empty", async () => {
     const f = fixture();

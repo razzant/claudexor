@@ -8,7 +8,17 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@claudexor/secrets", () => ({ resolveSecret: mocks.resolveSecret }));
 vi.mock("@claudexor/core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@claudexor/core")>();
-  return { ...actual, runCapture: mocks.runCapture };
+  return {
+    ...actual,
+    resolveSelectedProgramAsync: async () => {
+      try {
+        const value = await mocks.runCapture();
+        return { versionOutput: value.stdout.trim() };
+      } catch {
+        return { versionOutput: null };
+      }
+    },
+  };
 });
 
 import { createOpenCodeAdapter } from "./index.js";

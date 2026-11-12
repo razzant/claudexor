@@ -3,8 +3,8 @@ import { ControlQuotaResponse } from "./quota.js";
 import { ControlQuotaFreshnessResponse } from "./quota-read.js";
 import { QuotaRequestKind } from "./quota-request-kind.js";
 
-import { AccountTarget } from "./account-target.js";
-export { AccountTarget } from "./account-target.js";
+import { AccountResourceTarget, AccountTarget } from "./account-target.js";
+export { AccountResourceTarget, AccountTarget } from "./account-target.js";
 const instant = z.string().datetime({ offset: true }).nullable();
 const resourceScopeFields = {
   scope: z.enum(["personal", "team"]).optional(),
@@ -55,6 +55,27 @@ export const AccountSpending = z
     decimal_places: z.number().int().nonnegative().nullable(),
     resets_at: instant,
     reason: z.string().nullable(),
+    capped: z
+      .boolean()
+      .nullable()
+      .optional()
+      .describe(
+        "true: the provider reports a cap in limit; false: it reports no cap, so a null limit is not unknown and not unlimited money; null or absent: not established.",
+      ),
+    remaining: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "Provider-reported amount left under limit in the current window, with its sign; null when not reported.",
+      ),
+    window: z
+      .enum(["day", "week", "month", "lifetime"])
+      .nullable()
+      .optional()
+      .describe(
+        "Provider calendar window that used counts (UTC); when capped, limit resets at its end and lifetime never resets. resets_at is set only from a provider-reported instant.",
+      ),
   })
   .strict();
 export type AccountSpending = z.infer<typeof AccountSpending>;
@@ -90,7 +111,14 @@ export const AccountResetOffer = z
 export type AccountResetOffer = z.infer<typeof AccountResetOffer>;
 export const AccountResourceSnapshot = z
   .object({
-    target: AccountTarget,
+    target: AccountResourceTarget,
+    credential_fingerprint: z
+      .string()
+      .regex(/^[0-9a-f]{16}$/)
+      .optional()
+      .describe(
+        "Non-secret identity of the API key this row was read with. Present only on API-key rows; a row is published only while it matches the key requests would send now.",
+      ),
     balances: resourceFacet(z.array(AccountBalance)),
     spending: resourceFacet(z.array(AccountSpending)),
     resets: resourceFacet(z.array(AccountResetOffer)),
@@ -100,10 +128,24 @@ export const AccountResourceSnapshot = z
   })
   .strict();
 export type AccountResourceSnapshot = z.infer<typeof AccountResourceSnapshot>;
-/** Resource-only sources satisfy poll demand, never quota admission. */
+/** Resource-only sources never decide quota admission or routing. An
+ * `account` source reads registered login accounts and joins background poll
+ * demand; an `api_key` source reads the harness's registered API-key accounts
+ * and its default API-key route on explicit refresh only, and its rows reach
+ * only clients that negotiated includeApiKeys. */
 export const ACCOUNT_RESOURCE_REFRESH_SOURCES = {
-  cursor_dashboard: { harness: "cursor", facets: ["balances", "spending"] },
+  cursor_dashboard: { harness: "cursor", facets: ["balances", "spending"], credential: "account" },
+  openrouter_key: { harness: "openrouter", facets: ["spending"], credential: "api_key" },
 } as const;
+type ResourceSourceCredential =
+  (typeof ACCOUNT_RESOURCE_REFRESH_SOURCES)[keyof typeof ACCOUNT_RESOURCE_REFRESH_SOURCES]["credential"];
+export function accountResourceSourceHarnesses(credential: ResourceSourceCredential): Set<string> {
+  return new Set(
+    Object.values(ACCOUNT_RESOURCE_REFRESH_SOURCES)
+      .filter((source) => source.credential === credential)
+      .map((source) => source.harness),
+  );
+}
 export const AccountResourceObservation = AccountResourceSnapshot.partial()
   .required({ target: true })
   .extend({

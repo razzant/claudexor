@@ -149,7 +149,8 @@ extension SettingsScreen {
                         label: family.label,
                         iconImage: HarnessIconImage.image(for: family),
                         isActive: activeDraft.eligibleHarnesses.contains(family),
-                        tint: family.color
+                        tint: family.color,
+                        fill: family.fill
                     ) {
                         toggleEligibleHarness(family)
                     }

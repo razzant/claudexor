@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { ArtifactStore } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
-import { makeOutcomeFacts, type RunFailureCode } from "@claudexor/schema";
+import { makeOutcomeFacts, type QuotaRefusal, type RunFailureCode } from "@claudexor/schema";
 import { harnessFailureNextActions } from "./harnessFailure.js";
 import { declaredFailure, writeFailure } from "./runTerminalResults.js";
 
@@ -22,6 +22,7 @@ export function routingFailureClassification(err: unknown): {
   category: "config_error" | "harness_unavailable";
   code: RunFailureCode | null;
   resetsAt: string | null;
+  quotaRefusal?: QuotaRefusal;
   nextActions?: string[];
 } {
   const isPreflightRefusal =
@@ -47,6 +48,7 @@ export function routingFailureClassification(err: unknown): {
     category: declared.category === "config_error" ? "config_error" : "harness_unavailable",
     code: declared.code,
     resetsAt: declared.resetsAt,
+    ...(declared.quotaRefusal ? { quotaRefusal: declared.quotaRefusal } : {}),
   };
 }
 
@@ -79,6 +81,7 @@ export function writeRoutingFailureTerminal(
     category: routingFailure.category,
     code: routingFailure.code,
     resetsAt: routingFailure.resetsAt,
+    quotaRefusal: routingFailure.quotaRefusal,
     safeMessage: run.message,
     runDir: paths.root,
     ...(routingFailure.nextActions ? { nextActions: routingFailure.nextActions } : {}),

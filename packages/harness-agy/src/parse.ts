@@ -1,4 +1,10 @@
-import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
+import type {
+  HarnessEvent,
+  RateLimitSignal,
+  ToolKind,
+  ToolRef,
+  VendorFailureEvidence,
+} from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
 type Json = any;
@@ -49,12 +55,33 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
             ? step.tool_name
             : "tool";
       const target = boundedTarget(primaryToolTarget(info.parameters));
-      const tool: ToolRef = { name, kind: toolKindFor(name), target };
+      // The recorded step_index is the same on a call's ACTIVE and DONE frames:
+      // it is the invocation id that pairs them (and keys INV-043 recovery).
+      const useId = Number.isInteger(step.step_index) ? `step-${step.step_index}` : undefined;
+      const tool: ToolRef = {
+        name,
+        kind: toolKindFor(name),
+        ...(useId ? { use_id: useId } : {}),
+        target,
+      };
       const state = typeof step.state === "string" ? step.state : "";
       if (state === "ACTIVE") {
         // ACTIVE/DONE arrive as a pair per call (fixture-pinned): ACTIVE is
         // the call, DONE the result.
         events.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool });
+      } else if (state === "ERROR") {
+        // The step's own failure, returned to the model as its tool result, for
+        // every cause: a refused call (recorded 1.5.0: a matching deny rule
+        // ends the call, not the turn, #653) or any other failed step. A failed
+        // step confirms no completed change, so a writer gets no file_change.
+        const errorDetail = summarize(info.error) || "agy reported the tool step as ERROR";
+        events.push({
+          type: "tool_result",
+          session_id: sessionId,
+          ts,
+          text: `tool_result: error: ${errorDetail}`,
+          tool: { ...tool, status: "error", error_summary: errorDetail },
+        });
       } else if (state === "DONE") {
         const errorDetail = summarize(info.error);
         if (errorDetail) {
@@ -86,24 +113,33 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
             tool: { ...tool, status: "ok", content_summary: output || undefined },
           });
           if (isWriteTool(name)) {
+            // The write's companion of its own DONE result: the same step, completed.
             events.push({
               type: "file_change",
               session_id: sessionId,
               ts,
-              tool: { name, kind: "file" },
-              payload: { path: boundedTarget(primaryToolTarget(info.parameters)), tool: name },
+              tool: { ...tool, kind: "file", phase: "completed", status: "ok" },
+              payload: { path: target, tool: name },
             });
           }
         }
       }
-      // Any OTHER state (PENDING/CANCELLED/ERROR/absent, or a future value) is
-      // a recognized lifecycle no-op: claiming success for it would fabricate
-      // a completed tool call — and, for a write-named tool, a file change
-      // that never happened (Ф0 review #1).
+      // Any OTHER state (PENDING/CANCELLED/absent, or a future value) is a
+      // recognized lifecycle no-op: claiming success for it would fabricate a
+      // completed tool call — and, for a write-named tool, a file change that
+      // never happened (Ф0 review #1).
     } else if (typeof step.text_delta === "string" && step.text_delta) {
-      // agent_response chunks: completed narration segments (not display
-      // deltas — no payload.delta). The typed final comes from `result`.
-      events.push({ type: "message", session_id: sessionId, ts, text: step.text_delta });
+      // agent_response text is a stream FRAGMENT: across recorded tries every
+      // typed final equals the exact concatenation of its narration frames,
+      // across steps and tools, whitespace-only and repeated frames included.
+      // Kept verbatim as non-final evidence; finality comes only from `result`.
+      events.push({
+        type: "message",
+        session_id: sessionId,
+        ts,
+        text: step.text_delta,
+        payload: { delta: true },
+      });
     }
     // user_input / checkpoint / finish / unknown / future types: recognized
     // lifecycle no-ops. Step usage is deliberately NOT emitted: the recorded
@@ -157,11 +193,17 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
         });
       }
     } else {
-      events.push({
+      // A non-SUCCESS result is failure evidence, never answer material: the
+      // model's own text rides exact, non-final retained evidence; the
+      // vendor's status and error ride the error as its typed diagnostic.
+      const rateLimit = agyInferenceQuotaSignal(r.error);
+      events.push(...nonSuccessEvidence(r, sessionId, ts), {
         type: "error",
         session_id: sessionId,
         ts,
         error: summarize(r.error) || `agy terminal status ${status || "unknown"}`,
+        payload: { vendor_failure: agyVendorFailure(status, r.error) },
+        ...(rateLimit ? { rate_limit: rateLimit } : {}),
       });
     }
     if (usage) events.push({ type: "usage", session_id: sessionId, ts, usage });
@@ -169,6 +211,64 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
   }
 
   return null;
+}
+
+/** The `response` and object `structured_output` of a non-SUCCESS result,
+ * verbatim, as buffered (retained, never final or displayed) messages. */
+function nonSuccessEvidence(r: Json, sessionId: string, ts: string): HarnessEvent[] {
+  const texts = [
+    typeof r.response === "string" && r.response.trim() ? r.response : null,
+    r.structured_output !== null && typeof r.structured_output === "object"
+      ? JSON.stringify(r.structured_output)
+      : null,
+  ];
+  return texts.flatMap((text, index) =>
+    text === null
+      ? []
+      : [
+          {
+            type: "message" as const,
+            session_id: sessionId,
+            ts,
+            text,
+            payload: {
+              buffered: true,
+              non_success_result: true,
+              ...(index === 1 ? { structured_output: true } : {}),
+            },
+          },
+        ],
+  );
+}
+
+/** The result's own terminal status (machine-readable, verbatim) and its error
+ * words. Opaque evidence: nothing branches on either (VendorFailureEvidence). */
+function agyVendorFailure(status: string, error: unknown): VendorFailureEvidence {
+  const words =
+    typeof error === "string"
+      ? error
+      : error === undefined || error === null
+        ? ""
+        : summarize(error);
+  return {
+    code: status && status.length <= 128 ? status : null,
+    message: words.trim() ? redactSecrets(words).slice(0, 4000) : null,
+    source: "agy_result",
+  };
+}
+
+/**
+ * AGY puts this refusal in the structured `result.error` field, but the
+ * current vendor does not expose a stable machine code or absolute reset
+ * timestamp for it. Keep the exact vendor record as evidence and use the
+ * existing unknown-reopening contract so the continuation owner will not
+ * replay the same native session as if this were a transport interruption.
+ */
+function agyInferenceQuotaSignal(error: unknown): RateLimitSignal | undefined {
+  const words =
+    typeof error === "string" ? error : error && typeof error === "object" ? summarize(error) : "";
+  if (!/\bindividual quota reached\b/i.test(words)) return undefined;
+  return { resets_at: null, retry_delay_ms: null, reopening: "unknown" };
 }
 
 /** Tools that MUTATE the workspace. The regex catches the vendor's naming
@@ -201,6 +301,7 @@ function primaryToolTarget(parameters: unknown): string | undefined {
   for (const key of [
     "TargetFile",
     "AbsolutePath",
+    "Path",
     "DirectoryPath",
     "CommandLine",
     "Query",
@@ -227,14 +328,16 @@ function stepUsage(raw: unknown): HarnessEvent["usage"] | null {
   return Object.keys(usage).length ? usage : null;
 }
 
+/** Bounded tool output or terminal detail. Tool output is what the model saw
+ * and stays unmasked (INV-146); a terminal error is masked by the journal seam. */
 function summarize(value: unknown): string {
   if (typeof value === "string")
-    return value.trim() ? redactSecrets(value).trim().replace(/\s+/g, " ").slice(0, 1000) : "";
+    return value.trim() ? value.trim().replace(/\s+/g, " ").slice(0, 1000) : "";
   // A non-string detail (the vendor sometimes nests an object) must not be
   // silently dropped into a generic message (Ф0 review #7).
   if (value === null || value === undefined) return "";
   try {
-    return redactSecrets(JSON.stringify(value)).trim().slice(0, 1000);
+    return JSON.stringify(value).trim().slice(0, 1000);
   } catch {
     return "";
   }
@@ -242,7 +345,8 @@ function summarize(value: unknown): string {
 
 function boundedTarget(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
-  return redactSecrets(value).slice(0, 500);
+  // The agent's own tool input (INV-146): bounded for display, never masked.
+  return value.slice(0, 500);
 }
 
 function stringOrUndef(v: unknown): string | undefined {

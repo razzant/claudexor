@@ -30,7 +30,7 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 let prevConfigDir: string | undefined;
 
@@ -64,6 +64,8 @@ async function initRepo(): Promise<string> {
 }
 
 const SUMMARY_MARKER = "CACHED-SUMMARY-PROSE-MARKER";
+/** The run-owned input directory each summary pass was handed (#653). */
+const summaryInputDirs: (string | null)[] = [];
 
 /**
  * A lane that (a) answers a normal turn with a big body (so prior-turn outputs
@@ -99,6 +101,7 @@ function bigAnswerLane(id: string, nativeSessionId: string): HarnessAdapter {
         payload: { native_session_id: nativeSessionId },
       } as never;
       const isSummaryPass = spec.prompt.includes("successor agent");
+      if (isSummaryPass) summaryInputDirs.push(spec.input_file_dir);
       const text = isSummaryPass
         ? `${SUMMARY_MARKER}: decisions taken, current state, open items.`
         : `verbose answer from ${id} `.repeat(400); // ~8 KiB body
@@ -169,9 +172,12 @@ describe("[INV-137] V9c cached summary replaces the one-line collapse in the pac
     // Switch to lane B: it has never seen the thread, so the whole 6-turn delta
     // must be carried — that blows the 24 KiB budget and forces a collapse, so
     // the engine summarises the collapsed prefix inline on lane B.
+    summaryInputDirs.length = 0;
     const bDir = await turn("t7", "lane-b", "beta: switch lanes");
     expect(disclosures["t7"].kind).toBe("packet");
     expect(disclosures["t7"].summarized).toBe(true);
+    // The pass may deliver its transcript in the enclosing run's own context/.
+    expect(summaryInputDirs).toEqual([join(bDir, "context")]);
     const packet = readFileSync(join(bDir, "context", "THREAD.md"), "utf8");
     expect(packet).toContain("## Earlier conversation (summary)");
     expect(packet).toContain(SUMMARY_MARKER);

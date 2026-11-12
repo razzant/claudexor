@@ -36,6 +36,7 @@ type RetryServices = Pick<
 export interface RunRetryRouteContext {
   daemon: DaemonFacadeClient;
   storeId?: () => string | undefined;
+  wantsStoreId?: boolean;
   services?: RetryServices;
   findRun(id: string): Promise<DaemonRunRecord | null>;
   waitForRunStart(jobId: string): Promise<DaemonRunRecord>;
@@ -156,8 +157,19 @@ async function exactRetry(
           );
         }
         params = runStart.normalizeRunStart(ControlRunStartRequest.parse(recordedParams));
-        await ctx.services?.validateResources?.(params.attachments ?? []);
-        await ctx.services?.preflightRunRequirements?.(params);
+        // A same-key repeat whose recovery turn was recorded before its first enqueue
+        // (#249) reads the refs as that turn, which holds them; otherwise this Exact
+        // Retry is a new reference. A changed request under the key conflicts here.
+        const recorded = threadId
+          ? await ctx.services?.findThreadTurnByIdempotency?.(threadId, {
+              key: idempotencyKey,
+              client: "control-api",
+              request: idempotencyRequest,
+            })
+          : null;
+        const heldBy = recorded ? { owner: "turn" as const, id: recorded.id } : undefined;
+        await ctx.services?.validateResources?.(params.attachments ?? [], heldBy);
+        await ctx.services?.preflightRunRequirements?.(params, heldBy);
       },
     );
     if (prior) {
@@ -272,7 +284,7 @@ async function respondToExactRetryJob(
       ...(retryTurnId ? { turnId: retryTurnId } : {}),
     });
   }
-  const metadata = runStart.acceptedTaskGroupReceipt(accepted, ctx.storeId);
+  const metadata = runStart.acceptedRunReceipt(accepted, ctx.storeId, ctx.wantsStoreId);
   if (!accepted.runId && TERMINAL_STATES.has(accepted.state)) {
     // The replayed job died BEFORE it bound a run (e.g. the trust gate's typed
     // 403). A 202 here would hand the caller a durable handle for a run that

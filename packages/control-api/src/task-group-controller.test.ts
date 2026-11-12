@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createServer, request, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { RunWaitManyResult, TaskGroupRunsResult } from "@claudexor/schema";
 import { DaemonServer, type RunnerFn } from "../../daemon/src/server.js";
 import { readRunObservations } from "../../daemon/src/run-observation.js";
@@ -13,17 +13,24 @@ import type { McpToolOutput, RunnerFn as McpRunner } from "../../mcp-server/src/
 import { DaemonControlApiServer } from "./daemon-server.js";
 import { readTaskGroupRuns } from "./task-group-routes.js";
 import type { RunObservationListener } from "./run-wait-many.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const GROUP = "11111111-1111-4111-8111-111111111111";
 const cleanup: Array<() => void | Promise<void>> = [];
+const removals: Array<() => void> = [];
 function structured(output: McpToolOutput): unknown {
   if (typeof output === "string") throw new Error("expected structured MCP result");
   expect(output.isError).not.toBe(true);
   return output.structured;
 }
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const close of cleanup.splice(0).reverse()) await close();
-  vi.restoreAllMocks();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+    vi.restoreAllMocks();
+  };
 });
 
 // This trace uses a Unix-domain HTTP socket; Windows named-pipe coverage is separate.
@@ -34,7 +41,7 @@ itUnix(
     // A short private Unix socket avoids opening a host TCP port. This fixture
     // exercises the actual HTTP request handler, not listener discovery or stdio.
     const root = realpathSync(mkdtempSync(join(tmpdir(), "cx498-controller-")));
-    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    removals.push(() => rmSync(root, { recursive: true, force: true }));
     const f = await sqlFixture(root);
     cleanup.push(f.close);
     const repo = join(root, "project");
@@ -55,6 +62,7 @@ itUnix(
           request: {
             interaction_id: `question-${name}`,
             source_tool: "AskUserQuestion",
+            delivery: "blocking",
             questions: [],
           },
           requestedAt: new Date().toISOString(),

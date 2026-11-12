@@ -4,7 +4,7 @@ import {
   ControlRunControlResponse,
   DeferredMessageStopReport,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
+import { errorCode } from "@claudexor/util";
 import { cancelDelegationFamily } from "./delegation-control.js";
 import { appendRunAuditEvent } from "./run-audit.js";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
@@ -36,7 +36,6 @@ export async function handleRunControlRoute(
   let body: ControlRunControlRequest;
   try {
     const raw = await ctx.readBody(req);
-    assertNoInlineSecretValues(raw);
     body = ControlRunControlRequest.parse(raw);
   } catch (err) {
     ctx.requestError(res, err);
@@ -71,7 +70,8 @@ export async function handleRunControlRoute(
           accepted: true,
           status: "applied",
           runId: rec.runId ?? rec.id,
-          message: `run is ${rec.state}; ${kind} held its waiting next message`,
+          // True for a waiting draft this Stop held and for a custody hold it took over.
+          message: `run is ${rec.state}; ${kind} now holds its next message`,
           deferredMessage,
         }),
       );
@@ -152,7 +152,7 @@ export async function handleRunControlRoute(
       status: "applied",
       runId: rec.runId ?? rec.id,
       cascadeRunIds,
-      message: `${requested}${followUp.held ? "; its waiting next message is held" : ""}${successor ? `; ${successor}` : ""}`,
+      message: `${requested}${followUp.held ? "; its next message is now held" : ""}${successor ? `; ${successor}` : ""}`,
       ...(deferredMessage ? { deferredMessage } : {}),
     }),
   );

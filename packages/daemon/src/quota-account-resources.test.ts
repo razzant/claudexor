@@ -19,7 +19,7 @@ import { mergeResources, ageResources, quotaProjectionSignature } from "./quota-
 const cleanup: Array<() => void> = [];
 afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 const target = { harness: "codex", profile_id: "codex-default" };
 const sibling = { harness: "codex", profile_id: "other" };
 const at = new Date("2026-10-09T12:00:00Z");
@@ -65,6 +65,86 @@ const balance = {
   has_balance: false,
   unlimited: false,
 };
+
+describe("API-key resource rows", () => {
+  const keyTarget = { harness: "openrouter", profile_id: null };
+  const row = (used: string) => ({
+    id: "openrouter_key_limit",
+    label: "Key limit",
+    enabled: null,
+    used,
+    limit: "50",
+    unit: "USD",
+    currency: "USD",
+    decimal_places: null,
+    resets_at: null,
+    reason: null,
+    capped: true,
+    remaining: "1",
+    window: "month" as const,
+  });
+  const failed = (fingerprint: string, time: Date): AccountResourceObservation => ({
+    target: keyTarget,
+    credential_fingerprint: fingerprint,
+    spending: {
+      value: null,
+      source: null,
+      observed_at: null,
+      freshness: "unknown",
+      last_attempt_at: time.toISOString(),
+      last_error: "timeout",
+    },
+  });
+  it("keeps one key's figures through its own failed read but never under another key", () => {
+    const read = mergeResources(undefined, {
+      target: keyTarget,
+      credential_fingerprint: "aaaaaaaaaaaaaaaa",
+      spending: observedResourceFacet([row("49")], "openrouter_key", at),
+    });
+    const later = new Date(at.getTime() + 1000);
+    const sameKey = mergeResources(read, failed("aaaaaaaaaaaaaaaa", later));
+    expect(sameKey.spending).toMatchObject({
+      value: [row("49")],
+      freshness: "stale",
+      last_error: "timeout",
+    });
+    const otherKey = mergeResources(read, failed("bbbbbbbbbbbbbbbb", later));
+    expect(otherKey.credential_fingerprint).toBe("bbbbbbbbbbbbbbbb");
+    expect(otherKey.spending).toMatchObject({
+      value: null,
+      freshness: "unknown",
+      last_error: "timeout",
+    });
+  });
+  it("journals a default-route row with its binding and replays it exactly", async () => {
+    const j = journal();
+    const observation = {
+      target: keyTarget,
+      credential_fingerprint: "aaaaaaaaaaaaaaaa",
+      spending: observedResourceFacet([row("49")], "openrouter_key", at),
+    };
+    const registry = new QuotaRegistry(
+      j,
+      [
+        {
+          vendor: "openrouter",
+          refresh: async () => ({ snapshots: [], resources: [observation] }),
+        },
+      ],
+      () => at,
+      () => [],
+    );
+    await registry.refreshResources(keyTarget);
+    const written = registry.readResources();
+    expect(written[0]).toMatchObject({
+      target: keyTarget,
+      credential_fingerprint: "aaaaaaaaaaaaaaaa",
+    });
+    expect(new QuotaRegistry(j, [], () => at).readResources()).toEqual(written);
+    // No quota subject or absence is derived from an API-key route.
+    expect(registry.read()).toMatchObject({ snapshots: [], absences: [] });
+  });
+});
 
 describe("account resources inside quota owner", () => {
   it("ages facets independently and retains last-known balance after a 403 or sparse read", () => {
@@ -128,7 +208,7 @@ describe("account resources inside quota owner", () => {
         {
           vendor: "codex",
           refresh: async (cycle) => {
-            const id = cycle!.target!.profile_id;
+            const id = cycle!.target!.profile_id!;
             seen.push(id);
             if (id === target.profile_id) await held;
             return {

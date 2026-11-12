@@ -1,4 +1,5 @@
 import {
+  controlRoute,
   readFailure,
   strategyFromParams,
   legacyRunOutcomeFacts,
@@ -7,24 +8,22 @@ import {
 } from "./run-card-facts.js";
 import { budgetSnapshot } from "./run-budget-snapshot.js";
 import { runRepoRoot, applyEligibilityFor } from "./run-apply-projection.js";
-import { projectProcessScope } from "./run-detail-scope.js";
+import { projectProcessScope, projectProcessScopeLater } from "./run-detail-scope.js";
 
 import { readTextArtifact, safeReadStructuredArtifact } from "./run-artifact-read.js";
 import { controlRunResult } from "./run-delivery-state.js";
 import { lstatSync, readdirSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { lastRunEventSeq } from "@claudexor/event-log";
+import { executionFactsOf } from "@claudexor/workspace";
 import { isVanishedErrno, safeArtifactPath } from "./artifact-paths.js";
 
 import { continuationSummary } from "./run-continuation-projection.js";
 import { boundedArtifactText, outputReadyState, primaryOutput } from "./primary-output.js";
 
-import {
-  controlWebEvidence,
-  latestPlanProgress,
-  readRunEventsWithIntegrity,
-  timelineEvents,
-} from "./run-timeline.js";
+import { controlWebEvidence, latestPlanProgress, timelineEvents } from "./run-timeline.js";
+import { projectRouteControls } from "./route-controls-projection.js";
+import { readRunEventFacts, type RunEventFacts } from "./run-event-facts.js";
 import {
   paramsRecord,
   type ControlOperatorDecisionRecord,
@@ -47,7 +46,7 @@ import {
   ControlRunSummary,
   PaidBudget,
   type ControlPendingInteraction,
-  type ControlRouteInfo,
+  pendingQuestionAttention,
   DecisionRecord,
   ModeKind,
   RoutingGoal,
@@ -63,7 +62,7 @@ import {
   TestCommandInvocation,
   WorkProduct,
 } from "@claudexor/schema";
-import { redactSecrets, noProjectRepoRoot } from "@claudexor/util";
+import { noProjectRepoRoot } from "@claudexor/util";
 import { parse as parseYaml } from "yaml";
 
 /* ---- Thread projections (engine snake_case -> control camelCase) ---- */
@@ -137,10 +136,13 @@ export function winnerWorkStateFor(rec: DaemonRunRecord): WorkState | null {
   return winner?.outcome.work_state ?? null;
 }
 
-export function summarizeRun(
-  rec: DaemonRunRecord,
-  eventsSnapshot?: Record<string, unknown>[],
-): ControlRunSummary {
+/** An ancestor's continuation facts from the bounded event fold run detail keeps between reads. */
+function ancestorFacts(runDir: string) {
+  return executionFactsOf(readRunEventFacts({ runDir }).execution);
+}
+
+/** Run detail passes its folded event facts, which also add continuity receipts. */
+export function summarizeRun(rec: DaemonRunRecord, facts?: RunEventFacts): ControlRunSummary {
   const p = paramsRecord(rec);
   const project = projectMetadata(rec);
   // safeParse everywhere: one malformed job record (e.g. an old/foreign mode id)
@@ -164,15 +166,15 @@ export function summarizeRun(
   const webEvidence = controlWebEvidence(telemetry, task);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
   const failure = readFailure(rec);
-  const workState = telemetry?.final_attempt_id
-    ? (telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)?.outcome
-        .work_state ?? null)
-    : null;
+  const finalAttempt = telemetry?.final_attempt_id
+    ? telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)
+    : undefined;
+  const workState = finalAttempt?.outcome.work_state ?? null;
   const legacyOutcome = legacyRunOutcomeFacts(rec, decision, failure, workState);
   const terminalFacts = legacyOutcome
     ? effectiveTerminalFacts(rec.runDir, legacyOutcome, decision, expectedRunFacts(rec))
     : { runFacts: null, outcomeFacts: null, decision };
-  const budget = budgetSnapshot(rec, decision, eventsSnapshot);
+  const budget = budgetSnapshot(rec, decision, facts);
   const parsedReviewerPanel = Array.isArray(p["reviewerPanel"])
     ? ControlReviewerPanelEntry.array().safeParse(p["reviewerPanel"])
     : null;
@@ -200,7 +202,7 @@ export function summarizeRun(
       task?.run_lineage.delegated_from_run_id ??
       null,
     delegation: telemetry?.delegation ?? null,
-    ...continuationSummary(rec, eventsSnapshot),
+    ...continuationSummary(rec, facts, facts && ancestorFacts),
     taskId: rec.taskId,
     state: rec.state,
     runDir: rec.runDir,
@@ -212,7 +214,7 @@ export function summarizeRun(
     strategy: strategyFromParams(p),
     prompt:
       rec.promptPreview ??
-      (typeof p["prompt"] === "string" ? redactPrompt(p["prompt"]) : undefined),
+      (typeof p["prompt"] === "string" ? promptPreview(p["prompt"]) : undefined),
     harnesses: Array.isArray(p["harnesses"])
       ? p["harnesses"].filter((x): x is string => typeof x === "string")
       : undefined,
@@ -245,6 +247,7 @@ export function summarizeRun(
     webRequired: telemetry?.web_required ?? task?.external_context.web_required,
     webMode: telemetry?.effective_web_mode ?? task?.external_context.effective_mode,
     webEvidence,
+    routeControls: projectRouteControls(telemetry),
     requestRequirements: telemetry?.request_requirements ?? [],
     toolPermissionPolicy: task?.tool_permission_policy,
     outputReadyState: outputReadyState(
@@ -260,42 +263,13 @@ export function summarizeRun(
     // QA-034: routing rationale projected verbatim from the engine telemetry —
     // surfaces never reconstruct the order from prose.
     routingRationale: telemetry?.routing_rationale ?? null,
+    // #147: what the request that produced the result carried, typed.
+    rawContext: finalAttempt?.raw_context ?? null,
     tests: requestTests ?? (contractTests?.length ? contractTests : undefined),
     createdAt: rec.createdAt,
     startedAt: rec.startedAt,
     finishedAt: rec.finishedAt,
   });
-}
-
-/**
- * Run-level route evidence: observed model comes ONLY from telemetry (the
- * harness stream's own disclosure); the requested model from run params.
- * `verified` is never inferred from the request alone.
- */
-function controlRoute(
-  telemetry: RunTelemetry | null,
-  p: Record<string, unknown>,
-): ControlRouteInfo | null {
-  if (!telemetry) return null;
-  const finalAttempt = telemetry.final_attempt_id
-    ? telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)
-    : undefined;
-  const observed =
-    finalAttempt?.observed_model ??
-    telemetry.attempts.find((a) => a.observed_model)?.observed_model ??
-    null;
-  const harnessId =
-    finalAttempt?.harness_id ??
-    telemetry.attempts.find((a) => a.observed_model)?.harness_id ??
-    null;
-  return {
-    // Scalar-only by design until per-candidate route evidence lands:
-    // map-only pool members show requestedModel null here, honestly.
-    requestedModel: typeof p["model"] === "string" ? p["model"] : null,
-    observedModel: observed,
-    harnessId,
-    verified: observed !== null,
-  };
 }
 
 export function detailFor(
@@ -316,13 +290,12 @@ export function detailFor(
   const operatorDecisionRaw = operator
     ? { action: operator.action, decidedAt: operator.decidedAt }
     : null;
-  // RunDetail perf (D15): parse events.jsonl ONCE per detail request and thread
-  // the snapshot through every event-consuming projection (timeline, budget
-  // fallback, plan progress) — before this each field re-parsed the whole log.
-  const { events, integrity } = rec.runDir
-    ? readRunEventsWithIntegrity(rec)
-    : { events: [] as Record<string, unknown>[], integrity: undefined };
-  const summary = summarizeRun(rec, events);
+  // RunDetail perf (D15): fold events.jsonl ONCE per detail request and thread
+  // the facts through every event-consuming projection (timeline, budget
+  // fallback, plan progress, continuity). The bulk worker keeps a run's folded
+  // prefix between requests, so a repeated detail parses only appended lines.
+  const facts = readRunEventFacts(rec);
+  const summary = summarizeRun(rec, facts);
   // applyEligibility is non-null exactly when the run has an applyable patch —
   // the authoritative "something to apply" banner signal (a convergence patch
   // may carry kind:patch with no meta.result_kind, so result.kind alone would
@@ -340,6 +313,7 @@ export function detailFor(
     attemptExecution: telemetry?.attempts.map((attempt) => ({
       attemptId: attempt.attempt_id,
       harnessId: attempt.harness_id,
+      programs: attempt.programs,
       processing: attempt.processing,
       processingCostBasis: attempt.processing_cost_basis,
       usageCost: attempt.usage_cost,
@@ -347,8 +321,9 @@ export function detailFor(
     summary: {
       ...summary,
       outcomeFacts,
-      waitingOnUser: pendingInteractions.length > 0,
+      ...pendingQuestionAttention(pendingInteractions),
       processScope: projectProcessScope(rec, summary.state),
+      processScopeLater: projectProcessScopeLater(rec, summary.state),
     },
     children,
     runFacts,
@@ -363,8 +338,8 @@ export function detailFor(
     primaryOutput: retentionProblem
       ? { kind: "diagnostic", path: "events.jsonl", text: retentionProblem }
       : primaryOutput(rec, summary.mode, failure, runFacts),
-    timeline: timelineEvents(rec, events, integrity),
-    budget: budgetSnapshot(rec, decision, events, integrity),
+    timeline: timelineEvents(rec, facts.timeline, facts.integrity),
+    budget: budgetSnapshot(rec, decision, facts),
     finalSummary: boundedArtifactText(rec, "final/summary.md"),
     decision,
     operatorDecision: operatorDecisionRaw,
@@ -381,7 +356,7 @@ export function detailFor(
     // review artifacts; empty for single-envelope modes.
     candidates: rec.runDir ? candidatesFor(rec.runDir, decision) : [],
     // Live plan checklist: the winner's (else last) plan.progress items.
-    planProgress: latestPlanProgress(rec, decision?.winner ?? null, events, integrity),
+    planProgress: latestPlanProgress(rec, decision?.winner ?? null, facts.plans, facts.integrity),
     failure,
     // Minimal typed required-actions (GH #29) for a succeeded-but-blocked run,
     // from the single status-projection owner: review-blocked / checks-failed /
@@ -444,7 +419,6 @@ function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {
   return out;
 }
 
-function redactPrompt(prompt: string): string {
-  const redacted = redactSecrets(prompt);
-  return redacted.length > 240 ? `${redacted.slice(0, 240)}...` : redacted;
+function promptPreview(prompt: string): string {
+  return prompt.length > 240 ? `${prompt.slice(0, 240)}...` : prompt;
 }

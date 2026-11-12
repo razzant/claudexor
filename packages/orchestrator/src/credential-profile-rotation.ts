@@ -8,6 +8,7 @@ import type {
 import {
   HarnessRunSpec as HarnessRunSpecSchema,
   RouteCredentialUnusablePayload,
+  quotaWindowFreshness,
 } from "@claudexor/schema";
 import { quotaConstraintAppliesToModel } from "@claudexor/budget";
 import { stampCredentialProfileSelection } from "@claudexor/core";
@@ -20,6 +21,7 @@ import {
 } from "./credential-cooldown.js";
 import type { AttemptOutputMarkers } from "./attemptOutputMarkers.js";
 import { noteRefusedBeforeProgress } from "./pre-progress-refusal.js";
+import { pinnedTypedLimit } from "./quota-refusal-scope.js";
 import { applicableCredentialUnusable } from "./account-evidence.js";
 import {
   reactiveRotationEvidence,
@@ -116,7 +118,8 @@ export function staticRotationCandidates(args: {
 /**
  * Proactive headroom check (W5.4 `profile_headroom_preflight`): the SELECTED
  * profile's freshest snapshot windows against the policy threshold. Unknown
- * usage is NOT a breach — rotation never triggers on missing data.
+ * usage is NOT a breach — rotation never triggers on missing data. The first
+ * breaching window is reported unless a provider-spent (100%) window breaches.
  */
 export function profileHeadroomBreach(
   snapshots: readonly QuotaSnapshot[],
@@ -125,27 +128,30 @@ export function profileHeadroomBreach(
   threshold: number,
   model?: string | null,
   requestKind?: QuotaRequestKind,
+  now: number = Date.now(),
 ): HeadroomBreach | null {
+  let breach: HeadroomBreach | null = null;
   for (const snapshot of snapshots) {
-    // FRESH evidence only (release wave tier1 #3): a stale or unknown reading
-    // must never breach headroom, rotate a profile away, or fail selection.
-    if (snapshot.freshness !== "fresh") continue;
     if (snapshot.subject.harness !== harnessId) continue;
     if ((snapshot.subject.subject_id ?? null) !== profileId) continue;
     for (const constraint of snapshot.constraints) {
+      // FRESH evidence only, judged per window at this decision (tier1 #3, #457).
+      if (quotaWindowFreshness(snapshot, constraint, now) !== "fresh") continue;
       if (!quotaConstraintAppliesToRequestKind(constraint, requestKind)) continue;
       if (!quotaConstraintAppliesToModel(constraint, model)) continue;
-      if (constraint.used_ratio !== null && constraint.used_ratio >= threshold) {
-        return {
-          constraint_id: constraint.id,
-          used_ratio: constraint.used_ratio,
-          threshold,
-          resets_at: constraint.resets_at,
-        };
-      }
+      if (constraint.used_ratio === null || constraint.used_ratio < threshold) continue;
+      // A provider-spent window outranks a softer reserve breach in any order (#318).
+      if (breach && constraint.used_ratio < 1) continue;
+      breach = {
+        constraint_id: constraint.id,
+        used_ratio: constraint.used_ratio,
+        threshold,
+        resets_at: constraint.resets_at,
+      };
+      if (constraint.used_ratio >= 1) return breach;
     }
   }
-  return null;
+  return breach;
 }
 
 /**
@@ -293,7 +299,7 @@ function rotationExhaustionCandidates(args: {
         headroom: breach,
         cooldown: block,
         unusable: dead ? { code: dead.code, source: dead.source } : null,
-        resets_at: breach?.resets_at ?? block?.resets_at ?? null,
+        resets_at: block?.reopening ? null : (breach?.resets_at ?? block?.resets_at ?? null),
       };
     });
 }
@@ -429,7 +435,11 @@ export async function rotateSpecOnTypedLimit(args: {
   attemptId: string;
   policy: ProfilePolicy;
   registry: readonly CredentialProfile[];
-  snapshots: readonly QuotaSnapshot[];
+  /** The quota authority's current projection (#457). Read once per eligible
+   * decision, after both probes, so a reset or replacement recorded while the
+   * try ran or readiness was probed is seen; selection, the
+   * `rotation_exhausted` event and the typed terminal share that one value. */
+  quotaSnapshots: () => readonly QuotaSnapshot[];
   /** Fresh candidate-readiness probe (readyProfileIdsForRotation); called at
    * most once, and only for an eligible try under a `rotate` policy. */
   probeReadyProfiles: () => Promise<ReadonlySet<string>>;
@@ -454,7 +464,13 @@ export async function rotateSpecOnTypedLimit(args: {
   /** Candidate lane only: the workspace diff is non-empty. The read-only lane
    * omits it — file_change markers are its only mutation truth. */
   workspaceDiffNonEmpty?: boolean;
-  lastLimit: { retryDelayMs: number | null; resetsAt: string | null } | null;
+  /** The try's last typed limit; `constraintId` when the vendor named its window. */
+  lastLimit: {
+    retryDelayMs: number | null;
+    resetsAt: string | null;
+    constraintId?: string | null;
+    reopening?: "unknown" | null;
+  } | null;
   emit: EmitFn;
   newSessionId: () => string;
   /** Pre-spawn route estimate for a profile-less spec: default-subject
@@ -475,18 +491,7 @@ export async function rotateSpecOnTypedLimit(args: {
     // pins). Anything else (structural/untyped deaths) fails as-is.
     if (current && evidence.sawTypedLimit && rotationRetryEligible(evidence)) {
       return {
-        poolExhausted: Object.assign(
-          new Error(
-            `credential profile "${current.profile_id}" (${args.harnessId}) hit a typed ` +
-              `vendor limit and a pinned account never rotates` +
-              `${args.lastLimit?.resetsAt ? `; resets ${args.lastLimit.resetsAt}` : ""}`,
-          ),
-          {
-            code: "subscription_window_exhausted",
-            category: "harness_unavailable",
-            resetsAt: args.lastLimit?.resetsAt ?? null,
-          },
-        ),
+        poolExhausted: pinnedTypedLimit(current.profile_id, args.harnessId, args.lastLimit),
       };
     }
     return null;
@@ -512,6 +517,7 @@ export async function rotateSpecOnTypedLimit(args: {
       RouteCredentialUnusablePayload.parse({ ...subjectUnusable, attempt_id: args.attemptId }),
     );
   }
+  const snapshots = args.quotaSnapshots();
   const rotation = planReactiveRotation({
     currentProfile: current,
     defaultRouteWasVendorNative: args.defaultRouteWasVendorNative,
@@ -519,7 +525,7 @@ export async function rotateSpecOnTypedLimit(args: {
     attemptId: args.attemptId,
     policy: args.policy,
     registry: args.registry,
-    snapshots: args.snapshots,
+    snapshots,
     readyProfileIds,
     triedProfiles: args.triedProfiles,
     evidence,
@@ -540,7 +546,7 @@ export async function rotateSpecOnTypedLimit(args: {
       harnessId: args.harnessId,
       policy: args.policy,
       registry: args.registry,
-      snapshots: args.snapshots,
+      snapshots,
       readyProfileIds,
       excluded: args.triedProfiles,
       unusable: args.liveUnusable,
@@ -551,13 +557,7 @@ export async function rotateSpecOnTypedLimit(args: {
     // managed-api-key default that shares subject_id=null.
     const subjectBlock =
       current === null
-        ? profileQuotaBlock(
-            args.snapshots,
-            args.harnessId,
-            null,
-            "local_session",
-            args.spec.model_hint,
-          )
+        ? profileQuotaBlock(snapshots, args.harnessId, null, "local_session", args.spec.model_hint)
         : null;
     const subjectLimit =
       subjectBlock ??

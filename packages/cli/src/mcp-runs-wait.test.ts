@@ -73,6 +73,30 @@ describe("runsWaitQuery: one bounded read of existing durable handles", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("sends includeBlocking only when true and reads the blocking rows it asked for (#628)", async () => {
+    const marked = {
+      wakeReason: "attention",
+      attention: [0],
+      summaries: [
+        { status: "running", pending: true, token: TOKEN, problem: null, blocking: true },
+      ],
+    };
+    // A response body is read once: each call gets its own.
+    fetch.mockImplementation(async () => Response.json(result()));
+    fetch.mockResolvedValueOnce(Response.json(marked));
+    const targets = [{ runId: "r" }];
+    expect(await runsWaitQuery({ targets, waitMs: 0, includeBlocking: true })).toEqual(marked);
+    await runsWaitQuery({ targets, waitMs: 0, includeBlocking: false });
+    await runsWaitQuery({ targets, waitMs: 0 });
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { targets, waitMs: 0, includeBlocking: true },
+      { targets, waitMs: 0 },
+      { targets, waitMs: 0 },
+    ]);
+    await expect(runsWaitQuery({ targets, includeBlocking: "true" })).rejects.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
   it("forwards a null seen that acknowledges a problem row", async () => {
     const input = { targets: [{ runId: "r", seen: null }], waitMs: 0 };
     expect(await runsWaitQuery(input)).toEqual(result());

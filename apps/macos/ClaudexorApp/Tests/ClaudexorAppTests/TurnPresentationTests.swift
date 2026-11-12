@@ -21,14 +21,15 @@ import ClaudexorKit
     ) -> TurnPresentation.StatusLine {
         TurnPresentation.statusLine(
             phase: phase, reason: reason, harnesses: harnesses, n: n, isRace: isRace, retryLabel: retry,
-            reviewNeedsDecision: needsDecision, waitingOnUser: waiting)
+            reviewNeedsDecision: needsDecision, waitingOnUser: waiting, unfinishedWork: nil)
     }
 
     private func attention(
         _ phase: RunPhase, reason: String? = nil, needsDecision: Bool = false, waiting: Bool = false
     ) -> TurnPresentation.Attention? {
         TurnPresentation.attention(
-            phase: phase, reason: reason, reviewNeedsDecision: needsDecision, waitingOnUser: waiting)
+            phase: phase, reason: reason, reviewNeedsDecision: needsDecision, waitingOnUser: waiting,
+            unfinishedWork: nil)
     }
 
     @Test func autoLoginRequiresProvenIdleRecovery() {
@@ -88,6 +89,15 @@ import ClaudexorKit
         #expect(line(.cancelled, reason: "user_cancelled").stateWord == "Cancelled")
         #expect(line(.cancelled, reason: "wall_clock_exceeded").stateWord == "Time limit reached")
         #expect(attention(.cancelled) == nil)
+    }
+
+    @Test func maxTurnsStopIsNamedLikeTheEngineLabel() {
+        // #299: the engine's `interrupted / turn_limit_reached` ("Turn limit reached").
+        #expect(attention(.interrupted, reason: "turn_limit_reached")
+            == TurnPresentation.Attention(text: "Turn limit reached", tone: .failure))
+        #expect(line(.interrupted, reason: "turn_limit_reached").stateWord == nil)
+        #expect(attention(.interrupted)
+            == TurnPresentation.Attention(text: RunPhase.interrupted.label, tone: .failure))
     }
 
     @Test func attentionStatesRaiseOneLoudChipWithoutStutter() {

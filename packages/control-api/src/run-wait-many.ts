@@ -1,16 +1,19 @@
-import {
-  RunWaitManyResult,
-  isTerminalLifecycle,
-  type RunWaitManyInput,
-  type RunWaitManySummary,
-} from "@claudexor/schema";
+import { RunWaitManyResult, isTerminalLifecycle, type RunWaitManyInput } from "@claudexor/schema";
 
 /** Committed changes of observation inputs (job and run ids). A host that
  * cannot name them calls the listener without an argument: re-read everything. */
 export type RunObservationListener = (changed?: ReadonlySet<string>) => void;
 
+type Summary = RunWaitManyResult["summaries"][number];
+
 export interface RunWaitManyHost {
-  snapshot(ids: readonly string[], signal?: AbortSignal): Promise<RunWaitManySummary[]>;
+  /** Without `options` every row is the compact summary; `includeBlocking`
+   * asks the snapshot owner to add the fact to rows with pending questions. */
+  snapshot(
+    ids: readonly string[],
+    signal?: AbortSignal,
+    options?: { includeBlocking: true },
+  ): Promise<Summary[]>;
   /** Post-commit notices for observation inputs. A host without them is polled. */
   subscribe?(listener: RunObservationListener): () => void;
   pollMs?: number;
@@ -25,7 +28,7 @@ export interface RunWaitManyHost {
  * names.
  */
 export async function observeRunAttention(
-  { targets, waitMs }: RunWaitManyInput,
+  { targets, waitMs, includeBlocking }: RunWaitManyInput,
   host: RunWaitManyHost,
   signal?: AbortSignal,
 ): Promise<RunWaitManyResult> {
@@ -34,7 +37,12 @@ export async function observeRunAttention(
   targets.forEach(({ runId }, index) =>
     positions.set(runId, [...(positions.get(runId) ?? []), index]),
   );
-  const summaries: RunWaitManySummary[] = targets.map(() => ({
+  // The snapshot owner computes the opt-in; it is never stripped afterwards.
+  const read = (handles: readonly string[]) =>
+    includeBlocking
+      ? host.snapshot(handles, signal, { includeBlocking: true })
+      : host.snapshot(handles, signal);
+  const summaries: Summary[] = targets.map(() => ({
     status: null,
     pending: null,
     token: null,
@@ -82,9 +90,9 @@ export async function observeRunAttention(
       const handles = full ? [...positions.keys()] : [...dirty];
       full = false;
       dirty.clear();
-      let rows: RunWaitManySummary[];
+      let rows: Summary[];
       try {
-        rows = await host.snapshot(handles, signal);
+        rows = await read(handles);
       } catch (error) {
         // A read that rejects because the caller aborted is the abort itself.
         if (signal?.aborted) return result("aborted");

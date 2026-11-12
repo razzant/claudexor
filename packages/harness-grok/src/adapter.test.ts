@@ -89,8 +89,10 @@ describe("Grok adapter routes", () => {
     const resolve = vi.fn(() => "/installed/grok");
     expect(resolveGrokBin({ CLAUDEXOR_GROK_BIN: "/missing/grok" }, resolve)).toBe("/missing/grok");
     expect(resolve).not.toHaveBeenCalled();
-    expect(resolveGrokBin({}, resolve)).toBe("/installed/grok");
-    expect(resolveGrokBin({}, (bin) => (bin === "grok" ? null : bin))).toContain(".grok");
+    expect(resolveGrokBin({}, resolve)).toBe("grok");
+    expect(resolve).toHaveBeenCalledWith("grok");
+    // Folder expansion belongs to the shared resolver; an unproved alias never replaces grok.
+    expect(resolveGrokBin({}, (bin) => (bin === "grok" ? null : bin))).toBe("grok");
   });
 
   it("lists exact native model ids without duplicates", () => {

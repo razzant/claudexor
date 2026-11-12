@@ -15,10 +15,10 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("EventLog seq stamping", () => {
-  it("prepares output before terminal sequencing, only when a deferred terminal is flushed", () => {
+  it("prepares output before terminal sequencing, only when a deferred terminal is flushed", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-output-order-"));
     const log = new EventLog(join(dir, "events.jsonl"), "run-1", "task-1");
     let outputs = 0;
@@ -37,7 +37,7 @@ describe("EventLog seq stamping", () => {
     log.deferTerminal();
     log.emit("run.failed", { lifecycle: "cancelled" });
     expect(outputs).toBe(0);
-    log.flushDeferredTerminal();
+    await log.commitDeferredTerminal();
     expect(outputs).toBe(1);
     expect(log.readAll().events.map((event) => [event.seq, event.type])).toEqual([
       [1, "run.created"],
@@ -89,7 +89,7 @@ describe("EventLog seq stamping", () => {
     expect(lines.map((l) => l.seq)).toEqual([1, 2, 3]);
   });
 
-  it("defers a Delegate terminal so late child cash stays before the final event", () => {
+  it("defers a Delegate terminal so late child cash stays before the final event", async () => {
     const path = join(reapMk(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
     const log = new EventLog(path, "run-1", "task-1");
     let preparations = 0;
@@ -104,7 +104,7 @@ describe("EventLog seq stamping", () => {
     expect(preparations).toBe(0);
     expect(log.terminalCommitted()).toBe(false);
     log.emit("budget.cash", { cash_spend_usd: 0.4, valuation_usd: 0 });
-    const terminal = log.flushDeferredTerminal();
+    const terminal = await log.commitDeferredTerminal();
     expect(terminal?.seq).toBe(3);
     expect(preparations).toBe(1);
     expect(log.terminalCommitted()).toBe(true);

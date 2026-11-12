@@ -56,6 +56,11 @@ export function createDaemonAgentRunner(deps: {
   ) => NonNullable<
     Parameters<ReturnType<typeof buildRunOrchestrator>["run"]>[0]["onTerminalPersist"]
   >;
+  terminalStaging?: (
+    jobId: string,
+  ) => NonNullable<
+    Parameters<ReturnType<typeof buildRunOrchestrator>["run"]>[0]["onTerminalStage"]
+  >;
 }): RunnerFn {
   const {
     delegationBudgetAuthority,
@@ -179,6 +184,7 @@ export function createDaemonAgentRunner(deps: {
       .run({
         ...oneShotRunInput(p),
         onTerminalPersist: deps.terminalPersistence?.(ctx.jobId),
+        onTerminalStage: deps.terminalStaging?.(ctx.jobId),
         onEventPersist: (event) => {
           // The owning journal partition is the durable terminal
           // authority. EventLog runs this before committing RunFacts.
@@ -244,7 +250,10 @@ export function createDaemonAgentRunner(deps: {
         delegationAdmissionId: ctx.jobId,
         attachments: turnId
           ? (threads.getTurn(turnId)?.attachments ?? [])
-          : resources().resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments),
+          : resources().resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments, {
+              owner: "command",
+              id: ctx.jobId,
+            }),
         // Belt descriptor (D32): built once per delegate run with the parent
         // budget snapshot; injected into agent lanes whose adapter can host
         // MCP servers. Null when delegate is off (no belt).

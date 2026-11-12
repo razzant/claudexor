@@ -25,7 +25,10 @@ import type { ReviewerSpec } from "@claudexor/review";
 import { readSessionCapsule } from "./session-capsule.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 interface Spawn {
   profile: string;
@@ -40,12 +43,14 @@ type Script = (
 ) => Generator<HarnessEvent>;
 
 interface Scenario {
-  mode: "agent" | "ask";
+  mode: "agent" | "ask" | "plan";
   profiles: string[];
   script: Script;
   continuity?: HarnessContinuityCapability | null;
   pinned?: string;
   limitAction?: "rotate" | "fail" | "ask";
+  /** The saved quota reserve (`profile_policy.headroom_threshold`; default 1). */
+  headroomThreshold?: number;
   maxRetries?: number;
   /** The run's requested model; null = none (the harness default). */
   model?: string | null;
@@ -58,6 +63,9 @@ interface Scenario {
   models?: (profileId: string | null) => Promise<HarnessModel[]>;
   /** Extra Orchestrator dependencies (e.g. a Delegate drain authority). */
   deps?: Partial<ConstructorParameters<typeof Orchestrator>[0]>;
+  /** Runs inside each asynchronous credential readiness probe (e.g. time
+   * passing or a new quota observation landing while readiness is checked). */
+  onProbe?: (profileId: string) => void | Promise<void>;
 }
 
 export const RESET = "2026-10-06T21:00:00.000Z";
@@ -124,7 +132,16 @@ export async function run(scenario: Scenario) {
         },
       },
       credential_profiles: scenario.registryProfiles?.(profiles) ?? profiles,
-      harnesses: { fake: { profile_policy: { limit_action: scenario.limitAction ?? "rotate" } } },
+      harnesses: {
+        fake: {
+          profile_policy: {
+            limit_action: scenario.limitAction ?? "rotate",
+            ...(scenario.headroomThreshold
+              ? { headroom_threshold: scenario.headroomThreshold }
+              : {}),
+          },
+        },
+      },
     }),
   );
   const spawns: Spawn[] = [];
@@ -158,13 +175,14 @@ export async function run(scenario: Scenario) {
       return ConformanceReport.parse({
         harness_id: "fake",
         status: "ok",
-        enabled_intents: ["implement", "repair", "explain", "audit"],
+        enabled_intents: ["implement", "repair", "explain", "audit", "plan"],
         auth_sources: [
           { source: "native_session", availability: "available", verification: "passed" },
         ],
       });
     },
     async probeCredentialProfile(profile) {
+      await scenario.onProbe?.(profile.profile_id);
       return {
         profile_id: profile.profile_id,
         harness_id: "fake",

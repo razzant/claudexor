@@ -24,6 +24,7 @@ import {
   CONTINUITY_PROFILE_LOCATOR_ENV,
   type EnvMap,
   type HarnessContinuityCapability,
+  type NativeSessionFormatEvidence,
 } from "@claudexor/core";
 import { claudeNativeEnv } from "./index.js";
 import { canonicalProfileConfigDir } from "./profile.js";
@@ -127,9 +128,61 @@ export const claudeContinuity: HarnessContinuityCapability = {
   },
 };
 
+/** One recorded session of 2.1.316 on Darwin: its transcript and the spilled tool
+ * output beside it. Its subagents, file history, todos, debug log and task state
+ * were absent, so a session holding those, or on another host, is not proven by it. */
+const CLAUDE_SESSION_EVIDENCE: NativeSessionFormatEvidence = {
+  fixture: "packages/harness-claude/fixtures/native-session/2.1.316",
+  vendorVersions: ["2.1.316"],
+  platforms: ["darwin"],
+  transcriptOf(rel, id) {
+    const [top, cwd, name, kind, file, ...deeper] = rel.split("/");
+    if (top !== "projects" || !cwd || !name) return null;
+    const transcript = `projects/${cwd}/${id}.jsonl`;
+    if (rel === transcript) return transcript;
+    return name === id && kind === "tool-results" && file && deeper.length === 0
+      ? transcript
+      : null;
+  },
+  versionField: "version",
+};
+
 /** Native persistence is owned together with this adapter's resume contract. */
 export const claudePersistence = {
   continuity: claudeContinuity,
+  nativeSessionExport: {
+    storeRoot: claudeStoreDir,
+    // Matched by the exact session id. A recording proves which of these it saw.
+    sessionLocations: {
+      projects: 2,
+      "file-history": 1,
+      todos: 1,
+      debug: 1,
+      "session-env": 1,
+      tasks: 1,
+    },
+    laneCredentialStores: [".claude/.credentials.json", ".claude/.claude.json", ".claude.json"],
+    formatEvidence: CLAUDE_SESSION_EVIDENCE,
+    // Not this session's transcript parts or sidecars, so outside its closure;
+    // whatever its own transcript names in the store is required, and blocks.
+    outOfClosure: [
+      {
+        source: "history.jsonl",
+        reason:
+          "account-wide prompt log shared by every session, not a part of this one; reading it would read other sessions, so its relation to this session is unknown and it is not exported",
+      },
+      {
+        source: "plans, shell-snapshots",
+        reason:
+          "not named by session id, so never read; one this session's own transcript names in the store is not carried and blocks retirement",
+      },
+      {
+        source: "paths outside the store",
+        reason:
+          "project files and temporary output a transcript names are not session material and are never followed",
+      },
+    ],
+  },
   nativeHomeLifetime: {
     status: "not_pruned" as const,
     reason:

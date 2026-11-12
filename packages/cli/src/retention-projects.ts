@@ -4,7 +4,7 @@ import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import type { DiskRetentionReferences } from "@claudexor/daemon";
 import type { RetentionProject } from "@claudexor/control-api";
-import { projectRuntimeDir, userConfigDir } from "@claudexor/util";
+import { globalRunStores, projectRuntimeDir, userConfigDir } from "@claudexor/util";
 
 /** Directory inventory owns reachability. Active registrations and extant
  * archives own recent history; thread roots only name references. */
@@ -110,6 +110,29 @@ export async function retentionProjects(
       keepLastRuns: ownedRoots.has(root),
     });
   }
+  // The stores outside projects/<sha256> (#503): folderless Ask keeps its own
+  // keep-last group but is no prunable namespace; one-shot runs, like any
+  // unregistered namespace, keep none. A store that is not a plain directory
+  // (the Ask runtime is the config root itself; the one-shot runtime is its own)
+  // is not inventoried, so the old anchors its runs may name are held too.
+  if (!references.blocked)
+    for (const store of globalRunStores()) {
+      const runtime = store.kind === "one_shot" ? await optionalStat(store.runtime) : null;
+      const stat = runtime && !runtime.isDirectory() ? runtime : await optionalStat(store.runsDir);
+      if (stat && !stat.isDirectory()) {
+        heldRoots.add(store.runtime);
+        errors.push(`run store ${store.runsDir} kept: not a plain directory`);
+        continue;
+      }
+      if (stat)
+        projects.push({
+          root: store.runtime,
+          runsDir: store.runsDir,
+          reviewsDir: null,
+          keepLastRuns: store.kind === "ask",
+          namespaceMaintenance: store.kind !== "ask",
+        });
+    }
   const noProjectRuns = new ArtifactStore(noProjectRoot).runsDir();
   const noProjectRuntime = projectRuntimeDir(noProjectRoot);
   const noProjectRuntimeStat = await optionalStat(noProjectRuntime);

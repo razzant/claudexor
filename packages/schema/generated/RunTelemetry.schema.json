@@ -48,7 +48,7 @@
             "inherit_native",
             "external_sandbox_full"
           ],
-          "description": "Access profile enforced by the engine."
+          "description": "Access profile the engine resolved and passed to its routes; each route's native setting is in attempts[].route_controls."
         },
         "external_context_policy": {
           "type": "string",
@@ -68,7 +68,7 @@
             "cached",
             "live"
           ],
-          "description": "Web policy actually executed by the selected route."
+          "description": "Web policy given to the selected route, after disclosed upgrades (e.g. cached to live); not proof that a native session ran."
         },
         "web_required": {
           "type": "boolean",
@@ -111,12 +111,12 @@
             "effective_mode": {
               "$ref": "#/definitions/RunTelemetry/properties/web/properties/policy",
               "default": "auto",
-              "description": "Policy actually executed by the harness route (disclosed upgrades, e.g. cached to live)."
+              "description": "Policy given to the harness route, after disclosed upgrades (e.g. cached to live); not proof that a native session ran."
             },
             "attempted": {
               "type": "boolean",
               "default": false,
-              "description": "Whether any web activity was attempted."
+              "description": "Whether a web tool call or engine Browser call was observed; not a network measurement (see observation)."
             },
             "satisfied": {
               "type": "boolean",
@@ -143,7 +143,23 @@
                 "none"
               ],
               "default": "none",
-              "description": "Retrieval-proof strength of observed web activity: verified (typed successful retrieval; content proven), dispatched (operation completed but no typed retrieval outcome; content not proven), or none."
+              "description": "Retrieval-proof strength of observed web activity: verified (a typed successful retrieval; verified_content says of what), dispatched (a web call completed without a typed retrieval result), or none (no search or page retrieval observed, though a Browser action may have completed)."
+            },
+            "verified_content": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "page",
+                    "search_results"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "What the verified retrieval returned: page (a fetched or loaded page; it outranks search results) or search_results (a web search's results, not a fetched page); null when nothing was verified or the record predates this field."
             },
             "tool": {
               "type": [
@@ -159,7 +175,7 @@
                 "null"
               ],
               "default": null,
-              "description": "Redacted target (query/url) of the web activity, when any."
+              "description": "Target (query/url) of the web activity as issued, when any."
             },
             "error_summary": {
               "type": [
@@ -168,6 +184,31 @@
               ],
               "default": null,
               "description": "Redacted error detail when web activity failed."
+            },
+            "observation": {
+              "type": "object",
+              "properties": {
+                "evidence": {
+                  "type": "string",
+                  "const": "tool_calls",
+                  "description": "Web evidence comes from typed web tool calls and engine Browser MCP calls."
+                },
+                "network": {
+                  "type": "string",
+                  "const": "not_measured",
+                  "description": "Process network traffic is not measured: vendor API traffic, shell commands and other tools can use the network without appearing here."
+                }
+              },
+              "required": [
+                "evidence",
+                "network"
+              ],
+              "additionalProperties": false,
+              "description": "Scope of the web evidence: observed tool calls only, never a network measurement.",
+              "default": {
+                "evidence": "tool_calls",
+                "network": "not_measured"
+              }
             }
           },
           "additionalProperties": false,
@@ -178,6 +219,41 @@
           "items": {
             "type": "object",
             "properties": {
+              "programs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "version": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "versionSource": {
+                      "type": "string",
+                      "enum": [
+                        "vendor_stream",
+                        "version_probe",
+                        "remembered",
+                        "unknown"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "version",
+                    "versionSource"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "request_refusal": {
                 "anyOf": [
                   {
@@ -316,9 +392,41 @@
                       "reported_source"
                     ],
                     "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "vendor_not_retryable"
+                      },
+                      "source": {
+                        "type": "string",
+                        "const": "agy_stderr"
+                      },
+                      "error_id": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "The vendor's own error id from the same record, verbatim; null when absent."
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "source",
+                      "error_id"
+                    ],
+                    "additionalProperties": false
                   }
                 ],
-                "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes carry their own evidence."
+                "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes and an explicit vendor not-retryable verdict carry their own evidence."
               },
               "effort_resolution": {
                 "type": "object",
@@ -668,6 +776,126 @@
                 "additionalProperties": false,
                 "description": "Observed usage components. An amount of unknown meaning is not charged cash; separately proven included service can still establish exact zero incremental cash unless its route reports no actual debit."
               },
+              "raw_context": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Model the request named."
+                  },
+                  "estimated_request_tokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Estimated tokens of the whole rendered request (chars/4, plus a fixed figure per image); never a tokenizer count."
+                  },
+                  "budget": {
+                    "type": "object",
+                    "properties": {
+                      "estimator": {
+                        "type": "string",
+                        "const": "chars_div_4"
+                      },
+                      "basis": {
+                        "type": "string",
+                        "enum": [
+                          "model_context_window",
+                          "assumed_ceiling"
+                        ]
+                      },
+                      "model": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Model whose catalog row was consulted; null when the producer reported none."
+                      },
+                      "context_window": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "output_allowance_tokens": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "framing_tokens": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Estimated tokens of the request outside this packet; null when unmeasured."
+                      },
+                      "selection_limit_tokens": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "description": "Limit the optional selection honoured: the packet's share of the window, or the assumed ceiling on file contents."
+                      },
+                      "estimated_packet_tokens": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "omitted_for_budget": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional files left out to honour selection_limit_tokens (listed in omissions)."
+                      },
+                      "mandatory_paths": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": "Project mandatory files, each delivered complete in readable_files."
+                      }
+                    },
+                    "required": [
+                      "estimator",
+                      "basis",
+                      "model",
+                      "context_window",
+                      "output_allowance_tokens",
+                      "framing_tokens",
+                      "selection_limit_tokens",
+                      "estimated_packet_tokens",
+                      "omitted_for_budget",
+                      "mandatory_paths"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Sizing evidence for a raw context packet; disclosed, never a tokenizer count."
+                  }
+                },
+                "required": [
+                  "model",
+                  "estimated_request_tokens",
+                  "budget"
+                ],
+                "additionalProperties": false,
+                "description": "Size of the raw-api request this attempt last prepared, from the status event that try emitted just before its POST (#147); not proof the provider received it. Absent for other transports."
+              },
               "attempt_id": {
                 "type": "string",
                 "minLength": 1,
@@ -878,6 +1106,9 @@
                   "verification": {
                     "$ref": "#/definitions/RunTelemetry/properties/web/properties/verification"
                   },
+                  "verified_content": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/verified_content"
+                  },
                   "tool": {
                     "$ref": "#/definitions/RunTelemetry/properties/web/properties/tool"
                   },
@@ -886,10 +1117,73 @@
                   },
                   "error_summary": {
                     "$ref": "#/definitions/RunTelemetry/properties/web/properties/error_summary"
+                  },
+                  "observation": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/observation"
                   }
                 },
                 "additionalProperties": false,
                 "description": "Typed web-evidence record computed by the orchestrator; surfaces project it and never re-derive evidence from raw events."
+              },
+              "route_controls": {
+                "type": "object",
+                "properties": {
+                  "web_mechanism": {
+                    "type": "string",
+                    "enum": [
+                      "native",
+                      "tools",
+                      "uncontrolled",
+                      "none"
+                    ],
+                    "description": "How this route's own web tools are switched for its web policy (the manifest's web_policy)."
+                  },
+                  "access": {
+                    "type": "string",
+                    "enum": [
+                      "readonly",
+                      "workspace_write",
+                      "full",
+                      "inherit_native"
+                    ],
+                    "description": "Access profile handed to this spawn."
+                  },
+                  "native_access": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "The vendor access setting the adapter builds for that profile, in the vendor's own spelling (argv or request parameters) and from the helper that passes it; null when it passes none or does not disclose it."
+                  },
+                  "access_mechanism": {
+                    "type": "string",
+                    "enum": [
+                      "fs_sandbox",
+                      "permission_deny",
+                      "tool_allowlist",
+                      "tool_policy",
+                      "native_settings",
+                      "none"
+                    ],
+                    "description": "How the route's access profile reaches the harness: fs_sandbox (the vendor's own file-system sandbox, as the vendor applies it), permission_deny, tool_allowlist or tool_policy (vendor tool permissions; the manifest declares no OS file boundary), native_settings (inherit_native: Claudexor passes no access profile, so the harness's own configuration decides and what it confines is unknown here), or none (full access, or a route that declares no control)."
+                  }
+                },
+                "required": [
+                  "web_mechanism",
+                  "access",
+                  "native_access",
+                  "access_mechanism"
+                ],
+                "additionalProperties": false,
+                "description": "Native web and access controls prepared for this attempt's last spawn (#118, #413); absent on older records and when no spawn was dispatched."
+              },
+              "native_session_started": {
+                "type": "boolean",
+                "description": "Present with route_controls: whether an adapter reported a native session started during this attempt (the typed started event, which an adapter's own pre-spawn refusal never emits). False means none was observed: refused before launch, or stopped or ended before a start was reported. It does not prove that no process ran."
+              },
+              "harness_home_isolated": {
+                "type": "boolean",
+                "description": "The attempt's applied HOME fact (same producer as attempt.yaml): true when the engine assigned its child a Claudexor-owned HOME, false when the engine did not replace HOME, so the child inherits the engine's own environment. Absent where the lane records none, never inferred."
               },
               "tool_errors": {
                 "type": "array",
@@ -919,7 +1213,7 @@
                         "null"
                       ],
                       "default": null,
-                      "description": "Redacted target of the tool use, when known."
+                      "description": "Target of the tool use as issued, when known."
                     },
                     "summary": {
                       "type": "string",
@@ -960,6 +1254,112 @@
                 "minimum": 0,
                 "default": 0,
                 "description": "Tool errors with no later successful recovery."
+              },
+              "reported_command_outcomes": {
+                "type": "object",
+                "properties": {
+                  "total": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "True count of reports in this attempt."
+                  },
+                  "recent": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "tool": {
+                          "type": "string",
+                          "description": "Native tool name of the reported call."
+                        },
+                        "target": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "default": null,
+                          "description": "Target of the call as issued, when known."
+                        },
+                        "tool_use_id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "The exact call the report refined."
+                        },
+                        "command_outcome": {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "exited",
+                                "timed_out",
+                                "backgrounded",
+                                "completion_reported",
+                                "unknown"
+                              ],
+                              "description": "exited: the tool observed the command end; timed_out: the tool's timeout elapsed before an observed end (the process may still run or may have been signalled); backgrounded: the command was handed to a background shell and was still running when the result returned; completion_reported: after such a handoff, a later vendor notification reported that the command ended, without an exit code; unknown: the native result established none of these."
+                            },
+                            "signal": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "Vendor-reported signal name of an exited command."
+                            },
+                            "timeout_ms": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "description": "The elapsed tool timeout behind timed_out or a timeout-driven background handoff."
+                            },
+                            "background_reason": {
+                              "type": "string",
+                              "enum": [
+                                "timeout",
+                                "requested"
+                              ],
+                              "description": "Why a backgrounded command left the foreground: its timeout or a request."
+                            },
+                            "shell_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "Vendor handle of the background shell that kept the command."
+                            },
+                            "pid": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "description": "Vendor-reported process id."
+                            },
+                            "completion_status": {
+                              "type": "string",
+                              "enum": [
+                                "success",
+                                "error",
+                                "aborted"
+                              ],
+                              "description": "What the vendor reported about a completion_reported command; never an exit code."
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ],
+                          "additionalProperties": false,
+                          "description": "The call's refined facts: the vendor's word and the handoff, never an exit code."
+                        }
+                      },
+                      "required": [
+                        "tool",
+                        "tool_use_id",
+                        "command_outcome"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "description": "The most recent reports, bounded by the writer."
+                  }
+                },
+                "required": [
+                  "total",
+                  "recent"
+                ],
+                "additionalProperties": false,
+                "description": "Vendor reports about handed-off commands, kept apart from tool errors."
               },
               "statusless_tool_results": {
                 "type": "integer",
@@ -1269,6 +1669,41 @@
                     "type": "boolean",
                     "default": false,
                     "description": "The browser was armed but never called while generic web evidence satisfied the run (disclosure only; not a failure)."
+                  },
+                  "startup": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "failed",
+                          "cancelled",
+                          "starting",
+                          "not_observed"
+                        ],
+                        "description": "Startup state when the first model request was allowed: ready (Codex reported the server started), failed, cancelled, starting (still starting when the hold ended: Codex's 90 s limit plus a 5 s grace for its status), or not_observed (no startup status at all)."
+                      },
+                      "waited_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "How long the adapter held the first model request for this outcome."
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null,
+                        "description": "The vendor's own reason for a failed or cancelled startup, masked."
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "waited_ms"
+                    ],
+                    "additionalProperties": false,
+                    "description": "The selected Browser's startup outcome as the adapter reported it before the first model request (#215); absent when the route reported none."
                   }
                 },
                 "additionalProperties": false,
@@ -1802,9 +2237,11 @@
                             "owner_task_gone",
                             "crash_interrupted",
                             "workspace_unavailable",
+                            "capture_refused",
                             "input_required",
                             "work_incomplete",
                             "context_capacity_exhausted",
+                            "turn_limit_reached",
                             "work_report_contract"
                           ],
                           "description": "Typed reason qualifying a non-clean terminal; null on a clean success."
@@ -2218,7 +2655,7 @@
               "type": "null"
             }
           ],
-          "description": "Exact validated terminal receipt; null before terminalization or on legacy runs.",
+          "description": "Legacy-compatible nullable terminal-fact mirror; null for new terminalized runs and legacy runs because the canonical receipt is final/run_facts.yaml.",
           "default": null
         },
         "generated_at": {

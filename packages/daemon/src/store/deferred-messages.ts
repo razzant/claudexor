@@ -12,7 +12,6 @@ import {
   type ResourceAttachmentRef,
 } from "@claudexor/schema";
 import {
-  assertNoInlineSecretValues,
   hashJson,
   newId,
   safeProblemContext,
@@ -21,7 +20,12 @@ import {
 } from "@claudexor/util";
 import { validateCommandKey } from "../command-store.js";
 import type { JobRecord } from "../job-record.js";
-import { assertDeferredOperator, type DeferredMessageOwner } from "../deferred-message-owner.js";
+import {
+  assertDeferredOperator,
+  type DeferredMessageOwner,
+  type PromotionStamp,
+} from "../deferred-message-owner.js";
+import type { AcceptCommand } from "../command-store.js";
 import { recoveredTerminalFacts } from "../terminal-authority.js";
 import type { BlobFiles } from "./blob-files.js";
 import type { SqlCommandStore } from "./commands.js";
@@ -31,14 +35,37 @@ import { bindIdempotencyInTx, lookupIdempotency } from "./idempotency.js";
 import { runMutation, type MutationContext } from "./mutation.js";
 import type { PartitionGeneration } from "./partitions.js";
 import { storedTerminal } from "./run-events.js";
+import {
+  claimResourceUsesInTx,
+  collectAfterCommit,
+  dropResourceUsesInTx,
+  referencedResourceIds,
+  type ResourceUseHolder,
+} from "./resource-uses.js";
 import type { EngineStore } from "./store.js";
 import {
   deferredMessageDetail,
   deferredMessageProjection,
+  heldForProcessCustody,
+  writeDraftRowInTx,
   type DeferredMessageRow as DraftRow,
 } from "./deferred-message-rows.js";
 
 type Content = Pick<DeferredMessageDetail, "prompt" | "attachments" | "capturedStart">;
+
+/** The exact draft body bytes; the mutation and its off-loop staging share them. */
+function draftBody(
+  input: Pick<Content, "prompt" | "attachments">,
+  captured: object | null | undefined,
+): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      prompt: input.prompt,
+      attachments: input.attachments,
+      capturedStart: CapturedRunStart.parse({ ...(captured ?? {}), prompt: "", attachments: [] }),
+    } satisfies Content),
+  );
+}
 
 export function deferredConflict(code: string, message: string, context: object = {}): Error {
   return Object.assign(new Error(message), { code, status: 409, retryable: false, context });
@@ -49,11 +76,14 @@ export function deferredConflict(code: string, message: string, context: object 
 export class SqlDeferredMessages implements DeferredMessageOwner {
   private readonly events: SqlEventLedger;
   constructor(
-    private readonly store: EngineStore,
-    private readonly blobs: BlobFiles,
+    readonly store: EngineStore,
+    readonly blobs: BlobFiles,
     readonly generation: Pick<PartitionGeneration, "pid" | "name" | "epoch">,
     private readonly commands: SqlCommandStore,
-    private readonly validateRefs: (refs: ResourceAttachmentRef[]) => void = (refs) => {
+    private readonly validateRefs: (
+      refs: ResourceAttachmentRef[],
+      heldBy?: ResourceUseHolder,
+    ) => void = (refs) => {
       if (refs.length) throw new Error("ordinary resource admission is unavailable");
     },
     private readonly assertCurrentRoute: (request: CapturedRunStart) => void = (request) => {
@@ -119,6 +149,23 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     return { appliedRevision: applied.revision, draft: this.project(row) };
   }
 
+  /** Off the request thread, before `mutate`: write the draft body it will own. */
+  async stage(raw: DeferredMessageMutation, capturedStart?: CapturedRunStart): Promise<void> {
+    let bytes: Buffer;
+    try {
+      const input = DeferredMessageMutation.parse(raw);
+      if (input.action === "clear") return;
+      const captured =
+        input.action === "create"
+          ? CapturedRunStart.parse(capturedStart)
+          : this.get(input.draftId)!.capturedStart;
+      bytes = draftBody(input, captured);
+    } catch {
+      return; // mutate decides and reports
+    }
+    await this.blobs.stageBody(bytes);
+  }
+
   mutate(
     raw: DeferredMessageMutation,
     key: string,
@@ -127,7 +174,6 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     const input = DeferredMessageMutation.parse(raw);
     const replay = this.replay(input, key);
     if (replay) return replay;
-    assertNoInlineSecretValues(input, "$", "deferred message");
     const previous = input.action === "create" ? null : this.requireRow(input.draftId);
     const predecessor =
       input.action === "create"
@@ -136,7 +182,9 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     if (input.action !== "clear") assertDeferredOperator(false, predecessor.params);
     if (input.action === "create") this.assertTarget(predecessor);
     else this.assertEditable(previous!, input.expectedRevision);
-    if (input.action !== "clear") this.validateRefs(input.attachments);
+    const holder = { owner: "deferred_message" as const, id: previous?.id ?? "" };
+    if (input.action !== "clear")
+      this.validateRefs(input.attachments, previous ? holder : undefined);
     const captured =
       input.action === "clear"
         ? null
@@ -146,7 +194,6 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     if (input.action === "create" && !capturedStart)
       throw new Error("creation requires canonical captured controls");
     if (input.action === "create") {
-      assertNoInlineSecretValues(captured, "$", "captured deferred controls");
       for (const field of [
         "threadId",
         "turnId",
@@ -171,21 +218,7 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     if (!Number.isSafeInteger(revision))
       throw deferredConflict("draft_revision_exhausted", "draft revision is exhausted");
     const body =
-      input.action === "clear"
-        ? null
-        : this.blobs.prepareBody(
-            Buffer.from(
-              JSON.stringify({
-                prompt: input.prompt,
-                attachments: input.attachments,
-                capturedStart: CapturedRunStart.parse({
-                  ...captured,
-                  prompt: "",
-                  attachments: [],
-                }),
-              } satisfies Content),
-            ),
-          );
+      input.action === "clear" ? null : this.blobs.prepareBody(draftBody(input, captured));
     const next: DraftRow = {
       id,
       pid: this.generation.pid,
@@ -207,6 +240,9 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
       else this.assertEditable(this.requireRow(id), input.expectedRevision);
       if (body) this.blobs.insertRow(body);
       this.write(tx, next);
+      const refs = input.action === "clear" ? [] : referencedResourceIds(input.attachments);
+      claimResourceUsesInTx(tx, { ...holder, id }, refs);
+      collectAfterCommit(tx, this, dropResourceUsesInTx(tx, { ...holder, id }, refs));
       bindIdempotencyInTx(tx, {
         owner: "deferred_message",
         pid: this.generation.pid,
@@ -236,6 +272,33 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     });
   }
 
+  /** Off the request thread, after preparation: write the successor's large
+   * parameter and acceptance bodies under the job id and creation time `promote`
+   * then uses. Promotion still rechecks and decides everything synchronously. */
+  async stagePromotion(id: string, expectedRevision: number): Promise<PromotionStamp> {
+    const jobId = newId("job");
+    const input = this.successorAcceptance(id, expectedRevision, this.request(id), jobId);
+    return { jobId, createdAt: await this.commands.stageAcceptance(input) };
+  }
+
+  private successorAcceptance(
+    id: string,
+    expectedRevision: number,
+    request: CapturedRunStart,
+    jobId: string,
+    createdAt?: string,
+  ): AcceptCommand {
+    return {
+      id: jobId,
+      ...(createdAt === undefined ? {} : { createdAt }),
+      params: request,
+      clientId: "deferred-message",
+      operation: "run.create",
+      idempotencyKey: `deferred:${id}`,
+      idempotencyParams: { draftId: id, revision: expectedRevision },
+    };
+  }
+
   /** Async preparation finishes before this call. Rechecks and acceptance plus
    * freeze are ONE synchronous mutation; publish the returned job only after it.
    * A post-COMMIT notification error is deliberately allowed to escape: recovery
@@ -246,6 +309,7 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     preparedStart: CapturedRunStart,
     fence: () => DeferredMessageHold | null,
     admit: (request: CapturedRunStart, draftId: string) => void,
+    stamp?: PromotionStamp,
   ): { draft: DeferredMessageProjection; record: JobRecord | null; reused: boolean } {
     const row = this.requireRow(id);
     if (row.state === "dispatched") return this.dispatched(row);
@@ -258,14 +322,15 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
         "draft_controls_changed",
         "prepared execution controls differ from the captured draft",
       );
-    const acceptance = this.commands.prepareAcceptance({
-      id: newId("job"),
-      params: request,
-      clientId: "deferred-message",
-      operation: "run.create",
-      idempotencyKey: `deferred:${id}`,
-      idempotencyParams: { draftId: id, revision: expectedRevision },
-    });
+    const acceptance = this.commands.prepareAcceptance(
+      this.successorAcceptance(
+        id,
+        expectedRevision,
+        request,
+        stamp?.jobId ?? newId("job"),
+        stamp?.createdAt,
+      ),
+    );
     const event = this.events.prepare("deferred_message.changed", {
       draftId: id,
       revision: expectedRevision,
@@ -290,7 +355,7 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
         try {
           assertDeferredOperator(false, predecessor.params);
           this.assertReservation(current);
-          this.validateRefs(request.attachments ?? []);
+          this.validateRefs(request.attachments ?? [], { owner: "deferred_message", id });
           // This synchronous canonical read runs on the same SQL connection
           // and transaction as acceptance/freeze; it starts no nested mutation.
           this.assertCurrentRoute(request);
@@ -304,12 +369,15 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
           ...current,
           state: "held" as const,
           hold: Buffer.from(JSON.stringify(hold)),
+          held_revision: current.revision,
         };
         this.write(tx, held);
         this.events.appendInTx(tx, event);
         return { draft: this.project(held), record: null, reused: false };
       }
-      const accepted = this.commands.acceptInTx(tx, acceptance);
+      const draftHolder = { owner: "deferred_message" as const, id };
+      const accepted = this.commands.acceptInTx(tx, acceptance, draftHolder);
+      collectAfterCommit(tx, this, dropResourceUsesInTx(tx, draftHolder));
       const dispatched = {
         ...current,
         state: "dispatched" as const,
@@ -336,8 +404,42 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
         ...current,
         state: "held",
         hold: Buffer.from(JSON.stringify(DeferredMessageHold.parse(reason))),
+        held_revision: current.revision,
       });
       this.events.appendInTx(tx, event);
+    });
+  }
+
+  /** #613: an unchanged draft held only for process custody returns to `waiting`,
+   * visibly; its dispatch then takes the ordinary revision and admission path. */
+  resume(id: string, revision: number): boolean {
+    const at = this.store.now().toISOString();
+    return this.fromCustodyHold(id, revision, (row) => ({
+      ...row,
+      state: "waiting",
+      hold: null,
+      resumed: Buffer.from(
+        JSON.stringify({
+          from: JSON.parse(Buffer.from(row.hold!).toString("utf8")),
+          reason: "process_scope_settled",
+          at,
+        }),
+      ),
+    }));
+  }
+  /** A Stop of a custody-held draft keeps it held for the Stop, never for return. */
+  rehold(id: string, revision: number, reason: DeferredMessageHold): boolean {
+    const hold = Buffer.from(JSON.stringify(DeferredMessageHold.parse(reason)));
+    return this.fromCustodyHold(id, revision, (row) => ({ ...row, hold }));
+  }
+  private fromCustodyHold(id: string, revision: number, next: (row: DraftRow) => DraftRow) {
+    const event = this.events.prepare("deferred_message.changed", { draftId: id, revision });
+    return runMutation(this.store, (tx) => {
+      const current = this.row(id);
+      if (!current || !heldForProcessCustody(current, revision)) return false;
+      this.write(tx, next(current));
+      this.events.appendInTx(tx, event);
+      return true;
     });
   }
 
@@ -471,24 +573,7 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     };
   }
   private write(tx: MutationContext, row: DraftRow): void {
-    tx.prepare(
-      `INSERT INTO deferred_message(id,pid,predecessor_job_id,revision,state,body_sha,hold,
-      successor_job_id,dispatched_revision,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,state=excluded.state,
-      body_sha=excluded.body_sha,hold=excluded.hold,successor_job_id=excluded.successor_job_id,
-      dispatched_revision=excluded.dispatched_revision`,
-    ).run(
-      row.id,
-      row.pid,
-      row.predecessor_job_id,
-      row.revision,
-      row.state,
-      row.body_sha,
-      row.hold,
-      row.successor_job_id,
-      row.dispatched_revision,
-      row.created_at,
-    );
+    writeDraftRowInTx(tx, row);
   }
 }
 

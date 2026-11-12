@@ -163,7 +163,8 @@ extension AppModel {
         }
         do {
             let capabilities = await loadAccountResourceCapabilities(client: requestClient, at: locationID)
-            let response = try await requestClient.quota(resources: capabilities?.read == true)
+            let response = try await requestClient.quota(
+                resources: capabilities?.read == true, apiKeys: capabilities?.apiKeys == true)
             guard accountsQuotaDisplayTaskTokens[locationID] == token,
                   accountsQuotaDisplayGenerations[locationID] == generation,
                   isCurrentGateway(requestClient, at: locationID)
@@ -184,6 +185,12 @@ extension AppModel {
     ) {
         accountsQuotaDisplayGenerations[locationID] =
             (accountsQuotaDisplayGenerations[locationID] ?? 0) &+ 1
+        // A legacy read (no resources) keeps the shown rows and their key bindings.
+        let previous = quotaResponse(at: locationID)
+        let response = response.retainingResources(of: previous)
+        for target in response.resourceBindingChanges(from: previous) {
+            accountResourceBindingChanges[locationID, default: [:]][target, default: 0] &+= 1
+        }
         if locationID == .local { quotaResponse = response }
         else { remoteQuotaResponses[locationID] = response }
         // A refresh that skipped vendors for an active rate-limit cooldown is

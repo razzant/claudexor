@@ -142,6 +142,8 @@ describe("gcCommand data_root_report capability negotiation", () => {
       outcome: "held",
       started_at: RECEIPT.started_at,
       finished_at: RECEIPT.finished_at,
+      last_completed_at: "2026-08-07T00:00:00.000Z",
+      failed_or_held_streak: 3,
       freed_bytes: 42,
       kept: { referenced: 3 },
       held: { roots: 2, native_homes: 1 },
@@ -157,11 +159,15 @@ describe("gcCommand data_root_report capability negotiation", () => {
     };
     mocks.controlApiFetch.mockResolvedValue(new Response(JSON.stringify({ last })));
     expect(await gcCommand(parseArgs(["gc", "--last"]), false)).toBe(0);
-    expect(mocks.controlApiFetch).toHaveBeenCalledWith(expect.anything(), "/maintenance/gc");
+    expect(mocks.controlApiFetch).toHaveBeenCalledWith(
+      expect.anything(),
+      "/maintenance/gc?retention_report=true",
+    );
     expect(mocks.ensureDaemon).not.toHaveBeenCalled();
     const out = stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("");
     for (const text of [
       "held:",
+      `last completed: ${last.last_completed_at}; failed/held streak: 3`,
       last.started_at,
       last.finished_at,
       "42 bytes",
@@ -176,6 +182,51 @@ describe("gcCommand data_root_report capability negotiation", () => {
     ])
       expect(out).toContain(text);
   });
+  it("keeps completion history unknown across engine-version skew in text and JSON", async () => {
+    const last = {
+      outcome: "failed",
+      started_at: RECEIPT.started_at,
+      finished_at: RECEIPT.finished_at,
+      freed_bytes: 42,
+      kept: { referenced: 3 },
+      held: { roots: 2, native_homes: 1 },
+      holds: [],
+      errors: { count: 1, first: "newer daemon" },
+    };
+    mocks.connectDaemonIfRunning.mockResolvedValue({
+      addr: { baseUrl: "http://127.0.0.1:1234", token: "t" },
+      engine: engine("999.0.0"),
+    });
+    const response = () => new Response(JSON.stringify({ last }));
+    mocks.controlApiFetch.mockResolvedValue(response());
+    expect(await gcCommand(parseArgs(["gc", "--last"]), false)).toBe(0);
+    let out = stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("");
+    expect(out).toContain("failed:");
+    expect(out).not.toContain("last completed:");
+    expect(out).not.toContain("failed/held streak:");
+
+    stdoutSpy.mockClear();
+    mocks.controlApiFetch.mockResolvedValue(response());
+    expect(await gcCommand(parseArgs(["gc", "--last", "--json"]), true)).toBe(0);
+    out = stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("");
+    const printed = JSON.parse(out) as { last: Record<string, unknown> };
+    expect(printed.last).not.toHaveProperty("last_completed_at");
+    expect(printed.last).not.toHaveProperty("failed_or_held_streak");
+    expect(mocks.controlApiFetch).toHaveBeenLastCalledWith(expect.anything(), "/maintenance/gc");
+  });
+  it.each(["0.0.1", "999.0.0", null])(
+    "omits --last history opt-in for version %s",
+    async (version) => {
+      mocks.connectDaemonIfRunning.mockResolvedValue({
+        addr: { baseUrl: "http://127.0.0.1:1234", token: "t" },
+        engine: engine(version),
+      });
+      mocks.controlApiFetch.mockResolvedValue(new Response(JSON.stringify({ last: null })));
+      expect(await gcCommand(parseArgs(["gc", "--last"]), true)).toBe(0);
+      expect(mocks.controlApiFetch).toHaveBeenCalledWith(expect.anything(), "/maintenance/gc");
+      expect(mocks.ensureDaemon).not.toHaveBeenCalled();
+    },
+  );
   it("does not start a daemon for --last when none is running", async () => {
     mocks.connectDaemonIfRunning.mockResolvedValue(null);
     await expect(gcCommand(parseArgs(["gc", "--last"]), false)).rejects.toThrow(

@@ -12,7 +12,7 @@ import { composeSpawnEnv } from "@claudexor/core";
 const root = mkdtempSync(join(tmpdir(), "acp-policy-"));
 const cwd = join(root, "workspace");
 mkdirSync(cwd);
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+afterAll(() => rmSync(root, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const permission = (kind: string, rawInput: unknown = {}) =>
   ({
     sessionId: "native",

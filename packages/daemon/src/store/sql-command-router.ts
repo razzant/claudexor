@@ -16,6 +16,7 @@ import { SqlDeferredMessages, deferredConflict } from "./deferred-messages.js";
 import { SqlEventLedger } from "./event-store.js";
 import { isServedPid } from "./generations.js";
 import { SqlInteractionStore } from "./interactions.js";
+import type { MaintenanceController } from "./maintenance.js";
 import type { Obligations } from "./obligations.js";
 import { SqlOperatorDecisionStore } from "./operator-decisions.js";
 import { partitionById, type PartitionGeneration } from "./partitions.js";
@@ -23,6 +24,7 @@ import { SqlProjectRouter } from "./project-router.js";
 import type { SqlProjectStore } from "./projects.js";
 import { SqlRunEventStore } from "./run-events.js";
 import type { SqlTerminalFiles } from "./terminal-files.js";
+import type { ThreadClosure } from "./thread-closure.js";
 
 /** One addressed router over current generations. These lightweight writers
  * carry no restored history or separate partition cache. */
@@ -39,9 +41,17 @@ export class SqlCommandRouter
       pruner: SqlCommandPruner;
       validateRefs?: ConstructorParameters<typeof SqlDeferredMessages>[4];
     },
+    /** The store's maintenance worker: its read-only snapshot answers closure observations. */
+    private readonly snapshots: Pick<MaintenanceController, "threadClosure">,
   ) {
     super(projects);
     this.queries = new SqlCommandQueries(this.store, projects.blobs);
+  }
+
+  /** An observation, read in that snapshot off the writer's thread. Retirement never
+   * trusts it: it reads the closure again inside its deciding transaction. */
+  threadClosure(id: string, signal?: AbortSignal): Promise<ThreadClosure | null> {
+    return this.snapshots.threadClosure(id, signal);
   }
 
   commandStore(generation: PartitionGeneration): SqlCommandStore {
@@ -137,6 +147,14 @@ export class SqlCommandRouter
     // The producer owns the original event for its file and live bus. A
     // filtered event cannot fail merely because its old project is unavailable.
     return event;
+  }
+  /** Off-loop staging ahead of `persistTerminal` (best effort; it decides). */
+  async stageTerminal(jobId: string, event: RunEvent, telemetry: RunTelemetry | null) {
+    try {
+      await this.findById(jobId)?.stageTerminal(jobId, event, telemetry);
+    } catch {
+      /* persistTerminal decides and reports */
+    }
   }
   persistTerminal(jobId: string, event: RunEvent, telemetry: RunTelemetry | null) {
     const owner = this.findById(jobId);

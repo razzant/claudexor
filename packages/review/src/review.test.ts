@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { reviewUsageCostSettlement } from "@claudexor/budget";
 import { credentialProfileUnpinned, type HarnessAdapter } from "@claudexor/core";
 import type { CredentialProfile, ProviderFamily } from "@claudexor/schema";
 import {
@@ -60,7 +61,18 @@ function pathEntryExists(path: string): boolean {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
+
+/** A fixture's discovery where only its file-reading declaration matters. */
+function readerManifest(id: string) {
+  return HarnessManifest.parse({
+    id,
+    display_name: id,
+    kind: "local_cli",
+    provider_family: "openai",
+    capabilities: { review: true, read_files: true },
+  });
+}
 
 function makeReviewer(id: string, family: ProviderFamily, findings: unknown[]): ReviewerSpec {
   const adapter: HarnessAdapter = {
@@ -71,7 +83,7 @@ function makeReviewer(id: string, family: ProviderFamily, findings: unknown[]): 
         display_name: id,
         kind: "local_cli",
         provider_family: family,
-        capabilities: { review: true, structured_output: true },
+        capabilities: { review: true, read_files: true, structured_output: true },
       });
     },
     async doctor() {
@@ -101,7 +113,7 @@ function makeWorkspaceProbeReviewer(id: string, probe: (cwd: string) => void): R
         display_name: id,
         kind: "local_cli",
         provider_family: "openai",
-        capabilities: { review: true, structured_output: true },
+        capabilities: { review: true, read_files: true, structured_output: true },
       });
     },
     async doctor() {
@@ -466,7 +478,7 @@ describe("sealed release native reviewer contract", () => {
     const adapter: HarnessAdapter = {
       id: "generic-reviewer",
       async discover() {
-        throw new Error("not used");
+        return readerManifest("generic-reviewer");
       },
       async doctor() {
         throw new Error("not used");
@@ -541,7 +553,7 @@ describe("sealed release native reviewer contract", () => {
           display_name: "release reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -765,7 +777,7 @@ describe("sealed release native reviewer contract", () => {
     const adapter: HarnessAdapter = {
       id: "release-no-retry",
       async discover() {
-        throw new Error("not used");
+        return readerManifest("release-no-retry");
       },
       async doctor() {
         throw new Error("not used");
@@ -1623,7 +1635,7 @@ describe("reviewEngine", () => {
       adapter: {
         id,
         async discover() {
-          throw new Error("not used");
+          return readerManifest(id);
         },
         async doctor() {
           throw new Error("not used");
@@ -1710,7 +1722,7 @@ describe("reviewEngine", () => {
       adapter: {
         id,
         async discover() {
-          throw new Error("not used");
+          return readerManifest(id);
         },
         async doctor() {
           throw new Error("not used");
@@ -1778,6 +1790,105 @@ describe("reviewEngine", () => {
       reviewCashUsd: 0,
       reviewCashKnowledge: "exact",
     });
+
+    // #171: a reported zero survives the reviewer's later failure as evidence.
+    const zeroThenThrow = noUsageReviewer("native-zero-then-throw", "vendor_native");
+    zeroThenThrow.adapter.run = async function* (spec) {
+      const common = {
+        session_id: spec.session_id,
+        ts: new Date().toISOString(),
+        credential_route: "vendor_native" as const,
+      };
+      yield { ...common, type: "started" as const };
+      yield { ...common, type: "usage" as const, usage: { cost_usd: 0, estimated: true } };
+      throw new Error("native reviewer crashed after its usage");
+    };
+    await expect(run(zeroThenThrow)).resolves.toMatchObject({
+      reviewCashKnowledge: "exact",
+      reviewValuationUsd: 0,
+      reviewValuationKnowledge: "estimated",
+      reviewSpendEstimated: true,
+      reviewObservedAmounts: { cash: false, valuation: true, unknown: false },
+    });
+  });
+
+  it.each([
+    [
+      "an exact panel zero",
+      { cost_usd: 0 },
+      {
+        knowledge: "exact",
+        cashKnowledge: "exact",
+        valuationKnowledge: "exact",
+        source: "review-usage",
+        cashUsd: 0,
+        valuationUsd: 0,
+      },
+    ],
+    [
+      "an estimated panel zero",
+      { cost_usd: 0, estimated: true },
+      {
+        knowledge: "estimated",
+        cashKnowledge: "estimated",
+        valuationKnowledge: "estimated",
+        source: "review-usage",
+        cashUsd: 0,
+        valuationUsd: 0,
+      },
+    ],
+    [
+      "a panel with no reported amount",
+      { input_tokens: 1 },
+      {
+        knowledge: "unknown",
+        cashKnowledge: "unknown",
+        source: "review-usage-missing",
+        cashUsd: 0,
+      },
+    ],
+  ])("settles %s through the engine's own summary (#171)", async (_label, usage, expected) => {
+    const reviewerWith = (
+      id: string,
+      family: ProviderFamily,
+      route: "vendor_native" | "managed_api_key",
+    ): ReviewerSpec => {
+      const reviewer = makeReviewer(id, family, []);
+      reviewer.adapter.run = async function* (spec) {
+        const common = {
+          session_id: spec.session_id,
+          ts: new Date().toISOString(),
+          credential_route: route,
+        };
+        yield { ...common, type: "started" as const };
+        yield { ...common, type: "usage" as const, usage };
+        yield { ...common, type: "message" as const, text: "```json\n[]\n```" };
+        yield { ...common, type: "completed" as const };
+      };
+      return reviewer;
+    };
+    const result = await reviewCandidate({
+      candidateLabel: "Candidate",
+      diff: "diff --git a/a b/a\n",
+      ...makeReviewWorkspace(),
+      reviewers: [
+        reviewerWith("api", "openai", "managed_api_key"),
+        reviewerWith("native", "anthropic", "vendor_native"),
+      ],
+    });
+    const { provenance: _provenance, ...settlement } = reviewUsageCostSettlement(
+      result.reviewCashUsd,
+      result.reviewValuationUsd,
+      {
+        cash: result.reviewCashKnowledge,
+        allowanceDebitUnobserved: result.reviewAllowanceDebitUnobserved,
+        valuation: result.reviewValuationKnowledge,
+        observedAmounts: result.reviewObservedAmounts,
+      },
+      ["review:panel"],
+      result.reviewUnknownUsd,
+    );
+    expect(settlement).toEqual(expected);
   });
 
   it("classifies each reviewer retry usage by that try's credential route", async () => {
@@ -1787,7 +1898,7 @@ describe("reviewEngine", () => {
       adapter: {
         id: "route-switch",
         async discover() {
-          throw new Error("not used");
+          return readerManifest("route-switch");
         },
         async doctor() {
           throw new Error("not used");
@@ -1859,7 +1970,7 @@ describe("reviewEngine", () => {
       const adapter: HarnessAdapter = {
         id,
         async discover() {
-          throw new Error("not used");
+          return readerManifest(id);
         },
         async doctor() {
           throw new Error("not used");
@@ -1938,7 +2049,7 @@ describe("reviewEngine", () => {
           display_name: "bad",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2004,7 +2115,7 @@ describe("reviewEngine", () => {
           display_name: "empty",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2048,7 +2159,7 @@ describe("reviewEngine", () => {
           display_name: "throwing",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2091,7 +2202,7 @@ describe("reviewEngine", () => {
           display_name: "error-event",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2158,7 +2269,7 @@ describe("reviewEngine", () => {
           display_name: "stalled",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2231,7 +2342,7 @@ describe("reviewEngine", () => {
           display_name: "cancelled",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2269,7 +2380,7 @@ describe("reviewEngine", () => {
           display_name: "second",
           kind: "local_cli",
           provider_family: "anthropic",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2366,7 +2477,7 @@ describe("reviewEngine", () => {
           display_name: "transient",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2425,7 +2536,7 @@ describe("reviewEngine", () => {
           display_name: "transient",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2492,7 +2603,7 @@ describe("reviewEngine", () => {
           display_name: "file-backed",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2569,82 +2680,39 @@ describe("reviewEngine", () => {
     ).toContain("[]");
   });
 
-  it("refuses secret-like diff evidence before starting reviewers", async () => {
-    let reviewerStarted = false;
-    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
-    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
-    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
-    writeMandatoryReviewEvidence(evidenceDir);
-    const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
-    const adapter: HarnessAdapter = {
-      id: "secret-diff-reviewer",
-      async discover() {
-        return HarnessManifest.parse({
-          id: "secret-diff-reviewer",
-          display_name: "secret diff reviewer",
-          kind: "local_cli",
-          provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
-        });
-      },
-      async doctor() {
-        return ConformanceReport.parse({
-          harness_id: "secret-diff-reviewer",
-          status: "ok",
-          enabled_intents: ["review"],
-        });
-      },
-      async *run() {
-        reviewerStarted = true;
-      },
-    };
-
-    await expect(
-      reviewCandidate({
-        candidateLabel: "Candidate A",
-        diff: `diff --git a/.env b/.env\n@@ -1 +1 @@\n-OLD=1\n+OPENAI_API_KEY=${fakeKey}\n`,
-        evidenceDir,
-        artifactsDir,
-        cwd: candidateRoot,
-        reviewers: [{ adapter, providerFamily: "openai" }],
-      }),
-    ).rejects.toThrow(/refusing to persist raw DIFF\.patch/);
-    expect(reviewerStarted).toBe(false);
-    expect(existsSync(join(evidenceDir, "DIFF.patch"))).toBe(false);
-    expect(existsSync(join(artifactsDir, "evidence", "DIFF.patch"))).toBe(false);
-  });
-
-  it("redacts secret-like prose evidence before persistent artifacts and reviewer workspaces", async () => {
-    let reviewerEvidence = "";
+  it("gives the reviewer the exact credential-shaped diff and prose it reviews (INV-146)", async () => {
+    let seenDiff = "";
+    let seenIntent = "";
     const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
     const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
     writeMandatoryReviewEvidence(evidenceDir);
     const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
     writeFileSync(join(evidenceDir, "USER_INTENT.md"), `review prose ${fakeKey}\n`);
+    const diff = `diff --git a/.env b/.env\n@@ -1 +1 @@\n-OLD=1\n+OPENAI_API_KEY=${fakeKey}\n`;
     const adapter: HarnessAdapter = {
-      id: "prose-redaction-reviewer",
+      id: "exact-evidence-reviewer",
       async discover() {
         return HarnessManifest.parse({
-          id: "prose-redaction-reviewer",
-          display_name: "prose redaction reviewer",
+          id: "exact-evidence-reviewer",
+          display_name: "exact evidence reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
         return ConformanceReport.parse({
-          harness_id: "prose-redaction-reviewer",
+          harness_id: "exact-evidence-reviewer",
           status: "ok",
           enabled_intents: ["review"],
         });
       },
       async *run(spec) {
-        reviewerEvidence = readFileSync(
-          join(spec.cwd, ".claudexor-review-evidence", "USER_INTENT.md"),
-          "utf8",
-        );
+        // The consumer reads its own workspace copy; nothing is echoed back.
+        const evidence = join(spec.cwd, ".claudexor-review-evidence");
+        seenDiff = readFileSync(join(evidence, "DIFF.patch"), "utf8");
+        seenIntent = readFileSync(join(evidence, "USER_INTENT.md"), "utf8");
         const ts = new Date().toISOString();
         yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
       },
@@ -2652,22 +2720,19 @@ describe("reviewEngine", () => {
 
     await reviewCandidate({
       candidateLabel: "Candidate A",
-      diff: "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n",
+      diff,
       evidenceDir,
       artifactsDir,
       cwd: candidateRoot,
       reviewers: [{ adapter, providerFamily: "openai" }],
     });
 
-    const persistentEvidence = readFileSync(
-      join(artifactsDir, "evidence", "USER_INTENT.md"),
-      "utf8",
+    expect(seenDiff).toBe(diff);
+    expect(seenIntent).toBe(`review prose ${fakeKey}\n`);
+    expect(readFileSync(join(artifactsDir, "evidence", "DIFF.patch"), "utf8")).toBe(diff);
+    expect(readFileSync(join(artifactsDir, "evidence", "USER_INTENT.md"), "utf8")).toContain(
+      fakeKey,
     );
-    expect(readFileSync(join(evidenceDir, "USER_INTENT.md"), "utf8")).toContain(fakeKey);
-    expect(persistentEvidence).toContain("[redacted]");
-    expect(persistentEvidence).not.toContain(fakeKey);
-    expect(reviewerEvidence).toContain("[redacted]");
-    expect(reviewerEvidence).not.toContain(fakeKey);
   });
 
   it("fails closed on incomplete mandatory evidence before starting reviewers", async () => {
@@ -2684,7 +2749,7 @@ describe("reviewEngine", () => {
           display_name: "must-not-start",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2756,7 +2821,7 @@ describe("reviewEngine", () => {
           display_name: "fallback cleanup",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2805,7 +2870,7 @@ describe("reviewEngine", () => {
           display_name: "dotted child",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2855,7 +2920,7 @@ describe("reviewEngine", () => {
           display_name: "cleanup failure",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2941,7 +3006,7 @@ describe("reviewEngine", () => {
           display_name: "symlink reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3004,7 +3069,7 @@ describe("reviewEngine", () => {
           display_name: "hook bypass",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3063,7 +3128,7 @@ describe("reviewEngine", () => {
           display_name: "hidden evidence",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3153,7 +3218,7 @@ describe("reviewEngine", () => {
           display_name: "project config reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3226,7 +3291,7 @@ describe("reviewEngine", () => {
           display_name: "preserved output reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3542,7 +3607,7 @@ describe("reviewEngine", () => {
           display_name: "ignored file reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3577,7 +3642,7 @@ describe("reviewEngine", () => {
     expect(trackedIgnoredFile).toBe("ignored-but-versioned.txt");
   });
 
-  it("does not copy paths from the shared sensitive-resource policy into reviewer workspaces", async () => {
+  it("copies credential-named and credential-shaped candidate files into reviewer workspaces exactly (INV-146)", async () => {
     const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
     const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
     const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
@@ -3627,22 +3692,25 @@ describe("reviewEngine", () => {
     ]);
     writeMandatoryReviewEvidence(evidenceDir);
 
-    let sawDotEnv = true;
-    let sawEnvrc = true;
-    let sawLocalEnv = true;
-    let sawEnvExample = false;
-    let sawKey = true;
-    let sawCredentials = true;
-    let sawEnvAlias = true;
-    let sawContentSecret = true;
-    let sawNpmrc = true;
-    let sawNetrc = true;
-    let sawSsh = true;
-    let sawCursor = true;
-    let sawCodex = true;
-    let sawClaude = true;
-    let sawSecretPackage = false;
-    let sawSecretContainer = true;
+    const expected = [
+      ".env",
+      ".envrc",
+      ".env.local",
+      ".env.example",
+      "signing.key",
+      "credentials.json",
+      "notes.txt",
+      "env-alias",
+      ".npmrc",
+      ".netrc",
+      ".ssh/id_ed25519",
+      ".cursor/state.json",
+      ".codex/auth.json",
+      ".claude/session.json",
+      "packages/secrets/src/index.ts",
+      "secrets/service.json",
+    ];
+    const seen = new Map<string, string | null>();
     const adapter: HarnessAdapter = {
       id: "env-secret-reviewer",
       async discover() {
@@ -3651,7 +3719,7 @@ describe("reviewEngine", () => {
           display_name: "env secret reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3662,22 +3730,11 @@ describe("reviewEngine", () => {
         });
       },
       async *run(spec) {
-        sawDotEnv = existsSync(join(spec.cwd, ".env"));
-        sawEnvrc = existsSync(join(spec.cwd, ".envrc"));
-        sawLocalEnv = existsSync(join(spec.cwd, ".env.local"));
-        sawEnvExample = existsSync(join(spec.cwd, ".env.example"));
-        sawKey = existsSync(join(spec.cwd, "signing.key"));
-        sawCredentials = existsSync(join(spec.cwd, "credentials.json"));
-        sawEnvAlias = existsSync(join(spec.cwd, "env-alias"));
-        sawContentSecret = existsSync(join(spec.cwd, "notes.txt"));
-        sawNpmrc = existsSync(join(spec.cwd, ".npmrc"));
-        sawNetrc = existsSync(join(spec.cwd, ".netrc"));
-        sawSsh = existsSync(join(spec.cwd, ".ssh"));
-        sawCursor = existsSync(join(spec.cwd, ".cursor"));
-        sawCodex = existsSync(join(spec.cwd, ".codex"));
-        sawClaude = existsSync(join(spec.cwd, ".claude"));
-        sawSecretPackage = existsSync(join(spec.cwd, "packages", "secrets", "src", "index.ts"));
-        sawSecretContainer = existsSync(join(spec.cwd, "secrets", "service.json"));
+        for (const path of expected)
+          seen.set(
+            path,
+            existsSync(join(spec.cwd, path)) ? readFileSync(join(spec.cwd, path), "utf8") : null,
+          );
         const ts = new Date().toISOString();
         yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
       },
@@ -3693,22 +3750,9 @@ describe("reviewEngine", () => {
     });
 
     expect(res.findings).toEqual([]);
-    expect(sawDotEnv).toBe(false);
-    expect(sawEnvrc).toBe(false);
-    expect(sawLocalEnv).toBe(false);
-    expect(sawEnvExample).toBe(true);
-    expect(sawKey).toBe(false);
-    expect(sawCredentials).toBe(false);
-    expect(sawEnvAlias).toBe(false);
-    expect(sawContentSecret).toBe(false);
-    expect(sawNpmrc).toBe(false);
-    expect(sawNetrc).toBe(false);
-    expect(sawSsh).toBe(false);
-    expect(sawCursor).toBe(false);
-    expect(sawCodex).toBe(false);
-    expect(sawClaude).toBe(false);
-    expect(sawSecretPackage).toBe(true);
-    expect(sawSecretContainer).toBe(false);
+    for (const path of expected)
+      expect(seen.get(path), path).toBe(readFileSync(join(candidateRoot, path), "utf8"));
+    expect(seen.get("notes.txt")).toContain(jwt);
   });
 
   it("isolates reviewer workspace setup failures to the failing reviewer", async () => {
@@ -3781,7 +3825,7 @@ describe("reviewEngine", () => {
           display_name: "auth switch",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3873,7 +3917,7 @@ describe("reviewEngine", () => {
             display_name: id,
             kind: "local_cli",
             provider_family: family,
-            capabilities: { review: true, structured_output: true },
+            capabilities: { review: true, read_files: true, structured_output: true },
           });
         },
         async doctor() {
@@ -3974,7 +4018,7 @@ describe("reviewEngine", () => {
           display_name: "same harness",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -4116,7 +4160,7 @@ describe("reviewEngine", () => {
           display_name: "mutating",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -4186,7 +4230,7 @@ describe("reviewEngine", () => {
           display_name: "late error",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -4261,7 +4305,7 @@ describe("reviewEngine", () => {
           display_name: "malformed late error",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -4338,7 +4382,7 @@ describe("reviewEngine", () => {
           display_name: "throw after output",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -4488,7 +4532,7 @@ describe("reviewEngine", () => {
             display_name: "rev-cursor",
             kind: "local_cli",
             provider_family: "cursor",
-            capabilities: { review: true, structured_output: true },
+            capabilities: { review: true, read_files: true, structured_output: true },
           });
         },
         async doctor() {
@@ -4611,7 +4655,7 @@ describe("reviewer dispatch consumes ONE prepared result (model-id effort carrie
       id: "variant-reviewer",
       effortParameter: "--model",
       async discover() {
-        throw new Error("not used");
+        return readerManifest("variant-reviewer");
       },
       async doctor() {
         throw new Error("not used");

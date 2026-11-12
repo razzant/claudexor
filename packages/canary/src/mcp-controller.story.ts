@@ -7,10 +7,11 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { expect, it } from "vitest";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 import { ControlRunEventPart, RunEvent } from "@claudexor/schema";
 import { cli, makeSandbox, type Sandbox } from "./support.js";
-import { mcpStdioClient, type McpStdioClient } from "./mcp-stdio.js";
+import { closeThenDispose, mcpStdioClient, type McpStdioClient } from "./mcp-stdio.js";
 import {
   daemonApi,
   follow,
@@ -23,10 +24,11 @@ import {
 
 let sandbox: Sandbox | undefined;
 const clients: McpStdioClient[] = [];
-afterEach(async () => {
-  for (const client of clients.splice(0)) await client.close();
-  sandbox?.dispose();
+afterEachClosed((context) => {
+  // This test's sandbox, taken here: a late close never reaches the next test's.
+  const owned = sandbox;
   sandbox = undefined;
+  return closeThenDispose(context, owned, clients.splice(0));
 });
 
 // Independent oracle of the fixture's first question (packages/harness-fake/src/interactive.ts).

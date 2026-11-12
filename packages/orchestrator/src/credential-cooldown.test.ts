@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { CredentialProfile, QuotaConstraint, QuotaSnapshot } from "@claudexor/schema";
+import {
+  REOPENING_UNKNOWN_COOLDOWN_ID,
+  REOPENING_UNKNOWN_REFUSAL_CODE,
+  type CredentialProfile,
+  type QuotaConstraint,
+  type QuotaSnapshot,
+} from "@claudexor/schema";
 import {
   credentialPoolExhausted,
   profileQuotaBlock,
@@ -11,6 +17,8 @@ import {
   type ProfilePolicy,
 } from "./credential-profiles.js";
 import { resolveAccountForRun, type AccountResolutionContext } from "./account-resolution.js";
+import { selectFromAccountPool } from "./account-pool.js";
+import { pinnedWindowBlocked, quotaRefusalWithScope } from "./quota-refusal-scope.js";
 
 /** Strict-pin resolution context (D-U6): everything but the overrides inert. */
 function resolutionCtx(overrides: Partial<AccountResolutionContext>): AccountResolutionContext {
@@ -125,6 +133,178 @@ describe("profileQuotaBlock (A4 cooldown reader)", () => {
         "local_session",
       ),
     ).toBeNull();
+  });
+
+  it("#558: a usage refusal blocks for its bounded cooldown, which is a recheck, never a reset", () => {
+    const refused = cooldownSnapshot("a", { id: REOPENING_UNKNOWN_COOLDOWN_ID });
+    expect(profileQuotaBlock([refused], "cursor", "a", "local_session")).toEqual({
+      blocked: true,
+      constraint_id: REOPENING_UNKNOWN_COOLDOWN_ID,
+      resets_at: null,
+      reopening: "unknown",
+      recheck_at: FUTURE,
+      kind: "cooldown",
+    });
+    expect(
+      profileQuotaBlock([refused], "cursor", "a", "local_session", null, new Date(FUTURE)),
+    ).toBeNull();
+    // Controls: every other reset-less cooldown keeps its release as today, the
+    // generic one, a vendor retry delay or day (`cooldown_until` only), and one
+    // reported spent by another producer. Only the identity names the refusal.
+    for (const constraint of [{}, { id: "cooldown:five_hour" }, { used_ratio: 1 }]) {
+      const block = profileQuotaBlock(
+        [cooldownSnapshot("a", constraint)],
+        "cursor",
+        "a",
+        "local_session",
+      );
+      expect(block).toMatchObject({ resets_at: FUTURE });
+      expect(block).not.toHaveProperty("reopening");
+    }
+  });
+
+  it("#558: an active refusal decides the account whatever else blocks it; other dates stay with their windows", () => {
+    const LATER = "2099-06-01T00:00:00.000Z";
+    const refused = cooldownSnapshot("a", { id: REOPENING_UNKNOWN_COOLDOWN_ID });
+    const window: QuotaSnapshot = {
+      ...cooldownSnapshot("a", {
+        id: "weekly",
+        used_ratio: 1,
+        resets_at: LATER,
+        cooldown_until: null,
+      }),
+      source: "codex_app_server" as QuotaSnapshot["source"],
+    };
+    // The plain limit the vendor's words produce beside the typed code: a dated cooldown.
+    const plain = cooldownSnapshot("a");
+    const both: QuotaSnapshot = {
+      ...refused,
+      constraints: [...refused.constraints, ...plain.constraints, ...window.constraints],
+    };
+    for (const snapshots of [
+      [refused, window],
+      [window, refused],
+      [plain, refused],
+      [window, plain, refused],
+      [both],
+    ])
+      expect(profileQuotaBlock(snapshots, "cursor", "a", "local_session")).toEqual({
+        blocked: true,
+        constraint_id: REOPENING_UNKNOWN_COOLDOWN_ID,
+        resets_at: null,
+        reopening: "unknown",
+        recheck_at: FUTURE,
+        kind: "cooldown",
+      });
+    const dated = {
+      blocked: true,
+      constraint_id: "weekly",
+      resets_at: LATER,
+      kind: "exhausted",
+    };
+    // Controls: the window alone keeps its date, and so does it once the refusal has lapsed.
+    expect(profileQuotaBlock([window], "cursor", "a", "local_session")).toEqual(dated);
+    expect(
+      profileQuotaBlock([refused, window], "cursor", "a", "local_session", null, new Date(FUTURE)),
+    ).toEqual(dated);
+    // A refusal scoped to text never decides another request kind.
+    const textOnly = cooldownSnapshot("a", {
+      id: REOPENING_UNKNOWN_COOLDOWN_ID,
+      applies_to_request_kinds: ["text"],
+    });
+    expect(
+      profileQuotaBlock(
+        [textOnly, window],
+        "cursor",
+        "a",
+        "local_session",
+        null,
+        undefined,
+        "image",
+      ),
+    ).toEqual(dated);
+  });
+
+  it("#558: the refusal's control problem is not the timer-healing code a raw caller reads", () => {
+    const block = profileQuotaBlock(
+      [cooldownSnapshot("a", { id: REOPENING_UNKNOWN_COOLDOWN_ID })],
+      "cursor",
+      "a",
+      "local_session",
+    )!;
+    const error = quotaRefusalWithScope(pinnedWindowBlocked("a", "cursor", block), {
+      harness: "cursor",
+      profileId: "a",
+    }) as Error & { problem: { code: string; context: Record<string, unknown> }; code: string };
+    expect(error.problem.code).toBe(REOPENING_UNKNOWN_REFUSAL_CODE);
+    expect(error.problem.context["resetsAt"]).toBeNull();
+    expect(error.message).toContain("no reopening time named");
+    expect(error.message).not.toContain("resets ");
+  });
+
+  it("#558: one member with no known reopening leaves the whole pool undated and not a quota claim", () => {
+    const LATER = "2099-06-01T00:00:00.000Z";
+    const snapshots = [
+      cooldownSnapshot("a", { id: REOPENING_UNKNOWN_COOLDOWN_ID }),
+      cooldownSnapshot("b", { used_ratio: 1, resets_at: LATER, cooldown_until: null }),
+    ];
+    const selection = selectFromAccountPool({
+      registry: [profile("a"), profile("b")],
+      harnessId: "cursor",
+      snapshots,
+      readyProfileIds: new Set(["a", "b"]),
+      headroomThreshold: 1,
+    });
+    expect(selection).toMatchObject({ outcome: "exhausted", resets_at: null });
+    const candidates: PoolExhaustionCandidate[] = [
+      {
+        profile_id: "a",
+        rejected: "cooldown",
+        headroom: null,
+        cooldown: { resets_at: null, reopening: "unknown" },
+      },
+      {
+        profile_id: "b",
+        rejected: "headroom_exceeded",
+        headroom: { resets_at: LATER },
+        cooldown: null,
+      },
+    ];
+    const error = credentialPoolExhausted({
+      harnessId: "cursor",
+      profileId: null,
+      reason: "profile_headroom_preflight",
+      candidates,
+      subjectLimit: null,
+    }) as Error & { resetsAt: string | null; problem: { context: { poolCauses: string[] } } };
+    expect(error.resetsAt).toBeNull();
+    expect(error.problem.context.poolCauses.sort()).toEqual(["quota", "unavailable"]);
+    // Alone, the refused member claims no quota at all, so no pool reader maps it to a timer.
+    const alone = credentialPoolExhausted({
+      harnessId: "cursor",
+      profileId: null,
+      reason: "profile_headroom_preflight",
+      candidates: candidates.slice(0, 1),
+      subjectLimit: null,
+    }) as Error & { problem: { context: { poolCauses: string[] } } };
+    expect(alone.problem.context.poolCauses).toEqual(["unavailable"]);
+    // A reserve breach's date on the same member is that window's, and promises the pool nothing.
+    const breached = credentialPoolExhausted({
+      harnessId: "cursor",
+      profileId: null,
+      reason: "profile_headroom_preflight",
+      candidates: [
+        {
+          profile_id: "a",
+          rejected: "headroom_exceeded",
+          headroom: { resets_at: LATER },
+          cooldown: { resets_at: null, reopening: "unknown" },
+        },
+      ],
+      subjectLimit: null,
+    }) as Error & { resetsAt: string | null; problem: { context: { poolCauses: string[] } } };
+    expect(breached.resetsAt).toBeNull();
+    expect(breached.problem.context.poolCauses).toEqual(["unavailable"]);
   });
 
   it("blocks only the snapshot's own subject — never a sibling or the default", () => {

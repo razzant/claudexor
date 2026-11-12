@@ -1,5 +1,6 @@
 import {
   isTerminalLifecycle,
+  acceptedReceiptMetadata,
   taskGroupReceiptMetadata,
   type ModeKind,
   type RunOutcomeFacts,
@@ -28,7 +29,7 @@ export function projectTerminalRunOutput(
 ): Record<string, unknown> {
   return {
     ...(out.runId ? {} : taskGroupReceiptMetadata(out.errorContext)),
-    ...taskGroupReceiptMetadata(out),
+    ...acceptedReceiptMetadata(out),
     ...(options.frame ? { frame: options.frame } : {}),
     runId: out.runId,
     runDir: out.runDir,

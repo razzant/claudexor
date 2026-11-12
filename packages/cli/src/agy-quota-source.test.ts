@@ -91,7 +91,7 @@ describe("refreshAgyQuota", () => {
     if (originalConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = originalConfig;
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   const refresh = (options: Parameters<typeof refreshAgyQuota>[0] = {}) =>
     refreshAgyQuota({ prepareProfileKeychain: () => undefined, ...options });
@@ -163,6 +163,86 @@ describe("refreshAgyQuota", () => {
       id: "gemini-weekly",
       used_ratio: 0.75,
     });
+  });
+
+  it("keeps an unrecognized group's window as a diagnostic receipt, not a constraint (#394)", async () => {
+    const envelope = JSON.stringify({
+      status: "SUCCESS",
+      command: {
+        data: {
+          groups: [
+            {
+              name: "Gemini Models",
+              buckets: [{ id: "gemini-weekly", window: "weekly", remaining_fraction: 0.25 }],
+            },
+            {
+              name: "Mystery Models",
+              buckets: [{ id: "mystery-weekly", window: "weekly", remaining_fraction: 0 }],
+            },
+          ],
+        },
+      },
+    });
+    const { bin } = scaffold({
+      token: true,
+      script: `#!/bin/sh
+case "$2" in
+"/model") printf '%s\n' '${MODEL_ENVELOPE("gemini-3.7-flash-high")}' ;;
+*) printf '%s\n' '${envelope}' ;;
+esac
+`,
+    });
+    const receipts: Array<{ outcome: string; reason?: string }> = [];
+    const out = await refresh({ bin, diagnostic: (record) => receipts.push(record) });
+    expect(out.snapshots[0]?.constraints.map((constraint) => constraint.id)).toEqual([
+      "gemini-weekly",
+    ]);
+    expect(receipts.find((record) => record.outcome === "succeeded")?.reason).toBe(
+      "unknown_scope=mystery-weekly group=Mystery Models used=100% resets=unknown",
+    );
+  });
+
+  it("an unknown-only quota envelope is a typed absence with its receipt, never an empty fresh reading", async () => {
+    const envelope = JSON.stringify({
+      status: "SUCCESS",
+      command: {
+        data: {
+          groups: [
+            {
+              name: "Mystery Models",
+              buckets: [
+                {
+                  id: "mystery-weekly",
+                  window: "weekly",
+                  remaining_fraction: 0.1,
+                  reset_time: "2026-07-20T00:00:00Z",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    const { bin } = scaffold({
+      token: true,
+      script: `#!/bin/sh
+case "$2" in
+"/model") printf '%s\n' '${MODEL_ENVELOPE("gemini-3.7-flash-high")}' ;;
+*) printf '%s\n' '${envelope}' ;;
+esac
+`,
+    });
+    const receipts: Array<{ outcome: string; reason?: string }> = [];
+    const out = await refresh({ bin, diagnostic: (record) => receipts.push(record) });
+    expect(out.snapshots).toEqual([]);
+    expect(out.absences?.[0]).toMatchObject({
+      reason: "refresh_failed",
+      detail: expect.stringContaining("unknown model scope"),
+    });
+    const receipt = receipts.find((record) => record.outcome === "failed")?.reason ?? "";
+    expect(receipt).toMatch(
+      /^refresh_failed; unknown_scope=mystery-weekly group=Mystery Models used=90% resets=/,
+    );
   });
 
   it("prepares the profile before each quota child", async () => {
@@ -441,7 +521,7 @@ describe("refreshAgyQuota bare-route scoping", () => {
     if (originalConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = originalConfig;
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   const refresh = (options: Parameters<typeof refreshAgyQuota>[0] = {}) =>
     refreshAgyQuota({ prepareProfileKeychain: () => undefined, ...options });

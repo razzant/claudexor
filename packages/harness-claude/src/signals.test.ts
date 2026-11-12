@@ -163,18 +163,13 @@ describe("claude D-16 signal fixtures", () => {
     expect(out?.find((event) => event.quota)?.quota?.constraints[0]?.used_ratio).toBeNull();
     expect(rejection?.type).toBe("status");
     expect(rejection?.rate_limit?.resets_at).toBe(new Date(1784774400 * 1000).toISOString());
-    expect(rejection?.rate_limit).toMatchObject({
-      constraint_id: "seven_day_opus",
-      applies_to_models: [
-        "opus",
-        "claude-opus-5",
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-opus-4-5",
-        "best",
-      ],
-    });
+    expect(rejection?.rate_limit).toEqual(
+      expect.objectContaining({
+        constraint_id: "seven_day_opus",
+        applies_to_models: ["opus"],
+        applies_to_model_prefixes: ["claude-opus-"],
+      }),
+    );
     expect(() => HarnessEvent.parse(out?.[0])).not.toThrow();
   });
 
@@ -209,6 +204,23 @@ describe("claude D-16 signal fixtures", () => {
     const resultStatus = events.find((e) => e.payload?.["non_success_result"] === true);
     expect(resultStatus?.type).toBe("status");
     expect(resultStatus?.text).toContain("organization has disabled");
+  });
+
+  it("only the exact vendor code or the recorded result proves a subscription-wide denial", () => {
+    const retry = (error: string) =>
+      createClaudeParser()({ type: "system", subtype: "api_retry", attempt: 1, error }, "sig")?.[0];
+    expect(retry("oauth_org_not_allowed")).toMatchObject({
+      status: { error_category: "oauth_org_not_allowed" },
+      payload: { entitlement_denied: true },
+    });
+    // The fallback keeps the category and the vendor's words for diagnostics and
+    // retry, but prose about one model proves nothing about the others.
+    const prose = "Your organization is not allowed to use claude-opus-5-5";
+    const fromProse = retry(prose);
+    expect(fromProse?.status?.error_category).toBe("oauth_org_not_allowed");
+    expect(fromProse?.text).toContain(prose);
+    expect(fromProse?.payload?.["entitlement_denied"]).toBeUndefined();
+    expect(retry("model_not_found")?.payload?.["entitlement_denied"]).toBeUndefined();
   });
 
   it("a successful result never emits the entitlement status even if prose echoes the phrase", () => {

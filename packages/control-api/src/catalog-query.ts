@@ -29,12 +29,14 @@ export function parseHarnessListQuery(url: URL): HarnessListQuery {
 }
 
 export function parseCredentialProfilesSnapshotQuery(url: URL) {
-  assertOnlyQueryParams(url, ["snapshot", "view"]);
+  assertOnlyQueryParams(url, ["snapshot", "view", "includeApiKeys"]);
   const snapshot = optionalBooleanQuery(url, "snapshot") ?? false;
   const view = resourceViewQuery(url);
+  const includeApiKeys = optionalBooleanQuery(url, "includeApiKeys") === true;
   if (view && !snapshot) throw new Error("view=resources requires snapshot=true");
+  if (includeApiKeys && !view) throw new Error("includeApiKeys requires view=resources");
   return {
-    input: { snapshot, ...(view ? { view } : {}) },
+    input: { snapshot, ...(view ? { view } : {}), ...(includeApiKeys ? { includeApiKeys } : {}) },
     schema: view
       ? ControlCredentialProfilesResourcesResponse
       : snapshot

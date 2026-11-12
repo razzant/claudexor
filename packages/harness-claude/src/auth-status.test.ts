@@ -44,7 +44,7 @@ describe("Claude auth-status resilience", () => {
 
     const first = probeClaudeAuthStatus("/bin/claude", options(runCapture));
     const second = probeClaudeAuthStatus("/bin/claude", options(runCapture));
-    expect(calls).toBe(1);
+    await vi.waitFor(() => expect(calls).toBe(1));
     release();
     await expect(Promise.all([first, second])).resolves.toEqual([
       { loggedIn: true, authed: true, authMethod: "claude.ai", probeError: null },

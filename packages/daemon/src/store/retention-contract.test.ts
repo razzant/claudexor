@@ -7,7 +7,7 @@ import {
 } from "@claudexor/workspace";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BlobFiles } from "./blob-files.js";
 import { applyCommandPruneInTx, SqlCommandPruner } from "./command-prune.js";
 import { applyCommandInTx, prepareCommandRow } from "./command-rows.js";
@@ -20,19 +20,26 @@ import { RetentionReferenceReader } from "./retention-reference-reader.js";
 import { diskRetentionReferences } from "./retention-references.js";
 import { commandRetentionCandidates } from "./retention.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const OLD = "2026-01-01T00:00:00.000Z",
   NOW = Date.parse("2026-10-10T00:00:00.000Z"),
   MONTH = 30 * 86400000;
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "cx-sql-prune-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../../dist/store/flusher-worker.js"),
@@ -76,6 +83,7 @@ describe("SQL command retention contract", () => {
           request: {
             interaction_id: interactionId,
             source_tool: "AskUserQuestion",
+            delivery: "blocking",
             questions: [
               {
                 id: "q",
@@ -150,14 +158,14 @@ describe("SQL command retention contract", () => {
     const runId = "run-π",
       interactionId = "question:β",
       fullId = `${runId}\0${interactionId}`;
-    const changes: Array<{ table: unknown; id: unknown; operation: unknown }> = [];
+    const changes: Array<{ table: unknown; id: unknown }> = [];
     const register = f.store.db.function.bind(f.store.db);
     vi.spyOn(f.store.db, "function").mockImplementation((name, callback) => {
       if (name !== "disk_retention_changed") return register(name, callback);
-      register(name, (table, id, operation) => {
-        changes.push({ table, id, operation });
+      register(name, (table, id, root) => {
+        changes.push({ table, id });
         // Emulate Node 24.15's TEXT truncation on newer Node too; BLOBs stay intact.
-        return callback(table, typeof id === "string" ? id.split("\0")[0]! : id, operation);
+        return callback(table, typeof id === "string" ? id.split("\0")[0]! : id, root);
       });
     });
     const refresh = vi.spyOn(RetentionReferenceReader.prototype, "refresh");
@@ -174,6 +182,7 @@ describe("SQL command retention contract", () => {
       request: {
         interaction_id: interactionId,
         source_tool: "AskUserQuestion",
+        delivery: "blocking",
         questions: [
           { id: "q", question: "Continue?", header: null, options: [], multi_select: false },
         ],
@@ -183,9 +192,7 @@ describe("SQL command retention contract", () => {
     await proof.refresh!();
     expect(proof.referencedRunIds).toEqual(new Set([runId]));
     expect(refresh).toHaveBeenCalledExactlyOnceWith("interaction", fullId);
-    expect(changes).toEqual([
-      { table: "interaction", id: expect.any(Uint8Array), operation: "INSERT" },
-    ]);
+    expect(changes).toEqual([{ table: "interaction", id: expect.any(Uint8Array) }]);
     expect(Buffer.from(changes[0]!.id as Uint8Array).toString("utf8")).toBe(fullId);
   });
 
@@ -542,7 +549,7 @@ describe("SQL command retention contract", () => {
     ]);
   });
 
-  it("retires only aged model/reset event copies in bounded passes and keeps their receipts/bindings forever", async () => {
+  it("retires 30-day model receipts with their events and bindings, keeping account resets and only aging their event copies", async () => {
     const f = await fixture(),
       pid = f.generations[0]!.pid,
       events = new SqlEventLedger(f.store, f.blobs, f.generations[0]!);
@@ -582,11 +589,21 @@ describe("SQL command retention contract", () => {
         });
       }
     });
-    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual([]);
-    expect(f.store.prepare("SELECT count(*) AS n FROM event").get()).toEqual({ n: 20 });
-    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual([]);
-    expect(f.store.prepare("SELECT count(*) AS n FROM event").get()).toEqual({ n: 0 });
+    const models = rows.filter((_, i) => i % 2 === 0).map(({ prepared }) => prepared.row.id);
+    // Product cap/age are 0 here: model receipts follow only their own 30 days.
+    expect(f.pruner.pruneHistory(0, 0, Date.parse(OLD) + MONTH - 1)).toEqual([]);
     expect(f.store.prepare("SELECT count(*) AS n FROM command").get()).toEqual({ n: 120 });
-    expect(f.store.prepare("SELECT count(*) AS n FROM idempotency").get()).toEqual({ n: 120 });
+    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual(models);
+    // One batch removed each model receipt's own event keys; reset copies age separately.
+    expect(f.store.prepare("SELECT count(*) AS n FROM event").get()).toEqual({ n: 0 });
+    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual([]);
+    expect(f.store.prepare("SELECT DISTINCT kind FROM command").all()).toEqual([
+      { kind: "account_reset" },
+    ]);
+    expect(f.store.prepare("SELECT count(*) AS n FROM command").get()).toEqual({ n: 60 });
+    expect(f.store.prepare("SELECT count(*) AS n FROM idempotency").get()).toEqual({ n: 60 });
+    expect(
+      f.store.prepare("SELECT count(*) AS n FROM idempotency WHERE target_id LIKE 'model-%'").get(),
+    ).toEqual({ n: 0 });
   });
 });

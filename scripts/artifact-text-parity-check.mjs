@@ -7,7 +7,7 @@
  * moved between files once already) as a mirror of the server's
  * `SEMANTIC_TEXT_EXTENSIONS` set / `isTextArtifact` decision in
  * packages/control-api/src/artifact-read.ts. If the
- * two drift, the app either sends a server-redacted TEXT artifact down the raw
+ * two drift, the app either sends a server TEXT artifact down the raw
  * "open externally" binary path, or eager-previews a server-binary file as text.
  * A Swift-side test can't read the TS source, so this cross-source check reads
  * BOTH real files and fails loudly on drift.
@@ -85,7 +85,7 @@ for (const ext of server) {
   if (!swift.has(ext)) {
     failures.push(
       `server SEMANTIC_TEXT_EXTENSIONS has ".${ext}" but the app's semanticTextExtensions does NOT ` +
-        `— the app would send a server-redacted text artifact down the raw "open externally" path.`,
+        `— the app would send a server text artifact down the raw "open externally" path.`,
     );
   }
 }

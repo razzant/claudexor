@@ -81,6 +81,104 @@ describe("parseAgyEvent", () => {
     expect(out![0]).toMatchObject({ type: "error", error: "authentication failed or timed out" });
   });
 
+  it("turns AGY's structured inference-quota refusal into unknown reopening evidence", () => {
+    const error = "Individual quota reached. Resets in 68h48m15s.";
+    const out = parseAgyEvent(
+      { event: "result", result: { status: "ERROR", response: "", error } },
+      SID,
+    )!;
+    expect(out).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        error,
+        rate_limit: { resets_at: null, retry_delay_ms: null, reopening: "unknown" },
+        payload: {
+          vendor_failure: { code: "ERROR", message: error, source: "agy_result" },
+        },
+      }),
+    );
+  });
+
+  it("types text_delta as an exact non-final fragment: whitespace-only and repeated frames kept", () => {
+    const frames = ["Hel", "lo", " ", "\n", "ha", "ha", "\t\n"];
+    const out = frames.flatMap((text_delta, index) =>
+      parseAgyEvent(
+        {
+          event: "step_update",
+          step_update: { step_index: index, step_type: "agent_response", text_delta },
+        },
+        SID,
+      )!,
+    );
+    expect(out).toEqual(
+      frames.map((text) =>
+        expect.objectContaining({ type: "message", text, payload: { delta: true } }),
+      ),
+    );
+    expect(out.some((event) => event.final)).toBe(false);
+    // An empty frame carries nothing.
+    expect(parseAgyEvent({ event: "step_update", step_update: { text_delta: "" } }, SID)).toEqual(
+      [],
+    );
+  });
+
+  it("keeps a non-SUCCESS result's response and object structured_output as exact non-final evidence", () => {
+    const response = "Partial:\n\n  kept exactly  \n";
+    const structured = { output: "x", work_report: { state: "completed" } };
+    const out = parseAgyEvent(
+      {
+        event: "result",
+        result: {
+          status: "ERROR",
+          response,
+          structured_output: structured,
+          error: "  vendor   words\nkept  ",
+          usage: { input_tokens: 3, output_tokens: 1 },
+        },
+      },
+      SID,
+    )!;
+    expect(out.map((event) => event.type)).toEqual(["message", "message", "error", "usage"]);
+    expect(out[0]).toMatchObject({
+      text: response,
+      payload: { buffered: true, non_success_result: true },
+    });
+    expect(out[0]!.payload).not.toHaveProperty("structured_output");
+    expect(out[1]).toMatchObject({
+      text: JSON.stringify(structured),
+      payload: { buffered: true, non_success_result: true, structured_output: true },
+    });
+    expect(out.some((event) => event.final)).toBe(false);
+    // The display error stays the bounded summary; the vendor's words ride verbatim.
+    expect(out[2]).toMatchObject({
+      error: "vendor words kept",
+      payload: {
+        vendor_failure: {
+          code: "ERROR",
+          message: "  vendor   words\nkept  ",
+          source: "agy_result",
+        },
+      },
+    });
+  });
+
+  it("records the vendor's own status as an opaque code; no status is no code", () => {
+    const vendor = (result: Record<string, unknown>) =>
+      parseAgyEvent({ event: "result", result }, SID)!.find((event) => event.type === "error")!
+        .payload?.["vendor_failure"];
+    expect(vendor({ status: "CANCELLED" })).toEqual({
+      code: "CANCELLED",
+      message: null,
+      source: "agy_result",
+    });
+    expect(vendor({ error: { code: 14, message: "unavailable" } })).toEqual({
+      code: null,
+      message: '{"code":14,"message":"unavailable"}',
+      source: "agy_result",
+    });
+    expect(vendor({ status: "S".repeat(129), error: "e" })).toMatchObject({ code: null });
+  });
+
   it("pairs ACTIVE/DONE tool steps as call/result and flags writes as file changes", () => {
     const active = parseAgyEvent(
       {
@@ -111,6 +209,40 @@ describe("parseAgyEvent", () => {
     )!;
     expect(done[0]).toMatchObject({ type: "tool_result", tool: { status: "ok" } });
     expect(done[1]).toMatchObject({ type: "file_change", payload: { path: "/w/a.txt" } });
+    // Without a recorded step index nothing invents an invocation id.
+    expect(active[0]?.tool).not.toHaveProperty("use_id");
+  });
+
+  it("keys a step's call, result and write companion by its recorded step index (#410)", () => {
+    const step = (state: string, output?: string) =>
+      parseAgyEvent(
+        {
+          event: "step_update",
+          step_update: {
+            step_index: 12,
+            state,
+            step_type: "tool",
+            tool_info: {
+              name: "write_to_file",
+              parameters: { TargetFile: "/w/a.txt" },
+              ...(output ? { output } : {}),
+            },
+          },
+        },
+        SID,
+      )!;
+    expect(step("ACTIVE")[0]?.tool).toMatchObject({ use_id: "step-12", target: "/w/a.txt" });
+    const [result, change] = step("DONE", "ok");
+    expect(result?.tool).toMatchObject({ use_id: "step-12", status: "ok" });
+    // The companion is the same completed step, with its target; completion is typed.
+    expect(change?.tool).toEqual({
+      name: "write_to_file",
+      kind: "file",
+      use_id: "step-12",
+      target: "/w/a.txt",
+      phase: "completed",
+      status: "ok",
+    });
   });
 
   it("maps a tool_info error to a typed error tool result", () => {
@@ -164,7 +296,7 @@ describe("parseAgyEvent", () => {
   });
 
   it("never claims success for a non-DONE tool state (Ф0 review #1)", () => {
-    for (const state of ["CANCELLED", "ERROR", "PENDING", ""]) {
+    for (const state of ["CANCELLED", "PENDING", ""]) {
       const out = parseAgyEvent(
         {
           event: "step_update",
@@ -179,6 +311,95 @@ describe("parseAgyEvent", () => {
       // No fabricated tool_result and — critically — no fabricated file_change.
       expect(out).toEqual([]);
     }
+  });
+
+  // Recorded 1.5.0 frames (#653, arm B of the 8 Nov A/B): a session deny rule
+  // fails the call with state ERROR and the model continues; the ERROR frame is
+  // that call's own result, an error, never success and never a file change.
+  it("returns a refused tool step as its own error result, keyed by the step", () => {
+    const refusal =
+      'permission check failed for unsandboxed "date -u": Permission denied for unsandboxed(date -u). Matches user-configured deny rule.';
+    const call = parseAgyEvent(
+      {
+        event: "step_update",
+        step_update: {
+          step_index: 2,
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: { name: "run_command", parameters: { CommandLine: "date -u" } },
+        },
+      },
+      SID,
+    )!;
+    const result = parseAgyEvent(
+      {
+        event: "step_update",
+        step_update: {
+          step_index: 2,
+          state: "ERROR",
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_info: {
+            name: "run_command",
+            parameters: { CommandLine: "date -u" },
+            error: { type: "TOOL_ERROR", message: refusal },
+          },
+        },
+      },
+      SID,
+    )!;
+    expect(call).toEqual([expect.objectContaining({ type: "tool_call" })]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      type: "tool_result",
+      tool: {
+        name: "run_command",
+        kind: "command",
+        use_id: "step-2",
+        target: "date -u",
+        status: "error",
+        error_summary: expect.stringContaining(JSON.stringify(refusal).slice(1, -1)),
+      },
+    });
+    expect(result[0]!.tool!.use_id).toBe(call[0]!.tool!.use_id);
+    const write = parseAgyEvent(
+      {
+        event: "step_update",
+        step_update: {
+          step_index: 4,
+          state: "ERROR",
+          step_type: "tool",
+          tool_info: { name: "write_file", parameters: { TargetFile: "/w/a.txt" } },
+        },
+      },
+      SID,
+    )!;
+    expect(write.map((event) => event.type)).toEqual(["tool_result"]);
+    expect(write[0]!.tool).toMatchObject({
+      status: "error",
+      error_summary: "agy reported the tool step as ERROR",
+    });
+  });
+
+  it("names the Path parameter of a read as its target", () => {
+    const out = parseAgyEvent(
+      {
+        event: "step_update",
+        step_update: {
+          step_index: 4,
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_info: { name: "read_file", parameters: { Path: "/data/nonce.txt" } },
+        },
+      },
+      SID,
+    )!;
+    expect(out[0]!.tool).toMatchObject({
+      name: "read_file",
+      kind: "file",
+      target: "/data/nonce.txt",
+    });
   });
 
   it("flags a proven writer whose name does not match the convention (#5)", () => {
@@ -221,30 +442,23 @@ describe("parseAgyEvent", () => {
     }
   });
 
-  it("bounds and redacts the file_change payload path (#8)", () => {
-    const out = parseAgyEvent(
-      {
-        event: "step_update",
-        step_update: {
-          state: "DONE",
-          step_type: "tool",
-          tool_info: {
-            name: "write_to_file",
-            // Runtime-assembled: never a token-shaped literal at rest (the
-            // repo-wide secret scan runs on CI's GNU grep, where \b matches).
-            parameters: {
-              TargetFile: `/w/${["sk", "ant", "api03", "AAAABBBBCCCCDDDDEEEEFFFF"].join("-")}.txt`,
-            },
-            output: "ok",
+  it("keeps the file_change payload path exact and bounded (INV-146, #8)", () => {
+    const change = (file: string) =>
+      parseAgyEvent(
+        {
+          event: "step_update",
+          step_update: {
+            state: "DONE",
+            step_type: "tool",
+            tool_info: { name: "write_to_file", parameters: { TargetFile: file }, output: "ok" },
           },
         },
-      },
-      SID,
-    )!;
-    const change = out.find((e) => e.type === "file_change") as { payload?: { path?: string } };
-    expect(change.payload?.path).not.toContain(
-      ["sk", "ant", "api03", "AAAABBBBCCCCDDDDEEEEFFFF"].join("-"),
-    );
+        SID,
+      )!.find((e) => e.type === "file_change") as { payload?: { path?: string } };
+    // Runtime-assembled: never a token-shaped literal at rest.
+    const named = `/w/${["sk", "ant", "api03", "AAAABBBBCCCCDDDDEEEEFFFF"].join("-")}.txt`;
+    expect(change(named).payload?.path).toBe(named);
+    expect(change(`/w/${"a".repeat(600)}`).payload?.path).toHaveLength(500);
   });
 
   it("returns null for unknown top-level events so the run loop counts drops", () => {
@@ -271,5 +485,24 @@ describe("hostile top-level shapes never abort the run", () => {
     ).toEqual([]);
     const result = parseAgyEvent({ event: "result", result: { status: poison } }, SID)!;
     expect(result[0]).toMatchObject({ type: "error" });
+  });
+});
+
+describe("tool targets are the agent's own actions, kept exact (INV-146)", () => {
+  it("keeps a credential-shaped file path in the tool target", () => {
+    const token = ["ghp", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("_");
+    const out = parseAgyEvent(
+      {
+        event: "step_update",
+        step_update: {
+          step_index: 3,
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_info: { name: "write_to_file", parameters: { TargetFile: `/w/${token}.txt` } },
+        },
+      },
+      "s1",
+    );
+    expect(out?.[0]?.tool?.target).toBe(`/w/${token}.txt`);
   });
 });

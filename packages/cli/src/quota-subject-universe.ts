@@ -1,8 +1,8 @@
 import { loadConfig } from "@claudexor/config";
 import {
+  accountResourceSourceHarnesses,
   harnessHasDefaultCredentialStore,
   quotaRefreshDemandHarnesses,
-  ACCOUNT_RESOURCE_REFRESH_SOURCES,
   type QuotaSubject,
 } from "@claudexor/schema";
 import { noProjectRepoRoot } from "@claudexor/util";
@@ -11,7 +11,8 @@ import { readAccountsMigrationFile } from "./accounts-unified-migration.js";
 /** The refresh-demand universe for every enabled primary-capable harness:
  * its enabled native credential plus every enabled config-directory profile.
  * Source traits own the harness list, so adding a primary quota source cannot
- * silently miss this subject projection. */
+ * silently miss this subject projection. API-key resource sources refresh only
+ * on request, so their harnesses add no subject and no `no_source` absence. */
 export function quotaSubjectUniverseFromConfig(): QuotaSubject[] {
   const global = loadConfig(noProjectRepoRoot()).global;
   const profiles = global.credential_profiles;
@@ -19,7 +20,7 @@ export function quotaSubjectUniverseFromConfig(): QuotaSubject[] {
   const migrated = readAccountsMigrationFile();
   for (const harness of new Set([
     ...quotaRefreshDemandHarnesses(),
-    ...Object.values(ACCOUNT_RESOURCE_REFRESH_SOURCES).map((source) => source.harness),
+    ...accountResourceSourceHarnesses("account"),
   ])) {
     const settings = global.harnesses[harness];
     if (settings?.enabled === false) continue;

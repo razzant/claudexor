@@ -24,6 +24,10 @@
             "constraint_freshness",
             "resources_freshness"
           ]
+        },
+        "includeApiKeys": {
+          "type": "boolean",
+          "description": "With a resources view, add API-key rows: registered API-key accounts and each harness's default API-key route (target.profile_id null)."
         }
       },
       "additionalProperties": false,

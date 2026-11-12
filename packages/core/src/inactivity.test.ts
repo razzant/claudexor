@@ -363,6 +363,68 @@ describe("withInactivityWatchdog useful-progress window", () => {
     expect(cleaned).toBe(true);
   });
 
+  it("drains what a stopped source reports during teardown when the caller keeps consuming", async () => {
+    const stop = new AbortController();
+    async function* source(): AsyncGenerator<string> {
+      yield "started";
+      await new Promise<void>((resolve) => {
+        if (stop.signal.aborted) resolve();
+        else stop.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      yield "teardown-warning";
+      yield "completed";
+    }
+
+    const seen: string[] = [];
+    for await (const value of withInactivityWatchdog(source(), {
+      timeoutMs: null,
+      countsAsProgress: () => false,
+      onTimeout: () => {
+        throw new Error("unexpected timeout");
+      },
+      stopSignal: stop.signal,
+    })) {
+      seen.push(value);
+      stop.abort();
+    }
+    expect(seen).toEqual(["started", "teardown-warning", "completed"]);
+  });
+
+  it("bounds the Stop drain by the cleanup deadline even with timing disabled", async () => {
+    const stop = new AbortController();
+    async function* wedged(): AsyncGenerator<string> {
+      try {
+        yield "started";
+        yield "teardown-warning";
+        await new Promise<void>(() => {});
+      } finally {
+        await new Promise<void>(() => {});
+      }
+    }
+
+    const seen: string[] = [];
+    let stoppedAt = 0;
+    for await (const value of withInactivityWatchdog(wedged(), {
+      timeoutMs: null,
+      countsAsProgress: () => false,
+      onTimeout: () => {
+        throw new Error("unexpected timeout");
+      },
+      stopSignal: stop.signal,
+      cleanupDeadlineMs: 400,
+    })) {
+      seen.push(value);
+      if (!stop.signal.aborted) stoppedAt = performance.now();
+      stop.abort();
+    }
+    expect(seen).toEqual(["started", "teardown-warning"]);
+    // ONE cleanup allowance across the drain and the wedged return(), not a
+    // drain deadline followed by a second full return grace.
+    const elapsed = performance.now() - stoppedAt;
+    expect(elapsed).toBeGreaterThanOrEqual(350);
+    expect(elapsed).toBeLessThan(750);
+  });
+
   it("preserves a configured window longer than one Node timer delay", async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
@@ -513,6 +575,7 @@ describe("withInactivityWatchdog useful-progress window", () => {
         interaction: {
           interaction_id: "i1",
           source_tool: "AskUserQuestion",
+          delivery: "blocking",
           questions: [],
         },
       } as HarnessEvent;

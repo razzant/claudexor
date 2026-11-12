@@ -35,7 +35,7 @@ const ANSWER_REFUSAL_ACTIONS = {
   not_found:
     "Re-read claudexor_run_interactions: the question may have timed out, been withdrawn, or never belonged to this run.",
   rejected:
-    "Answer again with question ids and option labels exactly as claudexor_run_interactions returns them.",
+    "Nothing was committed. Answer again with at most one row per question id listed by claudexor_run_interactions, each carrying a selected label or non-blank free text.",
 } as const;
 
 /**
@@ -55,7 +55,7 @@ export async function answerInteraction(
     `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/answer`,
     {
       method: "POST",
-      headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ answers: input["answers"] }),
     },
   );

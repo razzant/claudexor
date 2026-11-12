@@ -51,8 +51,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A job that neither signs nor publishes is bounded at about twice its slowest
+  # successful run, never below ten minutes, so a hang fails visibly instead of
+  # holding the release, and main, for GitHub's six-hour default. package-macos
+  # also signs, notarizes and attests, so only its gates step is bounded. npm and
+  # GitHub Release publication stay unbounded: a cut-off publication is worse.
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       mode: ${{ steps.release.outputs.mode }}
       sha: ${{ steps.release.outputs.sha }}
@@ -104,6 +110,7 @@ jobs:
     name: Build or promote authoritative Windows ConPTY bytes
     needs: prepare
     runs-on: windows-2022
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -294,20 +301,25 @@ jobs:
           fi
           node scripts/verify-release-input.mjs
 
-      - name: Secret scan
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git grep -InE '(\bsk-[A-Za-z0-9_-]{20,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-or-[A-Za-z0-9_-]{20,}|\bghp_[A-Za-z0-9_]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|xox[baeprs]-[A-Za-z0-9-]{10,}|\bnpm_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' -- . ':!pnpm-lock.yaml'; then
-            echo "::error::Potential token-like secret found in tracked files."
-            exit 1
-          fi
-
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
           cache: pnpm
+
+      - name: Provision publication scanner (pinned Betterleaks)
+        run: node scripts/provision-betterleaks.mjs --dest "$RUNNER_TEMP/betterleaks/betterleaks"
+
+      # Same adapter as `pr` delivery and CI (INV-146): the release tree, the
+      # range's commits and messages and, when publishing, the reviewed tag's
+      # message must be clean before any release artifact is built from them.
+      - name: Publication scan
+        env:
+          CLAUDEXOR_BETTERLEAKS_PATH: ${{ runner.temp }}/betterleaks/betterleaks
+        run: |
+          tag_args=()
+          if [ "$RELEASE_MODE_INPUT" = publish ]; then tag_args=(--tag "$RELEASE_REF_INPUT"); fi
+          node scripts/publication-scan.mjs --repo . --range "origin/main..HEAD" --tree HEAD "${tag_args[@]}"
 
       - name: Pin release Node runtime
         shell: bash
@@ -353,7 +365,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Deterministic release gates
+        id: gates
         shell: bash
+        timeout-minutes: 100
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
@@ -386,9 +400,21 @@ jobs:
           pnpm release:verify:swift
           node scripts/verify-version-parity.mjs "$VERSION"
 
+      - name: Check vendor program freshness
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/harness-program-freshness.mjs
+
+      - name: List processes left after the release gates failed or timed out
+        if: failure() && steps.gates.outcome == 'failure'
+        run: ps axww -o user,pid,ppid,pgid,stat,etime,command | awk -v user="$(id -un)" 'NR == 1 || $1 == user'
+
       - name: Build shared engine resources before app packaging
         if: needs.prepare.outputs.mode == 'candidate'
         shell: bash
+        env:
+          # The app and update closure must ship the pinned darwin scanners.
+          CLAUDEXOR_REQUIRE_BETTERLEAKS: "1"
         run: |
           set -euo pipefail
           resources="$RUNNER_TEMP/engine-resources"
@@ -448,10 +474,10 @@ jobs:
           cli_install="$(env -i HOME="$cli_home" PATH="/usr/bin:/bin" \
             "$zipstage/Claudexor.app/Contents/Resources/node" \
             "$zipstage/Claudexor.app/Contents/Resources/claudexor.bundle.cjs" \
-            harness install codex --target local --release-tested --dry-run --json)"
+            harness inspect codex --json)"
           node -e '
             const help = JSON.parse(process.argv[1]);
-            const install = JSON.parse(process.argv[2]);
+            const inventory = JSON.parse(process.argv[2]);
             const expectedVersion = process.argv[3];
             const harness = Array.isArray(help.commands)
               ? help.commands.find((command) => command?.id === "harness")
@@ -459,12 +485,8 @@ jobs:
             if (
               help.ok !== true ||
               help.version !== expectedVersion ||
-              !harness?.flags?.includes("target") ||
-              install.ok !== true ||
-              install.dryRun !== true ||
-              install.harness !== "codex" ||
-              install.target !== "local" ||
-              install.installLocation !== "~/.claudexor/node/bin"
+              !harness?.flags?.includes("vendor-version") ||
+              !inventory.harnesses?.some(row => row.harness === "codex" && row.actions?.install && row.actions?.update)
             ) {
               throw new Error(`candidate CLI help mismatch: ${JSON.stringify(help)}`);
             }
@@ -585,10 +607,10 @@ jobs:
           cli_install="$(env -i HOME="$cli_home" PATH="/usr/bin:/bin" \
             "$promoted_app/Claudexor.app/Contents/Resources/node" \
             "$promoted_app/Claudexor.app/Contents/Resources/claudexor.bundle.cjs" \
-            harness install codex --target local --release-tested --dry-run --json)"
+            harness inspect codex --json)"
           node -e '
             const help = JSON.parse(process.argv[1]);
-            const install = JSON.parse(process.argv[2]);
+            const inventory = JSON.parse(process.argv[2]);
             const expectedVersion = process.argv[3];
             const harness = Array.isArray(help.commands)
               ? help.commands.find((command) => command?.id === "harness")
@@ -596,12 +618,8 @@ jobs:
             if (
               help.ok !== true ||
               help.version !== expectedVersion ||
-              !harness?.flags?.includes("target") ||
-              install.ok !== true ||
-              install.dryRun !== true ||
-              install.harness !== "codex" ||
-              install.target !== "local" ||
-              install.installLocation !== "~/.claudexor/node/bin"
+              !harness?.flags?.includes("vendor-version") ||
+              !inventory.harnesses?.some(row => row.harness === "codex" && row.actions?.install && row.actions?.update)
             ) {
               throw new Error(`promoted CLI help mismatch: ${JSON.stringify(help)}`);
             }
@@ -667,7 +685,7 @@ jobs:
             for entry in claudexord.bundle.cjs claudexor.bundle.cjs setup-login-runner.cjs browser-mcp-runtime native; do
               diff -r "$CLAUDEXOR_ENGINE_RESOURCES/$entry" "apps/macos/dist/bundle.noindex/Claudexor.app/Contents/Resources/$entry"
             done
-            node scripts/build-runtime-closure.mjs \
+            CLAUDEXOR_REQUIRE_BETTERLEAKS=1 node scripts/build-runtime-closure.mjs \
               --resources "$CLAUDEXOR_ENGINE_RESOURCES" \
               --version "$VERSION" \
               --out "$closure" \
@@ -711,6 +729,15 @@ jobs:
                 "https://nodejs.org/dist/v$node_version/node-v$node_version-$target.tar.gz" \
                 --output "$archive"
               digest="$(node -e 'const x=require("./scripts/remote-node-sha256.json");process.stdout.write(x.assets[process.argv[1]])' "$target")"
+              # The target's pinned publication scanner; build-remote-runtime
+              # checks its archive and binary digests before staging it.
+              scanners="$RUNNER_TEMP/betterleaks-archives"
+              scanner_url="$(node --input-type=module -e 'import { BETTERLEAKS_RELEASE_URL, BETTERLEAKS_RELEASES } from "./packages/delivery/src/publication-scanner-pin.ts"; process.stdout.write(BETTERLEAKS_RELEASE_URL + "/" + BETTERLEAKS_RELEASES[process.argv[1]].asset)' "$target")"
+              scanner_asset="${scanner_url##*/}"
+              mkdir -p "$scanners"
+              curl --fail --location --proto '=https' --tlsv1.2 \
+                "$scanner_url" \
+                --output "$scanners/$scanner_asset"
               node scripts/build-remote-runtime.mjs \
                 --target "$target" \
                 --version "$VERSION" \
@@ -719,6 +746,7 @@ jobs:
                 --node-archive "$archive" \
                 --node-sha256 "$digest" \
                 --node-version "$node_version" \
+                --betterleaks-archive "$scanners/$scanner_asset" \
                 --out "$remote"
             done
             node scripts/build-remote-runtime-manifest.mjs \
@@ -836,9 +864,10 @@ jobs:
           subject-path: ${{ runner.temp }}/release-assets/*
 
   windows-conpty-candidate-smoke:
-    name: Execute assembled Windows ConPTY bytes (Node 24.16)
+    name: Execute assembled Windows ConPTY bytes (Node 24.22)
     needs: [prepare, windows-conpty-authority, package-macos]
     runs-on: windows-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -861,7 +890,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.16.0
+          node-version: 24.22.3
           cache: pnpm
 
       - name: Install and build portable runtime code
@@ -957,14 +986,16 @@ jobs:
             # A just-started daemon refuses replacement stop with a retryable code until it can
             # read its own records (runtime_activity_unknown) or while work is active
             # (runtime_replacement_busy). Retry only those refusals, within a bounded window.
+            # An empty or non-JSON answer is reported with the stop command's exit code.
             $stopDeadline = [DateTime]::UtcNow.AddSeconds(30)
             while ($true) {
               $stopText = (& node $entry --stop $env:VERSION $env:PREPARED_SHA | Out-String)
               $stopExit = $LASTEXITCODE
-              try { $stop = $stopText | ConvertFrom-Json } catch { throw "assembled daemon stop answered no JSON: $stopText" }
+              if ([string]::IsNullOrWhiteSpace($stopText)) { throw "assembled daemon stop answered nothing (exit $stopExit)" }
+              try { $stop = $stopText | ConvertFrom-Json } catch { throw "assembled daemon stop answered no JSON (exit $stopExit): $stopText" }
               if ($stopExit -eq 0 -and $stop.stopped) { break }
               if (-not $stop.retryable -or [DateTime]::UtcNow -ge $stopDeadline) {
-                throw "assembled daemon graceful stop failed: $($stopText.Trim())"
+                throw "assembled daemon graceful stop failed (exit $stopExit): $($stopText.Trim())"
               }
               Start-Sleep -Milliseconds 500
             }
@@ -977,6 +1008,7 @@ jobs:
     name: Exercise the promoted Linux runtime over OpenSSH
     needs: [prepare, package-macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -1083,10 +1115,11 @@ jobs:
     needs: [prepare, publish-npm]
     if: needs.prepare.outputs.mode == 'publish'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        node-version: [24.15.0, 24.16.0]
+        node-version: [24.15.0, 24.22.3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

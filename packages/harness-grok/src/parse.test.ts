@@ -110,6 +110,30 @@ describe("Grok finality and vendor failures", () => {
     }
   });
 
+  it("types the max-turns cap, and only it, as the turn-limit stop (#299)", () => {
+    const capped = createGrokParser().parseEvent(
+      {
+        type: "result",
+        subtype: "error_max_turns",
+        is_error: true,
+        num_turns: 4,
+        errors: ["Maximum turns reached"],
+        usage: { input_tokens: 3, output_tokens: 1 },
+      },
+      "s",
+    )!;
+    expect(capped.filter((e) => e.type === "error").map((e) => e.turn_limit)).toEqual([
+      { native_code: "error_max_turns", num_turns: 4 },
+    ]);
+    expect(capped.some((e) => e.type === "usage")).toBe(true);
+    const other = createGrokParser().parseEvent(
+      { type: "result", subtype: "error_during_execution", is_error: true, errors: ["boom"] },
+      "s",
+    )!;
+    expect(other.find((e) => e.type === "error")?.turn_limit).toBeUndefined();
+    validateTypedStream([...capped, ...other]);
+  });
+
   it("does not fabricate a file change from a failed write", () => {
     const p = createGrokParser();
     p.parseEvent(
@@ -254,5 +278,28 @@ describe("Grok finality and vendor failures", () => {
     expect(
       createGrokParser().parseEvent({ type: "assistant", message: { content: {} } }, "s"),
     ).toEqual([]);
+  });
+});
+
+describe("tool targets are the agent's own actions, kept exact (INV-146)", () => {
+  it("keeps a credential-shaped file path in the tool target", () => {
+    const token = ["ghp", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("_");
+    const out = createGrokParser().parseEvent(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "g1",
+              name: "write",
+              input: { file_path: `/workspace/${token}.txt` },
+            },
+          ],
+        },
+      },
+      "s",
+    );
+    expect(out?.find((e) => e.type === "tool_call")?.tool?.target).toBe(`/workspace/${token}.txt`);
   });
 });

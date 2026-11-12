@@ -47,3 +47,19 @@ export const ControlRunSummaryProcessScope = ControlProcessScope.nullable()
   .describe(
     "Compact process-scope outcome from final/process_scope.yaml (settled, coverage, completeness, survivors, unreadable, census). Always present in this engine's responses: null means unknown (the run is live, or the record is missing, unreadable or invalid), never clean. Engines that predate the field omit the key, which is equally unknown.",
   );
+
+/**
+ * `ControlRunSummary.processScopeLater`: the latest later settlement attempt
+ * (final/process_scope_later.yaml) beside the unchanged terminal record. Null
+ * when none ran or its record is unreadable: unknown, never clean.
+ */
+export const ControlRunSummaryProcessScopeLater = ControlProcessScope.extend({
+  attempt: z.number().int().positive(),
+  at: z.string().min(1),
+})
+  .strict()
+  .nullable()
+  .default(null)
+  .describe(
+    "Latest later, separately bounded settlement attempt of this finished run's scope (final/process_scope_later.yaml), beside the unchanged terminal processScope. Null when none ran or it is unreadable: unknown, never clean.",
+  );

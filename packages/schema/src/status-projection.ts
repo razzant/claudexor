@@ -68,6 +68,8 @@ export function outcomeExitCode(facts: RunOutcomeFacts | null | undefined): numb
 export function runOutcomeLabel(facts: RunOutcomeFacts): string {
   switch (facts.lifecycle) {
     case "failed":
+      // A capture refusal names what is missing (the exact result), not a verb.
+      if (facts.reason === "capture_refused") return "Failed (changes not captured)";
       return facts.reason ? `Failed (${facts.reason.replaceAll("_", " ")})` : "Failed";
     case "cancelled":
       // The new provenance must survive to the human label too, or the whole
@@ -83,7 +85,7 @@ export function runOutcomeLabel(facts: RunOutcomeFacts): string {
           return "Cancelled";
       }
     case "interrupted":
-      return "Interrupted";
+      return facts.reason === "turn_limit_reached" ? "Turn limit reached" : "Interrupted";
     case "succeeded":
       break;
     default:
@@ -357,11 +359,12 @@ export function requiredActionsFor(
  * limit, a host/daemon shutdown, the owning task disappearing — is a typed
  * refusal, or the IDE attributes a host kill to its user. Legacy cancellations
  * without a reason remain cancelled because their initiator cannot be
- * reconstructed. */
+ * reconstructed. A run the max-turns cap ended is ACP's own
+ * `max_turn_requests` stop (#299). */
 export function acpStopReason(
   lifecycle: string,
   reason: RunReason | null,
-): "cancelled" | "refusal" | "end_turn" {
+): "cancelled" | "refusal" | "end_turn" | "max_turn_requests" {
   if (lifecycle === "cancelled") {
     const notUser =
       reason === "wall_clock_exceeded" ||
@@ -369,6 +372,7 @@ export function acpStopReason(
       reason === "owner_task_gone";
     return notUser ? "refusal" : "cancelled";
   }
+  if (lifecycle === "interrupted" && reason === "turn_limit_reached") return "max_turn_requests";
   if (lifecycle === "failed" || lifecycle === "interrupted") return "refusal";
   return "end_turn";
 }

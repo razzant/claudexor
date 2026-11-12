@@ -1,6 +1,6 @@
 import { QUOTA_GAP_ABSENCE_REASONS, quotaSourceTraits } from "@claudexor/schema";
 import type {
-  AccountTarget,
+  AccountResourceTarget,
   AccountResourceObservation,
   AccountResourceSnapshot,
   QuotaAbsence,
@@ -35,7 +35,7 @@ export interface QuotaRefreshResult {
  * ignores the argument keeps the pre-existing contract. */
 export interface QuotaRefreshCycle {
   readonly foreground: boolean;
-  readonly target?: AccountTarget;
+  readonly target?: AccountResourceTarget;
   /** Background cycles fetch only due primary evidence. Explicit refreshes
    * still ask every eligible subject; floor and alias checks remain separate. */
   readonly shouldRefresh?: (subject: QuotaSubject) => boolean;
@@ -242,7 +242,7 @@ export function selectCycleEntries(
   isCurrent: () => boolean = () => true,
   subjects: readonly QuotaSubject[] = [],
   snapshots: readonly QuotaSnapshot[] = [],
-  target?: AccountTarget,
+  target?: AccountResourceTarget,
   resources: readonly AccountResourceSnapshot[] = [],
 ): LaneCycleSelection {
   subjects = target

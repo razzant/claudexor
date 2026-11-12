@@ -9,6 +9,7 @@ import {
   type ControlProjectRemoveReceipt,
 } from "@claudexor/schema";
 import { hashJson, newId, nowIso } from "@claudexor/util";
+import { reduceThreadLifecycle } from "../thread-lifecycle.js";
 import {
   canonicalRoot,
   assertNotClaudexorOwned,
@@ -26,7 +27,12 @@ import {
   deleteTargetIdempotencyInTx,
   lookupIdempotency,
 } from "./idempotency.js";
-import { requireTransaction, runMutation, type SqlWriteContext } from "./mutation.js";
+import {
+  requireTransaction,
+  runMutation,
+  type MutationContext,
+  type SqlWriteContext,
+} from "./mutation.js";
 import type { Obligations } from "./obligations.js";
 import { insertPartitionInTx, partitionById, type PartitionGeneration } from "./partitions.js";
 import type { EngineStore } from "./store.js";
@@ -257,28 +263,23 @@ export class SqlProjectStore {
   unregister(id: string): Project | undefined {
     const project = this.get(id);
     if (!project) return undefined;
-    const event = prepareEvent(this.blobs, {
-      type: "project.unregistered",
-      time: nowIso(),
-      payload: { project },
-    });
-    runMutation(this.store, (tx) => {
-      applyProjectMutation(tx, this.global().pid, "project.unregistered", { project }, event.time);
-      appendPreparedEventInTx(tx, this.blobs, this.global().pid, event);
-    });
+    const event = unregisteredEvent(this.blobs, project);
+    runMutation(this.store, (tx) => this.unregisterInTx(tx, project, event));
     return project;
   }
 
+  private unregisterInTx(
+    tx: MutationContext,
+    project: Project,
+    event: ReturnType<typeof unregisteredEvent>,
+  ): void {
+    applyProjectMutation(tx, this.global().pid, "project.unregistered", { project }, event.time);
+    appendPreparedEventInTx(tx, this.blobs, this.global().pid, event);
+  }
+
   remove(id: string, activeRunRoots: ReadonlySet<string>): ControlProjectRemoveReceipt {
-    const project = this.get(id);
-    if (!project)
-      throw Object.assign(new Error(`no such project: ${id}`), {
-        code: "project_not_found",
-        status: 404,
-      });
-    const partition = this.partition(id);
+    const { project, partition } = this.removable(id);
     if (partition) {
-      requireServedGeneration(this.store, partition.pid);
       const n = Number(
         (
           this.store
@@ -294,22 +295,109 @@ export class SqlProjectStore {
           { code: "project_has_threads", status: 409 },
         );
     }
-    if (activeRunRoots.has(project.root))
-      throw Object.assign(
-        new Error(
-          `project ${id} has a live or queued run; wait for it to finish before removing it`,
-        ),
-        { code: "project_has_active_run", status: 409 },
-      );
+    if (activeRunRoots.has(project.root)) throw activeRunRefusal(id);
     this.unregister(id);
+    return removalReceipt(project, partition);
+  }
+
+  /** #333 explicit opt-in: purge the threads already in the trash and retire
+   * the generation in ONE transaction. A thread outside the trash, or any
+   * queued/running command of the partition (a turn, an Apply delivery, a run
+   * under a former root), refuses before any change: purge deletes directories
+   * that work uses. Directory cleanup follows the commit via the purge owner. */
+  removeWithTrashedThreads(id: string, activeRunRoots: ReadonlySet<string>): ProjectRemoval {
+    const { project, partition } = this.removable(id);
+    const threads = partition
+      ? new SqlThreadStore(this.store, this.blobs, partition, this.obligations)
+      : null;
+    const trashed: Thread[] = [];
+    if (partition) {
+      const live = (
+        this.store
+          .prepare("SELECT body FROM thread WHERE pid=? AND state<>'purged' ORDER BY rowid")
+          .all(partition.pid) as Array<{ body: Uint8Array }>
+      ).map((row) => decodeBody<Thread>(row));
+      const outside = live.filter((thread) => thread.state !== "trashed").length;
+      if (outside)
+        throw Object.assign(
+          new Error(
+            `project ${id} still has ${outside} thread(s) outside the trash; trash them before removing the project with its trashed threads`,
+          ),
+          { code: "project_has_threads", status: 409 },
+        );
+      trashed.push(...live);
+    }
+    if (activeRunRoots.has(project.root)) throw activeRunRefusal(id);
+    if (
+      partition &&
+      this.store
+        .prepare(
+          "SELECT 1 FROM command WHERE live=1 AND state IN ('queued','running') AND pid=? LIMIT 1",
+        )
+        .get(partition.pid)
+    )
+      throw activeRunRefusal(id);
+    const purged = trashed.map((thread) => reduceThreadLifecycle(thread, "purge"));
+    const prepared = threads && purged.length ? threads.prepare({ threads: purged }) : null;
+    const event = unregisteredEvent(this.blobs, project);
+    runMutation(this.store, (tx) => {
+      if (prepared) threads!.applyInTx(tx, prepared);
+      // The same pre-purge payload the single thread purge commits.
+      for (const thread of trashed)
+        this.obligations.create("purge_fs", thread.id, partition!.pid, { thread });
+      this.unregisterInTx(tx, project, event);
+    });
+    return { receipt: removalReceipt(project, partition), purged: trashed };
+  }
+
+  private removable(id: string): { project: Project; partition: PartitionGeneration | null } {
+    const project = this.get(id);
+    if (!project)
+      throw Object.assign(new Error(`no such project: ${id}`), {
+        code: "project_not_found",
+        status: 404,
+      });
+    const partition = this.partition(id);
     return {
-      projectId: id,
-      root: project.root,
-      registryRemoved: true,
-      journalPartitionArchived: partition !== null,
-      archivedPartitionPath: partition ? `partition:${partition.name}@${partition.epoch}` : null,
-      artifactsRetained: true,
-      activeRunCheck: "snapshot",
+      project,
+      partition: partition ? requireServedGeneration(this.store, partition.pid) : null,
     };
   }
+}
+
+/** The opted-in removal's committed decision and each purged thread's
+ * pre-purge record, which the purge owner's directory cleanup consumes. */
+export interface ProjectRemoval {
+  receipt: ControlProjectRemoveReceipt;
+  purged: Thread[];
+}
+
+function unregisteredEvent(blobs: BlobFiles, project: Project) {
+  return prepareEvent(blobs, {
+    type: "project.unregistered",
+    time: nowIso(),
+    payload: { project },
+  });
+}
+
+function activeRunRefusal(id: string): Error {
+  return Object.assign(
+    new Error(`project ${id} has a live or queued run; wait for it to finish before removing it`),
+    { code: "project_has_active_run", status: 409 },
+  );
+}
+
+function removalReceipt(
+  project: Project,
+  partition: PartitionGeneration | null,
+): ControlProjectRemoveReceipt {
+  return {
+    projectId: project.id,
+    root: project.root,
+    registryRemoved: true,
+    journalPartitionArchived: partition !== null,
+    archivedPartitionPath: partition ? `partition:${partition.name}@${partition.epoch}` : null,
+    artifactsRetained: true,
+    activeRunCheck: "snapshot",
+  };
 }

@@ -123,6 +123,29 @@ if [ "$(uname -s)" = "Darwin" ]; then
     exit 1
   fi
   echo "    bundled universal process-identity helper"
+  # The pinned publication scanner for both macOS architectures (INV-146): the
+  # app and its update closure are universal, so darwin-arm64 and darwin-x64
+  # ship, never another platform's build. Archives come from
+  # CLAUDEXOR_BETTERLEAKS_ARCHIVES when supplied, else this explicit build step
+  # downloads them; both digests are checked against the pin either way.
+  BETTERLEAKS_ARGS=(--stage "$RESOURCES/native" --platforms darwin-arm64,darwin-x64)
+  if [ -n "${CLAUDEXOR_BETTERLEAKS_ARCHIVES:-}" ]; then
+    BETTERLEAKS_ARGS+=(--archives-dir "$CLAUDEXOR_BETTERLEAKS_ARCHIVES")
+  fi
+  if node "$REPO_ROOT/scripts/provision-betterleaks.mjs" "${BETTERLEAKS_ARGS[@]}"; then
+    HOST_SCANNER="$RESOURCES/native/betterleaks/darwin-$(uname -m | sed 's/x86_64/x64/')/betterleaks"
+    if ! "$HOST_SCANNER" version | grep -Eq '^1\.9\.0$'; then
+      echo "ERROR: bundled publication scanner failed its offline version probe" >&2
+      exit 1
+    fi
+    echo "    bundled publication scanner (Betterleaks 1.9.0, darwin-arm64 + darwin-x64)"
+  elif [ "${CLAUDEXOR_REQUIRE_BETTERLEAKS:-0}" = "1" ]; then
+    echo "ERROR: candidate build requires the pinned publication scanner" >&2
+    exit 1
+  else
+    rm -rf "$RESOURCES/native/betterleaks"
+    echo "WARNING: publication scanner not bundled; 'pr' delivery will refuse as unavailable" >&2
+  fi
 fi
 # Linux uses procfs identity and host PTY tools. Do not create an empty native
 # directory that could masquerade as a complete universal update closure.
@@ -156,4 +179,14 @@ if [ "$(uname -s)" = "Darwin" ] && [ -n "${SIGN_IDENTITY:-}" ]; then
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$helper"
     codesign --verify --strict --verbose=2 "$helper"
   done
+  for scanner in "$RESOURCES"/native/betterleaks/darwin-*/betterleaks; do
+    [ -e "$scanner" ] || continue
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$scanner"
+    codesign --verify --strict --verbose=2 "$scanner"
+  done
+  # A signed scanner is the release's copy of the pinned build: record its
+  # digest beside the upstream one so the runtime accepts exactly these bytes.
+  if [ -d "$RESOURCES/native/betterleaks" ]; then
+    node "$REPO_ROOT/scripts/provision-betterleaks.mjs" --refresh-provenance "$RESOURCES/native"
+  fi
 fi

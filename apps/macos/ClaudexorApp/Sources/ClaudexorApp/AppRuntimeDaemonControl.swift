@@ -11,6 +11,10 @@ import ClaudexorKit
 //    uses the daemon-owned identity/idle/admission fence plus identity-proven
 //    termination confirmation.
 //  - start: DaemonLauncher (relaunch against the ACTIVE pointer).
+//  - savedScripts: DaemonLauncher's saved copies of one exact build, for the
+//    reconciler's bounded return after a failed replacement.
+//  - operatorStopCommand: the manual stop a notice names when an engine that
+//    cannot serve keeps this app's root.
 //  - isBusy / handshake: injected async closures over the app's GatewayClient
 //    (active-runs listing / protocol handshake), so this struct stays Sendable
 //    and testable.
@@ -22,13 +26,36 @@ struct AppRuntimeDaemonControl: RuntimeDaemonControl {
     /// One live handshake: exact identity plus product admission, nil when
     /// unreachable, incompatible or unstamped.
     let handshakeProbe: @Sendable () async -> RuntimeServingHandshake?
+    /// Reconciliation's launch assets: the app bundle and the user's runtime
+    /// directory in production, stand-ins in an offline process drill.
+    let node: URL?
+    let bundledDaemon: URL?
+    let installer: RuntimeInstaller
+    /// The CLI beside the bundled daemon, and the root this app's engine uses:
+    /// the one its discovery reads, from the environment the launcher passes on.
+    let cli: URL?
+    let engineRoot: URL
+    let environment: [String: String]
 
     init(
         isBusyProbe: @escaping @Sendable () async -> Bool?,
-        handshakeProbe: @escaping @Sendable () async -> RuntimeServingHandshake? = { nil }
+        handshakeProbe: @escaping @Sendable () async -> RuntimeServingHandshake? = { nil },
+        node: URL? = DaemonLauncher.bundledNode,
+        bundledDaemon: URL? = DaemonLauncher.bundledDaemon,
+        installer: RuntimeInstaller = RuntimeInstaller(),
+        cli: URL? = DaemonLauncher.bundledCLI,
+        engineRoot: URL = ControlApiDiscovery.defaultPath()
+            .deletingLastPathComponent().deletingLastPathComponent(),
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.isBusyProbe = isBusyProbe
         self.handshakeProbe = handshakeProbe
+        self.node = node
+        self.bundledDaemon = bundledDaemon
+        self.installer = installer
+        self.cli = cli
+        self.engineRoot = engineRoot
+        self.environment = environment
     }
 
     func isBusy() async -> Bool? { await isBusyProbe() }
@@ -53,14 +80,23 @@ struct AppRuntimeDaemonControl: RuntimeDaemonControl {
         }
     }
 
-    func start(scriptURL: URL) throws {
-        guard DaemonLauncher.startIfNeeded(scriptURL: scriptURL) else {
+    func start(scriptURL: URL, launchPermit: LocalRuntimeLaunchPermit) throws -> RuntimeDaemonLaunch {
+        let record = DaemonLaunchRecord()
+        guard DaemonLauncher.startIfNeeded(
+            scriptURL: scriptURL, launchPermit: launchPermit, launchRecord: record, node: node
+        ) else {
             throw RuntimeInstallError.io("could not relaunch the selected engine daemon")
         }
+        return RuntimeDaemonLaunch(isRunning: {
+            // Ordered after any spawn the permit admitted, so a child that was
+            // only just started cannot be missed.
+            launchPermit.waitForAdmittedSpawn()
+            return record.isRunning
+        })
     }
 
     func stopForRuntimeReplacement(expectedIdentity: RuntimeClosureIdentity) async throws {
-        guard let node = DaemonLauncher.bundledNode, let daemon = DaemonLauncher.bundledDaemon else {
+        guard let node, let daemon = bundledDaemon else {
             throw RuntimeInstallError.io("no bundled daemon to drive the identity-proven stop")
         }
         guard let execution = Self.runNodeJSONExecution(
@@ -85,8 +121,17 @@ struct AppRuntimeDaemonControl: RuntimeDaemonControl {
         }
     }
 
+    func operatorStopCommand() -> String? {
+        DaemonLauncher.operatorStopCommand(
+            root: engineRoot, node: node, cli: cli, environment: environment)
+    }
+
+    func savedScripts(for identity: RuntimeClosureIdentity) -> [URL] {
+        DaemonLauncher.savedScripts(for: identity, installer: installer, bundledDaemon: bundledDaemon)
+    }
+
     func probeIdentity(scriptURL: URL) async -> RuntimeClosureIdentity? {
-        guard let node = DaemonLauncher.bundledNode,
+        guard let node,
             let result = Self.runNodeJSON([scriptURL.path, "--probe"], node: node, timeout: 20)
         else { return nil }
         return Self.runtimeIdentity(from: result)
@@ -110,8 +155,9 @@ struct AppRuntimeDaemonControl: RuntimeDaemonControl {
     // MARK: - Subprocess helper
 
     /// Run the bundled Node with `args`, capture stdout, and parse the LAST
-    /// JSON-object line. Returns nil on spawn failure, timeout, or unparseable
-    /// output (fail-closed — the coordinator treats a nil probe/stop as failure).
+    /// JSON-object line. Returns nil on spawn failure, a nonzero exit (such as
+    /// a child terminated at its deadline), or unparseable output (fail-closed —
+    /// the coordinator treats a nil probe/stop as failure).
     static func runNodeJSON(_ args: [String], node: URL, timeout: TimeInterval) -> [String: Any]? {
         guard let execution = runNodeJSONExecution(args, node: node, timeout: timeout),
               execution.status == 0
@@ -137,7 +183,10 @@ struct AppRuntimeDaemonControl: RuntimeDaemonControl {
         } catch {
             return nil
         }
-        // Hard timeout so a hung child never wedges an install.
+        // A nominal stage timeout: at the deadline the child gets SIGTERM, and
+        // this still waits for its exit and for EOF on its output. A child that
+        // ignores SIGTERM, or a descendant holding the pipe, keeps the caller
+        // waiting, and an answer it prints before exiting 0 still counts.
         let killer = DispatchWorkItem { if proc.isRunning { proc.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
         let data = out.fileHandleForReading.readDataToEndOfFile()

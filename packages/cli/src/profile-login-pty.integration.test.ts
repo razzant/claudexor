@@ -1,4 +1,4 @@
-import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
+import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
@@ -21,6 +21,7 @@ import { createCursorAdapter } from "@claudexor/harness-cursor";
 import { registerConfigDirProfile } from "./profile-registration.js";
 import { setupJobControlServices } from "./setup-job-control-services.js";
 import { createSetupJobManager } from "./setup-jobs.js";
+import { SqlSetupLifecycleSlot } from "./sql-setup-lifecycle.js";
 
 // This is the built CLI, real terminal, Control API, lifecycle, runner and
 // process-group owner. Only the vendor and socket health facade are fixtures.
@@ -111,7 +112,7 @@ async function withFixture(
   expect(existsSync(CLI), "build the real CLI before this acceptance test").toBe(true);
   const keys = ["CLAUDEXOR_CONFIG_DIR", "HOME", "USERPROFILE", "XDG_CONFIG_HOME"] as const;
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "c363-pty-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p-")));
   process.env.CLAUDEXOR_CONFIG_DIR = root;
   const home = join(root, "home");
   mkdirSync(home);
@@ -125,15 +126,18 @@ async function withFixture(
     fixture.bin,
     `#!${process.execPath}\n` +
       `
+const args = process.argv.slice(2);
+if (args[0] === '--disable-auto-update') args.shift();
+if (args[0] === '--version') { console.log('2026.11.10-abc123'); process.exit(0); }
 const fs = require('node:fs');
 const path = require('node:path');
 const root = ${JSON.stringify(fixture.root)};
 const file = name => path.join(root,name);
-if (process.argv[2] === 'status') {
+if (args[0] === 'status') {
   console.log(JSON.stringify({authenticated: fs.existsSync(file('finished')), email:'fixture@example.test'}));
   process.exit(0);
 }
-if (process.argv[2] !== 'login') process.exit(2);
+if (args[0] !== 'login') process.exit(2);
 fs.appendFileSync(file('starts'), 'start\\n');
 fs.writeFileSync(file('login.json.tmp'), JSON.stringify({pid:process.pid, stdin:!!process.stdin.isTTY, stdout:!!process.stdout.isTTY, stderr:!!process.stderr.isTTY,home:process.env.HOME,credentialStore:process.env.AGENT_CLI_CREDENTIAL_STORE}));
 fs.renameSync(file('login.json.tmp'), file('login.json'));
@@ -151,8 +155,10 @@ setInterval(() => {
   const profile = registerConfigDirProfile({ harnessId: "cursor", profileId: "work" }).profile;
   const cursor = createCursorAdapter();
   const token = ensureToken();
+  // The daemon's SQL setup store; its engine store lives in daemonDir() and is closed here.
+  const sql = await sqlFixture(root);
   const manager = createSetupJobManager({
-    store: new SetupJobStore(daemonDir()),
+    store: new SqlSetupLifecycleSlot(daemonDir(), sql.graph).current(),
     rootDir: daemonDir(),
     runnerPath: RUNNER,
     monitorPollMs: 20,
@@ -200,7 +206,7 @@ setInterval(() => {
     await until("fixture login drain", () => manager.list({ active: true }).length === 0);
     await Promise.all(clients.map((client) => client.stop()));
     await manager.shutdown();
-    (manager._store as SetupJobStore).journal.close();
+    await sql.close();
     await server.stop();
     await new Promise<void>((resolve) => health.close(() => resolve()));
     for (const key of keys) {

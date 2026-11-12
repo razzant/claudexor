@@ -148,10 +148,12 @@ struct TurnCard: View {
                 }
                 // ONE persistent receipt row: the whole row toggles inline activity.
                 TurnReceiptRow(
-                    run: run, runId: runId,
+                    run: run, runId: runId, locationID: target.locationID,
                     expanded: transcriptExpanded ?? run.phase.isActive,
                     onToggle: {
-                        if model.transcriptBlocks(runId).isEmpty { model.openRun(run.id) }
+                        if (model.transcript(runId, at: target.locationID)?.blocks ?? []).isEmpty {
+                            model.openRun(run.id)
+                        }
                         else { transcriptExpanded = !(transcriptExpanded ?? run.phase.isActive) }
                     },
                     onOpenWorkspace: { model.openRun(run.id) }, historyRun: historyRow?.run)
@@ -181,8 +183,8 @@ struct TurnCard: View {
                 // PlanQuestionCard placement below. D42 retired TaskDetailView, the
                 // pinned InteractionCard's only surface, leaving AppModel
                 // .answerInteraction with no UI caller — this restores it so a
-                // pending interaction is always answerable in default config.
-                ForEach(run.pendingInteractions) { pending in
+                // question is answerable while the run is live (`openQuestions`).
+                ForEach(run.openQuestions) { pending in
                     InteractionCard(interaction: pending)
                 }
                 // D17: a plan that came back needs_answers surfaces its open
@@ -221,8 +223,10 @@ struct TurnCard: View {
                 // state, so D42 must not leave a project mutation visible only in
                 // the workspace Outcome facts (INV-093 honest outcome).
                 applyStateLine(run)
-                // Inline failure card: a terminal-FAILED turn with nothing to show.
-                if isSilentFailure(run) { failureCard(run) }
+                // Inline failure card: a terminal-FAILED turn with nothing to show,
+                // or a typed refusal (#147/#393/#551) that an earlier round's output
+                // or a collapsed transcript would otherwise leave unexplained.
+                if isSilentFailure(run) || TurnFailureCard.namesRefusal(run) { failureCard(run) }
             } else if let refusal = turn.enqueueError {
                 TurnRefusalCard(turn: turn, refusal: refusal, target: target)
             } else if historyRow?.runStatus == "not_retained" {
@@ -270,11 +274,12 @@ struct TurnCard: View {
 
     @ViewBuilder
     private func inlineActivity(_ run: TaskRun, runId: String) -> some View {
-        let blocks = model.transcriptBlocks(runId)
+        let transcript = model.transcript(runId, at: target.locationID)
+        let blocks = transcript?.blocks ?? []
         if !blocks.isEmpty, (transcriptExpanded ?? run.phase.isActive) {
             TranscriptView(blocks: blocks,
-                           trimmedOlder: model.transcriptTrimmedCount(runId),
-                           truncatedChars: model.transcriptTruncatedChars(runId),
+                           trimmedOlder: transcript?.trimmed ?? 0,
+                           truncatedChars: transcript?.truncatedChars ?? 0,
                            fileScopeRoots: Self.fileScopeRoots(
                                executionRoot: executionRoot, runDir: run.runDir),
                            remoteFileScope: Self.remoteFileScope(run, executionRoot: executionRoot))
@@ -322,7 +327,7 @@ struct TurnCard: View {
                         ?? "Start an Agent turn with \(planImplementAccessDescription) access and override the plan-readiness gate although questions remain")
             } else {
                 Button(implementingPlan ? "Implementing…" : "Implement plan") { implementPlan(override: false) }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .buttonStyle(.borderedProminent).tint(Theme.accentSolid).controlSize(.small)
                     .disabled(
                         implementingPlan
                             || model.isThreadBusy(target.threadID, at: target.locationID)
@@ -357,7 +362,7 @@ struct TurnCard: View {
     private func decisionAndApply(_ run: TaskRun) -> some View {
         // The review gate needs a human: the decision controls live HERE, inline.
         if DecisionApplyPresentation.showsDecisionBar(run, riskAccepted: riskAccepted) {
-            DecisionBar(runId: run.id) {
+            DecisionBar(runId: run.id, offersRiskDecisions: DecisionApplyPresentation.offersRiskDecisions(run)) {
                 riskAccepted = true
                 Task { await model.selectedHistory?.refresh() }
                 // DecisionBar owns the one post-mutation detail refresh before
@@ -382,7 +387,7 @@ struct TurnCard: View {
                 Button("Apply as branch") { apply(run, mode: "branch") }
                 Spacer()
             }
-            .buttonStyle(.borderedProminent).controlSize(.small)
+            .buttonStyle(.borderedProminent).tint(Theme.accentSolid).controlSize(.small)
         }
     }
 
@@ -429,44 +434,18 @@ struct TurnCard: View {
     // MARK: Silent-failure card (honest inline failure)
 
     /// A turn that finished in a genuinely FAILURE-shaped terminal state but
-    /// produced no visible content (no answer, no transcript, no diff).
+    /// produced no visible content (no answer, no executor transcript, no diff).
+    /// An engine notice (e.g. what its copy was prepared with) is not output.
     private func isSilentFailure(_ run: TaskRun) -> Bool {
         guard run.phase.isFailureShaped else { return false }
         let hasAnswer = !(run.answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasTranscript = !(turn.runId.map { model.transcriptBlocks($0) } ?? []).isEmpty
+        let hasTranscript = TurnPresentation.hasExecutorActivity(
+            blocks: turn.runId.flatMap { model.transcript($0, at: target.locationID)?.blocks } ?? [])
         return !hasAnswer && !hasTranscript && !run.hasPatchArtifact
     }
 
     private func failureCard(_ run: TaskRun) -> some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.sm) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.status(.negative))
-            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                HStack(spacing: Theme.Spacing.xs) {
-                    Text(RunReasonLabel.label(run.outcomeFacts?.reason) ?? run.phase.label)
-                        .font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.negative))
-                    if let category = run.failureCategory, category != "unknown" {
-                        Text(category.replacingOccurrences(of: "_", with: " "))
-                            .font(.caption2)
-                            .padding(.horizontal, Theme.Spacing.xs)
-                            .background(Theme.status(.negative).opacity(0.12), in: Capsule())
-                            .foregroundStyle(Theme.status(.negative))
-                    }
-                    if let route = run.authRoute, let effective = route.effective, effective != "unknown" {
-                        Text("route: \(RunFacts.authModeLabel(effective))")
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .help("Auth route this turn ran under — requested: \(route.requested), reason: \(route.reason).")
-                    }
-                }
-                Text(failureReason(run))
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            }
-            Spacer()
-            Button("Open run") { model.openRun(run.id) }
-                .buttonStyle(.link)
-                .help("Open this run in the thread workspace — failure detail, evidence, logs")
-        }
-        .padding(Theme.Spacing.sm)
-        .background(Theme.status(.negative).opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        TurnFailureCard(run: run, reason: failureReason(run), openRun: { model.openRun(run.id) })
     }
 
     private func failureReason(_ run: TaskRun) -> String {
@@ -513,6 +492,13 @@ enum DecisionApplyPresentation {
     /// has not just accepted risk locally.
     static func showsDecisionBar(_ run: TaskRun, riskAccepted: Bool) -> Bool {
         run.reviewNeedsDecision && !riskAccepted
+    }
+
+    /// Accept risk and Override appear only where the engine admits them: it
+    /// refuses both on unfinished work (`work_state_needs_input`) before it looks
+    /// at review or checks. Rerun is admitted either way.
+    static func offersRiskDecisions(_ run: TaskRun) -> Bool {
+        run.unfinishedWorkLabel == nil
     }
 
     /// Apply renders on the receipt for a decision-flow run ONCE the SERVER

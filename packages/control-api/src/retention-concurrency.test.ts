@@ -20,7 +20,7 @@ const roots: string[] = [];
 afterEach(() => {
   beforeCommit = () => {};
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 it.each(["reference", "active record", "work product", "custody", "age", "terminal evidence"])(
   "rechecks %s after asynchronous retirement preparation, while still retiring an unchanged neighbor",

@@ -1,5 +1,5 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
-import { redactedSseLine, streamLineIdentity } from "./sse-shared.js";
+import { sseDataLine, streamLineIdentity } from "./sse-shared.js";
 
 /** Work units, not a history limit: the caller continues until the file is quiet. */
 export const EVENT_REPLAY_BYTES = 64 * 1024;
@@ -195,8 +195,8 @@ function readTail(
   const lastNewline = bytes.lastIndexOf(10);
   const rawLines =
     lastNewline < 0 ? [] : bytes.toString("utf8", 0, lastNewline).split("\n").filter(Boolean);
-  // Preserve byte carry, including a UTF-8 codepoint split across reads. Decode
-  // and redact only complete events; a secret cannot leak at a batch boundary.
+  // Preserve byte carry, including a UTF-8 codepoint split across reads, and
+  // decode only complete events, so a batch never ends inside an event.
   const carry = bytes.subarray(lastNewline + 1);
   let lineNo = cursor.lineNo;
   const frames: EventReplayFrame[] = [];
@@ -219,7 +219,7 @@ function readTail(
     }
     const terminal = isTerminal(type);
     terminalSeen ||= terminal;
-    if (seq > lastEventId) frames.push({ seq, type, terminal, data: redactedSseLine(raw) });
+    if (seq > lastEventId) frames.push({ seq, type, terminal, data: sseDataLine(raw) });
   }
   return {
     cursor: { phase: "read", offset: nextOffset, carry, lineNo },

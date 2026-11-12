@@ -20,7 +20,7 @@ const repoRoot = resolve(import.meta.dirname, "../../..");
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function sha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");

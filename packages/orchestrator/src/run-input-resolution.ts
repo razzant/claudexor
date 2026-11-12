@@ -1,12 +1,20 @@
 import type { EffortHint, ResolvedConfig, RoutingGoal } from "@claudexor/schema";
-import { HarnessUnavailableError } from "@claudexor/core";
+import { HarnessUnavailableError, chosenModel, type AdapterRegistry } from "@claudexor/core";
 import { noProjectRepoRoot } from "@claudexor/util";
 import type { RunInput } from "./orchestrator.js";
 
 export interface RunInputResolutionDeps {
   config: ResolvedConfig;
   registryIds: Iterable<string>;
+  /** The operator's own choice for an instance (#395), below a saved default. */
+  instanceModel?: (harnessId: string) => string | null;
   routingGoal?: RoutingGoal;
+}
+
+/** What each registered instance's operator chose outside Settings, for this owner. */
+export function registryInstanceModel(registry: AdapterRegistry) {
+  return (harnessId: string) =>
+    registry.get(harnessId)?.modelRequirement?.instanceChoice?.model ?? null;
 }
 
 /** The run's pool: the requested one (a thread turn arrives with its sticky
@@ -63,21 +71,26 @@ export function resolveRunInputDefaults(input: RunInput, deps: RunInputResolutio
   validateHarnessMap("models", input.models, knownHarnessIds, knownHarnessIdSet);
   validateHarnessMap("efforts", input.efforts, knownHarnessIds, knownHarnessIdSet);
   const snapshotLaneIds = harnesses ?? knownHarnessIds;
-  const models: Record<string, string> = { ...input.models };
-  if (input.model) {
+  // A blank model was never a choice: it falls through to the next one (#395).
+  const models: Record<string, string> = Object.fromEntries(
+    Object.entries(input.models ?? {}).filter(([, model]) => chosenModel(model)),
+  );
+  const scalarModel = chosenModel(input.model);
+  if (scalarModel) {
     const scalarTarget = primaryHarness ?? (harnesses?.length === 1 ? harnesses[0] : undefined);
     if (!scalarTarget) {
       throw new Error(
-        `a scalar model ('${input.model}') is ambiguous without a primary harness: ` +
+        `a scalar model ('${scalarModel}') is ambiguous without a primary harness: ` +
           `the pool is ${harnesses?.length ? `[${harnesses.join(", ")}]` : "auto-resolved"} — ` +
           `set a primary harness, pass exactly one --harness, or use a harness-scoped model map`,
       );
     }
-    models[scalarTarget] ??= input.model;
+    models[scalarTarget] ??= scalarModel;
   }
   const harnessCfg = cfg.global.harnesses;
   for (const harnessId of snapshotLaneIds) {
-    const defaultModel = harnessCfg[harnessId]?.default_model;
+    const defaultModel =
+      chosenModel(harnessCfg[harnessId]?.default_model) ?? deps.instanceModel?.(harnessId);
     if (defaultModel) models[harnessId] ??= defaultModel;
   }
   const efforts: Record<string, EffortHint> = { ...input.efforts };

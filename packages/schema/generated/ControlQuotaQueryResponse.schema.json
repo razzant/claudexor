@@ -406,8 +406,16 @@
                         "minLength": 1
                       },
                       "profile_id": {
-                        "type": "string",
-                        "minLength": 1
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Registered account id; null names the harness's default API-key route, which is not an account."
                       }
                     },
                     "required": [
@@ -415,6 +423,11 @@
                       "profile_id"
                     ],
                     "additionalProperties": false
+                  },
+                  "credential_fingerprint": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{16}$",
+                    "description": "Non-secret identity of the API key this row was read with. Present only on API-key rows; a row is published only while it matches the key requests would send now."
                   },
                   "balances": {
                     "type": "object",
@@ -647,6 +660,37 @@
                                     "string",
                                     "null"
                                   ]
+                                },
+                                "capped": {
+                                  "type": [
+                                    "boolean",
+                                    "null"
+                                  ],
+                                  "description": "true: the provider reports a cap in limit; false: it reports no cap, so a null limit is not unknown and not unlimited money; null or absent: not established."
+                                },
+                                "remaining": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ],
+                                  "description": "Provider-reported amount left under limit in the current window, with its sign; null when not reported."
+                                },
+                                "window": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "day",
+                                        "week",
+                                        "month",
+                                        "lifetime"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "Provider calendar window that used counts (UTC); when capped, limit resets at its end and lifetime never resets. resets_at is set only from a provider-reported instant."
                                 }
                               },
                               "required": [

@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import { createInterface } from "node:readline";
+import controlRunStartRequestRaw from "@claudexor/schema/generated/ControlRunStartRequest.schema.json" with { type: "json" };
 import { defaultClaudexorTools, serveClaudexorMcp } from "./index.js";
 import { beltClaudexorTools } from "./delegation-belt.js";
+import { inlineJsonSchemaRefs } from "./inline-json-schema-refs.js";
 import { runContinueTool } from "./run-continue-tool.js";
 
 describe("MCP run continuation", () => {
@@ -19,6 +21,8 @@ describe("MCP run continuation", () => {
       "prompt",
       "attachments",
       "idempotencyKey",
+      "effort",
+      "efforts",
       "web",
       "externalContextPolicy",
       "paidBudget",
@@ -55,6 +59,50 @@ describe("MCP run continuation", () => {
         parentBudget: { kind: "unlimited" },
       }).some((t) => t.name === tool.name),
     ).toBe(false);
+  });
+
+  it("declares effort like the launch tools and efforts as the request's open harness-keyed map", () => {
+    const tools = defaultClaudexorTools(vi.fn(async () => ({})));
+    const properties = (name: string) =>
+      tools.find((tool) => tool.name === name)!.inputSchema.properties as Record<
+        string,
+        Record<string, unknown>
+      >;
+    const launch = properties("claudexor_run")["effort"]!;
+    const { effort, efforts } = properties("claudexor_run_continue");
+    // One scalar effort for both tools, worded as the engine applies it
+    // (run-input-resolution.ts): every harness lane, not only the primary,
+    // never a reviewer (reviewers take theirs from the review controls).
+    expect(effort).toEqual(launch);
+    expect(launch["description"]).toMatch(
+      /^Optional reasoning effort for every harness this run executes \(not its reviewers\)/,
+    );
+    expect(launch["description"]).not.toMatch(/primary/);
+    const { description: _launchText, ...launchEffort } = launch;
+    // The canonical request owns the map: open harness-id keys, which the engine
+    // validates against its registry, and the same bounds on every value.
+    const request = inlineJsonSchemaRefs(controlRunStartRequestRaw as Record<string, unknown>)[
+      "properties"
+    ] as Record<string, Record<string, unknown>>;
+    const { description: _requestText, ...requestValue } = request["efforts"]![
+      "additionalProperties"
+    ] as Record<string, unknown>;
+    const { description: valueText, ...value } = efforts!["additionalProperties"] as Record<
+      string,
+      unknown
+    >;
+    expect(valueText).toEqual(expect.any(String));
+    expect(value).toEqual(launchEffort);
+    expect(value).toEqual(requestValue);
+    expect(efforts).toMatchObject({
+      type: "object",
+      propertyNames: request["efforts"]!["propertyNames"],
+      description: expect.any(String),
+    });
+    expect(Object.keys(efforts!).sort()).toEqual(
+      ["additionalProperties", "description", "propertyNames", "type"].sort(),
+    );
+    expect(JSON.stringify(efforts)).not.toContain('"enum"');
   });
 
   it("exposes optional group metadata only on public one-shot launch and continuation tools", () => {
@@ -254,6 +302,38 @@ describe("MCP run continuation", () => {
         expect(runner).toHaveBeenLastCalledWith({ ...args, mode: "__run_continue" });
       }
       expect(runner).toHaveBeenCalledTimes(6);
+      // Hosts list the declared effort controls; a successor states them itself.
+      const listed = await call("tools/list", {});
+      const declared = defaultClaudexorTools(runner).find(
+        (tool) => tool.name === "claudexor_run_continue",
+      )!.inputSchema.properties as Record<string, unknown>;
+      const listedProperties = (
+        listed.result?.tools as Array<{ name: string; inputSchema: any }> | undefined
+      )?.find((tool) => tool.name === "claudexor_run_continue")?.inputSchema.properties;
+      expect(listedProperties?.effort).toEqual(declared["effort"]);
+      expect(listedProperties?.efforts).toEqual(declared["efforts"]);
+      // Stated values travel verbatim, harness ids included (the engine owns
+      // their registry check); omission adds no effort key at all.
+      for (const stated of [
+        { effort: "max" },
+        { efforts: { codex: "high", "no-such-harness": "low" } },
+        { effort: "low", efforts: { claude: "max" } },
+        {},
+      ]) {
+        const reply = await call("tools/call", {
+          name: "claudexor_run_continue",
+          arguments: { runId: "run-p", idempotencyKey: "effort-successor", ...stated },
+        });
+        expect(reply.error).toBeUndefined();
+        expect(reply.result?.isError, JSON.stringify(reply.result)).not.toBe(true);
+        expect(runner).toHaveBeenLastCalledWith({
+          runId: "run-p",
+          idempotencyKey: "effort-successor",
+          ...stated,
+          mode: "__run_continue",
+        });
+      }
+      expect(runner).toHaveBeenCalledTimes(10);
       for (const extra of [
         { taskGroupId: "not-a-uuid" },
         { taskGroupId: null },
@@ -261,6 +341,19 @@ describe("MCP run continuation", () => {
         { access: "full_access" },
         { harness: "claude" },
         { model: "fixture-model" },
+        { models: { claude: "fixture-model" } },
+        { effort: "MAX" },
+        { effort: "" },
+        { effort: "x".repeat(33) },
+        { effort: 3 },
+        { effort: null },
+        { efforts: "max" },
+        { efforts: null },
+        { efforts: { codex: "MAX" } },
+        { efforts: { codex: null } },
+        { efforts: { "": "max" } },
+        { efforts: { " ": "max" } },
+        { reasoningEffort: "max" },
         { maxSeconds: 0 },
         { web: "on", externalContextPolicy: "off" },
         { prompt: null },
@@ -288,9 +381,11 @@ describe("MCP run continuation", () => {
           name: "claudexor_run_continue",
           arguments: { runId: "run-p", ...extra },
         });
-        expect(Boolean(reply.error) || reply.result?.isError === true).toBe(true);
+        expect(Boolean(reply.error) || reply.result?.isError === true, JSON.stringify(extra)).toBe(
+          true,
+        );
       }
-      expect(runner).toHaveBeenCalledTimes(6);
+      expect(runner).toHaveBeenCalledTimes(10);
     } finally {
       await server.close();
       lines.close();

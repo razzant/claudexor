@@ -3,7 +3,9 @@ import { RoutePrimaryDivergedPayload as RoutePrimaryDivergedPayloadSchema } from
 
 /** Disclose a requested or configured primary lost before dispatch. Browser
  * omissions carry their capability cause; existing pool/quota drops keep
- * their original classification. No-op when the primary remains ordered. */
+ * their original classification. A degraded primary the Auto pool never
+ * admitted was passed over for a doctor-ok route, not missing auth, so its
+ * doctor status speaks (#133). No-op when the primary remains ordered. */
 export function emitPrimaryDivergence(
   log: EventLog | undefined,
   requested: string | undefined,
@@ -11,9 +13,16 @@ export function emitPrimaryDivergence(
   pool: { adapter: { id: string } }[],
   dropped: string[],
   browserOmissions: string[] = [],
+  statuses: ReadonlyMap<string, { status: string; reasons: string[] }> = new Map(),
 ): void {
   if (!log || !requested || ordered.some((r) => r.adapter.id === requested)) return;
   const survivedPool = pool.some((r) => r.adapter.id === requested);
+  const droppedDetail = dropped.find(
+    (d) => d.startsWith(`${requested} `) || d.startsWith(`${requested}(`),
+  );
+  const doctor = statuses.get(requested);
+  const degraded = !survivedPool && !droppedDetail && doctor?.status === "degraded";
+  const reasons = doctor?.reasons.length ? `: ${doctor.reasons.join("; ")}` : "";
   log.emit(
     "route.primary.diverged",
     RoutePrimaryDivergedPayloadSchema.parse({
@@ -23,11 +32,13 @@ export function emitPrimaryDivergence(
         ? "capability_incompatible"
         : survivedPool
           ? "quota_exhausted"
-          : "auth_unavailable",
+          : degraded
+            ? "readiness_preferred"
+            : "auth_unavailable",
       detail: survivedPool
         ? `${requested} is on cooldown or over its budget/quota pace`
-        : (dropped.find((d) => d.startsWith(`${requested} `) || d.startsWith(`${requested}(`)) ??
-          `${requested} is unavailable`),
+        : (droppedDetail ??
+          (degraded ? `${requested} is degraded${reasons}` : `${requested} is unavailable`)),
     }) as unknown as Record<string, unknown>,
   );
 }

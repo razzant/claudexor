@@ -213,8 +213,12 @@ export const BudgetObservation = z
       .nullable()
       .optional()
       .describe(
-        "Canonical model ids/aliases this quota observation applies to; omitted/null means every model.",
+        "Canonical model ids/aliases this quota observation applies to; omitted/null (with no prefixes) means every model.",
       ),
+    applies_to_model_prefixes: z
+      .array(Id)
+      .optional()
+      .describe("Producer-declared model-family prefixes, carried with applies_to_models."),
     applies_to_unspecified_model: z
       .boolean()
       .optional()

@@ -1,0 +1,21 @@
+{
+  "$ref": "#/definitions/ThreadRetireAbandonRequest",
+  "definitions": {
+    "ThreadRetireAbandonRequest": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        }
+      },
+      "required": [
+        "operationId"
+      ],
+      "additionalProperties": false,
+      "description": "Settle an unanswered operation: it can never be accepted after this returns."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

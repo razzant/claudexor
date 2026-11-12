@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { updateGlobalConfig, updateTrustConfig } from "@claudexor/config";
 import {
   ingress,
@@ -21,6 +21,7 @@ import {
   upload,
   type Row,
 } from "./test-support/profile-admission-daemon.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 // Production-shaped consumers for requirements admission (owner decision:
 // account readiness is checked by the normal run): the real Control API,
@@ -47,11 +48,12 @@ vi.mock("./registry.js", async (original) => {
   };
 });
 
-afterEach(async () => {
-  await closeDaemons();
+afterEachClosed(async () => {
+  const handOverFolders = await closeDaemons();
   resetRecorder();
+  return handOverFolders;
 }, 60_000);
-afterAll(() => finishFixture(process.env.CLAUDEXOR_TEST_ADMISSION_OBSERVATIONS), 60_000);
+afterAll(() => finishFixture(process.env.CLAUDEXOR_TEST_ADMISSION_OBSERVATIONS), 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 const codexRows: Row[] = [
   { id: "work", harness: "codex" },

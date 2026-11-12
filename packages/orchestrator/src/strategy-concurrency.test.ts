@@ -13,7 +13,7 @@ import { runParallelCandidates } from "./strategyConcurrency.js";
 const tempRoots: string[] = [];
 afterAll(() => {
   for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function initRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), "claudexor-strategy-concurrency-"));

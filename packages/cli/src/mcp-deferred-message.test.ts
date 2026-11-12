@@ -219,11 +219,11 @@ describe("operator MCP next-message boundary", () => {
       status: "applied",
       runId: "run-1",
       cascadeRunIds: [],
-      message: "run is succeeded; cancel held its waiting next message",
+      message: "run is succeeded; cancel now holds its next message",
       deferredMessage: held,
     });
     expect(await mcpSurfaceRunner()({ mode: "__run_cancel", runId: "run-1" })).toEqual({
-      summary: "run is succeeded; cancel held its waiting next message (run run-1)",
+      summary: "run is succeeded; cancel now holds its next message (run run-1)",
       runId: "run-1",
       acknowledged: true,
       deferredMessage: held,

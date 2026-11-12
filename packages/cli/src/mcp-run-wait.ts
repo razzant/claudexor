@@ -67,7 +67,8 @@ async function snapshot(addr: ControlApiAddress, runId: string, signal?: AbortSi
   return { ...parsed.data, runId: canonicalRunId(runId, parsed.data.summary) };
 }
 
-/** Precedence: abort, terminal lifecycle, a question event in the page, then the stream's own stop. */
+/** Precedence: abort, terminal lifecycle, a question event in the page or one too large
+ * for any page (claudexor_run_interactions reads it complete), then the stream's own stop. */
 function wakeReason(
   aborted: boolean,
   terminal: boolean,
@@ -76,7 +77,8 @@ function wakeReason(
   if (aborted || observed?.stop === "aborted") return "aborted";
   if (terminal) return "terminal";
   if (!observed) return "timeout";
-  if (observed.questionRequested) return "interactions";
+  if (observed.questionRequested || observed.oversizedEvent?.type === "interaction.requested")
+    return "interactions";
   if (observed.stop === "limit" || (observed.stop === "ready" && observed.events.length > 0))
     return "events";
   if (observed.stop === "ended" || observed.stop === "disconnected") return "disconnected";

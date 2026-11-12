@@ -15,9 +15,10 @@
             "open",
             "uploading",
             "ready",
+            "released",
             "cancelled"
           ],
-          "description": "open: send the bound bytes; uploading: a transfer is in flight; ready: resource is published; cancelled: finished without a resource, a new attempt needs a new key."
+          "description": "open: send the bound bytes; uploading: a transfer is in flight; ready: resource is published; released: the published managed resource was later released by its caller and admits no new reference, a new attachment needs a new key; cancelled: finished without a resource, a new attempt needs a new key."
         },
         "uploadId": {
           "type": "string",
@@ -61,6 +62,11 @@
               "type": "string",
               "const": "model",
               "description": "Immutable model-operation purpose; absent means a legacy or ordinary attachment."
+            },
+            "lifetime": {
+              "type": "string",
+              "const": "managed",
+              "description": "managed: its caller may later release the ID (POST /v2/resources/:id/release), after which no new reference is admitted while already accepted work keeps the bytes. Absent: indefinite reuse."
             },
             "kind": {
               "type": "string",
@@ -106,7 +112,11 @@
             "deduplicated"
           ],
           "additionalProperties": false,
-          "description": "The immutable resource, present exactly when state is ready."
+          "description": "The immutable resource, present exactly when state is ready or released."
+        },
+        "releasedAt": {
+          "$ref": "#/definitions/ControlUploadImport/properties/resource/properties/createdAt",
+          "description": "The first release of the resource, present exactly when state is released."
         }
       },
       "required": [

@@ -190,6 +190,8 @@ export class AuthCapabilityVerifier {
           intent: "explain",
           prompt: `Return exactly ${expected} and no other text. Do not call tools.`,
           cwd: scratchPath,
+          // No run directory: an adapter refuses input it cannot send inline.
+          input_file_dir: null,
           access: "readonly",
           auxiliary_writable_roots: [],
           external_context_policy: "off",

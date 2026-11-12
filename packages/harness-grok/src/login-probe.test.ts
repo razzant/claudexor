@@ -37,7 +37,7 @@ afterEach(() => {
   else process.env.CLAUDEXOR_GROK_BIN = previousBin;
   rmSync(bins, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function fakeGrok(body: string): void {
   const path = join(bins, "grok");

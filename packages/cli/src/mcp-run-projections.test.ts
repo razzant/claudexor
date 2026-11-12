@@ -358,13 +358,33 @@ describe("MCP run detail projections", () => {
       retainedAt: "2026-10-19T00:00:00.000Z",
       cause: "pool_exhausted",
     };
+    // #411(c): the actual source and the moved source's retirement fact, verbatim.
+    const continuity = [
+      {
+        tryIndex: 0,
+        attemptId: "a01",
+        carrier: "native_moved",
+        cause: "pool_exhausted",
+        from: { runId: "run-ancestor", attemptId: "a01", profileId: "codex-work" },
+        to: { profileId: "codex-other" },
+        workspace: "same_root",
+        memory: "partial",
+        instructions: "as_sent",
+        reingestedTokens: null,
+        observedModel: null,
+        modelMismatch: null,
+        identityCheck: "matched_before_effects",
+        inputDelivery: "confirmed",
+        sourceRetirement: "retired",
+      },
+    ];
     const terminal = {
       summary: {
         runId: "run-1",
         state: "failed",
         continueFrom: "run-0",
         resumable,
-        continuity: [],
+        continuity,
         retainedEnvelope,
       },
     };
@@ -373,7 +393,7 @@ describe("MCP run detail projections", () => {
       expect(projected).toMatchObject({
         continueFrom: "run-0",
         resumable,
-        continuity: [],
+        continuity,
         retainedEnvelope,
       });
     }

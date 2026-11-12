@@ -4,6 +4,17 @@
     "RunFailure": {
       "type": "object",
       "properties": {
+        "lastVendorError": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 1000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "requestRefusal": {
           "anyOf": [
             {
@@ -142,9 +153,103 @@
                 "reported_source"
               ],
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "vendor_not_retryable"
+                },
+                "source": {
+                  "type": "string",
+                  "const": "agy_stderr"
+                },
+                "error_id": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The vendor's own error id from the same record, verbatim; null when absent."
+                }
+              },
+              "required": [
+                "kind",
+                "source",
+                "error_id"
+              ],
+              "additionalProperties": false
             }
           ],
-          "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes carry their own evidence."
+          "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes and an explicit vendor not-retryable verdict carry their own evidence."
+        },
+        "rawContextShortfall": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Model whose window was checked."
+            },
+            "context_window": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "packet_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The packet with every optional file omitted: mandatory files, file manifest and metadata."
+            },
+            "framing_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The request outside the packet: instructions, user text, patch protocol and attachments."
+            },
+            "output_allowance_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Tokens kept free for the answer."
+            },
+            "mandatory_files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "estimated_tokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "This file's share of packet_tokens: its packet entry with content and evidence."
+                  }
+                },
+                "required": [
+                  "path",
+                  "estimated_tokens"
+                ],
+                "additionalProperties": false
+              },
+              "description": "Every mandatory file, largest first."
+            }
+          },
+          "required": [
+            "model",
+            "context_window",
+            "packet_tokens",
+            "framing_tokens",
+            "output_allowance_tokens",
+            "mandatory_files"
+          ],
+          "additionalProperties": false,
+          "description": "Typed sizes behind code raw_context_exceeds_window: the window, the request's parts and every mandatory file, so surfaces never read them from safeMessage."
         },
         "captureFailure": {
           "type": "object",
@@ -155,6 +260,11 @@
                 "capture_output_exceeded",
                 "capture_output_incomplete",
                 "capture_preview_truncated",
+                "capture_space_insufficient",
+                "capture_git_stalled",
+                "capture_git_signal",
+                "capture_read_failed",
+                "capture_object_missing",
                 "capture_failed"
               ]
             },
@@ -179,6 +289,22 @@
               "type": "string",
               "const": "truncated"
             },
+            "requiredBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "availableBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "signal": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "stallMs": {
+              "type": "integer",
+              "minimum": 0
+            },
             "cleanup": {
               "type": "object",
               "properties": {
@@ -197,6 +323,72 @@
                 "message"
               ],
               "additionalProperties": false
+            },
+            "inventory": {
+              "type": "object",
+              "properties": {
+                "exact": {
+                  "type": "boolean",
+                  "const": false,
+                  "description": "Always false: an inventory names files; it is not the exact change."
+                },
+                "changedFiles": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Changed paths the pass counted."
+                },
+                "largest": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "maxLength": 1024,
+                        "description": "Top-relative changed path, exact within the length cap."
+                      },
+                      "change": {
+                        "type": "string",
+                        "enum": [
+                          "added",
+                          "modified",
+                          "deleted",
+                          "type_changed"
+                        ],
+                        "description": "What happened to the path between the turn's base and the uncaptured tree."
+                      },
+                      "sizeBytes": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Size of the new blob (of the old blob for a deletion); null when Git could not size it."
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "change",
+                      "sizeBytes"
+                    ],
+                    "additionalProperties": false,
+                    "description": "One changed path of a non-exact capture inventory."
+                  },
+                  "maxItems": 20,
+                  "description": "The largest changed files, largest first."
+                }
+              },
+              "required": [
+                "exact",
+                "changedFiles",
+                "largest"
+              ],
+              "additionalProperties": false,
+              "description": "Bounded non-exact inventory of the changed files behind a refused capture."
             }
           },
           "required": [
@@ -243,8 +435,23 @@
                 "subscription_window_exhausted",
                 "credential_pool_exhausted",
                 "input_too_large",
+                "raw_context_mandatory_unavailable",
+                "raw_context_exceeds_window",
+                "model_catalog_unavailable",
+                "model_selection_required",
+                "raw_patch_requires_isolation",
+                "raw_patch_missing_evidence",
+                "raw_patch_digest_mismatch",
+                "raw_patch_base_mismatch",
+                "raw_patch_path_traversal",
+                "raw_patch_outside_scope",
+                "raw_patch_stale_preimage",
+                "raw_patch_binary_unsupported",
+                "raw_patch_truncated",
+                "raw_patch_apply_failed",
                 "vendor_cli_too_old",
                 "credential_source_unconfirmed",
+                "vendor_not_retryable",
                 "delegated_home_unavailable",
                 "delegated_confinement_unavailable",
                 "delegated_evidence_incomplete",
@@ -326,6 +533,55 @@
           "default": null,
           "description": "When the refused window reopens (a spent subscription quota window), or null when the failure has no such time. Callers schedule a retry off this field, never off safeMessage."
         },
+        "quotaRefusal": {
+          "type": "object",
+          "properties": {
+            "basis": {
+              "type": "string",
+              "enum": [
+                "owner_reserve",
+                "provider_window",
+                "provider_cooldown"
+              ],
+              "description": "owner_reserve: usage reached the saved headroom_threshold below 100% while the provider reports quota left; provider_window: the provider reports the window spent; provider_cooldown: a provider rate-limit cooldown is in force."
+            },
+            "constraintId": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The refusing quota window, when known."
+            },
+            "usedRatio": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Its observed usage, when known."
+            },
+            "threshold": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "The headroom_threshold the decision applied, when it applied one."
+            }
+          },
+          "required": [
+            "basis",
+            "constraintId",
+            "usedRatio",
+            "threshold"
+          ],
+          "additionalProperties": false,
+          "description": "Present when quota admission or a typed provider limit refused the account: with code subscription_window_exhausted it separates the owner's saved reserve from provider exhaustion; with a null code the provider refused usage and no reopening time is known, so no timer is implied. Absent on other failures and on records written before this field existed."
+        },
         "vendorFailure": {
           "anyOf": [
             {
@@ -383,6 +639,11 @@
           "items": {
             "type": "object",
             "properties": {
+              "lastVendorError": {
+                "type": "string",
+                "maxLength": 1000,
+                "description": "Last vendor diagnostic line, bounded and redacted; never classified."
+              },
               "harnessId": {
                 "type": "string",
                 "minLength": 1,

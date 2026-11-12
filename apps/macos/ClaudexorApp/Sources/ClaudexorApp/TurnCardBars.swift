@@ -17,27 +17,27 @@ struct TurnReceiptRow: View {
     @Environment(AppModel.self) private var model
     let run: TaskRun
     let runId: String
+    /// Where the run executes: its transcript is read for that location only.
+    let locationID: ExecutionLocationID
     let expanded: Bool
     let onToggle: () -> Void
     let onOpenWorkspace: () -> Void
     var historyRun: ThreadHistoryRun? = nil
 
-    private var line: TurnPresentation.StatusLine {
-        TurnPresentation.statusLine(
-            phase: run.phase, reason: run.outcomeFacts?.reason,
-            harnesses: run.harnesses, n: run.n,
-            isRace: run.mode == .bestOfN,
-            retryLabel: run.phase.isActive ? run.retryStatus?.label : nil,
-            reviewNeedsDecision: run.reviewNeedsDecision,
-            waitingOnUser: run.waitingOnUser)
-    }
+    private var line: TurnPresentation.StatusLine { TurnPresentation.statusLine(for: run) }
 
     private var countSummary: String? {
-        if let historyRun { return HistoryRunPresentation.counts(historyRun) }
-        return TurnPresentation.activitySummary(blocks: model.transcriptBlocks(runId))
+        if let historyRun {
+            let warning = TurnPresentation.noticeSummary(blocks: blocks)
+            let parts = [HistoryRunPresentation.counts(historyRun), warning].compactMap { $0 }
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
+        return TurnPresentation.activitySummary(blocks: blocks)
     }
 
-    private var hasActivity: Bool { !model.transcriptBlocks(runId).isEmpty }
+    private var blocks: [TranscriptBlock] { model.transcript(runId, at: locationID)?.blocks ?? [] }
+
+    private var hasActivity: Bool { !blocks.isEmpty }
 
     var body: some View {
         HStack(spacing: Theme.Spacing.sm) {
@@ -70,8 +70,8 @@ struct TurnReceiptRow: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(line.family?.color ?? .secondary)
                 .padding(.horizontal, Theme.Spacing.sm).padding(.vertical, 3)
-                .background((line.family?.color ?? Theme.separator).opacity(0.13), in: Capsule())
-                .overlay(Capsule().stroke((line.family?.color ?? Theme.separator).opacity(0.35), lineWidth: 1))
+                .background((line.family?.fill ?? Theme.separator).opacity(0.13), in: Capsule())
+                .overlay(Capsule().stroke((line.family?.fill ?? Theme.separator).opacity(0.35), lineWidth: 1))
             }
             if let word = line.stateWord {
                 Text(word).font(.caption).foregroundStyle(.secondary)
@@ -82,7 +82,7 @@ struct TurnReceiptRow: View {
             // inlineActivity transcript below already shows it — so suppress the
             // one-liner to avoid duplication.
             if run.phase.isActive, !expanded,
-               let activity = TurnPresentation.lastActivityLine(blocks: model.transcriptBlocks(runId)) {
+               let activity = TurnPresentation.lastActivityLine(blocks: blocks) {
                 Text("· \(activity)")
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.tail)
@@ -91,9 +91,7 @@ struct TurnReceiptRow: View {
             }
             // The outcome banner CHIP when present: the loud attention state
             // (needs decision / failed / waiting) — the quiet states stay text.
-            if let chip = TurnPresentation.attention(
-                phase: run.phase, reason: run.outcomeFacts?.reason,
-                reviewNeedsDecision: run.reviewNeedsDecision, waitingOnUser: run.waitingOnUser) {
+            if let chip = TurnPresentation.attention(for: run) {
                 Text(chip.text)
                     .font(.caption.weight(.semibold))
                     // Chip meta-rule (round-3 item 4): attention chip never wraps.
@@ -137,7 +135,7 @@ struct TurnReceiptRow: View {
         if run.phase.isActive {
             ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
         } else {
-            Circle().fill(run.phase.color).frame(width: 8, height: 8)
+            Circle().fill(Theme.statusFill(run.terminalTone)).frame(width: 8, height: 8)
         }
     }
 
@@ -154,6 +152,132 @@ struct TurnReceiptRow: View {
                     .help("How long the run took")
             }
         }
+    }
+}
+
+/// The inline card for a terminal-failed turn with nothing else to show, and
+/// for a typed refusal (`namesRefusal`, #147/#393/#551). The reason is the
+/// engine's own text, selectable and complete. Pure: values in, one action out.
+struct TurnFailureCard: View {
+    struct Route: Equatable {
+        let label: String
+        let help: String
+    }
+
+    let title: String
+    /// The engine refused before sending: nothing ran, so a raised hand instead
+    /// of the failure triangle.
+    let refused: Bool
+    let category: String?
+    let route: Route?
+    /// The engine's message, complete. With `shortfall` it is the summary's
+    /// hover help; otherwise it is the card's body.
+    let reason: String
+    /// #147: typed over-window sizes, shown as a summary and a file table.
+    var shortfall: RunFacts.Shortfall? = nil
+    /// The failure record's typed next actions.
+    var nextActions: [String] = []
+    let openRun: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Theme.Spacing.sm) {
+            Image(systemName: refused ? "hand.raised.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(Theme.status(.negative))
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                HStack(spacing: Theme.Spacing.xs) {
+                    Text(title)
+                        .font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.negative))
+                    if let category {
+                        Text(category.replacingOccurrences(of: "_", with: " "))
+                            .font(.caption2)
+                            .padding(.horizontal, Theme.Spacing.xs)
+                            .background(Theme.status(.negative).opacity(0.12), in: Capsule())
+                            .foregroundStyle(Theme.status(.negative))
+                    }
+                    if let route {
+                        Text(route.label)
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .help(route.help)
+                    }
+                }
+                if let shortfall {
+                    Text(shortfall.summary)
+                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        .help(reason)
+                    shortfallTable(shortfall.rows)
+                } else {
+                    Text(reason)
+                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                ForEach(Array(nextActions.prefix(3).enumerated()), id: \.offset) { _, action in
+                    Label(action, systemImage: "arrow.right.circle")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer()
+            Button("Open run", action: openRun)
+                .buttonStyle(.link)
+                .help("Open this run in the thread workspace — failure detail, evidence, logs")
+        }
+        .padding(Theme.Spacing.sm)
+        .background(Theme.status(.negative).opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+    }
+
+    /// Largest mandatory files first, paths in the code face, estimates on one
+    /// right edge; the closing "N more files" row keeps the total honest.
+    private func shortfallTable(_ rows: [RunFacts.Shortfall.Row]) -> some View {
+        Grid(alignment: .leading, horizontalSpacing: Theme.Spacing.md, verticalSpacing: Theme.Spacing.xxs) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                GridRow {
+                    Text(row.label)
+                        .font(row.isPath ? .caption.monospaced() : .caption)
+                        .foregroundStyle(row.isPath ? .primary : .secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(row.size)
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .gridColumnAlignment(.trailing)
+                }
+            }
+        }
+        .padding(Theme.Spacing.xs)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+    }
+}
+
+extension TurnFailureCard {
+    /// A typed refusal is named even beside output: a later round's refused patch
+    /// keeps the earlier round's result, which says nothing about why the run failed.
+    /// Any other failure with output keeps its receipt chip alone.
+    static func namesRefusal(_ run: TaskRun) -> Bool {
+        RunFacts.refusal(run) != nil
+            || (run.phase.isFailureShaped && RunFacts.patchRefusalTitle(code: run.failureCode) != nil)
+    }
+
+    /// Every input from the run's typed facts, so the card is composed here and
+    /// nowhere else (the turn card passes only the reason and the action).
+    init(run: TaskRun, reason: String, openRun: @escaping () -> Void) {
+        let refusal = RunFacts.refusal(run)
+        let record = run.failureRecord
+        let shortfall = refusal == nil ? nil : record?.rawContextShortfall.map {
+            RunFacts.shortfall($0, earlierFailedTries: record?.poolAttempts.count ?? 0)
+        }
+        self.init(
+            title: refusal?.title ?? RunFacts.patchRefusalTitle(code: run.failureCode)
+                ?? RunReasonLabel.label(run.outcomeFacts?.reason) ?? run.phase.label,
+            refused: refusal != nil,
+            category: run.failureCategory.flatMap { $0 == "unknown" ? nil : $0 },
+            route: run.authRoute.flatMap { route -> Route? in
+                guard let effective = route.effective, effective != "unknown" else { return nil }
+                return Route(label: "route: \(RunFacts.authModeLabel(effective))",
+                             help: "Auth route this turn ran under — requested: \(route.requested), reason: \(route.reason).")
+            },
+            reason: reason,
+            shortfall: shortfall,
+            nextActions: shortfall == nil ? [] : record?.nextActions ?? [],
+            openRun: openRun)
     }
 }
 
@@ -210,6 +334,7 @@ struct ApplyThreadBar: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(Theme.accentSolid)
                 .controlSize(.small)
                 .disabled(applying)
                 .help("Deliver the thread's accumulated diff to the project (server-gated)")

@@ -26,7 +26,7 @@ const shellTest = existsSync("/bin/bash") ? test : test.skip;
 
 afterEach(() => {
   for (const root of fixtures.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function fixtureRoot() {
   const root = mkdtempSync(join(process.env.CLAUDEXOR_TEST_TMPDIR ?? tmpdir(), "app-sign-"));

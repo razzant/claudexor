@@ -9,7 +9,8 @@ export type IdempotencyOwner =
   | "setup"
   | "upload"
   | "quarantine"
-  | "deferred_message";
+  | "deferred_message"
+  | "thread_retire";
 
 export interface IdempotencyKey {
   owner: IdempotencyOwner;
@@ -81,9 +82,12 @@ export function bindIdempotencyInTx(
   if (
     binding.owner !== "upload" &&
     binding.owner !== "deferred_message" &&
+    binding.owner !== "thread_retire" &&
     binding.result !== undefined
   ) {
-    throw new Error("only upload and deferred-message idempotency bindings carry a result");
+    throw new Error(
+      "only upload, deferred-message and thread-retire idempotency bindings carry a result",
+    );
   }
   sql
     .prepare(

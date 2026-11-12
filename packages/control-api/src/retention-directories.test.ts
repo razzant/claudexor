@@ -23,7 +23,7 @@ const cleanup: string[] = [];
 afterEach(() => {
   vi.mocked(fs.rmdirSync).mockReset();
   for (const root of cleanup.splice(0)) fs.rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 async function fixture() {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
   vi.mocked(fs.rmdirSync).mockImplementation(actual.rmdirSync);

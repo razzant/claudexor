@@ -58,3 +58,31 @@ it("drains post-processing before allowing storage to close", async () => {
   await pending;
   expect(closed).toBe(true);
 });
+
+it("cancelling a pass aborts its post-processing signal; a later pass gets a new one", async () => {
+  const seen: AbortSignal[] = [];
+  let ready!: () => void;
+  const started = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  const run = afterRetention(
+    serializeRetention(async () => ({}) as ControlGcReceipt),
+    async (_request, _receipt, signal) => {
+      seen.push(signal);
+      if (seen.length > 1) return;
+      ready();
+      // A step that works in slices: it ends when its signal aborts.
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    },
+  );
+  const pending = run({ dry_run: false });
+  await started;
+  expect(seen[0]!.aborted).toBe(false);
+  await run.cancel!();
+  await pending;
+  expect(seen[0]!.aborted).toBe(true);
+  await run({ dry_run: false });
+  expect(seen[1]!.aborted).toBe(false);
+});

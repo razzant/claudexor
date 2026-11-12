@@ -3,10 +3,18 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type {
   AccessProfile,
+  CaptureChangeInventory,
   DirtyPolicy,
+  GitObjectResult,
+  PatchViewUnavailable,
   WorkspaceEnvelope,
   WorkspaceKind,
 } from "@claudexor/schema";
+import { captureObjectFacts as objectFacts } from "./git-transient-capture.js";
+import { discardUnstartedEnvelope } from "./cleanup-fault.js";
+import { isolatedBaseCustody } from "./capture-objects.js";
+import { repositoryObjectFormat } from "./git-result.js";
+import { assertProjectObjectFormat } from "./object-store.js";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
 import { WorkspaceError } from "@claudexor/core";
 import { ensureDir, newId, nowIso, projectRuntimeDir } from "@claudexor/util";
@@ -18,13 +26,19 @@ import {
   createDirectoryEnvelope,
   type CapturedWorkspaceFiles,
 } from "./directory-workspace.js";
-import { processStartTime, readEnvelopeRecoveryRecord } from "./envelope-recovery.js";
+import {
+  envelopeBaseIn,
+  physicalEnvelopeBase,
+  processStartTime,
+  readEnvelopeRecoveryRecord,
+} from "./envelope-recovery.js";
 import {
   isRetainedEnvelope,
   liveEnvelopeCustody,
   writeEnvelopeCustody,
 } from "./envelope-custody.js";
 import { snapshotLegacyDirectoryBaseline } from "./plain-diff.js";
+import { rawAcceptedPaths, rawAwareSnapshot } from "./raw-patch.js";
 import { capturePlainDiff } from "./plain-diff-capture.js";
 import {
   CLAUDE_BRIDGE_BASENAME,
@@ -39,20 +53,16 @@ import {
   isolatedCloneAdd,
   isGitRepo,
   revParse,
-  snapshotTree,
   statusPorcelain,
   stashCreate,
   worktreePrune,
   worktreeRemove,
 } from "./git.js";
 
-/** One candidate capture. `diff` is always the EXACT patch (apply, synthesis,
- * digests); what a saved copy must hide is derived from it downstream. */
+/** One candidate capture. `diff` is the exact patch every consumer (apply,
+ * synthesis, review, digests, saved copies) reads (INV-146). */
 export interface CapturedWorkspaceDiff {
   diff: string;
-  /** Changed binaries whose bytes hold (or cannot be proven free of)
-   * secret-like content; a persisted copy withholds their payload. */
-  binarySecretPaths: string[];
   /** The capture could not observe the candidate's changes at all (no legacy
    * baseline, a failed `diff`): an honest capture refusal, never "no changes". */
   captureIncomplete: boolean;
@@ -60,6 +70,13 @@ export interface CapturedWorkspaceDiff {
   /** Untracked nested repositories left out of `diff` (a patch cannot carry
    * another repository); disclosed with the attempt. */
   excludedNestedRepositories?: string[];
+  /** The exact candidate as Git objects (#535): canonical whenever present;
+   * `diff` is then only its rendered view, "" when `patchViewUnavailable`. */
+  result?: GitObjectResult;
+  patchViewUnavailable?: PatchViewUnavailable;
+  inventory?: CaptureChangeInventory;
+  changedPaths?: string[];
+  existingPaths?: string[];
 }
 
 export interface CreateEnvelopeOptions {
@@ -83,29 +100,31 @@ export interface CreateEnvelopeOptions {
   custody?: { runId: string; runDir: string };
 }
 
-/**
- * Manages WorkspaceEnvelopes: an isolated Git checkout plus scoped HOME and
- * per-harness config dirs, and dirty-tree handling. Claudexor owns these
- * envelopes (it does not rely on a harness's native --worktree).
- */
+/** Manages WorkspaceEnvelopes: an isolated Git checkout plus scoped HOME and per-harness
+ * config dirs, and dirty-tree handling; Claudexor owns them (no native --worktree). */
 export { processStartTime } from "./envelope-recovery.js";
 
 export class WorkspaceManager {
   private readonly runtimeRoot: string;
+  /** The project whose object store keeps this manager's Git objects, when it is
+   * not the root Git runs in (a delegated run, an isolated thread). */
+  private readonly projectRoot: string | undefined;
   private readonly artifactOwnership: ArtifactOwnership;
 
   /** Current-prep bridge ownership, also persisted beside owner.json for recovery.
    * Only a bridge created here and still byte-identical is excluded from capture. */
   private readonly bridgeCreatedEnvelopes = new Set<string>();
   private readonly retainedEnvelopes = new Set<string>();
+  private readonly keptArtifactDirectories = new Set<string>();
 
   constructor(
     private readonly repoRoot: string,
-    options: { runtimeRoot?: string } = {},
+    options: { runtimeRoot?: string; projectRoot?: string } = {},
   ) {
     this.runtimeRoot = options.runtimeRoot ?? projectRuntimeDir(repoRoot);
+    this.projectRoot = options.projectRoot;
     this.artifactOwnership = new ArtifactOwnership((env) =>
-      join(this.envelopeBase(env.task_id, env.attempt_id), "artifact-created.json"),
+      join(this.baseOf(env), "artifact-created.json"),
     );
   }
 
@@ -113,27 +132,14 @@ export class WorkspaceManager {
     return join(this.runtimeRoot, "workspaces");
   }
 
-  /**
-   * The scoped envelope base for a task/attempt. The sole on-disk root we
-   * delete on dispose — so the ids MUST be path-safe segments and the resolved
-   * base MUST stay inside the workspaces dir (a crafted `../` id could
-   * otherwise turn dispose() into an arbitrary recursive delete).
-   */
+  /** The envelope base under this manager's namespace (ids fenced, `envelopeBaseIn`). */
   private envelopeBase(taskId: string, attemptId: string): string {
-    const idPattern = /^[A-Za-z0-9._-]+$/;
-    for (const [label, id] of [
-      ["taskId", taskId],
-      ["attemptId", attemptId],
-    ] as const) {
-      if (!idPattern.test(id) || id === "." || id === "..") {
-        throw new WorkspaceError(`${label} '${id}' is not a safe path segment`);
-      }
-    }
-    const base = join(this.workspacesDir(), taskId, attemptId);
-    if (!base.startsWith(this.workspacesDir() + sep)) {
-      throw new WorkspaceError(`envelope base escapes the workspaces dir: ${base}`);
-    }
-    return base;
+    return envelopeBaseIn(this.workspacesDir(), taskId, attemptId);
+  }
+
+  /** Where `env` physically is: its recorded engine-owned base, else this namespace's. */
+  private baseOf(env: WorkspaceEnvelope): string {
+    return physicalEnvelopeBase(env, this.workspacesDir());
   }
 
   ensureArtifactDirectory(env: WorkspaceEnvelope): string {
@@ -154,6 +160,7 @@ export class WorkspaceManager {
     const base = this.envelopeBase(opts.taskId, opts.attemptId);
     const envelopeId = newId("env");
     const workspaceMode = opts.inPlace ? "in_place" : "isolated";
+    const madeHere = !existsSync(base); // only an envelope this call made is removed on refusal
     ensureDir(base);
     const homeDir = join(base, "home");
     const harnessConfigDirs = ensureHarnessHome(homeDir);
@@ -172,6 +179,7 @@ export class WorkspaceManager {
         envelope_id: envelopeId,
         workspace_mode: workspaceMode,
         workspace_kind: opts.workspaceKind,
+        execution_root: this.repoRoot,
       }) + "\n",
     );
 
@@ -197,7 +205,13 @@ export class WorkspaceManager {
       // no dangling Git snapshot, copied baseline, diff/capture, or later
       // delivery. The native adapter policy owns the promised read-only mode.
       const readOnly = opts.accessProfile === "readonly";
-      const baseSha = !readOnly && gitRepo ? await snapshotTree(this.repoRoot) : null;
+      // One project keeps one object format: refused before the turn, not at its capture.
+      if (!readOnly && gitRepo && this.projectRoot && this.projectRoot !== this.repoRoot)
+        await assertProjectObjectFormat(
+          this.projectRoot,
+          await repositoryObjectFormat(this.repoRoot),
+        );
+      const baseSha = !readOnly && gitRepo ? await rawAwareSnapshot(this.repoRoot) : null;
       if (!readOnly && !gitRepo) snapshotLegacyDirectoryBaseline(this.repoRoot, base);
       return WorkspaceEnvelopeSchema.parse({
         id: envelopeId,
@@ -227,22 +241,33 @@ export class WorkspaceManager {
 
     const porcelain = await statusPorcelain(this.repoRoot);
     const dirty = porcelain.trim().length > 0;
-    if (dirty) {
-      if (dirtyPolicy === "refuse") {
-        throw new WorkspaceError(
-          "working tree is dirty; commit/stash or set dirty_policy: snapshot",
-        );
-      }
+    if (dirty && dirtyPolicy === "refuse") {
+      throw new WorkspaceError("working tree is dirty; commit/stash or set dirty_policy: snapshot");
+    }
+    // A snapshot base holds what an accepted raw patch left in this tree: status
+    // cannot show an ignored one, and the next candidate would start without it (#594).
+    const keep = dirtyPolicy === "snapshot" ? await rawAcceptedPaths(this.repoRoot, baseRef) : [];
+    if (dirty || keep.length > 0) {
       // snapshot: a stash-create commit becomes the base SHA without touching
       // the live tree. (The include/stash aliases and the untested `copy`
       // variant were retired in the v0.15 triage.)
-      const snap = await stashCreate(this.repoRoot);
+      const snap = await stashCreate(this.repoRoot, {}, [], keep);
       if (snap) baseSha = snap;
     }
 
     const path = join(base, "tree");
     const branch = `claudexor/${opts.taskId}/${opts.attemptId}`;
-    await isolatedCloneAdd(this.repoRoot, path, branch, baseSha);
+    // D2: a dirty base's own closure enters the project store BEFORE the clone,
+    // whose second alternate is that store (never the user repo's).
+    const storeObjects = await isolatedBaseCustody(
+      this.repoRoot,
+      this.projectRoot ?? this.repoRoot,
+      baseSha,
+      [base, ...(opts.custody ? [opts.custody.runDir] : [])],
+    );
+    await isolatedCloneAdd(this.repoRoot, path, branch, baseSha, storeObjects).catch((error) => {
+      throw madeHere ? discardUnstartedEnvelope(base, error) : error;
+    });
     writeFileSync(join(base, "private-clone-v1"), "private Git authority\n");
 
     // AGENTS.md bridge (INV-113): the checkout omits the untracked project-root bridge,
@@ -335,14 +360,14 @@ export class WorkspaceManager {
     return ensureLaneHomeEnv(this.runtimeRoot, threadId, harnessId, profileId);
   }
 
-  async captureDiff(env: WorkspaceEnvelope): Promise<CapturedWorkspaceDiff> {
+  /** `owner`: the path (run directory) whose existence keeps the result's objects. */
+  async captureDiff(env: WorkspaceEnvelope, owner?: string): Promise<CapturedWorkspaceDiff> {
     if (env.workspace_kind === "directory")
       throw new WorkspaceError(
         "Directory results use captureFiles; a text diff is not their work product",
       );
     const incomplete: CapturedWorkspaceDiff = {
       diff: "",
-      binarySecretPaths: [],
       captureIncomplete: true,
     };
     if (env.policy_profile === "readonly") {
@@ -360,21 +385,19 @@ export class WorkspaceManager {
           env.repo_root,
           env.base_sha,
           artifactExcludes,
+          { projectRoot: this.projectRoot ?? env.repo_root, owner },
         );
         return {
           diff: captured.patch,
-          binarySecretPaths: captured.binarySecretPaths,
           captureIncomplete: captured.captureIncomplete,
           captureFailure: captured.captureFailure,
-          ...(captured.excludedNestedRepositories
-            ? { excludedNestedRepositories: captured.excludedNestedRepositories }
-            : {}),
+          ...objectFacts(captured),
         };
       }
       // Non-git fallback: diff the best-effort cpSync baseline against the live
       // tree. Missing or failed capture is an INCOMPLETE capture, never a safe
       // no-change result.
-      const baseline = join(this.envelopeBase(env.task_id, env.attempt_id), "baseline");
+      const baseline = join(this.baseOf(env), "baseline");
       return capturePlainDiff(baseline, env.repo_root, artifactRelative);
     }
     // Exclude the envelope-local generated CLAUDE.md bridge (INV-113) from the
@@ -396,18 +419,19 @@ export class WorkspaceManager {
       this.bridgeCreatedFact(env) && isGeneratedClaudeBridge(env.worktree_path)
         ? [`:(exclude,top)${CLAUDE_BRIDGE_BASENAME}`]
         : [];
-    const captured = await captureWorkingTreeTransient(env.worktree_path, env.base_sha ?? "HEAD", [
-      ...artifactExcludes,
-      ...bridgeExcludes,
-    ]);
+    // What an accepted raw patch wrote is the candidate's, ignored or not (#594).
+    const keep = await rawAcceptedPaths(env.worktree_path, env.base_sha ?? "HEAD");
+    const captured = await captureWorkingTreeTransient(
+      env.worktree_path,
+      env.base_sha ?? "HEAD",
+      [...artifactExcludes, ...bridgeExcludes],
+      { projectRoot: this.projectRoot ?? env.repo_root, owner, keep },
+    );
     return {
       diff: captured.patch,
-      binarySecretPaths: captured.binarySecretPaths,
       captureIncomplete: captured.captureIncomplete,
       captureFailure: captured.captureFailure,
-      ...(captured.excludedNestedRepositories
-        ? { excludedNestedRepositories: captured.excludedNestedRepositories }
-        : {}),
+      ...objectFacts(captured),
     };
   }
 
@@ -429,7 +453,7 @@ export class WorkspaceManager {
     const owned = this.ownedArtifactRelativeDirectory(env);
     return captureDirectoryWorkspace({
       executionRoot: env.worktree_path,
-      envelopeRoot: this.envelopeBase(env.task_id, env.attempt_id),
+      envelopeRoot: this.baseOf(env),
       runRoot,
       ...options,
       excludedPaths: owned ? [owned] : [],
@@ -440,7 +464,7 @@ export class WorkspaceManager {
    *  the persisted envelope-id-bound marker (survives manager recreation). */
   private bridgeCreatedFact(env: WorkspaceEnvelope): boolean {
     if (this.bridgeCreatedEnvelopes.has(env.id)) return true;
-    return bridgeCreatedMarkerMatches(this.envelopeBase(env.task_id, env.attempt_id), env.id);
+    return bridgeCreatedMarkerMatches(this.baseOf(env), env.id);
   }
 
   /** Keep this envelope on disk past `dispose()`: it holds the only exact copy
@@ -449,19 +473,25 @@ export class WorkspaceManager {
     this.retainedEnvelopes.add(env.id);
   }
 
+  /** Keep an in-place envelope's run-owned artifact directory in the live tree
+   * past `dispose()`: when the run's changes were not captured, its media may
+   * be the only copy (the run's own copies are bounded). */
+  keepArtifactDirectory(env: WorkspaceEnvelope): void {
+    this.keptArtifactDirectories.add(env.id);
+  }
+
   async dispose(env: WorkspaceEnvelope): Promise<void> {
     if (this.retainedEnvelopes.has(env.id) || isRetainedEnvelope(env)) return;
     // Drop the created-this-run bridge fact so a long-lived manager doesn't
     // accumulate envelope ids (a disposed envelope is never diffed again).
     this.bridgeCreatedEnvelopes.delete(env.id);
+    const keepArtifacts = this.keptArtifactDirectories.delete(env.id);
     // In-place envelopes point worktree_path at the live repo root; NEVER remove a
     // worktree or the tree itself in that case.
     const inPlace = env.worktree_path === env.repo_root;
-    if (inPlace) this.artifactOwnership.removeDirectory(env);
+    if (inPlace && !keepArtifacts) this.artifactOwnership.removeDirectory(env);
     if (!inPlace && env.workspace_kind !== "directory") {
-      const privateClone = existsSync(
-        join(this.envelopeBase(env.task_id, env.attempt_id), "private-clone-v1"),
-      );
+      const privateClone = existsSync(join(this.baseOf(env), "private-clone-v1"));
       if (!privateClone) {
         try {
           await worktreeRemove(this.repoRoot, env.worktree_path);
@@ -483,7 +513,7 @@ export class WorkspaceManager {
     // under the external runtime workspaces root, so deriving from ids prevents
     // dispose() from ever deleting the live tree.
     try {
-      rmSync(this.envelopeBase(env.task_id, env.attempt_id), { recursive: true, force: true });
+      rmSync(this.baseOf(env), { recursive: true, force: true });
     } catch {
       /* best-effort */
     }

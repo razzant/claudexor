@@ -1,4 +1,5 @@
 import { THREAD_HISTORY_OPERATION_DRAFTS } from "./thread-history-routes.js";
+import { THREAD_EXPORT_OPERATION_DRAFTS } from "./thread-export-routes.js";
 import { ACCOUNT_RESOURCE_OPERATION_DRAFTS } from "./account-resource-routes.js";
 import {
   CONTROL_PROTOCOL_MAJOR,
@@ -11,7 +12,9 @@ import { STORE_IDENTITY_HEADER, queryParam, resumeHeader } from "./operation-par
 import { REMOTE_OPERATION_DRAFTS } from "./remote-operation-descriptors.js";
 import { MODEL_OPERATION_DRAFTS } from "./model-routes.js";
 import { MAINTENANCE_OPERATION_DRAFTS } from "./maintenance-routes.js";
+import { PROJECT_OPERATION_DRAFTS } from "./project-operation-descriptors.js";
 import { RUN_EVENT_PART_OPERATION_DRAFTS } from "./run-event-part-routes.js";
+import { START_OPERATION_DRAFTS, TURN_LOOKUP_OPERATION_DRAFTS } from "./run-start-routes.js";
 import { descriptor, jsonOperation as j } from "./operation-descriptor.js";
 import { TASK_GROUP_RUNS_OPERATION_DRAFTS } from "./task-group-routes.js";
 
@@ -33,6 +36,7 @@ const operations: ControlOperationDescriptor[] = [
   }),
   ...TASK_GROUP_RUNS_OPERATION_DRAFTS.map(descriptor),
   ...THREAD_HISTORY_OPERATION_DRAFTS.map(descriptor),
+  ...THREAD_EXPORT_OPERATION_DRAFTS.map(descriptor),
   ...MODEL_OPERATION_DRAFTS.map(descriptor),
   j("POST", "/v2/uploads", "mutating", "ControlUploadCreateRequest", "ControlUploadStatus", {
     idempotency: "key_required",
@@ -58,6 +62,15 @@ const operations: ControlOperationDescriptor[] = [
     {
       idempotency: "key_required",
     },
+  ),
+  // Its presence also marks the managed import lifetime (`lifetime: "managed"`).
+  j(
+    "POST",
+    "/v2/resources/:id/release",
+    "mutating",
+    "ControlResourceReleaseRequest",
+    "ControlResourceRelease",
+    { idempotency: "natural" },
   ),
   j("POST", "/v2/handshake", "read_only", "ControlHandshakeRequest", "ControlHandshakeResponse", {
     parameters: [STORE_IDENTITY_HEADER],
@@ -147,25 +160,7 @@ const operations: ControlOperationDescriptor[] = [
   }),
   j("GET", "/v2/projects", "read_only", null, "ControlProjectListResponse"),
   ...REMOTE_OPERATION_DRAFTS.map(descriptor),
-  j(
-    "POST",
-    "/v2/projects",
-    "mutating",
-    "ControlProjectRegisterRequest",
-    "ControlProjectRegisterResponse",
-    { idempotency: "key_required" },
-  ),
-  j(
-    "POST",
-    "/v2/projects/:id/relink",
-    "mutating",
-    "ControlProjectRelinkRequest",
-    "ControlProject",
-    { idempotency: "natural" },
-  ),
-  j("DELETE", "/v2/projects/:id", "mutating", null, "ControlProjectRemoveReceipt", {
-    idempotency: "natural",
-  }),
+  ...PROJECT_OPERATION_DRAFTS.map(descriptor),
   j("GET", "/v2/projects/:id/events", "read_only", null, null, {
     responseKind: "stream",
     parameters: [
@@ -230,10 +225,7 @@ const operations: ControlOperationDescriptor[] = [
       }),
     ],
   }),
-  j("POST", "/v2/runs", "mutating", "ControlRunStartRequest", "ControlRunStartResponse", {
-    completion: "durable_handle",
-    idempotency: "key_required",
-  }),
+  ...START_OPERATION_DRAFTS.map(descriptor),
   j("POST", "/v2/runs/wait-many", "read_only", "RunWaitManyInput", "RunWaitManyResult"),
   j("GET", "/v2/runs/:id", "read_only", null, "ControlRunDetail"),
   j("GET", "/v2/runs/:id/time-limit", "read_only", null, "RunTimeLimitSnapshot"),
@@ -241,6 +233,7 @@ const operations: ControlOperationDescriptor[] = [
   j("POST", "/v2/runs/:id/retry", "mutating", null, "ControlRunRetryResponse", {
     completion: "durable_handle",
     idempotency: "key_required",
+    parameters: [STORE_IDENTITY_HEADER],
   }),
   j("GET", "/v2/runs/:id/run-again", "read_only", null, "ControlRunAgainDraft"),
   j("POST", "/v2/runs/:id/apply", "mutating", "ControlApplyRequest", "ControlDeliveryResponse", {
@@ -280,6 +273,7 @@ const operations: ControlOperationDescriptor[] = [
     "ControlRunDecisionResponse",
     {
       idempotency: "key_required",
+      parameters: [STORE_IDENTITY_HEADER],
     },
   ),
   j("GET", "/v2/runs/:id/events", "read_only", null, null, {
@@ -356,10 +350,13 @@ const operations: ControlOperationDescriptor[] = [
     "ControlThreadTurnResponse",
     {
       idempotency: "key_required",
+      parameters: [STORE_IDENTITY_HEADER],
     },
   ),
+  ...TURN_LOOKUP_OPERATION_DRAFTS.map(descriptor),
   j("POST", "/v2/threads/:id/turns/:id/retry", "mutating", null, "ControlThreadTurnResponse", {
     idempotency: "key_required",
+    parameters: [STORE_IDENTITY_HEADER],
   }),
   j("GET", "/v2/trust", "read_only", null, "ControlTrustListResponse", {
     parameters: [

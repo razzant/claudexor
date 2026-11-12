@@ -45,7 +45,7 @@ describe("orphan reaper", () => {
     unregisterChildProcess(43);
     if (dir) rmSync(dir, { recursive: true, force: true });
     vi.restoreAllMocks();
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("signals only an exact persisted process-group identity", () => {
     vi.useFakeTimers();

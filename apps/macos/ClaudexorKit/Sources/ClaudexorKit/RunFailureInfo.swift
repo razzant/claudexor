@@ -1,6 +1,6 @@
 import Foundation
 
-public struct WorkspaceCaptureFailureInfo: Codable, Sendable, Equatable {
+public struct WorkspaceCaptureFailureInfo: Codable, Sendable, Equatable, Hashable {
     public let code: String
     public let message: String
     public let causeCode: String?
@@ -8,13 +8,13 @@ public struct WorkspaceCaptureFailureInfo: Codable, Sendable, Equatable {
     public let stream: String?
     public let drain: String?
     public let cleanup: Cleanup?
-    public struct Cleanup: Codable, Sendable, Equatable {
+    public struct Cleanup: Codable, Sendable, Equatable, Hashable {
         public let code: String?
         public let message: String
     }
 }
 
-public struct RunFailureInfo: Codable, Sendable, Equatable {
+public struct RunFailureInfo: Codable, Sendable, Equatable, Hashable {
     public let captureFailure: WorkspaceCaptureFailureInfo?
     public let phase: String
     public let category: String
@@ -37,9 +37,11 @@ public struct RunFailureInfo: Codable, Sendable, Equatable {
     /// Every failed execution try in order, each with its own account and
     /// error text; empty for a record written before the field existed.
     public let poolAttempts: [PoolAttemptFailureInfo]
+    /// Typed sizes behind `raw_context_exceeds_window` (#147); never read from `safeMessage`.
+    public let rawContextShortfall: RawContextShortfallInfo?
 
     enum CodingKeys: String, CodingKey {
-        case captureFailure, phase, category, code, harnessId, attemptId, safeMessage, rawDetailRef, logRefs, eventRefs, runDir, nextActions, resetsAt, poolAttempts
+        case captureFailure, phase, category, code, harnessId, attemptId, safeMessage, rawDetailRef, logRefs, eventRefs, runDir, nextActions, resetsAt, poolAttempts, rawContextShortfall
     }
 
     public init(from decoder: Decoder) throws {
@@ -58,12 +60,13 @@ public struct RunFailureInfo: Codable, Sendable, Equatable {
         nextActions = try c.decodeIfPresent([String].self, forKey: .nextActions) ?? []
         resetsAt = try c.decodeIfPresent(String.self, forKey: .resetsAt)
         poolAttempts = try c.decodeIfPresent([PoolAttemptFailureInfo].self, forKey: .poolAttempts) ?? []
+        rawContextShortfall = try c.decodeIfPresent(RawContextShortfallInfo.self, forKey: .rawContextShortfall)
     }
 }
 
 /// One failed execution try attributed to the account it ran on (diagnostic
 /// evidence; the engine's retry and routing never read it).
-public struct PoolAttemptFailureInfo: Codable, Sendable, Equatable {
+public struct PoolAttemptFailureInfo: Codable, Sendable, Equatable, Hashable {
     public let harnessId: String
     public let profileId: String?
     public let profileDisplayName: String?
@@ -80,7 +83,7 @@ public struct PoolAttemptFailureInfo: Codable, Sendable, Equatable {
 }
 
 /// The vendor's own typed failure, verbatim: display it, never branch on it.
-public struct VendorFailureInfo: Codable, Sendable, Equatable {
+public struct VendorFailureInfo: Codable, Sendable, Equatable, Hashable {
     public let code: String?
     public let message: String?
     public let source: String

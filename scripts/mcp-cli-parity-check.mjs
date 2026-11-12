@@ -146,6 +146,11 @@ const MCP_TO_CLI = {
 
 // BOOLEAN CLI strategy flags -> how MCP expresses them (or a reason).
 const BOOLEAN_FLAG_MAP = {
+  abandon: {
+    mcp: null,
+    reason:
+      "thread-retire fences one unanswered operation; retirement is a host decision over the control API, never an MCP tool",
+  },
   "browser-redirect": {
     mcp: null,
     reason:
@@ -193,11 +198,16 @@ const BOOLEAN_FLAG_MAP = {
   },
   "release-tested": {
     mcp: null,
-    reason: "harness install version selection (subcommand plumbing, not a run control)",
+    reason: "retired harness install spelling, parsed only to return its explicit refusal",
   },
   yes: {
     mcp: null,
     reason: "harness install confirmation (subcommand plumbing, not a run control)",
+  },
+  "purge-trashed-threads": {
+    mcp: null,
+    reason:
+      "project remove opt-in (registry ops verb, not a run control); public MCP has no project-removal tool",
   },
   force: { mcp: null, reason: "subcommand plumbing" },
   "allow-full-access": { mcp: null, reason: "trust subcommand flag" },
@@ -206,6 +216,10 @@ const BOOLEAN_FLAG_MAP = {
   override: { mcp: null, reason: "decision subcommand flag" },
   revert: { mcp: null, reason: "decision subcommand flag" },
   discard: {
+    mcp: null,
+    reason: "decision subcommand flag; public MCP has no result-disposition mutation tool",
+  },
+  taken: {
     mcp: null,
     reason: "decision subcommand flag; public MCP has no result-disposition mutation tool",
   },
@@ -218,6 +232,11 @@ const BOOLEAN_FLAG_MAP = {
 // CLI run-control flags with NO MCP argument: each needs a stated reason.
 // (Non-run-control CLI flags — subcommand plumbing — are structurally exempt.)
 const CLI_ONLY_EXEMPT = {
+  out: "thread export bundle directory; a local filesystem copy, and hosts speak the export routes directly",
+  export:
+    "thread-retire's verified bundle directory; retirement is a host decision over the control API, not an inference run argument",
+  "operation-id":
+    "thread-retire's one bound operation, read back by thread retirement; not an inference run argument",
   "request-json":
     "upload-create/upload-finalize request body; separate lifecycle tools, not an inference run argument",
   "host-binding-json":
@@ -233,8 +252,6 @@ const CLI_ONLY_EXEMPT = {
     "per-run structured-output contract; embedder contract is CLI/HTTP-first, MCP exposure deferred (DT2.1-1)",
   route:
     "models-subcommand credential-route filter (read-only listing), not a run-control knob; MCP has no models tool today",
-  "delta-scope":
-    "sealed-release operator flag (INV-125 second amendment): fail-closed outside sealed-packet review mode, driven only by the release operator's owner-review ceremony; exposing it over the MCP bridge would grow surface for a ceremony MCP callers never run",
   "reviewer-panel-json":
     "structured CLI spelling of reviewerPanel; MCP carries the same entries as JSON objects, including credentialProfileId, rather than exposing a second flag",
   "max-turns":
@@ -243,8 +260,6 @@ const CLI_ONLY_EXEMPT = {
     "native prompt-cache lifetime; embedder contract is CLI/HTTP-first and delegation-belt children inherit the parent's captured value, so no MCP argument is exposed",
   "prompt-file":
     "terminal input plumbing (file/stdin prompt sources); MCP callers pass the prompt inline",
-  target:
-    "harness-install destination; operator/embedder provisioning surface, while MCP exposes no harness-install tool",
   thread:
     "thread continuation is a CLI/HTTP embedder handle routed through POST /threads/:id/turns (D10); MCP continues threads through claudexor_thread_turn, not a one-shot argument",
   mode: "MCP encodes the mode in the TOOL NAME (claudexor_ask/plan/run/best_of/...)",
@@ -261,6 +276,8 @@ const CLI_ONLY_EXEMPT = {
   "grant-test": "trust subcommand flag for an external exact-command grant, not a run control",
   "revoke-test": "trust subcommand flag for an external exact-command grant, not a run control",
   "from-env": "secrets subcommand flag, not a run control",
+  "from-archive":
+    "scanner prepare subcommand flag for local machine setup, not a run control; MCP exposes no scanner preparation tool",
   "display-name": "profiles add subcommand flag (credential-profile label), not a run control",
   "apply-mode": "decision subcommand flag, not a run control",
   feedback: "decision subcommand flag, not a run control",

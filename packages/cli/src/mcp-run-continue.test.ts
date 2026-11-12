@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CONTROL_STORE_IDENTITY_HEADER } from "@claudexor/schema";
 import { runContinueQuery } from "./mcp-run-continue.js";
 import { mcpSurfaceRunner } from "./mcp-runner.js";
 import { connectDaemonIfRunning, enqueueAndAwait, ensureDaemon } from "./daemon-run.js";
@@ -29,55 +30,65 @@ function connected(body: unknown = { jobId: "job-s", state: "queued" }) {
 
 describe("MCP sparse continuation query", () => {
   afterEach(() => vi.resetAllMocks());
+  const taskGroupId = "11111111-1111-4111-8111-111111111111";
+  const storeId = "22222222-2222-4222-8222-222222222222";
 
-  it("forwards an explicit continuation group once and keeps the accepted receipt", async () => {
-    const taskGroupId = "11111111-1111-4111-8111-111111111111";
-    const storeId = "22222222-2222-4222-8222-222222222222";
-    connected({ jobId: "job-s", state: "queued", taskGroupId, storeId });
-    const result = await mcpSurfaceRunner()({
-      mode: "__run_continue",
-      runId: "run-p",
-      taskGroupId,
-      idempotencyKey: "group-key",
-    });
-    expect(JSON.parse(String(vi.mocked(controlApiFetch).mock.calls[0]![2]!.body))).toEqual({
-      continueFrom: "run-p",
-      taskGroupId,
-    });
-    expect(result).toMatchObject({ jobId: "job-s", taskGroupId, storeId });
-    expect(controlApiFetch).toHaveBeenCalledTimes(1);
-  });
+  it.each([
+    ["an explicit continuation group", { taskGroupId }, { taskGroupId, storeId }],
+    ["no group", {}, { storeId }],
+  ] as const)(
+    "forwards %s once and keeps the queued successor's accepted receipt",
+    async (_name, group, receipt) => {
+      connected({ jobId: "job-s", state: "queued", ...receipt });
+      const result = await mcpSurfaceRunner()({
+        mode: "__run_continue",
+        runId: "run-p",
+        ...group,
+        idempotencyKey: "group-key",
+      });
+      expect(JSON.parse(String(vi.mocked(controlApiFetch).mock.calls[0]![2]!.body))).toEqual({
+        continueFrom: "run-p",
+        ...group,
+      });
+      expect(result).toMatchObject({ jobId: "job-s", runId: "", status: "queued", ...receipt });
+      if (!("taskGroupId" in group)) expect(result).not.toHaveProperty("taskGroupId");
+      expect(controlApiFetch).toHaveBeenCalledTimes(1);
+    },
+  );
 
-  it("carries an explicit group through the ordinary MCP launch producer", async () => {
-    const taskGroupId = "11111111-1111-4111-8111-111111111111";
-    const storeId = "22222222-2222-4222-8222-222222222222";
-    connected();
-    vi.mocked(enqueueAndAwait).mockResolvedValue({
-      jobId: "job-s",
-      runId: "",
-      runDir: "",
-      status: "queued",
-      taskGroupId,
-      storeId,
-    } as Awaited<ReturnType<typeof enqueueAndAwait>>);
-    expect(
-      await mcpSurfaceRunner({ requireExistingDaemon: true })({
+  it.each([
+    ["an explicit group", { taskGroupId }, { taskGroupId, storeId }],
+    ["no group", {}, { storeId }],
+  ] as const)(
+    "carries %s and the accepting store through the ordinary MCP launch producer",
+    async (_name, group, receipt) => {
+      connected();
+      vi.mocked(enqueueAndAwait).mockResolvedValue({
+        jobId: "job-s",
+        runId: "",
+        runDir: "",
+        status: "queued",
+        ...receipt,
+      } as Awaited<ReturnType<typeof enqueueAndAwait>>);
+      const result = await mcpSurfaceRunner({ requireExistingDaemon: true })({
         mode: "agent",
         prompt: "work",
         repoPath: "/fixture",
         deferred: true,
-        taskGroupId,
-      }),
-    ).toMatchObject({ taskGroupId, storeId });
-    expect(vi.mocked(enqueueAndAwait).mock.calls[0]?.[2]).toHaveProperty(
-      "taskGroupId",
-      taskGroupId,
-    );
-  });
+        ...group,
+      });
+      expect(result).toMatchObject({ jobId: "job-s", ...receipt });
+      const request = vi.mocked(enqueueAndAwait).mock.calls[0]?.[2];
+      if ("taskGroupId" in group) {
+        expect(request).toHaveProperty("taskGroupId", taskGroupId);
+      } else {
+        expect(request).not.toHaveProperty("taskGroupId");
+        expect(result).not.toHaveProperty("taskGroupId");
+      }
+    },
+  );
 
   it("keeps accepted pre-run failure metadata from server context", async () => {
-    const taskGroupId = "11111111-1111-4111-8111-111111111111";
-    const storeId = "22222222-2222-4222-8222-222222222222";
     connected();
     vi.mocked(controlApiFetch)
       .mockResolvedValueOnce({
@@ -110,7 +121,11 @@ describe("MCP sparse continuation query", () => {
       });
       expect(controlApiFetch).toHaveBeenCalledExactlyOnceWith(expect.anything(), "/runs", {
         method: "POST",
-        headers: { "content-type": "application/json", "Idempotency-Key": "stable-key" },
+        headers: {
+          "content-type": "application/json",
+          [CONTROL_STORE_IDENTITY_HEADER]: "1",
+          "Idempotency-Key": "stable-key",
+        },
         body: JSON.stringify({
           continueFrom: "run-p",
           ...(prompt !== undefined ? { prompt } : {}),
@@ -124,15 +139,35 @@ describe("MCP sparse continuation query", () => {
     },
   );
 
-  it("returns bound run handles without polling or inventing lifecycle", async () => {
-    connected({ jobId: "job-s", runId: "run-s", taskId: "task-s", runDir: "/fixture/run-s" });
-    const result = await runContinueQuery({ runId: "run-p" });
-    expect(result).toMatchObject({ jobId: "job-s", runId: "run-s", runDir: "/fixture/run-s" });
-    // No state read is available here: the lifecycle stays unknown, never assumed running.
-    expect(result).toMatchObject({ status: "" });
-    expect(result).not.toHaveProperty("state");
-    expect(controlApiFetch).toHaveBeenCalledTimes(1);
-  });
+  it.each([
+    ["a daemon that names no store", {}],
+    ["its accepting store", { storeId }],
+  ] as const)(
+    "returns bound run handles with %s, without polling or inventing lifecycle",
+    async (_name, receipt) => {
+      connected({
+        jobId: "job-s",
+        runId: "run-s",
+        taskId: "task-s",
+        runDir: "/fixture/run-s",
+        ...receipt,
+      });
+      const result = await runContinueQuery({ runId: "run-p" });
+      expect(result).toMatchObject({
+        jobId: "job-s",
+        runId: "run-s",
+        runDir: "/fixture/run-s",
+        ...receipt,
+      });
+      // Absent stays unknown: no store is claimed that the daemon did not name.
+      if (!("storeId" in receipt)) expect(result).not.toHaveProperty("storeId");
+      expect(result).not.toHaveProperty("taskGroupId");
+      // No state read is available here: the lifecycle stays unknown, never assumed running.
+      expect(result).toMatchObject({ status: "" });
+      expect(result).not.toHaveProperty("state");
+      expect(controlApiFetch).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([
     { attachments: undefined },
@@ -153,7 +188,11 @@ describe("MCP sparse continuation query", () => {
       expect(await mcpSurfaceRunner()(request)).toEqual(first);
       const expected = {
         method: "POST",
-        headers: { "content-type": "application/json", "Idempotency-Key": request.idempotencyKey },
+        headers: {
+          "content-type": "application/json",
+          [CONTROL_STORE_IDENTITY_HEADER]: "1",
+          "Idempotency-Key": request.idempotencyKey,
+        },
         body: JSON.stringify({
           continueFrom: "run-p",
           prompt: "",
@@ -185,6 +224,8 @@ describe("MCP sparse continuation query", () => {
       reviewerModels: { anthropic: "fixture-model" },
       reviewerEfforts: { openai: "high" },
       continueCarrier: "packet",
+      effort: "max",
+      efforts: { codex: "xhigh" },
     };
     await runContinueQuery({ runId: "run-p", prompt: "", ...controls, idempotencyKey: "k" });
     expect(JSON.parse(String(vi.mocked(controlApiFetch).mock.calls[0]![2]!.body))).toEqual({
@@ -201,6 +242,37 @@ describe("MCP sparse continuation query", () => {
   });
 
   it.each([
+    ["the scalar", { effort: "max" }],
+    ["a harness-keyed map", { efforts: { codex: "high", "no-such-harness": "low" } }],
+    ["both", { effort: "low", efforts: { claude: "max" } }],
+    ["neither", {}],
+  ] as const)(
+    "posts %s effort exactly as stated and never materializes a default",
+    async (_name, stated) => {
+      connected();
+      await mcpSurfaceRunner()({
+        mode: "__run_continue",
+        runId: "run-p",
+        ...stated,
+        idempotencyKey: "effort-successor",
+      });
+      const body = JSON.parse(String(vi.mocked(controlApiFetch).mock.calls[0]![2]!.body));
+      // Harness ids stay open here; the engine checks them against its registry.
+      expect(body).toEqual({ continueFrom: "run-p", ...stated });
+      if (!("effort" in stated)) expect(body).not.toHaveProperty("effort");
+      if (!("efforts" in stated)) expect(body).not.toHaveProperty("efforts");
+      expect(controlApiFetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { effort: "MAX" },
+    { effort: "" },
+    { effort: 3 },
+    { efforts: "max" },
+    { efforts: { codex: "MAX" } },
+    { efforts: { " ": "max" } },
+    { reasoningEffort: "max" },
     { attachments: null },
     { attachments: [{ path: "/host/document.txt" }] },
     { attachments: [{ base64: "Zml4dHVyZQ==" }] },

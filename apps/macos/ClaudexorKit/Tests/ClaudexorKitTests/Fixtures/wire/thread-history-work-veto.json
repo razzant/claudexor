@@ -1,0 +1,855 @@
+{
+  "schema": "ThreadHistoryPage",
+  "value": {
+    "storeId": "22222222-2222-4222-8222-222222222222",
+    "threadId": "th-history",
+    "epoch": "partition-epoch",
+    "revision": {
+      "epoch": "11111111-1111-4111-8111-111111111111",
+      "sequence": 42
+    },
+    "header": {
+      "thread": {
+        "id": "th-history",
+        "title": null,
+        "folder": null,
+        "repoRoot": null,
+        "workspaceMode": "in_place",
+        "workspaceRoot": null,
+        "authPreference": "auto",
+        "primaryHarness": null,
+        "eligibleHarnesses": [],
+        "credentialProfileId": null,
+        "access": null,
+        "state": "active",
+        "trashedAt": null,
+        "purgeAfter": null,
+        "headRunId": "run-clean",
+        "needsHuman": false,
+        "createdAt": "2026-10-26T10:00:00Z",
+        "updatedAt": "2026-10-26T10:00:00Z"
+      },
+      "latestTurnId": "turn-clean",
+      "latestOrdinal": 5,
+      "latestAdmission": {
+        "id": "turn-clean",
+        "runId": "run-clean",
+        "enqueueError": null,
+        "jobId": "job-work-veto",
+        "state": "succeeded"
+      },
+      "headRun": {
+        "runId": "run-clean",
+        "run": {
+          "state": "succeeded",
+          "mode": "agent",
+          "result": {
+            "kind": "none",
+            "diffStat": null,
+            "blockers": 0,
+            "adopted": null,
+            "applyState": "not_applied",
+            "preTurnSha": null,
+            "postTurnSha": null,
+            "revertAnchorId": null,
+            "revertable": false
+          },
+          "outcomeFacts": {
+            "lifecycle": "succeeded",
+            "noChanges": false,
+            "checks": "not_configured",
+            "review": "not_run",
+            "review_requested": false,
+            "reason": null,
+            "work_state": {
+              "state": "completed",
+              "source": "constrained"
+            }
+          },
+          "spendUsd": null,
+          "outputReadyState": "ready",
+          "waitingOnUser": false,
+          "asyncQuestionsOnly": false,
+          "finishedAt": "2026-10-26T10:00:00Z",
+          "delegation": null,
+          "delegatedChildRunIds": []
+        }
+      },
+      "headRunStatus": "available",
+      "sessions": [],
+      "sessionsComplete": true
+    },
+    "turns": [
+      {
+        "id": "turn-needs-input",
+        "threadId": "th-history",
+        "runId": "run-needs-input",
+        "parentRunId": null,
+        "answersPlanRunId": null,
+        "planRunId": null,
+        "planHash": null,
+        "planReadinessOverridden": false,
+        "kind": "followup",
+        "prompt": "Question 😀",
+        "enqueueError": null,
+        "continuity": null,
+        "createdAt": "2026-10-26T10:00:00Z",
+        "ordinal": 0,
+        "revision": {
+          "epoch": "11111111-1111-4111-8111-111111111111",
+          "sequence": 42
+        },
+        "promptInfo": {
+          "textBytes": 13,
+          "totalTextBytes": 13,
+          "truncated": false
+        },
+        "run": {
+          "state": "succeeded",
+          "mode": "agent",
+          "result": {
+            "kind": "none",
+            "diffStat": null,
+            "blockers": 0,
+            "adopted": null,
+            "applyState": "not_applied",
+            "preTurnSha": null,
+            "postTurnSha": null,
+            "revertAnchorId": null,
+            "revertable": false
+          },
+          "outcomeFacts": {
+            "lifecycle": "succeeded",
+            "noChanges": false,
+            "checks": "not_configured",
+            "review": "not_run",
+            "reason": "input_required",
+            "work_state": {
+              "state": "needs_input",
+              "source": "constrained",
+              "required_inputs": [
+                {
+                  "kind": "file",
+                  "locator": "fixtures/input.json",
+                  "description": "The fixture it needs."
+                }
+              ]
+            }
+          },
+          "spendUsd": null,
+          "outputReadyState": "ready",
+          "waitingOnUser": false,
+          "asyncQuestionsOnly": false,
+          "finishedAt": "2026-10-26T10:00:00Z",
+          "delegation": null,
+          "delegatedChildRunIds": [],
+          "runDir": "/fixtures/runs/run-history",
+          "authRoute": {
+            "requested": "auto",
+            "effective": "local_session",
+            "source": "native_session",
+            "reason": "native_first",
+            "harnessId": null,
+            "attemptId": null,
+            "profileId": "profile-history",
+            "modelMismatch": null
+          },
+          "harnesses": [
+            "fake"
+          ],
+          "startedAt": "2026-10-26T10:00:00Z",
+          "spendEstimated": true,
+          "route": null,
+          "budget": {
+            "paidBudget": {
+              "kind": "unlimited"
+            },
+            "spendUsd": null,
+            "controllableSpendUsd": null,
+            "valuationUsd": null,
+            "valuationKnowledge": "unknown",
+            "remainingUsd": null,
+            "estimated": false,
+            "source": "unknown",
+            "evidence": "complete"
+          },
+          "failure": null,
+          "applyEligibility": null,
+          "requiredActions": [
+            {
+              "id": "provide_required_input",
+              "detail": "The model needs input (fixtures/input.json); supply it and re-run — a risk override cannot resolve it."
+            }
+          ],
+          "planReadiness": null,
+          "planQuestions": [],
+          "outcomeBanner": "Needs input: fixtures/input.json",
+          "operatorDecision": null,
+          "runFacts": null,
+          "applyEligibilityCoverage": "complete",
+          "operatorDecisionCoverage": "complete",
+          "unverifiedOperatorDecision": null,
+          "failureMessageInfo": null,
+          "toolCount": {
+            "value": 2,
+            "coverage": "partial"
+          },
+          "fileCount": {
+            "value": null,
+            "coverage": "unavailable"
+          }
+        },
+        "runStatus": "available",
+        "primaryOutput": {
+          "kind": "answer",
+          "path": "final/answer.md",
+          "text": "The change stops here for now.",
+          "bytes": 30,
+          "truncated": false,
+          "textBytes": 30,
+          "totalTextBytes": 30
+        },
+        "primaryOutputStatus": "available",
+        "answeredByTurnId": null,
+        "answeredByPrompt": null,
+        "planAnswerComplete": true
+      },
+      {
+        "id": "turn-incomplete-review-blocked",
+        "threadId": "th-history",
+        "runId": "run-incomplete-review-blocked",
+        "parentRunId": null,
+        "answersPlanRunId": null,
+        "planRunId": null,
+        "planHash": null,
+        "planReadinessOverridden": false,
+        "kind": "followup",
+        "prompt": "Question 😀",
+        "enqueueError": null,
+        "continuity": null,
+        "createdAt": "2026-10-26T10:00:00Z",
+        "ordinal": 1,
+        "revision": {
+          "epoch": "11111111-1111-4111-8111-111111111111",
+          "sequence": 42
+        },
+        "promptInfo": {
+          "textBytes": 13,
+          "totalTextBytes": 13,
+          "truncated": false
+        },
+        "run": {
+          "state": "succeeded",
+          "mode": "agent",
+          "result": {
+            "kind": "none",
+            "diffStat": null,
+            "blockers": 0,
+            "adopted": null,
+            "applyState": "not_applied",
+            "preTurnSha": null,
+            "postTurnSha": null,
+            "revertAnchorId": null,
+            "revertable": false
+          },
+          "outcomeFacts": {
+            "lifecycle": "succeeded",
+            "noChanges": false,
+            "checks": "not_configured",
+            "review": "blocked",
+            "reason": "review_blocked",
+            "work_state": {
+              "state": "incomplete",
+              "source": "validated"
+            }
+          },
+          "spendUsd": null,
+          "outputReadyState": "ready",
+          "waitingOnUser": false,
+          "asyncQuestionsOnly": false,
+          "finishedAt": "2026-10-26T10:00:00Z",
+          "delegation": null,
+          "delegatedChildRunIds": [],
+          "runDir": "/fixtures/runs/run-history",
+          "authRoute": {
+            "requested": "auto",
+            "effective": "local_session",
+            "source": "native_session",
+            "reason": "native_first",
+            "harnessId": null,
+            "attemptId": null,
+            "profileId": "profile-history",
+            "modelMismatch": null
+          },
+          "harnesses": [
+            "fake"
+          ],
+          "startedAt": "2026-10-26T10:00:00Z",
+          "spendEstimated": true,
+          "route": null,
+          "budget": {
+            "paidBudget": {
+              "kind": "unlimited"
+            },
+            "spendUsd": null,
+            "controllableSpendUsd": null,
+            "valuationUsd": null,
+            "valuationKnowledge": "unknown",
+            "remainingUsd": null,
+            "estimated": false,
+            "source": "unknown",
+            "evidence": "complete"
+          },
+          "failure": null,
+          "applyEligibility": null,
+          "requiredActions": [
+            {
+              "id": "complete_incomplete_work",
+              "detail": "The model attested its work is incomplete; re-run to finish it — a risk override cannot complete unfinished work."
+            }
+          ],
+          "planReadiness": null,
+          "planQuestions": [],
+          "outcomeBanner": "Incomplete",
+          "operatorDecision": null,
+          "runFacts": null,
+          "applyEligibilityCoverage": "complete",
+          "operatorDecisionCoverage": "complete",
+          "unverifiedOperatorDecision": null,
+          "failureMessageInfo": null,
+          "toolCount": {
+            "value": 2,
+            "coverage": "partial"
+          },
+          "fileCount": {
+            "value": null,
+            "coverage": "unavailable"
+          }
+        },
+        "runStatus": "available",
+        "primaryOutput": {
+          "kind": "answer",
+          "path": "final/answer.md",
+          "text": "The change stops here for now.",
+          "bytes": 30,
+          "truncated": false,
+          "textBytes": 30,
+          "totalTextBytes": 30
+        },
+        "primaryOutputStatus": "available",
+        "answeredByTurnId": null,
+        "answeredByPrompt": null,
+        "planAnswerComplete": true
+      },
+      {
+        "id": "turn-needs-input-checks-failed",
+        "threadId": "th-history",
+        "runId": "run-needs-input-checks-failed",
+        "parentRunId": null,
+        "answersPlanRunId": null,
+        "planRunId": null,
+        "planHash": null,
+        "planReadinessOverridden": false,
+        "kind": "followup",
+        "prompt": "Question 😀",
+        "enqueueError": null,
+        "continuity": null,
+        "createdAt": "2026-10-26T10:00:00Z",
+        "ordinal": 2,
+        "revision": {
+          "epoch": "11111111-1111-4111-8111-111111111111",
+          "sequence": 42
+        },
+        "promptInfo": {
+          "textBytes": 13,
+          "totalTextBytes": 13,
+          "truncated": false
+        },
+        "run": {
+          "state": "succeeded",
+          "mode": "agent",
+          "result": {
+            "kind": "none",
+            "diffStat": null,
+            "blockers": 0,
+            "adopted": null,
+            "applyState": "not_applied",
+            "preTurnSha": null,
+            "postTurnSha": null,
+            "revertAnchorId": null,
+            "revertable": false
+          },
+          "outcomeFacts": {
+            "lifecycle": "succeeded",
+            "noChanges": false,
+            "checks": "failed",
+            "review": "not_run",
+            "reason": "checks_failed",
+            "work_state": {
+              "state": "needs_input",
+              "source": "constrained",
+              "required_inputs": [
+                {
+                  "kind": "file",
+                  "locator": "fixtures/input.json",
+                  "description": "The fixture it needs."
+                }
+              ]
+            }
+          },
+          "spendUsd": null,
+          "outputReadyState": "ready",
+          "waitingOnUser": false,
+          "asyncQuestionsOnly": false,
+          "finishedAt": "2026-10-26T10:00:00Z",
+          "delegation": null,
+          "delegatedChildRunIds": [],
+          "runDir": "/fixtures/runs/run-history",
+          "authRoute": {
+            "requested": "auto",
+            "effective": "local_session",
+            "source": "native_session",
+            "reason": "native_first",
+            "harnessId": null,
+            "attemptId": null,
+            "profileId": "profile-history",
+            "modelMismatch": null
+          },
+          "harnesses": [
+            "fake"
+          ],
+          "startedAt": "2026-10-26T10:00:00Z",
+          "spendEstimated": true,
+          "route": null,
+          "budget": {
+            "paidBudget": {
+              "kind": "unlimited"
+            },
+            "spendUsd": null,
+            "controllableSpendUsd": null,
+            "valuationUsd": null,
+            "valuationKnowledge": "unknown",
+            "remainingUsd": null,
+            "estimated": false,
+            "source": "unknown",
+            "evidence": "complete"
+          },
+          "failure": null,
+          "applyEligibility": null,
+          "requiredActions": [
+            {
+              "id": "provide_required_input",
+              "detail": "The model needs input (fixtures/input.json); supply it and re-run — a risk override cannot resolve it."
+            }
+          ],
+          "planReadiness": null,
+          "planQuestions": [],
+          "outcomeBanner": "Needs input: fixtures/input.json",
+          "operatorDecision": null,
+          "runFacts": null,
+          "applyEligibilityCoverage": "complete",
+          "operatorDecisionCoverage": "complete",
+          "unverifiedOperatorDecision": null,
+          "failureMessageInfo": null,
+          "toolCount": {
+            "value": 2,
+            "coverage": "partial"
+          },
+          "fileCount": {
+            "value": null,
+            "coverage": "unavailable"
+          }
+        },
+        "runStatus": "available",
+        "primaryOutput": {
+          "kind": "answer",
+          "path": "final/answer.md",
+          "text": "The change stops here for now.",
+          "bytes": 30,
+          "truncated": false,
+          "textBytes": 30,
+          "totalTextBytes": 30
+        },
+        "primaryOutputStatus": "available",
+        "answeredByTurnId": null,
+        "answeredByPrompt": null,
+        "planAnswerComplete": true
+      },
+      {
+        "id": "turn-review-gate",
+        "threadId": "th-history",
+        "runId": "run-review-gate",
+        "parentRunId": null,
+        "answersPlanRunId": null,
+        "planRunId": null,
+        "planHash": null,
+        "planReadinessOverridden": false,
+        "kind": "followup",
+        "prompt": "Question 😀",
+        "enqueueError": null,
+        "continuity": null,
+        "createdAt": "2026-10-26T10:00:00Z",
+        "ordinal": 3,
+        "revision": {
+          "epoch": "11111111-1111-4111-8111-111111111111",
+          "sequence": 42
+        },
+        "promptInfo": {
+          "textBytes": 13,
+          "totalTextBytes": 13,
+          "truncated": false
+        },
+        "run": {
+          "state": "succeeded",
+          "mode": "agent",
+          "result": {
+            "kind": "none",
+            "diffStat": null,
+            "blockers": 0,
+            "adopted": null,
+            "applyState": "not_applied",
+            "preTurnSha": null,
+            "postTurnSha": null,
+            "revertAnchorId": null,
+            "revertable": false
+          },
+          "outcomeFacts": {
+            "lifecycle": "succeeded",
+            "noChanges": false,
+            "checks": "not_configured",
+            "review": "blocked",
+            "reason": "review_blocked"
+          },
+          "spendUsd": null,
+          "outputReadyState": "ready",
+          "waitingOnUser": false,
+          "asyncQuestionsOnly": false,
+          "finishedAt": "2026-10-26T10:00:00Z",
+          "delegation": null,
+          "delegatedChildRunIds": [],
+          "runDir": "/fixtures/runs/run-history",
+          "authRoute": {
+            "requested": "auto",
+            "effective": "local_session",
+            "source": "native_session",
+            "reason": "native_first",
+            "harnessId": null,
+            "attemptId": null,
+            "profileId": "profile-history",
+            "modelMismatch": null
+          },
+          "harnesses": [
+            "fake"
+          ],
+          "startedAt": "2026-10-26T10:00:00Z",
+          "spendEstimated": true,
+          "route": null,
+          "budget": {
+            "paidBudget": {
+              "kind": "unlimited"
+            },
+            "spendUsd": null,
+            "controllableSpendUsd": null,
+            "valuationUsd": null,
+            "valuationKnowledge": "unknown",
+            "remainingUsd": null,
+            "estimated": false,
+            "source": "unknown",
+            "evidence": "complete"
+          },
+          "failure": null,
+          "applyEligibility": null,
+          "requiredActions": [
+            {
+              "id": "resolve_review_block",
+              "detail": "Review is blocked; address the blocking findings, or record an operator decision."
+            },
+            {
+              "id": "record_operator_decision",
+              "detail": "Record a typed operator decision (accept risk / override) to unblock apply, if the risk is acceptable."
+            }
+          ],
+          "planReadiness": null,
+          "planQuestions": [],
+          "outcomeBanner": "Needs review",
+          "operatorDecision": null,
+          "runFacts": null,
+          "applyEligibilityCoverage": "complete",
+          "operatorDecisionCoverage": "complete",
+          "unverifiedOperatorDecision": null,
+          "failureMessageInfo": null,
+          "toolCount": {
+            "value": 2,
+            "coverage": "partial"
+          },
+          "fileCount": {
+            "value": null,
+            "coverage": "unavailable"
+          }
+        },
+        "runStatus": "available",
+        "primaryOutput": {
+          "kind": "answer",
+          "path": "final/answer.md",
+          "text": "The change stops here for now.",
+          "bytes": 30,
+          "truncated": false,
+          "textBytes": 30,
+          "totalTextBytes": 30
+        },
+        "primaryOutputStatus": "available",
+        "answeredByTurnId": null,
+        "answeredByPrompt": null,
+        "planAnswerComplete": true
+      },
+      {
+        "id": "turn-host-stopped",
+        "threadId": "th-history",
+        "runId": "run-host-stopped",
+        "parentRunId": null,
+        "answersPlanRunId": null,
+        "planRunId": null,
+        "planHash": null,
+        "planReadinessOverridden": false,
+        "kind": "followup",
+        "prompt": "Question 😀",
+        "enqueueError": null,
+        "continuity": null,
+        "createdAt": "2026-10-26T10:00:00Z",
+        "ordinal": 4,
+        "revision": {
+          "epoch": "11111111-1111-4111-8111-111111111111",
+          "sequence": 42
+        },
+        "promptInfo": {
+          "textBytes": 13,
+          "totalTextBytes": 13,
+          "truncated": false
+        },
+        "run": {
+          "state": "cancelled",
+          "mode": "agent",
+          "result": {
+            "kind": "none",
+            "diffStat": null,
+            "blockers": 0,
+            "adopted": null,
+            "applyState": "not_applied",
+            "preTurnSha": null,
+            "postTurnSha": null,
+            "revertAnchorId": null,
+            "revertable": false
+          },
+          "outcomeFacts": {
+            "lifecycle": "cancelled",
+            "noChanges": false,
+            "checks": "not_configured",
+            "review": "not_run",
+            "reason": "host_cancelled"
+          },
+          "spendUsd": null,
+          "outputReadyState": "ready",
+          "waitingOnUser": false,
+          "asyncQuestionsOnly": false,
+          "finishedAt": "2026-10-26T10:00:00Z",
+          "delegation": null,
+          "delegatedChildRunIds": [],
+          "runDir": "/fixtures/runs/run-history",
+          "authRoute": {
+            "requested": "auto",
+            "effective": "local_session",
+            "source": "native_session",
+            "reason": "native_first",
+            "harnessId": null,
+            "attemptId": null,
+            "profileId": "profile-history",
+            "modelMismatch": null
+          },
+          "harnesses": [
+            "fake"
+          ],
+          "startedAt": "2026-10-26T10:00:00Z",
+          "spendEstimated": true,
+          "route": null,
+          "budget": {
+            "paidBudget": {
+              "kind": "unlimited"
+            },
+            "spendUsd": null,
+            "controllableSpendUsd": null,
+            "valuationUsd": null,
+            "valuationKnowledge": "unknown",
+            "remainingUsd": null,
+            "estimated": false,
+            "source": "unknown",
+            "evidence": "complete"
+          },
+          "failure": null,
+          "applyEligibility": null,
+          "requiredActions": [],
+          "planReadiness": null,
+          "planQuestions": [],
+          "outcomeBanner": "Stopped by host",
+          "operatorDecision": null,
+          "runFacts": null,
+          "applyEligibilityCoverage": "complete",
+          "operatorDecisionCoverage": "complete",
+          "unverifiedOperatorDecision": null,
+          "failureMessageInfo": null,
+          "toolCount": {
+            "value": 2,
+            "coverage": "partial"
+          },
+          "fileCount": {
+            "value": null,
+            "coverage": "unavailable"
+          }
+        },
+        "runStatus": "available",
+        "primaryOutput": {
+          "kind": "answer",
+          "path": "final/answer.md",
+          "text": "The change stops here for now.",
+          "bytes": 30,
+          "truncated": false,
+          "textBytes": 30,
+          "totalTextBytes": 30
+        },
+        "primaryOutputStatus": "available",
+        "answeredByTurnId": null,
+        "answeredByPrompt": null,
+        "planAnswerComplete": true
+      },
+      {
+        "id": "turn-clean",
+        "threadId": "th-history",
+        "runId": "run-clean",
+        "parentRunId": null,
+        "answersPlanRunId": null,
+        "planRunId": null,
+        "planHash": null,
+        "planReadinessOverridden": false,
+        "kind": "followup",
+        "prompt": "Question 😀",
+        "enqueueError": null,
+        "continuity": null,
+        "createdAt": "2026-10-26T10:00:00Z",
+        "ordinal": 5,
+        "revision": {
+          "epoch": "11111111-1111-4111-8111-111111111111",
+          "sequence": 42
+        },
+        "promptInfo": {
+          "textBytes": 13,
+          "totalTextBytes": 13,
+          "truncated": false
+        },
+        "run": {
+          "state": "succeeded",
+          "mode": "agent",
+          "result": {
+            "kind": "none",
+            "diffStat": null,
+            "blockers": 0,
+            "adopted": null,
+            "applyState": "not_applied",
+            "preTurnSha": null,
+            "postTurnSha": null,
+            "revertAnchorId": null,
+            "revertable": false
+          },
+          "outcomeFacts": {
+            "lifecycle": "succeeded",
+            "noChanges": false,
+            "checks": "not_configured",
+            "review": "not_run",
+            "review_requested": false,
+            "reason": null,
+            "work_state": {
+              "state": "completed",
+              "source": "constrained"
+            }
+          },
+          "spendUsd": null,
+          "outputReadyState": "ready",
+          "waitingOnUser": false,
+          "asyncQuestionsOnly": false,
+          "finishedAt": "2026-10-26T10:00:00Z",
+          "delegation": null,
+          "delegatedChildRunIds": [],
+          "runDir": "/fixtures/runs/run-history",
+          "authRoute": {
+            "requested": "auto",
+            "effective": "local_session",
+            "source": "native_session",
+            "reason": "native_first",
+            "harnessId": null,
+            "attemptId": null,
+            "profileId": "profile-history",
+            "modelMismatch": null
+          },
+          "harnesses": [
+            "fake"
+          ],
+          "startedAt": "2026-10-26T10:00:00Z",
+          "spendEstimated": true,
+          "route": null,
+          "budget": {
+            "paidBudget": {
+              "kind": "unlimited"
+            },
+            "spendUsd": null,
+            "controllableSpendUsd": null,
+            "valuationUsd": null,
+            "valuationKnowledge": "unknown",
+            "remainingUsd": null,
+            "estimated": false,
+            "source": "unknown",
+            "evidence": "complete"
+          },
+          "failure": null,
+          "applyEligibility": null,
+          "requiredActions": [],
+          "planReadiness": null,
+          "planQuestions": [],
+          "outcomeBanner": "Done · not reviewed",
+          "operatorDecision": null,
+          "runFacts": null,
+          "applyEligibilityCoverage": "complete",
+          "operatorDecisionCoverage": "complete",
+          "unverifiedOperatorDecision": null,
+          "failureMessageInfo": null,
+          "toolCount": {
+            "value": 2,
+            "coverage": "partial"
+          },
+          "fileCount": {
+            "value": null,
+            "coverage": "unavailable"
+          }
+        },
+        "runStatus": "available",
+        "primaryOutput": {
+          "kind": "answer",
+          "path": "final/answer.md",
+          "text": "The change stops here for now.",
+          "bytes": 30,
+          "truncated": false,
+          "textBytes": 30,
+          "totalTextBytes": 30
+        },
+        "primaryOutputStatus": "available",
+        "answeredByTurnId": null,
+        "answeredByPrompt": null,
+        "planAnswerComplete": true
+      }
+    ],
+    "hasOlder": false,
+    "hasNewer": false,
+    "olderCursor": null,
+    "newerCursor": null,
+    "replayCursor": "opaque-replay",
+    "replayNextCursor": null,
+    "limitedBy": null
+  }
+}

@@ -4,6 +4,8 @@ import {
   PROJECT_NOT_REGISTERED_REQUIRED_ACTIONS,
   type ControlProjectListingProblem,
   type Thread,
+  type ThreadExportDigestEntry,
+  type ThreadRetireRequest,
   type ThreadTurn,
 } from "@claudexor/schema";
 import { hashJson, isClaudexorOwnedRuntimePath } from "@claudexor/util";
@@ -18,6 +20,15 @@ import {
 import { partitionById, type PartitionGeneration } from "./partitions.js";
 import { SqlProjectStore } from "./projects.js";
 import { findThreadCreationAcross } from "./thread-replay.js";
+import { readClosureThread, readThreadClosureDocument } from "./thread-closure.js";
+import { runMutation } from "./mutation.js";
+import {
+  acceptRetirement,
+  bindRetirementOutcome,
+  readThreadCleanup,
+  retirementOutcome,
+  type RetirementRefusal,
+} from "./thread-retirement.js";
 import { decodeBody } from "./thread-rows.js";
 import { SqlThreadStore } from "./threads.js";
 import { diskRetentionReferences, diskRetentionThreads } from "./retention-references.js";
@@ -90,6 +101,9 @@ export class SqlProjectRouter {
   }
   removeProject(id: string, activeRunRoots: ReadonlySet<string>) {
     return this.projects.remove(id, activeRunRoots);
+  }
+  removeProjectWithTrashedThreads(id: string, activeRunRoots: ReadonlySet<string>) {
+    return this.projects.removeWithTrashedThreads(id, activeRunRoots);
   }
 
   findThreadCreation(input: CreateThreadInput & { ephemeral?: boolean }): Thread | null {
@@ -169,6 +183,13 @@ export class SqlProjectRouter {
   createTurn(id: string, prompt: string, input: CreateTurnInput = {}) {
     return this.requireThread(id).createTurn(id, prompt, input);
   }
+  async stageTurnPrompt(id: string, prompt: string): Promise<void> {
+    try {
+      await this.forThread(id)?.stageTurnPrompt(prompt);
+    } catch {
+      /* createTurn decides and reports */
+    }
+  }
   findTurnByIdempotency(id: string, input: NonNullable<CreateTurnInput["idempotency"]>) {
     return this.requireThread(id).findTurnByIdempotency(id, input);
   }
@@ -183,6 +204,39 @@ export class SqlProjectRouter {
   }
   purgeThread(id: string) {
     return this.requireThread(id).purgeThread(id);
+  }
+  retireThread(
+    id: string,
+    request: ThreadRetireRequest,
+    acceptedLane: readonly ThreadExportDigestEntry[],
+  ) {
+    const threads = this.requireThread(id);
+    return acceptRetirement(threads, threads.obligations, id, request, acceptedLane);
+  }
+  /** The outcome already bound, read in the thread row's own partition, so it still
+   * answers after that project was removed. Only a new decision needs it served. */
+  retirementOperation(id: string, operationId: string) {
+    const row = this.store.prepare("SELECT pid FROM thread WHERE id=?").get(id) as
+      { pid: number } | undefined;
+    if (!row) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
+    return retirementOutcome(this.store, row.pid, id, operationId);
+  }
+  /** Bind a definite refusal or abandonment: this operation can never accept. */
+  settleRetirement(id: string, operationId: string, refusal: RetirementRefusal | null) {
+    const { pid } = this.requireThread(id).generation;
+    return runMutation(this.store, (tx) =>
+      bindRetirementOutcome(tx, pid, id, operationId, refusal),
+    );
+  }
+  threadRecord(id: string) {
+    return readClosureThread(this.store, id);
+  }
+  threadClosureDocument(id: string, key: string) {
+    return readThreadClosureDocument(this.store, this.projects.blobs, id, key);
+  }
+  /** An open purge obligation's reason, or null with no open cleanup at all. */
+  threadCleanup(id: string) {
+    return readThreadCleanup(this.projects.obligations, id);
   }
   setThreadWorktree(id: string, path: string, base: string, through?: string): void {
     this.requireThread(id).setThreadWorktree(id, path, base, through);

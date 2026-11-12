@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { validateModel } from "@claudexor/core";
-import { knownModelIdsForRoute } from "@claudexor/schema";
-import {
-  CLAUDE_KNOWN_MODELS,
-  CLAUDE_KNOWN_MODELS_VERIFIED_AGAINST,
-  claudeQuotaModelAliases,
-} from "./capability-profile.js";
+import { claudeQuotaFamilyScope, knownModelIdsForRoute } from "@claudexor/schema";
+import { CLAUDE_KNOWN_MODELS, CLAUDE_KNOWN_MODELS_VERIFIED_AGAINST } from "./capability-profile.js";
 import { createClaudeAdapter } from "./index.js";
 import { claudeModelRows } from "./model-probe.js";
 
@@ -107,32 +103,16 @@ describe("the claude manifest model truth source", () => {
     );
   });
 
-  it("projects vendor quota family names onto the manifest aliases", () => {
-    // The projection inherits catalog order (newest full id first within a
-    // family); nothing routes on it, but `models` listings display it.
-    expect(claudeQuotaModelAliases("Fable")).toEqual([
-      "fable",
-      "claude-fable-5-1",
-      "claude-fable-5",
-      "best",
-    ]);
-    expect(claudeQuotaModelAliases(" Opus ")).toEqual([
-      "opus",
-      "claude-opus-5",
-      "claude-opus-4-8",
-      "claude-opus-4-7",
-      "claude-opus-4-6",
-      "claude-opus-4-5",
-      "best",
-    ]);
-    expect(claudeQuotaModelAliases("Sonnet")).toEqual([
-      "sonnet",
-      "claude-sonnet-5",
-      "claude-sonnet-4-6",
-      "claude-sonnet-4-5",
-      "best",
-    ]);
-    expect(claudeQuotaModelAliases("Future")).toEqual(["future", "best"]);
-    expect(claudeQuotaModelAliases("   ")).toEqual([]);
+  it("scopes vendor quota families by their declared id prefix, never by the frozen hints", () => {
+    // A future full id joins its family; `best` and other families never do.
+    expect(claudeQuotaFamilyScope(" Opus ")).toEqual({
+      applies_to_models: ["opus"],
+      applies_to_model_prefixes: ["claude-opus-"],
+    });
+    expect(claudeQuotaFamilyScope("Fable")?.applies_to_model_prefixes).toEqual(["claude-fable-"]);
+    expect(CLAUDE_KNOWN_MODELS).not.toContain("claude-opus-5-5");
+    // An empty or multi-word name is not a family: producers keep it diagnostic.
+    expect(claudeQuotaFamilyScope("   ")).toBeNull();
+    expect(claudeQuotaFamilyScope("Opus 4.8")).toBeNull();
   });
 });

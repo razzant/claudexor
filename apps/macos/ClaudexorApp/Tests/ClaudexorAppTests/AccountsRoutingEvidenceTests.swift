@@ -319,6 +319,76 @@ struct AccountsRoutingEvidenceTests {
         #expect(state.lastService(harnessId: "claude", profileId: "work", at: .local).count == 1)
     }
 
+    /// Soft pre-progress marks plus the opt-in model-scoped credential refusals
+    /// (#200): two live ones on Work, one expired, one on another account.
+    static let evidenceWithCredentialRefusals = """
+    {"refusals":[
+      {"harness_id":"claude","profile_id":"work","requested_model":"grok-4.7",
+       "observed_at":"2026-10-13T06:00:00.000Z","expires_at":"2099-01-01T00:00:00.000Z"},
+      {"harness_id":"claude","profile_id":"work","requested_model":null,
+       "observed_at":"2026-10-13T06:01:00.000Z","expires_at":"2099-01-01T00:00:00.000Z"}],
+     "lastService":[
+      {"harness_id":"claude","profile_id":"work","requested_model":null,"observed_at":"2026-10-13T05:00:00.000Z"}],
+     "credentialUnusable":[
+      {"harness_id":"claude","profile_id":"work","model":"gpt-5.5","code":"capability_refused",
+       "detail":"model_not_found","observed_at":"2026-10-13T07:48:00.000Z","expires_at":"2099-01-01T00:00:00.000Z"},
+      {"harness_id":"claude","profile_id":"work","model":"grok-4.7","code":"capability_refused",
+       "detail":"model_not_found","observed_at":"2026-10-13T06:00:00.000Z","expires_at":"2099-01-01T00:00:00.000Z"},
+      {"harness_id":"claude","profile_id":"work","model":"expired-model","code":"capability_refused",
+       "detail":"model_not_found","observed_at":"2020-01-01T00:00:00.000Z","expires_at":"2020-01-01T01:00:00.000Z"},
+      {"harness_id":"claude","profile_id":"spare","model":"gpt-5.5","code":"capability_refused",
+       "detail":"model_not_found","observed_at":"2026-10-13T07:48:00.000Z","expires_at":"2099-01-01T00:00:00.000Z"}]}
+    """
+
+    @MainActor
+    @Test func aModelScopedRefusalIsADatedObservationInTheOneRefusalLine() async throws {
+        defer { RoutingEvidenceProtocol.routes = [:]; RoutingEvidenceProtocol.requested = [] }
+        RoutingEvidenceProtocol.routes = [
+            "/v2/operations": (200, Self.current),
+            "/v2/accounts/routing-evidence": (200, Self.evidenceWithCredentialRefusals),
+        ]
+        let (model, client) = try connectedModel()
+        await model.refreshAccountsRoutingEvidence(at: .local, client: client)
+        let rows = AccountsPresentation.rows(model: model)
+        let work = try #require(rows.first { $0.profileId == "work" })
+        #expect(work.credentialUnusable.map(\.model) == ["gpt-5.5", "grok-4.7"])
+        let now = try #require(ISO8601DateFormatter().date(from: "2026-10-13T08:00:00Z"))
+        let line = try #require(AccountsPresentation.refusalLine(
+            work.refusalMarks, credentialUnusable: work.credentialUnusable, now: now))
+        // Model, the typed reason and when; a pre-progress mark of the same
+        // model folds into it, and the default model stays its own entry.
+        #expect(line == "Recent refusal · gpt-5.5 (model_not_found, 12m ago), "
+            + "grok-4.7 (model_not_found, 2h ago), default model")
+        #expect(!line.localizedCaseInsensitiveContains("unavailable"))
+        // An observation, never the row's status: readiness, Enabled, order and
+        // controls are exactly as without it.
+        #expect(work.readiness == .ready && work.verified && work.enabled)
+        #expect(rows.map(\.profileId) == ["work", "spare"])
+        #expect(AccountsPresentation.columns(for: work) == AccountsPresentation.AccountRowColumn.allCases)
+        let spare = try #require(rows.first { $0.profileId == "spare" })
+        #expect(spare.readiness == .ready)
+        #expect(AccountsPresentation.refusalLine(
+            spare.refusalMarks, credentialUnusable: spare.credentialUnusable, now: now)
+            == "Recent refusal · gpt-5.5 (model_not_found, 12m ago)")
+    }
+
+    @Test func aNamedRefusalNeverStandsInForTheDefaultModel() throws {
+        let now = try #require(ISO8601DateFormatter().date(from: "2026-10-13T08:00:00Z"))
+        let marks = try JSONDecoder().decode([AccountRefusalMark].self, from: Data("""
+            [{"harness_id":"claude","profile_id":"work","requested_model":null,
+              "observed_at":"2026-10-13T07:00:00.000Z","expires_at":"2099-01-01T00:00:00.000Z"}]
+            """.utf8))
+        let refusals = try JSONDecoder().decode([AccountCredentialUnusableMark].self, from: Data("""
+            [{"harness_id":"claude","profile_id":"work","model":"claude-opus-5-5","code":"capability_refused",
+              "detail":null,"observed_at":"2026-10-13T07:59:40.000Z","expires_at":"2099-01-01T00:00:00.000Z"}]
+            """.utf8))
+        // Without typed evidence the engine's code is the reason.
+        #expect(AccountsPresentation.refusalLine(marks, credentialUnusable: refusals, now: now)
+            == "Recent refusal · claude-opus-5-5 (capability_refused, just now), default model")
+        #expect(AccountsPresentation.refusalLine(marks, now: now) == "Recent refusal · default model")
+        #expect(AccountsPresentation.refusalLine([], credentialUnusable: [], now: now) == nil)
+    }
+
     @Test func copyIsQualifiedAndLocaleIndependent() throws {
         #expect(AccountsPresentation.nextUpLabel == "Next up · default model")
         #expect(AccountsPresentation.modelLabel(nil) == "default model")

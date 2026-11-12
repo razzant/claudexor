@@ -37,6 +37,28 @@ export function externalContextProperties(): Record<string, unknown> {
   };
 }
 
+/** The scalar effort as the engine applies it: to every harness lane of the
+ * run (run-input-resolution.ts), never to a reviewer. */
+export function scalarEffortProperty(): Record<string, unknown> {
+  return effortJsonSchema(
+    "Optional reasoning effort for every harness this run executes (not its reviewers), instead of each harness's Settings default.",
+  );
+}
+
+/** Each lane runs at efforts[harness], else effort, else its Settings default. */
+export function effortProperties(): Record<string, unknown> {
+  return {
+    effort: scalarEffortProperty(),
+    efforts: {
+      type: "object",
+      propertyNames: { minLength: 1, pattern: "\\S" },
+      additionalProperties: effortJsonSchema("Reasoning effort for this harness id."),
+      description:
+        "Optional harness-scoped effort map (harness id to effort); an entry wins over effort and that harness's Settings default. The engine refuses an unregistered harness id.",
+    },
+  };
+}
+
 export function accessAndLimitProperties(): Record<string, unknown> {
   return {
     paidBudget: paidBudgetSchema,

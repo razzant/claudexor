@@ -3,7 +3,7 @@
  * (owner directive 2026-08-04): POST /v2/setup/jobs/:id/input lands the
  * user's pasted completion value in a transient 0600 job-dir sidecar the
  * runner writes to the vendor CLI's stdin. The value is NEVER journaled,
- * logged, or persisted anywhere durable (the userCode rule, INV-062).
+ * logged, or persisted anywhere durable (the userCode rule, INV-146).
  */
 import { existsSync } from "node:fs";
 import { ControlSetupJobInputRequest, type ControlSetupJob } from "@claudexor/schema";

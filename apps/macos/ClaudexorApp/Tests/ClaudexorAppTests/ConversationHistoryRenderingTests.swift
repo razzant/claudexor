@@ -23,9 +23,6 @@ struct ConversationHistoryRenderingTests {
         let clock = ContinuousClock()
         let started = clock.now
         let model = AppModel(client: nil, requestNotificationAuthorization: false)
-        // AppModel loads saved connection metadata; this fixture must never
-        // connect it or discover/use the user's daemon.
-        model.remoteConnections = []
         let turns = Self.fixtureTurns(model: model)
         let target = TurnStartTarget.existing(
             locationID: .local, threadID: "conversation-render-fixture",

@@ -13,7 +13,13 @@ export const RateLimitSignal = z.object({
     .nullable()
     .optional()
     .describe(
-      "Canonical model ids/aliases this rejection applies to; omitted/null means every model.",
+      "Canonical model ids/aliases this rejection applies to; omitted/null (with no prefixes) means every model.",
+    ),
+  applies_to_model_prefixes: z
+    .array(Id)
+    .optional()
+    .describe(
+      "Producer-declared model-family prefixes this rejection also applies to, as on QuotaConstraint.",
     ),
   resets_at: z
     .string()
@@ -27,6 +33,12 @@ export const RateLimitSignal = z.object({
     .nullable()
     .default(null)
     .describe("Suggested retry delay in milliseconds, when reported."),
+  reopening: z
+    .enum(["unknown"])
+    .optional()
+    .describe(
+      "unknown: the vendor's own typed code refused further usage on this account and named no reopening time, and the refusal is not known to be a timed window (Codex usage_limit_exceeded and AGY's structured `Individual quota reached` also cover refusals whose scope is not a timed window). No reset is derived from it; the vendor's original failure evidence remains alongside the signal. Admission/continuation consumers decide whether the account is retried, and a typed refusal must not be mistaken for a transport failure. Absent: resets_at, retry_delay_ms and the vendor's window say when to come back, as before.",
+    ),
 });
 export type RateLimitSignal = z.infer<typeof RateLimitSignal>;
 

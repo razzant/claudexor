@@ -4,11 +4,9 @@ import type { RunTimeLimit } from "./run-time-limit.js";
 import { type Server, type Socket, createServer } from "node:net";
 
 import {
-  ControlRunStartRequest,
   TurnEnqueueProblem,
   type TurnEnqueueProblem as TurnEnqueueProblemValue,
   delegatedParentOf,
-  resolveRunReviewRequested,
   normalizeCancelReasonCode,
   isTerminalLifecycle,
   type CancelReasonCode,
@@ -20,26 +18,16 @@ import {
 } from "@claudexor/schema";
 import { daemonHealth, daemonConcurrencyCaps } from "./daemon-health.js";
 import { RpcFollowers } from "./rpc-followers.js";
-import { newId, nowIso, pathExists } from "@claudexor/util";
+import { nowIso, pathExists } from "@claudexor/util";
 import { DeferredMessages, type DeferredStartPreparation } from "./deferred-messages.js";
-import { enqueueCommand } from "./enqueue-command.js";
-import {
-  commandStoreForId,
-  commandStoreForRequest,
-  type CommandBackend,
-} from "./command-authority.js";
+import { enqueueStaged } from "./enqueue-command.js";
+import { commandStoreForId, type CommandBackend } from "./command-authority.js";
 import { publicAcceptedCommand } from "./command-rpc.js";
 import { parseCommandListQuery } from "./command-list-select.js";
 import { clearStaleUnixSocketPath, listenOnDaemonEndpoint } from "./daemon-listen.js";
 import { type DelegationAdmissionAuthority } from "./delegation-admission.js";
-import {
-  jobStateFromResult,
-  publicJobRecord,
-  resultReason,
-  resultSummary,
-  type JobRecord,
-} from "./job-record.js";
-import { settleJobError } from "./job-settlement.js";
+import { jobStateFromResult, publicJobRecord, type JobRecord } from "./job-record.js";
+import { settleJobError, settledJobPatch } from "./job-settlement.js";
 import {
   admissionActivity,
   admissionJob,
@@ -116,7 +104,7 @@ export class DaemonServer {
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly taskFailures: unknown[] = [];
   private readonly commands: CommandBackend;
-  private readonly deferred: DeferredMessages;
+  readonly deferred: DeferredMessages;
   private get active(): number {
     return this.activeJobs.size;
   }
@@ -329,11 +317,10 @@ export class DaemonServer {
     if (servingMode !== "normal") throw recoveryOnlyRefusal(method);
     switch (method) {
       case "claudexor.enqueue":
-        return enqueueCommand(params, {
+        return enqueueStaged(params, {
           commands: this.commands,
-          stopping: this.stopping,
+          stopping: () => this.stopping,
           delegation: this.opts.delegationAuthority,
-          accept: this.acceptCommand.bind(this),
           publish: (record) => this.publishQueued(record),
         });
       case "claudexor.deferredMessage":
@@ -447,30 +434,6 @@ export class DaemonServer {
     for (const id of removed) this.cancelled.delete(id);
   }
 
-  private acceptCommand(
-    params: unknown,
-    idempotencyKey: string,
-    clientId: string,
-    idempotencyParams?: unknown,
-    operation?: string,
-  ) {
-    const store = commandStoreForRequest(this.commands, params);
-    const parsed = ControlRunStartRequest.safeParse(params);
-    const acceptedParams =
-      parsed.success && parsed.data.mode === "agent"
-        ? { ...(params as Record<string, unknown>), review: resolveRunReviewRequested(parsed.data) }
-        : params;
-    return store.accept({
-      id: newId("job"),
-      params: acceptedParams,
-      idempotencyKey,
-      clientId,
-      // Resolved defaults belong to accepted execution, never the wire digest.
-      idempotencyParams: idempotencyParams ?? params,
-      operation,
-    });
-  }
-
   private getRecord(id: string): JobRecord | undefined {
     return commandStoreForId(this.commands, id)?.get(id);
   }
@@ -534,18 +497,10 @@ export class DaemonServer {
           rec = this.updateRecord(rec, info);
         },
       });
-      const state = jobStateFromResult(result, controller.signal.aborted);
-      if (state === "failed" || state === "interrupted") {
-        const reason = resultReason(result);
-        rec = this.updateRecord(rec, {
-          state,
-          result,
-          error: resultSummary(result) ?? `run ended ${state}${reason ? ` (${reason})` : ""}`,
-          finishedAt: nowIso(),
-        });
-      } else {
-        rec = this.updateRecord(rec, { state, result, finishedAt: nowIso() });
-      }
+      const patch = settledJobPatch(jobStateFromResult(result, controller.signal.aborted), result);
+      // The verdict is fixed above; only the result's large bodies are written off the loop.
+      await commandStoreForId(this.commands, id)?.stageUpdate?.(id, patch);
+      rec = this.updateRecord(rec, patch);
     } catch (thrown) {
       rec = settleJobError({
         thrown,

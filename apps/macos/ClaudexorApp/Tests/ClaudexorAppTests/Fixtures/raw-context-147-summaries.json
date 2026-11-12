@@ -1,0 +1,820 @@
+{
+  "success": {
+    "jobId": "job-run-9ec26aed3302",
+    "runId": "run-9ec26aed3302",
+    "parentRunId": null,
+    "delegatedFromRunId": null,
+    "delegation": {
+      "requested": false,
+      "effective": false,
+      "used": false,
+      "reason": "not_requested",
+      "remediation": null
+    },
+    "continueFrom": null,
+    "resumable": null,
+    "retainedEnvelope": null,
+    "taskId": "task-f13d3ef32f4f",
+    "state": "succeeded",
+    "runDir": "/work/.claudexor/run",
+    "failure": null,
+    "project": {
+      "kind": "project",
+      "root": "/work/billing-worker",
+      "projectName": "billing-worker",
+      "context": "auto"
+    },
+    "executionRoot": "/work/billing-worker",
+    "mode": "agent",
+    "strategy": null,
+    "prompt": "Retry flaky invoice sync in billing worker",
+    "harnesses": ["openrouter"],
+    "model": "openai/gpt-4o-mini",
+    "review": false,
+    "paidBudget": {
+      "kind": "unlimited"
+    },
+    "spendUsd": null,
+    "spendEstimated": true,
+    "inputTokens": 10,
+    "outputTokens": 10,
+    "cachedInputTokens": null,
+    "inputTokenUsage": {
+      "total_tokens": null,
+      "cache_read_tokens": null,
+      "cache_write_tokens": null
+    },
+    "outputConformance": null,
+    "authRoute": {
+      "requested": "auto",
+      "effective": "api_key",
+      "source": "api_key_env",
+      "reason": "no_native_session_fallback",
+      "harnessId": "openrouter",
+      "attemptId": "a01",
+      "profileId": null,
+      "modelMismatch": null
+    },
+    "access": "workspace_write",
+    "requestedAccess": "workspace_write",
+    "effectiveAccess": "workspace_write",
+    "externalContextPolicy": "auto",
+    "webRequired": false,
+    "webMode": "auto",
+    "webEvidence": {
+      "required": false,
+      "mode": "auto",
+      "effectiveMode": "auto",
+      "attempted": false,
+      "satisfied": false,
+      "status": "none",
+      "tool": null,
+      "target": null,
+      "errorSummary": null,
+      "rawDetailRef": "final/telemetry.yaml",
+      "available": true
+    },
+    "requestRequirements": [
+      {
+        "capability": "browser",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["request.browser"]
+      },
+      {
+        "capability": "path_deny",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["request.deny_paths"]
+      },
+      {
+        "capability": "delegation",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["task.delegation_requested"]
+      }
+    ],
+    "toolPermissionPolicy": {
+      "web": "auto",
+      "allow": [],
+      "deny": []
+    },
+    "outputReadyState": "ready",
+    "toolWarningsTotal": 0,
+    "result": {
+      "kind": "patch",
+      "diffStat": {
+        "files": 1,
+        "additions": 1,
+        "deletions": 1
+      },
+      "blockers": 0,
+      "adopted": null,
+      "applyState": "not_applied",
+      "preTurnSha": null,
+      "postTurnSha": null,
+      "revertAnchorId": null,
+      "revertable": false
+    },
+    "outcomeFacts": {
+      "lifecycle": "succeeded",
+      "noChanges": false,
+      "checks": "not_configured",
+      "review": "not_run",
+      "review_requested": false,
+      "reason": null,
+      "work_state": {
+        "state": "unverified",
+        "source": "absent"
+      }
+    },
+    "waitingOnUser": false,
+    "processScope": null,
+    "route": {
+      "requestedModel": "openai/gpt-4o-mini",
+      "observedModel": "openai/gpt-4o-mini",
+      "harnessId": "openrouter",
+      "verified": true
+    },
+    "routingRationale": {
+      "goal": "auto",
+      "paid_fallback": "when_unavailable",
+      "order": ["openrouter"],
+      "dropped": [],
+      "reason": "declared_order",
+      "entries": [
+        {
+          "harness_id": "openrouter",
+          "billing_knowledge": "metered",
+          "incremental_cost_usd": null,
+          "eligible": true
+        }
+      ]
+    },
+    "rawContext": {
+      "model": "openai/gpt-4o-mini",
+      "estimated_request_tokens": 158954,
+      "budget": {
+        "estimator": "chars_div_4",
+        "basis": "model_context_window",
+        "model": "openai/gpt-4o-mini",
+        "context_window": 200000,
+        "output_allowance_tokens": 16384,
+        "framing_tokens": 109,
+        "selection_limit_tokens": 183507,
+        "estimated_packet_tokens": 158846,
+        "omitted_for_budget": 3,
+        "mandatory_paths": ["AGENTS.md", "src/billing/retry.ts"]
+      }
+    }
+  },
+  "unknown": {
+    "jobId": "job-run-a3dfc45d9b95",
+    "runId": "run-a3dfc45d9b95",
+    "parentRunId": null,
+    "delegatedFromRunId": null,
+    "delegation": {
+      "requested": false,
+      "effective": false,
+      "used": false,
+      "reason": "not_requested",
+      "remediation": null
+    },
+    "continueFrom": null,
+    "resumable": null,
+    "retainedEnvelope": null,
+    "taskId": "task-28d3ff16bac1",
+    "state": "succeeded",
+    "runDir": "/work/.claudexor/run",
+    "failure": null,
+    "project": {
+      "kind": "project",
+      "root": "/work/billing-worker",
+      "projectName": "billing-worker",
+      "context": "auto"
+    },
+    "executionRoot": "/work/billing-worker",
+    "mode": "agent",
+    "strategy": null,
+    "prompt": "Retry flaky invoice sync in billing worker",
+    "harnesses": ["openrouter"],
+    "model": "openai/gpt-4o-mini",
+    "review": false,
+    "paidBudget": {
+      "kind": "unlimited"
+    },
+    "spendUsd": null,
+    "spendEstimated": true,
+    "inputTokens": 10,
+    "outputTokens": 10,
+    "cachedInputTokens": null,
+    "inputTokenUsage": {
+      "total_tokens": null,
+      "cache_read_tokens": null,
+      "cache_write_tokens": null
+    },
+    "outputConformance": null,
+    "authRoute": {
+      "requested": "auto",
+      "effective": "api_key",
+      "source": "api_key_env",
+      "reason": "no_native_session_fallback",
+      "harnessId": "openrouter",
+      "attemptId": "a01",
+      "profileId": null,
+      "modelMismatch": null
+    },
+    "access": "workspace_write",
+    "requestedAccess": "workspace_write",
+    "effectiveAccess": "workspace_write",
+    "externalContextPolicy": "auto",
+    "webRequired": false,
+    "webMode": "auto",
+    "webEvidence": {
+      "required": false,
+      "mode": "auto",
+      "effectiveMode": "auto",
+      "attempted": false,
+      "satisfied": false,
+      "status": "none",
+      "tool": null,
+      "target": null,
+      "errorSummary": null,
+      "rawDetailRef": "final/telemetry.yaml",
+      "available": true
+    },
+    "requestRequirements": [
+      {
+        "capability": "browser",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["request.browser"]
+      },
+      {
+        "capability": "path_deny",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["request.deny_paths"]
+      },
+      {
+        "capability": "delegation",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["task.delegation_requested"]
+      }
+    ],
+    "toolPermissionPolicy": {
+      "web": "auto",
+      "allow": [],
+      "deny": []
+    },
+    "outputReadyState": "ready",
+    "toolWarningsTotal": 0,
+    "result": {
+      "kind": "patch",
+      "diffStat": {
+        "files": 1,
+        "additions": 1,
+        "deletions": 1
+      },
+      "blockers": 0,
+      "adopted": null,
+      "applyState": "not_applied",
+      "preTurnSha": null,
+      "postTurnSha": null,
+      "revertAnchorId": null,
+      "revertable": false
+    },
+    "outcomeFacts": {
+      "lifecycle": "succeeded",
+      "noChanges": false,
+      "checks": "not_configured",
+      "review": "not_run",
+      "review_requested": false,
+      "reason": null,
+      "work_state": {
+        "state": "unverified",
+        "source": "absent"
+      }
+    },
+    "waitingOnUser": false,
+    "processScope": null,
+    "route": {
+      "requestedModel": "openai/gpt-4o-mini",
+      "observedModel": "openai/gpt-4o-mini",
+      "harnessId": "openrouter",
+      "verified": true
+    },
+    "routingRationale": {
+      "goal": "auto",
+      "paid_fallback": "when_unavailable",
+      "order": ["openrouter"],
+      "dropped": [],
+      "reason": "declared_order",
+      "entries": [
+        {
+          "harness_id": "openrouter",
+          "billing_knowledge": "metered",
+          "incremental_cost_usd": null,
+          "eligible": true
+        }
+      ]
+    },
+    "rawContext": {
+      "model": "openai/gpt-4o-mini",
+      "estimated_request_tokens": 189438,
+      "budget": {
+        "estimator": "chars_div_4",
+        "basis": "assumed_ceiling",
+        "model": "openai/gpt-4o-mini",
+        "context_window": null,
+        "output_allowance_tokens": 16384,
+        "framing_tokens": 109,
+        "selection_limit_tokens": 200000,
+        "estimated_packet_tokens": 189330,
+        "omitted_for_budget": 2,
+        "mandatory_paths": ["AGENTS.md"]
+      }
+    }
+  },
+  "refusal": {
+    "jobId": "job-run-25d84597cd6c",
+    "runId": "run-25d84597cd6c",
+    "parentRunId": null,
+    "delegatedFromRunId": null,
+    "delegation": {
+      "requested": false,
+      "effective": false,
+      "used": false,
+      "reason": "not_requested",
+      "remediation": null
+    },
+    "continueFrom": null,
+    "resumable": {
+      "cause": "other",
+      "resetsAt": null,
+      "limitWindow": null,
+      "limitEvidence": null,
+      "carriers": [],
+      "limitCode": null,
+      "session": null,
+      "workspace": {
+        "kind": "none",
+        "root": null
+      }
+    },
+    "retainedEnvelope": null,
+    "taskId": "task-2b15f30f881c",
+    "state": "failed",
+    "runDir": "/work/.claudexor/run",
+    "failure": {
+      "rawContextShortfall": {
+        "model": "openai/gpt-4o-mini",
+        "context_window": 128000,
+        "packet_tokens": 314915,
+        "framing_tokens": 119,
+        "output_allowance_tokens": 16384,
+        "mandatory_files": [
+          {
+            "path": "src/billing/ledger/reconciliation.ts",
+            "estimated_tokens": 92975
+          },
+          {
+            "path": "src/billing/ledger/ledger-store.ts",
+            "estimated_tokens": 71765
+          },
+          {
+            "path": "src/billing/refunds/partial-refunds.ts",
+            "estimated_tokens": 48536
+          },
+          {
+            "path": "test/billing/ledger/reconciliation.test.ts",
+            "estimated_tokens": 35407
+          },
+          {
+            "path": "src/billing/ledger/part-1.ts",
+            "estimated_tokens": 6517
+          },
+          {
+            "path": "src/billing/ledger/part-2.ts",
+            "estimated_tokens": 6517
+          },
+          {
+            "path": "src/billing/ledger/part-3.ts",
+            "estimated_tokens": 6517
+          },
+          {
+            "path": "src/billing/ledger/part-4.ts",
+            "estimated_tokens": 6517
+          },
+          {
+            "path": "src/billing/ledger/part-5.ts",
+            "estimated_tokens": 6517
+          },
+          {
+            "path": "src/billing/ledger/part-6.ts",
+            "estimated_tokens": 6517
+          },
+          {
+            "path": "src/billing/ledger/part-7.ts",
+            "estimated_tokens": 6517
+          },
+          {
+            "path": "src/billing/ledger/part-8.ts",
+            "estimated_tokens": 6517
+          },
+          {
+            "path": "src/billing/ledger/part-9.ts",
+            "estimated_tokens": 6517
+          },
+          {
+            "path": "AGENTS.md",
+            "estimated_tokens": 6108
+          }
+        ]
+      },
+      "phase": "harness",
+      "category": "validation",
+      "code": "raw_context_exceeds_window",
+      "harnessId": "openrouter",
+      "attemptId": "a01",
+      "safeMessage": "a01/openrouter: raw_context_exceeds_window: the raw request for \"openai/gpt-4o-mini\" cannot fit its 128000-token context window: the packet needs ~314915 tokens with every optional file omitted (mandatory: AGENTS.md (~6108 tokens), src/billing/ledger/ledger-store.ts (~71765 tokens), src/billing/ledger/part-1.ts (~6517 tokens), src/billing/ledger/part-2.ts (~6517 tokens), src/billing/ledger/part-3.ts (~6517 tokens), src/billing/ledger/part-4.ts (~6517 tokens), src/billing/ledger/part-5.ts (~6517 tokens), src/billing/ledger/part-6.ts (~6517 tokens), src/billing/ledger/part-7.ts (~6517 tokens), src/billing/ledger/part-8.ts (~6517 tokens), src/billing/ledger/part-9.ts (~6517 tokens), src/billing/ledger/reconciliation.ts (~92975 tokens), src/billing/refunds/partial-refunds.ts (~48536 tokens), test/billing/ledger/reconciliation.test.ts (~35407 tokens)), the request framing ~119 and the output allowance 16384 (estimates, chars/4). Choose a model with a larger window, or reduce context.mandatory_files.",
+      "rawDetailRef": "attempts/a01/attempt.yaml",
+      "logRefs": [],
+      "eventRefs": ["events.jsonl"],
+      "runDir": "/work/.claudexor/run",
+      "resetsAt": null,
+      "vendorFailure": null,
+      "poolAttempts": [],
+      "nextActions": [
+        "Choose a model with a larger context window",
+        "Reduce context.mandatory_files in the project's .claudexor/config.yaml",
+        "Or use a harness that reads project files itself"
+      ]
+    },
+    "project": {
+      "kind": "project",
+      "root": "/work/billing-worker",
+      "projectName": "billing-worker",
+      "context": "auto"
+    },
+    "executionRoot": "/work/billing-worker",
+    "mode": "agent",
+    "strategy": null,
+    "prompt": "Refactor the ledger reconciliation so partial refunds post once. Keep the public API.",
+    "harnesses": ["openrouter"],
+    "model": "openai/gpt-4o-mini",
+    "review": false,
+    "paidBudget": {
+      "kind": "unlimited"
+    },
+    "spendUsd": null,
+    "spendEstimated": true,
+    "inputTokens": null,
+    "outputTokens": null,
+    "cachedInputTokens": null,
+    "inputTokenUsage": {
+      "total_tokens": null,
+      "cache_read_tokens": null,
+      "cache_write_tokens": null
+    },
+    "outputConformance": null,
+    "authRoute": {
+      "requested": "auto",
+      "effective": null,
+      "source": null,
+      "reason": "undisclosed",
+      "harnessId": "openrouter",
+      "attemptId": "a01",
+      "profileId": null,
+      "modelMismatch": null
+    },
+    "access": "workspace_write",
+    "requestedAccess": "workspace_write",
+    "effectiveAccess": "workspace_write",
+    "externalContextPolicy": "auto",
+    "webRequired": false,
+    "webMode": "auto",
+    "webEvidence": {
+      "required": false,
+      "mode": "auto",
+      "effectiveMode": "auto",
+      "attempted": false,
+      "satisfied": false,
+      "status": "none",
+      "tool": null,
+      "target": null,
+      "errorSummary": null,
+      "rawDetailRef": "final/telemetry.yaml",
+      "available": true
+    },
+    "requestRequirements": [
+      {
+        "capability": "browser",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["request.browser"]
+      },
+      {
+        "capability": "path_deny",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["request.deny_paths"]
+      },
+      {
+        "capability": "delegation",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["task.delegation_requested"]
+      }
+    ],
+    "toolPermissionPolicy": {
+      "web": "auto",
+      "allow": [],
+      "deny": []
+    },
+    "outputReadyState": "diagnostic",
+    "toolWarningsTotal": 0,
+    "result": {
+      "kind": "none",
+      "diffStat": null,
+      "blockers": 0,
+      "adopted": null,
+      "applyState": "not_applied",
+      "preTurnSha": null,
+      "postTurnSha": null,
+      "revertAnchorId": null,
+      "revertable": false
+    },
+    "outcomeFacts": {
+      "lifecycle": "failed",
+      "noChanges": true,
+      "checks": "not_configured",
+      "review": "not_run",
+      "review_requested": false,
+      "reason": "harness_failed"
+    },
+    "waitingOnUser": false,
+    "processScope": null,
+    "route": {
+      "requestedModel": "openai/gpt-4o-mini",
+      "observedModel": null,
+      "harnessId": null,
+      "verified": false
+    },
+    "routingRationale": {
+      "goal": "auto",
+      "paid_fallback": "when_unavailable",
+      "order": ["openrouter"],
+      "dropped": [],
+      "reason": "declared_order",
+      "entries": [
+        {
+          "harness_id": "openrouter",
+          "billing_knowledge": "metered",
+          "incremental_cost_usd": null,
+          "eligible": true
+        }
+      ]
+    },
+    "rawContext": null
+  },
+  "unsentRetry": {
+    "jobId": "job-probe",
+    "runId": "run-a8d1b2804f13",
+    "parentRunId": null,
+    "delegatedFromRunId": null,
+    "delegation": {
+      "requested": false,
+      "effective": false,
+      "used": false,
+      "reason": "not_requested",
+      "remediation": null
+    },
+    "continueFrom": null,
+    "resumable": {
+      "cause": "transport",
+      "resetsAt": null,
+      "limitWindow": null,
+      "limitEvidence": null,
+      "carriers": [],
+      "limitCode": null,
+      "session": null,
+      "workspace": {
+        "kind": "none",
+        "root": null
+      }
+    },
+    "retainedEnvelope": null,
+    "taskId": "task-b2a96c7d6918",
+    "state": "failed",
+    "runDir": "/work/.claudexor/run",
+    "failure": {
+      "rawContextShortfall": {
+        "model": "vendor/big",
+        "context_window": 50000,
+        "packet_tokens": 68522,
+        "framing_tokens": 105,
+        "output_allowance_tokens": 4096,
+        "mandatory_files": [
+          {
+            "path": "BIG.md",
+            "estimated_tokens": 68223
+          }
+        ]
+      },
+      "phase": "harness",
+      "category": "validation",
+      "code": "raw_context_exceeds_window",
+      "harnessId": "openrouter",
+      "attemptId": "a01",
+      "safeMessage": "a01/openrouter: raw_context_exceeds_window: the raw request for \"vendor/big\" cannot fit its 50000-token context window: the packet needs ~68522 tokens with every optional file omitted (mandatory: BIG.md (~68223 tokens)), the request framing ~105 and the output allowance 4096 (estimates, chars/4). Choose a model with a larger window, or reduce context.mandatory_files.\n\nAccount attempts:\n- openrouter/default · vendor/big · a01 try 1 · pre progress · unknown_harness_error: fetch failed",
+      "rawDetailRef": "attempts/a01/attempt.yaml",
+      "logRefs": [],
+      "eventRefs": ["events.jsonl"],
+      "runDir": "/work/.claudexor/run",
+      "resetsAt": null,
+      "vendorFailure": null,
+      "poolAttempts": [
+        {
+          "harnessId": "openrouter",
+          "profileId": null,
+          "profileDisplayName": null,
+          "requestedModel": "vendor/big",
+          "attemptId": "a01",
+          "tryIndex": 0,
+          "observedAt": "2026-10-29T11:11:37.226Z",
+          "phase": "pre_progress",
+          "category": "unknown_harness_error",
+          "error": "fetch failed",
+          "vendorFailure": null
+        }
+      ],
+      "nextActions": [
+        "Choose a model with a larger context window",
+        "Reduce context.mandatory_files in the project's .claudexor/config.yaml",
+        "Or use a harness that reads project files itself"
+      ]
+    },
+    "project": {
+      "kind": "project",
+      "root": "/work/raw-probe",
+      "projectName": "raw-probe",
+      "context": "auto"
+    },
+    "executionRoot": "/work/raw-probe",
+    "mode": "agent",
+    "strategy": null,
+    "prompt": "Update the README heading.",
+    "review": false,
+    "paidBudget": {
+      "kind": "unlimited"
+    },
+    "spendUsd": null,
+    "spendEstimated": true,
+    "inputTokens": null,
+    "outputTokens": null,
+    "cachedInputTokens": null,
+    "inputTokenUsage": {
+      "total_tokens": null,
+      "cache_read_tokens": null,
+      "cache_write_tokens": null
+    },
+    "outputConformance": null,
+    "authRoute": {
+      "requested": "auto",
+      "effective": "api_key",
+      "source": "api_key_env",
+      "reason": "no_native_session_fallback",
+      "harnessId": "openrouter",
+      "attemptId": "a01",
+      "profileId": null,
+      "modelMismatch": null
+    },
+    "access": "workspace_write",
+    "requestedAccess": "workspace_write",
+    "effectiveAccess": "workspace_write",
+    "externalContextPolicy": "auto",
+    "webRequired": false,
+    "webMode": "auto",
+    "webEvidence": {
+      "required": false,
+      "mode": "auto",
+      "effectiveMode": "auto",
+      "attempted": false,
+      "satisfied": false,
+      "status": "none",
+      "tool": null,
+      "target": null,
+      "errorSummary": null,
+      "rawDetailRef": "final/telemetry.yaml",
+      "available": true
+    },
+    "requestRequirements": [
+      {
+        "capability": "browser",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["request.browser"]
+      },
+      {
+        "capability": "path_deny",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["request.deny_paths"]
+      },
+      {
+        "capability": "delegation",
+        "harness_id": "openrouter",
+        "eligible": false,
+        "requested": false,
+        "effective": false,
+        "reason": "not_requested",
+        "evidence_refs": ["task.delegation_requested"]
+      }
+    ],
+    "toolPermissionPolicy": {
+      "web": "auto",
+      "allow": [],
+      "deny": []
+    },
+    "outputReadyState": "diagnostic",
+    "toolWarningsTotal": 0,
+    "result": {
+      "kind": "none",
+      "diffStat": null,
+      "blockers": 0,
+      "adopted": null,
+      "applyState": "not_applied",
+      "preTurnSha": null,
+      "postTurnSha": null,
+      "revertAnchorId": null,
+      "revertable": false
+    },
+    "outcomeFacts": {
+      "lifecycle": "failed",
+      "noChanges": true,
+      "checks": "not_configured",
+      "review": "not_run",
+      "review_requested": false,
+      "reason": "harness_failed"
+    },
+    "waitingOnUser": false,
+    "processScope": null,
+    "route": {
+      "requestedModel": null,
+      "observedModel": null,
+      "harnessId": null,
+      "verified": false
+    },
+    "routingRationale": {
+      "goal": "auto",
+      "paid_fallback": "when_unavailable",
+      "order": ["openrouter"],
+      "dropped": [],
+      "reason": "declared_order",
+      "entries": [
+        {
+          "harness_id": "openrouter",
+          "billing_knowledge": "metered",
+          "incremental_cost_usd": null,
+          "eligible": true
+        }
+      ]
+    },
+    "rawContext": null
+  }
+}

@@ -34,6 +34,9 @@ extension AppModel {
         if task.routeProof == .unverified, existing.routeProof != .unverified { task.routeProof = existing.routeProof }
         task.authRoute = task.authRoute ?? existing.authRoute
         task.failureCategory = task.failureCategory ?? existing.failureCategory
+        task.failureCode = task.failureCode ?? existing.failureCode
+        task.failureRecord = task.failureRecord ?? existing.failureRecord
+        task.rawContext = task.rawContext ?? existing.rawContext
         // Delegation lineage/outcome rides the list summary in current engines.
         // Preserve the last engine-owned projection across a skewed/older
         // summary rather than making a durable warning or child link flicker.

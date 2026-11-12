@@ -1,9 +1,9 @@
 /**
  * Run-artifact serving routes (list/fetch for run trees and produced project
  * outputs), extracted from the daemon-server shell. One owner of artifact
- * MIME/caps/redaction policy and of the honest post-GC answer: a
- * retention-reclaimed run serves a typed 410 tombstone, never a mysterious
- * 404 (W3.6).
+ * MIME/caps policy (bytes are served exactly, INV-146) and of the honest
+ * post-GC answer: a retention-reclaimed run serves a typed 410 tombstone,
+ * never a mysterious 404 (W3.6).
  */
 import type { ServerResponse } from "node:http";
 import { existsSync } from "node:fs";

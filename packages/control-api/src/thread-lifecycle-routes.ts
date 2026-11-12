@@ -1,3 +1,4 @@
+import { runDeliverableOf } from "./run-object-delivery.js";
 import { readCommandIds } from "./command-reads.js";
 import type { CommandListQuery } from "@claudexor/schema";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -5,10 +6,12 @@ import {
   ControlThread,
   ControlThreadApplyRequest,
   ControlThreadApplyResponse,
+  ThreadRetireAbandonRequest,
+  ThreadRetireRequest,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues } from "@claudexor/util";
 import type { DaemonControlApiOptions, DaemonRunRecord } from "./daemon-server.js";
 import { projectThread } from "./thread-projection.js";
+import { readLifetime } from "./request-liveness.js";
 import type { ThreadTurnRouteCtx } from "./thread-turn-routes.js";
 import type { verifyAndDeliver } from "@claudexor/delivery";
 import {
@@ -25,6 +28,7 @@ export interface ThreadLifecycleRouteCtx {
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown): void;
   requiredIdempotencyKey(req: IncomingMessage): string;
+  stopping?: AbortSignal;
   runIdempotentDelivery<T>(input: {
     params: unknown;
     key: string;
@@ -117,6 +121,56 @@ export async function handleThreadLifecycleRoutes(
     return true;
   }
 
+  const retireMatch = /^\/threads\/([^/]+)\/retire$/.exec(path);
+  const abandonMatch = /^\/threads\/([^/]+)\/retire\/abandon$/.exec(path);
+  if ((method === "POST" && retireMatch) || (method === "POST" && abandonMatch)) {
+    const threadExport = ctx.services?.threadExport;
+    if (!threadExport) {
+      ctx.json(res, 501, { error: "thread retirement is not supported by this build" });
+      return true;
+    }
+    const threadId = decodeURIComponent((retireMatch ?? abandonMatch)![1] as string);
+    const lifetime = readLifetime(req, res, ctx.stopping);
+    // The same per-thread chain as every thread mutation: a repeated operation
+    // waits for one still in flight, then finds its bound outcome.
+    await chainThreadMutation(ctx.turnCtx.threadTurnChains, threadId, async () => {
+      try {
+        const raw = await ctx.readBody(req);
+        const abandon = abandonMatch ? ThreadRetireAbandonRequest.parse(raw) : null;
+        const retire = abandon ? null : ThreadRetireRequest.parse(raw);
+        try {
+          ctx.json(
+            res,
+            200,
+            abandon
+              ? threadExport.abandonThreadRetirement(threadId, abandon.operationId)
+              : await threadExport.retireThread(threadId, retire!, lifetime.signal, ctx.stopping),
+          );
+        } catch (error) {
+          // Untyped means infrastructure: the outcome stays unknown, never a
+          // client's mistake. A caller repeats this same operation. A new error
+          // carries that answer, since an abort's own `code` cannot be set.
+          ctx.requestError(
+            res,
+            typeof (error as { status?: unknown }).status === "number"
+              ? error
+              : Object.assign(
+                  new Error(error instanceof Error ? error.message : String(error), {
+                    cause: error,
+                  }),
+                  { status: 503, code: "thread_retirement_unavailable", retryable: true },
+                ),
+          );
+        }
+      } catch (error) {
+        ctx.requestError(res, error);
+      } finally {
+        lifetime.dispose();
+      }
+    });
+    return true;
+  }
+
   const threadApplyMatch = /^\/threads\/([^/]+)\/apply$/.exec(path);
   if (!(method === "POST" && threadApplyMatch)) return false;
   const detail = ctx.services?.threadDetail;
@@ -136,7 +190,6 @@ export async function handleThreadLifecycleRoutes(
   await chainThreadMutation(ctx.turnCtx.threadTurnChains, threadId, async () => {
     try {
       const body = ControlThreadApplyRequest.parse(await ctx.readBody(req));
-      assertNoInlineSecretValues(body);
       const snapshot = await detail(threadId);
       const thread = snapshot.thread as {
         repo?: { root?: string } | null;
@@ -187,14 +240,20 @@ export async function handleThreadLifecycleRoutes(
             code: "thread_run_unverifiable",
           });
         }
-        const patch = ctx.readPatch(record);
-        if (patch === null) {
+        // An object result (#535) is evidence by its trees; its view may be absent.
+        const delivery = runDeliverableOf(record);
+        if (delivery === null) {
           throw Object.assign(new Error(`thread run ${runId} is missing required patch evidence`), {
             status: 409,
             code: "thread_run_unverifiable",
           });
         }
-        if (!patch.trim()) {
+        const { patch, deliverable } = delivery;
+        const changed =
+          typeof deliverable === "string"
+            ? patch.trim().length > 0
+            : deliverable.result.base_tree !== deliverable.result.candidate_tree;
+        if (!changed) {
           if (record.state === "succeeded") continue;
           throw Object.assign(new Error(`thread run ${runId} is ${record.state}`), {
             status: 409,

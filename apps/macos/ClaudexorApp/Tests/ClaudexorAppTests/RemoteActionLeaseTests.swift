@@ -141,13 +141,9 @@ import Testing
         let connection = RemoteConnection(id: UUID(), sshAlias: "prompt-host")
         model.remoteConnections = [connection]
         let oldLease = model.beginRemoteAction(.harnessInstall, connectionID: connection.id)!
-        let oldPrompt = RemoteHarnessInstallPrompt(
-            lease: oldLease, harness: "codex", runtimeTarget: "versions/test", command: "old", installLocation: "bin",
-            pinnedVersion: "1", verification: .releaseVerified, versionBinding: nil)
+        let oldPrompt = remoteInstallTestPrompt(lease: oldLease, harness: "codex", command: "old")
         let newLease = model.beginRemoteAction(.harnessInstall, connectionID: connection.id)!
-        let newPrompt = RemoteHarnessInstallPrompt(
-            lease: newLease, harness: "codex", runtimeTarget: "versions/test", command: "new", installLocation: "bin",
-            pinnedVersion: "2", verification: .releaseVerified, versionBinding: nil)
+        let newPrompt = remoteInstallTestPrompt(lease: newLease, harness: "codex", command: "new")
         model.remoteHarnessInstallPrompt = newPrompt
 
         model.dismissRemoteHarnessInstallPrompt(oldPrompt)
@@ -162,9 +158,7 @@ import Testing
         let connection = RemoteConnection(id: UUID(), sshAlias: "accept-host")
         model.remoteConnections = [connection]
         let lease = model.beginRemoteAction(.harnessInstall, connectionID: connection.id)!
-        let prompt = RemoteHarnessInstallPrompt(
-            lease: lease, harness: "codex", runtimeTarget: "versions/test", command: "install", installLocation: "bin",
-            pinnedVersion: "1", verification: .releaseVerified, versionBinding: nil)
+        let prompt = remoteInstallTestPrompt(lease: lease, harness: "codex", command: "install")
         model.remoteHarnessInstallPrompt = prompt
 
         #expect(model.acceptRemoteHarnessInstallPrompt(prompt))
@@ -178,68 +172,20 @@ import Testing
     }
 
     @MainActor
-    @Test func remoteInstallDisclosureDistinguishesEveryVerificationClass() {
+    @Test func remoteInstallDisclosureNamesCommandsHomeAndCurrentOrExactTarget() {
         let model = AppModel(client: nil, requestNotificationAuthorization: false)
-        let connection = RemoteConnection(id: UUID(), sshAlias: "verification-host")
+        let connection = RemoteConnection(id: UUID(), sshAlias: "disclosure-host")
         model.remoteConnections = [connection]
         let lease = model.beginRemoteAction(.harnessInstall, connectionID: connection.id)!
-        func prompt(
-            _ verification: RemoteHarnessInstallVerification,
-            pin: String?
-        ) -> RemoteHarnessInstallPrompt {
-            RemoteHarnessInstallPrompt(
-                lease: lease, harness: "tool", runtimeTarget: "versions/test", command: "install tool",
-                installLocation: "~/.local/bin", pinnedVersion: pin,
-                verification: verification, versionBinding: nil)
-        }
-
-        let verified = RemoteHarnessInstallSection.disclosureText(
-            prompt(.releaseVerified, pin: "1.2.3"), model: model)
-        let deterministic = RemoteHarnessInstallSection.disclosureText(
-            prompt(.deterministicOnly, pin: "4.5.6"), model: model)
-        let observed = RemoteHarnessInstallSection.disclosureText(
-            prompt(.humanObserved, pin: nil), model: model)
-
-        #expect(verified.contains("this release was verified against"))
-        #expect(verified.contains("Selected version: 1.2.3"))
-        #expect(deterministic.contains("deterministic install target"))
-        #expect(deterministic.contains("not covered by recorded verification fixtures"))
-        #expect(deterministic.contains("Selected version: 4.5.6"))
-        #expect(!deterministic.contains("this release was verified against"))
-        #expect(observed.contains("No version pin"))
-        #expect(observed.contains("runs in the embedded terminal where you watch it"))
-    }
-
-    /// The unpinnable branch named "Cursor" outright, so an Antigravity install
-    /// asked the user to approve a paragraph about the wrong vendor — in the
-    /// most security-sensitive dialog in the app. Every vendor noun here comes
-    /// from `HarnessFamily.label`, which also keeps `agy` from reading "Agy".
-    @MainActor
-    @Test func remoteInstallDisclosureNamesTheHarnessItIsActuallyInstalling() {
-        let model = AppModel(client: nil, requestNotificationAuthorization: false)
-        let connection = RemoteConnection(id: UUID(), sshAlias: "naming-host")
-        model.remoteConnections = [connection]
-        let lease = model.beginRemoteAction(.harnessInstall, connectionID: connection.id)!
-        func observed(_ harness: String) -> String {
-            RemoteHarnessInstallSection.disclosureText(
-                RemoteHarnessInstallPrompt(
-                    lease: lease, harness: harness, runtimeTarget: "versions/test",
-                    command: "curl … | /bin/sh", installLocation: "~/.local/bin",
-                    pinnedVersion: nil, verification: .humanObserved, versionBinding: nil),
-                model: model)
-        }
-
-        let agy = observed("agy")
-        #expect(agy.contains("Antigravity ships no pinnable npm artifact"))
-        #expect(!agy.contains("Cursor"))
-        #expect(!agy.contains("Agy"))
-
-        // The other script vendor still names itself.
-        #expect(observed("cursor").contains("Cursor ships no pinnable npm artifact"))
-
-        // Every installable harness renders its product label, never its id.
-        for harness in installableRemoteHarnesses {
-            #expect(observed(harness).contains(HarnessFamily(rawValue: harness).label))
+        for harness in ["agy", "cursor", "future-vendor"] {
+            let current = RemoteHarnessInstallSection.disclosureText(
+                remoteInstallTestPrompt(lease: lease, harness: harness), model: model)
+            #expect(current.contains(HarnessFamily(rawValue: harness).label))
+            #expect(current.contains("Vendor's current version at execution"))
+            #expect(current.contains("Installation HOME: /fixture/home"))
+            let exact = RemoteHarnessInstallSection.disclosureText(
+                remoteInstallTestPrompt(lease: lease, harness: harness, version: "1.2.3"), model: model)
+            #expect(exact.contains("Exact vendor version: 1.2.3"))
         }
     }
 

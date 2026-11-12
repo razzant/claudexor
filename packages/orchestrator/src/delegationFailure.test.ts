@@ -5,15 +5,18 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
 import { projectRuntimeDir, sha256 } from "@claudexor/util";
-import { readRevertAnchor } from "@claudexor/workspace";
 import type { CandidateRun } from "./candidateEvidence.js";
 import { createAttemptTelemetry } from "./attemptTelemetry.js";
-import { persistFailedInPlaceWorkProduct } from "./delegationFailure.js";
+import {
+  dominantRaceCandidateFailure,
+  persistFailedInPlaceWorkProduct,
+  raceSummaryDisclosure,
+} from "./delegationFailure.js";
 
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("uncaptured in-place receipt", () => {
   it("records manual cleanup without a patch, anchor, or false revertability", async () => {
@@ -46,6 +49,7 @@ describe("uncaptured in-place receipt", () => {
       log,
       paths,
       execRoot: repo,
+      projectRoot: repo,
       preTurnSha: "a".repeat(40),
       taskId: "task-capture-refusal",
       mode: "agent",
@@ -63,7 +67,7 @@ describe("uncaptured in-place receipt", () => {
     expect(readFileSync(paths.eventsPath, "utf8")).toContain('"manual_cleanup_required":true');
   });
 
-  it("publishes a failed live candidate's secret-like patch as a redacted copy, never a refusal", async () => {
+  it("publishes a failed live candidate's credential-shaped patch exactly, never a refusal (INV-146)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "claudexor-failed-live-secretlike-"));
     dirs.push(repo, projectRuntimeDir(repo));
     const store = new ArtifactStore(repo, { claudexorDir: join(repo, "runtime") });
@@ -94,6 +98,7 @@ describe("uncaptured in-place receipt", () => {
       log,
       paths,
       execRoot: repo,
+      projectRoot: repo,
       preTurnSha: null,
       postTurnSha: null,
       taskId: "task-failed-live",
@@ -101,15 +106,104 @@ describe("uncaptured in-place receipt", () => {
       kind: "patch",
     });
 
-    const saved = readFileSync(join(paths.finalDir, "patch.diff"), "utf8");
-    expect(saved).not.toContain(token);
-    expect(saved).toContain("+[redacted]");
+    expect(readFileSync(join(paths.finalDir, "patch.diff"), "utf8")).toBe(diff);
     const receipt = readFileSync(join(paths.finalDir, "work_product.yaml"), "utf8");
-    expect(receipt).not.toContain(token);
-    expect(receipt).toContain("persisted_patch: redacted");
+    expect(receipt).not.toContain("persisted_patch");
+    expect(receipt).not.toContain("exact_patch_object");
     expect(receipt).toContain(`patch_sha256: ${sha256(diff)}`);
-    expect(receipt).toContain(`exact_patch_object: ${sha256(diff)}`);
     expect(receipt).toContain("apply_state: applied_review_blocked");
-    expect(readRevertAnchor(repo, sha256(diff))).toBe(diff);
+  });
+});
+
+// #563 owner decision A: in a directory race, a candidate whose isolated copy
+// could not be retained durably is excluded, never fatal for a healthy sibling.
+// Every other dominant failure keeps its precedence.
+describe("race precedence of a capture refusal", () => {
+  const candidate = (
+    attemptId: string,
+    captureRefusal?: CandidateRun["captureRefusal"],
+    telemetry = createAttemptTelemetry("auto", false),
+  ) =>
+    ({
+      attemptId,
+      harnessId: `h-${attemptId}`,
+      label: `Candidate ${attemptId}`,
+      diff: "",
+      gates: [],
+      cost: 0,
+      errored: captureRefusal !== undefined,
+      costEstimated: false,
+      errors: captureRefusal ? [captureRefusal.detail] : [],
+      telemetry,
+      ...(captureRefusal ? { captureRefusal } : {}),
+    }) satisfies CandidateRun;
+  const retentionFailed = {
+    disposition: "manual_cleanup" as const,
+    phase: "artifact_security" as const,
+    sourceRoot: "/runtime/workspaces/task/a01/tree",
+    detail:
+      "Directory output capture failed … held by this process only (durable retention could not be recorded).",
+    retentionFailure: { code: "capture_failed" as const, message: "ENOTEMPTY: rename" },
+  };
+  const healthy = candidate("a02");
+
+  it("excludes a directory copy whose retention failed instead of failing the race", () => {
+    expect(
+      dominantRaceCandidateFailure([candidate("a01", retentionFailed), healthy], {
+        workspaceKind: "directory",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps a Git source whose retention failed race-fatal (unchanged)", () => {
+    const git = candidate("a01", { ...retentionFailed, phase: "workspace" });
+    expect(dominantRaceCandidateFailure([git, healthy], { workspaceKind: "git" })).toBe(git);
+    expect(dominantRaceCandidateFailure([git, healthy], {})).toBe(git);
+  });
+
+  it("keeps an in-place directory refusal race-fatal (unchanged)", () => {
+    const live = candidate("a01", {
+      disposition: "manual_cleanup",
+      phase: "artifact_security",
+      detail: "Directory output capture failed … Direct effects require inspection.",
+    });
+    expect(dominantRaceCandidateFailure([live, healthy], { workspaceKind: "directory" })).toBe(
+      live,
+    );
+  });
+
+  it("lets an injected Delegate belt failure lead over every capture refusal (unchanged)", () => {
+    const telemetry = createAttemptTelemetry("auto", false);
+    telemetry.delegationBelt.requested = true;
+    telemetry.delegationBelt.failed = true;
+    const belt = candidate("a03", undefined, telemetry);
+    expect(
+      dominantRaceCandidateFailure([candidate("a01", retentionFailed), healthy, belt], {
+        workspaceKind: "directory",
+      }),
+    ).toBe(belt);
+  });
+
+  it("names every excluded sibling's exact receipt beside the winner in the summary", () => {
+    const refused = candidate("a01", retentionFailed);
+    expect(raceSummaryDisclosure(healthy, [refused, healthy])).toBe(
+      `- Excluded Candidate a01 (a01, h-a01): ${retentionFailed.detail}`,
+    );
+    expect(raceSummaryDisclosure(healthy, [healthy])).toBeNull();
+  });
+
+  it("names an errored winner's own cause first, and never a loser's (#621)", () => {
+    const telemetry = createAttemptTelemetry("auto", false);
+    telemetry.vendorFailure = { code: "server_overloaded", message: "at capacity", source: "x" };
+    const failed = {
+      ...candidate("a01", undefined, telemetry),
+      errored: true,
+      errors: ["stopped"],
+    };
+    const loser = { ...candidate("a03"), errored: true, errors: ["the loser's own error"] };
+    expect(raceSummaryDisclosure(failed, [failed, loser])).toBe(
+      '- Failure: a01/h-a01: stopped (vendor x: server_overloaded, "at capacity")',
+    );
+    expect(raceSummaryDisclosure(healthy, [loser, healthy])).toBeNull();
   });
 });

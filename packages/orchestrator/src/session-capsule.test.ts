@@ -14,7 +14,7 @@ import {
 } from "./session-capsule.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true })));
+afterEach(() => roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function capsule(over: Partial<SessionCapsule> = {}): SessionCapsule {
   return {

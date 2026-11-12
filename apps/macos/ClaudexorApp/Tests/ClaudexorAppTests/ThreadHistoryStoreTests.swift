@@ -138,9 +138,12 @@ struct ThreadHistoryStoreTests {
         source.transform = { json in
             var rows = json["turns"] as! [[String: Any]]
             for index in rows.indices {
-                var run = rows[index]["run"] as! [String: Any]
-                run["runFacts"] = String(repeating: "x", count: 700_000)
-                rows[index]["run"] = run
+                var turn = rows[index]
+                // Keep the cache-bound test grounded in retained user content,
+                // rather than the optional receipt field that the history model
+                // deliberately ignores.
+                turn["prompt"] = String(repeating: "x", count: 700_000)
+                rows[index] = turn
             }
             json["turns"] = rows
         }

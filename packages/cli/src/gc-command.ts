@@ -14,8 +14,10 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
   if (flagBool(args, "last")) {
     const connection = await connectDaemonIfRunning();
     if (!connection) throw new Error("Daemon is not running; no last retention pass is available.");
-    const { addr } = connection;
-    const response = await controlApiFetch(addr, "/maintenance/gc");
+    const { addr, engine } = connection;
+    const lockstep = engine.engineVersion === CLAUDEXOR_VERSION;
+    const report = lockstep ? "?retention_report=true" : "";
+    const response = await controlApiFetch(addr, `/maintenance/gc${report}`);
     if (!response.ok)
       throw new Error(
         response.status === 404
@@ -23,13 +25,27 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
           : `gc --last failed (${response.status}): ${await response.text()}`,
       );
     const result = ControlGcLastResponse.parse(await response.json());
-    if (json) printJson(result);
+    const output =
+      !lockstep && result.last
+        ? {
+            ...result,
+            last: (({ last_completed_at: _completed, failed_or_held_streak: _streak, ...last }) =>
+              last)(result.last),
+          }
+        : result;
+    if (json) printJson(output);
     else if (!result.last) print(result.diagnostic ?? "No retention pass has been recorded.");
     else {
       const last = result.last;
-      print(
-        `${last.outcome}: ${last.started_at} to ${last.finished_at}; freed ${last.freed_bytes} bytes`,
-      );
+      const freed =
+        last.effects === "unknown"
+          ? `freed at least ${last.freed_bytes} bytes; effects before it stopped are unknown`
+          : `freed ${last.freed_bytes} bytes`;
+      print(`${last.outcome}: ${last.started_at} to ${last.finished_at}; ${freed}`);
+      if (lockstep)
+        print(
+          `last completed: ${last.last_completed_at ?? "unknown"}; failed/held streak: ${last.failed_or_held_streak}`,
+        );
       print(
         `kept ${Object.entries(last.kept)
           .map(([reason, count]) => `${reason}=${count}`)
@@ -54,7 +70,7 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
   const lockstep = engine.engineVersion === CLAUDEXOR_VERSION;
   const response = await controlApiFetch(addr, "/maintenance/gc", {
     method: "POST",
-    headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({ dry_run: dryRun, ...(lockstep ? GC_LOCKSTEP_REPORTS : {}) }),
   });
   if (!response.ok) throw new Error(`gc failed (${response.status}): ${await response.text()}`);
@@ -63,7 +79,11 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
     printJson(receipt);
     return 0;
   }
-  const verb = receipt.dry_run ? "would free" : "freed";
+  const verb = receipt.dry_run
+    ? "would free"
+    : receipt.effects === "unknown"
+      ? "freed at least"
+      : "freed";
   const mb = (receipt.freed_bytes / (1024 * 1024)).toFixed(1);
   print(
     `${verb} ${mb} MiB: ${receipt.deleted_runs.length} run tree(s), ${receipt.deleted_reviews.length} review tree(s) ` +

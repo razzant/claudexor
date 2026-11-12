@@ -85,8 +85,13 @@ export function candidatesFor(runDir: string, decision: DecisionRecord | null): 
             ? review.final_review_clean
             : null,
       winner: decision?.winner === raw.attempt_id,
+      // Unknown is not zero: a Git result with no rendered patch has no line counts.
       diffstat:
-        raw.diffstat && typeof raw.diffstat === "object"
+        raw.diffstat &&
+        typeof raw.diffstat === "object" &&
+        typeof raw.diffstat.files === "number" &&
+        typeof raw.diffstat.additions === "number" &&
+        typeof raw.diffstat.deletions === "number"
           ? {
               files: numberOr(raw.diffstat.files, 0),
               additions: numberOr(raw.diffstat.additions, 0),

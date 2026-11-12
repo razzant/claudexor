@@ -46,6 +46,20 @@ describe("operation catalog wording (QA-039 / QA-049)", () => {
     expect(remove?.summary.toLowerCase()).toMatch(/409|refused/);
   });
 
+  it("advertises the fixed-window route-health read as a global parameterless fact", () => {
+    const health = op("GET", "/v2/daemon/route-health");
+    expect(health).toMatchObject({
+      mutability: "read_only",
+      requestSchema: null,
+      responseSchema: "ControlRouteHealth",
+      applicability: "global",
+      parameters: [],
+      idempotency: "natural",
+    });
+    expect(health?.summary).toContain("seven days");
+    expect(health?.summary.toLowerCase()).not.toMatch(/threshold.*(alarm|alert)|alarm/);
+  });
+
   it("advertises addressed run timer read and revision-guarded mutation", () => {
     const read = op("GET", "/v2/runs/:id/time-limit");
     const patch = op("PATCH", "/v2/runs/:id/time-limit");
@@ -62,5 +76,16 @@ describe("operation catalog wording (QA-039 / QA-049)", () => {
       idempotency: "none",
     });
     expect(patch?.summary).toContain("expected revision");
+  });
+
+  it("advertises the typed taken decision for captured terminal patches", () => {
+    const decision = op("POST", "/v2/runs/:id/decision");
+    expect(decision).toMatchObject({
+      requestSchema: "ControlRunDecisionRequest",
+      responseSchema: "ControlRunDecisionResponse",
+      idempotency: "key_required",
+    });
+    expect(decision?.summary).toMatch(/taken/);
+    expect(decision?.summary).toMatch(/captured_result/);
   });
 });

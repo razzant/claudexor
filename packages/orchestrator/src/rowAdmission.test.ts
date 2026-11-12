@@ -24,7 +24,7 @@ function reapMk(prefix: string): string {
 }
 afterAll(() => {
   for (const dir of reapDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 async function initRepo(): Promise<string> {
   const repo = reapMk("claudexor-row-admission-");
@@ -82,10 +82,13 @@ function status(profileId: string, state: RowState): CredentialProfileStatus {
 
 /** A harness whose DEFAULT route is never ready (Cursor: no host login is
  * used), so only its account rows can admit the lane. */
+type ProbeCall = { profileId: string; signal: AbortSignal | undefined; options: unknown };
+
 function stubAdapter(
   rows: Record<string, RowState>,
   spawns: string[],
   unpinned: boolean[],
+  probes: ProbeCall[] = [],
 ): HarnessAdapter {
   const id = "stub";
   return {
@@ -107,7 +110,8 @@ function stubAdapter(
         reasons: [DEFAULT_LOGIN_ADVICE],
       });
     },
-    async probeCredentialProfile(profile) {
+    async probeCredentialProfile(profile, signal, options) {
+      probes.push({ profileId: profile.profile_id, signal, options });
       return status(profile.profile_id, rows[profile.profile_id] ?? "unknown");
     },
     async *run(spec) {
@@ -122,7 +126,12 @@ function stubAdapter(
   };
 }
 
-async function ask(rows: Record<string, RowState>, registered: string[], pin?: string) {
+async function ask(
+  rows: Record<string, RowState>,
+  registered: string[],
+  pin?: string,
+  signal?: AbortSignal,
+) {
   const configDir = reapMk("claudexor-row-admission-config-");
   const previous = process.env.CLAUDEXOR_CONFIG_DIR;
   process.env.CLAUDEXOR_CONFIG_DIR = configDir;
@@ -143,8 +152,9 @@ async function ask(rows: Record<string, RowState>, registered: string[], pin?: s
   try {
     const spawns: string[] = [];
     const unpinned: boolean[] = [];
+    const probes: ProbeCall[] = [];
     const res = await new Orchestrator({
-      registry: new Map([["stub", stubAdapter(rows, spawns, unpinned)]]),
+      registry: new Map([["stub", stubAdapter(rows, spawns, unpinned, probes)]]),
       reviewers: [],
     }).run({
       repoRoot: await initRepo(),
@@ -152,8 +162,9 @@ async function ask(rows: Record<string, RowState>, registered: string[], pin?: s
       mode: "ask",
       harnesses: ["stub"],
       ...(pin ? { credentialProfileId: pin } : {}),
+      ...(signal ? { signal } : {}),
     });
-    return { spawns, unpinned, lifecycle: res.lifecycle, summary: res.summary ?? "" };
+    return { spawns, unpinned, probes, lifecycle: res.lifecycle, summary: res.summary ?? "" };
   } finally {
     if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = previous;
@@ -225,6 +236,29 @@ describe("row admission refusal names observed row states (#363)", () => {
     const pooled = await ask({ a: "ready", b: "ready" }, ["a", "b"]);
     expect(pooled.spawns).toEqual(["a"]);
     expect(pooled.unpinned).toEqual([true]);
+  });
+
+  it("the pin's admission probe carries the pin fact and the run's signal; pool probes keep the ordinary wait (#532)", async () => {
+    const run = new AbortController();
+    const pinned = await ask({ a: "ready", b: "ready" }, ["a", "b"], "a", run.signal);
+    expect(pinned.spawns).toEqual(["a"]);
+    // Admission asks with the pin fact; a later read reuses that answer.
+    expect(pinned.probes[0]?.profileId).toBe("a");
+    expect(pinned.probes[0]?.options).toEqual({ pinned: true });
+    expect(pinned.probes[0]?.signal).toBe(run.signal);
+    const pooled = await ask({ a: "unknown", b: "ready" }, ["a", "b"], undefined, run.signal);
+    expect(pooled.spawns).toEqual(["b"]);
+    const admission = pooled.probes.filter((call) => call.signal === run.signal);
+    expect(admission.map((call) => call.profileId)).toEqual(["a", "b"]);
+    expect(admission.every((call) => call.options === undefined)).toBe(true);
+  });
+
+  it("a run cancelled during the pin's admission ends cancelled and dispatches nothing (#532)", async () => {
+    const run = new AbortController();
+    run.abort();
+    const res = await ask({ a: "ready" }, ["a"], "a", run.signal);
+    expect(res.lifecycle).toBe("cancelled");
+    expect(res.spawns).toEqual([]);
   });
 
   it("with no registered row, the default route's doctor verdict still speaks", async () => {

@@ -9,6 +9,7 @@ export function resourceRefreshEvidence(resources: readonly AccountResourceObser
   return resources.flatMap((snapshot) => {
     const declaration = Object.entries(ACCOUNT_RESOURCE_REFRESH_SOURCES).find(
       ([source, entry]) =>
+        entry.credential === "account" &&
         entry.harness === snapshot.target.harness &&
         entry.facets.every((key) => snapshot[key]?.source === source),
     );

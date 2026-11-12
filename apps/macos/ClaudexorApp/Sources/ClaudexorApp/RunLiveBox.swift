@@ -117,19 +117,38 @@ extension AppModel {
         return box
     }
 
-    /// Live-first transcript blocks (box while streaming, folded store after).
+    /// The snapshot's engine receipts (`workspace.prepared`) into the visible
+    /// transcript: a restored or re-attached run resumes its stream after the
+    /// snapshot's last seq, so the SSE fold never sees them. Same block id as
+    /// the live fold, so a receipt seen both ways shows once; a generic row
+    /// (the server could not read the payload) adds nothing.
+    /// A remote run folds into its own location-keyed reducer, never the local maps.
+    func foldTimelineNotices(_ runId: String, _ timeline: [TimelineEvent], at location: ExecutionLocationID = .local) {
+        let notices = timeline.compactMap { row -> (id: String, notice: TranscriptNotice)? in
+            guard row.type == "workspace.prepared", row.title == TranscriptNotice.preparedTitle,
+                  let attempt = row.attemptId, let detail = row.detail else { return nil }
+            return (TranscriptNotice.preparedId(attemptId: attempt),
+                    TranscriptNotice(title: row.title, text: detail, warning: row.severity == "warning"))
+        }
+        guard !notices.isEmpty else { return }
+        let key = RunDetailLoadKey(locationID: location, runId: runId)
+        var transcript = location != .local ? remoteTranscripts[key] ?? TranscriptReducer()
+            : liveBoxes[runId]?.transcript ?? transcripts[runId] ?? TranscriptReducer()
+        for item in notices.reversed() { transcript.applyNotice(id: item.id, item.notice, atStart: true) }
+        if location != .local { remoteTranscripts[key] = transcript }
+        else if let box = liveBoxes[runId] { box.transcript = transcript } else { transcripts[runId] = transcript }
+    }
+
+    /// The transcript a turn card at `location` shows: a local run's live box or
+    /// folded store, a remote run's receipts only. A same-id run elsewhere never answers.
+    func transcript(_ runId: String, at location: ExecutionLocationID) -> TranscriptReducer? {
+        location == .local ? liveBoxes[runId]?.transcript ?? transcripts[runId]
+            : remoteTranscripts[RunDetailLoadKey(locationID: location, runId: runId)]
+    }
+
+    /// Live-first LOCAL transcript blocks (box while streaming, folded store after).
     func transcriptBlocks(_ runId: String) -> [TranscriptBlock] {
-        liveBoxes[runId]?.transcript.blocks ?? transcripts[runId]?.blocks ?? []
-    }
-
-    /// Oldest transcript blocks dropped by the reducer's cap (honest marker).
-    func transcriptTrimmedCount(_ runId: String) -> Int {
-        liveBoxes[runId]?.transcript.trimmed ?? transcripts[runId]?.trimmed ?? 0
-    }
-
-    /// Characters the reducer's per-block byte bound cut (W23 honest marker).
-    func transcriptTruncatedChars(_ runId: String) -> Int {
-        liveBoxes[runId]?.transcript.truncatedChars ?? transcripts[runId]?.truncatedChars ?? 0
+        transcript(runId, at: .local)?.blocks ?? []
     }
 
     /// Live-first spend for meters/cards: the box once cash evidence reached it,

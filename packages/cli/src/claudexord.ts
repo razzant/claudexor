@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./host-libuv-pool-boot.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -40,7 +41,7 @@ import { createSetupJobManager } from "./setup-jobs.js";
 import { bustLoginCredentialState } from "./credential-status-invalidation.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { SqlSetupLifecycleSlot } from "./sql-setup-lifecycle.js";
-import { DaemonRuntimeShutdown } from "./daemon-runtime-shutdown.js";
+import { DaemonRuntimeShutdown, productionDaemonStop } from "./daemon-runtime-shutdown.js";
 import { quotaRefreshers } from "./quota-refreshers.js";
 import {
   dispatchClaudexordEntry,
@@ -54,10 +55,10 @@ import { runStopIfRequested } from "./runtime-replacement-stop.js";
 import { createSqlDaemonExecutors } from "./sql-daemon-runtime.js";
 import { SqlDaemonStorage } from "./sql-daemon-storage.js";
 import * as sqlReads from "./sql-daemon-queries.js";
-import { threadPurgeEffect } from "./thread-purge.js";
+import { startupPurgeEffect } from "./thread-purge.js";
+import { laneCredentialStores } from "./thread-export-services.js";
 import { accountResetServices } from "./account-reset-services.js";
 type Graph = ReturnType<typeof createSqlDaemonServices>;
-
 export async function main(): Promise<void> {
   if (runProbeIfRequested(process.argv.slice(2))) return;
   if (await runStopIfRequested(process.argv.slice(2))) return;
@@ -160,10 +161,12 @@ export async function main(): Promise<void> {
     const attach = (value: Graph) => {
       if (!listening) server = makeServer();
       setup = setupFor(value);
+      executors?.close(); // A failed open never reached beforeClose, which ends them.
       executors = createSqlDaemonExecutors(value, {
         client: selfClient,
         authority: delegation.authority,
         admission: (id) => server.admission(id),
+        daemon: () => server,
         authReadiness: () => readiness,
         bus,
         runtimeConcurrencyCaps: caps,
@@ -202,7 +205,7 @@ export async function main(): Promise<void> {
       rootDir: daemonDir(),
       advanceFloor: () => authority.advanceFloor(),
       graph: {
-        purgeFiles: threadPurgeEffect(noProjectRepoRoot()),
+        purgeFiles: startupPurgeEffect(noProjectRepoRoot(), laneCredentialStores, abort.signal),
         log,
         refreshers: quotaRefreshers((record) => log(`quota.observation ${JSON.stringify(record)}`)),
         subjects: quotaSubjectUniverseFromConfig,
@@ -223,7 +226,7 @@ export async function main(): Promise<void> {
         quotaPoller.stop();
         await stopRetention();
         setup?.beginDrain();
-        executors?.models.close();
+        executors?.close();
         await Promise.all([server.stopForStoreRecovery(), setup?.shutdown()]);
         listening = false;
         setup = null;
@@ -271,15 +274,13 @@ export async function main(): Promise<void> {
       !existsSync(join(daemonDir(), "engine.sqlite")) && existsSync(join(daemonDir(), "journal"));
     if (process.env.CLAUDEXOR_NO_CONTROL_API !== "1" || importing) control = makeControl();
     shutdown = new DaemonRuntimeShutdown({
-      daemon: {
-        stop: async () => {
-          abort.abort();
-          await stopRetention();
-          executors?.models.close();
-          await server.stop();
-          await opening?.catch(() => {});
-        },
-      },
+      daemon: productionDaemonStop({
+        abort: () => abort.abort(),
+        server: () => server,
+        closeExecutors: () => executors?.close(),
+        stopRetention: () => stopRetention(),
+        opening: () => opening,
+      }),
       setup: {
         hasActiveWork: () => {
           if (!setup) throw recoveryOnlyRefusal("setup activity");
@@ -380,8 +381,8 @@ export async function main(): Promise<void> {
         admissionFlight = null;
       }
     }
-    if (!shutdown.requested()) {
-      await proveRecoveryTransport({ socketPath, identity, token, control: address });
+    const proof = { socketPath, identity, token, control: address, signal: abort.signal };
+    if (!shutdown.requested() && (await proveRecoveryTransport(proof)) === "proved") {
       opening = storage.open(abort.signal).then(completeAdmission);
       try {
         await opening;

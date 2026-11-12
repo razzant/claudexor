@@ -2,24 +2,17 @@ import { flagBool, type ParsedArgs } from "./args.js";
 import { print, printJson, printUsageError } from "./cli-io.js";
 import { subcommandFlagScopeError } from "./command-scope.js";
 import { HARNESS_USAGE_ARGS } from "./harness-command-specs.js";
-import { harnessInstallCommand } from "./harness-installer.js";
-import { harnessInspectCommand, harnessUpdateCommand } from "./harness-maintenance.js";
+import { harnessInstallCommand, retiredInstallFlags } from "./harness-installer.js";
+import { harnessInspectCommand, harnessUpdateCommand } from "./harness-maintenance-command.js";
 import { buildRegistry } from "./registry.js";
 
-/**
- * `claudexor harness list [--all]` and `claudexor harness install <id>`.
- * Fakes are test fixtures, not real harnesses; `--all` reveals them. The
- * install verb is the target-aware disclosed installer (harness-installer.ts,
- * issue #89): exact npm targets (Codex resolves latest once, others use baselines), and for the script
- * vendors (cursor, agy) either the human-verified remote PTY path or, under an
- * explicit `--target local --yes`, receipt-bound unattended execution. Nothing
- * executes without disclosure and explicit authorization.
- * Flags are verb-owned (registry `subcommandFlags`): `harness list --yes` or
- * `harness install --all` is a loud exit-2 usage error, never a silently
- * ignored flag (INV-021).
- */
-export function harnessCommand(args: ParsedArgs, json: boolean): number {
+/** Thin CLI projection of adapter declarations and the shared vendor operation. */
+export function harnessCommand(args: ParsedArgs, json: boolean): number | Promise<number> {
   const sub = args._[1] ?? "";
+  if (sub === "install" || sub === "update") {
+    const retired = retiredInstallFlags(args);
+    if (retired) return printUsageError(json, retired);
+  }
   const scopeError = subcommandFlagScopeError("harness", sub, Object.keys(args.flags));
   if (scopeError) return printUsageError(json, scopeError);
   if (args._[1] === "list") {

@@ -8,8 +8,10 @@ import {
 } from "./control.js";
 import { Id, ModeKind } from "./primitives.js";
 import { DeliveryReceipt } from "./delivery.js";
+import { GitResultRefusal } from "./git-result.js";
 import { RunExecution } from "./control-run-execution.js";
 import { DeferredMessageProjection } from "./deferred-message.js";
+import { TaskGroupReceipt } from "./task-group.js";
 
 export const ControlRunStartResponse = z
   .union([ControlRunStartInfo, ControlQueuedRunInfo])
@@ -104,6 +106,10 @@ export const ControlApplyCheckResponse = z
       .boolean()
       .default(false)
       .describe("True when the clean check is an already-applied idempotent no-op."),
+    /** #535: the delivery owner's typed reason, as a delivery of this result would refuse. */
+    refusal: GitResultRefusal.optional().describe(
+      "Typed reason an object result's dry run refused (code, message, bounded paths); absent otherwise.",
+    ),
   })
   .strict()
   .describe("Mechanical git apply --check result.");
@@ -160,11 +166,19 @@ export type ControlThreadTurnRequest = z.infer<typeof ControlThreadTurnRequest>;
 
 export const ControlThreadTurnResponse = z
   .union([
-    ControlRunStartInfo.omit({ taskGroupId: true, storeId: true }).extend({
+    ControlRunStartInfo.omit({ taskGroupId: true }).extend({
       threadId: Id,
       turnId: Id,
     }),
-    z.object({ jobId: Id, threadId: Id, turnId: Id, state: z.string().min(1) }).strict(),
+    z
+      .object({
+        storeId: TaskGroupReceipt.shape.storeId.optional(),
+        jobId: Id,
+        threadId: Id,
+        turnId: Id,
+        state: z.string().min(1),
+      })
+      .strict(),
   ])
   .describe("Durable handle returned by thread turn create or Exact Retry.");
 export type ControlThreadTurnResponse = z.infer<typeof ControlThreadTurnResponse>;

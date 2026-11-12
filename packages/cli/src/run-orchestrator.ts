@@ -54,7 +54,8 @@ export function buildRunOrchestrator(args: {
     delegationBudgetAuthority: args.delegationBudgetAuthority,
     accountsMigrationGate: args.accountsMigrationGate,
     routingGoal: p.routingGoal,
-    quotaSnapshots: () => quotaStore().read().snapshots,
+    // Admission ages each window at the deciding reader (#457); display keeps read().
+    quotaSnapshots: () => quotaStore().readAdmission().snapshots,
     // The absence half of the SAME projection: `auth_revoked` is how the
     // poller reports a vendor rejecting a profile's credential, and run
     // admission is the surface that has to act on it.

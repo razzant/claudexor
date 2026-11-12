@@ -1,6 +1,16 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  type BigIntStats,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { assertCaptureComplete, runCaptureRaw, WorkspaceError } from "@claudexor/core";
 import { isClaudexorOwnedRuntimePath } from "@claudexor/util";
 import {
@@ -8,12 +18,15 @@ import {
   type EnsureGitRepositoryDependencies,
   type EnsureGitRepositoryResult,
 } from "./git-initialization.js";
+import { assertNoBinaryStubs, git, gitEnv, SCRATCH_INDEX_CONFIG } from "./git-run.js";
+import { diskProgress, gitObserved } from "./git-observed.js";
 import {
-  nestedRepositoryExcludes,
-  untrackedNestedRepositories,
-} from "./git-nested-repositories.js";
-import { assertNoBinaryStubs, git, gitEnv } from "./git-run.js";
-export { git } from "./git-run.js";
+  absentAfterCheckout,
+  cloneFailureMessage,
+  incompleteCloneMessage,
+} from "./isolated-clone-content.js";
+import { repositoryEndpoint } from "./object-store.js";
+export { git, revParse } from "./git-run.js";
 export { captureWorkingTreeTransient, diffWorkingTreeTransient } from "./git-transient-capture.js";
 export {
   GitBoundaryRootRefusedError,
@@ -25,12 +38,6 @@ export {
 export async function isGitRepo(repo: string): Promise<boolean> {
   const r = await git(repo, ["rev-parse", "--is-inside-work-tree"]);
   return r.code === 0 && r.stdout.trim() === "true";
-}
-
-export async function revParse(repo: string, ref: string): Promise<string> {
-  const r = await git(repo, ["rev-parse", ref]);
-  if (r.code !== 0) throw new WorkspaceError(`git rev-parse ${ref} failed: ${r.stderr.trim()}`);
-  return r.stdout.trim();
 }
 
 /**
@@ -62,95 +69,7 @@ export async function statusPorcelain(repo: string): Promise<string> {
   return (await git(repo, ["status", "--porcelain"])).stdout;
 }
 
-/**
- * Capture the full dirty working tree (tracked AND untracked) as a dangling
- * commit; null if clean. Plain `git stash create` captures only TRACKED
- * changes, silently dropping the user's new-but-unstaged files from the run's
- * base. We instead seed a scratch index from HEAD, `add -A` into it (which
- * respects .gitignore, so run artifacts stay out), and commit-tree the result.
- */
-export async function stashCreate(repo: string): Promise<string | null> {
-  // NUL form is filename-faithful (newlines, quotes and whitespace are legal
-  // path bytes). Runtime is external, so every reported path is user state.
-  const status = await git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-  if (status.code !== 0)
-    throw new WorkspaceError(`snapshot status failed: ${status.stderr.trim()}`);
-  if (status.stdout.length === 0) return null;
-  const head = await git(repo, ["rev-parse", "HEAD"]);
-  if (head.code !== 0)
-    throw new WorkspaceError(`snapshot rev-parse HEAD failed: ${head.stderr.trim()}`);
-  const headSha = head.stdout.trim();
-  // Unique per call: concurrent envelope creates (a best_of_n wave) must never
-  // collide on the scratch index (same pid + same millisecond is real). It lives
-  // in the OS temp dir, NOT under `<repo>/.git` — in a linked worktree `.git` is
-  // a FILE (gitdir pointer), so a scratch path there fails (review #8).
-  const scratchDir = mkdtempSync(join(tmpdir(), "claudexor-snapshot-index-"));
-  const tmpIndex = join(scratchDir, "index");
-  const env: Record<string, string> = {
-    GIT_INDEX_FILE: tmpIndex,
-    GIT_AUTHOR_NAME: "Claudexor",
-    GIT_AUTHOR_EMAIL: "noreply@claudexor.local",
-    GIT_COMMITTER_NAME: "Claudexor",
-    GIT_COMMITTER_EMAIL: "noreply@claudexor.local",
-  };
-  try {
-    const read = await gitEnv(repo, ["read-tree", "HEAD"], env);
-    if (read.code !== 0)
-      throw new WorkspaceError(`snapshot read-tree failed: ${read.stderr.trim()}`);
-    // Bare add runs only against the scratch index. It respects the project's
-    // own ignore policy without changing the live index. `.claudexor/` is not a
-    // runtime exception in v2: tracked or untracked project config is user state.
-    // An undeclared nested repository stays out, as in the candidate capture:
-    // `add` refuses one without a commit and would freeze one with a commit as
-    // a commit link (`:/` keeps the whole-tree scope of the bare add).
-    const nested = await untrackedNestedRepositories(repo, env, [":/"], "snapshot");
-    const add = await gitEnv(
-      repo,
-      ["add", "-A", ...(nested.length ? ["--", ":/", ...nestedRepositoryExcludes(nested)] : [])],
-      env,
-    );
-    if (add.code !== 0) throw new WorkspaceError(`snapshot add -A failed: ${add.stderr.trim()}`);
-    const writeTree = await gitEnv(repo, ["write-tree"], env);
-    if (writeTree.code !== 0)
-      throw new WorkspaceError(`snapshot write-tree failed: ${writeTree.stderr.trim()}`);
-    const tree = writeTree.stdout.trim();
-    const commit = await gitEnv(
-      repo,
-      [
-        "commit-tree",
-        tree,
-        "-p",
-        headSha,
-        "-m",
-        "claudexor: dirty worktree snapshot (incl. untracked)",
-      ],
-      env,
-    );
-    if (commit.code !== 0)
-      throw new WorkspaceError(`snapshot commit-tree failed: ${commit.stderr.trim()}`);
-    const sha = commit.stdout.trim();
-    return sha.length > 0 ? sha : null;
-  } finally {
-    try {
-      rmSync(scratchDir, { recursive: true, force: true });
-    } catch {
-      /* scratch index cleanup is best-effort */
-    }
-  }
-}
-
-/**
- * Capture the CURRENT working-tree state (tracked + untracked, minus `.claudexor`)
- * as a commit sha — always returns one. Dirty trees become a dangling snapshot
- * commit (via `stashCreate`); a clean tree resolves to HEAD. This is the per-turn
- * diff base for in-place threads: snapshot at turn start, snapshot at turn end,
- * `diffTrees(base, end)` yields exactly that turn's net change (pre-existing dirty
- * state is folded into `base`, so the reviewer never sees prior turns' edits).
- */
-export async function snapshotTree(repo: string): Promise<string> {
-  const snap = await stashCreate(repo);
-  return snap ?? (await revParse(repo, "HEAD"));
-}
+export { snapshotTree, stashCreate } from "./git-snapshot.js";
 
 /** Net diff between two tree-ish shas (used for in-place per-turn diffs).
  * `--binary`: binary changes carry an APPLYABLE payload instead of
@@ -179,7 +98,7 @@ export async function materializePatchTree(
   const indexPath = join(scratchDir, "index");
   const env = { GIT_INDEX_FILE: indexPath, GIT_OPTIONAL_LOCKS: "0" };
   try {
-    const read = await gitEnv(repo, ["read-tree", baseSha], env);
+    const read = await gitEnv(repo, [...SCRATCH_INDEX_CONFIG, "read-tree", baseSha], env);
     if (read.code !== 0) {
       throw new WorkspaceError(
         `git read-tree ${baseSha} failed during patch materialization: ${read.stderr.trim()}`,
@@ -188,7 +107,7 @@ export async function materializePatchTree(
     if (diff.trim()) {
       const applied = await gitEnv(
         repo,
-        ["apply", "--cached", "--whitespace=nowarn", "-"],
+        [...SCRATCH_INDEX_CONFIG, "apply", "--cached", "--whitespace=nowarn", "-"],
         env,
         diff,
       );
@@ -198,7 +117,7 @@ export async function materializePatchTree(
         );
       }
     }
-    const written = await gitEnv(repo, ["write-tree"], env);
+    const written = await gitEnv(repo, [...SCRATCH_INDEX_CONFIG, "write-tree"], env);
     if (written.code !== 0) {
       throw new WorkspaceError(`scratch git write-tree failed: ${written.stderr.trim()}`);
     }
@@ -218,18 +137,32 @@ export async function worktreeAdd(
   branch: string,
   baseSha: string,
 ): Promise<void> {
-  const r = await git(repo, ["worktree", "add", "-b", branch, path, baseSha]);
+  const r = await gitObserved(repo, ["worktree", "add", "-b", branch, path, baseSha], {
+    label: "worktree add",
+    progress: diskProgress(repo),
+    allowFailure: true,
+  });
   if (r.code !== 0) throw new WorkspaceError(`git worktree add failed: ${r.stderr.trim()}`);
 }
 
 /** Disposable candidate checkout with private refs/index/objects. The source
  * repository is only an object alternate, so harness `git add`/`commit` cannot
- * write candidate blobs or refs into the user's repository. */
+ * write candidate blobs or refs into the user's repository. That alternate is
+ * the FIRST one whatever the source's depth: `--shared` writes it only when Git
+ * clones the path locally, and a shallow source Git silently clones through its
+ * transport instead (#501), so it is written here, keeping what only the source
+ * holds (a dirty snapshot, a delivery's composed tree) readable in the clone.
+ * A shallow source Git copies locally keeps its history boundary (see
+ * keepShallowBoundary), and a copy or checkout that cannot be complete is refused
+ * naming what the source lacks (isolated-clone-content.ts); nothing is fetched.
+ * Claudexor's own clone lists the project object store as a SECOND alternate
+ * (#535 D2): a dirty base resolves after the user's prune; the user repo never gets it. */
 export async function isolatedCloneAdd(
   repo: string,
   path: string,
   branch: string,
   baseSha: string,
+  storeObjects?: string,
 ): Promise<void> {
   const cloned = await runCaptureRaw(
     "git",
@@ -237,19 +170,50 @@ export async function isolatedCloneAdd(
     { timeoutMs: 120_000, windowsConsole: "none" },
   );
   assertCaptureComplete(cloned);
-  if (cloned.code !== 0) {
-    throw new WorkspaceError(`isolated clone failed: ${cloned.stderr.trim()}`);
-  }
-  const checkout = await git(path, ["checkout", "-b", branch, baseSha]);
+  if (cloned.code !== 0)
+    throw new WorkspaceError(await cloneFailureMessage(repo, baseSha, cloned.stderr));
+  const alternates = join(path, ".git", "objects", "info", "alternates");
+  if (!existsSync(alternates))
+    appendFileSync(alternates, `${(await repositoryEndpoint(repo)).objectsDir}\n`);
+  else await keepShallowBoundary(repo, path);
+  if (storeObjects && existsSync(storeObjects)) appendFileSync(alternates, `${storeObjects}\n`);
+  // A large checkout may take long: only a stall (no disk progress) stops it.
+  const checkout = await gitObserved(path, ["checkout", "-q", "-b", branch, baseSha], {
+    label: "checkout (isolated clone)",
+    progress: diskProgress(path),
+    allowFailure: true,
+  });
   if (checkout.code !== 0) {
     throw new WorkspaceError(`isolated clone checkout failed: ${checkout.stderr.trim()}`);
   }
+  // Git checks out a commit whose content no object directory here holds (what a
+  // partial clone never fetched or a sparse checkout left out) by reporting each
+  // such file and succeeding (#501). That tree is refused, and nothing is fetched.
+  const absent = await absentAfterCheckout(path);
+  if (absent.length > 0)
+    throw new WorkspaceError(incompleteCloneMessage(repo, baseSha, absent, checkout.stderr));
   const detachedRemote = await git(path, ["remote", "remove", "origin"]);
   if (detachedRemote.code !== 0) {
     throw new WorkspaceError(
       `isolated clone remote removal failed: ${detachedRemote.stderr.trim()}`,
     );
   }
+}
+
+/** Git copies a shallow source locally when it is a linked worktree of a shallow
+ * repository: refs and the alternate come, the `shallow` file does not, so the clone's
+ * history ends at parents it does not hold instead of at the boundary, and a log, a
+ * blame or `fsck` there fails (#501). The source's own boundary, wherever Git keeps it,
+ * goes into the clone; a full source has none. */
+async function keepShallowBoundary(repo: string, clone: string): Promise<void> {
+  const located = await gitObserved(
+    repo,
+    ["rev-parse", "--path-format=absolute", "--git-path", "shallow"],
+    { label: "rev-parse --git-path shallow" },
+  );
+  const boundary = located.stdout.trim();
+  const own = join(clone, ".git", "shallow");
+  if (boundary && existsSync(boundary) && !existsSync(own)) copyFileSync(boundary, own);
 }
 
 /** Recreate a worktree for an EXISTING branch (recovery: dir lost, branch survived). */
@@ -270,8 +234,127 @@ export async function worktreeAddExisting(
     throw new WorkspaceError(`git worktree add (existing branch) failed: ${r.stderr.trim()}`);
 }
 
+/** Best-effort: Git's exit status is ignored. An owner that must not report a
+ * refused removal as done uses `worktreeRemoveRegistered`. */
 export async function worktreeRemove(repo: string, path: string): Promise<void> {
   await git(repo, ["worktree", "remove", "--force", path]);
+}
+
+/**
+ * Deregister the linked worktree Git records at `path`; Git deletes its
+ * directory too. A path Git does not register is already removed. A refusal
+ * (a locked worktree, an unreadable registration) throws and leaves the
+ * registration and the directory as they were. A directory Git cannot delete
+ * (a permission error) throws after Git deleted the registration: the
+ * directory stays, its `.git` file naming what is gone. The registration is
+ * found by `samePlace` and removed in Git's own spelling, so a stale one whose
+ * directory is gone still goes. Git prints porcelain paths unquoted, one per
+ * line, so a path holding a line break cannot be read back and is refused
+ * rather than reported absent. `beforeRemove` runs once Git is known to
+ * register the path, right before the removal.
+ */
+export async function worktreeRemoveRegistered(
+  repo: string,
+  path: string,
+  beforeRemove: () => Promise<void> = async () => {},
+): Promise<void> {
+  if (path.includes("\n")) {
+    throw new WorkspaceError(
+      `worktree path has a line break that git worktree list cannot report: ${JSON.stringify(path)}`,
+    );
+  }
+  const listed = await git(repo, ["worktree", "list", "--porcelain"]);
+  if (listed.code !== 0) {
+    throw new WorkspaceError(`git worktree list failed: ${listed.stderr.trim()}`);
+  }
+  const registered = worktreePaths(listed.stdout).find((entry) => samePlace(entry, path));
+  if (registered === undefined) return;
+  await beforeRemove();
+  const r = await git(repo, ["worktree", "remove", "--force", registered]);
+  if (r.code !== 0) throw new WorkspaceError(`git worktree remove failed: ${r.stderr.trim()}`);
+}
+
+/**
+ * The common Git directory of the repository that registered the linked
+ * worktree at `path`, from Git's own records: the worktree's `.git` file names
+ * its registration, which must still exist and name this worktree back. Null
+ * when `path` holds no such file. A registration that is gone or names another
+ * worktree is what a moved or deleted repository leaves, and also a removal
+ * that deleted the registration but not the directory
+ * (`worktreeRemoveRegistered`; a later worktree can take the freed name).
+ * `recorded`, called only then, tells them apart: the common Git directory a
+ * caller kept from before its removal is returned when the registration was
+ * in it. Otherwise this throws, since whatever a moved repository still
+ * records cannot be proven gone.
+ */
+export function worktreeRepository(
+  path: string,
+  recorded: () => string | null = () => null,
+): string | null {
+  const gitfile = join(path, ".git");
+  const pointer = /^gitdir: (.+)$/m.exec(plainText(gitfile) ?? "")?.[1]?.trimEnd();
+  if (!pointer) return null;
+  const registration = resolve(path, pointer);
+  const named = plainText(join(registration, "gitdir"))?.trimEnd();
+  if (named && samePlace(resolve(registration, named), gitfile))
+    return resolve(registration, readFileSync(join(registration, "commondir"), "utf8").trimEnd());
+  const gitDir = recorded();
+  if (gitDir !== null && samePlace(dirname(registration), join(gitDir, "worktrees"))) return gitDir;
+  throw new WorkspaceError(
+    `Git no longer registers worktree ${path} at ${registration}: its repository moved or was deleted; if it moved, run "git worktree repair" in it so the next attempt can finish this cleanup`,
+  );
+}
+
+/** The common Git directory of the repository `dir` is in; throws when Git cannot tell. */
+export async function gitCommonDir(dir: string): Promise<string> {
+  const r = await git(dir, ["rev-parse", "--git-common-dir"]);
+  if (r.code !== 0) {
+    throw new WorkspaceError(`git rev-parse --git-common-dir failed: ${r.stderr.trim()}`);
+  }
+  return resolve(dir, r.stdout.trim());
+}
+
+/** A regular file's text, or null when nothing (or no regular file) is there. */
+function plainText(file: string): string | null {
+  try {
+    return lstatSync(file).isFile() ? readFileSync(file, "utf8") : null;
+  } catch (error) {
+    if (absent(error)) return null;
+    throw error;
+  }
+}
+
+/**
+ * Whether two spellings name the same place: the deepest existing part of
+ * each is one file by identity, so the filesystem itself decides about letter
+ * case, links and Unicode normalization, and the names below it are equal.
+ * Without a usable identity the spellings must match exactly.
+ */
+function samePlace(a: string, b: string): boolean {
+  if (resolve(a) === resolve(b)) return true;
+  const [x, y] = [existingPart(a), existingPart(b)];
+  if (x.rest !== y.rest) return false;
+  if (!x.stat || !y.stat || x.stat.ino === 0n || y.stat.ino === 0n) return x.path === y.path;
+  return x.stat.dev === y.stat.dev && x.stat.ino === y.stat.ino;
+}
+
+function existingPart(path: string): { path: string; stat: BigIntStats | null; rest: string } {
+  const rest: string[] = [];
+  for (let current = resolve(path); ; current = dirname(current)) {
+    let stat: BigIntStats | null = null;
+    try {
+      stat = statSync(current, { bigint: true });
+    } catch (error) {
+      if (!absent(error)) throw error;
+    }
+    if (stat || dirname(current) === current) return { path: current, stat, rest: rest.join(sep) };
+    rest.unshift(basename(current));
+  }
+}
+
+function absent(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 /**
@@ -375,7 +458,11 @@ export async function reversePatchAndIndexProtected(
 async function worktreeList(repo: string): Promise<string[]> {
   const r = await git(repo, ["worktree", "list", "--porcelain"]);
   if (r.code !== 0) return [];
-  return r.stdout
+  return worktreePaths(r.stdout);
+}
+
+function worktreePaths(porcelain: string): string[] {
+  return porcelain
     .split("\n")
     .filter((line) => line.startsWith("worktree "))
     .map((line) => line.slice("worktree ".length).trim())
@@ -413,4 +500,26 @@ export async function worktreePrune(repo: string): Promise<void> {
 /** Delete a local branch (best-effort GC of per-attempt claudexor/* branches). */
 export async function branchDelete(repo: string, branch: string): Promise<void> {
   await git(repo, ["branch", "-D", branch]);
+}
+
+/**
+ * Delete a local branch, or throw when Git refuses (a held ref lock, a
+ * worktree that still uses it). An absent branch is already deleted. Presence
+ * is read first because `branch -D` reports "not found" and a refusal with the
+ * same exit code. `beforeDelete` runs only for a present branch, right before
+ * the deletion.
+ */
+export async function branchDeleteIfPresent(
+  repo: string,
+  branch: string,
+  beforeDelete: () => Promise<void> = async () => {},
+): Promise<void> {
+  const present = await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (present.code === 1) return;
+  if (present.code !== 0) {
+    throw new WorkspaceError(`git show-ref ${branch} failed: ${present.stderr.trim()}`);
+  }
+  await beforeDelete();
+  const r = await git(repo, ["branch", "-D", branch]);
+  if (r.code !== 0) throw new WorkspaceError(`git branch -D ${branch} failed: ${r.stderr.trim()}`);
 }

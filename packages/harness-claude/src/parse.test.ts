@@ -2,6 +2,32 @@ import { describe, expect, it } from "vitest";
 import { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import { claudeArgsForSpec } from "./index.js";
 import { createClaudeParser, parseClaudeEvent } from "./parse.js";
+import { createClaudeQuestionTracker, type ClaudeQuestionInput } from "./question-outcome.js";
+
+/** One native AskUserQuestion tool_use frame with neutral question text. */
+function askFrame(id: string) {
+  return {
+    type: "assistant",
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          id,
+          name: "AskUserQuestion",
+          input: { questions: [{ question: "Which stack?", options: [], multiSelect: false }] },
+        },
+      ],
+    },
+  };
+}
+
+/** The native error tool_result for one tool-use id. */
+function errorResultFrame(id: string, content: string) {
+  return {
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: id, is_error: true, content }] },
+  };
+}
 
 describe("parseClaudeEvent", () => {
   it("maps system init to a started event with observed model", () => {
@@ -321,16 +347,24 @@ describe("parseClaudeEvent", () => {
     // The terminal result is claude's TYPED final answer (F2.5 W-C1).
     expect(ok[1]?.final).toBe(true);
 
-    // error_max_turns is a BENIGN turn-control outcome (the run hit --max-turns
-    // with partial work preserved), NOT a run failure -> a timeline thinking
-    // event, never an error (mirrors ExitPlanMode/AskUserQuestion handling).
+    // #299: error_max_turns (an is_error result; the CLI then exits 1) is ONE
+    // typed error carrying `turn_limit`, never a final answer. The engine
+    // reports interrupted / turn_limit_reached and never resumes under the cap.
     const maxTurns = parseClaudeEvent(
-      { type: "result", subtype: "error_max_turns", num_turns: 12 },
+      {
+        type: "result",
+        subtype: "error_max_turns",
+        is_error: true,
+        num_turns: 12,
+        errors: ["Reached maximum number of turns (12)"],
+      },
       "s1",
     ) as HarnessEvent[];
-    expect(maxTurns.map((e) => e.type)).toEqual(["usage", "thinking"]);
-    expect(maxTurns[1]?.text).toContain("max-turns");
-    expect(maxTurns[1]?.payload?.["max_turns_reached"]).toBe(true);
+    expect(maxTurns.map((e) => e.type)).toEqual(["usage", "error"]);
+    expect(maxTurns[1]?.turn_limit).toEqual({ native_code: "error_max_turns", num_turns: 12 });
+    expect(maxTurns[1]?.error).toContain("max-turns limit reached after 12 turns");
+    expect(maxTurns.some((e) => e.final)).toBe(false);
+    for (const e of maxTurns) expect(() => HarnessEvent.parse(e)).not.toThrow();
 
     // Other non-success subtypes remain real errors.
     const realError = parseClaudeEvent(
@@ -367,7 +401,7 @@ describe("parseClaudeEvent", () => {
     expect(exhausted[1]?.payload?.["structured_output_retries_exhausted"]).toBe(true);
   });
 
-  it("emits typed tool_result with redacted detail resolved to the originating tool", () => {
+  it("emits typed tool_result with its exact detail resolved to the originating tool", () => {
     const parse = createClaudeParser();
     parse(
       {
@@ -442,6 +476,45 @@ describe("parseClaudeEvent", () => {
     expect(out[0]?.tool?.status).toBe("ok");
     // Claude exposes typed content -> a VERIFIED retrieval (unlike codex dispatch).
     expect(out[0]?.tool?.web_retrieval).toBe("verified");
+    expect(out[0]?.tool?.web_content).toBe("page");
+    expect(() => HarnessEvent.parse(out[0])).not.toThrow();
+  });
+
+  it("stamps a successful WebSearch as verified search results, not a fetched page (#118)", () => {
+    const parse = createClaudeParser();
+    parse(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "toolu_ws", name: "WebSearch", input: { query: "claudexor" } },
+          ],
+        },
+      },
+      "s1",
+    );
+    const out = parse(
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_ws",
+              content:
+                'Web search results for query: "claudexor"\n\nLinks: [{"title":"Claudexor","url":"https://example.com/"}]',
+            },
+          ],
+        },
+      },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out[0]?.tool).toMatchObject({
+      kind: "web",
+      status: "ok",
+      web_retrieval: "verified",
+      web_content: "search_results",
+    });
     expect(() => HarnessEvent.parse(out[0])).not.toThrow();
   });
 
@@ -480,7 +553,64 @@ describe("parseClaudeEvent", () => {
     expect(out[0]?.tool?.kind).toBe("web");
     expect(out[0]?.tool?.error_summary).toBeUndefined();
     expect(out[0]?.tool?.content_summary).toContain("WebSearch denied by policy");
+    // A denial retrieved nothing: no retrieval stamp, least of all "verified".
+    expect(out[0]?.tool?.web_retrieval).toBeUndefined();
+    expect(out[0]?.tool?.web_content).toBeUndefined();
     expect(() => HarnessEvent.parse(out[0])).not.toThrow();
+  });
+
+  it("keeps an MCP result's line breaks while other tool results stay on one line", () => {
+    const parse = createClaudeParser();
+    parse(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_page",
+              name: "mcp__browser__browser_snapshot",
+              input: {},
+            },
+            {
+              type: "tool_use",
+              id: "toolu_nav",
+              name: "mcp__browser__browser_navigate",
+              input: {},
+            },
+            { type: "tool_use", id: "toolu_sh", name: "Bash", input: { command: "cat page.md" } },
+          ],
+        },
+      },
+      "s1",
+    );
+    const text = "### Page\r\n-   Page URL:  http://x/\n\n  - nested\t item\n### Snapshot";
+    const out = parse(
+      {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_page", content: [{ type: "text", text }] },
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_nav",
+              is_error: true,
+              content: "### Error\nError: net::ERR_CONNECTION_REFUSED",
+            },
+            { type: "tool_result", tool_use_id: "toolu_sh", content: text },
+          ],
+        },
+      },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out.map((event) => event.tool?.content_summary)).toEqual([
+      "### Page\n- Page URL: http://x/\n - nested item\n### Snapshot",
+      "### Error\nError: net::ERR_CONNECTION_REFUSED",
+      "### Page - Page URL: http://x/ - nested item ### Snapshot",
+    ]);
+    // The error detail and the event text stay on one line.
+    expect(out[1]?.tool?.error_summary).toBe("### Error Error: net::ERR_CONNECTION_REFUSED");
+    expect(out[1]?.text).toBe("tool_result: error: ### Error Error: net::ERR_CONNECTION_REFUSED");
   });
 
   it("preserves an MCP belt isError result as exact error evidence", () => {
@@ -893,45 +1023,170 @@ describe("parseClaudeEvent", () => {
     expect(out[0]?.text).toContain("plan mode ended");
   });
 
-  it("translates a declined AskUserQuestion error result to a benign thinking event (never a blocking tool error)", () => {
+  it("records an AskUserQuestion error result neutrally with its native detail: a benign thinking event, never a decline or a blocking tool error (#622)", () => {
     const parse = createClaudeParser();
+    parse(askFrame("toolu_q"), "s1");
+    const out = parse(
+      errorResultFrame("toolu_q", "Tool permission request failed: AbortError: Stream closed"),
+      "s1",
+    ) as HarnessEvent[];
+    expect(out).toEqual([
+      {
+        type: "thinking",
+        session_id: "s1",
+        ts: expect.any(String),
+        text: "AskUserQuestion returned an error instead of answers: Tool permission request failed: AbortError: Stream closed",
+        payload: { tool: "AskUserQuestion", tool_use_id: "toolu_q" },
+      },
+    ]);
+    // Neither a decline claim nor an unrecovered tool error over a flow-control tool.
+    expect(out[0]?.text).not.toMatch(/declin|no user answer/i);
+    expect(out.some((event) => event.type === "tool_result")).toBe(false);
+    expect(() => HarnessEvent.parse(out[0])).not.toThrow();
+  });
+
+  it("names the session input Claudexor observed when a question was asked, by its tool-use id (#622)", () => {
+    let input: "open" | "closed" | "none" = "open";
+    const parse = createClaudeParser({ questionInput: () => input });
+    parse(askFrame("toolu_open"), "s1");
+    input = "closed";
+    parse(askFrame("toolu_late"), "s1");
+    // The result order differs from the ask order: each keeps the state it was asked under.
+    const late = parse(errorResultFrame("toolu_late", "Stream closed"), "s1") as HarnessEvent[];
+    const open = parse(errorResultFrame("toolu_open", "No user answer"), "s1") as HarnessEvent[];
+    expect(late[0]?.text).toBe(
+      "AskUserQuestion returned an error instead of answers; this session's input was already closed when Claudexor read the question: Stream closed",
+    );
+    expect(late[0]?.payload).toEqual({
+      tool: "AskUserQuestion",
+      tool_use_id: "toolu_late",
+      session_input: "closed",
+    });
+    expect(open[0]?.text).toBe(
+      "AskUserQuestion returned an error instead of answers: No user answer",
+    );
+    expect(open[0]?.payload?.["session_input"]).toBe("open");
+    const headless = createClaudeParser({ questionInput: () => "none" });
+    headless(askFrame("toolu_h"), "s2");
+    const none = headless(errorResultFrame("toolu_h", "not available"), "s2") as HarnessEvent[];
+    expect(none[0]?.text).toBe(
+      "AskUserQuestion returned an error instead of answers; this run has no answer channel: not available",
+    );
+    expect(none[0]?.payload?.["session_input"]).toBe("none");
+  });
+
+  it("retires every question at its own result, answered or failed: many of both leave nothing remembered (#622)", () => {
+    let input: ClaudeQuestionInput = "open";
+    const tracker = createClaudeQuestionTracker(() => input);
+    const parse = createClaudeParser({ questionInput: () => input });
+    for (let i = 0; i < 200; i++) {
+      input = i % 3 === 0 ? "closed" : "open";
+      const failed = i % 2 === 1;
+      tracker.asked(`toolu-${i}`);
+      const record = tracker.result(`toolu-${i}`, failed, "detail", "s1", "ts");
+      // An answered question has no record; a failed one keeps its own state.
+      expect(record?.payload?.["session_input"] ?? null).toBe(failed ? input : null);
+      // The parser routes both through the same tracker: an answered question
+      // is an ordinary ok result, a failed one the benign record.
+      parse(askFrame(`toolu-${i}`), "s1");
+      const out = parse(
+        {
+          type: "user",
+          message: {
+            content: [
+              { type: "tool_result", tool_use_id: `toolu-${i}`, is_error: failed, content: "x" },
+            ],
+          },
+        },
+        "s1",
+      ) as HarnessEvent[];
+      expect(out.map((event) => event.type)).toEqual([failed ? "thinking" : "tool_result"]);
+    }
+    // A later result naming any of them finds nothing remembered.
+    input = "closed";
+    for (let i = 0; i < 200; i++)
+      expect(tracker.result(`toolu-${i}`, true, "", "s1", "ts")?.payload).toEqual({
+        tool: "AskUserQuestion",
+        tool_use_id: `toolu-${i}`,
+      });
+  });
+
+  it("keeps a real work-tool error a visible tool_result error beside a question's benign record", () => {
+    const parse = createClaudeParser({ questionInput: () => "closed" });
     parse(
       {
         type: "assistant",
         message: {
           content: [
-            {
-              type: "tool_use",
-              id: "toolu_q",
-              name: "AskUserQuestion",
-              input: { questions: [{ question: "Which stack?" }] },
-            },
+            { type: "tool_use", id: "toolu_bash", name: "Bash", input: { command: "make check" } },
           ],
         },
       },
       "s1",
     );
-    const out = parse(
-      {
-        type: "user",
-        message: {
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "toolu_q",
-              is_error: true,
-              content: "Answer questions?",
-            },
+    const out = parse(errorResultFrame("toolu_bash", "exit status 2"), "s1") as HarnessEvent[];
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      type: "tool_result",
+      text: "tool_result: error: exit status 2",
+      tool: { name: "Bash", use_id: "toolu_bash", status: "error", error_summary: "exit status 2" },
+    });
+  });
+
+  it("records an AskUserQuestion permission request the closed session could not route, with its exact input and ids (#622)", () => {
+    const input = {
+      questions: [
+        {
+          question: "Which fixture module should the new test use?",
+          header: "Fixture",
+          options: [
+            { label: "Shared", description: "The existing shared module" },
+            { label: "Local", description: "A new local helper" },
           ],
+          multiSelect: false,
+        },
+      ],
+    };
+    const request = {
+      type: "control_request",
+      request_id: "ask-late",
+      request: {
+        subtype: "can_use_tool",
+        tool_name: "AskUserQuestion",
+        input,
+        tool_use_id: "toolu_late",
+      },
+    };
+    const closed = createClaudeParser({ questionInput: () => "closed" })(request, "s1");
+    expect(closed).toEqual([
+      {
+        type: "status",
+        session_id: "s1",
+        ts: expect.any(String),
+        text: "AskUserQuestion ask-late could not be answered: this session's input was already closed when Claudexor read the request",
+        payload: {
+          code: "interaction_answer_unavailable",
+          reason: "input_closed",
+          interaction_id: "ask-late",
+          tool_use_id: "toolu_late",
+          input,
         },
       },
-      "s1",
-    ) as HarnessEvent[];
-    expect(out).toHaveLength(1);
-    expect(out[0]?.type).toBe("thinking");
-    expect(out[0]?.text).toContain("clarifying questions declined");
-    expect(out[0]?.text).toContain("Answer questions?");
-    expect(() => HarnessEvent.parse(out[0])).not.toThrow();
+    ]);
+    expect(() => HarnessEvent.parse(closed![0])).not.toThrow();
+    // One-shot input: the run never had an answer channel.
+    expect(
+      createClaudeParser({ questionInput: () => "none" })(request, "s1")?.[0]?.payload,
+    ).toMatchObject({ reason: "no_answer_channel", interaction_id: "ask-late" });
+    // Without session knowledge (fixture replays) or for other control requests,
+    // nothing is claimed: the frame stays unrecognized as before.
+    expect(parseClaudeEvent(request, "s1")).toBeNull();
+    expect(
+      createClaudeParser({ questionInput: () => "closed" })(
+        { ...request, request: { ...request.request, tool_name: "Bash" } },
+        "s1",
+      ),
+    ).toBeNull();
   });
 
   it("builds interactive args with stream-json input, stdio permission prompts, and the prompt on stdin", () => {
@@ -1235,5 +1490,28 @@ describe("claude parser: multi-turn session folding", () => {
       "s1",
     ) as HarnessEvent[];
     expect(out.map((e) => e.type)).toEqual(["tool_result"]);
+  });
+});
+
+describe("tool targets are the agent's own actions, kept exact (INV-146)", () => {
+  it("keeps a credential-shaped command in the tool target", () => {
+    const token = ["ghp", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("_");
+    const out = parseClaudeEvent(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "t1",
+              name: "Bash",
+              input: { command: `curl -H "Authorization: ${token}"` },
+            },
+          ],
+        },
+      },
+      "s1",
+    );
+    expect(out?.[0]?.tool?.target).toBe(`Bash: curl -H "Authorization: ${token}"`);
   });
 });

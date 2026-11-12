@@ -27,6 +27,32 @@
                   {
                     "type": "object",
                     "properties": {
+                      "sourceProgram": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "path": {
+                                "type": "string"
+                              },
+                              "version": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "version"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "id": {
                         "type": "string",
                         "minLength": 1,
@@ -263,7 +289,7 @@
                                   "tool_allowlist",
                                   "none"
                                 ],
-                                "description": "How read-only access is enforced for a harness: a filesystem sandbox, permission denial, a tool allowlist, or none (read-only intent is advisory).",
+                                "description": "How a harness applies read-only access: a filesystem sandbox, permission denial, a tool allowlist, or none (read-only intent is advisory).",
                                 "default": "none"
                               },
                               "write_mechanism": {
@@ -630,6 +656,63 @@
                             ],
                             "description": "Whether an absence from this harness's model lists (the live models() answer and the manifest known_models alike) proves a model is ABSENT; omitted = authoritative (an unlisted model is refused). advisory = absence is not proof, so an explicit model is forwarded to the vendor and disclosed instead of refused."
                           },
+                          "model_routing_variants": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "suffix": {
+                                  "type": "string",
+                                  "pattern": "^:[a-z][a-z0-9_-]*$",
+                                  "description": "The suffix, colon included (e.g. ':nitro')."
+                                },
+                                "billing": {
+                                  "type": "string",
+                                  "enum": [
+                                    "base",
+                                    "service_tier"
+                                  ],
+                                  "description": "base = billed like the listed row; service_tier = the provider may serve it on another service tier billed at that tier's rate."
+                                }
+                              },
+                              "required": [
+                                "suffix",
+                                "billing"
+                              ],
+                              "additionalProperties": false,
+                              "description": "One declared request-time routing suffix and its billing effect."
+                            },
+                            "minItems": 1,
+                            "description": "Request-time routing suffixes this harness's provider accepts on a listed model id; an id ending in declared suffixes is admitted when the id without them is an exact catalog row. Omitted = exact catalog membership only."
+                          },
+                          "model_refused_variants": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "suffix": {
+                                  "type": "string",
+                                  "pattern": "^:[a-z][a-z0-9_-]*$",
+                                  "description": "The suffix, colon included (e.g. ':online')."
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "provider_web_search"
+                                  ],
+                                  "description": "provider_web_search = the provider would search the web for the request, outside this route's web policy."
+                                }
+                              },
+                              "required": [
+                                "suffix",
+                                "reason"
+                              ],
+                              "additionalProperties": false,
+                              "description": "One declared request-time suffix this harness refuses, and why."
+                            },
+                            "minItems": 1,
+                            "description": "Request-time suffixes this harness refuses in any position after the base id, whether or not a catalog lists the id or could be read. Omitted = none."
+                          },
                           "known_models": {
                             "type": "array",
                             "items": {
@@ -707,7 +790,7 @@
                           "description": "Active filesystem/command access profile for a run: readonly (no writes), workspace_write (use the harness's native workspace-write policy), full (unrestricted; requires the per-repo trust allow for a run an operator starts at a surface, not for an execution.delegated run), inherit_native (defer to the harness's own native settings)."
                         },
                         "default": [],
-                        "description": "Access profiles the adapter can enforce."
+                        "description": "Access profiles the adapter can translate to its harness."
                       }
                     },
                     "required": [
@@ -731,7 +814,7 @@
                   "type": "string"
                 },
                 "default": [],
-                "description": "Intents the gateway will route to this harness."
+                "description": "Intents an explicit selection of this harness may run: capability intents its doctor enables. A degraded harness keeps the intents its doctor still enables, with its reasons; an unavailable harness has none."
               },
               "routableIntents": {
                 "type": "array",
@@ -739,7 +822,7 @@
                   "type": "string"
                 },
                 "default": [],
-                "description": "Intents the harness is actually routable for right now (doctor-gated); the server-side availability truth surfaces must read instead of re-deriving."
+                "description": "Intents the automatic (Auto pool) routing may choose this harness for: enabledIntents while the doctor reports ok, empty for a degraded or unavailable harness. Explicit selection reads enabledIntents instead."
               },
               "disabledIntents": {
                 "type": "array",

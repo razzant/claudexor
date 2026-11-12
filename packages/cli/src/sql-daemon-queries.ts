@@ -4,10 +4,11 @@ import {
   type CommandBackend,
   type ObservationListener,
   type EngineStore,
+  type RunObservationOptions,
   type createSqlDaemonServices,
 } from "@claudexor/daemon";
 import { readTaskGroupRuns } from "@claudexor/control-api";
-import type { TaskGroupRunsInput } from "@claudexor/schema";
+import { RecordedControlRunStartRequest, type TaskGroupRunsInput } from "@claudexor/schema";
 
 type ControlReadGraph = Pick<
   ReturnType<typeof createSqlDaemonServices>,
@@ -59,7 +60,11 @@ export function sqlControlReadSources(
         signal,
       );
     },
-    runObservations: async (ids: readonly string[], signal?: AbortSignal) => {
+    runObservations: async (
+      ids: readonly string[],
+      signal?: AbortSignal,
+      options?: RunObservationOptions,
+    ) => {
       const identity = storeId();
       if (!identity)
         throw Object.assign(
@@ -71,7 +76,14 @@ export function sqlControlReadSources(
           },
         );
       const graph = current();
-      return readRunObservations(graph.commands.queries, graph.interactions, identity, ids, signal);
+      return readRunObservations(
+        graph.commands.queries,
+        graph.interactions,
+        identity,
+        ids,
+        signal,
+        options,
+      );
     },
     runObservationChanges: (listener: ObservationListener) =>
       current().store.observations.subscribe(listener),
@@ -113,11 +125,21 @@ export function sqlStartupRoots(store: EngineStore) {
       FROM command WHERE live=1 AND json_type(CAST(summary AS TEXT),'$.params.execution.workspaceRoot')='text'`),
   };
 }
+/** Live product commands for project removal and retention. A run's scope is
+ * the one its accepted request recorded: the indexed project root, otherwise
+ * the compact summary's scope as written, so a malformed one stays
+ * unresolvable. An omitted scope reads as the request schema's default (no
+ * project). A summary that records no request params yields no scope, which
+ * the project-removal fence refuses. Summary bytes need not be JSON. */
 export function sqlActivityRecords(store: EngineStore) {
   return (
     store
       .prepare(
-        `SELECT run_id AS runId,state,finished_at AS finishedAt,scope_root AS root,thread_id AS threadId
+        `SELECT run_id AS runId,state,finished_at AS finishedAt,scope_root AS root,thread_id AS threadId,
+      CASE WHEN scope_root IS NULL AND json_valid(CAST(summary AS TEXT))
+        THEN json_type(CAST(summary AS TEXT),'$.params') END AS paramsType,
+      CASE WHEN scope_root IS NULL AND json_valid(CAST(summary AS TEXT))
+        THEN CAST(summary AS TEXT) -> '$.params.scope' END AS scope
     FROM command WHERE live=1 AND kind='product'`,
       )
       .all() as Array<{
@@ -126,14 +148,22 @@ export function sqlActivityRecords(store: EngineStore) {
       finishedAt: string | null;
       root: string | null;
       threadId: string | null;
+      paramsType: string | null;
+      scope: string | null;
     }>
   ).map((row) => ({
     runId: row.runId ?? undefined,
     state: row.state,
     finishedAt: row.finishedAt ?? undefined,
     params: {
-      scope: row.root ? { kind: "project", root: row.root } : { kind: "global" },
+      scope: row.root !== null ? { kind: "project", root: row.root } : recordedScope(row),
       threadId: row.threadId ?? undefined,
     },
   }));
+}
+
+function recordedScope(row: { paramsType: string | null; scope: string | null }): unknown {
+  if (row.paramsType !== "object") return undefined;
+  if (row.scope === null) return RecordedControlRunStartRequest.shape.scope.parse(undefined);
+  return JSON.parse(row.scope) as unknown;
 }

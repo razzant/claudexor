@@ -1,0 +1,442 @@
+{
+  "generatedBy": ["createCursorParser", "harnessEventPayload"],
+  "source": "packages/harness-cursor/fixtures/shell/command-outcomes.jsonl",
+  "rows": [
+    {
+      "seq": 1,
+      "ts": "2026-10-29T00:00:00.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:00.000Z",
+        "type": "started",
+        "title": "started",
+        "observed_model": "Fixture Model",
+        "payload": { "native_session_id": "ses-shell-outcomes" }
+      }
+    },
+    {
+      "seq": 2,
+      "ts": "2026-10-29T00:00:01.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:01.000Z",
+        "type": "message",
+        "title": "I'll run the checks.",
+        "text": "I'll run the checks."
+      }
+    },
+    {
+      "seq": 3,
+      "ts": "2026-10-29T00:00:02.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:02.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": { "name": "shell", "kind": "command", "use_id": "c-exit0", "target": "ls" }
+      }
+    },
+    {
+      "seq": 4,
+      "ts": "2026-10-29T00:00:03.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:03.000Z",
+        "type": "tool_result",
+        "title": "tool_result",
+        "text": "tool_result",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "c-exit0",
+          "target": "ls",
+          "status": "ok",
+          "content_summary": "{\"success\":{\"command\":\"ls\",\"workingDirectory\":\"/repo\",\"exitCode\":0,\"signal\":\"\",\"stdout\":\"README.md\\nsrc\\n\",\"stderr\":\"\",\"executionTime\":41,\"interleavedOutput\":\"README.md\\nsrc\\n\",\"localExecutionTimeMs\":38}}",
+          "exit_code": 0,
+          "command_outcome": { "state": "exited" }
+        }
+      }
+    },
+    {
+      "seq": 5,
+      "ts": "2026-10-29T00:00:04.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:04.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": { "name": "shell", "kind": "command", "use_id": "c-exit1", "target": "pnpm test" }
+      }
+    },
+    {
+      "seq": 6,
+      "ts": "2026-10-29T00:00:05.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:05.000Z",
+        "type": "tool_result",
+        "title": "tool_result: error: {\"failure\":{\"command\":\"pnpm test\",\"workingDirectory\":\"/repo\",\"exitCode\":1,\"signal\":\"\",\"stdout\":\"1 failing\\n\",\"stderr\":\"\",\"executionTime\":2200,\"interleavedOutput\":\"1 failing\\n\",\"aborted\":false,\"localExecutionTimeMs\":2190}}",
+        "text": "tool_result: error: {\"failure\":{\"command\":\"pnpm test\",\"workingDirectory\":\"/repo\",\"exitCode\":1,\"signal\":\"\",\"stdout\":\"1 failing\\n\",\"stderr\":\"\",\"executionTime\":2200,\"interleavedOutput\":\"1 failing\\n\",\"aborted\":false,\"localExecutionTimeMs\":2190}}",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "c-exit1",
+          "target": "pnpm test",
+          "status": "error",
+          "error_summary": "{\"failure\":{\"command\":\"pnpm test\",\"workingDirectory\":\"/repo\",\"exitCode\":1,\"signal\":\"\",\"stdout\":\"1 failing\\n\",\"stderr\":\"\",\"executionTime\":2200,\"interleavedOutput\":\"1 failing\\n\",\"aborted\":false,\"localExecutionTimeMs\":2190}}",
+          "content_summary": "{\"failure\":{\"command\":\"pnpm test\",\"workingDirectory\":\"/repo\",\"exitCode\":1,\"signal\":\"\",\"stdout\":\"1 failing\\n\",\"stderr\":\"\",\"executionTime\":2200,\"interleavedOutput\":\"1 failing\\n\",\"aborted\":false,\"localExecutionTimeMs\":2190}}",
+          "exit_code": 1,
+          "command_outcome": { "state": "exited" }
+        }
+      }
+    },
+    {
+      "seq": 7,
+      "ts": "2026-10-29T00:00:06.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:06.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "c-bg-timeout",
+          "target": "find /repo -name '*.log'"
+        }
+      }
+    },
+    {
+      "seq": 8,
+      "ts": "2026-10-29T00:00:07.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:07.000Z",
+        "type": "tool_result",
+        "title": "tool_result: Handed off to background after its 30s timeout; completion not observed · shell 3 · pid 4242",
+        "text": "tool_result: Handed off to background after its 30s timeout; completion not observed · shell 3 · pid 4242",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "c-bg-timeout",
+          "target": "find /repo -name '*.log'",
+          "status": "ok",
+          "content_summary": "{\"success\":{\"command\":\"find /repo -name '*.log'\",\"workingDirectory\":\"/repo\",\"exitCode\":0,\"signal\":\"\",\"stdout\":\"\",\"stderr\":\"\",\"executionTime\":0,\"shellId\":3,\"interleavedOutput\":\"/repo/a.log\\n/repo/b.log\\n\",\"pid\":4242,\"msToWait\":30000,\"backgroundReason\":\"SHELL_BACKGROUND_REASON_TIMEOUT\"}}",
+          "command_outcome": {
+            "state": "backgrounded",
+            "background_reason": "timeout",
+            "timeout_ms": 30000,
+            "shell_id": "3",
+            "pid": 4242
+          }
+        },
+        "payload": {
+          "native_result": {
+            "success": {
+              "command": "find /repo -name '*.log'",
+              "workingDirectory": "/repo",
+              "exitCode": 0,
+              "signal": "",
+              "stdout": "",
+              "stderr": "",
+              "executionTime": 0,
+              "shellId": 3,
+              "interleavedOutput": "/repo/a.log\n/repo/b.log\n",
+              "pid": 4242,
+              "msToWait": 30000,
+              "backgroundReason": "SHELL_BACKGROUND_REASON_TIMEOUT"
+            }
+          }
+        }
+      }
+    },
+    {
+      "seq": 9,
+      "ts": "2026-10-29T00:00:08.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:08.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "c-bg-request",
+          "target": "pnpm dev"
+        }
+      }
+    },
+    {
+      "seq": 10,
+      "ts": "2026-10-29T00:00:09.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:09.000Z",
+        "type": "tool_result",
+        "title": "tool_result: Handed off to background; completion not observed · shell 4 · pid 4343",
+        "text": "tool_result: Handed off to background; completion not observed · shell 4 · pid 4343",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "c-bg-request",
+          "target": "pnpm dev",
+          "status": "ok",
+          "content_summary": "{\"success\":{\"command\":\"pnpm dev\",\"workingDirectory\":\"/repo\",\"exitCode\":0,\"signal\":\"\",\"stdout\":\"\",\"stderr\":\"\",\"executionTime\":0,\"shellId\":4,\"interleavedOutput\":\"ready on port 3000\\n\",\"pid\":4343,\"msToWait\":5000,\"backgroundReason\":\"SHELL_BACKGROUND_REASON_USER_REQUEST\"}}",
+          "command_outcome": {
+            "state": "backgrounded",
+            "background_reason": "requested",
+            "shell_id": "4",
+            "pid": 4343
+          }
+        },
+        "payload": {
+          "native_result": {
+            "success": {
+              "command": "pnpm dev",
+              "workingDirectory": "/repo",
+              "exitCode": 0,
+              "signal": "",
+              "stdout": "",
+              "stderr": "",
+              "executionTime": 0,
+              "shellId": 4,
+              "interleavedOutput": "ready on port 3000\n",
+              "pid": 4343,
+              "msToWait": 5000,
+              "backgroundReason": "SHELL_BACKGROUND_REASON_USER_REQUEST"
+            }
+          }
+        }
+      }
+    },
+    {
+      "seq": 11,
+      "ts": "2026-10-29T00:00:10.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:10.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": { "name": "shell", "kind": "command", "use_id": "c-timeout", "target": "sleep 120" }
+      }
+    },
+    {
+      "seq": 12,
+      "ts": "2026-10-29T00:00:11.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:11.000Z",
+        "type": "tool_result",
+        "title": "tool_result: Timed out after 30s · exit status unknown",
+        "text": "tool_result: Timed out after 30s · exit status unknown",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "c-timeout",
+          "target": "sleep 120",
+          "status": "ok",
+          "content_summary": "{\"timeout\":{\"command\":\"sleep 120\",\"workingDirectory\":\"/repo\",\"timeoutMs\":30000}}",
+          "command_outcome": { "state": "timed_out", "timeout_ms": 30000 }
+        },
+        "payload": {
+          "native_result": {
+            "timeout": { "command": "sleep 120", "workingDirectory": "/repo", "timeoutMs": 30000 }
+          }
+        }
+      }
+    },
+    {
+      "seq": 13,
+      "ts": "2026-10-29T00:00:12.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:12.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": { "name": "shell", "kind": "command", "use_id": "c-abort", "target": "pnpm build" }
+      }
+    },
+    {
+      "seq": 14,
+      "ts": "2026-10-29T00:00:13.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:13.000Z",
+        "type": "tool_result",
+        "title": "tool_result: error: {\"failure\":{\"command\":\"pnpm build\",\"workingDirectory\":\"/repo\",\"exitCode\":-1,\"signal\":\"SIGTERM\",\"stdout\":\"building\\n\",\"stderr\":\"\",\"executionTime\":30004,\"interleavedOutput\":\"building\\n\",\"abortReason\":\"SHELL_ABORT_REASON_TIMEOUT\",\"aborted\":true,\"localExecutionTimeMs\":30001}}",
+        "text": "tool_result: error: {\"failure\":{\"command\":\"pnpm build\",\"workingDirectory\":\"/repo\",\"exitCode\":-1,\"signal\":\"SIGTERM\",\"stdout\":\"building\\n\",\"stderr\":\"\",\"executionTime\":30004,\"interleavedOutput\":\"building\\n\",\"abortReason\":\"SHELL_ABORT_REASON_TIMEOUT\",\"aborted\":true,\"localExecutionTimeMs\":30001}}",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "c-abort",
+          "target": "pnpm build",
+          "status": "error",
+          "error_summary": "{\"failure\":{\"command\":\"pnpm build\",\"workingDirectory\":\"/repo\",\"exitCode\":-1,\"signal\":\"SIGTERM\",\"stdout\":\"building\\n\",\"stderr\":\"\",\"executionTime\":30004,\"interleavedOutput\":\"building\\n\",\"abortReason\":\"SHELL_ABORT_REASON_TIMEOUT\",\"aborted\":true,\"localExecutionTimeMs\":30001}}",
+          "content_summary": "{\"failure\":{\"command\":\"pnpm build\",\"workingDirectory\":\"/repo\",\"exitCode\":-1,\"signal\":\"SIGTERM\",\"stdout\":\"building\\n\",\"stderr\":\"\",\"executionTime\":30004,\"interleavedOutput\":\"building\\n\",\"abortReason\":\"SHELL_ABORT_REASON_TIMEOUT\",\"aborted\":true,\"localExecutionTimeMs\":30001}}",
+          "command_outcome": { "state": "timed_out" }
+        },
+        "payload": {
+          "native_result": {
+            "failure": {
+              "command": "pnpm build",
+              "workingDirectory": "/repo",
+              "exitCode": -1,
+              "signal": "SIGTERM",
+              "stdout": "building\n",
+              "stderr": "",
+              "executionTime": 30004,
+              "interleavedOutput": "building\n",
+              "abortReason": "SHELL_ABORT_REASON_TIMEOUT",
+              "aborted": true,
+              "localExecutionTimeMs": 30001
+            }
+          }
+        }
+      }
+    },
+    {
+      "seq": 15,
+      "ts": "2026-10-29T00:00:14.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:14.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "c-spawn",
+          "target": "missing-tool --version"
+        }
+      }
+    },
+    {
+      "seq": 16,
+      "ts": "2026-10-29T00:00:15.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:15.000Z",
+        "type": "tool_result",
+        "title": "tool_result: error: {\"spawnError\":{\"command\":\"missing-tool --version\",\"workingDirectory\":\"/repo\",\"error\":\"spawn missing-tool ENOENT\"}}",
+        "text": "tool_result: error: {\"spawnError\":{\"command\":\"missing-tool --version\",\"workingDirectory\":\"/repo\",\"error\":\"spawn missing-tool ENOENT\"}}",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "c-spawn",
+          "target": "missing-tool --version",
+          "status": "error",
+          "error_summary": "{\"spawnError\":{\"command\":\"missing-tool --version\",\"workingDirectory\":\"/repo\",\"error\":\"spawn missing-tool ENOENT\"}}",
+          "content_summary": "{\"spawnError\":{\"command\":\"missing-tool --version\",\"workingDirectory\":\"/repo\",\"error\":\"spawn missing-tool ENOENT\"}}"
+        }
+      }
+    },
+    {
+      "seq": 17,
+      "ts": "2026-10-29T00:00:16.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:16.000Z",
+        "type": "message",
+        "title": "The log search and the dev server are still running in the background; the tests fail and the build timed out.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```",
+        "text": "The log search and the dev server are still running in the background; the tests fail and the build timed out.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```"
+      }
+    },
+    {
+      "seq": 18,
+      "ts": "2026-10-29T00:00:17.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:17.000Z",
+        "type": "usage",
+        "title": "usage: 4000 in / 120 out",
+        "usage": {
+          "input_tokens": 4000,
+          "output_tokens": 120,
+          "cached_input_tokens": 1000,
+          "input_token_usage": {
+            "total_tokens": 5000,
+            "cache_read_tokens": 1000,
+            "cache_write_tokens": 0
+          }
+        }
+      }
+    },
+    {
+      "seq": 19,
+      "ts": "2026-10-29T00:00:18.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:18.000Z",
+        "type": "message",
+        "title": "The log search and the dev server are still running in the background; the tests fail and the build timed out.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```",
+        "text": "The log search and the dev server are still running in the background; the tests fail and the build timed out.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```",
+        "final": true,
+        "payload": { "final_source": "assistant_message" }
+      }
+    }
+  ]
+}

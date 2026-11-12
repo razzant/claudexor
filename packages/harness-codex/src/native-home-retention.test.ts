@@ -15,7 +15,7 @@ import { createCodexAdapter } from "./index.js";
 const roots: string[] = [];
 afterEach(() => {
   for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const old = new Date("2020-01-01");
 const id = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
 function fixture() {

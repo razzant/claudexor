@@ -4,13 +4,17 @@ import FoundationNetworking
 #endif
 
 public extension GatewayClient {
+    /// `apiKeys` adds the negotiated API-key rows (each default key route and
+    /// registered API-key account); send it only when the catalog advertises it.
     func quota(
         refresh: Bool = false,
         resources: Bool = false,
+        apiKeys: Bool = false,
         target: AccountTarget? = nil
     ) async throws -> ControlQuotaResponse {
-        var req = request("quota", method: refresh ? "POST" : "GET",
-                          queryItems: resources ? [URLQueryItem(name: "view", value: "resources")] : [])
+        var query = resources ? [URLQueryItem(name: "view", value: "resources")] : []
+        if resources && apiKeys { query.append(URLQueryItem(name: "includeApiKeys", value: "true")) }
+        var req = request("quota", method: refresh ? "POST" : "GET", queryItems: query)
         if let target {
             guard refresh else { throw GatewayError.transport("Account refresh requires POST") }
             struct Body: Encodable { let target: AccountTarget }

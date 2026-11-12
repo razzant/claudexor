@@ -56,6 +56,8 @@ const unknown = (
 function fixture(pollMs?: number) {
   const records = new Map<string, RunObservationRecord>();
   const questions = new Map<string, string[] | Error>();
+  /** Runs whose pending questions are all async; any other pending run blocks. */
+  const asyncOnly = new Set<string>();
   const listeners = new Set<RunObservationListener>();
   const subscribe = vi.fn((listener: RunObservationListener) => {
     listeners.add(listener);
@@ -63,7 +65,11 @@ function fixture(pollMs?: number) {
       listeners.delete(listener);
     };
   });
-  const read = (ids: readonly string[], signal?: AbortSignal) =>
+  const read = (
+    ids: readonly string[],
+    signal?: AbortSignal,
+    options?: { includeBlocking: true },
+  ) =>
     readRunObservations(
       {
         observationRecords: (requested) =>
@@ -75,16 +81,19 @@ function fixture(pollMs?: number) {
       },
       {
         snapshotPendingIdentities: async (ids) =>
-          new Map(
+          new Map<string, Error | ReturnType<typeof digestPendingIdentities>>(
             ids.map((id) => {
               const value = questions.get(id) ?? [];
-              return [id, value instanceof Error ? value : digestPendingIdentities(value)] as const;
+              if (value instanceof Error) return [id, value] as const;
+              const digest = digestPendingIdentities(value);
+              return [id, asyncOnly.has(id) ? { ...digest, blocking: false } : digest] as const;
             }),
           ),
       },
       "11111111-1111-4111-8111-111111111111",
       ids,
       signal,
+      options,
     );
   const snapshot = vi.fn(read);
   const host = pollMs === undefined ? { snapshot, subscribe } : { snapshot, pollMs };
@@ -125,9 +134,29 @@ function fixture(pollMs?: number) {
     void work.catch(() => {});
     return work;
   }
+  /** The same wait asking for the blocking fact. */
+  function beginBlocking(
+    targets: Array<{ runId: string; seen?: string | null }>,
+    waitMs?: number,
+    includeBlocking = true,
+  ) {
+    const work = observeRunAttention(
+      RunWaitManyInput.parse({
+        targets,
+        includeBlocking,
+        ...(waitMs === undefined ? {} : { waitMs }),
+      }),
+      host,
+      controller().signal,
+    );
+    void work.catch(() => {});
+    return work;
+  }
   return {
     records,
     questions,
+    asyncOnly,
+    beginBlocking,
     listeners,
     snapshot,
     subscribe,
@@ -145,6 +174,71 @@ function clean(f: ReturnType<typeof fixture>, signal?: AbortSignal) {
   expect(vi.getTimerCount()).toBe(0);
   if (signal) expect(getEventListeners(signal, "abort")).toHaveLength(0);
 }
+
+describe("observeRunAttention includeBlocking opt-in (#628)", () => {
+  it("passes the opt-in to the snapshot owner, and otherwise calls it exactly as before", async () => {
+    const f = fixture();
+    f.seed("a");
+    f.seed("b");
+    f.questions.set("run-a", ["question-a"]);
+    f.asyncOnly.add("run-a");
+    const targets = [{ runId: "a" }, { runId: "b" }];
+    const plain = await f.begin(targets, 0);
+    expect(f.snapshot.mock.calls.map((call) => call.length)).toEqual([2]);
+    expect(JSON.stringify(plain)).not.toContain("blocking");
+    f.snapshot.mockClear();
+    const unasked = await f.beginBlocking(targets, 0, false);
+    expect(f.snapshot.mock.calls.map((call) => call.length)).toEqual([2]);
+    expect(JSON.stringify(unasked)).toBe(JSON.stringify(plain));
+    f.snapshot.mockClear();
+    const marked = await f.beginBlocking(targets, 0);
+    expect(f.snapshot.mock.calls.map((call) => call[2])).toEqual([{ includeBlocking: true }]);
+    expect(marked).toEqual({
+      wakeReason: "attention",
+      attention: [0],
+      summaries: [{ ...plain.summaries[0], blocking: false }, plain.summaries[1]],
+    });
+    clean(f);
+  });
+
+  it("keeps the opt-in on notice-driven re-reads and wakes on an async question like any other", async () => {
+    const f = fixture();
+    f.seed("a");
+    f.seed("b");
+    const [a, b] = await f.read(["a", "b"]);
+    const work = f.beginBlocking(
+      [
+        { runId: "a", seen: a!.token! },
+        { runId: "b", seen: b!.token! },
+      ],
+      1000,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    f.questions.set("run-b", ["question-b"]);
+    f.asyncOnly.add("run-b");
+    f.notice("b");
+    await vi.advanceTimersByTimeAsync(0);
+    const woke = await work;
+    expect(woke).toMatchObject({ wakeReason: "attention", attention: [1] });
+    expect(woke.summaries[1]).toMatchObject({ pending: true, blocking: false });
+    expect(woke.summaries[0]).not.toHaveProperty("blocking");
+    expect(f.snapshot.mock.calls.map(([ids, , options]) => [ids, options])).toEqual([
+      [["a", "b"], { includeBlocking: true }],
+      [["b"], { includeBlocking: true }],
+    ]);
+    // Echoing the async row's token acknowledges it exactly as a blocking one.
+    expect(
+      await f.beginBlocking(
+        [
+          { runId: "a", seen: a!.token! },
+          { runId: "b", seen: woke.summaries[1]!.token },
+        ],
+        0,
+      ),
+    ).toMatchObject({ wakeReason: "timeout", attention: [] });
+    clean(f);
+  });
+});
 
 describe("observeRunAttention", () => {
   it.each(["succeeded", "failed", "cancelled", "interrupted"] as const)(

@@ -1,9 +1,9 @@
 {
-  "nodeVersion": "24.16.0",
+  "nodeVersion": "24.22.3",
   "assets": {
-    "darwin-arm64": "39189dab4eeb15706c424af0ac08a3044c9e48f7db12a7d77f6b7aafc7dd5df6",
-    "darwin-x64": "298b4c7b3cb80765c8703e42b90324a4ece3b6634947b89e769c3c980ab55185",
-    "linux-arm64": "589f5b6dd4fcfee4dfda73013903c966abaa8abd93dbc9d436544e472b4f0e74",
-    "linux-x64": "2faf6a387e9b62b888e21c54f01249fb27537ffecf1842f29f4c919d0a59a0ff"
+    "darwin-arm64": "ff6e17d4874b76d272212b908cc020d6e815fba5a6c7eaaa06add725840307fd",
+    "darwin-x64": "977614af0504c81045e7fd85596dbca0e5f951b96681516dadafedcca8c447f7",
+    "linux-arm64": "261af2af250dfd7e9f25cf151d1b2713a0adf8f10a9ad116c4947f68627affe8",
+    "linux-x64": "061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2"
   }
 }

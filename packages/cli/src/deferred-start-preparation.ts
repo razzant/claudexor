@@ -3,6 +3,7 @@ import { inheritContinuationBody, prepareRunStart } from "@claudexor/control-api
 import {
   captureRunDefaults,
   executionRunConfig,
+  registryInstanceModel,
   resolveRunInputDefaults,
   type DelegationBudgetAuthority,
 } from "@claudexor/orchestrator";
@@ -59,6 +60,7 @@ export function createDeferredStartPreparation(deps: {
       const resolved = resolveRunInputDefaults(oneShotRunInput(request), {
         config,
         registryIds: registry.keys(),
+        instanceModel: registryInstanceModel(registry),
       });
       return CapturedRunStart.parse({
         ...request,
@@ -81,17 +83,20 @@ export function createDeferredStartPreparation(deps: {
         deferredDefaults: captureRunDefaults(config),
       });
     },
-    async validate(captured) {
+    async validate(captured, heldBy) {
       const { deferredDefaults: _snapshot, ...request } = captured;
+      // The accepted draft reads its own refs: a released ID it holds still resolves.
+      const held = {
+        resolve: (refs: Parameters<ResourceStorePort["resolve"]>[0]) =>
+          deps.resources.resolve(refs, heldBy),
+      };
       const normalized = await prepareRunStart(request, {
-        ...services,
-        preflightRunRequirements: createRunRequirementsPreflight(
-          deps.resources,
-          noProjectRepoRoot(),
-          {
-            config: (root) => executionRunConfig(root, captured.deferredDefaults),
-          },
-        ),
+        validateResources: async (refs) => {
+          held.resolve(refs);
+        },
+        preflightRunRequirements: createRunRequirementsPreflight(held, noProjectRepoRoot(), {
+          config: (root) => executionRunConfig(root, captured.deferredDefaults),
+        }),
       });
       const orchestrator = buildRunOrchestrator({
         accounts: deps.accounts,
@@ -112,7 +117,7 @@ export function createDeferredStartPreparation(deps: {
       }
       await orchestrator.preflightOneShot({
         ...oneShotRunInput(normalized),
-        attachments: deps.resources.resolve(normalized.attachments),
+        attachments: held.resolve(normalized.attachments),
         continuation,
       });
     },

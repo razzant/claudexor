@@ -31,7 +31,8 @@ import {
   ControlRunState,
   TERMINAL_LIFECYCLES,
   taskGroupLaunchMetadata,
-  taskGroupReceiptMetadata,
+  acceptedReceiptMetadata,
+  CONTROL_STORE_IDENTITY_HEADER,
   type TaskGroupReceipt,
 } from "@claudexor/schema";
 import { acceptedPreRunFailure } from "./run-start-acceptance.js";
@@ -205,10 +206,10 @@ export async function ensureDaemon(
 /**
  * Connect to an ALREADY-RUNNING daemon + control API WITHOUT ever spawning one.
  * Returns null when no token exists, the socket is unreachable, or the control
- * API is down. Used by read-only-looking run lookups (inspect/apply) so a typo'd
- * run id reports "no such run" instead of silently launching a background daemon
- * (`ensureDaemon`, by contrast, auto-starts and is reserved for paths that act —
- * enqueue/decision). A daemon that REFUSES the typed handshake is NOT "not
+ * API is down. Used by read-only run lookups (inspect, MCP recovery reads) so a
+ * typo'd run id never silently launches a background daemon (`ensureDaemon`, by
+ * contrast, auto-starts and is reserved for paths that act — enqueue/decision/
+ * apply). A daemon that REFUSES the typed handshake is NOT "not
  * running": the typed problem propagates — still without spawning (#93).
  */
 export async function connectDaemonIfRunning(): Promise<{
@@ -302,8 +303,9 @@ export async function enqueueAndAwait(
     internalDaemonEnqueue?: boolean;
     startTimeoutMs?: number;
     /** Invoked each terminal-wait iteration once the run is bound (MCP uses
-     * this to bridge pendingInteractions -> host elicitation). Awaited: a
-     * long answer round-trip pauses status polling, never the run itself. */
+     * this to bridge pendingInteractions -> host elicitation). Awaited: it
+     * must return promptly, or status polling and the terminal wait stop;
+     * the interaction bridge asks its prompts beside this loop. */
     onPollTick?: (info: { runId: string }) => void | Promise<void>;
   } = { waitForTerminal: true },
 ): Promise<DaemonRunOutcome> {
@@ -345,8 +347,8 @@ export async function enqueueAndAwait(
     const startRes = await controlApiFetch(addr, url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${addr.token}`,
         "content-type": "application/json",
+        [CONTROL_STORE_IDENTITY_HEADER]: "1",
         ...(opts.idempotencyKey !== undefined ? { "Idempotency-Key": opts.idempotencyKey } : {}),
       },
       body: JSON.stringify(postBody),
@@ -363,7 +365,7 @@ export async function enqueueAndAwait(
       );
     }
     jobId = String(start["jobId"] ?? "");
-    metadata = taskGroupReceiptMetadata(start);
+    metadata = acceptedReceiptMetadata(start);
     runId = typeof start["runId"] === "string" ? (start["runId"] as string) : "";
     runDir = typeof start["runDir"] === "string" ? (start["runDir"] as string) : "";
     // The daemon already waited for binding before answering 202: the
@@ -386,7 +388,7 @@ export async function enqueueAndAwait(
     process.stderr.write("\ncancelling daemon run (Ctrl-C again to detach)...\n");
     void controlApiFetch(addr, `/runs/${encodeURIComponent(jobId)}/control`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         control: {
           kind: "cancel",

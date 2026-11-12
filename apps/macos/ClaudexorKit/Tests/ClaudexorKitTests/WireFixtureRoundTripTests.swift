@@ -30,6 +30,8 @@ import Testing
         case "RunOutcomeFacts": return try recode(RunOutcomeFacts.self, data)
         case "DelegationCapability": return try recode(HarnessDelegationCapability.self, data)
         case "RunDelegationInfo": return try recode(RunDelegationInfo.self, data)
+        case "ControlRouteControl": return try recode(RouteControlInfo.self, data)
+        case "ControlWebEvidence": return try recode(WebEvidence.self, data)
         case "RunFailure": return try recode(RunFailureInfo.self, data)
         case "ControlBudgetSnapshot": return try recode(BudgetSnapshot.self, data)
         case "PlanReadiness": return try recode(PlanReadiness.self, data)
@@ -47,6 +49,7 @@ import Testing
         "ThreadHistoryPage", "ThreadPromptPart",
         "ControlHandshakeResponse", "ControlProblem", "ControlThread", "ControlThreadTurn",
         "RunOutcomeFacts", "DelegationCapability", "RunDelegationInfo", "RunFailure",
+        "ControlRouteControl", "ControlWebEvidence",
         "ControlBudgetSnapshot", "PlanReadiness", "PlanQuestionsArtifact",
         "ApplyEligibility", "ControlQuotaResponse", "ControlHarnessSettingsPatch",
         "ControlSettingsSnapshot", "EffortResolution",

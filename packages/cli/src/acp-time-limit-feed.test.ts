@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AcpTimeLimitFeed } from "./acp-time-limit-feed.js";
 
@@ -26,7 +27,7 @@ describe("ACP live time-limit feed", () => {
     ]);
   });
 
-  it("replays only timer events and starts only one stream", async () => {
+  it("replays timer events, skips an unreadable row and starts only one stream", async () => {
     const event = {
       type: "control.applied",
       payload: { control: { kind: "time_limit", action: "reached" }, timeLimit: { mode: "soft" } },
@@ -46,6 +47,57 @@ describe("ACP live time-limit feed", () => {
     await feed.close(true);
     expect(emit).toHaveBeenCalledExactlyOnceWith(event);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  // X1: `acp serve` has no other source of tool activity. The rows are the ones
+  // the real Cursor parser and journal projection store for the #546 fixture.
+  it("forwards the run's tool activity in order beside timer events, and nothing else", async () => {
+    const stored = (
+      JSON.parse(
+        readFileSync(
+          new URL(
+            "../../../apps/macos/ClaudexorApp/Tests/ClaudexorAppTests/Fixtures/cursor-background-completion-transcript.json",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      ) as { rows: Array<{ seq: number; payload: Record<string, any> }> }
+    ).rows;
+    const timer = {
+      type: "control.applied",
+      payload: { control: { kind: "time_limit", action: "reached" }, timeLimit: { mode: "soft" } },
+    };
+    const frames = stored.map(
+      (row) => `id: ${row.seq}\nevent: harness.event\ndata: ${JSON.stringify(row)}\n\n`,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            `: connected\n\n${frames.join("")}event: harness.event\ndata: not-json\n\nevent: control.applied\ndata: ${JSON.stringify(timer)}\n\nevent: end\ndata: {}\n\n`,
+          ),
+        ),
+    );
+    const emit = vi.fn(),
+      feed = new AcpTimeLimitFeed(addr, emit);
+    feed.start("run-1");
+    await feed.close(true);
+    const forwarded = emit.mock.calls.map(([event]) => event);
+    expect(forwarded.map((event) => event.seq ?? event.type)).toEqual([
+      3,
+      4,
+      5,
+      6,
+      8,
+      9,
+      timer.type,
+    ]);
+    expect(forwarded.slice(0, -1)).toEqual(
+      stored.filter((row) => [3, 4, 5, 6, 8, 9].includes(row.seq)),
+    );
+    expect(forwarded.at(-1)).toEqual(timer);
   });
 
   it("releases a quiet stream on owner teardown without a warning", async () => {

@@ -28,6 +28,19 @@ function speech(events: HarnessEvent[]): unknown[][] {
     });
 }
 
+/** Each text message that names a joined run, keys renamed as `speech` renames them. */
+function joinedRuns(events: HarnessEvent[]): unknown[][] {
+  const names = new Map<string, string>();
+  return events
+    .filter((e) => e.type === "message" || e.speech !== undefined)
+    .flatMap((e) => {
+      const key = e.speech?.key;
+      if (key !== undefined && !names.has(key)) names.set(key, `K${names.size + 1}`);
+      const run = e.payload?.["joined_speech_keys"];
+      return Array.isArray(run) ? [[e.text, run.map((k: string) => names.get(k) ?? k)]] : [];
+    });
+}
+
 const main = { parent_tool_use_id: null };
 const start = (id: unknown, extra: Frame = {}): Frame => ({
   type: "stream_event",
@@ -143,7 +156,7 @@ describe("claude speech identity: recorded 2.1.311 controlled-endpoint streams",
     expect(events.find((e) => e.status?.kind === "api_retry")?.speech).toBeUndefined();
   });
 
-  it("never emits a complete link in a text_runs_joined incarnation (joined and deferred snapshots stay unkeyed)", () => {
+  it("never emits a complete link in a text_runs_joined incarnation; each run's one frame names the keys it joins", () => {
     const frames = fixture("recorded-partial-joined.jsonl");
     expect(
       frames
@@ -160,6 +173,20 @@ describe("claude speech identity: recorded 2.1.311 controlled-endpoint streams",
       ["message", "Done.", null, null, false],
       ["message", "Done.", null, null, true],
     ]);
+    // The deferred frame after the run's last stop names that run; the result names none.
+    expect(joinedRuns(events)).toEqual([
+      ["Part one. Part two.", ["K1", "K2"]],
+      ["Done.", ["K3"]],
+    ]);
+  });
+
+  it("names no run outside a text_runs_joined incarnation", () => {
+    for (const name of [
+      "recorded-partial-messages.jsonl",
+      "recorded-partial-multiblock.jsonl",
+      "recorded-partial-replay.jsonl",
+    ])
+      expect(joinedRuns(parseAll(fixture(name))), name).toEqual([]);
   });
 });
 
@@ -183,6 +210,65 @@ describe("claude speech identity: ambiguity stays unlinked", () => {
       ["message", "a", null, null, false],
       ["message", "b", null, null, false],
     ]);
+    // Frames inside the run, before its last stop, name nothing.
+    expect(joinedRuns(events)).toEqual([]);
+  });
+
+  it("names a joined run only when its lifecycle is exact; any other text frame ends it unnamed", () => {
+    const joined = { text_runs_joined: true };
+    const events = parseAll([
+      // A block of the run whose start names another response: not exactly observed.
+      start("m1", joined),
+      blockStart(0),
+      delta(0, "a"),
+      blockStop(0),
+      blockStart(1, { api_message_id: "m2" }),
+      delta(1, "b"),
+      blockStop(1),
+      assistant("m1", [text("ab")]),
+      stop(),
+      // Another block started after the run: its frame comes too late to name it.
+      start("m3", joined),
+      blockStart(0),
+      delta(0, "c"),
+      blockStop(0),
+      blockStart(1, {}, "tool_use"),
+      assistant("m3", [text("c")]),
+      blockStop(1),
+      stop(),
+      // Another response's id ends the run; the late frame of the right id names nothing.
+      start("m4", joined),
+      blockStart(0),
+      delta(0, "d"),
+      blockStop(0),
+      assistant("m9", [text("d")]),
+      assistant("m4", [text("d")]),
+      stop(),
+      // An interrupted partial names nothing.
+      start("m5", joined),
+      blockStart(0),
+      delta(0, "e"),
+      blockStop(0),
+      assistant("m5", [text("e")], { aborted: true }),
+      stop(),
+      // A run is named once: a second frame names nothing.
+      start("m6", joined),
+      blockStart(0),
+      delta(0, "f"),
+      blockStop(0),
+      assistant("m6", [text("f")]),
+      assistant("m6", [text("f")]),
+      stop(),
+      // A frame whose own api_message_id names another response is not authoritative.
+      start("m7", { ...joined, api_message_id: "m7" }),
+      blockStart(0, { api_message_id: "m7" }),
+      delta(0, "g", { api_message_id: "m7" }),
+      blockStop(0, { api_message_id: "m7" }),
+      assistant("m7", [text("g")], { api_message_id: "m8" }),
+      stop({ api_message_id: "m7" }),
+    ]);
+    expect(joinedRuns(events)).toEqual([["f", ["K5"]]]);
+    expect(events.every((e) => e.speech?.op !== "complete")).toBe(true);
   });
 
   it("invalidates an index on a duplicate block start: no reuse, no late completion of the old key (amendment 2)", () => {

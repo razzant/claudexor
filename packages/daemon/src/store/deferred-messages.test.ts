@@ -1,7 +1,7 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 vi.mock("@claudexor/schema", () => import("../../../schema/src/index.js"));
 import {
   ControlRunStartRequest,
@@ -27,16 +27,23 @@ import { validateDeferredMessages } from "./deferred-message-rows.js";
 import { SqlResourceStore } from "./resources.js";
 import { chunks } from "./test-support/resource-fixture.js";
 import { assertDeferredOperator } from "../deferred-message-owner.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 async function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-deferred-")));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../../dist/store/flusher-worker.js"),

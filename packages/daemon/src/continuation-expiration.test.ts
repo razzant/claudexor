@@ -13,7 +13,7 @@ const roots: string[] = [];
 afterEach(() => {
   vi.mocked(readContinuationEvidence).mockClear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function records() {
   const root = mkdtempSync(join(tmpdir(), "continuation-expiry-"));
   roots.push(root);

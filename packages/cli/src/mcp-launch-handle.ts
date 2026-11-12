@@ -1,5 +1,6 @@
 import {
   isTerminalLifecycle,
+  acceptedReceiptMetadata,
   taskGroupReceiptMetadata,
   type ModeKind,
   type RunOutcomeFacts,
@@ -82,7 +83,7 @@ export async function projectLaunchHandle(
       summary,
       ...detailProjection,
       ...(out.runId ? {} : taskGroupReceiptMetadata(out.errorContext)),
-      ...taskGroupReceiptMetadata(out),
+      ...acceptedReceiptMetadata(out),
       ...(detailProblem ? { detailProblem } : {}),
     };
   } catch (error) {

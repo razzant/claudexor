@@ -9,7 +9,7 @@ let sandbox: Sandbox | undefined;
 afterEach(() => {
   sandbox?.dispose();
   sandbox = undefined;
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("ordinary folder CLI delivery", () => {
   it.skipIf(process.platform === "win32")(

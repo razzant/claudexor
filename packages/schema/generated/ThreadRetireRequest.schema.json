@@ -1,0 +1,41 @@
+{
+  "$ref": "#/definitions/ThreadRetireRequest",
+  "definitions": {
+    "ThreadRetireRequest": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The caller's durable release intent. Exactly one outcome is ever bound to it."
+        },
+        "exportId": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "closureDigest": {
+          "$ref": "#/definitions/ThreadRetireRequest/properties/exportId"
+        },
+        "contentDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "threadExportDigest over every byte the caller received."
+        },
+        "laneDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "threadExportDigest over the lane plane of the same transfer."
+        }
+      },
+      "required": [
+        "operationId",
+        "exportId",
+        "closureDigest",
+        "contentDigest",
+        "laneDigest"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

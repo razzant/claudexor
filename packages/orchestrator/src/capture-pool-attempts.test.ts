@@ -126,7 +126,7 @@ describe("one failure record carries the account list and the capture facts", ()
     expect(o.spawns.map((s) => s.profile)).toEqual(["a", "b"]);
     expect(o.result.facts).toMatchObject({
       lifecycle: "failed",
-      reason: "workspace_unavailable",
+      reason: "capture_refused",
       noChanges: null,
     });
     const t = terminal(o);
@@ -145,7 +145,7 @@ describe("one failure record carries the account list and the capture facts", ()
     expect(t.failure.nextActions).toEqual([
       `Inspect the changed files at ${t.attempt.capture_refusal?.sourceRoot}`,
       "Inspect Claudexor temporary state: private scratch cleanup failed",
-      "Retry the run",
+      "Decide on those changes yourself: Claudexor kept no exact result to apply or revert",
     ]);
     for (const text of [t.failure.safeMessage, t.summaryMd, o.result.summary]) {
       expect(text).toContain("Account attempts:\n- fake/a · m1 · a01 try 1");

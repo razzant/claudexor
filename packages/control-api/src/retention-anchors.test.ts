@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   existsSync,
   linkSync,
@@ -21,7 +21,7 @@ import { pruneRunAnchors } from "./retention-anchors.js";
 const cleanup: string[] = [];
 afterEach(() => {
   for (const root of cleanup.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const old = new Date("2020-01-01");
 const policy = { runsMaxAgeDays: 30, reviewsMaxAgeDays: 14, keepLastRunsPerProject: 0 };
 function fixture() {
@@ -40,12 +40,12 @@ function fixture() {
     records: () => [],
     referencedRunIds: () => new Set(),
   };
-  const anchor = (text: string, age = old) => {
+  const anchor = (text: string, age = old, targetRuntime = runtime) => {
     const name = `${sha256(text).slice(7)}.patch`;
-    const path = join(runtime, "anchors", "objects", name);
-    writePatchObject(runtime, path, text);
+    const path = join(targetRuntime, "anchors", "objects", name);
+    writePatchObject(targetRuntime, path, text);
     utimesSync(path, age, age);
-    return { id: sha256(text), path, cache: join(runtime, "patches", name) };
+    return { id: sha256(text), path, cache: join(targetRuntime, "patches", name) };
   };
   return { root, runtime, other, projects, deps, anchor };
 }
@@ -99,12 +99,70 @@ it("frees zero bytes when another hard link still owns the inode", async () => {
   expect(existsSync(anchor.path)).toBe(false);
   expect(readFileSync(retained, "utf8")).toBe("shared");
 });
+it("reports anchor deferral for a runtime absent from the opening inventory", async () => {
+  const f = fixture();
+  const anchor = f.anchor("unlisted deferral");
+  const deferred = new Set([join(f.root, "late-runtime")]);
+  const onTruncated = vi.fn();
+  f.deps.deferredRuntimes = () => deferred;
+  f.deps.onTruncated = onTruncated;
+  const held = await runRetentionPass(policy, { dry_run: false }, f.deps);
+  expect(existsSync(anchor.path)).toBe(true);
+  expect(held.holds).toContainEqual({
+    class: "references_changed",
+    count: 1,
+    example: "anchors kept: a registration changed during this pass",
+  });
+  expect(held.truncated).toBe(true);
+  expect(onTruncated).toHaveBeenCalledTimes(1);
+  deferred.clear();
+  onTruncated.mockClear();
+  const completed = await runRetentionPass(policy, { dry_run: false }, f.deps);
+  expect(existsSync(anchor.path)).toBe(false);
+  expect(completed.holds).toEqual([]);
+  expect(completed.truncated).toBe(false);
+  expect(onTruncated).not.toHaveBeenCalled();
+});
+it("does not hold or truncate for young anchors during an unlisted deferral", async () => {
+  const f = fixture();
+  const anchor = f.anchor("young unlisted deferral", new Date());
+  const deferred = new Set([join(f.root, "late-runtime")]);
+  const onTruncated = vi.fn();
+  f.deps.deferredRuntimes = () => deferred;
+  f.deps.onTruncated = onTruncated;
+  const receipt = await runRetentionPass(policy, { dry_run: false }, f.deps);
+  expect(existsSync(anchor.path)).toBe(true);
+  expect(receipt.holds).toEqual([]);
+  expect(receipt.truncated).toBe(false);
+  expect(onTruncated).not.toHaveBeenCalled();
+});
+it("reports one hold when an unlisted deferral reaches due anchors in several namespaces", async () => {
+  const f = fixture();
+  const first = f.anchor("first due unlisted deferral");
+  const second = f.anchor("second due unlisted deferral", old, f.other);
+  const deferred = new Set([join(f.root, "late-runtime")]);
+  const onTruncated = vi.fn();
+  f.deps.deferredRuntimes = () => deferred;
+  f.deps.onTruncated = onTruncated;
+  const receipt = await runRetentionPass(policy, { dry_run: false }, f.deps);
+  expect(existsSync(first.path)).toBe(true);
+  expect(existsSync(second.path)).toBe(true);
+  expect(receipt.holds).toEqual([
+    {
+      class: "references_changed",
+      count: 1,
+      example: "anchors kept: a registration changed during this pass",
+    },
+  ]);
+  expect(receipt.truncated).toBe(true);
+  expect(onTruncated).toHaveBeenCalledTimes(1);
+});
 it.each(["bad-meta", "held-namespace", "linked-namespace"])(
   "keeps all anchors on %s uncertainty",
   async (kind) => {
     const f = fixture();
     const anchor = f.anchor("held");
-    if (kind === "held-namespace") f.deps.anchorsHeld = true;
+    if (kind === "held-namespace") f.deps.deferredRuntimes = () => new Set([f.other]);
     else if (kind === "linked-namespace") {
       rmSync(f.projects[1]!.runsDir, { recursive: true });
       symlinkSync(f.projects[0]!.runsDir, f.projects[1]!.runsDir, "dir");
@@ -122,6 +180,7 @@ it.each(["bad-meta", "held-namespace", "linked-namespace"])(
       rmSync(f.projects[1]!.runsDir);
       mkdirSync(f.projects[1]!.runsDir);
     }
+    f.deps.deferredRuntimes = undefined;
     f.deps.anchorsHeld = false;
     await runRetentionPass(policy, { dry_run: false }, f.deps);
     expect(existsSync(anchor.path)).toBe(false);

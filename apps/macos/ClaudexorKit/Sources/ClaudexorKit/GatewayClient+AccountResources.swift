@@ -11,6 +11,8 @@ public struct AccountResourceCapabilities: Sendable, Equatable {
     public let resetStatus: Bool
     /// `GET /v2/accounts/routing-evidence` (model-scoped refusals + last service).
     public let routingEvidence: Bool
+    /// Every resources read and refresh accepts `includeApiKeys` (API-key rows).
+    public var apiKeys: Bool = false
 }
 
 /// Only the declaration slice needed by this consumer. No version guesses or
@@ -42,12 +44,20 @@ struct AccountResourceOperationCatalog: Decodable, Sendable {
                 }
             }
         }
+        // One engine ships the three together; all are required so rows never
+        // appear in one read and vanish from the next.
+        let apiKeys = ["get:quota", "post:quota", "get:credential-profiles"].allSatisfy { id in
+            operations.contains { op in
+                op.id == id && op.parameters.contains { $0.name == "includeApiKeys" && $0.location == "query" }
+            }
+        }
         return AccountResourceCapabilities(
             read: rich("get:quota"), refresh: rich("post:quota"),
             accountsSnapshot: rich("get:credential-profiles"),
             reset: operations.contains { $0.id == "post:account-resets" },
             resetStatus: operations.contains { $0.id == "get:account-resets.id" },
-            routingEvidence: operations.contains { $0.id == "get:accounts.routing-evidence" })
+            routingEvidence: operations.contains { $0.id == "get:accounts.routing-evidence" },
+            apiKeys: apiKeys)
     }
 }
 

@@ -1,5 +1,5 @@
 import { WorkspaceError } from "@claudexor/core";
-import { gitEnv } from "./git-run.js";
+import { gitEnv, SCRATCH_INDEX_CONFIG } from "./git-run.js";
 
 /** Submodule paths the working tree's own `.gitmodules` declares, relative to
  * the worktree top (where the file lives, whatever directory the capture runs
@@ -57,7 +57,16 @@ export async function untrackedNestedRepositories(
 ): Promise<string[]> {
   const listed = await gitEnv(
     repo,
-    ["ls-files", "--others", "--exclude-standard", "--full-name", "-z", "--", ...pathspec],
+    [
+      ...SCRATCH_INDEX_CONFIG,
+      "ls-files",
+      "--others",
+      "--exclude-standard",
+      "--full-name",
+      "-z",
+      "--",
+      ...pathspec,
+    ],
     env,
   );
   if (listed.code !== 0) {

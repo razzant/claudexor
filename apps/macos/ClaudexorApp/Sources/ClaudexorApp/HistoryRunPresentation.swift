@@ -33,6 +33,8 @@ enum HistoryRunPresentation {
         task.valuationUsd = run.budget.knownValuationUsd
         task.engineError = run.failure?.safeMessage
         task.failureCategory = run.failure?.category
+        task.failureCode = run.failure?.code
+        task.failureRecord = run.failure
         task.runDir = run.runDir ?? run.failure?.runDir
         task.authRoute = run.authRoute
         task.outcomeFacts = run.outcomeFacts
@@ -43,6 +45,7 @@ enum HistoryRunPresentation {
         task.planQuestions = run.planQuestions
         task.delegation = run.delegation
         task.waitingOnUser = run.waitingOnUser
+        task.serverAsyncQuestionsOnly = run.asyncQuestionsOnly ?? false
         task.outputReadyState = run.outputReadyState
         task.applyState = run.result.applyState
         task.adopted = run.result.adopted == true

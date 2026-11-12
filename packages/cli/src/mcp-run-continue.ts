@@ -3,7 +3,8 @@ import {
   ControlRunStartResponse,
   ControlRunState,
   validateOptionalNonEmptyString,
-  taskGroupReceiptMetadata,
+  acceptedReceiptMetadata,
+  CONTROL_STORE_IDENTITY_HEADER,
 } from "@claudexor/schema";
 import { connectDaemonIfRunning, type DaemonRunOutcome } from "./daemon-run.js";
 import { controlProblemError } from "./cli-error.js";
@@ -37,6 +38,8 @@ const continuationRequest = ControlRunStartRequest.pick({
   reviewerModels: true,
   reviewerEfforts: true,
   continueCarrier: true,
+  effort: true,
+  efforts: true,
 })
   .partial({ prompt: true })
   .required({ continueFrom: true });
@@ -87,6 +90,7 @@ export async function runContinueQuery(
     method: "POST",
     headers: {
       "content-type": "application/json",
+      [CONTROL_STORE_IDENTITY_HEADER]: "1",
       ...(typeof key === "string" ? { "Idempotency-Key": key } : {}),
     },
     body: JSON.stringify(body),
@@ -120,7 +124,7 @@ export async function runContinueQuery(
       const record = jobId ? await connection.client?.status(jobId).catch(() => null) : null;
       const state = ControlRunState.safeParse(record?.state);
       out = {
-        ...taskGroupReceiptMetadata(handle),
+        ...acceptedReceiptMetadata(handle),
         jobId,
         runId: handle.runId,
         runDir: handle.runDir,
@@ -128,7 +132,7 @@ export async function runContinueQuery(
       };
     } else {
       out = {
-        ...taskGroupReceiptMetadata(handle),
+        ...acceptedReceiptMetadata(handle),
         jobId: handle.jobId,
         runId: "",
         runDir: "",

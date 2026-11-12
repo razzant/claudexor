@@ -63,7 +63,7 @@ while the caller decides when to update and whether to continue its work.
 Model content and authorization are distinct responsibilities. The caller's model
 payload keeps its supplied content, including examples that resemble credentials;
 the adapter's own authorization never enters that payload. Temporary exchange
-bytes support result recovery, while compact receipts retain operation identity.
+bytes support recovery; compact receipts keep operation identity for 30 days after termination.
 The calling application remains responsible for conversation history. This narrow
 content boundary does not change the protections on Agent tasks and attachments.
 
@@ -139,7 +139,7 @@ Selecting an account never narrows the harness pool; choosing a strategy
 never implicitly pins an account, while an explicit reviewer-slot pin does.
 Quota is read per account from the vendor's own
 surfaces, model-scoped windows and typed model-family rejections apply only to
-their declared aliases, advisory warnings do not become cooldowns, absence is
+their declared models and model-family prefixes, advisory warnings do not become cooldowns, absence is
 typed and explained, and unknown never renders as zero. A failed refresh remains
 explainable alongside stale last-known data without presenting it as a fresh observation. Older unclassified refusals may yield to a recognized newer
 vendor observation, including early quota resets, while separately established
@@ -152,9 +152,11 @@ requiring operation discovery: a reset in one
 window need not stale a sibling whose own observation is still current.
 Fully valid legacy responses retain conservative snapshot freshness; missing
 metadata never implies a fresh window, and partial explicit metadata is rejected.
-This display projection preserves the conservative snapshot used by routing,
-the original observation time and usage, and unknown values; it never invents
-refill or triggers provider work. An account reset still makes earlier evidence
+Routing decisions (run admission, model-operation selection and the
+next-account verdict) judge each window the same way at the moment they decide,
+while the ordinary display keeps its conservative whole-snapshot freshness.
+Both preserve the original observation time and usage, and unknown values; they
+never invent refill or trigger provider work. An account reset still makes earlier evidence
 historical for every window.
 
 Account resources extend that same observation owner with independently aged
@@ -162,7 +164,9 @@ balances, spending facts and reset offers. An explicit reset is a durable direct
 command outside inference capacity: its original account binding and request key
 survive response loss, while provider effect and subsequent readback remain
 separate. GUI, CLI and MCP consume the same contract; the existence of a balance
-or reset never creates an automatic spending strategy.
+or reset never creates an automatic spending strategy. An API key's own spending
+limit is read the same way, bound to the key a request would send, and is never
+presented as the account's balance.
 
 A saved login and a vendor accepting that credential are different facts.
 Observations from ordinary work should improve the same account view and selection
@@ -336,8 +340,8 @@ a typed problem carrying stable `message`/`code`/exit fields. `--json-stream`
 keeps one compact event per line and text mode keeps one stderr line. Some
 subcommands and pre/post-run paths retain purpose-built one-object schemas; the
 exact bounded residue is tracked explicitly as D-7 in the backlog rather than
-hidden behind a generic wrapper. Secret-like tokens are redacted before any
-bounded error context is emitted.
+hidden behind a generic wrapper. Credential-shaped tokens are masked in
+engine-owned error context; working content stays exact.
 
 ## Secrets, Auth, And Isolation
 
@@ -353,8 +357,13 @@ allows one enabled binding instead of presenting several labels for one vendor
 Keychain identity. Readiness is always a live
 doctor projection in the exact environment a run will use, never a stored
 assertion. Antigravity account checks use non-interactive input so they cannot
-start a sign-in ceremony; explicit login retains its terminal. Raw secrets never
-become artifacts — prompts included.
+start a sign-in ceremony; explicit login retains its terminal. Claudexor never
+writes engine credentials into artifacts, though a harness can read the one the
+engine hands it and what the harness prints is kept as ordinary output; the
+user's own working content, including credential-shaped test fixtures, is
+carried exactly, tool output as unmasked bounded summaries, and only
+publication is checked, by the pinned Betterleaks scanner over what `pr` would
+push.
 
 Login is run through Claudexor rather than the bare vendor CLI so the session
 lands in the Claudexor-scoped store the runs actually read. Codex login
@@ -440,7 +449,9 @@ captured as real work rather than discarded.
 A completed run settles the processes it owns before publishing its terminal
 event, then exposes a best-effort process-scope receipt separately from the
 answer. Unavailable cleanup evidence remains unknown; it never becomes a clean
-receipt or rewrites a substantive review verdict. Native output is drained
+receipt or rewrites a substantive review verdict. While its daemon lives, a scope
+left unresolved gets separately bounded later attempts, recorded beside the
+unchanged terminal receipt. Native output is drained
 within a bound after process exit, with forced truncation disclosed. Codex
 rechecks late root lifecycle events before delivering a final answer, including
 after confirmed cleanup. A Windows limitation in proving tree death alone may
@@ -460,7 +471,7 @@ preference, and a finding without evidence blocks nothing.
 Reviewer access is also evidence-scoped. The candidate workspace is projected
 from version-control-visible files plus the reviewed diff, or from the complete
 selected postimage manifest for directory work, while the review
-packet crosses through a separate sealed or redacted channel. Ignored local
+packet crosses through a separate sealed evidence channel. Ignored local
 operator state is therefore not silently promoted into reviewer context.
 
 Rejected alternative: per-commit blocking review of the repository's own

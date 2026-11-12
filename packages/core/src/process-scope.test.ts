@@ -7,6 +7,7 @@ import {
   isScopeMarkerName,
   mintRunScopeMarker,
   scopeMarkerEnv,
+  withoutRunScopeMarkers,
 } from "./process-scope.js";
 import { composeBaseEnv, composeSpawnEnv } from "./env-scope.js";
 
@@ -51,6 +52,16 @@ describe("scope marker grammar", () => {
       [`X_SCOPE_${HEX}`]: "",
     });
     expect(markers).toEqual({ [run]: "1", [`OURO_INSTALL_SCOPE_${HEX}`]: "1" });
+  });
+});
+
+describe("a process handed to a longer-lived custodian", () => {
+  it("sheds only Claudexor run markers; a host's markers and every other entry stay", () => {
+    const run = mintRunScopeMarker();
+    const host = `OURO_INSTALL_SCOPE_${HEX}`;
+    expect(
+      withoutRunScopeMarkers({ [run]: "1", [host]: "1", HOME: "/row", CURSOR_API_KEY: null }),
+    ).toEqual({ [host]: "1", HOME: "/row", CURSOR_API_KEY: null });
   });
 });
 

@@ -44,7 +44,7 @@ export const TaskGroupReceipt = z.object({
   storeId: ControlHandshakeResponse.shape.storeId
     .unwrap()
     .describe(
-      "Identity of the durable engine store that accepted this group member, stable across restarts.",
+      "Identity of the durable engine store that accepted this command, stable across restarts. A group member always carries it; an ordinary receipt carries it only for a request sending `X-Claudexor-Store-Identity: 1`, and it stays absent, meaning unknown, when the store has no identity to give.",
     ),
 });
 export type TaskGroupReceipt = z.infer<typeof TaskGroupReceipt>;
@@ -53,4 +53,14 @@ export type TaskGroupReceipt = z.infer<typeof TaskGroupReceipt>;
 export function taskGroupReceiptMetadata(value: unknown): Partial<TaskGroupReceipt> {
   const receipt = TaskGroupReceipt.safeParse(value);
   return receipt.success ? receipt.data : {};
+}
+
+/** The same copy for an accepted handle, whose ordinary receipt can name its store alone. A group
+ * without its store stays dropped, and absent stays unknown. */
+export function acceptedReceiptMetadata(value: unknown): Partial<TaskGroupReceipt> {
+  const pair = taskGroupReceiptMetadata(value);
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  if (pair.storeId !== undefined || record["taskGroupId"] !== undefined) return pair;
+  const store = TaskGroupReceipt.shape.storeId.safeParse(record["storeId"]);
+  return store.success ? { storeId: store.data } : {};
 }

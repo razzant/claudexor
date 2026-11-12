@@ -19,7 +19,7 @@ import type { AnnouncedRunContext } from "./runTerminalContext.js";
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function temp(name: string): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), `claudexor-custody-${name}-`)));
@@ -121,10 +121,20 @@ describe("candidate envelope custody (A9)", () => {
         // With no deferred event, the terminal guard must still be able to publish its fallback.
         if (!pending) log.emit("run.failed", { facts });
         expect(log.terminalCommitted()).toBe(true);
-        expect(readRunEvents(paths.eventsPath).events.map((event) => event.type)).toEqual([
+        const written = readRunEvents(paths.eventsPath).events;
+        // #411(f): the failure is disclosed once, before the terminal, which still publishes.
+        expect(written.map((event) => event.type)).toEqual([
           "run.created",
+          "workspace.settlement_failed",
           "run.failed",
         ]);
+        expect(written[1]?.payload).toEqual({
+          attempt_id: "a01",
+          envelope_id: env.id,
+          root: env.worktree_path,
+          stage: "dispose",
+          cause: "injected settle failure",
+        });
         // The failed settle is removed: a guard retry must not repeat the failing operation.
         await expect(flushContinuationTerminal(context, facts)).resolves.toBeUndefined();
         expect(settle).toHaveBeenCalledTimes(1);
@@ -134,6 +144,59 @@ describe("candidate envelope custody (A9)", () => {
       }
     },
   );
+
+  it("a diagnostic that cannot be written changes neither the error, the terminal nor the retry", async () => {
+    const repo = initRepo();
+    const store = new ArtifactStore(repo);
+    const paths = store.createRun("run-settle-quiet");
+    const log = new EventLog(paths.eventsPath, "run-settle-quiet", "task-settle");
+    const context: AnnouncedRunContext = {
+      store,
+      paths,
+      log,
+      runId: "run-settle-quiet",
+      taskId: "task-settle",
+      mode: "agent",
+      phase: "settle",
+    };
+    const kept = forRun({ continuation: { retain: true } }, true, context.runId, paths, log);
+    const wsm = new WorkspaceManager(repo);
+    const env = await kept.envelope(wsm, {
+      taskId: "task-settle",
+      attemptId: "a01",
+      baseRef: "HEAD",
+    });
+    await kept.settle(wsm, env, [candidate(env, { errored: true })]);
+    const settle = vi.spyOn(wsm, "dispose").mockRejectedValue(new Error("injected settle failure"));
+    const emit = log.emit.bind(log);
+    const diagnostic = vi.spyOn(log, "emit").mockImplementation((type, payload, publish) => {
+      if (type === "workspace.settlement_failed") throw new Error("diagnostic write failed");
+      return emit(type, payload, publish);
+    });
+    const facts = makeOutcomeFacts("failed");
+    try {
+      log.emit("run.created", { prompt: "Test terminal settlement" });
+      log.emit("run.failed", { facts });
+      await expect(flushContinuationTerminal(context, facts)).rejects.toThrow(
+        "injected settle failure",
+      );
+      expect(log.terminalCommitted()).toBe(true);
+      expect(readRunEvents(paths.eventsPath).events.map((event) => event.type)).toEqual([
+        "run.created",
+        "run.failed",
+      ]);
+      expect(diagnostic).toHaveBeenCalledWith(
+        "workspace.settlement_failed",
+        expect.objectContaining({ stage: "dispose" }),
+      );
+      await expect(flushContinuationTerminal(context, facts)).resolves.toBeUndefined();
+      expect(settle).toHaveBeenCalledTimes(1);
+    } finally {
+      diagnostic.mockRestore();
+      settle.mockRestore();
+      log.dispose();
+    }
+  });
 
   it("keeps the envelope of an errored candidate that changed files and discloses it", async () => {
     const { kept, wsm, create, events, runDir } = setup(true);

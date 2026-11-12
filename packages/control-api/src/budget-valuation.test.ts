@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { budgetValuationFromEvents, cashKnowledgeFromEvents } from "./budget-valuation.js";
+import { budgetValuation, foldBudgetEvents } from "./budget-valuation.js";
+
+const budgetValuationFromEvents = (events: Record<string, unknown>[]) =>
+  budgetValuation(foldBudgetEvents(events));
+const cashKnowledgeFromEvents = (events: Record<string, unknown>[]) =>
+  foldBudgetEvents(events).cashKnowledge;
 
 describe("cash certainty projection", () => {
   it("distinguishes an unknown zero from an estimated zero without consulting valuation", () => {
@@ -71,6 +76,63 @@ describe("budgetValuationFromEvents (QA-023c)", () => {
     ]);
     expect(v.valuationUsd).toBeNull();
     expect(v.valuationKnowledge).toBe("unknown");
+  });
+
+  it.each([
+    [false, "exact"],
+    [true, "estimated"],
+  ] as const)(
+    "knows a reported valuation zero (estimated=%s) only once its settlement states it",
+    (estimated, knowledge) => {
+      const row = {
+        type: "budget.observation",
+        payload: { kind: "spend", usd: 0, estimated, amount_kind: "valuation" },
+      };
+      expect(budgetValuationFromEvents([row])).toEqual({
+        valuationUsd: null,
+        valuationKnowledge: "unknown",
+      });
+      expect(
+        budgetValuationFromEvents([
+          row,
+          {
+            type: "budget.cash",
+            payload: {
+              cash_spend_usd: 0,
+              valuation_usd: 0,
+              estimated: false,
+              valuation_knowledge: knowledge,
+            },
+          },
+        ]),
+      ).toEqual({ valuationUsd: 0, valuationKnowledge: knowledge });
+    },
+  );
+
+  it.each(["cash", "valuation", "unknown", undefined])(
+    "never reads a %s zero spend row as a valuation",
+    (amount_kind) => {
+      expect(
+        budgetValuationFromEvents([
+          {
+            type: "budget.observation",
+            payload: { kind: "spend", usd: 0, ...(amount_kind ? { amount_kind } : {}) },
+          },
+        ]),
+      ).toEqual({ valuationUsd: null, valuationKnowledge: "unknown" });
+    },
+  );
+
+  it("still reads a positive spend row as the legacy estimated valuation", () => {
+    expect(
+      budgetValuationFromEvents([
+        {
+          type: "budget.observation",
+          payload: { kind: "spend", usd: 0, amount_kind: "valuation" },
+        },
+        { type: "budget.observation", payload: { kind: "spend", usd: 0.5, amount_kind: "cash" } },
+      ]),
+    ).toEqual({ valuationUsd: 0.5, valuationKnowledge: "estimated" });
   });
 
   it("falls back to summed budget.observation for runs predating budget.cash", () => {

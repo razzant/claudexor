@@ -16,7 +16,11 @@
  *
  * A successor's work order is the chain's: the predecessor's work order plus
  * the caller's continuation text, recorded as `context/work-order.md` so the
- * next link reads one file instead of walking the chain.
+ * next link reads one file instead of walking the chain. The receipt names the
+ * actual source run, attempt and profile (an ancestor when the requested head
+ * left no carrier); the requested head stays in the run's `continueFrom`.
+ * Later attempts of the same run continue the recorded plan instead
+ * (`continuation-later.ts`).
  */
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -27,10 +31,15 @@ import {
   type HarnessRunSpec,
   type ContinuationSources,
   type ResumableCause,
+  type RunContinuityReceipt,
   type SessionCapsule,
 } from "@claudexor/schema";
 import { readTextSafe } from "@claudexor/util";
-import { readContinuationEvidence, retainedEnvelopeInChain } from "@claudexor/workspace";
+import {
+  ownsContinuationSource,
+  readContinuationEvidence,
+  retainedEnvelopeInChain,
+} from "@claudexor/workspace";
 import {
   decideCarrier,
   prepareCarrier,
@@ -38,14 +47,28 @@ import {
   type CarrierPreference,
 } from "./carrier-planner.js";
 import type { RunContinuation } from "./continuation-custody.js";
-import { buildEvidenceIndex, type PredecessorEvidenceSource } from "./continuation-evidence.js";
-import { collectEvidenceIndexInput, diffStatFromPatch } from "./continuation-evidence-io.js";
+import {
+  buildEvidenceIndex,
+  readlessWorkOrder,
+  uncoveredWorkSection,
+  type PredecessorEvidenceSource,
+} from "./continuation-evidence.js";
+import {
+  collectEvidenceIndexInput,
+  diffStatFromPatch,
+  uncoveredWork,
+} from "./continuation-evidence-io.js";
 import { continuationNotice, packetContinuationPrompt } from "./continuity-notice.js";
 import { unconfirmedContinuationInputs } from "./continuation-input.js";
 import { InRunContinuity } from "./inrun-continuity.js";
 import type { InRunContinuityDeps } from "./inrun-continuity-types.js";
 import { routeListsModel } from "./modelGovernance.js";
-import { uncertainInputFor, type ContinuedTry } from "./inrun-continuity-carrier.js";
+import {
+  retireMovedSource,
+  uncertainInputFor,
+  type ContinuedTry,
+} from "./inrun-continuity-carrier.js";
+import { openLaterAttempt } from "./continuation-later.js";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import { registryProfile, storeEnvFor, writeSessionCapsule } from "./session-capsule.js";
 
@@ -76,15 +99,24 @@ const DIFFERENT_ROOT_NOTE =
 
 /** What the predecessor left behind, read from its run directory. */
 interface PredecessorFacts {
+  /** The run these facts were read from (an ancestor when the head has no carrier). */
+  runId: string;
   /** Attempt whose evidence the index reads (the one holding the session, else the final one). */
   attemptId: string;
+  /** Every attempt of that run with recorded harness events, in order. */
+  attempts: string[];
+  /** The attempts whose work the held session never received. */
+  uncovered: string[];
   runDir: string;
   capsule: SessionCapsule | null;
+  /** Recorded history quality of the capsule's session (null without a capsule). */
+  sessionMemory: RunContinuityReceipt["memory"] | null;
   resumable: RunResumable | null;
   cause: ResumableCause;
   acted: boolean;
   hasEvidence: boolean;
-  nativeRejected: boolean;
+  /** This run is its own continuation source (`ownsContinuationSource`). */
+  ownsSource: boolean;
   observedModel: string | null;
   profileId: string | null;
   workOrder: string;
@@ -95,8 +127,19 @@ interface PredecessorFacts {
 }
 
 function readSource(from: ContinueFromSource): PredecessorFacts {
-  const { resumable, held, attemptId, attempt, patch, output, hasEvidence } =
-    readContinuationEvidence(from.runDir);
+  const evidence = readContinuationEvidence(from.runDir);
+  const {
+    resumable,
+    held,
+    sessionMemory,
+    attemptId,
+    attempts,
+    uncovered,
+    attempt,
+    patch,
+    output,
+    hasEvidence,
+  } = evidence;
   const cause: ResumableCause =
     resumable?.cause ??
     (from.state === "interrupted"
@@ -105,9 +148,13 @@ function readSource(from: ContinueFromSource): PredecessorFacts {
         ? "cancelled"
         : "other");
   return {
+    runId: from.runId,
     attemptId,
+    attempts,
+    uncovered,
     runDir: from.runDir,
     capsule: held?.capsule ?? null,
+    sessionMemory,
     resumable: resumable ?? null,
     cause,
     // Sticky `acted` of the predecessor: its terminal block lists `packet`
@@ -116,8 +163,7 @@ function readSource(from: ContinueFromSource): PredecessorFacts {
       ? resumable.carriers.includes("packet")
       : hasEvidence || from.state === "succeeded",
     hasEvidence,
-    // The predecessor's controller dropped the session on a typed fact.
-    nativeRejected: resumable !== undefined && resumable.session === null && held !== null,
+    ownsSource: ownsContinuationSource(evidence),
     observedModel: attempt?.observed_model ?? held?.capsule.requestedModel ?? null,
     profileId: held?.capsule.holderProfileId ?? attempt?.profile_id ?? null,
     // What the predecessor itself was given, else the daemon's chain record.
@@ -133,8 +179,7 @@ function readPredecessor(from: ContinueFromSource): PredecessorFacts {
   for (const source of [from, ...(from.ancestors ?? [])]) {
     const facts =
       source === from ? own : readSource({ ...from, ...source, scopeRoot: source.scopeRoot });
-    if (facts.capsule || facts.resumable || facts.hasEvidence)
-      return { ...facts, workOrder: own.workOrder };
+    if (facts.ownsSource) return { ...facts, workOrder: own.workOrder };
   }
   return own;
 }
@@ -157,9 +202,10 @@ function profileRef(deps: InRunContinuityDeps, spec: HarnessRunSpec, profileId: 
 /**
  * Open the attempt's continuation controller. For the first candidate attempt
  * of a `continueFrom` successor, plan the carrier of its first try and return
- * the composed spec; every other attempt gets the controller unchanged.
- * `continuation.from` is consumed here: synthesis, a D-16d continuation or a
- * repair attempt of the same run never re-plans the predecessor's carrier.
+ * the composed spec. `continuation.from` is consumed here, so nothing re-plans
+ * the predecessor's carrier: a later fallback or D-16d checkpoint attempt
+ * (`deps.later`) continues the recorded plan through the evidence index, and
+ * every other attempt (synthesis, repair) gets the controller unchanged.
  */
 export async function openContinuity(
   deps: InRunContinuityDeps,
@@ -172,6 +218,8 @@ export async function openContinuity(
 ): Promise<{ continuity: InRunContinuity; spec: HarnessRunSpec }> {
   const { spec, continuation, store } = first;
   const from = continuation?.from;
+  if (continuation?.planned && !from && deps.later)
+    return openLaterAttempt(deps, { spec, later: deps.later }, continuation.planned);
   if (!continuation || !from) return { continuity: new InRunContinuity(deps), spec };
   continuation.from = null;
   const pred = readPredecessor(from);
@@ -183,6 +231,7 @@ export async function openContinuity(
       return {
         runDir: facts.runDir,
         attemptId: facts.attemptId,
+        attemptIds: facts.attempts,
         workOrder: facts.workOrder,
         steering: [],
         retainedOutput: facts.output,
@@ -190,6 +239,7 @@ export async function openContinuity(
       };
     });
   const model =
+    !deps.explicitModel &&
     from.inheritModel &&
     pred.observedModel &&
     deps.route &&
@@ -212,12 +262,18 @@ export async function openContinuity(
     effectiveModel: pred.observedModel ?? spec.model_hint ?? null,
     preference: from.preference,
     adapter: deps.adapter,
-    nativeRejected: pred.nativeRejected,
+    // A terminal block that dropped the session names none: no capsule is held.
+    nativeRejected: false,
   };
+  // A route that cannot read files gets the complete work order the index cuts inline.
+  const wholeWorkOrder = readlessWorkOrder(deps.route, pred.workOrder, spec.prompt);
   const evidence = {
     runDir: pred.runDir,
     attemptId: pred.attemptId,
+    attemptIds: pred.attempts,
     workOrder: pred.workOrder,
+    workOrderPath: wholeWorkOrder ? null : join(deps.runDir, WORK_ORDER_FILE),
+    workOrderInPrompt: wholeWorkOrder !== null,
     steering: [],
     predecessors: evidenceSources.filter((source) => source.runDir !== pred.runDir),
   };
@@ -238,7 +294,7 @@ export async function openContinuity(
   const uncertainInput = uncertainInputFor(
     pred.runDir,
     unconfirmedContinuationInputs([from, ...(from.ancestors ?? [])]),
-    pred.attemptId,
+    undefined,
     deps.runDir,
   );
   const retainedRoot =
@@ -260,20 +316,30 @@ export async function openContinuity(
   const expiredNote = from.expiredAncestors?.length
     ? `Earlier continuation evidence expired by retention: ${from.expiredAncestors.join(", ")}. Continue using the intact predecessor's evidence; the expired trees are unavailable.`
     : "";
-  const withNote = (text: string) =>
-    [expiredNote, treeNote, text.trim()].filter(Boolean).join("\n\n");
   const native = prepared.carrier === "native" || prepared.carrier === "native_moved";
+  // Work of the predecessor's other attempts that the resumed session never
+  // received arrives as labelled evidence; a packet already carries them all.
+  const outside = native
+    ? uncoveredWorkSection(
+        uncoveredWork(
+          pred.runDir,
+          pred.uncovered,
+          pred.attempts.filter((id) => !pred.uncovered.includes(id)),
+        ),
+      )
+    : "";
+  const withNote = (text: string) =>
+    [expiredNote, treeNote, outside, text.trim()].filter(Boolean).join("\n\n");
   let composed: HarnessRunSpec;
+  let retirement: Pick<ContinuedTry, "sourceRetirement"> = {};
   if (prepared.carrier === "native" || prepared.carrier === "native_moved") {
     writeSessionCapsule(deps.attemptDir, prepared.capsule);
-    try {
-      await prepared.retire?.();
-    } catch {
-      // The published capsule is authoritative even if a stale source copy remains.
-    }
+    // The published capsule is authoritative even if a stale source copy remains.
+    retirement = await retireMovedSource(prepared.retire);
     // A follow-up on finished work is the caller's text alone; unfinished
-    // work gets the continuation notice (cause, undelivered input) first.
-    const followUp = completed && callerText.trim() && uncertainInput === null;
+    // work, or work its session never received, gets the continuation notice
+    // (cause, undelivered input, that work) first.
+    const followUp = completed && callerText.trim() && uncertainInput === null && !outside;
     composed = HarnessRunSpecSchema.parse({
       ...spec,
       model_hint: model,
@@ -313,6 +379,7 @@ export async function openContinuity(
         evidencePath,
         evidenceMarkdown: index.markdown,
         completed,
+        workOrder: wholeWorkOrder,
       }),
     });
   }
@@ -322,12 +389,24 @@ export async function openContinuity(
     cause: pred.cause,
     fromProfileId: capsule ? capsule.holderProfileId : pred.profileId,
     toProfileId: targetId,
-    memory: native ? "full" : "partial",
+    // History quality follows the chosen session's own record, never the carrier word.
+    memory: native ? (pred.sessionMemory ?? "unknown") : "partial",
     inputDelivery: uncertainInput === null ? "confirmed" : "uncertain",
-    from: { runId: from.runId, attemptId: pred.attemptId },
+    from: { runId: pred.runId, attemptId: pred.attemptId },
     workspace: sameRoot ? "same_root" : "different_root",
+    ...retirement,
   };
   first.telemetry.requestedModel = composed.model_hint ?? null;
+  continuation.planned = {
+    workOrder,
+    evidenceSources,
+    acted: pred.acted,
+    cause: pred.cause,
+    completed,
+    from: continued.from!,
+    fromProfileId: continued.fromProfileId,
+    workspace: continued.workspace!,
+  };
   return {
     continuity: new InRunContinuity({
       ...deps,

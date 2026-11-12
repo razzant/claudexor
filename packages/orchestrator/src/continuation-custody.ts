@@ -30,9 +30,11 @@ import {
   type CreateEnvelopeOptions,
   type WorkspaceManager,
 } from "@claudexor/workspace";
-import type { CandidateRun } from "./candidateEvidence.js";
+import { hasCandidateChanges, type CandidateRun } from "./candidateEvidence.js";
 import type { ContinueFromSource } from "./continue-from.js";
+import type { ContinuationPlan } from "./continuation-later.js";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
+import { safeErrorMessage } from "./runSupport.js";
 
 interface EnvelopeHolder {
   runId: string;
@@ -55,6 +57,8 @@ export interface RunContinuation {
   /** The predecessor whose work the first candidate attempt continues
    * (`continueFrom`); consumed by that attempt (`continue-from.ts`). */
   from?: ContinueFromSource | null;
+  /** What that consumed plan leaves for a later fallback or checkpoint attempt. */
+  planned?: ContinuationPlan | null;
 }
 
 /**
@@ -155,7 +159,7 @@ async function worthKeeping(
   run: CandidateRun | undefined,
   attemptsDir: string,
 ): Promise<boolean> {
-  if (run && run.diff.trim().length > 0) return true;
+  if (run && hasCandidateChanges(run)) return true;
   const attempts = new Set([env.attempt_id, ...(run ? [run.attemptId] : [])]);
   if ([...attempts].some((id) => existsSync(sessionCapsuleFile(join(attemptsDir, id))))) {
     return true;
@@ -163,11 +167,38 @@ async function worthKeeping(
   return (await envelopeTreeChanged(env)) === true;
 }
 
+type SettlementStage = "custody" | "dispose" | "retain" | "resumable";
+
+/**
+ * One typed diagnostic for a settlement failure, emitted before the deferred
+ * terminal is published (MCP run detail carries no timeline). It never changes
+ * the outcome: its own failure is ignored, and the original error keeps its path.
+ */
+function settlementFailed(
+  log: EventLog | undefined,
+  env: WorkspaceEnvelope,
+  stage: SettlementStage,
+  error: unknown,
+): void {
+  try {
+    log?.emit("workspace.settlement_failed", {
+      attempt_id: env.attempt_id,
+      envelope_id: env.id,
+      root: env.worktree_path,
+      stage,
+      cause: safeErrorMessage(error),
+    });
+  } catch {
+    // Best effort: the terminal is still flushed and nothing is retried.
+  }
+}
+
 /**
  * End of a candidate: keep or dispose its envelope. Only an envelope under
  * this run's `live` custody can be kept; everything else is disposed exactly
  * as before. Keeping is durable before the run's terminal is reported and is
- * disclosed with a `workspace.retained` event (disk use measured once).
+ * disclosed with a `workspace.retained` event (disk use measured once); a
+ * failure at any stage is disclosed as `workspace.settlement_failed`.
  */
 async function settleCandidateEnvelope(
   wsm: WorkspaceManager,
@@ -180,27 +211,38 @@ async function settleCandidateEnvelope(
     facts: RunOutcomeFacts;
   },
 ): Promise<void> {
-  const custody = readEnvelopeCustody(envelopeBaseOf(env));
-  if (custody?.state !== "live" || custody.envelope.id !== env.id) return wsm.dispose(env);
-  const run = ctx.runs.find((candidate) => candidate?.reviewCwd === env.worktree_path);
-  const cause = unfinishedCause(run, ctx.signal, ctx.facts);
-  if (cause === undefined || !(await worthKeeping(env, run, ctx.attemptsDir))) {
-    return wsm.dispose(env);
+  let stage: SettlementStage = "custody";
+  try {
+    const custody = readEnvelopeCustody(envelopeBaseOf(env));
+    if (custody?.state !== "live" || custody.envelope.id !== env.id) {
+      stage = "dispose";
+      return await wsm.dispose(env);
+    }
+    const run = ctx.runs.find((candidate) => candidate?.reviewCwd === env.worktree_path);
+    const cause = unfinishedCause(run, ctx.signal, ctx.facts);
+    stage = "retain";
+    if (cause === undefined || !(await worthKeeping(env, run, ctx.attemptsDir))) {
+      stage = "dispose";
+      return await wsm.dispose(env);
+    }
+    const holder = { runId: custody.holder_run_id, runDir: custody.holder_run_dir };
+    const retained = retainForContinuation(env, holder, cause);
+    // The terminal `resumable` block (written after this settle) names the kept tree.
+    // Deferred terminal payloads share these workspace objects, including a
+    // resumableOnFailure promoted by the final budget verdict.
+    for (const resumable of [run?.resumable, run?.resumableOnFailure])
+      if (resumable)
+        Object.assign(resumable.workspace, { kind: "retained_envelope", root: env.worktree_path });
+    ctx.log?.emit("workspace.retained", {
+      attempt_id: run?.attemptId ?? env.attempt_id,
+      root: env.worktree_path,
+      cause,
+      bytes: retained.bytes,
+    });
+  } catch (error) {
+    settlementFailed(ctx.log, env, stage, error);
+    throw error;
   }
-  const holder = { runId: custody.holder_run_id, runDir: custody.holder_run_dir };
-  const retained = retainForContinuation(env, holder, cause);
-  // The terminal `resumable` block (written after this settle) names the kept tree.
-  // Deferred terminal payloads share these workspace objects, including a
-  // resumableOnFailure promoted by the final budget verdict.
-  for (const resumable of [run?.resumable, run?.resumableOnFailure])
-    if (resumable)
-      Object.assign(resumable.workspace, { kind: "retained_envelope", root: env.worktree_path });
-  ctx.log?.emit("workspace.retained", {
-    attempt_id: run?.attemptId ?? env.attempt_id,
-    root: env.worktree_path,
-    cause,
-    bytes: retained.bytes,
-  });
 }
 
 const pendingRuns = new WeakMap<EventLog, (facts: RunOutcomeFacts) => Promise<void>>();
@@ -217,14 +259,21 @@ export async function flushContinuationTerminal(
       const kept = retainedEnvelopeOfRun(context.paths.root, context.runId);
       const path = join(context.paths.finalDir, "resumable.yaml");
       const resumable = RunResumable.safeParse(context.store.readYaml(path)).data;
-      if (kept && resumable)
-        context.store.writeYaml(path, {
-          ...resumable,
-          workspace: { kind: "retained_envelope", root: kept.envelope.worktree_path },
-        });
+      try {
+        if (kept && resumable)
+          context.store.writeYaml(path, {
+            ...resumable,
+            workspace: { kind: "retained_envelope", root: kept.envelope.worktree_path },
+          });
+      } catch (error) {
+        if (kept) settlementFailed(context.log, kept.envelope, "resumable", error);
+        throw error;
+      }
     }
   } finally {
     pendingRuns.delete(context.log);
-    context.log.flushDeferredTerminal();
+    // The held terminal's durable bytes are staged off the request thread
+    // first; its verdict is already fixed and its commit stays synchronous.
+    await context.log.commitDeferredTerminal();
   }
 }

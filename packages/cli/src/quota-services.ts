@@ -5,22 +5,92 @@ import {
   ControlAccountResourcesFreshnessResponse,
   ControlQuotaReadRequest,
   ControlQuotaRefreshRequest,
+  accountResourceSourceHarnesses,
+  emptyResourceFacet,
   withQuotaAvailability,
   type ControlQuotaResponse,
   type ControlAccountResourcesResponse,
   type AccountResourceSnapshot,
+  type AccountResourceTarget,
 } from "@claudexor/schema";
 import { accountManagementTarget } from "./account-management.js";
+import { openRouterKeyCredentials } from "./openrouter-key-source.js";
 
 type AvailabilityScope = Pick<ControlQuotaRefreshRequest, "requestKind" | "model">;
+type KeyBinding = { target: AccountResourceTarget; fingerprint: string };
+
+const API_KEY_HARNESSES = accountResourceSourceHarnesses("api_key");
+const targetKey = (target: AccountResourceTarget) =>
+  JSON.stringify([target.harness, target.profile_id]);
+const currentKeyBindings = (): KeyBinding[] =>
+  openRouterKeyCredentials().map(({ target, fingerprint }) => ({ target, fingerprint }));
+
+/** Account rows publish as before. API-key rows reach only a client that
+ * negotiated includeApiKeys, one per key a request can send now: a row read
+ * with another key (replaced or removed) never stands for the current one, and
+ * a key not read yet appears with every facet unknown. */
+export function publishedResources(
+  rows: readonly AccountResourceSnapshot[],
+  includeApiKeys = false,
+  bindings: () => readonly KeyBinding[] = currentKeyBindings,
+): AccountResourceSnapshot[] {
+  const accounts = rows.filter((row) => !API_KEY_HARNESSES.has(row.target.harness));
+  if (!includeApiKeys) return accounts;
+  const stored = new Map(
+    rows
+      .filter((row) => API_KEY_HARNESSES.has(row.target.harness))
+      .map((row) => [targetKey(row.target), row]),
+  );
+  return [
+    ...accounts,
+    ...bindings().map(({ target, fingerprint }) => {
+      const row = stored.get(targetKey(target));
+      return row?.credential_fingerprint === fingerprint
+        ? row
+        : {
+            target,
+            credential_fingerprint: fingerprint,
+            balances: emptyResourceFacet(),
+            spending: emptyResourceFacet(),
+            resets: emptyResourceFacet(),
+            diagnostics: emptyResourceFacet(),
+          };
+    }),
+  ];
+}
 
 export function accountResourcesResponse(
   registry: QuotaRegistry,
   response: ControlQuotaResponse = registry.read(),
   resources: AccountResourceSnapshot[] = registry.readResources(),
   scope: AvailabilityScope = {},
+  includeApiKeys = false,
 ): ControlAccountResourcesResponse {
-  return { ...withQuotaAvailability(response, scope), resources };
+  return {
+    ...withQuotaAvailability(response, scope),
+    resources: publishedResources(resources, includeApiKeys),
+  };
+}
+
+/** An exact refresh names a managed account, or, for a client that negotiated
+ * includeApiKeys, one of the API keys a request can send now. */
+function validateRefreshTarget(target: AccountResourceTarget, includeApiKeys: boolean): void {
+  if (includeApiKeys && API_KEY_HARNESSES.has(target.harness)) {
+    if (currentKeyBindings().some((binding) => targetKey(binding.target) === targetKey(target)))
+      return;
+    throw Object.assign(new Error("No API key is configured for this resource target"), {
+      status: 404,
+      code: "credential_profile_not_found",
+    });
+  }
+  if (target.profile_id === null)
+    throw Object.assign(
+      new Error(
+        "A null profile_id names a default API-key route; it requires includeApiKeys=true on a harness with an API-key resource source",
+      ),
+      { status: 400, code: "invalid_request" },
+    );
+  accountManagementTarget({ harness: target.harness, profile_id: target.profile_id });
 }
 
 type DecoratedSnapshot = ControlQuotaResponse["snapshots"][number];
@@ -110,14 +180,19 @@ export function constraintFreshnessQuotaResponse(
 export function quotaControlServices(quotaRegistry: () => QuotaRegistry) {
   return {
     quota: async (input?: ControlQuotaReadRequest) => {
-      const { view, ...scope } = ControlQuotaReadRequest.parse(input ?? {});
+      const { view, includeApiKeys, ...scope } = ControlQuotaReadRequest.parse(input ?? {});
+      if (includeApiKeys && view !== "resources" && view !== "resources_freshness")
+        throw Object.assign(
+          new Error("includeApiKeys requires view=resources or view=resources_freshness"),
+          { status: 400, code: "invalid_request" },
+        );
       const registry = quotaRegistry();
       if (view === "resources_freshness") {
         const resources = registry.readResources();
         const response = constraintFreshnessQuotaResponse(registry, scope, resources);
         return ControlAccountResourcesFreshnessResponse.parse({
           ...response,
-          resources,
+          resources: publishedResources(resources, includeApiKeys),
           availability_scope: {
             basis: "quota_block",
             model: scope.model ?? null,
@@ -126,19 +201,32 @@ export function quotaControlServices(quotaRegistry: () => QuotaRegistry) {
         });
       }
       if (view === "resources")
-        return accountResourcesResponse(registry, registry.read(), registry.readResources(), scope);
+        return accountResourcesResponse(
+          registry,
+          registry.read(),
+          registry.readResources(),
+          scope,
+          includeApiKeys,
+        );
       if (view === "constraint_freshness") return constraintFreshnessQuotaResponse(registry, scope);
       return legacyQuotaResponse(registry, registry.read(), undefined, scope);
     },
-    refreshQuota: async (input?: ControlQuotaRefreshRequest & { view?: "resources" }) => {
-      const { view, ...body } = input ?? {};
+    refreshQuota: async (
+      input?: ControlQuotaRefreshRequest & { view?: "resources"; includeApiKeys?: boolean },
+    ) => {
+      const { view, includeApiKeys = false, ...body } = input ?? {};
+      if (includeApiKeys && view !== "resources")
+        throw Object.assign(new Error("includeApiKeys requires view=resources"), {
+          status: 400,
+          code: "invalid_request",
+        });
       const request = ControlQuotaRefreshRequest.parse(body);
-      if (request.target) accountManagementTarget(request.target);
+      if (request.target) validateRefreshTarget(request.target, includeApiKeys);
       if (view === "resources") {
         const result = await quotaRegistry().refreshResources(request.target);
         return {
           ...withQuotaAvailability(result, request),
-          resources: result.resources,
+          resources: publishedResources(result.resources, includeApiKeys),
         };
       }
       return withQuotaAvailability(

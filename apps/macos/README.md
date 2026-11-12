@@ -15,6 +15,7 @@ not build it as part of normal package tasks.
 - `packaging/` - app bundle metadata, entitlements, and LaunchAgent template.
 - `scripts/build-app.sh` - local/release app packaging script.
 - `scripts/sign-local-app.sh` - ad-hoc root seal and strict verification for local bundles.
+- `scripts/boot-smoke.sh` - packaged daemon boot smoke in a scrubbed scratch root.
 
 ## Toolchain
 
@@ -108,6 +109,16 @@ The self-contained app also places `setup-login-runner.cjs` beside
 executes that runner with the bundled Node before the daemon boot smoke, so a
 missing runner or broken direct-entry guard fails the build instead of shipping
 a subscription login flow that can open Terminal and then hang.
+The boot smoke (`scripts/boot-smoke.sh`) then starts the packaged daemon entry
+with the bundled Node in an empty environment holding only a short scratch
+`HOME` and a fixed `PATH`, so an exported `CLAUDEXOR_CONFIG_DIR`, socket or
+control-API override, `NODE_OPTIONS` or provider key cannot reach it. It waits
+for control-api discovery in the default root derived from that `HOME`, then
+stops and reaps the daemon before deleting the root. A daemon that exits before
+it is stopped or needs SIGKILL fails the build; if even SIGKILL cannot be
+confirmed, the root is kept for inspection. Discovery is published before normal
+admission opens, so a pass shows that the bundle starts and binds its
+transports, not that the engine reached normal readiness.
 
 The app is distributed outside the App Store because the engine-service launches
 local harnesses and works with arbitrary repositories. The App Sandbox is not

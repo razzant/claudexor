@@ -67,7 +67,7 @@ beforeAll(() => {
 afterAll(() => {
   if (!capture && !existsSync(join(base, "cleanup-unknown.json")))
     rmSync(base, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 type Frame = { method: string; params: Record<string, unknown> };
 const childFrame: Frame = {

@@ -23,7 +23,7 @@ export function runEventReadTool(runner: RunnerFn): McpTool {
   return {
     name: "claudexor_run_event_read",
     description:
-      "Read one bounded part of one run event by run id and seq, typically claudexor_run_wait's oversizedEvent. Returns the exact UTF-8 bytes [offset, nextOffset) of the redacted serialization the run event stream delivers, with totalBytes and the sha256 of the whole event; parts never split a character. Read from offset 0, then each nextOffset until it equals totalBytes; a partial read is not a consumed event, so do not move claudexor_run_wait past it until the last part. Only validated events of this run are readable; there is no path, artifact or whole-log access.",
+      "Read one bounded part of one run event by run id and seq, typically claudexor_run_wait's oversizedEvent. Returns the exact UTF-8 bytes [offset, nextOffset) of the stored serialization the run event stream delivers, with totalBytes and the sha256 of the whole event; parts never split a character. Read from offset 0, then each nextOffset until it equals totalBytes; a partial read is not a consumed event, so do not move claudexor_run_wait past it until the last part. Only validated events of this run are readable; there is no path, artifact or whole-log access.",
     inputSchema: inlineJsonSchemaRefs(inputSchema),
     outputSchema: inlineJsonSchemaRefs(partSchema),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },

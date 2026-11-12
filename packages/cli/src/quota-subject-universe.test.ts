@@ -21,7 +21,7 @@ describe("quotaSubjectUniverseFromConfig", () => {
     if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = previous;
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("contains only enabled primary-capable harness subjects", () => {
     registerConfigDirProfile({ harnessId: "claude", profileId: "ignored" });

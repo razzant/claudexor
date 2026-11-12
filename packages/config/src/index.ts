@@ -1,7 +1,8 @@
 import { cachedLoad } from "./config-cache.js";
 import { ConfigParseError } from "./config-error.js";
 import { concurrencyEnv, concurrencySources, omitImplicitConcurrency } from "./concurrency.js";
-import { readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod/v3";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
@@ -432,27 +433,32 @@ export function updateTrustConfig(
 }
 
 /**
- * Enumerate every user-local trust file (Settings trust list). Unreadable or
- * schema-invalid entries are skipped: listing is a projection, and one stale
- * hand-edited file must not take down the whole settings surface — the strict
- * parse still fails loudly on the load path that actually GATES access.
+ * Enumerate every user-local trust file (Settings trust list) off the request
+ * thread. A read error is an empty document, same as `readYaml`; a parse error
+ * is skipped. One stale file must not take down the list. The load path that
+ * gates access still parses strictly.
  */
-export function listTrustConfigs(): Array<{ path: string; config: TrustConfig }> {
+export async function listTrustConfigs(): Promise<Array<{ path: string; config: TrustConfig }>> {
   const dir = join(globalConfigDir(), "trust");
-  let names: string[] = [];
+  let names: string[];
   try {
-    names = readdirSync(dir).filter((n) => n.endsWith(".yaml"));
+    names = (await readdir(dir)).filter((name) => name.endsWith(".yaml"));
   } catch {
     return [];
   }
   const out: Array<{ path: string; config: TrustConfig }> = [];
   for (const name of names.sort()) {
     const path = join(dir, name);
+    let text: string | null;
     try {
-      out.push({ path, config: parseStrict(TrustConfig, readYaml(path) ?? {}, path) });
+      text = await readFile(path, "utf8");
+    } catch {
+      text = null;
+    }
+    try {
+      const raw = text === null ? null : yamlParse(text);
+      out.push({ path, config: parseStrict(TrustConfig, raw ?? {}, path) });
     } catch (err) {
-      // Skip-but-disclose: the projection must survive one stale file, but an
-      // operator debugging "why is my grant not listed" needs the breadcrumb.
       process.stderr.write(
         `claudexor: skipping unparseable trust file ${path}: ${err instanceof Error ? err.message : String(err)}\n`,
       );

@@ -30,13 +30,23 @@ struct AccountResourceRefresh {
     var error: String?
 }
 
+/// The display counters an exact-account request reads when it begins; its reply
+/// is accepted against them.
+struct AccountRequestObservation: Equatable {
+    /// The location's display generation: orders one key's tied readings.
+    var displayGeneration: UInt64 = 0
+    /// Binding changes of the addressed account seen so far: committed snapshots
+    /// and acknowledged app-owned writes of its credential.
+    var bindingChanges: UInt64 = 0
+}
+
 @MainActor
 struct AccountResourceConnection {
     let location: ExecutionLocationID
     let client: GatewayClient
     let isCurrent: () -> Bool
-    var displayGeneration: () -> UInt64 = { 0 }
-    let accept: (ControlQuotaResponse, AccountTarget, UInt64) -> Void
+    var observe: (AccountTarget) -> AccountRequestObservation = { _ in AccountRequestObservation() }
+    let accept: (ControlQuotaResponse, AccountTarget, AccountRequestObservation) -> Void
 }
 
 @MainActor @Observable
@@ -120,14 +130,15 @@ final class AccountsResourceActions {
             guard capability?.refresh == true else {
                 throw GatewayError.transport("This engine does not advertise exact-account refresh. Update the engine to use it.")
             }
-            let generation = connection.displayGeneration()
-            let response = try await connection.client.quota(refresh: true, resources: true, target: target)
+            let observation = connection.observe(target)
+            let response = try await connection.client.quota(
+                refresh: true, resources: true, apiKeys: capability?.apiKeys == true, target: target)
             guard refreshes[location]?[target]?.token == attempt.token else { return }
             guard connection.isCurrent() else { throw GatewayError.transport("Engine connection changed. Retry refresh.") }
             guard resetTokens == Dictionary(uniqueKeysWithValues: attempts(for: target, at: location).map { ($0.id, $0.token) }) else {
                 throw GatewayError.transport("A reset changed while this refresh was running. Refresh again for current resources.")
             }
-            connection.accept(response, target, generation)
+            connection.accept(response, target, observation)
             refreshes[location]?[target]?.inFlight = false
             // This acknowledges a read, not a reset. Each server facet and
             // quota window still supplies its own freshness/absence below.
@@ -175,7 +186,7 @@ final class AccountsResourceActions {
             guard connection.isCurrent() else {
                 throw GatewayError.transport("Engine connection changed. Check the original request after reconnecting.")
             }
-            let generation = connection.displayGeneration()
+            let observation = connection.observe(attempt.request.target)
             let receipt: ControlAccountResetResponse
             if let previous = attempt.receipt, previous.state == .running,
                capabilities(at: location, client: connection.client)?.resetStatus == true {
@@ -194,7 +205,7 @@ final class AccountsResourceActions {
             resets[location]?[index].inFlight = false
             resets[location]?[index].token = UUID() // Retire any read admitted before this outcome.
             persistUnresolved()
-            if let response = receipt.resources { connection.accept(response.quota, attempt.request.target, generation) }
+            if let response = receipt.resources { connection.accept(response.quota, attempt.request.target, observation) }
         } catch {
             guard let index = resets[location]?.firstIndex(where: { $0.id == key && $0.token == attempt.token }) else { return }
             resets[location]?[index].inFlight = false

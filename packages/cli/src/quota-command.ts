@@ -34,7 +34,11 @@ export async function quotaCommand(args: ParsedArgs, json: boolean): Promise<num
       else {
         printQuota(value);
         for (const row of value.resources) {
-          print(`${row.target.harness}/${row.target.profile_id}: resources`);
+          const subject =
+            row.target.profile_id === null
+              ? `${row.target.harness} (default API key)`
+              : `${row.target.harness}/${row.target.profile_id}`;
+          print(`${subject}: resources`);
           for (const key of ["balances", "spending", "resets", "diagnostics"] as const)
             print(
               `  ${key}: ${row[key].freshness}; ${JSON.stringify(row[key].value)}${row[key].last_error ? ` (${row[key].last_error})` : ""}`,
@@ -48,7 +52,6 @@ export async function quotaCommand(args: ParsedArgs, json: boolean): Promise<num
     const response = await controlApiFetch(addr, "/quota", {
       method: refresh ? "POST" : "GET",
       headers: {
-        Authorization: `Bearer ${addr.token}`,
         ...(refresh ? { "Content-Type": "application/json" } : {}),
       },
       ...(refresh

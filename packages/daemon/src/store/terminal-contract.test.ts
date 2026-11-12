@@ -15,7 +15,7 @@ import {
   validateRunFactsInvariants,
 } from "@claudexor/schema";
 import { appendLine } from "@claudexor/util";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   streamRunEvents,
   type StreamEventsCtx,
@@ -34,6 +34,7 @@ import { settleJobError } from "../job-settlement.js";
 import { applyTerminalInTx } from "./run-events.js";
 import { applyCommandInTx, commandRow, prepareCommandRow } from "./command-rows.js";
 import { runMutation } from "./mutation.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const syncSpies = vi.hoisted(() => ({ fsyncSync: vi.fn(), fdatasyncSync: vi.fn() }));
 vi.mock("node:fs", async (importOriginal) => {
@@ -53,10 +54,16 @@ vi.mock("node:fs", async (importOriginal) => {
 
 const TIME = "2026-10-10T00:00:00.000Z";
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const spy of Object.values(syncSpies)) spy.mockClear();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 function facts() {
   const outcome = makeOutcomeFacts("failed", { reason: "harness_failed" });
@@ -82,6 +89,8 @@ function facts() {
     generated_at: TIME,
   });
 }
+/** A legacy-shaped hook telemetry carrying the retired `run_facts` mirror; the
+ * terminal-files owner ignores it and never writes telemetry.yaml. */
 function telemetry() {
   return RunTelemetry.parse({
     schema_version: SCHEMA_VERSION,
@@ -136,7 +145,7 @@ async function runtime(root: string, io: ConstructorParameters<typeof SqlTermina
 }
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "cx-sql-terminal-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const runDir = join(root, "run");
   mkdirSync(join(runDir, "final"), { recursive: true });
   let fault: string | null = null;
@@ -223,12 +232,11 @@ describe("SQL terminal transaction and real EventLog", () => {
     });
     expect(storedTerminal(f.store, "run")).toEqual(event);
     expect(f.obligations.get("terminal_files", "run")?.state).toBe("materialized");
+    expect(f.obligations.get("terminal_files", "run")?.payload).toEqual({});
     expect(JSON.parse(readFileSync(join(f.runDir, "final/run_facts.yaml"), "utf8"))).toEqual(
       facts(),
     );
-    expect(JSON.parse(readFileSync(join(f.runDir, "final/telemetry.yaml"), "utf8"))).toEqual(
-      telemetry(),
-    );
+    expect(existsSync(join(f.runDir, "final/telemetry.yaml"))).toBe(false);
     expect(readEvents(f.runDir).map((row) => row.type)).toEqual(["run.created", "run.failed"]);
     expect(() => f.commands.persistTerminal("job", event, telemetry())).toThrow(
       /UNIQUE|constraint/i,
@@ -254,7 +262,7 @@ describe("SQL terminal transaction and real EventLog", () => {
     expect(syncSpies.fdatasyncSync).not.toHaveBeenCalled();
   });
 
-  it.each(["run_facts.yaml", "telemetry.yaml", "events.jsonl"])(
+  it.each(["run_facts.yaml", "events.jsonl"])(
     "T-TRM-1/4: repeated EIO in %s keeps SQL terminal and immediate repair later completes without another terminal INSERT",
     async (name) => {
       const f = await fixture();
@@ -339,7 +347,7 @@ describe("SQL terminal transaction and real EventLog", () => {
   it("settlement repairs an already terminal command and preserves canonical outcome through another EIO", async () => {
     const f = await fixture();
     const running = f.commands.get("job")!;
-    f.setFault("telemetry.yaml");
+    f.setFault("run_facts.yaml");
     let thrown: unknown;
     try {
       f.log.emit("run.failed", terminal().payload);
@@ -430,7 +438,7 @@ describe("SQL terminal transaction and real EventLog", () => {
 
   it("T-TRM-3: SIGKILL after SQL commit leaves an obligation that a fresh process state repairs", async () => {
     const root = mkdtempSync(join(tmpdir(), "cx-sql-kill-"));
-    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    removals.push(() => rmSync(root, { recursive: true, force: true }));
     const runDir = join(root, "run");
     mkdirSync(join(runDir, "final"), { recursive: true });
     const modules = Object.fromEntries(

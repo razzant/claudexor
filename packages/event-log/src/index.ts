@@ -1,17 +1,10 @@
 import type { RunEvent, RunEventType, RunTelemetry } from "@claudexor/schema";
 import { RunEvent as RunEventSchema } from "@claudexor/schema";
-import {
-  closeSync,
-  existsSync,
-  fstatSync,
-  openSync,
-  readSync,
-  statSync,
-  truncateSync,
-  unlinkSync,
-} from "node:fs";
-import { appendLine, nowIso, readTextSafe, redactSecrets } from "@claudexor/util";
+import { existsSync, statSync, truncateSync, unlinkSync } from "node:fs";
+import { appendLine, nowIso } from "@claudexor/util";
+import { lastSeqInFile, readRunEvents, terminalEventInFile } from "./event-file.js";
 export { RETAINED_OUTPUT_PATH, retainedOutput, writeRetainedOutput } from "./retained-output.js";
+export { lastSeqInFile, readRunEvents } from "./event-file.js";
 
 export type TerminalRunEventType = Extract<
   RunEventType,
@@ -44,6 +37,21 @@ export type TerminalPersistenceHook = (
   telemetry: RunTelemetry | null,
 ) => { state: "materialized" } | { state: "pending"; error: unknown };
 
+/** Writes a prepared terminal's durable bytes off the request thread before
+ * its synchronous commit, which then adopts them; anything not staged the
+ * commit writes itself. */
+export type TerminalStagingHook = (
+  event: RunEvent,
+  telemetry: RunTelemetry | null,
+) => Promise<void>;
+
+interface PreparedTerminal {
+  event: RunEvent;
+  prepared: PreparedTerminalEvent | void;
+  /** The event file's size before preparation: the rollback boundary. */
+  previousBytes: number | null;
+}
+
 /**
  * Append-only JSONL event log for a single run. Terminal output and human
  * summaries are projections; this file is the canonical event stream.
@@ -62,6 +70,9 @@ export class EventLog {
   private terminalCommitInProgress = false;
   private terminalWriterPoisoned = false;
   private terminalPersistence?: TerminalPersistenceHook;
+  private terminalStaging?: TerminalStagingHook;
+  /** A prepared terminal's bytes are being staged; ordinary events may append. */
+  private terminalStaged = false;
   private prepareOutput?: (type: TerminalRunEventType, payload: Record<string, unknown>) => void;
   private beforeTerminal?: (
     type: TerminalRunEventType,
@@ -122,13 +133,6 @@ export class EventLog {
     return this.deferredTerminal ? { ...this.deferredTerminal } : null;
   }
 
-  flushDeferredTerminal(): RunEvent | null {
-    const pending = this.deferredTerminal;
-    this.deferredTerminal = null;
-    this.deferTerminalEvents = false;
-    return pending ? this.emit(pending.type, pending.payload) : null;
-  }
-
   /**
    * Register the engine's once-only terminal preparation hook. It builds the
    * canonical receipt in memory before the durable authority accepts the
@@ -154,6 +158,12 @@ export class EventLog {
     this.terminalPersistence = hook;
   }
 
+  /** Stage a terminal's durable bytes off the request thread before its commit
+   * (`emitTerminal`, `commitDeferredTerminal`). */
+  setTerminalStaging(hook: TerminalStagingHook): void {
+    this.terminalStaging = hook;
+  }
+
   /** Highest seq this writer has appended: its in-memory counter, no file read. */
   lastSeq(): number {
     return this.nextSeq - 1;
@@ -161,6 +171,76 @@ export class EventLog {
 
   /** Append a typed run event. Validates against the schema before writing. */
   emit(type: RunEventType, payload: Record<string, unknown> = {}, publish = true): RunEvent {
+    this.assertEmittable();
+    const terminalType: TerminalRunEventType | null =
+      type === "run.completed" || type === "run.failed" || type === "run.blocked" ? type : null;
+    if (terminalType && this.terminalStaged) {
+      throw new Error("run terminal event commit is already in progress");
+    }
+    if (this.deferTerminalEvents && terminalType) {
+      if (this.deferredTerminal) throw new Error("run terminal event was emitted more than once");
+      this.deferredTerminal = { type, payload };
+      return this.stamp(type, payload);
+    }
+    if (terminalType)
+      return this.commitTerminal(this.prepareTerminal(terminalType, payload), publish);
+    const event = this.stamp(type, payload);
+    appendLine(this.path, JSON.stringify(event));
+    this.nextSeq += 1;
+    this.onPersist?.(event);
+    try {
+      if (publish) this.onPublish?.(event);
+    } catch {
+      /* best-effort live observer */
+    }
+    return event;
+  }
+
+  /**
+   * The terminal commit with its durable bytes staged first. The terminal is
+   * prepared synchronously (canonical type, receipt and outcome frozen), the
+   * staging hook writes its bytes off the request thread, and the unchanged
+   * synchronous commit adopts them. While staging awaits, another terminal is
+   * refused as in progress and an ordinary event (an audit, a live-message
+   * receipt) appends before the terminal, which then takes the next seq and
+   * keeps the time its verdict was prepared. A staging failure leaves the
+   * writes to the commit. Without a hook, or while terminals are held, this is
+   * `emit`, committed before this function first yields.
+   */
+  async emitTerminal(
+    type: TerminalRunEventType,
+    payload: Record<string, unknown> = {},
+    publish = true,
+  ): Promise<RunEvent> {
+    const stage = this.terminalStaging;
+    if (!stage || this.deferTerminalEvents) return this.emit(type, payload, publish);
+    this.assertEmittable();
+    if (this.terminalStaged) throw new Error("run terminal event commit is already in progress");
+    const terminal = this.prepareTerminal(type, payload);
+    this.terminalCommitInProgress = false;
+    this.terminalStaged = true;
+    try {
+      await stage(terminal.event, terminal.prepared?.telemetry ?? null);
+    } catch {
+      // Whatever was not staged, the synchronous commit writes itself.
+    } finally {
+      this.terminalStaged = false;
+    }
+    return this.commitTerminal(terminal, publish);
+  }
+
+  /** Commit the terminal held by `deferTerminal()` through `emitTerminal`, so
+   * its bytes are staged first when a staging hook is set. */
+  async commitDeferredTerminal(): Promise<RunEvent | null> {
+    const pending = this.deferredTerminal;
+    this.deferredTerminal = null;
+    this.deferTerminalEvents = false;
+    return pending
+      ? this.emitTerminal(pending.type as TerminalRunEventType, pending.payload)
+      : null;
+  }
+
+  private assertEmittable(): void {
     if (this.terminalCommittedFlag) {
       throw new Error("run terminal event is already committed");
     }
@@ -170,116 +250,109 @@ export class EventLog {
     if (this.terminalCommitInProgress) {
       throw new Error("run terminal event commit is already in progress");
     }
-    const terminalType: TerminalRunEventType | null =
-      type === "run.completed" || type === "run.failed" || type === "run.blocked" ? type : null;
-    const terminal = terminalType !== null;
-    if (this.deferTerminalEvents && terminal) {
-      if (this.deferredTerminal) throw new Error("run terminal event was emitted more than once");
-      this.deferredTerminal = { type, payload };
-      return RunEventSchema.parse({
-        seq: this.nextSeq,
-        ts: nowIso(),
-        run_id: this.runId,
-        task_id: this.taskId,
-        ...(this.threadId ? { thread_id: this.threadId } : {}),
-        type,
-        payload: redactEventValue(payload),
-      });
-    }
-    // Derived output may announce its file before the terminal sequence/receipt
-    // is frozen. Deferred terminals reach this only when they are flushed.
-    if (terminalType) this.prepareOutput?.(terminalType, payload);
-    let prepared: PreparedTerminalEvent | void = undefined;
-    let event = RunEventSchema.parse({
+  }
+
+  private stamp(type: RunEventType, payload: Record<string, unknown>): RunEvent {
+    return RunEventSchema.parse({
       seq: this.nextSeq,
       ts: nowIso(),
       run_id: this.runId,
       task_id: this.taskId,
       ...(this.threadId ? { thread_id: this.threadId } : {}),
       type,
-      payload: redactEventValue(payload),
+      payload: payload,
     });
+  }
+
+  private fileBytes(): number | null {
+    return existsSync(this.path) ? statSync(this.path).size : null;
+  }
+
+  /** Freeze a terminal: its derived output, event and receipt. The fence stays
+   * up until the commit; a failed preparation rolls back and rethrows. */
+  private prepareTerminal(
+    terminalType: TerminalRunEventType,
+    payload: Record<string, unknown>,
+  ): PreparedTerminal {
+    // Derived output may announce its file before the terminal sequence/receipt
+    // is frozen. Deferred terminals reach this only when they are flushed.
+    this.prepareOutput?.(terminalType, payload);
+    let prepared: PreparedTerminalEvent | void = undefined;
+    let event = this.stamp(terminalType, payload);
     // Snapshot before terminal preparation: the hook may materialize sibling
     // artifacts, but the event file rollback boundary is the pre-hook state.
-    const previousBytes = existsSync(this.path) ? statSync(this.path).size : null;
-    if (terminal) {
-      // Fence every re-entrant emit before the preparation hook, append, and
-      // durable sink form one terminal commit. The fence is released only by
-      // a complete rollback or after the terminal fully commits.
-      this.terminalCommitInProgress = true;
-      // Validate the exact redacted event before terminal preparation can
-      // materialize a receipt for it. Keep the hook registered until the event
-      // itself is durable so an append failure can retry the entire commit.
+    const previousBytes = this.fileBytes();
+    // Fence every re-entrant emit before the preparation hook, append, and
+    // durable sink form one terminal commit. The fence is released only by
+    // a complete rollback or after the terminal fully commits.
+    this.terminalCommitInProgress = true;
+    // Validate the exact event before terminal preparation can
+    // materialize a receipt for it. Keep the hook registered until the event
+    // itself is durable so an append failure can retry the entire commit.
+    try {
+      prepared = this.beforeTerminal?.(terminalType, event.payload);
+      // Terminal preparation may canonicalize facts after consulting immutable
+      // artifacts. Commit the corresponding event type and payload as one
+      // validated unit so the receipt, durable event, and live publication
+      // cannot disagree.
+      event = RunEventSchema.parse(
+        prepared ? { ...event, type: prepared.type, payload: prepared.payload } : event,
+      );
+    } catch (error) {
+      this.rollbackTerminal(previousBytes, prepared, error);
+    }
+    return { event, prepared, previousBytes };
+  }
+
+  private commitTerminal(terminal: PreparedTerminal, publish: boolean): RunEvent {
+    const { prepared } = terminal;
+    // Ordinary events appended while staging awaited precede the terminal.
+    const moved = terminal.event.seq !== this.nextSeq;
+    const event = moved
+      ? RunEventSchema.parse({ ...terminal.event, seq: this.nextSeq })
+      : terminal.event;
+    const previousBytes = moved ? this.fileBytes() : terminal.previousBytes;
+    this.terminalCommitInProgress = true;
+    if (this.terminalPersistence) {
+      let persisted: ReturnType<TerminalPersistenceHook>;
       try {
-        prepared = this.beforeTerminal?.(terminalType, event.payload);
-        // Terminal preparation may canonicalize facts after consulting immutable
-        // artifacts. Commit the corresponding event type and payload as one
-        // validated unit so the receipt, durable event, and live publication
-        // cannot disagree.
-        event = RunEventSchema.parse(
-          prepared
-            ? {
-                ...event,
-                type: prepared.type,
-                payload: redactEventValue(prepared.payload),
-              }
-            : event,
-        );
+        persisted = this.terminalPersistence(event, prepared?.telemetry ?? null);
       } catch (error) {
         this.rollbackTerminal(previousBytes, prepared, error);
       }
-    }
-    if (terminal) {
-      if (this.terminalPersistence) {
-        let persisted: ReturnType<TerminalPersistenceHook>;
-        try {
-          persisted = this.terminalPersistence(event, prepared?.telemetry ?? null);
-        } catch (error) {
-          this.rollbackTerminal(previousBytes, prepared, error);
-        }
-        if (persisted.state === "pending") this.poisonAfterDurableCommit(persisted.error);
-      } else {
-        let durableAuthorityCommitted = false;
-        try {
-          this.onPersist?.(event);
-          durableAuthorityCommitted = this.onPersist !== undefined;
-        } catch (error) {
-          this.rollbackTerminal(previousBytes, prepared, error);
-        }
-        try {
-          prepared?.commit?.();
-        } catch (error) {
-          if (durableAuthorityCommitted) this.poisonAfterDurableCommit(error);
-          this.rollbackTerminal(previousBytes, prepared, error);
-        }
-        try {
-          appendLine(this.path, JSON.stringify(event));
-        } catch (error) {
-          if (durableAuthorityCommitted) this.poisonAfterDurableCommit(error);
-          this.rollbackTerminal(previousBytes, prepared, error);
-        }
-      }
-      this.nextSeq += 1;
-      // The durable journal, canonical prepared receipt, and per-run event are
-      // now one committed terminal unit. Only now may observers see it.
-      this.terminalCommittedFlag = true;
-      this.terminalCommitInProgress = false;
-      this.beforeTerminal = undefined;
-      this.dispose();
-      try {
-        if (publish) this.onPublish?.(event);
-      } catch {
-        /* durable replay remains authoritative */
-      }
+      if (persisted.state === "pending") this.poisonAfterDurableCommit(persisted.error);
     } else {
-      appendLine(this.path, JSON.stringify(event));
-      this.nextSeq += 1;
-      this.onPersist?.(event);
+      let durableAuthorityCommitted = false;
       try {
-        if (publish) this.onPublish?.(event);
-      } catch {
-        /* best-effort live observer */
+        this.onPersist?.(event);
+        durableAuthorityCommitted = this.onPersist !== undefined;
+      } catch (error) {
+        this.rollbackTerminal(previousBytes, prepared, error);
       }
+      try {
+        prepared?.commit?.();
+      } catch (error) {
+        if (durableAuthorityCommitted) this.poisonAfterDurableCommit(error);
+        this.rollbackTerminal(previousBytes, prepared, error);
+      }
+      try {
+        appendLine(this.path, JSON.stringify(event));
+      } catch (error) {
+        if (durableAuthorityCommitted) this.poisonAfterDurableCommit(error);
+        this.rollbackTerminal(previousBytes, prepared, error);
+      }
+    }
+    this.nextSeq += 1;
+    // The durable journal, canonical prepared receipt, and per-run event are
+    // now one committed terminal unit. Only now may observers see it.
+    this.terminalCommittedFlag = true;
+    this.terminalCommitInProgress = false;
+    this.beforeTerminal = undefined;
+    this.dispose();
+    try {
+      if (publish) this.onPublish?.(event);
+    } catch {
+      /* durable replay remains authoritative */
     }
     return event;
   }
@@ -356,24 +429,6 @@ export class EventLog {
   }
 }
 
-/** Shared reader for live terminal preparation and selected interrupted-run recovery. */
-export function readRunEvents(path: string): { events: RunEvent[]; malformed: number } {
-  const text = readTextSafe(path);
-  if (text === null) return { events: [], malformed: 0 };
-  const events: RunEvent[] = [];
-  let malformed = 0;
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      events.push(RunEventSchema.parse(JSON.parse(trimmed)));
-    } catch {
-      malformed += 1;
-    }
-  }
-  return { events, malformed };
-}
-
 /**
  * Live writers by events.jsonl path (one daemon process hosts the
  * orchestrator AND the control API). While a run is active its EventLog owns
@@ -407,7 +462,7 @@ export function appendRunEvent(
     run_id: runId,
     task_id: taskId,
     type,
-    payload: redactEventValue(payload),
+    payload: payload,
   });
   appendLine(path, JSON.stringify(event));
   return event;
@@ -430,111 +485,4 @@ export function liveRunEventSeq(path: string): number | null {
 export function lastRunEventSeq(path: string): number {
   const live = activeEventLogs.get(path);
   return live && !live.releaseRecoveredTerminalFence() ? live.lastSeq() : lastSeqInFile(path);
-}
-
-/** How much of a log's end `lastSeqInFile` reads before it scans the whole file. */
-const LAST_SEQ_TAIL_BYTES = 64 * 1024;
-
-/**
- * Highest `seq` already present in an events.jsonl file (0 for missing/empty).
- * Legacy lines without seq count by position so a continued log never reuses
- * a line number an SSE replayer may have already served as a fallback id.
- *
- * Seqs only grow within a log (its writer is the one owner and continues from
- * the tail when reopened), so the last line carries the highest one. When the
- * last 64 KiB hold that whole line and it carries a numeric seq, the tail
- * answers; a legacy or torn last line (valued by its position), a last line
- * longer than the window, or a read failure takes the full scan.
- */
-export function lastSeqInFile(path: string): number {
-  try {
-    return lastSeqFromTail(path) ?? lastSeqByScan(path);
-  } catch {
-    return lastSeqByScan(path);
-  }
-}
-
-/** The last non-blank line's numeric seq, or null when only a scan can tell. */
-function lastSeqFromTail(path: string): number | null {
-  const fd = openSync(path, "r");
-  try {
-    const size = fstatSync(fd).size;
-    const start = Math.max(0, size - LAST_SEQ_TAIL_BYTES);
-    const window = Buffer.alloc(size - start);
-    let end = readSync(fd, window, 0, window.length, start);
-    for (;;) {
-      const newline = end > 0 ? window.lastIndexOf(0x0a, end - 1) : -1;
-      // Without a newline in the window the line may begin before it.
-      if (newline < 0 && start > 0) return null;
-      const line = window.toString("utf8", newline + 1, end).trim();
-      if (line) return finiteSeq(line);
-      if (newline < 0) return 0;
-      end = newline;
-    }
-  } finally {
-    closeSync(fd);
-  }
-}
-
-function finiteSeq(line: string): number | null {
-  try {
-    const seq = (JSON.parse(line) as { seq?: unknown }).seq;
-    return typeof seq === "number" && Number.isFinite(seq) ? seq : null;
-  } catch {
-    return null;
-  }
-}
-
-function lastSeqByScan(path: string): number {
-  const text = readTextSafe(path);
-  if (text === null) return 0;
-  let last = 0;
-  let lineNo = 0;
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    lineNo += 1;
-    try {
-      const parsed = JSON.parse(trimmed) as { seq?: unknown };
-      const seq =
-        typeof parsed.seq === "number" && Number.isFinite(parsed.seq) ? parsed.seq : lineNo;
-      if (seq > last) last = seq;
-    } catch {
-      if (lineNo > last) last = lineNo;
-    }
-  }
-  return last;
-}
-
-function terminalEventInFile(path: string): boolean {
-  const text = readTextSafe(path);
-  if (text === null) return false;
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const event = RunEventSchema.parse(JSON.parse(trimmed));
-      if (
-        event.type === "run.completed" ||
-        event.type === "run.failed" ||
-        event.type === "run.blocked"
-      ) {
-        return true;
-      }
-    } catch {
-      /* malformed evidence cannot establish a terminal fence */
-    }
-  }
-  return false;
-}
-
-function redactEventValue(value: unknown): unknown {
-  if (typeof value === "string") return redactSecrets(value);
-  if (Array.isArray(value)) return value.map(redactEventValue);
-  if (!value || typeof value !== "object") return value;
-  const out: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = redactEventValue(child);
-  }
-  return out;
 }

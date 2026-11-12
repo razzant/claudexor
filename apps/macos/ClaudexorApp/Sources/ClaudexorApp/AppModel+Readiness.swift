@@ -75,6 +75,27 @@ extension AppModel {
                                    intent: intent, info: info)
     }
 
+    /// The composer pool lane for one harness (#133). `availability(for:mode:)`
+    /// stays the Auto truth; this adds explicit eligibility from the doctor's
+    /// enabled intents. Blocks that bind every selection — no doctor row, stale
+    /// readiness, disabled in Settings — keep the chip unavailable with that reason.
+    func poolLane(for family: HarnessFamily, mode: RunMode, projectScoped: Bool) -> HarnessPoolPresentation.Lane {
+        let auto = availability(for: family, mode: mode)
+        guard let info = auto.info, activeHarnessReadinessFresh,
+              activeSettingsSnapshot?.harnesses?[family.rawValue]?.enabled != false
+        else { return .unavailable(reason: auto.reason) }
+        return HarnessPoolPresentation.lane(
+            label: family.label,
+            intent: auto.intent,
+            routableIntents: info.routableIntents,
+            enabledIntents: info.intents,
+            readsFiles: info.readsFiles,
+            projectScoped: projectScoped,
+            reasons: info.reasons,
+            healthOk: info.health == .ok,
+            auth: info.auth)
+    }
+
     func availableHarnesses(for mode: RunMode, selected: Set<HarnessFamily>) -> [HarnessFamily] {
         selectableHarnesses
             .filter { selected.contains($0) }

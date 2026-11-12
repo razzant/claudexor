@@ -14,7 +14,7 @@ import {
 import { sha256 } from "../journal-recovery-files.js";
 import type { PartitionControlPort } from "../store-contracts.js";
 import type { BlobFiles } from "./blob-files.js";
-import { readJournalEvents } from "./cursors.js";
+import { readJournalEventPage, type JournalEventPageRequest } from "./cursors.js";
 import { StoreError } from "./errors.js";
 import { quarantineGeneration, setGenerationStatusInTx } from "./generations.js";
 import type { MaintenanceController } from "./maintenance.js";
@@ -119,10 +119,10 @@ export class SqlPartitionRecovery implements PartitionControlPort {
     return ControlJournalValidation.parse({ ...this.inspect(), projectionStatus: statuses });
   }
 
-  events(afterCursor?: string) {
+  events(request?: JournalEventPageRequest) {
     this.assertPhysicalHealthy();
     assertPartitionReadable(this.store, recoveryGeneration(this.store, this.partition));
-    return readJournalEvents(this.store, this.partition, afterCursor, this.blobs);
+    return readJournalEventPage(this.store, this.partition, request, this.blobs);
   }
 
   exportRecovery() {

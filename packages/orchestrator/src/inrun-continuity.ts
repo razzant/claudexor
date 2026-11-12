@@ -1,8 +1,8 @@
 /** Agent and Ask share one per-attempt continuation owner. Before progress,
  * existing fresh-retry/rotation rules apply. After progress, limits move the
  * session to another account (or a packet); transport resumes the same account
- * bounded by max_retries. Deterministic permission/context refusals stop rather
- * than replaying the same limitation. Pins never rotate.
+ * bounded by max_retries. Permission/context refusals and the max-turns cap stop
+ * rather than replaying the same limitation. Pins never rotate.
  *
  * Acted is sticky across every try (answer, activity, file change or diff): a
  * silent resumed try never reopens the fresh rung. The capsule, per-try receipts,
@@ -10,7 +10,6 @@
  * bounded by triedProfiles; work never silently becomes a fresh prompt replay.
  * Full mechanism and carrier rationale: ARCHITECTURE "In-run continuation". */
 import { CONTINUITY_IDENTITY_MISMATCH_CODE, acceptedTryOutput } from "@claudexor/core";
-import { readContinuationSources } from "@claudexor/workspace";
 import {
   HarnessRunSpec as HarnessRunSpecSchema,
   type ContinuityIdentityCheck,
@@ -24,6 +23,7 @@ import {
 } from "@claudexor/schema";
 import type { AttemptOutputMarkers } from "./attemptOutputMarkers.js";
 import {
+  carriedRunAttempts,
   composeContinuedTry,
   continuityReceipt,
   relocateCapsule,
@@ -48,13 +48,13 @@ import type { AfterTryVerdict, InRunContinuityDeps, TryFacts } from "./inrun-con
 import { discloseContinuedTry } from "./inrun-continuity-thread.js";
 import type { ContinuityTerminalFacts } from "./continuity-terminal.js";
 import { RetainedAttemptOutput } from "./inrun-retained-output.js";
-import { unconfirmedContinuationInputs, type UncertainInput } from "./continuation-input.js";
+import { undeliveredInputs, type UncertainInput } from "./continuation-input.js";
 import {
   noteRefusedBeforeProgress,
   type PreProgressRefusalSubject,
 } from "./pre-progress-refusal.js";
 import { PoolAttemptEvidence, withRotationAttempts } from "./pool-attempt-evidence.js";
-import { quotaRefusalWithScope } from "./quota-refusal-scope.js";
+import { pinnedTypedLimit, quotaRefusalWithScope } from "./quota-refusal-scope.js";
 
 const TYPED_REFUSALS = new Set(["auth_failed", "capability_refused", "config_error"]);
 
@@ -72,6 +72,9 @@ export class InRunContinuity {
   private tryIndex = 0;
   private tryAbort: AbortController | null = null;
   private tryStarted = false;
+  /** Some try of this attempt started with an accepted handshake (it carries work). */
+  private startedAccepted = false;
+  private trySessionId: string | null = null;
   private expectedSessionId: string | null = null;
   private tryModel: string | null = null;
   private tryRequestedModel: string | null = null;
@@ -79,9 +82,11 @@ export class InRunContinuity {
   private tryFirstInputTokens: number | null = null;
   private continued: ContinuedTry | null = null;
   private pending: ContinuedTry | null = null;
-  private packetSession = false;
+  /** History quality of the capsule's session: packet-born stays partial, a seeded
+   * native carrier keeps its predecessor's recorded quality. */
+  private sessionMemory: RunContinuityReceipt["memory"];
   private threadSwitch: { harness: string; profileId: string | null } | null = null;
-  private readonly retainedOutput = new RetainedAttemptOutput();
+  private readonly retainedOutput: RetainedAttemptOutput;
   /** Carrier of the try that just settled (null = the first try or a fresh replay). */
   private settledCarrier: RunContinuityReceipt["carrier"] | null = null;
   private unstartedInputs: UncertainInput[] = [];
@@ -91,9 +96,13 @@ export class InRunContinuity {
   constructor(private readonly deps: InRunContinuityDeps) {
     this.poolEvidence =
       deps.poolEvidence ?? new PoolAttemptEvidence(deps.adapter.id, deps.attemptId);
+    this.retainedOutput = new RetainedAttemptOutput(deps.runDir, deps.attemptId);
     this.capsule = readSessionCapsule(deps.attemptDir);
     this.acted = deps.seed?.acted === true;
     this.pending = deps.seed?.continued ?? null;
+    const seeded = this.pending?.carrier;
+    this.sessionMemory =
+      seeded === "native" || seeded === "native_moved" ? this.pending!.memory : "full";
   }
 
   /** The loop calls this before each try spawns; `abort` is THIS try's controller.
@@ -112,6 +121,7 @@ export class InRunContinuity {
     this.tryIndex = nativeTry;
     this.tryAbort = abort;
     this.tryStarted = false;
+    this.trySessionId = runSpec.session_id;
     this.continued = this.pending;
     this.pending = null;
     if (this.continued) {
@@ -146,6 +156,7 @@ export class InRunContinuity {
         resetsAt: ev.rate_limit.resets_at ?? null,
         retryDelayMs: ev.rate_limit.retry_delay_ms ?? null,
         constraintId: ev.rate_limit.constraint_id ?? null,
+        reopening: ev.rate_limit.reopening ?? null,
       };
     }
     if (ev.type === "usage" && this.expectedSessionId && this.tryFirstInputTokens === null) {
@@ -170,7 +181,10 @@ export class InRunContinuity {
     if (ev.type !== "started") return null;
     this.tryStarted = true;
     const nid = ev.payload?.["native_session_id"];
-    if (typeof nid !== "string" || nid.length === 0) return null;
+    if (typeof nid !== "string" || nid.length === 0) {
+      this.startedAccepted = true;
+      return null;
+    }
     // Only an adapter with the `continuity` capability promises that a resume
     // keeps the session id; on any other harness a new id after a resume is the
     // vendor's own answer and is recorded as the session, as before.
@@ -183,12 +197,12 @@ export class InRunContinuity {
       void this.deps.adapter.cancel?.(runSpec.session_id)?.catch(() => {});
       return `resumed native session ${nid} is not the requested ${this.expectedSessionId}; the try was stopped${markers.sawAgentProgress ? " (effects may have occurred)" : " before any effect"}`;
     }
+    this.startedAccepted = true;
     if (this.expectedSessionId && nid === this.expectedSessionId)
       this.tryIdentity = "matched_before_effects";
     // Packet-born history lacks earlier thread turns, even on later native resumes.
-    this.packetSession =
-      this.continued?.carrier === "packet" ||
-      (this.packetSession && this.capsule?.nativeSessionId === nid);
+    if (this.continued?.carrier === "packet") this.sessionMemory = "partial";
+    else if (this.capsule?.nativeSessionId !== nid) this.sessionMemory = "full";
     // A new native session (or the resumed one) is the attempt's capsule now.
     this.nativeRejected = false;
     this.capsule = {
@@ -207,7 +221,9 @@ export class InRunContinuity {
 
   /** Both loops consult this only after the controller accepts the handshake. */
   get mayPublishSession(): boolean {
-    return this.tryStarted && !this.tryIdentity.startsWith("mismatch") && !this.packetSession;
+    return (
+      this.tryStarted && !this.tryIdentity.startsWith("mismatch") && this.sessionMemory === "full"
+    );
   }
 
   /** Record the try's account row from its own facts, before workspace capture can throw. */
@@ -218,7 +234,7 @@ export class InRunContinuity {
   /** Decide what the attempt does after a settled try. */
   async afterTry(facts: TryFacts): Promise<AfterTryVerdict> {
     this.poolEvidence.settle(facts);
-    this.retainedOutput.add(facts.answer, facts.harnessErrored, this.tryIdentity);
+    this.retainedOutput.add(facts.runSpec.session_id, facts.answer, this.tryIdentity);
     const accepted = acceptedTryOutput(facts.answer, facts.harnessErrored);
     this.acted ||=
       accepted.length > 0 ||
@@ -228,17 +244,9 @@ export class InRunContinuity {
     await this.relocate(facts.runSpec);
     this.settledCarrier = this.continued?.carrier ?? null;
     this.emitReceipt(facts.runSpec);
-    if (this.tryStarted) this.unstartedInputs = [];
-    else if (this.tryIndex === 0) {
-      const { runDir, runId, workOrder } = this.deps;
-      const sources = readContinuationSources(runDir);
-      // A successor's workOrder is the whole joined chain. Keep the individual
-      // undelivered callers newest first, including this run's own correction.
-      // Further unstarted tries keep these references until a try starts.
-      this.unstartedInputs = sources.length
-        ? unconfirmedContinuationInputs([{ runDir, runId, state: "running" }, ...sources])
-        : [{ text: workOrder, runDir }];
-    }
+    // A mismatched handshake delivered nothing, exactly like a try that never started.
+    if (this.tryStarted && !this.tryIdentity.startsWith("mismatch")) this.unstartedInputs = [];
+    else if (this.tryIndex === 0) this.unstartedInputs = undeliveredInputs(this.deps);
     if (facts.budgetStopped) return this.breakWith("other");
     if (!facts.harnessErrored || facts.aborted) return { kind: "break" };
     // A cancel or deadline after the try settled ends the attempt: nothing
@@ -259,6 +267,7 @@ export class InRunContinuity {
     // or rotating accounts. Keep its answer and ordinary continuation evidence.
     if (this.permissionDenied) return this.breakWith("permission_denied");
     if (facts.telemetry.contextExhausted) return this.breakWith("context_exhausted");
+    if (facts.telemetry.turnLimitReached) return this.breakWith("turn_limit"); // #299
     if (!this.acted) return this.legacy(facts);
     const typedRefusal = facts.newTransients.some((t) => TYPED_REFUSALS.has(t.category));
     if (typedRefusal) return this.breakWith("other");
@@ -286,7 +295,7 @@ export class InRunContinuity {
     workState: WorkState | null | undefined;
   }): Promise<RunResumable | null> {
     // A continued try whose attempt ended on a loop exit that skipped
-    // `afterTry` (a request or processing refusal) still owes its receipt.
+    // `afterTry` (a processing refusal) still owes its receipt.
     this.emitReceipt(input.runSpec);
     await this.relocate(input.runSpec);
     const vetoed =
@@ -312,13 +321,13 @@ export class InRunContinuity {
     return this.resumable(cause);
   }
 
-  /** Keep a snapshot for gates/review/arbitration that can fail after this try completed. */
-  terminalFacts(resumable: RunResumable | null): ContinuityTerminalFacts {
-    const poolAttempts = this.poolEvidence.snapshot();
-    if (resumable) return { resumable, poolAttempts };
-    return this.acted || this.capsule
-      ? { resumableOnFailure: this.resumable("other"), poolAttempts }
-      : { poolAttempts };
+  /** Snapshot for gates/review/arbitration failing later; a capture refusal skips those. */
+  terminalFacts(resumable: RunResumable | null, captureRefused = false): ContinuityTerminalFacts {
+    const facts = { poolAttempts: this.poolEvidence.snapshot(), started: this.startedAccepted };
+    if (resumable) return { ...facts, resumable };
+    return (this.acted || this.capsule) && !captureRefused
+      ? { ...facts, resumableOnFailure: this.resumable("other") }
+      : facts;
   }
 
   resumable(cause: ResumableCause): RunResumable {
@@ -366,6 +375,7 @@ export class InRunContinuity {
     if (
       !facts.sawRetryable ||
       !facts.rawDeliverableEmpty ||
+      this.limit?.reopening === "unknown" ||
       facts.nativeTry >= this.deps.retryPolicy.maxRetries
     )
       return { kind: "break" };
@@ -394,29 +404,23 @@ export class InRunContinuity {
     );
     if (this.deps.pinned) {
       this.lastCause = "pinned_limit";
-      this.terminalCode = "subscription_window_exhausted";
-      return {
-        kind: "terminal",
-        error: quotaRefusalWithScope(
-          Object.assign(
-            new Error(
-              `credential profile "${facts.runSpec.credential_profile?.profile_id ?? "default"}" (${this.deps.adapter.id}) hit a typed vendor limit after progress and a pinned account never rotates${this.limit?.resetsAt ? `; resets ${this.limit.resetsAt}` : ""}`,
-            ),
-            {
-              code: "subscription_window_exhausted",
-              category: "harness_unavailable",
-              resetsAt: this.limit?.resetsAt ?? null,
-            },
-          ),
-          {
-            harness: this.deps.adapter.id,
-            profileId: facts.runSpec.credential_profile?.profile_id ?? null,
-            model: facts.runSpec.model_hint,
-            requestKind: "text",
-            constraintId: this.limit?.constraintId,
-          },
+      const error = quotaRefusalWithScope(
+        pinnedTypedLimit(
+          facts.runSpec.credential_profile?.profile_id ?? "default",
+          this.deps.adapter.id,
+          this.limit,
+          true,
         ),
-      };
+        {
+          harness: this.deps.adapter.id,
+          profileId: facts.runSpec.credential_profile?.profile_id ?? null,
+          model: facts.runSpec.model_hint,
+          requestKind: "text",
+          constraintId: this.limit?.constraintId,
+        },
+      );
+      this.terminalCode = codeOf(error);
+      return { kind: "terminal", error };
     }
     if (effectiveLimitAction(this.deps.policy, route) !== "rotate")
       return this.breakWith("vendor_limit");
@@ -435,8 +439,8 @@ export class InRunContinuity {
     );
   }
 
-  /** The process died after progress: the same account resumes its session
-   * (bounded), or re-briefs once a typed fact rejected that session. With no
+  /** An untyped error ended a try after progress: the same account resumes its
+   * session (bounded), or re-briefs once a typed fact rejected it. With no
    * session recorded at all (the harness never reported one) the same account
    * continues on a new session re-briefed by the evidence index (owner 1B),
    * under the same bound. */
@@ -493,12 +497,13 @@ export class InRunContinuity {
       attemptId: this.deps.attemptId,
       policy: this.deps.policy,
       registry: this.deps.registry,
-      snapshots: this.deps.snapshots,
+      quotaSnapshots: this.deps.quotaSnapshots,
       probeReadyProfiles: () => this.deps.probeReadyProfiles(runSpec, this.triedProfiles),
       ...this.deps.rotationObservations(runSpec, facts.newTransients, facts.refusal),
       triedProfiles: this.triedProfiles,
       ...inRunRotationArgs(facts, forceEligible),
-      lastLimit: facts.lastLimit,
+      // This try's own limit (with the window it named) when it saw one.
+      lastLimit: this.limit ?? facts.lastLimit,
       // An in-run exhaustion names each account's own failed tries (settled first).
       emit: ((type, payload) =>
         this.deps.emit(
@@ -544,9 +549,10 @@ export class InRunContinuity {
         uncertainInput: uncertainInputFor(
           this.deps.runDir,
           this.unstartedInputs,
-          this.deps.attemptId,
+          carriedRunAttempts(this.deps),
         ),
-        retainedOutput: this.retainedOutput.text(),
+        retainedOutput: () => this.retainedOutput.text(),
+        sessionMemory: this.sessionMemory,
       },
       facts,
       base,
@@ -570,7 +576,8 @@ export class InRunContinuity {
     this.deps.emit("run.continuity", {
       harness_id: this.deps.adapter.id,
       attempt_id: this.deps.attemptId,
-      session_id: runSpec.session_id,
+      // The settled try's own process session joins this receipt to its start.
+      session_id: this.trySessionId ?? runSpec.session_id,
       receipt: continuityReceipt({
         deps: this.deps,
         continued,

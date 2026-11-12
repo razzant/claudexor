@@ -9,13 +9,17 @@ permissions:
   contents: read
 
 jobs:
+  # Each job is bounded at about twice its slowest successful run, never below
+  # ten minutes, so a hung step fails visibly instead of holding a required
+  # check for GitHub's six-hour default. Raise a bound when honest runs near it.
   build-test:
     name: Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        node-version: [24.15.0, 24.16.0]
+        node-version: [24.15.0, 24.22.3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,19 +28,6 @@ jobs:
           # commits (a shallow synthetic-merge checkout would hide them, and
           # the gate fails loudly on unreachable parents rather than skip).
           fetch-depth: 0
-
-      # Secret scan runs FIRST — before any toolchain/lifecycle step can read
-      # or echo repository contents. The patterns cannot self-match their own
-      # literals (each embeds a `[` that breaks the class), so workflow files
-      # are scanned too; verified empirically.
-      - name: Secret scan
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git grep -InE '(\bsk-[A-Za-z0-9_-]{20,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-or-[A-Za-z0-9_-]{20,}|\bghp_[A-Za-z0-9_]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|xox[baeprs]-[A-Za-z0-9-]{10,}|\bnpm_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' -- . ':!pnpm-lock.yaml'; then
-            echo "::error::Potential token-like secret found in tracked files."
-            exit 1
-          fi
 
       # No `version:` here — pnpm/action-setup reads the `packageManager` field in package.json
       # (the pinned pnpm version). Specifying both causes
@@ -50,6 +41,25 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
 
+      # The publication scan runs before any dependency install or lifecycle
+      # step can read or echo repository contents. It is the same pinned
+      # Betterleaks adapter `pr` delivery uses (INV-146), loaded from source
+      # with Node's type stripping: the outgoing commit range (merges and commit
+      # messages included) plus the complete tracked tree (attributes committed
+      # in it do not apply; the runner's Git configuration does), live
+      # validation off, findings by rule and place only.
+      - name: Provision publication scanner (pinned Betterleaks)
+        run: |
+          node scripts/provision-betterleaks.mjs --dest "$RUNNER_TEMP/betterleaks/betterleaks"
+          # Later test steps exercise the same pinned binary in `pr` delivery tests.
+          echo "CLAUDEXOR_BETTERLEAKS_PATH=$RUNNER_TEMP/betterleaks/betterleaks" >> "$GITHUB_ENV"
+
+      - name: Publication scan
+        env:
+          CLAUDEXOR_BETTERLEAKS_PATH: ${{ runner.temp }}/betterleaks/betterleaks
+          SCAN_RANGE: ${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || format('{0}..{1}', github.event.before, github.sha) }}
+        run: node scripts/publication-scan.mjs --repo . --range "$SCAN_RANGE" --tree HEAD
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -57,7 +67,7 @@ jobs:
         run: pnpm build
 
       - name: Build Linux engine resources without platform helper substitutes
-        if: matrix.node-version == '24.16.0'
+        if: matrix.node-version == '24.22.3'
         shell: bash
         env:
           CLAUDEXOR_BUILD_SHA: ${{ github.sha }}
@@ -77,8 +87,15 @@ jobs:
       - name: Typecheck (packages + tests + scripts)
         run: pnpm typecheck && pnpm typecheck:tests
 
+      # Bounded inside the job, so the listing below still runs after a hang.
       - name: Test
+        id: test
+        timeout-minutes: 40
         run: pnpm test
+
+      - name: List processes left after the test step failed or timed out
+        if: failure() && steps.test.outcome == 'failure'
+        run: ps axww -o user,pid,ppid,pgid,stat,etime,command | awk -v user="$(id -un)" 'NR == 1 || $1 == user'
 
       - name: Verify generated JSON Schema is up to date
         run: |
@@ -186,15 +203,16 @@ jobs:
   # Branch protection on main requires a check context literally named
   # `build-test`. The job above never publishes one: a matrix job's check runs
   # are named from its `name:` template, so it reports as "Node 24.15.0" and
-  # "Node 24.16.0" and the required context stays pending forever (every PR
+  # "Node 24.22.3" and the required context stays pending forever (every PR
   # sits at BLOCKED). This aggregate exists only to publish that name.
   # `if: always()` is load-bearing — without it the job is skipped when the
   # matrix fails or is cancelled, and a skipped required check never reports.
   build-test-gate:
     name: build-test
-    needs: [build-test, windows-test, swift]
+    needs: [build-test, windows-test, swift, vendor-programs]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Require every Node matrix leg to succeed
         # `needs.<job>.result` collapses the whole matrix: it is `success` only
@@ -203,6 +221,7 @@ jobs:
           MATRIX_RESULT: ${{ needs.build-test.result }}
           WINDOWS_RESULT: ${{ needs.windows-test.result }}
           MACOS_RESULT: ${{ needs.swift.result }}
+          VENDOR_RESULT: ${{ needs.vendor-programs.result }}
         shell: bash
         run: |
           set -euo pipefail
@@ -218,10 +237,15 @@ jobs:
             echo "::error::macOS lane result is '$MACOS_RESULT' (expected 'success')."
             exit 1
           fi
+          if [ "$VENDOR_RESULT" != "success" ]; then
+            echo "::error::Vendor program result is '$VENDOR_RESULT' (expected 'success')."
+            exit 1
+          fi
 
   windows-test:
     name: Windows ${{ matrix.runner }} (Node ${{ matrix.node-version }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -229,7 +253,7 @@ jobs:
           - runner: windows-2022
             node-version: 24.15.0
           - runner: windows-latest
-            node-version: 24.16.0
+            node-version: 24.22.3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -291,7 +315,8 @@ jobs:
       # ONLY here. Suites built on POSIX mode bits, symlinks or `#!/bin/sh`
       # fixtures stay on the Linux/macOS legs; their win32 branches are
       # proven by injected-platform unit tests instead. The CLI exit tail runs
-      # here because only Windows libuv aborts a forced exit after fetch().
+      # here because only Windows libuv aborts a forced exit after fetch(). The
+      # release smoke's daemon stop loop runs under this runner's pwsh.
       - name: Test (platform auth, agy print, ConPTY, setup transport, SQL recovery, CLI exit)
         run: >
           pnpm vitest run packages/schema/src/schema.test.ts
@@ -354,6 +379,17 @@ jobs:
           packages/daemon/src/resource-store.model.test.ts
           packages/daemon/src/command-retention.test.ts
           packages/control-api/src/model-routes.test.ts
+          scripts/lib/release-windows-stop.test.mjs
+
+      # Default-path writer birth: real FILETIME reads, an owned witness process
+      # and the built daemon on its default named pipe. The mismatched record is
+      # seeded and labelled synthetic; nothing forces real PID recycling. Kept
+      # apart from the parallel step above so its timing line reads this lane's
+      # own PowerShell and stop latency. That line is an observation, not a gate.
+      - name: Writer birth identity and built daemon lifecycle (credential-free native processes)
+        run: >
+          pnpm vitest run packages/daemon/src/writer-lease-pid-reuse.test.ts
+          packages/cli/src/claudexord-writer-birth.test.ts
 
       - name: Reproduce Codex cleanup control loss on the known broken control (Windows, no credentials)
         if: github.event_name == 'pull_request' && github.head_ref == 'fix/windows-codex-verdict-1755'
@@ -406,46 +442,49 @@ jobs:
           node --input-type=module -e 'import {readFileSync} from "node:fs"; const r=JSON.parse(readFileSync(process.env.OUT,"utf8").trim().split("\n").at(-1)); if(r.integrity?.ok!==true || !(r.flusher.counters.barriers>0) || !(r.flushed?.n>0)) throw new Error("store load smoke did not prove integrity and flush completion");'
           if ($LASTEXITCODE -ne 0) { throw "store load smoke did not pass" }
 
-      # The Windows smoke installs the REAL selected Codex npm latest as one
-      # exact version, beside Claude's release baseline. The embedded Node
-      # toolchain is exact (official zip `node.exe` + its npm-cli.js, SHA-256
-      # pinned below for `.node-version`); no ambient node/npm is used. The
-      # isolated profile and npm-declared vendor entrypoints are proved through
-      # shared harness PATH, receipt, version and doctor. Auth and native Agent
-      # behavior are separate lanes: a newer CLI's --version is no app-server
-      # compatibility verdict. `scripts/windows-local-install-smoke.mjs` owns it.
-      - name: Stage the exact embedded Node toolchain (node.exe + its own npm-cli.js)
+      # The same real-vendor proof as the `vendor-programs` job, here because
+      # the Windows build needs this job's MSVC environment. One runner is enough.
+      # All phases share its actual Windows profile: winget/MSI do not honor a fake HOME.
+      - name: Vendor installation, update and npm-copy replacement routes
+        if: matrix.runner == 'windows-latest'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = (Get-Content .node-version -Raw).Trim()
-          $expected = "edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56"
-          $archive = "node-v$version-win-x64.zip"
-          $stage = Join-Path $env:RUNNER_TEMP "claudexor-embedded-node"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          $zip = Join-Path $stage $archive
-          Invoke-WebRequest -Uri "https://nodejs.org/dist/v$version/$archive" -OutFile $zip
-          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) {
-            throw "$archive SHA-256 $actual does not match the pinned $expected (nodejs.org SHASUMS256.txt for v$version)"
-          }
-          Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
-          $node = Join-Path $stage "node-v$version-win-x64\node.exe"
-          $npm = Join-Path (Split-Path -Parent $node) "node_modules\npm\bin\npm-cli.js"
-          if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw "embedded node.exe missing at $node" }
-          if (-not (Test-Path -LiteralPath $npm -PathType Leaf)) { throw "embedded npm-cli.js missing at $npm" }
-          & $node --version
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "CLAUDEXOR_EMBEDDED_NODE=$node" -Encoding utf8
+          node scripts/vendor-program-smoke.mjs
+          if ($LASTEXITCODE -ne 0) { throw "vendor program smoke exited $LASTEXITCODE" }
 
-      - name: Local Codex/Claude install proof (exact selected npm version, embedded npm, isolated profile)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          & $env:CLAUDEXOR_EMBEDDED_NODE scripts/windows-local-install-smoke.mjs
-          if ($LASTEXITCODE -ne 0) { throw "windows-local-install-smoke exited $LASTEXITCODE" }
+  # Real vendor installers and updaters in a disposable HOME on each platform:
+  # every adapter-declared installation route, the installed program's own
+  # update, and replacement of a product-made npm copy. Receipts and the next
+  # resolver read must agree on the program path and its own version;
+  # auth/model compatibility is separate.
+  vendor-programs:
+    name: Vendor programs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Vendor installation, update and npm-copy replacement routes
+        run: node scripts/vendor-program-smoke.mjs
 
   swift:
     runs-on: macos-26
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -462,6 +501,9 @@ jobs:
         shell: bash
         env:
           CLAUDEXOR_BUILD_SHA: ${{ github.sha }}
+          # Stage, sign-free provenance and the offline version probe of the
+          # bundled darwin publication scanners are part of this build.
+          CLAUDEXOR_REQUIRE_BETTERLEAKS: "1"
         run: |
           set -euo pipefail
           resources="$RUNNER_TEMP/engine-resources"
@@ -470,8 +512,8 @@ jobs:
           node "$resources/claudexor.bundle.cjs" help --json
           pnpm vitest run packages/core/src/process-identity.test.ts packages/schema/src/platform-auth-policy.test.ts
 
-      - name: Verify local macOS app signing and cleanup
-        run: pnpm vitest run scripts/lib/build-app-local-signing.test.mjs scripts/lib/build-app-cleanup.test.mjs
+      - name: Verify local macOS app signing, cleanup and boot smoke
+        run: pnpm vitest run scripts/lib/build-app-local-signing.test.mjs scripts/lib/build-app-cleanup.test.mjs scripts/lib/build-app-boot-smoke.test.mjs
 
       - name: Swift tests (ClaudexorKit)
         working-directory: apps/macos/ClaudexorKit

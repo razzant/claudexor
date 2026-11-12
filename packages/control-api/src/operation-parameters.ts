@@ -52,7 +52,7 @@ export const resumeHeader = (cursorSemantics: string): ControlOperationParameter
     description: `Resume cursor sent on reconnect: ${cursorSemantics}. Omit to snapshot-then-subscribe from the beginning.`,
   });
 
-/** The handshake's opt-in header: `1` adds the durable engine store identity (`storeId`). */
+/** The opt-in header of the handshake and admission receipts: `1` adds `storeId`. */
 export const STORE_IDENTITY_HEADER = headerParam({
   name: CONTROL_STORE_IDENTITY_HEADER,
   enum: ["1"],

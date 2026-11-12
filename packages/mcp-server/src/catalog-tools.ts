@@ -27,7 +27,7 @@ export function catalogTools(runner: RunnerFn): McpTool[] {
     {
       name: "claudexor_capabilities",
       description:
-        "Return the derived AgentCapabilityCatalog: per-harness live capabilities (doctor-backed), canonical modes, the mutability matrix, run-control keys, CLI verbs, and the run-apply-state vocabulary.",
+        "Return the derived AgentCapabilityCatalog: per-harness doctor-backed capabilities (the daemon may answer from a recent composition; generatedAt dates it), canonical modes, the mutability matrix, run-control keys, run-decision actions (including taken for a captured terminal patch), CLI verbs, and the run-apply-state vocabulary.",
       inputSchema: { type: "object", additionalProperties: false, properties: {} },
       outputSchema: inlineJsonSchemaRefs(agentCapabilityCatalogSchemaRaw),
       annotations: { readOnlyHint: true },

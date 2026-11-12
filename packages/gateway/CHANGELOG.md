@@ -1,5 +1,75 @@
 # @claudexor/gateway
 
+## 6.0.0
+
+### Patch Changes
+
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/core@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/core@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [d9f50f5]
+  - @claudexor/schema@5.0.2
+  - @claudexor/core@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/core@5.0.1
+- @claudexor/schema@5.0.1
+
+## 5.0.0
+
+### Patch Changes
+
+- f428c0a: An explicitly selected raw API route such as OpenRouter can answer Ask without a project (#133). Answering no longer requires the `read_files` capability, so a route whose doctor enables `explain` keeps it. A project-scoped Ask on a route that cannot read files is refused before dispatch with "cannot read project files: ask without a project or choose a harness that reads files", because that Ask sends a list of paths and expects the harness to open the files itself; deep scan still requires file reading. Harness status now documents its two intent lists: `enabledIntents` is what an explicit selection may run (a degraded harness keeps the intents its doctor still enables, with its reasons) and `routableIntents` is what the Auto pool may choose. `claudexor doctor` labels the second line `auto-routable`. When the Auto pool passes over a degraded preferred primary, `route.primary.diverged` now reports reason `readiness_preferred` with the doctor's degraded detail instead of `auth_unavailable` and "unavailable". The macOS composer now shows such a route under "Manual only — Auto won't pick these" with the doctor's reason, and disables it for a project-scoped Ask with the same reason the engine gives.
+- Updated dependencies [f428c0a]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [30caf39]
+- Updated dependencies [d16170f]
+- Updated dependencies [f428c0a]
+- Updated dependencies [8bae6ae]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [f428c0a]
+- Updated dependencies [d9e7977]
+- Updated dependencies [2d83b87]
+- Updated dependencies [f428c0a]
+- Updated dependencies [28dfe1a]
+  - @claudexor/schema@5.0.0
+  - @claudexor/core@5.0.0
+
 ## 4.8.2
 
 ### Patch Changes

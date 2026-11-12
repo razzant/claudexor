@@ -91,14 +91,16 @@
             "run.continuation",
             "run.continuation.denied",
             "run.continuity",
-            "workspace.retained"
+            "workspace.retained",
+            "workspace.prepared",
+            "workspace.settlement_failed"
           ],
           "description": "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, and control verbs."
         },
         "totalBytes": {
           "type": "integer",
           "exclusiveMinimum": 0,
-          "description": "UTF-8 byte length of the event's complete stream serialization: the redacted JSON line the run event stream delivers."
+          "description": "UTF-8 byte length of the event's complete stream serialization: the stored JSON line the run event stream delivers."
         },
         "sha256": {
           "type": "string",

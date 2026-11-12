@@ -20,10 +20,12 @@ function writer(path: string, onPersist?: ConstructorParameters<typeof EventLog>
 }
 
 afterEach(() => {
+  // This test's folders, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const log of logs.splice(0)) log.dispose();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
   vi.restoreAllMocks();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("liveRunEventSeq", () => {
   it("returns null for absent and retained-only logs without parsing their files", () => {

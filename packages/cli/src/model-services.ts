@@ -84,6 +84,8 @@ export function createModelServices(deps: Dependencies) {
   const { unusable, substitutions } = deps;
   const capabilities = deps.capabilities ?? new ModelCapabilityLedger(unusable.credentials);
   const quotaEvidence = () => ({ ...deps.quota().read(), honored: unusable.honored() });
+  // Selection judges each window at the decision, exactly like run admission (#457).
+  const admissionEvidence = () => ({ ...quotaEvidence(), ...deps.quota().readAdmission() });
   const lifetime = new AbortController();
   const getSource = (id: string): ModelSource => {
     const source = sources.find((entry) => entry.adapter.id === id);
@@ -195,7 +197,7 @@ export function createModelServices(deps: Dependencies) {
     poolEvents: ModelRoutingEvidence["poolEvents"] = [],
   ): Promise<CredentialProfile> => {
     const { harnessId, harness, profiles, probe, pinnedProfile } = admitted;
-    const currentQuota = quotaEvidence();
+    const currentQuota = admissionEvidence();
     let profile: CredentialProfile | null;
     try {
       profile = await resolveAccountForRun({

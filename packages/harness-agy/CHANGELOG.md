@@ -1,5 +1,120 @@
 # @claudexor/harness-agy
 
+## 6.0.0
+
+### Patch Changes
+
+- a0a5b1a: AGY inference-quota refusals are now emitted as typed unknown-reopening quota
+  evidence. Claudexor preserves the vendor's original error and does not mistake
+  the refusal for a transport interruption that should retry the same native
+  session. No reset time is inferred; genuine transport failures keep their
+  existing continuation behavior.
+- 80ca9ee: Antigravity read-only runs no longer end at their first shell command, and
+  large Antigravity inputs reach the model whole (#653).
+
+  A read-only run now passes session-only settings that deny every command and
+  file write, including commands the profile allows. agy returns a denied call to
+  the model as a tool error, so the run keeps reading files and delivers its
+  answer; before, plan mode's unanswerable permission prompt ended the whole turn.
+  The profile's own allow, deny and ask rules stay in force: agy replaces each
+  list a session object names, so all three are copied from the profile. If the
+  profile settings cannot be read, the read-only run is refused before it starts;
+  if only saving the read grant fails, the session settings carry the grant.
+  Read-only runs therefore need agy 1.4.10 or newer, the first release that
+  accepts session-only settings: on an older CLI a read-only run stops before any
+  model call with a message asking to update agy, and `doctor` states the
+  minimum. Full-access and workspace-write runs are unaffected, and nothing
+  updates agy automatically. Every tool step agy
+  reports as ERROR, refused or otherwise failed, now records that call's error
+  result.
+
+  In the recorded runs agy kept only the first 192,000 bytes of each larger piped
+  prompt. Input over Claudexor's conservative 128 KiB limit is now saved unchanged
+  in the run's context directory and named by a short bootstrap whose size does
+  not grow with the input. This also covers inputs between 128 KiB and 192,000
+  bytes, which agy would have received whole, and a thread's summary pass, which
+  uses its enclosing run's directory. A lane without a run directory, an
+  unavailable profile read grant or a failed write refuses such input before
+  anything is sent.
+
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/core@6.0.0
+  - @claudexor/util@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- b1320a9: An Antigravity (`agy`) try that fails with the vendor's own stderr record `AGY_ERROR: {...}` saying exactly `"retryable": false` now ends the run instead of continuing it: the try carries the typed `vendor_not_retryable` request refusal (`source: agy_stderr`, with the record's `error_id`), so there is no retry, no in-run continuation on the same native session and no move to another account, also after progress. The run fails with category `harness_error` and code `vendor_not_retryable`; its streamed text stays retained evidence and its next actions name the vendor's error id. Only the vendor's stderr line counts, and only its explicit boolean in the try's last line with the `AGY_ERROR: ` marker: a later unreadable record leaves the verdict unknown, while stderr lines without the marker do not change it. `retryable: true`, a missing or non-boolean field, malformed JSON, the minimal `short_error`-only form, the same words in model text and a warning a session continued past keep today's behavior, including the existing continuation after an error without a typed cause. This does not establish why the vendor refused a request. A refused try now settles like every other try before the attempt stops: after progress the failed run still lists the `packet` carrier, so an explicit `continueFrom` re-briefs from its evidence instead of starting fresh, and its `resumable` cause is `other` rather than an earlier try's `transport`. Earlier request refusals (Codex input, Grok credential source) skipped that settlement too; the new refusal after progress exposed it.
+- b1320a9: Antigravity (`agy`) text that streams before a failed turn is now kept exactly and pointed to, while the run still fails. Each `text_delta` frame is a non-final stream fragment, so the retained output, the in-run continuation packet and reviewer transcripts join fragments byte for byte, keeping whitespace-only and repeated frames, instead of one trimmed section per fragment. A reviewer's complete message (its final or a failed result's response) still starts its own line after the fragments. One shared rule now decides when a complete message exactly repeats unkeyed streamed text from the start of a run of fragments, including text split by tool calls or thoughts, so the findings parser reads it once and the retained output no longer shows a failed response that repeats its fragments a second time; carrying that final answer leaves out the streamed blocks it repeats. A suffix that begins inside one uninterrupted run is not a repetition, text a speech key identifies keeps its own identity (#568), and a typed final ends its turn, so an equal later message stays. Fragments of a reviewer speech the harness states abandoned (Claude's text before an API retry) leave the findings parser input while the transcript keeps them, so their unfinished JSON can no longer hide the retried response's findings or clean answer. A `[]` draft glued to its answer on one line (`[][...]`) no longer reads as a clean review: adjacent payloads separated only by spaces or tabs are read, and an unreadable adjacent payload leaves the reviewer unhealthy. Without a parseable fence, one structural pass over every line-start `[` and `{` runs before any candidate bound, so a line start nested in an earlier multiline payload of either bracket is no longer read as the newest answer. A review is malformed (its reviewer unhealthy, never clean, with any findings it read kept) when, after the first payload read, the text holds another value that opens like JSON and is not an exact copy of one read: another answer, JSON of the wrong schema, an object or an empty answer beside findings, a closed fence that does not parse, a value that closes on the wrong bracket or never closes, or more such values than the parser examines; one-line payloads nested in a span the reader could not read count too. A closed fence or value before the first payload read is an example or a draft and is not counted, on the fenced path as on the bare one. Bracketed prose such as `[x]` or `[1]` and exact copies of the answer pass. An example finding in prose after `[]` therefore reads as malformed rather than clean; the newest-line choice and the preference for array lines over object lines are unchanged. A non-`SUCCESS` result is never an answer: its response stays retained evidence, and the result's own status and error words reach the failed try's account row and the run's failure record as opaque vendor evidence, including on a zero exit. A stream that ends without its terminal result is now an honest failure instead of an Ask answer made from narration. A failed run that retained text names `final/retained-output.md` in its failure record (`logRefs`) and, right after the failure's first line (its cause) and before the account attempts, says that text is not an accepted final answer, so a reader that shortens the record still sees it unless the cause line and the notice together exceed the reader's bound. The record is replaced atomically: a failed replacement keeps the announced output and the original record and is reported on its own, and a later terminal-facts failure record names the file too. An attempt that errored without an accepted final no longer reports `footer_missing` (or a work-report contract failure) from text that never became an answer. A packet continuation keeps the complete retained text beside its evidence index and references it; native continuations still rely on the vendor's history. Continuation notices no longer say the previous process "died", and decision evidence no longer says an errored attempt "produced no work". In Agent candidates, Antigravity fragments now count toward the existing live preview cap of 4,000 fragments per attempt: past it live observers stop receiving them, while the journal, replay and retained output stay complete. The macOS transcript now groups stream fragments as sent by the engine, per physical try: one try's final no longer hides a later try's text, a Claude live message that runs as the next turn of the same session streams again, and concurrent candidates' text never joins. The text of a Claude response the CLI abandoned before retrying it stays beside the retried response, whose complete text replaces only its own block.
+- 0d2d858: Run receipts now say what Web Off and an access profile actually did on each route, without changing either (#118, #413). Just before dispatching an adapter, the per-spawn gate records a `route_controls` receipt of what was prepared: the route's own web switch (`native`, `tools`, `uncontrolled` or `none`), the access profile, the vendor access arguments the adapter passes (for example Cursor `--force --sandbox enabled --trust --mode ask`, Codex `sandbox=read-only approvalPolicy=never approvalsReviewer=auto_review`) and the access mechanism, where only `fs_sandbox`, the vendor's own sandbox, declares an OS file boundary and `native_settings` (`inherit_native`) leaves it unknown. `native_session_started` reports whether the attempt's native session was reported started, so a pre-spawn refusal or a stop stays distinct from a launch; `false` never proves that no process ran. The gate checks Stop again after recording the receipt, so a stop that lands at the receipt keeps it and never dispatches the adapter. Agent attempts also carry their applied HOME fact, where `false` means the engine did not replace HOME; Ask and Plan record none, so none is claimed. The web evidence states its scope (`observation`: typed web tool calls and engine Browser calls; network traffic not measured), so `attempted: false` no longer reads as "no network". The run summary projects the distinct routes as `routeControls` together with `webEvidence.verification` and `webEvidence.observation`, and `claudexor inspect` prints `access route`, `web route`, `web retrieval` and `web scope` lines. Retrieval strength now says what came back. A verified result carries `verified_content`: Claude's WebFetch and a Browser navigation or snapshot of a loaded http(s) page are a `page`, while Claude's WebSearch is `search_results`, which is not a fetched page; its strength and the required-web gate are unchanged. A Browser page read that got an HTTP error status is `dispatched`, and a Browser call that read no web page (closing, clicking, listing tabs, an `about:blank` or `data:` page) carries no retrieval stamp: it still counts as completed web activity for the unchanged required-web gate, but the strength stays `none`. The Browser rule is checked against recorded replies of the pinned Browser MCP, and a denied or cancelled Claude web call is no longer stamped as a verified retrieval. The macOS run facts show "Web verified" for a verified page, "Web searched" for verified search results, "Web reached" for a web call without a typed result and "Web tools used" when completed web tools retrieved nothing or the engine sent no strength; for Web Off they show "Web tools off" only when a route reported a native session under the off switch, otherwise "Web Off requested"; and they describe access by its native setting and declared boundary instead of "enforced".
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+  - @claudexor/core@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+  - @claudexor/schema@5.0.2
+  - @claudexor/util@5.0.2
+  - @claudexor/core@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/core@5.0.1
+- @claudexor/schema@5.0.1
+- @claudexor/util@5.0.1
+
+## 5.0.0
+
+### Patch Changes
+
+- 8bae6ae: Credential-shaped text in your own work is no longer refused or masked (#555, INV-146 retires INV-062). A review brief, prompt, instruction, output schema, test command, live or deferred message, interaction answer or attachment that contains a bearer header, an `sk-`/`ghp_`/`AKIA` key, a JWT or a PEM block now reaches the selected harness exactly; the typed `inline_secret_rejected` error is gone from the CLI, `POST /v2/runs`, thread turns, MCP and ACP. The task contract, command journal, served job params, thread history, events, SSE frames, answers, plans, reports, retained output, saved `patch.diff` copies, reviewer packets, reviewer workspaces, context packs and served artifacts keep the exact bytes, so Exact Retry, Run Again, continuation and later turns read back what was sent, and reviewers judge the same patch apply uses. Files named `.env`, `credentials.json`, `*.pem`, `*.key`, `secrets/…`, `.ssh/…` or `.claude/…` inside the project are ordinary project files for context, review, directory results, uploads and served outputs; Codex approval requests for them are offered instead of declined, and `review --diff` no longer refuses a diff. Claude `AskUserQuestion` text is shown exactly and answered by its native question text. Tool calls keep unmasked targets (command, path, query, URL) within each adapter's existing bounds, and tool results keep unmasked summaries of their output (`content_summary`, and a failed tool's own `error_summary`, within each adapter's existing bound and whitespace normalization) for every adapter, a Cursor shell command whose end is unconfirmed keeps its complete native result (`native_result`) exactly, a failed raw-API completion keeps the model's bounded partial output (`partial_output`) exact in its error event while it stays a failure, never becomes the answer and the provider's error report stays masked, a Copilot ACP answer keeps credential-shaped text exact (only the managed token Claudexor injected is removed), a work report's required inputs stay exact in telemetry and run facts, a planner's own `plans/<harness>.md` copy is its exact text, and the gate argv disclosed to a candidate is the argv the gate runner executes. Images are no longer withheld from `produced/` or from served outputs for their bytes; an image Claudexor did not save (over the per-image or total size cap, unreadable, a link, not a regular file or an unsafe path) is listed in the attempt's `produced_omitted` with its size and reason, and the run summary names it. Credentials Claudexor itself owns stay in their stores, outside every worktree, behind daemon authentication, grants, read-only and trust policy, root and symlink containment and digest checks; engine diagnostics (errors, stderr tails, probe output, vendor failure reports, also inside the run, attempt and reviewer event journals, which all pass through one masking step) are still masked. Claudexor never places its engine credentials into prompts, events or artifacts; a harness process can read the credential the engine hands it, and whatever the harness prints is ordinary output kept exactly in local run records, as in the vendor's own transcript. Importing an arbitrary host file still refuses credential-store paths, and review risk still rates credential-named paths critical. The historical release-attestation sealer no longer refuses a reviewer report or metadata file for credential-shaped text: it still requires strict UTF-8, the digest and exact-key bindings and its other checks, and the attestation carries digests and validated fields, never report text. A real key you put in working content is ordinary task material: it reaches the selected model and stays in local run records. Runs written by earlier versions keep their masked copies; their `persisted_patch: redacted` patches still apply only from the private exact object (`patch_exact_bytes_unavailable` when it is missing), and the MCP read tools still project their `secretLike` disclosure, which is `null` for new runs.
+
+  **Breaking:** `pr` delivery now needs the pinned open-source scanner Betterleaks 1.9.0 and checks what would leave the machine with it instead of Claudexor's own patterns; an npm-installed CLI bundles no scanner, so its `pr` refuses with `publication_scan_unavailable` until one is provided (below). Before any branch, index or ref changes, the exact outgoing commit, every earlier commit that a URL `git push origin` sends to (its push URL when one is set) does not already advertise, read with `git ls-remote` (a secret added and later deleted included, and a commit only the fetch URL or another remote holds still counts), what each merge in that range itself changed (Git's remerge view, Git 2.36 or newer: a conflict resolution or an "evil" merge, never content its parents already carried; an octopus merge has no such view and is scanned for what it adds over its first parent, which can re-flag content a non-first parent already published), the commit messages of that range, the branch name and the PR title and body are scanned with live validation off; the PR body `gh` reads is the scanned copy, and the push sends exactly the scanned commit object. A finding refuses typed (`publication_scan_findings`, rule and place only, never the matched text; a file name or label the scanner itself flags is shown as `withheld location (sha256 …)`, and every place is withheld when that check cannot run); a missing or unpinned scanner (`publication_scan_unavailable`) and a scan that fails, times out, writes no valid report or reads a Git history that Git's own trace2 record does not prove complete (every `git log` it ran exited 0 without a signal; a `git log` killed mid-stream otherwise looks clean) (`publication_scan_failed`) also refuse, and local apply, branch and commit stay available. The outgoing repository's own `.gitleaksignore`/`.betterleaksignore`, inline allow comments and scanner environment variables cannot suppress a finding. The macOS app and its update closure now bundle the darwin-arm64 and darwin-x64 builds and each SSH runtime archive bundles its own target's build, with the MIT license and provenance (the SBOMs list them). npm installs, and hosts on other platforms embedding the closure, bundle none for their platform: point `CLAUDEXOR_BETTERLEAKS_PATH` at the pinned build or provision it with `node scripts/provision-betterleaks.mjs`. Delivery never downloads it. Betterleaks skips some binary, archive and lockfile content by design, so a clean scan is not proof that nothing sensitive is present. Repository CI and release use the same adapter in place of the old `git grep` step, over the range's commits, merges and messages and the tracked tree; a release being published also scans its annotated tag's message.
+
+- Updated dependencies [f428c0a]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [30caf39]
+- Updated dependencies [d16170f]
+- Updated dependencies [f428c0a]
+- Updated dependencies [8bae6ae]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [f428c0a]
+- Updated dependencies [d9e7977]
+- Updated dependencies [2d83b87]
+- Updated dependencies [f428c0a]
+- Updated dependencies [28dfe1a]
+  - @claudexor/schema@5.0.0
+  - @claudexor/core@5.0.0
+  - @claudexor/util@5.0.0
+
 ## 4.8.2
 
 ### Patch Changes

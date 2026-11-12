@@ -11,7 +11,7 @@ describe("candidatesFor ranking scorecard projection (QA-028)", () => {
   const dirs: string[] = [];
   afterEach(() => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   function runDirWith(attempts: Record<string, string>): string {
     const root = mkdtempSync(join(tmpdir(), "cand-"));

@@ -89,7 +89,11 @@ For an explicitly selected document on an already-running daemon, first call
 import key with the exact arguments, then call `claudexor_upload_import` with
 `{expectedStoreId,path,idempotencyKey}` (optional `kind`, `mime`, `name`). Select
 one absolute regular file on the MCP-server host, not a remote client's path, URL,
-glob or directory; sensitive source/content checks still apply. After any
+glob or directory. The file must not be a symlink, and neither its path nor its
+resolved target may be a credential store, secret directory, `.env` file,
+credential file or private key (`sensitive_resource_rejected`); its size and
+file identity must not change while it is read, and the daemon checks the bytes
+against the digest the import key owns. File content is not scanned. After any
 uncertainty or failure repeat the identical call with the saved store id and key,
 never a later store answer. A completed import returns its original `resource`
 without reading the file again, even after the file changed or was deleted. Other
@@ -188,15 +192,16 @@ When `oversizedEvent` is set, read that event with `claudexor_run_event_read`
 part by part until `nextOffset` equals `totalBytes`, then resume after its `seq`.
 For an authorized correction to active work, use `claudexor_run_message` with
 an explicit message `idempotencyKey`; `accepted` is not observed delivery, and
-a pending question refuses the message. Keep the same key and body after an
-unknown outcome.
+a pending blocking question refuses the message (an async one does not; no
+message answers a question). Keep the same key and body after an unknown
+outcome.
 Use `claudexor_run_continue` for an authorized successor of a terminal run. Its
 optional prompt may be empty. Only mode, scope, execution, harness, model and
 prompt-cache lifetime carry over (another lifetime, Default included, needs a
-new run): restate access, web, account, budget, time limit and review settings
-the successor must keep. Retain its handle and use the same key and arguments
-to recover an unknown response. These controllers do not restart a daemon or
-expand Delegate access.
+new run): restate access, web, account, effort, budget, time limit and review
+settings the successor must keep. Retain its handle and use the same key and
+arguments to recover an unknown response. These controllers do not restart a
+daemon or expand Delegate access.
 
 Use `claudexor_next_message` only for an authorized operator-owned one-shot
 Agent/Ask follow-up on a supporting engine. Ordinary controller-owned workers
@@ -249,7 +254,10 @@ worker asks, grant session-wide access, or treat delivery as proof of execution.
 A refused answer keeps its code (`not_found`, `already_resolved`, `rejected`);
 `already_resolved` does not prove your answer was the one delivered.
 `Authorize one retry` starts one more worker turn and guarantees nothing.
-Ordinary questions need answers supplied or approved by the user.
+Ordinary questions need answers supplied or approved by the user. A question
+with `delivery: async` does not pause the worker: answer it when you can, and
+the answer reaches the worker as its next message; silence or expiry sends
+nothing.
 Use `claudexor_run_cancel` only when cancellation is requested.
 
 Use `claudexor_run_time_limit` to read, set, extend or disable an active run's
@@ -291,9 +299,12 @@ confirmation required by its schema.
 
 ## Safety
 
-- NEVER paste live credentials into prompts. Ask the user to use
-  `claudexor auth login <harness>` or `claudexor secrets set` outside the
-  conversation; do not collect or transform credentials.
+- Credentials Claudexor itself uses belong in `claudexor auth login <harness>`
+  or `claudexor secrets set`, outside the conversation; do not collect or
+  transform them. Working content (prompts, attachments, files, test fixtures)
+  reaches the selected harness exactly and stays in local run records; only
+  `pr` delivery checks content, scanning what would be pushed with the pinned
+  Betterleaks scanner before anything is published.
 - NEVER auto-answer `claudexor decision` for a blocked run. Risk acceptance and
   overrides are human decisions, even when the calling host otherwise permits
   mutation.

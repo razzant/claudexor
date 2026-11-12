@@ -27,11 +27,10 @@ export interface TransientFailureObservation {
   retryDelayMs: number | null;
   httpStatus: number | null;
   signal: string | null;
+  /** The adapter proved the vendor denied this credential's subscription access,
+   * beyond a category inferred from prose. In memory only, for refusal scope. */
+  entitlementDenied?: true;
   adapterCode: string | null;
-  /** The vendor's own typed failure the adapter attached to the terminal event.
-   * In-memory evidence for the terminal failure record only: opaque, never
-   * persisted into attempt telemetry, never an input to `retryable`. */
-  vendorFailure?: VendorFailureEvidence | null;
 }
 
 /**
@@ -68,6 +67,7 @@ function observation(
     httpStatus: extra.httpStatus ?? null,
     signal: extra.signal ?? null,
     adapterCode: extra.adapterCode ?? null,
+    ...(extra.entitlementDenied ? { entitlementDenied: true as const } : {}),
   };
 }
 
@@ -95,10 +95,9 @@ export function classifyPermissionDenial(): TransientFailureObservation {
  * deterministic FAILURE classes are surfaced here; rate limits arrive via the
  * dedicated `rate_limit` signal, and transient/overload retries the vendor
  * drives itself are not our failures (returns null → not recorded). */
-export function classifyStatusError(
-  ec: NonNullable<NonNullable<HarnessEvent["status"]>["error_category"]>,
-  retryDelayMs: number | null,
-): TransientFailureObservation | null {
+export function classifyStatusError(event: HarnessEvent): TransientFailureObservation | null {
+  const ec = event.status?.error_category;
+  if (!ec) return null;
   let category: HarnessFailureCategory | null;
   switch (ec) {
     case "authentication_failed":
@@ -118,7 +117,13 @@ export function classifyStatusError(
       category = null;
   }
   if (!category) return null;
-  return observation(category, { retryDelayMs, adapterCode: ec });
+  return observation(category, {
+    retryDelayMs: event.status?.retry_delay_ms ?? null,
+    adapterCode: ec,
+    ...(ec === "oauth_org_not_allowed" && event.payload?.["entitlement_denied"] === true
+      ? { entitlementDenied: true as const }
+      : {}),
+  });
 }
 
 /**
@@ -130,10 +135,10 @@ export function classifyStatusError(
  * code is the CLI's way of saying "that turn failed" — so it is an
  * `unknown_harness_error`; a signal kill stays a crash whatever preceded it.
  * Exit evidence is a give-up, never a retry signal: every observation here
- * carries `retryable: false`. The adapter-attached `vendor_failure` is forwarded
- * as opaque evidence and decides nothing. An aborted completion (our
- * watchdog/cancel) is never a crash. Returns null when the completion carries no
- * exit evidence.
+ * carries `retryable: false`. The adapter-attached `vendor_failure` is read by
+ * `completionVendorFailure`, with or without exit evidence, and decides
+ * nothing here. An aborted completion (our watchdog/cancel) is never a crash.
+ * Returns null when the completion carries no exit evidence.
  */
 export function classifyCompletedCrash(
   payload: Record<string, unknown> | undefined,
@@ -147,18 +152,34 @@ export function classifyCompletedCrash(
   }
   if (signal !== null || (exitCode !== null && exitCode !== 0)) {
     const voiced = payload["harness_reported_error"] === true && signal === null;
-    const vendor = VendorFailureEvidence.safeParse(payload["vendor_failure"]);
     return {
       ...observation(voiced ? "unknown_harness_error" : "process_crash", {
         signal,
         adapterCode: exitCode !== null ? `exit_${exitCode}` : null,
       }),
       retryable: false,
-      // A signal kill is a crash whatever preceded it: its record carries no vendor evidence.
-      vendorFailure: voiced && vendor.success ? vendor.data : null,
     };
   }
   return null;
+}
+
+/**
+ * The vendor's own typed failure a try's completion carries (#414): any
+ * completion the harness voiced its error on, with OS exit evidence or none (a
+ * Codex app-server turn has neither code nor signal). A signal kill is a crash
+ * whatever preceded it and an aborted completion is a cancel: neither carries
+ * vendor evidence, and malformed evidence is unknown (null). Opaque evidence
+ * for the try's account row and its attempt's failure record; decides nothing.
+ */
+export function completionVendorFailure(
+  ev: Pick<HarnessEvent, "type" | "aborted" | "payload">,
+): VendorFailureEvidence | null {
+  const payload = ev.payload;
+  if (ev.type !== "completed" || ev.aborted || !payload || payload["aborted"]) return null;
+  if (payload["harness_reported_error"] !== true || typeof payload["exit_signal"] === "string")
+    return null;
+  const vendor = VendorFailureEvidence.safeParse(payload["vendor_failure"]);
+  return vendor.success ? vendor.data : null;
 }
 
 /**

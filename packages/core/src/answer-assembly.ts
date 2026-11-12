@@ -3,6 +3,9 @@
  * (claude/cursor terminal `result`, codex's finalized last agent message) IS
  * the answer, verbatim — mid-run narration never bleeds into it. The joined
  * narration remains the fallback for adapters/versions without the marker.
+ * A message an adapter typed as delivered asynchronously (`payload.delivery:
+ * "async"`, a question asked while the agent kept working, #628) stays
+ * visible evidence in the stream but is never answer material.
  */
 export class AnswerAssembly {
   private readonly parts: string[] = [];
@@ -28,6 +31,7 @@ export class AnswerAssembly {
   }): void {
     if (ev.type !== "message") return;
     if (ev.payload?.["auth_switched"] === true) return;
+    if (ev.payload?.["delivery"] === "async") return;
     // Fragments and buffered snapshots are retained evidence, not finality or
     // retry inputs. A final flush may never arrive on an interrupted stream.
     if (ev.payload?.["delta"] === true || ev.payload?.["buffered"] === true) return;

@@ -24,6 +24,19 @@ describe("launch handle mirrors", () => {
     expect(McpRunToolResult.parse(structured)).toMatchObject({ taskGroupId, storeId });
   });
 
+  it("mirrors an ordinary handle's accepting store in both channels", () => {
+    const storeId = "22222222-2222-4222-8222-222222222222";
+    const handle = { summary: "accepted", jobId: "job-q", runId: "", status: "queued", storeId };
+    expect(formatRunResult(handle)).toContain(`storeId: ${storeId}`);
+    expect(structuredRunResult(handle)).toMatchObject({ storeId });
+    expect(McpRunToolResult.parse(structuredRunResult(handle)).storeId).toBe(storeId);
+    for (const invalid of ["", 42]) {
+      const stale = { ...handle, storeId: invalid };
+      expect(formatRunResult(stale)).not.toContain("storeId");
+      expect(structuredRunResult(stale)).not.toHaveProperty("storeId");
+    }
+  });
+
   it("carries a queued job id in text and structured content", () => {
     const queued = {
       summary: "accepted as job job-q",
@@ -49,5 +62,26 @@ describe("launch handle mirrors", () => {
       runId: "run-1",
       status: null,
     });
+  });
+
+  it("mirrors a result's typed patch-view absence in both channels", () => {
+    const objectResult = {
+      digest: `sha256:${"a".repeat(64)}`,
+      patchView: "unavailable",
+      reason: "exceeds_view_limit",
+      estimatedBytes: 300_000_000,
+      changedFiles: 3,
+    };
+    const run = { summary: "run succeeded", runId: "run-1", status: "succeeded", objectResult };
+    expect(formatRunResult(run)).toContain("no patch view (exceeds_view_limit, 3 changed files)");
+    const structured = structuredRunResult(run);
+    expect(structured["objectResult"]).toEqual(objectResult);
+    expect(McpRunToolResult.parse(structured).objectResult).toEqual(objectResult);
+  });
+
+  it("states a run without an object result as null, never as an absent fact", () => {
+    const structured = structuredRunResult({ summary: "answered", runId: "run-1" });
+    expect(structured["objectResult"]).toBeNull();
+    expect(McpRunToolResult.parse(structured).objectResult).toBeNull();
   });
 });

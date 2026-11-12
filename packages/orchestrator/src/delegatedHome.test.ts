@@ -48,7 +48,7 @@ describe("scopedHarnessHome", () => {
   const repoRoot = join(base, "repo");
   ensureDir(repoRoot);
   const wsm = new WorkspaceManager(repoRoot, { runtimeRoot: join(base, "runtime") });
-  afterAll(() => rmSync(base, { recursive: true, force: true }));
+  afterAll(() => rmSync(base, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("leaves an ordinary in-place attempt on the operator's native environment", () => {
     expect(scopedHarnessHome(wsm, envelopeAt(base, repoRoot, true), true, false)).toEqual({
@@ -90,7 +90,7 @@ describe("durable lane home of a delegated thread candidate (INV-034)", () => {
   const wsm = new WorkspaceManager(copy, { runtimeRoot: join(base, "copy-runtime") });
   const lanes = new WorkspaceManager(project, { runtimeRoot: join(base, "project-runtime") });
   const laneFor = (profile: string | null) => lanes.laneHomeEnv("th-1", "claude", profile).env;
-  afterAll(() => rmSync(base, { recursive: true, force: true }));
+  afterAll(() => rmSync(base, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("re-keys the in-place candidate to the resolved account's lane, the same home every turn", () => {
     const first = scopedHarnessHome(wsm, envelopeAt(base, copy, true), true, true, "full", laneFor);
@@ -190,7 +190,7 @@ describe("delegated boundary disclosure", () => {
   const repoRoot = join(base, "project");
   ensureDir(repoRoot);
   const wsm = new WorkspaceManager(repoRoot, { runtimeRoot: join(base, "runtime") });
-  afterAll(() => rmSync(base, { recursive: true, force: true }));
+  afterAll(() => rmSync(base, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("keeps native workspace_write and records deliberate no-outer-boundary evidence", () => {
     const home = scopedHarnessHome(
@@ -307,6 +307,40 @@ describe("applied attempt evidence", () => {
         confinement_verified_denied_path: null,
       }),
     ).toBe(false);
+  });
+
+  it("leaves an attempt this run marked as failed before its HOME to its own failure (#648)", () => {
+    const beforeHome = appliedAttemptFacts(undefined, "workspace_write", null);
+    const marked = { errored: true, homeUndecided: true, applied: beforeHome } as const;
+    // No child ran: the gate does not replace that attempt's own failure.
+    expect(() =>
+      assertDelegatedEvidence(true, "full", [{ attemptId: "a01", ...marked }]),
+    ).not.toThrow();
+    expect(() =>
+      assertDelegatedEvidence(true, "workspace_write", [
+        { attemptId: "a01", ...marked },
+        { attemptId: "a02", applied: deliberate },
+      ]),
+    ).not.toThrow();
+    // The gap stays a gap: the record never claims what did not run.
+    expect(appliedEvidenceComplete(beforeHome)).toBe(false);
+    // Only that marker exempts: the same homeless block read without it (a
+    // historical record, or one whose catch did not know), a success, a missing
+    // block, or a decided HOME without its disclosure stays unauditable.
+    const started = { ...deliberate, confinement_unavailable_reason: null };
+    for (const attempt of [
+      { attemptId: "a03", errored: true, applied: beforeHome },
+      { attemptId: "a03", homeUndecided: true, applied: beforeHome },
+      { attemptId: "a03", errored: false, homeUndecided: true, applied: beforeHome },
+      { attemptId: "a03", errored: true },
+      { attemptId: "a03", errored: true, applied: started },
+    ])
+      expect(() =>
+        assertDelegatedEvidence(true, "workspace_write", [
+          { attemptId: "a01", ...marked },
+          attempt,
+        ]),
+      ).toThrowError(/1 attempt\(s\) state neither .* \(a03\)$/);
   });
 
   it("does not gate non-delegated or readonly runs", () => {

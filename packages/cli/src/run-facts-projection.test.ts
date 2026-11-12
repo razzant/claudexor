@@ -55,7 +55,7 @@ const jsonReader = {
 
 afterEach(() => {
   for (const root of tempRoots.splice(0)) rmSync(root, { force: true, recursive: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function emptyFinalDir(): string {
   const root = mkdtempSync(join(tmpdir(), "claudexor-cli-run-facts-"));
@@ -107,6 +107,15 @@ describe("RunFacts CLI projections (GH #29)", () => {
       expect(incomplete).not.toHaveProperty("taskGroupId");
       expect(incomplete).not.toHaveProperty("storeId");
     }
+  });
+
+  it("keeps an ordinary handle's accepting store, never a producer's lone context key", () => {
+    const storeId = "22222222-2222-4222-8222-222222222222";
+    const out = { runId: "", runDir: "", jobId: "job", status: "failed" };
+    expect(projectTerminalRunOutput({ ...out, storeId }, "ask", null)).toMatchObject({ storeId });
+    expect(
+      projectTerminalRunOutput({ ...out, errorContext: { storeId } }, "ask", null),
+    ).not.toHaveProperty("storeId");
   });
 
   it("retains a pre-run failure's accepted metadata from server error context", () => {

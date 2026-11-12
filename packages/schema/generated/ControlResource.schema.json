@@ -14,6 +14,11 @@
           "const": "model",
           "description": "Immutable model-operation purpose; absent means a legacy or ordinary attachment."
         },
+        "lifetime": {
+          "type": "string",
+          "const": "managed",
+          "description": "managed: its caller may later release the ID (POST /v2/resources/:id/release), after which no new reference is admitted while already accepted work keeps the bytes. Absent: indefinite reuse."
+        },
         "kind": {
           "type": "string",
           "enum": [

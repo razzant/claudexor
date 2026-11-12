@@ -176,6 +176,101 @@ export function threadHistoryFixtures(schema) {
       },
     ],
   });
+  // One receipt per consumer branch of the D-16 work_state veto, with its two
+  // controls. Banner and required actions come from the engine's own projection
+  // owners, so a consumer test reads what the server would send.
+  const answer = "The change stops here for now.";
+  const receipt = (id, ordinal, outcomeFacts) =>
+    schema.ThreadHistoryTurn.parse({
+      ...settled,
+      id: `turn-${id}`,
+      ordinal,
+      runId: `run-${id}`,
+      answeredByTurnId: null,
+      answeredByPrompt: null,
+      primaryOutput: {
+        kind: "answer",
+        path: "final/answer.md",
+        text: answer,
+        bytes: answer.length,
+        textBytes: answer.length,
+        totalTextBytes: answer.length,
+        truncated: false,
+      },
+      run: {
+        ...settled.run,
+        state: outcomeFacts.lifecycle,
+        mode: "agent",
+        outcomeFacts,
+        outcomeBanner: schema.outcomeBanner(outcomeFacts, {
+          applyState: "not_applied",
+          hasApplyableChange: false,
+        }),
+        requiredActions: schema.requiredActionsFor(outcomeFacts, false),
+        planReadiness: null,
+        planQuestions: [],
+      },
+    });
+  const facts = (lifecycle, reason, axes = {}) => ({
+    lifecycle,
+    noChanges: false,
+    checks: "not_configured",
+    review: "not_run",
+    reason,
+    ...axes,
+  });
+  const needsInput = {
+    state: "needs_input",
+    source: "constrained",
+    required_inputs: [
+      { kind: "file", locator: "fixtures/input.json", description: "The fixture it needs." },
+    ],
+  };
+  const incomplete = { state: "incomplete", source: "validated" };
+  const vetoRows = [
+    receipt("needs-input", 0, facts("succeeded", "input_required", { work_state: needsInput })),
+    receipt(
+      "incomplete-review-blocked",
+      1,
+      facts("succeeded", "review_blocked", { review: "blocked", work_state: incomplete }),
+    ),
+    receipt(
+      "needs-input-checks-failed",
+      2,
+      facts("succeeded", "checks_failed", { checks: "failed", work_state: needsInput }),
+    ),
+    receipt("review-gate", 3, facts("succeeded", "review_blocked", { review: "blocked" })),
+    receipt("host-stopped", 4, facts("cancelled", "host_cancelled")),
+    receipt(
+      "clean",
+      5,
+      facts("succeeded", null, {
+        review_requested: false,
+        work_state: { state: "completed", source: "constrained" },
+      }),
+    ),
+  ];
+  const vetoHead = vetoRows.at(-1);
+  const workVeto = schema.ThreadHistoryPage.parse({
+    ...empty,
+    header: {
+      ...empty.header,
+      thread: { ...empty.header.thread, headRunId: vetoHead.runId },
+      latestTurnId: vetoHead.id,
+      latestOrdinal: vetoHead.ordinal,
+      latestAdmission: {
+        id: vetoHead.id,
+        runId: vetoHead.runId,
+        enqueueError: null,
+        jobId: "job-work-veto",
+        state: vetoHead.run.state,
+      },
+      headRun: { runId: vetoHead.runId, run: schema.ControlTurnRunCard.parse(vetoHead.run) },
+      headRunStatus: "available",
+    },
+    turns: vetoRows,
+    replayCursor: "opaque-replay",
+  });
   return [
     { name: "thread-history-empty", schema: "ThreadHistoryPage", value: empty },
     { name: "thread-history-receipts", schema: "ThreadHistoryPage", value: withRows },
@@ -185,6 +280,7 @@ export function threadHistoryFixtures(schema) {
       schema: "ThreadHistoryPage",
       value: unavailable,
     },
+    { name: "thread-history-work-veto", schema: "ThreadHistoryPage", value: workVeto },
     { name: "thread-prompt-part", schema: "ThreadPromptPart", value: part },
   ];
 }

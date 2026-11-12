@@ -1,4 +1,5 @@
 import { InteractionStore } from "./store/test-support/fixtures/legacy/daemon/interactions.js";
+import { legacyInteractionPort } from "./store/test-support/legacy-interaction-port.js";
 import { legacyCommandFixture } from "./store/test-support/legacy-command-fixture.js";
 import {
   existsSync,
@@ -42,10 +43,12 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function tempDir(name = "daemon"): string {
-  return realpathSync(reapMk(join(tmpdir(), `claudexor-${name}-`)));
+  // The configured TMPDIR may already be long; leave room for daemon.sock
+  // within macOS's Unix socket limit. The label is diagnostic, not identity.
+  return realpathSync(reapMk(join(tmpdir(), `d-${name.slice(0, 6)}-`)));
 }
 
 const TEST_RUNTIME_IDENTITY = {
@@ -2028,7 +2031,7 @@ describe("DaemonServer", () => {
     }
   });
 
-  it("records pre-run turn failures, preserves typed codes, and rejects inline secrets", async () => {
+  it("records pre-run turn failures, preserves typed codes, and journals credential-shaped prompts exactly", async () => {
     const dir = tempDir("refusal");
     const authority = commandAuthority(dir);
     const socketPath = join(dir, "daemon.sock");
@@ -2065,13 +2068,15 @@ describe("DaemonServer", () => {
           },
         ],
       ]);
-      const inlineSecretError = await client
-        .enqueue({ prompt: `use sk-${"a".repeat(32)}` })
-        .catch((error: unknown) => error);
-      expect(inlineSecretError).toMatchObject({ code: "inline_secret_rejected" });
-      expect(inlineSecretError).toBeInstanceOf(Error);
-      expect((inlineSecretError as Error).message).toMatch(/secret-like/i);
-      expect(authority.store.records()).toHaveLength(1);
+      // A credential-shaped prompt is ordinary work: it is journaled exactly (INV-146).
+      const fixturePrompt = `use sk-${"a".repeat(32)}`;
+      await client.enqueue({ prompt: fixturePrompt });
+      expect(authority.store.records()).toHaveLength(2);
+      expect(
+        authority.store
+          .records()
+          .some((record) => (record.params as { prompt?: string })?.prompt === fixturePrompt),
+      ).toBe(true);
     } finally {
       await server.stop();
       authority.journal.close();
@@ -2129,7 +2134,7 @@ describe("InteractionRegistry", () => {
       rootDir: join(tempDir("interactions"), "journal"),
       partition: "global",
     });
-    const store = new InteractionStore(journal);
+    const store = legacyInteractionPort(new InteractionStore(journal));
     const registry = new InteractionRegistry({ forRequest: () => store, forRun: () => store });
     const context = (runId: string) => ({
       runId,
@@ -2139,6 +2144,7 @@ describe("InteractionRegistry", () => {
       request: {
         interaction_id: "same",
         source_tool: "AskUserQuestion",
+        delivery: "blocking" as const,
         questions: [],
       },
       requestedAt: new Date().toISOString(),
@@ -2161,7 +2167,7 @@ describe("InteractionRegistry", () => {
       rootDir: join(tempDir("interactions"), "journal"),
       partition: "global",
     });
-    const store = new InteractionStore(journal);
+    const store = legacyInteractionPort(new InteractionStore(journal));
     const registry = new InteractionRegistry({ forRequest: () => store, forRun: () => store });
     const pending = registry.register(
       {
@@ -2169,7 +2175,12 @@ describe("InteractionRegistry", () => {
         taskId: "task",
         attemptId: "a01",
         harnessId: "test",
-        request: { interaction_id: "question", source_tool: "AskUserQuestion", questions: [] },
+        request: {
+          interaction_id: "question",
+          source_tool: "AskUserQuestion",
+          delivery: "blocking",
+          questions: [],
+        },
         requestedAt: new Date().toISOString(),
         timeoutAt: new Date(Date.now() + 60_000).toISOString(),
       },

@@ -581,9 +581,11 @@
                                       "owner_task_gone",
                                       "crash_interrupted",
                                       "workspace_unavailable",
+                                      "capture_refused",
                                       "input_required",
                                       "work_incomplete",
                                       "context_capacity_exhausted",
+                                      "turn_limit_reached",
                                       "work_report_contract"
                                     ],
                                     "description": "Typed reason qualifying a non-clean terminal; null on a clean success."
@@ -720,6 +722,11 @@
                         "type": "boolean",
                         "default": false,
                         "description": "True while an interactive question is awaiting the user's answer."
+                      },
+                      "asyncQuestionsOnly": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "True while questions are pending and every one is async (the agent keeps working); false when none is pending or any is blocking."
                       },
                       "finishedAt": {
                         "type": [

@@ -61,6 +61,12 @@ function settled(state: ControlUploadImport): ControlUploadImport {
       "this import ended without a resource; a new attempt needs a new key",
       state,
     );
+  if (state.state === "released")
+    throw importError(
+      "upload_import_released",
+      "this import's managed resource was released and admits no new reference; a new attachment needs a new key",
+      state,
+    );
   throw state.state === "uploading"
     ? importError(
         "upload_import_in_progress",

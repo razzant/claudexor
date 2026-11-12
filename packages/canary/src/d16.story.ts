@@ -27,7 +27,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   sb.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("D-16 WorkReport + work_state canaries", () => {
   it("[INV-116:work-complete] a completed WorkReport ⇒ succeeded, exit 0, answer.md holds the OUTPUT not the envelope", () => {

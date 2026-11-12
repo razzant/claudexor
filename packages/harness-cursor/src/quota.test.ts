@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CredentialProfile } from "@claudexor/schema";
 import { readCursorDashboard } from "./quota.js";
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 function store(sub = "fixture", cachedSub = sub, platform: NodeJS.Platform = process.platform) {
   const root = mkdtempSync(join(process.env.CLAUDEXOR_CONFIG_DIR!, "cursor-dashboard-"));
   roots.push(root);

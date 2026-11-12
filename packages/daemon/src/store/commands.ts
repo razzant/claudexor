@@ -22,7 +22,7 @@ import {
   type CommandRow,
 } from "./command-rows.js";
 import { SqlCommandPruner } from "./command-prune.js";
-import { collectReleasedBodies, SqlEventLedger } from "./event-store.js";
+import { collectReleasedBodies, eventBody, SqlEventLedger } from "./event-store.js";
 import { bindIdempotencyInTx, lookupIdempotency } from "./idempotency.js";
 import {
   MutationPostCommitError,
@@ -35,6 +35,40 @@ import type { PartitionGeneration } from "./partitions.js";
 import type { EngineStore } from "./store.js";
 import type { SqlTerminalFiles } from "./terminal-files.js";
 import { applyTerminalInTx, storedTerminal } from "./run-events.js";
+import {
+  claimResourceUsesInTx,
+  markTurnDispatchedInTx,
+  referencedResourceIds,
+  turnDispatchUses,
+  type ResourceUseHolder,
+} from "./resource-uses.js";
+
+/** A purged thread is terminal: no new work of it is accepted. Its accepted
+ * commands still answer their replay, which every caller looks up first, and a
+ * `delivery` command (apply, discard, revert or a message receipt of a run's
+ * retained result) is not new work, so it stays as available as before purge. */
+function assertThreadAdmits(tx: MutationContext, row: CommandRow): void {
+  if (row.kind === "delivery" || row.thread_id === null) return;
+  const thread = tx.prepare("SELECT state FROM thread WHERE id=?").get(row.thread_id) as
+    { state: string } | undefined;
+  if (thread?.state === "purged")
+    throw Object.assign(new Error(`thread ${row.thread_id} was purged; it admits no new work`), {
+      code: "thread_purged",
+      status: 409,
+      retryable: false,
+    });
+}
+
+/** The command record a durable terminal settles, derived from its RunFacts. */
+function terminalRecord(current: JobRecord, event: RunEvent): JobRecord {
+  const { facts } = recoveredTerminalFacts(current, event);
+  return {
+    ...current,
+    state: facts.outcome.lifecycle,
+    finishedAt: event.ts,
+    result: terminalCommandResult(current, facts),
+  };
+}
 
 /** Partition-scoped SQL command writes. Collection reads live in the separate
  * addressed query owner, not an enumerable in-memory command cache. */
@@ -64,12 +98,7 @@ export class SqlCommandStore implements CommandStorePort {
   /** All body preparation precedes the synchronous acceptance transaction. */
   prepareAcceptance(input: AcceptCommand) {
     const digests = commandDigests(this.generation.name, input);
-    const record: JobRecord = {
-      id: input.id,
-      state: "queued",
-      params: structuredClone(input.params),
-      createdAt: this.store.now().toISOString(),
-    };
+    const record = this.acceptanceRecord(input);
     const prepared = this.prepare(
       record,
       undefined,
@@ -81,12 +110,32 @@ export class SqlCommandStore implements CommandStorePort {
   }
 
   /** Compose acceptance with its owner's other row reducers; never starts a
-   * transaction or publishes a queue entry. Replay remains first. */
-  acceptInTx(tx: MutationContext, acceptance: ReturnType<SqlCommandStore["prepareAcceptance"]>) {
+   * transaction or publishes a queue entry. Replay remains first. `resourcesFrom`:
+   * the accepted owner whose managed resources this command inherits (a draft); a
+   * thread turn's first dispatch inherits the turn's own (`turnDispatchUses`). Only
+   * product work references resources: a delivery of a run's retained result (whose
+   * params are that run's) and model or maintenance commands take no hold. */
+  acceptInTx(
+    tx: MutationContext,
+    acceptance: ReturnType<SqlCommandStore["prepareAcceptance"]>,
+    resourcesFrom?: ResourceUseHolder,
+  ) {
     requireTransaction(tx);
     const { input, digests, record, prepared, event } = acceptance;
     const prior = this.find(input);
     if (prior) return { record: prior, reused: true };
+    assertThreadAdmits(tx, prepared.row);
+    if (prepared.row.kind === "product") {
+      const refs = (record.params as { attachments?: unknown } | null)?.attachments;
+      const turn = turnDispatchUses(tx, prepared.row.turn_id);
+      claimResourceUsesInTx(
+        tx,
+        { owner: "command", id: record.id },
+        [...new Set([...referencedResourceIds(refs), ...turn.ids])],
+        resourcesFrom ?? turn.from,
+      );
+      if (prepared.row.turn_id) markTurnDispatchedInTx(tx, prepared.row.turn_id, record.createdAt);
+    }
     applyCommandInTx(tx, prepared, "accept");
     bindIdempotencyInTx(tx, {
       owner: "command",
@@ -99,6 +148,62 @@ export class SqlCommandStore implements CommandStorePort {
     this.events.appendInTx(tx, event);
     tx.changes.blobChanged(prepared.row.params_sha, prepared.row.result_sha);
     return { record, reused: false };
+  }
+
+  private acceptanceRecord(input: AcceptCommand): JobRecord {
+    return {
+      id: input.id,
+      state: "queued",
+      params: structuredClone(input.params),
+      createdAt: input.createdAt ?? this.store.now().toISOString(),
+    };
+  }
+
+  /**
+   * Off the request thread, before the synchronous `accept`: write the large
+   * bodies it will own (`BlobFiles.stageBody`), so its same-tick preparation
+   * finds them. Best effort; replay, admission and the write stay with `accept`.
+   */
+  async stageAcceptance(input: AcceptCommand): Promise<string> {
+    const record = this.acceptanceRecord(input);
+    const accepted = { record, ...commandDigests(this.generation.name, input) };
+    await this.stageBodies(() => [...this.rowBodies(record), eventBody(accepted)]);
+    return record.createdAt;
+  }
+
+  /** The `update` twin of `stageAcceptance`, for bodies known before the update. */
+  async stageUpdate(id: string, patch: Partial<JobRecord>): Promise<void> {
+    await this.stageBodies(() => {
+      const row = commandRow(this.store, id, this.generation.pid);
+      if (!row) return [];
+      const next = this.nextRecord(row, patch);
+      const { params: _params, ...record } = next;
+      return [...this.rowBodies(next, row), eventBody({ record })];
+    });
+  }
+
+  private async stageBodies(bodies: () => Uint8Array[]): Promise<void> {
+    let staged: Uint8Array[];
+    try {
+      staged = bodies();
+    } catch {
+      return; // the synchronous mutation decides and reports
+    }
+    await Promise.all(staged.map((bytes) => this.blobs.stageBody(bytes)));
+  }
+
+  /** The bodies a row write of `record` prepares, collected instead of written. */
+  private rowBodies(record: JobRecord, previous?: CommandRow): Uint8Array[] {
+    const bodies: Uint8Array[] = [];
+    prepareCommandRow(
+      record,
+      { pid: this.generation.pid, live: true, operation: "stage", clientId: null, previous },
+      (bytes) => {
+        bodies.push(bytes);
+        return { sha256: "", size: bytes.byteLength, inline: null, file: null, generation: null };
+      },
+    );
+    return bodies;
   }
 
   find(input: FindCommand): JobRecord | null {
@@ -128,6 +233,12 @@ export class SqlCommandStore implements CommandStorePort {
   update(id: string, patch: Partial<JobRecord>): JobRecord {
     const row = commandRow(this.store, id, this.generation.pid);
     if (!row) throw new Error(`no such job: ${id}`);
+    return this.writeUpdate(row, this.nextRecord(row, patch));
+  }
+
+  /** The record an update writes: the patch over the row, with a durable
+   * terminal's RunFacts outcome winning over the patch. */
+  private nextRecord(row: CommandRow, patch: Partial<JobRecord>): JobRecord {
     const current = hydrateCommand(row, this.blobs);
     let next: JobRecord = {
       ...current,
@@ -151,7 +262,7 @@ export class SqlCommandStore implements CommandStorePort {
         result: { ...extra, ...terminalCommandResult(current, facts) },
       };
     }
-    return this.writeUpdate(row, next);
+    return next;
   }
 
   prune(ids: readonly string[]): void {
@@ -166,6 +277,35 @@ export class SqlCommandStore implements CommandStorePort {
     ).map((row) => row.root);
   }
 
+  /**
+   * Off the request thread, before the synchronous `persistTerminal`: write the
+   * large bodies it will own (BlobFiles.stageBody) and the receipts its file
+   * step will publish (SqlTerminalFiles.stage). Best effort; persistTerminal
+   * still decides, commits and writes whatever was not staged or has changed.
+   */
+  async stageTerminal(id: string, raw: RunEvent, telemetry: RunTelemetry | null): Promise<void> {
+    let current: JobRecord, event: RunEvent, bodies: Uint8Array[];
+    try {
+      event = RunEvent.parse(raw);
+      const row = commandRow(this.store, id, this.generation.pid);
+      if (!row) return;
+      current = hydrateCommand(row, this.blobs);
+      const next = terminalRecord(current, event);
+      const { params: _params, ...record } = next;
+      bodies = [
+        ...this.rowBodies(next, row),
+        eventBody({ record }),
+        eventBody(journaledRunEventCopy(event)),
+      ];
+    } catch {
+      return;
+    }
+    await Promise.all([
+      ...bodies.map((bytes) => this.blobs.stageBody(bytes)),
+      this.options.terminalFiles.stage(current, event, telemetry),
+    ]);
+  }
+
   /** The synchronous EventLog hook: one SQL terminal then immediate file repair.
    * Returning pending means SQL committed; EventLog must never roll it back or
    * emit another terminal. A second terminal INSERT is a constraint failure. */
@@ -178,13 +318,7 @@ export class SqlCommandStore implements CommandStorePort {
     const row = commandRow(this.store, id, this.generation.pid);
     if (!row) throw new Error(`no such job: ${id}`);
     const current = hydrateCommand(row, this.blobs);
-    const { facts } = recoveredTerminalFacts(current, event);
-    const next: JobRecord = {
-      ...current,
-      state: facts.outcome.lifecycle,
-      finishedAt: event.ts,
-      result: terminalCommandResult(current, facts),
-    };
+    const next = terminalRecord(current, event);
     const prepared = this.prepare(next, row);
     const { params: _params, ...record } = next;
     const updated = this.events.prepare("command.updated", { record });
@@ -193,9 +327,7 @@ export class SqlCommandStore implements CommandStorePort {
       runMutation(this.store, (tx) => {
         applyCommandInTx(tx, prepared, "update");
         applyTerminalInTx(tx, this.generation.pid, event);
-        this.options.obligations.create("terminal_files", event.run_id, this.generation.pid, {
-          telemetry,
-        });
+        this.options.obligations.create("terminal_files", event.run_id, this.generation.pid, {});
         this.events.appendInTx(tx, updated);
         this.events.appendInTx(tx, run);
         tx.changes.blobChanged(
@@ -265,7 +397,9 @@ export class SqlCommandStore implements CommandStorePort {
           errorContext: undefined,
           finishedAt: terminal.ts,
         },
-        this.options.terminalFiles.prepareRecoveryTelemetry(current.runDir!, facts),
+        // Re-create the terminal-files obligation without a telemetry payload;
+        // no mirror is rebuilt.
+        true,
       );
     } else if (
       current.state !== facts.outcome.lifecycle ||
@@ -310,24 +444,18 @@ export class SqlCommandStore implements CommandStorePort {
     );
   }
 
-  private writeUpdate(
-    row: CommandRow,
-    next: JobRecord,
-    recoveryTelemetry?: RunTelemetry | null,
-  ): JobRecord {
+  private writeUpdate(row: CommandRow, next: JobRecord, recreateTerminalFiles = false): JobRecord {
     const prepared = this.prepare(next, row);
     const { params: _params, ...record } = next;
     const event = this.events.prepare("command.updated", { record });
     runMutation(this.store, (tx) => {
       applyCommandInTx(tx, prepared, "update");
       if (
-        recoveryTelemetry !== undefined &&
+        recreateTerminalFiles &&
         next.runId &&
         !this.options.obligations.get("terminal_files", next.runId)
       )
-        this.options.obligations.create("terminal_files", next.runId, this.generation.pid, {
-          telemetry: recoveryTelemetry,
-        });
+        this.options.obligations.create("terminal_files", next.runId, this.generation.pid, {});
       this.events.appendInTx(tx, event);
       tx.changes.blobChanged(
         row.params_sha,

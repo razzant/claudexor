@@ -26,9 +26,9 @@ updates:
         dependency-type: "production"
         update-types: ["minor", "patch"]
     ignore:
-      # The runtime matrix is Node 20.19 / 24.16. A newer @types/node lets code
-      # typecheck against APIs that do not exist on the oldest supported
-      # runtime, so the major tracks the runtime floor by hand, not by bot.
+      # CI runs Node 24.15 / 24.22 plus a Node 20.19 refusal check. A newer
+      # @types/node lets code typecheck against APIs missing from the supported
+      # floor, so the major tracks the runtime floor by hand, not by bot.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
 

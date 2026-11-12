@@ -19,6 +19,28 @@ describe("resource wire negotiation and direct reset route", () => {
         new URL("http://fixture/v2/credential-profiles?snapshot=true&view=resources"),
       ).input,
     ).toEqual({ snapshot: true, view: "resources" });
+    expect(
+      parseCredentialProfilesSnapshotQuery(
+        new URL(
+          "http://fixture/v2/credential-profiles?snapshot=true&view=resources&includeApiKeys=true",
+        ),
+      ).input,
+    ).toEqual({ snapshot: true, view: "resources", includeApiKeys: true });
+    expect(() =>
+      parseCredentialProfilesSnapshotQuery(
+        new URL("http://fixture/v2/credential-profiles?snapshot=true&includeApiKeys=true"),
+      ),
+    ).toThrow("view=resources");
+  });
+  it("advertises API-key rows on every resources read and refresh it applies to", () => {
+    for (const id of ["get:quota", "post:quota", "get:credential-profiles"])
+      expect(OPERATION_CATALOG.operations.find((o) => o.id === id)?.parameters).toContainEqual(
+        expect.objectContaining({
+          name: "includeApiKeys",
+          location: "query",
+          enum: ["true", "false"],
+        }),
+      );
   });
   it("advertises the opt-in query and key-required reset operation", () => {
     const catalog = OPERATION_CATALOG;
@@ -116,6 +138,18 @@ describe("resource wire negotiation and direct reset route", () => {
       expect((await call(`/quota?${query}`)).status).toBe(400);
     expect((await call("/quota?view=resources", { target: request.target })).status).toBe(200);
     expect(refreshQuota).toHaveBeenLastCalledWith({ target: request.target, view: "resources" });
+    expect((await call("/quota?view=resources&includeApiKeys=true")).status).toBe(200);
+    expect(quota).toHaveBeenLastCalledWith({ view: "resources", includeApiKeys: true });
+    const defaultRoute = { harness: "openrouter", profile_id: null };
+    expect(
+      (await call("/quota?view=resources&includeApiKeys=true", { target: defaultRoute })).status,
+    ).toBe(200);
+    expect(refreshQuota).toHaveBeenLastCalledWith({
+      target: defaultRoute,
+      view: "resources",
+      includeApiKeys: true,
+    });
+    expect((await call("/quota?view=resources&includeApiKeys=maybe")).status).toBe(400);
     expect(
       (
         await call("/quota?view=resources", {

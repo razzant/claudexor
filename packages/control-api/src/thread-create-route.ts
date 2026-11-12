@@ -7,7 +7,6 @@ import {
   isEphemeralRunScope,
   threadCreateWorkspaceViolation,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues } from "@claudexor/util";
 import type { DaemonControlApiOptions } from "./daemon-server.js";
 import { normalizeExistingProjectRoot, requiredIdempotencyKey } from "./run-start.js";
 import { projectThread } from "./thread-projection.js";
@@ -57,7 +56,6 @@ export async function handleThreadCreate(
   if (!svc) return ctx.json(res, 501, { error: "threads are not supported by this engine build" });
   try {
     const body = await ctx.readBody(req);
-    assertNoInlineSecretValues(body);
     const parsed = ControlThreadCreateRequest.parse(body);
     const idempotencyKey = requiredIdempotencyKey(req);
     const shapeError = threadCreateWorkspaceViolation(parsed);

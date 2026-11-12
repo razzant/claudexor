@@ -190,31 +190,124 @@ describe("parseChatCompletion", () => {
 });
 
 describe("parseModelsList", () => {
+  const unknown = { input_modalities: null, max_output_tokens: null };
+
   it("parses the OpenAI GET /v1/models shape", () => {
-    const models = parseModelsList({
+    const parsed = parseModelsList({
       object: "list",
       data: [
         { id: "gpt-4o-mini", object: "model", created: 1, owned_by: "openai" },
         { id: "gpt-4o", object: "model", created: 2, owned_by: "openai" },
       ],
     });
-    expect(models.map((m) => m.id)).toEqual(["gpt-4o-mini", "gpt-4o"]);
-    // The bare OpenAI list carries no label/context_window -> honest nulls.
-    expect(models[0]).toEqual({ id: "gpt-4o-mini", label: null, context_window: null });
-  });
-
-  it("populates label/context_window when a compatible provider supplies them", () => {
-    const models = parseModelsList({
-      data: [{ id: "openai/gpt-4o", name: "GPT-4o", context_length: 128000 }],
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.models.map((m) => m.id)).toEqual(["gpt-4o-mini", "gpt-4o"]);
+    // The bare OpenAI list carries no label/window/modalities -> honest unknowns.
+    expect(parsed.models[0]).toEqual({
+      id: "gpt-4o-mini",
+      label: null,
+      context_window: null,
+      ...unknown,
     });
-    expect(models[0]).toEqual({ id: "openai/gpt-4o", label: "GPT-4o", context_window: 128000 });
   });
 
-  it("drops entries without a string id and tolerates a missing/empty data array", () => {
+  it("copies OpenRouter metadata verbatim when the provider supplies it (#146)", () => {
     expect(
-      parseModelsList({ data: [{ object: "model" }, { id: 42 }, { id: "ok" }] }).map((m) => m.id),
-    ).toEqual(["ok"]);
-    expect(parseModelsList({})).toEqual([]);
-    expect(parseModelsList(null)).toEqual([]);
+      parseModelsList({
+        data: [
+          {
+            id: "openai/gpt-4o",
+            name: "GPT-4o",
+            context_length: 128000,
+            architecture: { input_modalities: ["text", "image", "file"] },
+            top_provider: { context_length: 64000, max_completion_tokens: 16384 },
+          },
+        ],
+      }),
+    ).toEqual({
+      ok: true,
+      models: [
+        {
+          id: "openai/gpt-4o",
+          label: "GPT-4o",
+          context_window: 128000,
+          input_modalities: ["text", "image", "file"],
+          max_output_tokens: 16384,
+        },
+      ],
+    });
+  });
+
+  it.each([
+    ["missing", {}],
+    ["empty", { input_modalities: [] }],
+    ["not an array", { input_modalities: "text" }],
+    ["a blank entry", { input_modalities: ["text", " "] }],
+    ["a non-string entry", { input_modalities: ["text", 3] }],
+  ])("keeps %s modalities unknown, never 'none'", (_label, architecture) => {
+    const parsed = parseModelsList({
+      data: [{ id: "m", architecture, top_provider: { max_completion_tokens: 0 } }],
+    });
+    expect(parsed).toEqual({
+      ok: true,
+      models: [{ id: "m", label: null, context_window: null, ...unknown }],
+    });
+  });
+
+  it("keeps a successful EMPTY list a success", () => {
+    expect(parseModelsList({ data: [] })).toEqual({ ok: true, models: [] });
+  });
+
+  it("refuses to shrink a partially invalid answer into a smaller catalog (#393)", () => {
+    expect(parseModelsList({ data: [{ object: "model" }, { id: "ok" }] })).toEqual({
+      ok: false,
+      cause: "malformed",
+      detail: "row 0 has no string id",
+    });
+    expect(parseModelsList({ data: [{ id: "ok" }, { id: 42 }] })).toMatchObject({
+      ok: false,
+      cause: "malformed",
+      detail: "row 1 has no string id",
+    });
+    expect(parseModelsList({ data: [{ id: "ok" }, null] })).toMatchObject({ cause: "malformed" });
+    expect(parseModelsList({})).toMatchObject({ ok: false, cause: "malformed" });
+    expect(parseModelsList(null)).toMatchObject({ ok: false, cause: "malformed" });
+  });
+
+  it("treats one page of a longer list as incomplete, not as the catalog", () => {
+    expect(
+      parseModelsList({ data: [{ id: "a" }], links: { next: "/api/v1/models?offset=1" } }),
+    ).toMatchObject({ ok: false, cause: "incomplete" });
+    expect(parseModelsList({ data: [{ id: "a" }], total_count: 2 })).toMatchObject({
+      ok: false,
+      cause: "incomplete",
+      detail: "the answer is one page of a longer list (1 rows of 2)",
+    });
+    expect(
+      parseModelsList({ data: [{ id: "a" }], total_count: 1, links: { next: null } }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("accepts total_count only as exact completeness evidence", () => {
+    // OpenRouter answers the FULL list when offset and limit are omitted, with
+    // `total_count` equal to the rows it carries; an empty catalog says 0.
+    expect(parseModelsList({ data: [], total_count: 0, links: { next: null } })).toEqual({
+      ok: true,
+      models: [],
+    });
+    expect(parseModelsList({ data: [{ id: "a" }, { id: "b" }], total_count: 1 })).toEqual({
+      ok: false,
+      cause: "malformed",
+      detail: "the answer declares 1 rows but carries 2",
+    });
+    for (const total_count of ["1", -1, 1.5, null])
+      expect(parseModelsList({ data: [{ id: "a" }], total_count }), String(total_count)).toEqual({
+        ok: false,
+        cause: "malformed",
+        detail: "total_count is not a non-negative integer",
+      });
+    // A generic OpenAI-compatible list carries no count at all: complete as listed.
+    expect(parseModelsList({ object: "list", data: [{ id: "a" }] })).toMatchObject({ ok: true });
   });
 });

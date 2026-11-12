@@ -81,9 +81,26 @@ export const DeferredMessageHold = z
   })
   .strict()
   .describe(
-    "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation.",
+    "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held.",
   );
 export type DeferredMessageHold = z.infer<typeof DeferredMessageHold>;
+
+/** The visible reason a held draft was returned to the ordinary path (#613). */
+export const DeferredMessageResumed = z
+  .object({
+    from: DeferredMessageHold.describe("The hold the draft was returned from."),
+    reason: z
+      .literal("process_scope_settled")
+      .describe(
+        "A later settlement of the predecessor's run proved its processes gone; the draft was unchanged, not cleared, replaced or stopped.",
+      ),
+    at: IsoTimestamp,
+  })
+  .strict()
+  .describe(
+    "Why this draft left its hold automatically. It then took the existing revision and admission path; any other reason holds it again.",
+  );
+export type DeferredMessageResumed = z.infer<typeof DeferredMessageResumed>;
 
 export const DeferredMessageProjection = z
   .object({
@@ -96,6 +113,7 @@ export const DeferredMessageProjection = z
       .string()
       .describe("Existing addressed run-detail/result path; no duplicate result store."),
     hold: DeferredMessageHold.nullable(),
+    resumed: DeferredMessageResumed.optional(),
     dispatchedRevision: revision.nullable(),
     successorJobId: Id.nullable(),
     successorRunId: Id.nullable(),
@@ -109,7 +127,11 @@ export type DeferredMessageProjection = z.infer<typeof DeferredMessageProjection
 /** Daemon answer to a public Stop of the predecessor, whatever its lifecycle. */
 export const DeferredMessageStopReport = z
   .object({
-    held: z.boolean().describe("This Stop moved the predecessor's waiting draft to held."),
+    held: z
+      .boolean()
+      .describe(
+        "This Stop moved the predecessor's waiting draft to held, or took over a process-custody hold as its own.",
+      ),
     draft: DeferredMessageProjection.nullable().describe(
       "The predecessor's latest draft after the Stop; a dispatched draft names the successor, which the Stop does not cancel.",
     ),

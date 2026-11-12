@@ -1,3 +1,4 @@
+import { RETENTION_AGE_REVISIT_MS } from "@claudexor/daemon";
 import { logLine } from "./daemon-lifecycle.js";
 import type { RetentionRunner } from "./retention-service.js";
 
@@ -41,7 +42,11 @@ export function scheduleStartupRetention(
         )
         .finally(() => {
           flight = null;
-          schedule(more ? (opts.continuationDelayMs ?? 1_000) : (opts.intervalMs ?? 60 * 60_000));
+          schedule(
+            more
+              ? (opts.continuationDelayMs ?? 1_000)
+              : (opts.intervalMs ?? RETENTION_AGE_REVISIT_MS),
+          );
         });
     }, delay);
     timer.unref?.();

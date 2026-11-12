@@ -1,4 +1,5 @@
 import { HARNESS_COMMAND_SPECS } from "./harness-command-specs.js";
+import { PROJECT_COMMAND_SPECS } from "./project-command-specs.js";
 import { REMOTE_COMMAND_SPECS } from "./remote-command-specs.js";
 import { RETRY_COMMAND_SPECS } from "./retry-command-specs.js";
 import { RUN_OBSERVATION_COMMAND_SPECS } from "./run-observation-command-specs.js";
@@ -71,22 +72,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     mutability: "read",
     stability: "stable",
   },
-  {
-    id: "project",
-    positionalPatterns: [
-      { min: 0, max: 0 },
-      { prefix: ["list"], min: 1, max: 1 },
-      { prefix: ["register"], min: 2, max: 2 },
-      { prefix: ["relink"], min: 3, max: 3 },
-      { prefix: ["remove"], min: 2, max: 2 },
-      { prefix: ["outputs"], min: 2, max: 3 },
-    ],
-    usageArgs: "list | register <root> | relink <id> <root> | remove <id> | outputs <id> [path]",
-    summary: "Manage the durable v2 project registry",
-    flags: ["json"],
-    mutability: "ops",
-    stability: "stable",
-  },
+  ...PROJECT_COMMAND_SPECS,
   {
     id: "ask",
     positionalPatterns: [{ min: 0, max: null }],
@@ -191,12 +177,13 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     positionalPatterns: [{ min: 1, max: 1 }],
     usageArgs: "<run_id> <action-flags>",
     summary:
-      'Record a run decision: --accept-risk|--override|--revert|--discard|--accept-clean-patch [--apply-mode m]|--rerun --feedback "<text>"',
+      'Record a run decision: --accept-risk|--override|--revert|--discard|--taken|--accept-clean-patch [--apply-mode m]|--rerun --feedback "<text>"',
     flags: [
       "accept-risk",
       "override",
       "revert",
       "discard",
+      "taken",
       "accept-clean-patch",
       "rerun",
       "apply-mode",

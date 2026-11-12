@@ -9,16 +9,21 @@ import {
   RunFailureCode,
   type ModeKind,
   type RunOutcomeFacts,
+  type RunReason,
   type RunResumable,
   type VendorFailureEvidence,
   type PoolAttemptFailure,
   HarnessRequestRefusal,
+  QuotaRefusal,
+  RawContextShortfall,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
-import { poolFailure, redactVendorFailure } from "./pool-attempt-evidence.js";
+import { poolFailure, redactVendorFailure, lastVendorSentence } from "./pool-attempt-evidence.js";
+import { vendorFailureAction } from "./harnessFailure.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import { resumableTerminal, type ContinuityTerminalFacts } from "./continuity-terminal.js";
 import { terminalOutcomeFacts } from "./terminalOutcome.js";
+import { captureInventorySummary } from "./captureRefusal.js";
 
 export function writeFailure(
   store: ArtifactStore,
@@ -44,9 +49,13 @@ export function writeFailure(
      * null/omitted when no vendor-typed evidence exists. Opaque evidence. */
     vendorFailure?: VendorFailureEvidence | null;
     requestRefusal?: HarnessRequestRefusal;
+    /** Typed sizes behind `raw_context_exceeds_window` (#147). */
+    rawContextShortfall?: RawContextShortfall;
     captureFailure?: RunFailure["captureFailure"];
     /** Every failed try with its own account, in order (empty = none). */
     poolAttempts?: readonly PoolAttemptFailure[];
+    /** Typed basis of a quota-admission refusal (#318); omitted otherwise. */
+    quotaRefusal?: QuotaRefusal;
     nextActions?: string[];
   },
 ): void {
@@ -66,14 +75,19 @@ export function writeFailure(
     harnessId: failure.harnessId ?? null,
     attemptId: failure.attemptId ?? null,
     safeMessage: redactSecrets(failure.safeMessage),
+    lastVendorError:
+      failure.poolAttempts?.at(-1)?.lastVendorError ??
+      (vendor?.message ? lastVendorSentence(vendor.message) : null),
     rawDetailRef: failure.rawDetailRef ?? null,
     logRefs: failure.logRefs ?? [],
     eventRefs: failure.eventRefs ?? [],
     runDir: failure.runDir ?? paths.root,
     resetsAt: failure.resetsAt ?? null,
     ...(failure.requestRefusal ? { requestRefusal: failure.requestRefusal } : {}),
+    ...(failure.rawContextShortfall ? { rawContextShortfall: failure.rawContextShortfall } : {}),
     ...(failure.captureFailure ? { captureFailure: failure.captureFailure } : {}),
-    // Vendor text was redacted at event ingress; redact again like safeMessage (INV-062).
+    ...(failure.quotaRefusal ? { quotaRefusal: failure.quotaRefusal } : {}),
+    // Vendor failure text is a diagnostic derivative: masked like safeMessage (INV-146).
     vendorFailure: vendor && redactVendorFailure(vendor),
     poolAttempts: (failure.poolAttempts ?? []).map((row) => ({
       ...row,
@@ -83,6 +97,20 @@ export function writeFailure(
     })),
     nextActions: [
       ...new Set([
+        ...(failure.quotaRefusal?.basis === "owner_reserve"
+          ? [
+              "The account reached your saved quota reserve (headroom_threshold), not a provider limit; wait for the reset, choose another account, or change the reserve in Settings",
+            ]
+          : []),
+        // An untyped harness failure names the vendor's own record first; a
+        // typed refusal keeps its own remedy (#633).
+        ...(vendor &&
+        failure.category === "harness_error" &&
+        !failure.code &&
+        !failure.requestRefusal &&
+        !failure.quotaRefusal
+          ? [vendorFailureAction(vendor)]
+          : []),
         ...(failure.code === "input_too_large"
           ? [
               "Fit the input to the reported transport limit or supply source references",
@@ -91,7 +119,7 @@ export function writeFailure(
           : failure.code === "vendor_cli_too_old"
             ? [
                 `Update the Claude Code CLI${installation ? ` at ${installation}` : ""}`,
-                "Use the update method for that installation, then retry the requested model",
+                "Use harness maintenance Update for claude (CLI: claudexor harness update claude --yes), then decide whether to retry the requested model",
                 "Open diagnostics",
               ]
             : failure.code === "credential_source_unconfirmed"
@@ -99,7 +127,23 @@ export function writeFailure(
                   "Check the vendor's own configuration for a per-model API key or managed policy that replaces session login; Claudexor does not read or change it",
                   "Retry once the vendor reports session login, or choose another model or account",
                 ]
-              : (failure.nextActions ?? [])),
+              : failure.requestRefusal?.kind === "vendor_not_retryable"
+                ? [
+                    `The vendor marked this request not retryable${failure.requestRefusal.error_id ? ` (error id ${failure.requestRefusal.error_id})` : ""}; it was not retried, continued or moved to another account`,
+                    "Read the vendor's error and final/retained-output.md before changing the request or running it again",
+                  ]
+                : failure.code === "raw_context_exceeds_window"
+                  ? [
+                      "Choose a model with a larger context window",
+                      "Reduce context.mandatory_files in the project's .claudexor/config.yaml",
+                      "Or use a harness that reads project files itself",
+                    ]
+                  : failure.code === "model_selection_required"
+                    ? [
+                        "List the route's models with `claudexor models --harness <id>`",
+                        "Save one once with `claudexor settings set harness.<id>.default_model <model>`, or pass it for this run",
+                      ]
+                    : (failure.nextActions ?? [])),
         ...(failure.captureFailure ? (failure.nextActions ?? []) : []),
       ]),
     ],
@@ -109,6 +153,8 @@ export function writeFailure(
 /** The typed provenance an error declared about its own terminal. */
 export interface DeclaredFailure {
   requestRefusal?: HarnessRequestRefusal;
+  quotaRefusal?: QuotaRefusal;
+  rawContextShortfall?: RawContextShortfall;
   category?: RunFailure["category"];
   code: RunFailureCode | null;
   resetsAt: string | null;
@@ -116,9 +162,15 @@ export interface DeclaredFailure {
 
 export function requestRefusalFailure(requestRefusal: HarnessRequestRefusal): DeclaredFailure {
   return {
-    // Only an oversized input is the request's own fault; the other causes are
+    // Only an oversized input is the request's own fault; a vendor's explicit
+    // not-retryable verdict is that harness's own error; the other causes are
     // the installed vendor CLI or its configuration.
-    category: requestRefusal.kind === "input_too_large" ? "validation" : "harness_unavailable",
+    category:
+      requestRefusal.kind === "input_too_large"
+        ? "validation"
+        : requestRefusal.kind === "vendor_not_retryable"
+          ? "harness_error"
+          : "harness_unavailable",
     code: requestRefusal.kind,
     resetsAt: null,
     requestRefusal,
@@ -146,6 +198,8 @@ export function declaredFailure(err: unknown): DeclaredFailure {
   const category = RunFailure.shape.category.safeParse(record["category"]);
   const resetsAt = RunFailure.shape.resetsAt.safeParse(record["resetsAt"]);
   const refusal = HarnessRequestRefusal.safeParse(record["requestRefusal"]);
+  const quota = QuotaRefusal.safeParse(record["quotaRefusal"]);
+  const shortfall = RawContextShortfall.safeParse(record["rawContextShortfall"]);
   return {
     ...(typeof record["category"] === "string" && category.success
       ? { category: category.data }
@@ -153,6 +207,8 @@ export function declaredFailure(err: unknown): DeclaredFailure {
     code: code.success ? code.data : null,
     resetsAt: resetsAt.success ? resetsAt.data : null,
     ...(refusal.success ? { requestRefusal: refusal.data } : {}),
+    ...(quota.success ? { quotaRefusal: quota.data } : {}),
+    ...(shortfall.success ? { rawContextShortfall: shortfall.data } : {}),
   };
 }
 
@@ -306,6 +362,8 @@ export function failTerminally(
     /** Actions that follow this terminal's own remedy (an earlier record's capture actions). */
     followUps?: readonly string[];
     priorFacts?: RunOutcomeFacts;
+    /** The leading cause's own reason when the phase does not name it (capture refusal). */
+    reason?: RunReason;
     continuity?: readonly ContinuityTerminalFacts[];
     /** Every attempt whose failed tries this terminal names (default: `continuity`). */
     attempts?: readonly ContinuityTerminalFacts[];
@@ -324,11 +382,13 @@ export function failTerminally(
   const failFacts = terminalOutcomeFacts(
     failureMeta.priorFacts,
     "failed",
-    budget?.reason ?? (phase === "workspace" ? "workspace_unavailable" : "harness_failed"),
+    budget?.reason ??
+      failureMeta.reason ??
+      (phase === "workspace" ? "workspace_unavailable" : "harness_failed"),
   );
   store.writeText(
     join(paths.finalDir, "summary.md"),
-    `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: ${phase}\n\n${message}\n`,
+    `# Run ${runId} (${mode})\n\n- Lifecycle: failed${failFacts.reason ? ` (${failFacts.reason})` : ""}\n- Phase: ${phase}\n\n${message}\n${captureInventorySummary(failureMeta.captureFailure)}`,
   );
   writeFailure(store, paths, {
     phase,
@@ -342,6 +402,8 @@ export function failTerminally(
     runDir: paths.root,
     resetsAt: declared.resetsAt,
     requestRefusal: declared.requestRefusal,
+    quotaRefusal: declared.quotaRefusal,
+    rawContextShortfall: declared.rawContextShortfall,
     poolAttempts,
     nextActions: [
       ...(budget?.nextActions ?? failureMeta.nextActions ?? ["Open diagnostics", "Retry the run"]),

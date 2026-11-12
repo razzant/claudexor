@@ -1,4 +1,8 @@
-import type { InteractionChannel, spawnProcess } from "@claudexor/core";
+import {
+  InteractionChannelError,
+  type InteractionChannel,
+  type spawnProcess,
+} from "@claudexor/core";
 import type { HarnessEvent, InteractionAnswerSet, InteractionRequest } from "@claudexor/schema";
 import { HarnessRunSpec } from "@claudexor/schema";
 import { describe, expect, it } from "vitest";
@@ -72,6 +76,15 @@ function approvalPeer(
               params: { threadId: "thread-approval", turn: { id: turnId } },
             });
             push({ id: frame["id"], result: { turn: { id: turnId } } });
+            if (turnCount === 1 && itemDetails["type"] === "mcpToolCall")
+              push({
+                method: "item/started",
+                params: {
+                  threadId: "thread-approval",
+                  turnId,
+                  item: { id: "item-approval", ...itemDetails },
+                },
+              });
             if (turnCount === 1)
               push({
                 method,
@@ -211,13 +224,14 @@ function startApprovalRun(
   peer: ReturnType<typeof approvalPeer>,
   signal?: AbortSignal,
   access: "readonly" | "workspace_write" | "full" = "full",
+  channelFailure?: unknown,
 ) {
   const asked = deferred<InteractionRequest>();
   const reply = deferred<InteractionAnswerSet | null>();
   const channel: InteractionChannel = {
     request(request) {
       asked.resolve(request);
-      return reply.promise;
+      return channelFailure === undefined ? reply.promise : Promise.reject(channelFailure);
     },
   };
   const events: HarnessEvent[] = [];
@@ -268,6 +282,173 @@ function answer(
 }
 
 describe("Codex app-server approval relay", () => {
+  it("fails closed on an elicitation that reuses a pending command RPC id", async () => {
+    const peer = approvalPeer("item/commandExecution/requestApproval", 7, {
+      command: "pwd",
+      cwd: process.cwd(),
+    });
+    const run = startApprovalRun(peer);
+    const request = await observedRequest(run);
+    peer.push({
+      id: 7,
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread-approval",
+        turnId: "turn-approval",
+        serverName: "wiki",
+        mode: "form",
+        message: "Allow?",
+        requestedSchema: { type: "object", properties: {} },
+      },
+    });
+    const events = await bounded(run.done);
+    run.reply(answer(request, ["Approve once"]));
+    expect(
+      peer.writes.filter((frame) => frame["id"] === 7 && frame["method"] === undefined),
+    ).toEqual([]);
+    expect(events.some((event) => event.type === "error")).toBe(true);
+  });
+  it.each([
+    ["Accept request", "accept"],
+    ["Decline", "decline"],
+  ])("answers a simple untrusted MCP server request with %s", async (choice, action) => {
+    const peer = approvalPeer(
+      "mcpServer/elicitation/request",
+      "mcp-request",
+      {},
+      {
+        serverName: "wiki",
+        mode: "form",
+        message: "Allow lookup?",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: { tool_params: { slug: "support" } },
+      },
+    );
+    const run = startApprovalRun(peer, undefined, "workspace_write");
+    const request = await observedRequest(run);
+    expect(request.source_tool).toBe("mcpServer/elicitation/request");
+    expect(request.questions[0]!.question).toContain('"slug": "support"');
+    expect(request.questions[0]!.question).toContain("not verified as a native tool-call approval");
+    run.reply(answer(request, [choice]));
+    expect(await bounded(peer.wroteApproval)).toEqual({
+      id: "mcp-request",
+      result: { action, content: action === "accept" ? {} : null, _meta: null },
+    });
+    await bounded(run.done);
+  });
+
+  it.each(["readonly", "full"] as const)(
+    "declines an MCP server request under %s without asking",
+    async (access) => {
+      const peer = approvalPeer(
+        "mcpServer/elicitation/request",
+        "mcp-request",
+        {},
+        {
+          serverName: "wiki",
+          mode: "form",
+          message: "Allow?",
+          requestedSchema: { type: "object", properties: {} },
+        },
+      );
+      const run = startApprovalRun(peer, undefined, access);
+      expect(await bounded(peer.wroteApproval)).toEqual({
+        id: "mcp-request",
+        result: { action: "decline", content: null, _meta: null },
+      });
+      await bounded(run.done);
+    },
+  );
+
+  it("declines unsupported MCP form schemas rather than accepting incomplete input", async () => {
+    const peer = approvalPeer(
+      "mcpServer/elicitation/request",
+      "mcp-request",
+      {},
+      {
+        serverName: "wiki",
+        mode: "form",
+        message: "Type a value",
+        requestedSchema: { type: "object", properties: { value: { type: "string" } } },
+      },
+    );
+    const run = startApprovalRun(peer, undefined, "workspace_write");
+    expect(await bounded(peer.wroteApproval)).toEqual({
+      id: "mcp-request",
+      result: { action: "decline", content: null, _meta: null },
+    });
+    await bounded(run.done);
+  });
+
+  it.each([
+    { threadId: "foreign" },
+    { turnId: null },
+    { serverName: "" },
+    { mode: "url", url: "https://example.test/verify" },
+    { message: "x".repeat(33_000) },
+  ])("declines unsupported or uncorrelated MCP requests %j", async (overrides) => {
+    const peer = approvalPeer(
+      "mcpServer/elicitation/request",
+      "mcp-request",
+      {},
+      {
+        serverName: "wiki",
+        mode: "form",
+        message: "Allow?",
+        requestedSchema: { type: "object", properties: {} },
+        ...overrides,
+      },
+    );
+    const run = startApprovalRun(peer, undefined, "workspace_write");
+    expect(await bounded(peer.wroteApproval)).toEqual({
+      id: "mcp-request",
+      result: { action: "decline", content: null, _meta: null },
+    });
+    const events = await bounded(run.done);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "status" &&
+          event.payload?.["code"] === "codex_mcp_elicitation_not_offered",
+      ),
+    ).toBe(true);
+  });
+  it("presents a denied MCP call and carries the original arguments into the next turn", async () => {
+    const peer = approvalPeer(
+      "item/autoApprovalReview/completed",
+      "unused",
+      { type: "mcpToolCall", server: "wiki", tool: "read", arguments: { slug: "support" } },
+      {
+        action: {
+          type: "mcpToolCall",
+          server: "wiki",
+          toolName: "read",
+          connectorId: null,
+          connectorName: null,
+          toolTitle: null,
+        },
+      },
+    );
+    const run = startApprovalRun(peer, undefined, "workspace_write");
+    const request = await observedRequest(run);
+    expect(request.questions[0]!.question).toContain('"slug": "support"');
+    expect(request.questions[0]!.question).toMatch(/not bound to these arguments/);
+    run.reply(answer(request, ["Authorize one retry"]));
+    const events = await bounded(run.done);
+    const authorization = peer.writes.find(
+      (frame) => frame["method"] === "thread/approveGuardianDeniedAction",
+    );
+    expect(authorization?.["params"]).toMatchObject({
+      event: { action: { type: "mcp_tool_call", server: "wiki", tool_name: "read" } },
+    });
+    const turns = peer.writes.filter((frame) => frame["method"] === "turn/start");
+    expect(turns).toHaveLength(2);
+    expect(JSON.stringify(turns[1])).toContain("support");
+    expect(events.at(-1)).toMatchObject({
+      type: "completed",
+      payload: { native_turn_id: "turn-approval-2" },
+    });
+  });
   it("returns to the controller after a native denial, then re-reviews one explicitly authorized retry", async () => {
     const peer = approvalPeer("item/autoApprovalReview/completed", "unused", {});
     const run = startApprovalRun(peer, undefined, "workspace_write");
@@ -503,6 +684,64 @@ describe("Codex app-server approval relay", () => {
     await bounded(run.done);
   });
 
+  it("declines the native action and records why when the answer channel fails (#622 class)", async () => {
+    const peer = approvalPeer("item/fileChange/requestApproval", "approval-unavailable", {
+      changes: [{ path: "smoke.txt", kind: { type: "add" }, diff: "+safe\n" }],
+    });
+    const failure = new InteractionChannelError(new Error("interaction store unavailable"));
+    const run = startApprovalRun(peer, undefined, "workspace_write", failure);
+    const request = await observedRequest(run);
+    // Fail closed: nobody approved, so the action is declined natively...
+    expect(await bounded(peer.wroteApproval)).toEqual({
+      id: "approval-unavailable",
+      result: { decision: "decline" },
+    });
+    const events = await bounded(run.done);
+    // ...and the run says the channel failed, not that a person declined.
+    expect(
+      events.filter((event) => event.payload?.["code"] === "interaction_answer_unavailable"),
+    ).toEqual([
+      expect.objectContaining({
+        type: "status",
+        text: `item/fileChange/requestApproval ${request.interaction_id} could not be answered: the answer channel failed (interaction store unavailable)`,
+        payload: {
+          code: "interaction_answer_unavailable",
+          reason: "answer_channel_failed",
+          interaction_id: request.interaction_id,
+          error: "interaction store unavailable",
+        },
+      }),
+    ]);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.at(-1)?.payload?.["harness_reported_error"]).not.toBe(true);
+  });
+
+  it("keeps a native denial without a retry and records why when the answer channel fails", async () => {
+    const peer = approvalPeer("item/autoApprovalReview/completed", "unused", {});
+    const failure = new InteractionChannelError("bridge lost");
+    const run = startApprovalRun(peer, undefined, "workspace_write", failure);
+    const request = await observedRequest(run);
+    const events = await bounded(run.done);
+    expect(peer.writes.filter((frame) => frame["method"] === "turn/start")).toHaveLength(1);
+    expect(
+      peer.writes.some((frame) => frame["method"] === "thread/approveGuardianDeniedAction"),
+    ).toBe(false);
+    expect(
+      events.filter((event) => event.payload?.["code"] === "interaction_answer_unavailable"),
+    ).toEqual([
+      expect.objectContaining({
+        payload: {
+          code: "interaction_answer_unavailable",
+          reason: "answer_channel_failed",
+          interaction_id: request.interaction_id,
+          error: "bridge lost",
+        },
+      }),
+    ]);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.filter((event) => event.final).at(-1)?.text).toBe("Blocked by policy");
+  });
+
   it("maps Decline to native cancel when cancel is offered without decline", async () => {
     const peer = approvalPeer(
       "item/commandExecution/requestApproval",
@@ -636,20 +875,6 @@ describe("Codex app-server approval relay", () => {
       },
     ],
     [
-      "secret path",
-      "item/fileChange/requestApproval",
-      { changes: [{ path: ".env", kind: { type: "add" }, diff: "+safe\n" }] },
-      {},
-    ],
-    [
-      "secret content",
-      "item/fileChange/requestApproval",
-      {
-        changes: [{ path: "smoke.txt", kind: { type: "add" }, diff: "+sk-proj-" + "x".repeat(40) }],
-      },
-      {},
-    ],
-    [
       "oversized change metadata",
       "item/fileChange/requestApproval",
       {
@@ -707,6 +932,105 @@ describe("Codex app-server approval relay", () => {
       expect(run.events.some((event) => event.type === "interaction_requested")).toBe(false);
     },
   );
+
+  /** Run one native approval request to its refusal; the declined reply and the run's error text. */
+  async function refusal(
+    method: string,
+    itemDetails: Frame,
+    requestDetails: Frame,
+    access: "readonly" | "workspace_write" | "full",
+  ) {
+    const peer = approvalPeer(method, "approval-refused", itemDetails, requestDetails);
+    const run = startApprovalRun(peer, undefined, access);
+    const first = await bounded(
+      Promise.race([peer.wroteApproval.then(() => "native"), run.asked.then(() => "question")]),
+    );
+    if (first === "question") run.reply(null);
+    const reply = await bounded(peer.wroteApproval);
+    await bounded(run.done);
+    expect(first).toBe("native");
+    expect(run.events.some((event) => event.type === "interaction_requested")).toBe(false);
+    return { reply, error: run.events.find((event) => event.type === "error")?.error ?? "" };
+  }
+
+  const bigChange = { path: "smoke.txt", kind: { type: "add" }, diff: "+" + "x".repeat(40_000) };
+  const bigCommand = `printf ${"x".repeat(40_000)}`;
+
+  it("names the measured size when an approval exceeds the review limit (#651)", async () => {
+    const file = await refusal(
+      "item/fileChange/requestApproval",
+      { changes: [bigChange] },
+      {},
+      "full",
+    );
+    expect(file.reply).toEqual({ id: "approval-refused", result: { decision: "decline" } });
+    const fileChars = JSON.stringify({ changes: [bigChange] }, null, 2).length;
+    expect(file.error).toContain(
+      `the action's review details (${fileChars} characters) exceed the 32000-character review limit`,
+    );
+    expect(file.error).not.toContain("cannot grant native approval");
+    const command = await refusal(
+      "item/commandExecution/requestApproval",
+      { command: "pwd", cwd: process.cwd() },
+      { command: bigCommand, cwd: process.cwd() },
+      "full",
+    );
+    expect(command.reply).toEqual({ id: "approval-refused", result: { decision: "decline" } });
+    const commandChars = JSON.stringify(
+      {
+        method: "item/commandExecution/requestApproval",
+        workspace: process.cwd(),
+        environmentId: null,
+        reason: null,
+        command: bigCommand,
+        cwd: process.cwd(),
+      },
+      null,
+      2,
+    ).length;
+    expect(command.error).toContain(`review details (${commandChars} characters)`);
+  });
+
+  it("keeps the access refusals ahead of an oversized approval (#651)", async () => {
+    const readonly = await refusal(
+      "item/fileChange/requestApproval",
+      { changes: [bigChange] },
+      {},
+      "readonly",
+    );
+    expect(readonly.error).toContain("readonly access forbids sandbox escalation");
+    expect(readonly.error).not.toContain("review limit");
+    const sandboxed = await refusal(
+      "item/commandExecution/requestApproval",
+      { command: "pwd", cwd: process.cwd() },
+      { command: bigCommand, cwd: process.cwd() },
+      "workspace_write",
+    );
+    expect(sandboxed.error).toContain("workspace_write access cannot grant an unsandboxed command");
+    expect(sandboxed.error).not.toContain("review limit");
+  });
+
+  it.each([
+    ["a credential-named path", { path: ".env", kind: { type: "add" }, diff: "+safe\n" }],
+    [
+      "credential-shaped content",
+      { path: "smoke.txt", kind: { type: "add" }, diff: "+sk-proj-" + "x".repeat(40) },
+    ],
+  ] as const)("presents %s inside the workspace for approval (INV-146)", async (_case, change) => {
+    const peer = approvalPeer("item/fileChange/requestApproval", "approval-exact", {
+      changes: [change],
+    });
+    const run = startApprovalRun(peer);
+    const request = await observedRequest(run);
+    expect(JSON.stringify(request)).toContain(change.path);
+    expect(JSON.stringify(request)).toContain(change.diff.slice(1).trimEnd().slice(0, 8));
+    run.reply(answer(request, ["Approve once"]));
+    expect(await bounded(peer.wroteApproval)).toEqual({
+      id: "approval-exact",
+      result: { decision: "accept" },
+    });
+    await bounded(run.done);
+  });
 
   it("does not accept a late answer after cancellation", async () => {
     const peer = approvalPeer(

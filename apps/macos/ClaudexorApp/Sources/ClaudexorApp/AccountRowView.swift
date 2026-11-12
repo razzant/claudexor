@@ -84,9 +84,12 @@ struct AccountRowView: View {
         }
         var details: [AlignedRowDetail] = []
         details.append(quotaDetail)
-        // Model-scoped routing evidence: ordering facts, not readiness verdicts.
-        if let refusals = AccountsPresentation.refusalLine(row.refusalMarks) {
-            details.append(AlignedRowDetail(100, refusals, emphasis: .warning))
+        // Model-scoped routing evidence, never a readiness verdict.
+        if let refusals = AccountsPresentation.refusalLine(
+            row.refusalMarks, credentialUnusable: row.credentialUnusable) {
+            // The row's only statement of which model was refused, why and when,
+            // so it wraps instead of truncating; newest first when it is bounded.
+            details.append(AlignedRowDetail(100, refusals, emphasis: .warning, lineLimit: 3))
         }
         if let served = AccountsPresentation.lastServedLine(row.lastService) {
             details.append(AlignedRowDetail(101, served, emphasis: .secondary))
@@ -111,8 +114,9 @@ struct AccountRowView: View {
         return "\(summary)\n\(detail)"
     }
 
-    /// ONE compact quota detail: the worst window's used-% and its reset, as a
-    /// single-line string (the component enforces single-line + tail truncation).
+    /// ONE compact quota detail: the account-wide window's used-% and reset, or
+    /// a measured scoped fallback when no account-wide text window exists. The
+    /// component enforces single-line + tail truncation.
     private var quotaDetail: AlignedRowDetail {
         if let resourceStatus { return AlignedRowDetail(0, resourceStatus, emphasis: .secondary) }
         if row.quotaAvailabilityState == "exhausted" {
@@ -129,13 +133,23 @@ struct AccountRowView: View {
             }
             return AlignedRowDetail(0, text, emphasis: .warning)
         }
-        if let window = row.worstWindow, let pct = row.worstPercent {
+        if let window = row.compactWindow, let ratio = window.usedRatio {
+            let pct = Int((ratio * 100).rounded())
             var text = "\(pct)% used"
+            let models = window.appliesToModels ?? []
+            let scope = models.isEmpty ? nil : QuotaPresentation.modelScopeLabel(models)
+            if let scope {
+                if window.freshness != "fresh" { text = "Last known: " + text }
+                text += " · \(scope)"
+            }
             if let reset = AccountResourcePresentation.compactResetDate(window.resetsAt) { text += " · \(reset)" }
-            if let scoped = row.scopedQuotaLabel { text += " · \(scoped)" }
+            if let scoped = row.scopedQuotaLabel, scoped != scope {
+                text += " · \(scoped)"
+            }
             return AlignedRowDetail(
                 0, text,
-                emphasis: pct >= 90 || row.scopedQuotaLabel != nil ? .warning : .secondary,
+                emphasis: pct >= 90 || !row.quotaGroups.flatMap(\.scopedExhaustions).isEmpty
+                    ? .warning : .secondary,
                 monospacedDigit: true)
         }
         if let scoped = row.scopedQuotaLabel {

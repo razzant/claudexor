@@ -13,9 +13,11 @@ const roots: string[] = [];
 const logs: EventLog[] = [];
 
 afterEach(() => {
+  // This test's folders, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const log of logs.splice(0)) log.dispose();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+  for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function log(runId: string, taskId: string): { eventLog: EventLog; path: string } {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-root-ledger-")));

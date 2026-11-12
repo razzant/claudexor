@@ -5,8 +5,11 @@
  * state lives here.
  */
 import {
+  QUOTA_FRESHNESS_TTL_MS,
   REACTIVE_COOLDOWN_SOURCE,
+  REOPENING_UNKNOWN_COOLDOWN_ID,
   legacyV320QuotaSource,
+  quotaWindowFreshness,
   quotaSourceTraits,
   quotaSnapshotIdentity,
   quotaConstraintIdentity,
@@ -24,18 +27,29 @@ import { hashJson } from "@claudexor/util";
 
 /** The reactive vendor-limit cooldown snapshot for a harness event: the
  * existing subject's constraints minus the superseded/expired cooldown, plus
- * the new bounded cooldown window. Pure: the registry finds `existing`. */
+ * the new bounded cooldown window. Pure: it only reads the snapshots it is handed. */
 export function reactiveCooldownSnapshot(
   input: {
     harness: string;
     credentialRoute: CredentialRoute;
     event: HarnessEvent;
     source: QuotaSource;
-    existing: QuotaSnapshot | undefined;
+    /** The registry's current snapshots; this subject's own cooldown record is extended. */
+    current: Iterable<QuotaSnapshot>;
   },
   now: Date,
 ): QuotaSnapshot {
-  const { harness, credentialRoute, event, source, existing } = input;
+  const { harness, credentialRoute, event, source } = input;
+  // The event's profile stamp scopes the cooldown to ITS subject (round-11):
+  // a profiled limit never cools the default subject down (or vice versa).
+  const profileId = event.credential_profile_id ?? null;
+  const existing = [...input.current].find(
+    (snapshot) =>
+      snapshot.subject.harness === harness &&
+      snapshot.subject.credential_route === credentialRoute &&
+      (snapshot.subject.subject_id ?? null) === profileId &&
+      snapshot.source === source,
+  );
   const reset = event.rate_limit?.resets_at ?? null;
   const delay = event.rate_limit?.retry_delay_ms ?? null;
   // A day-granular vendor reset (A1 payload) bounds the cooldown at end-of-day UTC.
@@ -43,9 +57,14 @@ export function reactiveCooldownSnapshot(
     reset ??
     vendorResetDayCooldownEnd(event.payload) ??
     new Date(now.getTime() + (typeof delay === "number" ? delay : 5 * 60_000)).toISOString();
-  const constraintId = event.rate_limit?.constraint_id
-    ? `cooldown:${event.rate_limit.constraint_id}`
-    : "cooldown";
+  // #558: a usage refusal with no reopening time keeps its provenance in the
+  // cooldown's own engine-owned identity: no usage or reset is invented for it.
+  const constraintId =
+    event.rate_limit?.reopening === "unknown"
+      ? REOPENING_UNKNOWN_COOLDOWN_ID
+      : event.rate_limit?.constraint_id
+        ? `cooldown:${event.rate_limit.constraint_id}`
+        : "cooldown";
   return {
     subject: existing?.subject ?? {
       harness,
@@ -68,6 +87,9 @@ export function reactiveCooldownSnapshot(
         ...(event.rate_limit?.applies_to_models !== undefined
           ? { applies_to_models: event.rate_limit.applies_to_models }
           : {}),
+        ...(event.rate_limit?.applies_to_model_prefixes
+          ? { applies_to_model_prefixes: event.rate_limit.applies_to_model_prefixes }
+          : {}),
         ...(event.rate_limit?.applies_to_request_kinds
           ? { applies_to_request_kinds: event.rate_limit.applies_to_request_kinds }
           : {}),
@@ -87,12 +109,15 @@ const MAX_SNAPSHOT_AGE_MS = 24 * 60 * 60_000;
 /** Freshness-annotated snapshots with expired (>24h) observations pruned.
  * An old observation whose constraint still EXTENDS into the future (a
  * weekly cooldown/reset seen once) is kept and stale-marked: pruning it
- * would hide a live cap from both the footer and the router's ledger. */
+ * would hide a live cap from both the footer and the router's ledger.
+ * `age` is `staleAt` for display/demand; admission passes `observationStaleAt`
+ * and judges each window's own reset at its decision (quotaWindowFreshness). */
 export function activeQuotaSnapshots(
   snapshots: readonly QuotaSnapshot[],
   now: number,
+  age: (snapshot: QuotaSnapshot, now: number) => QuotaSnapshot = staleAt,
 ): QuotaSnapshot[] {
-  return activeRawQuotaSnapshots(snapshots, now).map((snapshot) => staleAt(snapshot, now));
+  return activeRawQuotaSnapshots(snapshots, now).map((snapshot) => age(snapshot, now));
 }
 
 /** Passive display projection. Apply the SAME aging rule to each singleton
@@ -105,7 +130,7 @@ export function activeQuotaSnapshotsWithConstraintFreshness(
     ...staleAt(snapshot, now),
     constraints: snapshot.constraints.map((constraint) => ({
       ...constraint,
-      freshness: staleAt({ ...snapshot, constraints: [constraint] }, now).freshness,
+      freshness: quotaWindowFreshness(snapshot, constraint, now),
     })),
   }));
 }
@@ -130,7 +155,7 @@ function activeRawQuotaSnapshots(
     });
 }
 
-export const QUOTA_FRESHNESS_TTL_MS = 5 * 60_000;
+export { QUOTA_FRESHNESS_TTL_MS };
 
 /** Same quota EVIDENCE: everything but the observation time (a freshness flip
  * is evidence). A poll that only re-observed unchanged evidence keeps the fresh
@@ -161,6 +186,11 @@ export function withoutSupersededQuotaConstraints(
     return existing;
   }
   const constraints = existing.constraints.filter((constraint) => {
+    // A usage refusal with no reopening time (#558) outlives every read
+    // (#318): an empty, unknown or measured window does not show that the
+    // refused usage or credits returned. Only its own bounded recheck
+    // (`cooldown_until`, which no read moves) ends the block.
+    if (constraint.id === REOPENING_UNKNOWN_COOLDOWN_ID) return true;
     // A generic refusal retained no window identity. A successful recognized
     // read permits the next requested attempt, including unknown/empty quota;
     // it does not promise that the provider will accept that attempt. Its
@@ -363,12 +393,24 @@ export function legacyV320Snapshot(snapshot: QuotaSnapshot): QuotaSnapshot {
   };
 }
 
+/** Aggregate freshness: stale once the observation TTL passes or ANY window's
+ * reset is reached (display, demand and journal signatures). */
 export function staleAt(snapshot: QuotaSnapshot, now: number): QuotaSnapshot {
+  const aged = observationStaleAt(snapshot, now);
+  if (aged.freshness !== "fresh") return aged;
+  const resetExpired = snapshot.constraints.some(
+    (constraint) => quotaWindowFreshness(snapshot, constraint, now) !== "fresh",
+  );
+  return resetExpired ? { ...snapshot, freshness: "stale" } : snapshot;
+}
+
+/** The snapshot-wide part of `staleAt` only: raw label and observation TTL.
+ * A sibling window's elapsed reset does not age the other windows. */
+export function observationStaleAt(snapshot: QuotaSnapshot, now: number): QuotaSnapshot {
   if (snapshot.freshness !== "fresh") return snapshot;
   const observed = Date.parse(snapshot.observed_at);
-  const resetExpired = snapshot.constraints.some((constraint) => resetExpiredAt(constraint, now));
   const tooOld = !Number.isFinite(observed) || now - observed > QUOTA_FRESHNESS_TTL_MS;
-  return resetExpired || tooOld ? { ...snapshot, freshness: "stale" } : snapshot;
+  return tooOld ? { ...snapshot, freshness: "stale" } : snapshot;
 }
 
 /** The instant at which a fresh snapshot stops satisfying primary demand: its

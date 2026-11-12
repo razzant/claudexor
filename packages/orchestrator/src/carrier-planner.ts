@@ -26,7 +26,10 @@ import {
   type EvidenceIndex,
   type EvidenceIndexSources,
 } from "./continuation-evidence.js";
-import { collectEvidenceIndexInput } from "./continuation-evidence-io.js";
+import {
+  collectEvidenceIndexInput,
+  keepCompleteRetainedOutput,
+} from "./continuation-evidence-io.js";
 
 export type CarrierPreference = "auto" | "packet";
 
@@ -76,8 +79,11 @@ export interface CarrierIo {
   /** Sources of the evidence index (the run dir, the work order, admitted steering). */
   evidence: EvidenceIndexSources;
   targetCwd: string;
-  /** In-memory facts the loop already holds (the collector reads the rest from the run dir). */
-  retainedOutput?: string;
+  /** In-memory facts the loop already holds (the collector reads the rest from the run dir);
+   * a reader is called only when the ladder reaches the packet rung. */
+  retainedOutput?: string | (() => string);
+  /** Where the packet keeps the complete retained output its bounded section cuts. */
+  retainedOutputFile?: string;
   diffStat?: string | null;
   completed?: boolean;
 }
@@ -175,11 +181,15 @@ export async function prepareCarrier(
 function preparePacket(io: CarrierIo): CarrierPrepared {
   const input = collectEvidenceIndexInput(io.evidence, {
     cause: io.facts.cause,
-    retainedOutput: io.retainedOutput ?? "",
+    retainedOutput:
+      typeof io.retainedOutput === "function" ? io.retainedOutput() : (io.retainedOutput ?? ""),
     diffStat: io.diffStat ?? null,
     completed: io.completed,
   });
-  return { carrier: "packet", packet: buildEvidenceIndex(input) };
+  return {
+    carrier: "packet",
+    packet: buildEvidenceIndex(keepCompleteRetainedOutput(input, io.retainedOutputFile)),
+  };
 }
 
 /** Locate through the adapter: the refreshed capsule, "miss", or "unverified"

@@ -1,10 +1,16 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { CursorStatusObservation } from "./auth.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { runCapture } from "@claudexor/core";
+import {
+  CURSOR_STATUS_TIMEOUT_MS,
+  probeCursorNativeAuth,
+  type CursorStatusObservation,
+} from "./auth.js";
 import { cursorProfileRunEnv } from "./profile.js";
 import {
+  CURSOR_PINNED_STATUS_WAIT_MS,
   CURSOR_STATUS_LAST_POSITIVE_MS,
   CURSOR_STATUS_REUSE_MS,
   createCursorStatusCoordinator,
@@ -34,7 +40,7 @@ afterEach(() => {
   if (priorRoot === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
   else process.env.CLAUDEXOR_CONFIG_DIR = priorRoot;
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 const rowHome = (id: string) => join(root, "profiles", `cursor-${id}`);
 const rowA = () => cursorProfileRunEnv(rowHome("a"));
 const rowB = () => cursorProfileRunEnv(rowHome("b"));
@@ -51,18 +57,20 @@ function harness(answers: Array<CursorStatusObservation | ReturnType<typeof defe
   const clock = { now: T0, wallOffset: 0, mutating: false };
   const calls: EnvMap[] = [];
   const signals: Array<AbortSignal | undefined> = [];
+  const budgets: number[] = [];
   const coordinator = createCursorStatusCoordinator({
     monotonicMs: () => clock.now,
     wallMs: () => clock.now + clock.wallOffset,
     mutating: () => clock.mutating,
-    probe: async (env, signal) => {
+    probe: async (env, signal, budgetMs) => {
       calls.push(env ?? {});
       signals.push(signal);
+      budgets.push(budgetMs);
       const next = answers.shift() ?? { kind: "unknown", error: "no scripted answer" };
       return "promise" in next ? next.promise : next;
     },
   });
-  return { coordinator, calls, signals, clock };
+  return { coordinator, calls, signals, budgets, clock };
 }
 
 describe("Cursor status coordinator (#363)", () => {
@@ -76,8 +84,11 @@ describe("Cursor status coordinator (#363)", () => {
     expect(await first).toMatchObject({ kind: "authenticated", email: "b@example.com" });
     expect(await second).toMatchObject({ kind: "authenticated" });
     expect(h.calls).toHaveLength(1);
-    // The shared child never receives a single caller's abort signal.
-    expect(h.signals).toEqual([undefined]);
+    // The shared child runs under the coordinator's own signal, never a
+    // single caller's, and an answered child is not stopped (#532).
+    expect(h.signals).toHaveLength(1);
+    expect(h.signals[0]).toBeInstanceOf(AbortSignal);
+    expect(h.signals[0]?.aborted).toBe(false);
   });
 
   it("reuses a positive answer for the bounded window with its original instant", async () => {
@@ -334,5 +345,269 @@ describe("Cursor status coordinator (#363)", () => {
     await h.coordinator.status(hostLike);
     await h.coordinator.status(hostLike);
     expect(h.calls).toHaveLength(2);
+  });
+});
+
+describe("each caller waits on its own budget; the child lives while one still waits (#532)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const PINNED = { pinned: true } as const;
+  const ABORTED: CursorStatusObservation = {
+    kind: "unknown",
+    error: "cursor-agent status probe aborted",
+  };
+  const unanswered = (seconds: number): CursorStatusObservation => ({
+    kind: "unknown",
+    error: `cursor-agent status did not answer within ${seconds}s; login state unknown`,
+    timedOut: true,
+  });
+  const watch = <T>(promise: Promise<T>) => {
+    const state = { settled: false };
+    void promise.then(() => (state.settled = true));
+    return state;
+  };
+
+  it("an explicit pin keeps waiting for the same child past the ordinary budget and takes its answer", async () => {
+    const pending = deferred();
+    const h = harness([pending]);
+    const pin = h.coordinator.status(rowA(), undefined, PINNED);
+    const state = watch(pin);
+    await vi.advanceTimersByTimeAsync(CURSOR_STATUS_TIMEOUT_MS + 1_000);
+    expect(state.settled).toBe(false);
+    expect(h.signals[0]?.aborted).toBe(false);
+    pending.resolve({ kind: "authenticated", email: "a@example.com" });
+    expect(await pin).toMatchObject({ kind: "authenticated", email: "a@example.com" });
+    expect(h.calls).toHaveLength(1);
+    // The shared child is bounded by the pinned wait, not by one caller.
+    expect(h.budgets).toEqual([CURSOR_PINNED_STATUS_WAIT_MS]);
+  });
+
+  it("an ordinary caller still decides at the ordinary budget, with its last positive, while a pin keeps the child", async () => {
+    const pending = deferred();
+    const h = harness([{ kind: "authenticated" }, pending]);
+    await h.coordinator.status(rowA());
+    h.clock.now = T0 + CURSOR_STATUS_REUSE_MS;
+    const ordinary = h.coordinator.status(rowA());
+    const pin = h.coordinator.status(rowA(), undefined, PINNED);
+    await vi.advanceTimersByTimeAsync(CURSOR_STATUS_TIMEOUT_MS);
+    expect(await ordinary).toEqual({
+      ...unanswered(10),
+      lastPositive: { observedAt: new Date(T0).toISOString(), ageMs: CURSOR_STATUS_REUSE_MS },
+    });
+    expect(h.signals[1]?.aborted).toBe(false);
+    pending.resolve({ kind: "authenticated" });
+    expect(await pin).toMatchObject({ kind: "authenticated" });
+    expect(h.calls).toHaveLength(2);
+  });
+
+  it("an ordinary caller alone stops its child at the ordinary budget, as before", async () => {
+    const pending = deferred();
+    const h = harness([pending, { kind: "authenticated" }]);
+    const ordinary = h.coordinator.status(rowA());
+    await vi.advanceTimersByTimeAsync(CURSOR_STATUS_TIMEOUT_MS - 1);
+    expect(h.signals[0]?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await ordinary).toEqual(unanswered(10));
+    expect(h.signals[0]?.aborted).toBe(true);
+    // A stopped child is never shared again: the next caller asks anew.
+    expect(await h.coordinator.status(rowA())).toMatchObject({ kind: "authenticated" });
+    expect(h.calls).toHaveLength(2);
+  });
+
+  it("a pin that is never answered gives up at the pinned bound and stops the child", async () => {
+    const h = harness([deferred()]);
+    const pin = h.coordinator.status(rowA(), undefined, PINNED);
+    const state = watch(pin);
+    await vi.advanceTimersByTimeAsync(CURSOR_PINNED_STATUS_WAIT_MS - 1);
+    expect(state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pin).toEqual(unanswered(120));
+    expect(h.signals[0]?.aborted).toBe(true);
+  });
+
+  it("one caller's cancellation ends only its own wait; the child stops when no caller waits", async () => {
+    const h = harness([deferred()]);
+    const first = new AbortController();
+    const second = new AbortController();
+    const a = h.coordinator.status(rowA(), first.signal, PINNED);
+    const b = h.coordinator.status(rowA(), second.signal, PINNED);
+    await vi.advanceTimersByTimeAsync(20_000);
+    first.abort();
+    expect(await a).toEqual(ABORTED);
+    expect(h.signals[0]?.aborted).toBe(false);
+    second.abort();
+    expect(await b).toEqual(ABORTED);
+    expect(h.signals[0]?.aborted).toBe(true);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("a credential mutation during a pin's wait answers it unknown at once and stops the child", async () => {
+    const pending = deferred();
+    const h = harness([pending, { kind: "authenticated" }]);
+    const pin = h.coordinator.status(rowA(), undefined, PINNED);
+    await vi.advanceTimersByTimeAsync(30_000);
+    h.coordinator.clear();
+    expect(await pin).toEqual(SUPERSEDED);
+    expect(h.signals[0]?.aborted).toBe(true);
+    // The old child's late positive is not kept: the next caller asks anew.
+    pending.resolve({ kind: "authenticated", email: "old@example.com" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await h.coordinator.status(rowA())).toEqual({
+      kind: "authenticated",
+      observedAt: new Date(T0).toISOString(),
+    });
+    expect(h.calls).toHaveLength(2);
+  });
+
+  it("a logged-out answer during a pin's wait is the vendor's answer and revokes the last positive", async () => {
+    const pending = deferred();
+    const h = harness([{ kind: "authenticated" }, pending, TIMED_OUT]);
+    await h.coordinator.status(rowA());
+    h.clock.now = T0 + CURSOR_STATUS_REUSE_MS;
+    const pin = h.coordinator.status(rowA(), undefined, PINNED);
+    await vi.advanceTimersByTimeAsync(40_000);
+    pending.resolve({ kind: "loggedOut" });
+    expect(await pin).toEqual({ kind: "loggedOut" });
+    expect(await h.coordinator.status(rowA())).toEqual(TIMED_OUT);
+  });
+
+  it("an ordinary caller joining a pin's child keeps its own budget from when it asked", async () => {
+    const pending = deferred();
+    const h = harness([pending]);
+    const pin = h.coordinator.status(rowA(), undefined, PINNED);
+    await vi.advanceTimersByTimeAsync(50_000);
+    const ordinary = h.coordinator.status(rowA());
+    const state = watch(ordinary);
+    await vi.advanceTimersByTimeAsync(CURSOR_STATUS_TIMEOUT_MS - 1);
+    expect(state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await ordinary).toEqual(unanswered(10));
+    expect(h.signals[0]?.aborted).toBe(false);
+    pending.resolve({ kind: "authenticated" });
+    expect(await pin).toMatchObject({ kind: "authenticated" });
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("an unshared env gives a pin the pinned budget on its own child", async () => {
+    const h = harness([{ kind: "authenticated" }, { kind: "authenticated" }]);
+    const hostLike = { HOME: "/Users/someone", AGENT_CLI_CREDENTIAL_STORE: "file" };
+    const controller = new AbortController();
+    await h.coordinator.status(hostLike, controller.signal, PINNED);
+    await h.coordinator.status(hostLike, controller.signal);
+    expect(h.budgets).toEqual([CURSOR_PINNED_STATUS_WAIT_MS, CURSOR_STATUS_TIMEOUT_MS]);
+    expect(h.signals).toEqual([controller.signal, controller.signal]);
+  });
+});
+
+describe("a read no caller waits for any more never repopulates the cache (#532)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const ABORTED: CursorStatusObservation = {
+    kind: "unknown",
+    error: "cursor-agent status probe aborted",
+  };
+
+  it("a positive that lands after its only waiter cancelled leaves a newer logged-out answer in force", async () => {
+    const old = deferred();
+    const h = harness([old, { kind: "loggedOut" }, { kind: "authenticated" }]);
+    const cancel = new AbortController();
+    const first = h.coordinator.status(rowA(), cancel.signal);
+    cancel.abort();
+    expect(await first).toEqual(ABORTED);
+    expect(h.signals[0]?.aborted).toBe(true);
+    expect(await h.coordinator.status(rowA())).toEqual({ kind: "loggedOut" });
+    old.resolve({ kind: "authenticated", email: "old@example.com" });
+    await vi.advanceTimersByTimeAsync(0);
+    // Nothing was kept from the abandoned read: the store is asked again.
+    expect(await h.coordinator.status(rowA())).toEqual({
+      kind: "authenticated",
+      observedAt: new Date(T0).toISOString(),
+    });
+    expect(h.calls).toHaveLength(3);
+  });
+
+  it.each([
+    { label: "logged out", newer: { kind: "loggedOut" } as CursorStatusObservation },
+    {
+      label: "signed in as another account",
+      newer: { kind: "authenticated", email: "new@example.com" } as CursorStatusObservation,
+    },
+  ])(
+    "a positive that lands after its only waiter timed out never replaces a newer read ($label)",
+    async ({ newer }) => {
+      const old = deferred();
+      const h = harness([old, newer, TIMED_OUT]);
+      const first = h.coordinator.status(rowA());
+      await vi.advanceTimersByTimeAsync(CURSOR_STATUS_TIMEOUT_MS);
+      expect(await first).toMatchObject({ kind: "unknown", timedOut: true });
+      expect(h.signals[0]?.aborted).toBe(true);
+      h.clock.now = T0 + 1;
+      const fresh = await h.coordinator.status(rowA());
+      expect(fresh).toMatchObject({ kind: newer.kind });
+      old.resolve({ kind: "authenticated", email: "old@example.com" });
+      await vi.advanceTimersByTimeAsync(0);
+      // A newer positive is still what reuse serves; after a newer logout the
+      // store is asked again and the late positive is no last positive either.
+      expect(await h.coordinator.status(rowA())).toEqual(
+        newer.kind === "authenticated" ? fresh : TIMED_OUT,
+      );
+      expect(h.calls).toHaveLength(newer.kind === "authenticated" ? 2 : 3);
+    },
+  );
+
+  it("a logged-out answer that lands after its only waiter left still revokes the last positive", async () => {
+    const late = deferred();
+    const h = harness([{ kind: "authenticated" }, late, TIMED_OUT]);
+    await h.coordinator.status(rowA());
+    h.clock.now = T0 + CURSOR_STATUS_REUSE_MS;
+    const first = h.coordinator.status(rowA());
+    await vi.advanceTimersByTimeAsync(CURSOR_STATUS_TIMEOUT_MS);
+    expect(await first).toMatchObject({
+      kind: "unknown",
+      lastPositive: { ageMs: CURSOR_STATUS_REUSE_MS },
+    });
+    late.resolve({ kind: "loggedOut" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await h.coordinator.status(rowA())).toEqual(TIMED_OUT);
+  });
+
+  it("through the real status probe, a vendor answer that finishes despite its cancel is not kept", async () => {
+    vi.useRealTimers();
+    let calls = 0;
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const capture: typeof runCapture = async (_bin, _args, opts) => {
+      const call = ++calls;
+      // The first read completes its answer after the coordinator stopped it.
+      if (call === 1) await released;
+      opts?.onExit?.(0, null);
+      const verdict = call === 2 ? { authenticated: false } : { authenticated: true };
+      return { code: 0, signal: null, stdout: JSON.stringify(verdict), stderr: "" };
+    };
+    const coordinator = createCursorStatusCoordinator({
+      probe: (env, signal, budgetMs) => probeCursorNativeAuth(env, signal, capture, budgetMs),
+      monotonicMs: () => T0,
+      wallMs: () => T0,
+      mutating: () => false,
+    });
+    const cancel = new AbortController();
+    const first = coordinator.status(rowA(), cancel.signal);
+    cancel.abort();
+    expect(await first).toEqual(ABORTED);
+    expect(await coordinator.status(rowA())).toEqual({ kind: "loggedOut" });
+    release();
+    // A macrotask boundary: the late answer's whole promise chain has settled.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toBe(2);
+    expect(await coordinator.status(rowA())).toMatchObject({ kind: "authenticated" });
+    expect(calls).toBe(3);
   });
 });

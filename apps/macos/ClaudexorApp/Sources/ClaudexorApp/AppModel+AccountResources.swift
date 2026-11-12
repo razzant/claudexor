@@ -20,19 +20,31 @@ extension AppModel {
             isCurrent: { [weak self] in self?.isCurrentGateway(client, at: location) == true })
     }
 
+    /// An app-owned credential write the engine acknowledged (a stored key; a
+    /// profile enabled, disabled or removed) changes that account's binding even
+    /// when the display read that would show it fails: a reply begun before it
+    /// cannot install another key, while a refresh begun after it still can.
+    func noteAccountResourceBindingWrite(_ target: AccountTarget, at location: ExecutionLocationID) {
+        accountResourceBindingChanges[location, default: [:]][target, default: 0] &+= 1
+    }
+
     func accountResourceConnection(at location: ExecutionLocationID) -> AccountResourceConnection? {
         guard let requestClient = gateway(for: location) else { return nil }
         return AccountResourceConnection(location: location, client: requestClient,
             isCurrent: { [weak self] in self?.isCurrentGateway(requestClient, at: location) == true },
-            displayGeneration: { [weak self] in self?.accountsQuotaDisplayGenerations[location] ?? 0 },
-            accept: { [weak self] response, target, generation in
+            observe: { [weak self] target in
+                AccountRequestObservation(displayGeneration: self?.accountsQuotaDisplayGenerations[location] ?? 0,
+                                          bindingChanges: self?.accountResourceBindingChanges[location]?[target] ?? 0)
+            },
+            accept: { [weak self] response, target, observation in
                 guard let self else { return }
                 // Reset/refresh responses retain all accounts server-side. Only
                 // the addressed slice belongs to this request in the UI; never
                 // replace another account's newer display with that older copy.
                 let previous = self.quotaResponse(at: location)
                 let merged = response.replacingAccount(target, in: previous,
-                    preferPreviousOnTie: (self.accountsQuotaDisplayGenerations[location] ?? 0) != generation)
+                    reboundSinceRequest: (self.accountResourceBindingChanges[location]?[target] ?? 0) != observation.bindingChanges,
+                    preferPreviousOnTie: (self.accountsQuotaDisplayGenerations[location] ?? 0) != observation.displayGeneration)
                 self.accountsNextUpAuthorityFresh[location] = false
                 guard merged != previous else { return }
                 self.storeAccountsQuotaSnapshot(merged, at: location)

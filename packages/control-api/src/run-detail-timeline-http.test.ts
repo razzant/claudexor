@@ -14,7 +14,7 @@ const SECRET = `sk-ant-${"b".repeat(40)}`;
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const text = (i: number) => `display ${i} · ранний 🌿\n`;
 
@@ -157,10 +157,11 @@ describe("GET /v2/runs/:id bounded timeline over a long event log", () => {
       expect(first.body.timeline[2]).toMatchObject({ detail: text(1001), textKind: "message" });
       expect(first.body.timeline.at(-1)).toMatchObject({
         type: "route.fallback.started",
-        title: "to [redacted]",
+        title: `to ${SECRET}`,
         severity: "warning",
       });
-      expect(JSON.stringify(first.body)).not.toContain(SECRET);
+      // The projection shows the journaled event text exactly (INV-146).
+      expect(JSON.stringify(first.body)).toContain(SECRET);
       expect(first.body.budget).toMatchObject({
         spendUsd: 1.25,
         source: "events",

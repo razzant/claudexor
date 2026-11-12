@@ -11,7 +11,7 @@ const tempRoots: string[] = [];
 
 afterEach(() => {
   for (const path of tempRoots.splice(0)) rmSync(path, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("portable Agent Skill, Copilot plugin, and MCP distribution", () => {
   it("keeps the portable skill aligned with the real MCP and generated-skill safety surface", async () => {
@@ -129,7 +129,7 @@ describe("portable Agent Skill, Copilot plugin, and MCP distribution", () => {
         expect(portable).toContain(reference);
       }
       for (const safety of [
-        "NEVER paste live credentials into prompts",
+        "Credentials Claudexor itself uses belong in",
         "NEVER auto-answer `claudexor decision`",
       ]) {
         expect(generated).toContain(safety);

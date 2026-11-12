@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { Intent } from "@claudexor/schema";
+import { noProjectRepoRoot } from "@claudexor/util";
 import { RequestRequirementsError, RequestRequirementsResolver } from "./requestRequirements.js";
 
 describe("RequestRequirementsResolver browser preflight", () => {
@@ -260,5 +262,54 @@ describe("adapterAccess native policy", () => {
     expect(resolver.adapterAccess("implement", "git_patch_envelope", "workspace_write")).toBe(
       "readonly",
     );
+  });
+});
+
+describe("RequestRequirementsResolver project-read admission (#133)", () => {
+  const resolver = new RequestRequirementsResolver();
+  const remote = (enabledIntents: Intent[], readFiles: boolean) => ({
+    id: "openrouter",
+    enabledIntents,
+    manifest: { capabilities: { read_files: readFiles } },
+  });
+  const project = { repoRoot: "/work/project" };
+
+  it("refuses a project Ask on a route that may answer but cannot read files", () => {
+    expect(resolver.projectReadRefusal("explain", project, remote(["explain"], false))).toBe(
+      "openrouter (cannot read project files: ask without a project or choose a harness that reads files)",
+    );
+  });
+
+  it.each(["plan", "spec"] as const)("refuses a project %s the same way (#137)", (intent) => {
+    expect(resolver.projectReadRefusal(intent, project, remote([intent], false))).toBe(
+      "openrouter (cannot read project files: ask without a project or choose a harness that reads files)",
+    );
+  });
+
+  it("admits work without a project, a file-reading route, and an intent that reads nothing", () => {
+    const noProject = { repoRoot: noProjectRepoRoot() };
+    for (const intent of ["explain", "plan", "spec"] as const) {
+      expect(resolver.projectReadRefusal(intent, noProject, remote([intent], false))).toBeNull();
+      expect(resolver.projectReadRefusal(intent, project, remote([intent], true))).toBeNull();
+    }
+    // A patch producer's packet carries what it reads; its implement is untouched.
+    expect(
+      resolver.projectReadRefusal("implement", project, remote(["implement"], false)),
+    ).toBeNull();
+  });
+
+  it("leaves a route whose doctor does not enable explain to the capability refusal", () => {
+    expect(resolver.projectReadRefusal("explain", project, remote(["plan"], false))).toBeNull();
+  });
+});
+
+describe("RequestRequirementsResolver convergence rounds (#147)", () => {
+  const resolver = new RequestRequirementsResolver();
+
+  it("asks a patch-envelope producer for its candidate intent, every other harness for repair", () => {
+    const raw = { implementationTransport: "git_patch_envelope" as const };
+    const native = { implementationTransport: "workspace" as const };
+    expect(resolver.convergenceIntent(raw, "implement")).toBe("implement");
+    expect(resolver.convergenceIntent(native, "implement")).toBe("repair");
   });
 });

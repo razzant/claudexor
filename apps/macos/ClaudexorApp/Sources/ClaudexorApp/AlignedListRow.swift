@@ -31,21 +31,27 @@ enum AlignedRowEmphasis: Equatable {
     }
 }
 
-/// One detail line under a row's title. ALWAYS rendered single-line with tail
-/// truncation; the full (possibly multi-line) text is reachable via `.help`.
-/// The single-line collapse is the discipline call sites cannot bypass.
+/// One detail line under a row's title. Rendered single-line with tail truncation
+/// unless its call site bounds a wrap inside the identity cell; the full (possibly
+/// multi-line) text is reachable via `.help`. The whitespace collapse is the
+/// discipline call sites cannot bypass.
 struct AlignedRowDetail: Equatable, Identifiable {
     let id: Int
     var text: String
     var emphasis: AlignedRowEmphasis = .secondary
     var monospacedDigit: Bool = false
+    /// Lines this detail may wrap to within its Grid cell, for a fact a single
+    /// truncated line would hide. It can never reach the trailing columns.
+    var lineLimit: Int = 1
 
     init(_ id: Int = 0, _ text: String,
-         emphasis: AlignedRowEmphasis = .secondary, monospacedDigit: Bool = false) {
+         emphasis: AlignedRowEmphasis = .secondary, monospacedDigit: Bool = false,
+         lineLimit: Int = 1) {
         self.id = id
         self.text = text
         self.emphasis = emphasis
         self.monospacedDigit = monospacedDigit
+        self.lineLimit = lineLimit
     }
 
     /// The rendered form: runs of whitespace (spaces, tabs, newlines) collapse to
@@ -115,8 +121,9 @@ struct AlignedRowIdentity: View {
                         .font(.caption2)
                         .foregroundStyle(detail.emphasis.style)
                         .modifier(MonospacedDigitIf(on: detail.monospacedDigit))
-                        .lineLimit(1)
+                        .lineLimit(detail.lineLimit)
                         .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: detail.lineLimit > 1)
                         .help(detail.text)
                 }
             }

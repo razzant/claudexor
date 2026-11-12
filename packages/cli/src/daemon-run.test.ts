@@ -31,6 +31,7 @@ import {
   mergeDaemonRunOutcome,
   waitForDaemonReady,
 } from "./daemon-run.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -473,7 +474,8 @@ describe("absence vs refusal discrimination (#93)", () => {
   let httpServer: HttpServer | null = null;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(realpathSync(tmpdir()), "cx-dr-"));
+    // Leave room for the canonical Unix socket under long private TMPDIR roots.
+    dir = mkdtempSync(join(realpathSync(tmpdir()), "d-"));
     prevConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     prevSock = process.env.CLAUDEXOR_DAEMON_SOCK;
     prevEntry = process.env.CLAUDEXOR_DAEMON_ENTRY;
@@ -482,22 +484,26 @@ describe("absence vs refusal discrimination (#93)", () => {
     recordEngineSkew(null);
   });
 
-  afterEach(async () => {
+  afterEachClosed(async () => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
-    if (socketServer) await new Promise<void>((r) => socketServer!.close(() => r()));
-    if (httpServer) await new Promise<void>((r) => httpServer!.close(() => r()));
+    // This test's servers, taken before their closes: a late close never reaches the next test's.
+    const [ownedSocket, ownedHttp] = [socketServer, httpServer];
     socketServer = null;
     httpServer = null;
-    if (prevConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
-    else process.env.CLAUDEXOR_CONFIG_DIR = prevConfigDir;
-    if (prevSock === undefined) delete process.env.CLAUDEXOR_DAEMON_SOCK;
-    else process.env.CLAUDEXOR_DAEMON_SOCK = prevSock;
-    if (prevEntry === undefined) delete process.env.CLAUDEXOR_DAEMON_ENTRY;
-    else process.env.CLAUDEXOR_DAEMON_ENTRY = prevEntry;
-    recordEngineSkew(null);
-    rmSync(dir, { recursive: true, force: true });
+    if (ownedSocket) await new Promise<void>((r) => ownedSocket.close(() => r()));
+    if (ownedHttp) await new Promise<void>((r) => ownedHttp.close(() => r()));
+    return () => {
+      if (prevConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prevConfigDir;
+      if (prevSock === undefined) delete process.env.CLAUDEXOR_DAEMON_SOCK;
+      else process.env.CLAUDEXOR_DAEMON_SOCK = prevSock;
+      if (prevEntry === undefined) delete process.env.CLAUDEXOR_DAEMON_ENTRY;
+      else process.env.CLAUDEXOR_DAEMON_ENTRY = prevEntry;
+      recordEngineSkew(null);
+      rmSync(dir, { recursive: true, force: true });
+    };
   });
 
   function writeDaemonFixture(controlApiPort: number): void {

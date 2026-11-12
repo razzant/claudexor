@@ -158,7 +158,8 @@
                 "exclusiveMinimum": 0
               },
               "example": {
-                "type": "string"
+                "type": "string",
+                "description": "Named cause and affected owner, such as a changed registration, unreadable row or pending recovery partition."
               }
             },
             "required": [
@@ -197,10 +198,21 @@
           "default": [],
           "description": "Standalone diff-review trees deleted (or would-be under dry_run)."
         },
+        "deleted_lanes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Number of orphan lane directories removed during this pass."
+        },
         "freed_bytes": {
           "type": "integer",
           "minimum": 0,
           "description": "Total bytes freed (or reclaimable under dry_run)."
+        },
+        "effects": {
+          "type": "string",
+          "const": "unknown",
+          "description": "Present only when a deletion committed and then stopped partway: freed_bytes is a lower bound and a later pass finishes that tree. Absent: freed_bytes counts this pass's deletions."
         },
         "errors": {
           "type": "array",

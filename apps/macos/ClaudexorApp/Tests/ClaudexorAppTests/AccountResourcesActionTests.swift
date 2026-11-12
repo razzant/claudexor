@@ -329,8 +329,11 @@ struct AccountResourcesActionTests {
         var displayed: ControlQuotaResponse? = try AccountResourcesFixtures.quota()
         var displayGeneration: UInt64 = 1
         let connection = AccountResourceConnection(location: .local, client: fixture.gateway(),
-            isCurrent: { true }, displayGeneration: { displayGeneration }, accept: { response, target, generation in
-                displayed = response.replacingAccount(target, in: displayed, preferPreviousOnTie: generation != displayGeneration)
+            isCurrent: { true }, observe: { _ in AccountRequestObservation(displayGeneration: displayGeneration) },
+            accept: { response, target, observation in
+                // The background read below keeps this account's key: not a rebinding.
+                displayed = response.replacingAccount(target, in: displayed, reboundSinceRequest: false,
+                                                      preferPreviousOnTie: observation.displayGeneration != displayGeneration)
             })
         let command = Task {
             if reset { await actions.startReset(AccountResourcesFixtures.request, label: "Reset", using: connection) }

@@ -157,7 +157,7 @@ struct AuthSheet: View {
                         setupConnectionPanel
                     }
                     if AuthSheetPresentation.showsGlobalApiKeyPanel(profileId: profileId, secretName: secretName),
-                       let secretName { apiKeyPanel(secretName) }
+                       let secretName { AuthSheetKeyAllowanceSection(family: family) { apiKeyPanel(secretName) } }
                     if !status.isEmpty {
                         Text(status)
                             .font(.caption)

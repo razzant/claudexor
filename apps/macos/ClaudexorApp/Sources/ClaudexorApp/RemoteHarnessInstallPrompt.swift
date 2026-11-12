@@ -1,58 +1,65 @@
 import ClaudexorKit
 import Foundation
 
-enum RemoteHarnessInstallVerification: String, Decodable, Equatable, Sendable {
-    case releaseVerified = "release_verified"
-    case deterministicOnly = "deterministic_only"
-    case humanObserved = "human_observed"
-}
-
-/// How confirmation binds the disclosed npm version, as declared by the
-/// remote CLI's dry-run. An older CLI omits it and rejects
-/// `install --vendor-version`; its plain `--yes` installs exactly the fixed
-/// version it disclosed. An unknown value is not decodable: no prompt.
-enum RemoteHarnessInstallVersionBinding: String, Decodable, Equatable, Sendable {
-    case vendorVersion = "vendor-version"
-}
-
-/// The CLI inside one immutable remote runtime closure (`versions/<id>`).
+/// The CLI inside one immutable remote runtime closure.
 func remoteRuntimeCLI(_ runtimeTarget: String) -> String {
     "~/.claudexor/remote/" + SSHCommandFactory.posixQuote(runtimeTarget) + "/bin/claudexor"
 }
 
-/// A pending remote harness install, awaiting the user's confirmation. The
-/// command/location/version fields are the remote CLI's own `--dry-run --json`
-/// disclosure verbatim (issue #89). Confirmation runs the SAME runtime closure
-/// that disclosed it, never the movable `current` pointer, and carries the
-/// selected npm version back when that CLI declares the binding, so neither a
-/// runtime switch nor a changed registry latest replaces what the user approved.
-/// Script installers have no version to bind.
+struct RemoteVendorCommand: Decodable, Equatable, Sendable {
+    struct Script: Decodable, Equatable, Sendable {
+        let url: String
+        let size: Int
+        let sha256: String
+    }
+    let binary: String
+    let args: [String]
+    let env: [String: String]
+    let script: Script?
+
+    var valid: Bool {
+        guard !binary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard let script else { return true }
+        return URL(string: script.url)?.scheme == "https"
+            && URL(string: script.url)?.host != nil && script.size > 0
+            && script.sha256.count == 64 && script.sha256.allSatisfy { $0.isHexDigit }
+    }
+
+    var disclosure: String {
+        let assignments = env.sorted { $0.key < $1.key }.map {
+            $0.key + "=" + SSHCommandFactory.posixQuote($0.value)
+        }
+        var text = (assignments + ([binary] + args).map(SSHCommandFactory.posixQuote)).joined(separator: " ")
+        if let script {
+            text += "\nScript: \(script.url) (\(script.size) bytes; SHA-256 \(script.sha256))"
+        }
+        return text
+    }
+}
+
+/// Projection of the engine's prepared maintenance receipt. Confirmation uses
+/// the same runtime; vendor-current is resolved at execution, never a local pin.
 struct RemoteHarnessInstallPrompt: Identifiable, Equatable {
     let lease: RemoteActionLease
     let harness: String
     let runtimeTarget: String
-    let command: String
-    let installLocation: String
-    let pinnedVersion: String?
-    let verification: RemoteHarnessInstallVerification
-    let versionBinding: RemoteHarnessInstallVersionBinding?
+    let commands: [RemoteVendorCommand]
+    let installationHome: String
+    let requestedVersion: String?
 
     var id: UUID { lease.token }
     var connectionID: UUID { lease.connectionID }
-
     var confirmedInstallCommand: String {
         var command = remoteRuntimeCLI(runtimeTarget) + " harness install "
             + SSHCommandFactory.posixQuote(harness)
-        if versionBinding == .vendorVersion, let pinnedVersion {
-            command += " --vendor-version " + SSHCommandFactory.posixQuote(pinnedVersion)
+        if let requestedVersion {
+            command += " --vendor-version " + SSHCommandFactory.posixQuote(requestedVersion)
         }
-        return command + " --yes"
+        return command + " --yes --json"
     }
 }
 
 extension AppModel {
-    /// A refused dry-run exits non-zero, so `execute` throws before its stdout
-    /// JSON can be decoded; the CLI repeats the refusal on stderr for this path.
     nonisolated static func harnessInstallPreparationFailure(
         _ error: Error, harness: String
     ) -> String? {
@@ -63,46 +70,33 @@ extension AppModel {
             : "\(vendor) was not installed: \(detail)"
     }
 
-    /// The remote CLI's `--dry-run --json` answer is the ONLY source of the
-    /// confirmation text. Strict: a non-disclosure payload (ok/dryRun false,
-    /// harness mismatch, empty command) yields nil and therefore no install.
+
     nonisolated static func parseHarnessInstallDisclosure(
-        _ data: Data,
-        lease: RemoteActionLease,
-        harness: String,
-        runtimeTarget: String
+        _ data: Data, lease: RemoteActionLease, harness: String, runtimeTarget: String
     ) -> RemoteHarnessInstallPrompt? {
         struct Disclosure: Decodable {
+            struct Target: Decodable { let kind: String; let version: String? }
             let ok: Bool
             let dryRun: Bool
             let harness: String
-            let command: String
-            let installLocation: String
-            let pinnedVersion: String?
-            let verification: RemoteHarnessInstallVerification
-            let versionBinding: RemoteHarnessInstallVersionBinding?
+            let target: Target
+            let installationHome: String
+            let commands: [RemoteVendorCommand]
         }
         guard let parsed = try? JSONDecoder().decode(Disclosure.self, from: data),
               parsed.ok, parsed.dryRun, parsed.harness == harness,
-              !parsed.command.isEmpty
+              !parsed.installationHome.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !parsed.commands.isEmpty, parsed.commands.allSatisfy(\.valid)
         else { return nil }
-        switch parsed.verification {
-        case .releaseVerified, .deterministicOnly:
-            guard parsed.pinnedVersion?.trimmingCharacters(
-                in: .whitespacesAndNewlines).isEmpty == false
-            else { return nil }
-        case .humanObserved:
-            // No version to bind: a declared binding contradicts the payload.
-            guard parsed.pinnedVersion == nil, parsed.versionBinding == nil else { return nil }
+        switch parsed.target.kind {
+        case "latest": guard parsed.target.version == nil else { return nil }
+        case "version":
+            guard parsed.target.version?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return nil }
+        default: return nil
         }
         return RemoteHarnessInstallPrompt(
-            lease: lease,
-            harness: harness,
-            runtimeTarget: runtimeTarget,
-            command: parsed.command,
-            installLocation: parsed.installLocation,
-            pinnedVersion: parsed.pinnedVersion,
-            verification: parsed.verification,
-            versionBinding: parsed.versionBinding)
+            lease: lease, harness: harness, runtimeTarget: runtimeTarget,
+            commands: parsed.commands, installationHome: parsed.installationHome,
+            requestedVersion: parsed.target.version)
     }
 }

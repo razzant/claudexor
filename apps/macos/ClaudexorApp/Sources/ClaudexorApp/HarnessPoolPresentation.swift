@@ -39,12 +39,105 @@ enum HarnessPoolPresentation {
     /// harness within the current subset. The result is re-ordered to follow
     /// `available` so the wire body is deterministic. Emptying the subset falls
     /// back to Auto (empty = auto, the same wire truth).
+    ///
+    /// A manual-only harness (#133) is never in `available` (Auto's set), so
+    /// selecting it appends it after the ordered members instead of dropping it:
+    /// from Auto the subset is Auto's harnesses plus the manual pick.
     static func toggling(_ family: String, pool: [String], available: [String]) -> [String] {
         var set = Set(isAuto(pool: pool) ? available : pool)
-        if set.contains(family) { set.remove(family) } else { set.insert(family) }
+        let adding = !set.contains(family)
+        if adding { set.insert(family) } else { set.remove(family) }
         // Deterministic order: available harnesses in their canonical order, then
-        // any stray ids not in `available` (defensive) in their original order.
-        return available.filter { set.contains($0) } + pool.filter { !available.contains($0) && set.contains($0) }
+        // ids outside `available` (manual lanes) in their original order.
+        let ordered = available.filter { set.contains($0) }
+            + pool.filter { !available.contains($0) && set.contains($0) }
+        return adding && !ordered.contains(family) ? ordered + [family] : ordered
+    }
+
+    /// How one harness can take part in the composer pool for the current
+    /// intent (#133). The server owns both inputs: `routableIntents` is the Auto
+    /// pool's eligibility and `enabledIntents` (the app's `HarnessInfo.intents`)
+    /// is explicit selection's. The app formats them; it never re-derives
+    /// readiness from health.
+    enum Lane: Equatable {
+        /// Auto may choose it; an explicit subset may include it.
+        case auto
+        /// Runs only when explicitly selected; Auto never chooses it. The
+        /// doctor's own reason says why.
+        case manualOnly(reason: String)
+        /// Project-scoped Ask or Plan on a harness whose manifest declares it cannot
+        /// read files: the engine refuses it before dispatch.
+        case cannotReadProjectFiles
+        /// Neither Auto nor an explicit selection can run it.
+        case unavailable(reason: String)
+
+        var isManualOnly: Bool {
+            if case .manualOnly = self { return true }
+            return false
+        }
+
+        /// Shown disabled in the main chip row, with this reason.
+        var unavailableReason: String? {
+            switch self {
+            case .unavailable(let reason): return reason
+            case .cannotReadProjectFiles: return HarnessPoolPresentation.cannotReadProjectFilesReason
+            case .auto, .manualOnly: return nil
+            }
+        }
+    }
+
+    static let cannotReadProjectFilesReason =
+        "Can't read project files. Ask without a project, or choose a harness that reads files."
+    static let manualOnlyTitle = "Manual only — Auto won't pick these"
+
+    /// Classify one harness for `intent`. Not enabled at all = unavailable with
+    /// the doctor's reason (as before); a project Ask or Plan on a declared
+    /// non-reader = refused; then Auto-eligible, else manual only.
+    static func lane(
+        label: String,
+        intent: String,
+        routableIntents: [String],
+        enabledIntents: [String],
+        readsFiles: Bool?,
+        projectScoped: Bool,
+        reasons: [String],
+        healthOk: Bool,
+        auth: String
+    ) -> Lane {
+        let reason = reasons.first
+            ?? (healthOk
+                ? "\(label) is not routable for \(intent). Fix auth/install status in Harness Doctor."
+                : auth)
+        guard routableIntents.contains(intent) || enabledIntents.contains(intent) else {
+            return .unavailable(reason: reason)
+        }
+        if intent == "explain" || intent == "plan", projectScoped, readsFiles == false {
+            return .cannotReadProjectFiles
+        }
+        return routableIntents.contains(intent) ? .auto : .manualOnly(reason: reason)
+    }
+
+    /// Hover help and AX value for a manual-only chip, from the same membership
+    /// fact the highlight uses. Auto never includes it.
+    static func manualOnlyChipDescriptor(_ family: String, pool: [String], reason: String) -> ChipDescriptor {
+        if isAuto(pool: pool) {
+            return .init(
+                included: false,
+                help: "Manual only: Auto won't pick this harness (\(reason)). Selecting it switches to an explicit subset that includes it.",
+                accessibilityValue: "Manual only, not included by Auto"
+            )
+        }
+        return pool.contains(family)
+            ? .init(
+                included: true,
+                help: "Manual only: included in the explicit eligible pool (\(reason)). Select it to exclude it.",
+                accessibilityValue: "Manual only, included"
+            )
+            : .init(
+                included: false,
+                help: "Manual only: excluded from the explicit eligible pool (\(reason)). Select it to include it.",
+                accessibilityValue: "Manual only, excluded"
+            )
     }
 
     /// Is a harness chip rendered as INCLUDED (highlighted)? In Auto mode every

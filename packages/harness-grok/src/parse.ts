@@ -1,4 +1,5 @@
 import type { HarnessEvent, ToolRef } from "@claudexor/schema";
+import { turnLimitError } from "@claudexor/core";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
 type ObjectValue = Record<string, any>;
@@ -134,7 +135,8 @@ export function createGrokParser() {
                       ? "file"
                       : "other",
             use_id: string(block.id) || undefined,
-            target: target ? redactSecrets(target).slice(0, 500) : undefined,
+            // The agent's own tool input (INV-146): bounded, never masked.
+            target: target ? target.slice(0, 500) : undefined,
           };
           if (tool.use_id) tools.set(tool.use_id, tool);
           events.push({ ...base, type: "tool_call", text: name, tool });
@@ -157,7 +159,8 @@ export function createGrokParser() {
           });
           continue;
         }
-        const detail = redactSecrets(string(block.content)).slice(0, 1000);
+        // The tool output the model saw, bounded and unmasked (INV-146).
+        const detail = string(block.content).slice(0, 1000);
         events.push({
           ...base,
           type: "tool_result",
@@ -199,8 +202,11 @@ export function createGrokParser() {
       resulted = true;
       const events: HarnessEvent[] = [];
       // After a vendor error frame the turn has already failed: keep the
-      // spend, never a late answer or a second failure.
-      if (!failed && (obj.is_error === true || (obj.subtype && obj.subtype !== "success"))) {
+      // spend, never a late answer or a second failure. The max-turns cap is
+      // its own typed stop (#299), never a generic failure.
+      if (!failed && obj.subtype === "error_max_turns") {
+        events.push(turnLimitError(sessionId, base.ts, obj.subtype, obj.num_turns));
+      } else if (!failed && (obj.is_error === true || (obj.subtype && obj.subtype !== "success"))) {
         const detail = Array.isArray(obj.errors)
           ? obj.errors.filter((v: unknown) => typeof v === "string").join("; ")
           : "";

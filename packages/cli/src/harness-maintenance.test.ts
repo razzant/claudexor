@@ -1,1101 +1,1182 @@
-/**
- * The CLI-first maintenance primitive against isolated fake prefixes: a temp
- * HOME, a fake runner Node with an embedded npm stub, and a fake spawnSync that
- * answers `--version`, `npm view` and `npm install` without the network. No
- * test touches ~/.claudexor, a real vendor CLI or a credential.
- */
+import { createHash } from "node:crypto";
+import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import {
-  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
+  realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as core from "@claudexor/core";
-import { CODEX_VENDOR_CLI_VERSION } from "@claudexor/harness-codex";
-import type { ParsedArgs } from "./args.js";
-import { harnessInstallCommand, localPlatformRefusal } from "./harness-installer.js";
-import { compareVendorVersions } from "./harness-install-proof.js";
-import { harnessMaintenanceRecipe, NPM_PINS } from "./harness-install-recipes.js";
-import { harnessUpdateCommand, inspectHarness, runHarnessUpdate } from "./harness-maintenance.js";
+import { planCursorProfileProgramCleanup } from "../../harness-cursor/src/profile-program-cleanup.js";
+import { GROK_PROGRAM } from "../../harness-grok/src/program.js";
+import { OPENCODE_PROGRAM } from "../../harness-opencode/src/program.js";
+import { inspectHarness, runHarnessUpdate } from "./harness-maintenance.js";
+import {
+  SCRIPT,
+  executable,
+  result,
+  vendorFixture,
+} from "./test-support/vendor-program-fixture.js";
 
 const roots: string[] = [];
 afterEach(() => {
-  vi.restoreAllMocks();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
-
-const exe = (path: string, body = "#!/bin/sh\nexit 0\n"): string => {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, body, { mode: 0o755 });
-  chmodSync(path, 0o755);
-  return path;
-};
-
-/** A scratch world: HOME, runner Node with embedded npm, nothing installed. */
+  vi.unstubAllEnvs();
+  for (const home of roots.splice(0)) rmSync(home, { recursive: true, force: true });
+}, 0);
 function world() {
-  const root = mkdtempSync(join(tmpdir(), "cx maint-"));
-  roots.push(root);
-  const home = join(root, "home");
-  mkdirSync(home, { recursive: true });
-  const nodePath = exe(join(root, "runner", "bin", "node"));
-  exe(join(root, "runner", "lib", "node_modules", "npm", "bin", "npm-cli.js"));
-  const managed = join(home, ".claudexor", "node");
-  /** Lay down a managed npm copy of one npm recipe's package at `version`. */
-  const installNpm = (npmPackage: string, version: string): string => {
-    const pin = Object.values(NPM_PINS).find((row) => row.npmPackage === npmPackage)!;
-    const name = pin.binaryNames[0]!;
-    const pkg = join(managed, "lib", "node_modules", ...npmPackage.split("/"));
-    mkdirSync(pkg, { recursive: true });
-    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: npmPackage, version }));
-    const binary = exe(join(pkg, "bin", `${name}.js`), `#!/bin/sh\necho ${name}-cli ${version}\n`);
-    mkdirSync(join(managed, "bin"), { recursive: true });
-    rmSync(join(managed, "bin", name), { force: true });
-    exe(join(managed, "bin", name), `#!/bin/sh\nexec "${binary}" "$@"\n`);
-    return version;
-  };
-  const installCodex = (version: string): string => installNpm("@openai/codex", version);
-  const sourceEnv = { HOME: home, PATH: "/usr/bin:/bin" };
-  return { root, home, nodePath, managed, installNpm, installCodex, sourceEnv };
+  const w = vendorFixture();
+  roots.push(w.home);
+  return w;
+}
+function oldCopy(w: ReturnType<typeof world>, remote = false) {
+  const prefix = join(w.home, remote ? ".claudexor/remote/vendor" : ".claudexor/node");
+  const pkg = join(prefix, "lib/node_modules/@fixture/harness");
+  const entry = join(pkg, "bin/fixture-harness");
+  executable(entry);
+  writeFileSync(
+    join(pkg, "package.json"),
+    JSON.stringify({
+      name: "@fixture/harness",
+      version: "9.9.9",
+      bin: { "fixture-harness": "bin/fixture-harness" },
+    }),
+  );
+  const launcher = join(prefix, "bin/fixture-harness");
+  mkdirSync(dirname(launcher), { recursive: true });
+  symlinkSync(entry, launcher);
+  if (remote) w.options.sourceEnv!.CLAUDEXOR_REMOTE_RUNTIME = "1";
+  return { pkg, entry, launcher };
 }
 
-/** spawnSync fake: `--version` reads the launcher script's echo, npm view
- * answers `latest`, npm install lays down the requested managed version. */
-function fakeSpawn(w: ReturnType<typeof world>, latest = "99.1.0", installOk = true) {
-  const calls: string[][] = [];
-  const spawn = vi.fn((binary: string, argv: readonly string[]) => {
-    calls.push([binary, ...argv]);
-    if (argv.includes("--version")) {
-      const target = binary.endsWith("node") ? argv[0]! : binary;
-      const body = readFileSync(target, "utf8");
-      const nested = /^#!\/bin\/sh\nexec "([^"\n]+)" "\$@"\n$/.exec(body)?.[1];
-      const text = nested ? readFileSync(nested, "utf8") : body;
-      const answer = /echo (.*)/.exec(text)?.[1] ?? "";
-      return { status: 0, stdout: `${answer}\n`, stderr: "" } as never;
-    }
-    if (argv.includes("view")) return { status: 0, stdout: `"${latest}"\n`, stderr: "" } as never;
-    if (argv.includes("install")) {
-      if (!installOk) return { status: 1, signal: null } as never;
-      const spec = String(argv.at(-1));
-      const at = spec.lastIndexOf("@");
-      w.installNpm(spec.slice(0, at), spec.slice(at + 1));
-      return { status: 0 } as never;
-    }
-    return { status: 0, stdout: "", stderr: "" } as never;
-  });
-  return { spawn, calls };
-}
-
-const opts = (w: ReturnType<typeof world>, spawn: unknown) => ({
-  home: w.home,
-  nodePath: w.nodePath,
-  sourceEnv: w.sourceEnv,
-  spawn: spawn as never,
-  platform: "darwin" as const,
-  arch: "arm64",
-  lock: false,
-});
-
-const args = (positional: string[], flags: ParsedArgs["flags"] = {}): ParsedArgs => ({
-  _: positional,
-  flags,
-});
-
-describe("harness maintenance primitive", () => {
-  it("orders exact versions by SemVer precedence", () => {
-    expect(compareVendorVersions("1.10.0", "1.9.9")).toBeGreaterThan(0);
-    expect(compareVendorVersions("1.0.0-alpha", "1.0.0")).toBeLessThan(0);
-    expect(compareVendorVersions("1.0.0-alpha.2", "1.0.0-alpha.10")).toBeLessThan(0);
-    expect(compareVendorVersions("2.0.0+build.1", "2.0.0")).toBe(0);
-  });
-
-  it("default Codex install keeps a runnable NEWER managed copy without a registry read", () => {
+describe("selected vendor operation", () => {
+  it.each([
+    { error: new DOMException("Download was aborted", "AbortError"), code: "maintenance_failed" },
+    {
+      error: Object.assign(new Error("Download unavailable"), { code: "download_unavailable" }),
+      code: "download_unavailable",
+    },
+  ])("retains a script-download failure receipt with code $code", async ({ error, code }) => {
     const w = world();
-    w.installCodex("99.0.0");
-    const { spawn, calls } = fakeSpawn(w);
-    const out: string[] = [];
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      out.push(String(chunk));
-      return true;
-    });
-    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const code = harnessInstallCommand(
-      args(["harness", "install", "codex"], { target: "local", yes: true }),
-      true,
-      { ...opts(w, spawn), exists: () => true },
-    );
-    expect(code).toBe(0);
-    expect(calls.some((call) => call.includes("install"))).toBe(false);
-    const receipt = JSON.parse(out.join("")) as Record<string, unknown>;
-    expect(receipt.installedVersion).toBe("99.0.0");
-    expect(receipt.pinnedVersion).toBe("99.0.0");
-    expect(receipt.verification).toBe("deterministic_only");
-    // Old strict parsers keep running: no maintenance-only key leaks into Connect.
-    expect(Object.keys(receipt).sort()).toEqual(
-      [
-        "ok",
-        "dryRun",
-        "exitCode",
-        "installedBinary",
-        "installedVersion",
-        "harness",
-        "target",
-        "command",
-        "installLocation",
-        "pinnedVersion",
-        "verification",
-      ].sort(),
-    );
-  });
-
-  it("tested-baseline install still upgrades an OLDER managed copy to the pin", () => {
-    const w = world();
-    w.installCodex("0.0.1");
-    const { spawn, calls } = fakeSpawn(w);
-    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const code = harnessInstallCommand(
-      args(["harness", "install", "codex"], { target: "local", yes: true, "release-tested": true }),
-      true,
-      { ...opts(w, spawn), exists: () => true },
-    );
-    expect(code).toBe(0);
-    expect(calls.find((call) => call.includes("install"))?.at(-1)).toBe(
-      `@openai/codex@${CODEX_VENDOR_CLI_VERSION}`,
-    );
-  });
-
-  it("a fresh default Codex install resolves one latest version, installs it exactly, and does not inherit native verification", () => {
-    const w = world();
-    const { spawn, calls } = fakeSpawn(w, "0.163.0");
-    const output: string[] = [];
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      output.push(String(chunk));
-      return true;
-    });
-    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const code = harnessInstallCommand(
-      args(["harness", "install", "codex"], { target: "local", yes: true }),
-      true,
-      { ...opts(w, spawn), exists: () => true },
-    );
-    const receipt = JSON.parse(output.join("")) as Record<string, unknown>;
-    expect(code).toBe(0);
-    expect(calls.filter((call) => call.includes("view"))).toHaveLength(1);
-    expect(calls.filter((call) => call.includes("install"))).toHaveLength(1);
-    expect(calls.find((call) => call.includes("install"))?.at(-1)).toBe("@openai/codex@0.163.0");
-    expect(receipt).toMatchObject({
-      ok: true,
-      dryRun: false,
-      pinnedVersion: "0.163.0",
-      verification: "deterministic_only",
-      installedVersion: "0.163.0",
-    });
-    expect(receipt).not.toHaveProperty("previousVersion"); // Connect receipt, not Maintenance rollback data.
-    expect(inspectHarness("codex", opts(w, spawn)).releaseTested.version).toBe(
-      CODEX_VENDOR_CLI_VERSION,
-    );
-  });
-
-  it("remote dry-run selects one exact latest, and confirmation can execute THAT version without another lookup", () => {
-    const w = world();
-    const { spawn, calls } = fakeSpawn(w, "0.163.0");
-    const output: string[] = [];
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      output.push(String(chunk));
-      return true;
-    });
-    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const runtime = { ...opts(w, spawn), exists: () => true };
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], { "dry-run": true }),
-        true,
-        runtime,
-      ),
-    ).toBe(0);
-    const proposed = JSON.parse(output.join("")) as Record<string, unknown>;
-    expect(proposed).toMatchObject({
-      ok: true,
-      target: "remote",
-      dryRun: true,
-      pinnedVersion: "0.163.0",
-      verification: "deterministic_only",
-    });
-    expect(proposed.command).toContain("@openai/codex@0.163.0");
-    expect(calls.filter((call) => call.includes("view"))).toHaveLength(1);
-    output.length = 0;
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], { yes: true, "vendor-version": "0.163.0" }),
-        true,
-        runtime,
-      ),
-    ).toBe(0);
-    const executed = JSON.parse(output.join("")) as Record<string, unknown>;
-    expect(executed).toMatchObject({
-      ok: true,
-      target: "remote",
-      dryRun: false,
-      pinnedVersion: "0.163.0",
-      verification: "deterministic_only",
-    });
-    expect(executed).not.toHaveProperty("installedVersion"); // The watched remote path has no local post-install proof.
-    expect(calls.filter((call) => call.includes("view"))).toHaveLength(1);
-    expect(calls.find((call) => call.includes("install"))?.at(-1)).toBe("@openai/codex@0.163.0");
-  });
-
-  it("an older managed copy takes the new default exact latest, but a malformed registry answer refuses without install", () => {
-    const w = world();
-    w.installCodex("0.0.1");
-    const good = fakeSpawn(w, "0.163.0");
-    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], { target: "local", yes: true }),
-        true,
-        { ...opts(w, good.spawn), exists: () => true },
-      ),
-    ).toBe(0);
-    expect(good.calls.find((call) => call.includes("install"))?.at(-1)).toBe(
-      "@openai/codex@0.163.0",
-    );
-    const fresh = world();
-    const bad = fakeSpawn(fresh, "not-a-version");
-    const output: string[] = [];
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      output.push(String(chunk));
-      return true;
-    });
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], { target: "local", yes: true }),
-        true,
-        { ...opts(fresh, bad.spawn), exists: () => true },
-      ),
-    ).toBe(1);
-    expect(JSON.parse(output.join(""))).toMatchObject({
-      ok: false,
-      code: "latest_unavailable",
-      exitCode: 1,
-    });
-    expect(bad.calls.some((call) => call.includes("install"))).toBe(false);
-  });
-
-  it("a newer managed copy arriving between latest lookup and the install lease is not downgraded", () => {
-    const w = world();
-    const { spawn, calls } = fakeSpawn(w, "0.163.0");
-    const racingSpawn = vi.fn((binary: string, argv: readonly string[]) => {
-      if (argv.includes("view")) w.installCodex("99.0.0");
-      return spawn(binary, argv);
-    });
-    const output: string[] = [];
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      output.push(String(chunk));
-      return true;
-    });
-    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], { target: "local", yes: true }),
-        true,
-        { ...opts(w, racingSpawn), exists: () => true },
-      ),
-    ).toBe(0);
-    const receipt = JSON.parse(output.join("")) as Record<string, unknown>;
-    expect(receipt).toMatchObject({
-      pinnedVersion: "0.163.0",
-      installedVersion: "99.0.0",
-      verification: "deterministic_only",
-    });
-    expect(calls.filter((call) => call.includes("view"))).toHaveLength(1);
-    expect(calls.some((call) => call.includes("install"))).toBe(false);
-  });
-
-  it("a missing registry cannot silently fall back to the tested baseline; explicit offline baseline still discloses it", () => {
-    const w = world();
-    const output: string[] = [];
-    const { spawn, calls } = fakeSpawn(w);
-    const failedRegistry = vi.fn((binary: string, argv: readonly string[]) =>
-      argv.includes("view") ? ({ status: 7, stdout: "" } as never) : spawn(binary, argv),
-    );
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      output.push(String(chunk));
-      return true;
-    });
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], { "dry-run": true }),
-        true,
-        opts(w, failedRegistry),
-      ),
-    ).toBe(1);
-    expect(JSON.parse(output.join(""))).toMatchObject({
-      ok: false,
-      code: "latest_unavailable",
-      exitCode: 1,
-    });
-    expect(calls).toHaveLength(0);
-    output.length = 0;
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], { "dry-run": true, "release-tested": true }),
-        true,
-        opts(w, failedRegistry),
-      ),
-    ).toBe(0);
-    expect(JSON.parse(output.join(""))).toMatchObject({
-      ok: true,
-      pinnedVersion: CODEX_VENDOR_CLI_VERSION,
-      verification: "release_verified",
-    });
-    expect(calls).toHaveLength(0);
-  });
-
-  it("invalid and conflicting vendor-version flags refuse before registry or install", () => {
-    const w = world();
-    const { spawn, calls } = fakeSpawn(w);
-    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    const runtime = opts(w, spawn);
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], { "vendor-version": "latest", yes: true }),
-        true,
-        runtime,
-      ),
-    ).toBe(2);
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], { "vendor-version": "0.163.0;rm", yes: true }),
-        true,
-        runtime,
-      ),
-    ).toBe(2);
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], {
-          "vendor-version": "0.163.0",
-          "release-tested": true,
-        }),
-        true,
-        runtime,
-      ),
-    ).toBe(2);
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "cursor"], { "vendor-version": "0.163.0" }),
-        true,
-        runtime,
-      ),
-    ).toBe(2);
-    expect(calls).toHaveLength(0);
-  });
-
-  /** stdout/stderr capture for one CLI invocation. */
-  const captured = () => {
-    const out: string[] = [];
-    const err: string[] = [];
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      out.push(String(chunk));
-      return true;
-    });
-    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
-      err.push(String(chunk));
-      return true;
-    });
-    return {
-      json: () => JSON.parse(out.join("")) as Record<string, unknown>,
-      stderr: () => err.join(""),
-      reset: () => {
-        out.length = 0;
-        err.length = 0;
+    const spawn = vi.fn();
+    const receipt = await runHarnessUpdate("fixture", undefined, {
+      ...w.options,
+      spawn,
+      fetch: async () => {
+        throw error;
       },
-    };
-  };
-
-  it("an npm dry-run names its exact-version confirmation binding; scripts and executed receipts never carry it", () => {
-    const w = world();
-    const { spawn } = fakeSpawn(w, "0.163.0");
-    const io = captured();
-    const runtime = { ...opts(w, spawn), exists: () => true };
-    const dryRun = (harness: string, flags: ParsedArgs["flags"] = {}) => {
-      io.reset();
-      const code = harnessInstallCommand(
-        args(["harness", "install", harness], { "dry-run": true, ...flags }),
-        true,
-        runtime,
-      );
-      return { code, payload: io.json() };
-    };
-    for (const harness of ["codex", "claude", "copilot", "opencode"]) {
-      const { code, payload } = dryRun(harness);
-      expect(code).toBe(0);
-      expect(typeof payload.pinnedVersion).toBe("string");
-      expect(payload.versionBinding).toBe("vendor-version");
-    }
-    expect(dryRun("codex", { "release-tested": true }).payload).toMatchObject({
-      pinnedVersion: CODEX_VENDOR_CLI_VERSION,
-      versionBinding: "vendor-version",
     });
-    for (const harness of ["cursor", "agy"]) {
-      const { code, payload } = dryRun(harness);
-      expect(code).toBe(0);
-      expect(payload.pinnedVersion).toBeNull();
-      expect(payload).not.toHaveProperty("versionBinding");
-    }
-    // The strict embedding-host execute receipt keeps its exact historical keys.
-    io.reset();
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], { target: "local", yes: true }),
-        true,
-        runtime,
-      ),
-    ).toBe(0);
-    expect(Object.keys(io.json()).sort()).toEqual(
-      [
-        "ok",
-        "dryRun",
-        "exitCode",
-        "installedBinary",
-        "installedVersion",
-        "harness",
-        "target",
-        "command",
-        "installLocation",
-        "pinnedVersion",
-        "verification",
-      ].sort(),
-    );
-  });
-
-  it("a refused default Codex selection is actionable on stderr for SSH consumers and names no selected baseline", () => {
-    const io = captured();
-    for (const [answer, code] of [
-      [{ status: 1, stdout: "", stderr: "npm error code ENOTFOUND" }, "latest_unavailable"],
-      [{ status: 0, stdout: '"0.0.1"\n', stderr: "" }, "latest_older_than_tested"],
-    ] as const) {
-      const w = world();
-      const { spawn, calls } = fakeSpawn(w);
-      const registry = vi.fn((binary: string, argv: readonly string[]) =>
-        argv.includes("view") ? (answer as never) : spawn(binary, argv),
-      );
-      io.reset();
-      expect(
-        harnessInstallCommand(
-          args(["harness", "install", "codex"], { "dry-run": true }),
-          true,
-          opts(w, registry),
-        ),
-      ).toBe(1);
-      const payload = io.json();
-      // The same pre-selection shape as every other refusal before a version exists.
-      expect(payload).toMatchObject({
-        ok: false,
-        exitCode: 1,
-        code,
-        harness: "codex",
-        target: "remote",
-        installLocation: "~/.claudexor/remote/vendor/bin",
-      });
-      for (const key of ["command", "pinnedVersion", "verification", "versionBinding"])
-        expect(payload).not.toHaveProperty(key);
-      const refusal = String(payload.refusal);
-      expect(refusal).toContain("nothing was executed");
-      expect(refusal).toContain(`--release-tested selects ${CODEX_VENDOR_CLI_VERSION}`);
-      expect(refusal).toContain("installing it still needs the npm registry");
-      expect(refusal).toContain("--vendor-version <exact>");
-      // A remote dry-run exits non-zero, so the SSH consumer only sees stderr.
-      expect(io.stderr()).toBe(`Install refused: ${refusal}\n`);
-      expect(calls.some((call) => call.includes("install"))).toBe(false);
-    }
-  });
-
-  it("a runnable release-tested copy arriving after the latest lookup is kept; older copies and explicit targets still install", () => {
-    const io = captured();
-    for (const [arriving, installs] of [
-      [CODEX_VENDOR_CLI_VERSION, false],
-      ["0.0.1", true],
-    ] as const) {
-      const w = world();
-      const { spawn, calls } = fakeSpawn(w, "99.2.0");
-      const racing = vi.fn((binary: string, argv: readonly string[]) => {
-        if (argv.includes("view")) w.installCodex(arriving);
-        return spawn(binary, argv);
-      });
-      io.reset();
-      expect(
-        harnessInstallCommand(
-          args(["harness", "install", "codex"], { target: "local", yes: true }),
-          true,
-          { ...opts(w, racing), exists: () => true },
-        ),
-      ).toBe(0);
-      expect(calls.filter((call) => call.includes("view"))).toHaveLength(1);
-      expect(calls.some((call) => call.includes("install"))).toBe(installs);
-      expect(io.json().installedVersion).toBe(installs ? "99.2.0" : CODEX_VENDOR_CLI_VERSION);
-    }
-    const w = world();
-    w.installCodex(CODEX_VENDOR_CLI_VERSION);
-    const { spawn, calls } = fakeSpawn(w);
-    io.reset();
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], {
-          target: "local",
-          yes: true,
-          "vendor-version": "99.2.0",
-        }),
-        true,
-        { ...opts(w, spawn), exists: () => true },
-      ),
-    ).toBe(0);
-    expect(calls.find((call) => call.includes("install"))?.at(-1)).toBe("@openai/codex@99.2.0");
-  });
-
-  it("a refusal before Codex's default selection never presents the release-tested baseline as selected", () => {
-    const io = captured();
-    const w = world();
-    const { spawn } = fakeSpawn(w);
-    const unsupported = (flags: ParsedArgs["flags"]) => {
-      io.reset();
-      expect(
-        harnessInstallCommand(
-          args(["harness", "install", "codex"], { target: "local", "dry-run": true, ...flags }),
-          true,
-          { ...opts(w, spawn), platform: "win32", arch: "ia32" },
-        ),
-      ).toBe(1);
-      return io.json();
-    };
-    const undecided = unsupported({});
-    expect(undecided).toMatchObject({ ok: false, code: "unsupported_platform", harness: "codex" });
-    for (const key of ["command", "pinnedVersion", "verification"])
-      expect(undecided).not.toHaveProperty(key);
-    // An explicit baseline request is a real selection and is still disclosed.
-    expect(unsupported({ "release-tested": true })).toMatchObject({
-      code: "unsupported_platform",
-      pinnedVersion: CODEX_VENDOR_CLI_VERSION,
-      verification: "release_verified",
-    });
-
-    w.installCodex(CODEX_VENDOR_CLI_VERSION);
-    const failing = vi.fn((binary: string, argv: readonly string[]) => {
-      if (argv.includes("--version"))
-        throw Object.assign(new Error("exec failed"), { code: "EIO" });
-      return spawn(binary, argv);
-    });
-    io.reset();
-    expect(
-      harnessInstallCommand(
-        args(["harness", "install", "codex"], { target: "local", "dry-run": true }),
-        true,
-        opts(w, failing),
-      ),
-    ).toBe(1);
-    const failed = io.json();
-    expect(failed).toMatchObject({ ok: false, code: "harness_install_failed", harness: "codex" });
-    for (const key of ["command", "pinnedVersion", "verification"])
-      expect(failed).not.toHaveProperty(key);
-  });
-
-  type NpmHarness = "claude" | "codex" | "copilot" | "opencode";
-  const NPM_HARNESSES: NpmHarness[] = ["claude", "codex", "copilot", "opencode"];
-
-  /** One production Ensure (`harness install <id> --target local --yes --json`)
-   * under the REAL install lease. `between` runs once, after the Ensure's
-   * pre-lease selection probe answered and before it acquires that lease.
-   * Every npm install records whether the lease was held. */
-  function ensureAround(
-    harness: NpmHarness,
-    flags: ParsedArgs["flags"],
-    setup: (w: ReturnType<typeof world>) => void,
-    between: (w: ReturnType<typeof world>, spawn: unknown) => void = () => undefined,
-  ) {
-    const w = world();
-    setup(w);
-    const { spawn } = fakeSpawn(w);
-    const lock = join(w.home, ".claudexor", "harness-install.lock");
-    const installs: { spec: string; leased: boolean }[] = [];
-    const recorded = vi.fn((binary: string, argv: readonly string[]) => {
-      if (argv.includes("install"))
-        installs.push({ spec: String(argv.at(-1)), leased: existsSync(lock) });
-      return spawn(binary, argv);
-    });
-    let fired = false;
-    const ensureSpawn = vi.fn((binary: string, argv: readonly string[]) => {
-      const answer = recorded(binary, argv);
-      if (!fired && argv.includes("--version") && !existsSync(lock)) {
-        fired = true;
-        between(w, recorded);
-      }
-      return answer;
-    });
-    const io = captured();
-    const code = harnessInstallCommand(
-      args(["harness", "install", harness], { target: "local", yes: true, ...flags }),
-      true,
-      { ...opts(w, ensureSpawn), lock: true },
-    );
-    const managed = inspectHarness(harness, opts(w, spawn)).installed.version;
-    return { code, receipt: io.json(), installs, fired, managed, released: !existsSync(lock) };
-  }
-
-  it.each(NPM_HARNESSES)(
-    "an ordinary %s Ensure keeps the newer copy a concurrent Maintenance update installed after its selection and before its lease",
-    (harness) => {
-      const pin = NPM_PINS[harness]!;
-      let update: ReturnType<typeof runHarnessUpdate> | undefined;
-      const run = ensureAround(
-        harness,
-        {},
-        (w) => w.installNpm(pin.npmPackage, pin.version),
-        (w, spawn) => {
-          update = runHarnessUpdate(harness, "999.0.0", {
-            ...opts(w, spawn),
-            lock: true,
-            json: true,
-          });
-        },
-      );
-      expect(run.fired).toBe(true);
-      expect(update).toMatchObject({
-        ok: true,
-        mutation: "applied",
-        after: { version: "999.0.0" },
-      });
-      // Only Maintenance installed, under the lease; the Ensure kept its copy.
-      expect(run.installs).toEqual([{ spec: `${pin.npmPackage}@999.0.0`, leased: true }]);
-      expect(run.code).toBe(0);
-      expect(run.receipt).toMatchObject({ ok: true, installedVersion: "999.0.0" });
-      expect(run.managed).toBe("999.0.0");
-      expect(run.released).toBe(true);
-    },
-  );
-
-  it.each(NPM_HARNESSES)(
-    "%s: an explicit --vendor-version stays exact over a newer managed copy, under the lease",
-    (harness) => {
-      const pin = NPM_PINS[harness]!;
-      const run = ensureAround(harness, { "vendor-version": pin.version }, (w) =>
-        w.installNpm(pin.npmPackage, "999.0.0"),
-      );
-      expect(run.installs).toEqual([{ spec: `${pin.npmPackage}@${pin.version}`, leased: true }]);
-      expect(run.receipt).toMatchObject({
-        ok: true,
-        pinnedVersion: pin.version,
-        installedVersion: pin.version,
-      });
-      expect(run.managed).toBe(pin.version);
-    },
-  );
-
-  it.each(NPM_HARNESSES)(
-    "%s: an automatically selected copy that breaks or falls below the baseline before the lease is repaired to that disclosed version",
-    (harness) => {
-      const pin = NPM_PINS[harness]!;
-      const launcher = pin.binaryNames[0]!;
-      for (const between of [
-        (w: ReturnType<typeof world>) => rmSync(join(w.managed, "bin", launcher)),
-        (w: ReturnType<typeof world>) => w.installNpm(pin.npmPackage, "0.0.1"),
-      ]) {
-        const run = ensureAround(
-          harness,
-          {},
-          (w) => w.installNpm(pin.npmPackage, "50.0.0"),
-          between,
-        );
-        expect(run.fired).toBe(true);
-        expect(run.installs).toEqual([{ spec: `${pin.npmPackage}@50.0.0`, leased: true }]);
-        expect(run.receipt).toMatchObject({
-          ok: true,
-          pinnedVersion: "50.0.0",
-          installedVersion: "50.0.0",
-        });
-      }
-    },
-  );
-
-  it.each(NPM_HARNESSES)(
-    "%s --release-tested: a kept copy that disappears before the lease installs the baseline, and the receipt names it",
-    (harness) => {
-      const pin = NPM_PINS[harness]!;
-      const run = ensureAround(
-        harness,
-        { "release-tested": true },
-        (w) => w.installNpm(pin.npmPackage, "50.0.0"),
-        (w) => rmSync(join(w.managed, "lib"), { recursive: true, force: true }),
-      );
-      expect(run.fired).toBe(true);
-      expect(run.installs).toEqual([{ spec: `${pin.npmPackage}@${pin.version}`, leased: true }]);
-      expect(run.receipt).toMatchObject({
-        ok: true,
-        command: expect.stringContaining(`${pin.npmPackage}@${pin.version}`),
-        pinnedVersion: pin.version,
-        verification: pin.verification,
-        installedVersion: pin.version,
-      });
-      // A replacement that is still runnable is kept: nothing executes.
-      const replaced = ensureAround(
-        harness,
-        { "release-tested": true },
-        (w) => w.installNpm(pin.npmPackage, "50.0.0"),
-        (w) => w.installNpm(pin.npmPackage, "999.0.0"),
-      );
-      expect(replaced.installs).toEqual([]);
-      expect(replaced.receipt).toMatchObject({
-        ok: true,
-        pinnedVersion: "50.0.0",
-        installedVersion: "999.0.0",
-      });
-    },
-  );
-
-  it("a missing bundled npm is a local refusal, never a registry outage with a retry remedy", () => {
-    const io = captured();
-    const w = world();
-    // An empty fixture must not discover a vendor CLI in a host PATH fallback.
-    vi.spyOn(core, "resolveHarnessBinary").mockReturnValue(null);
-    const npmCli = join(w.root, "runner", "lib", "node_modules", "npm", "bin", "npm-cli.js");
-    rmSync(npmCli);
-    const { spawn } = fakeSpawn(w);
-    // Like node itself: a missing script makes the lookup fail, not answer.
-    const realistic = vi.fn((binary: string, argv: readonly string[]) =>
-      existsSync(argv[0]!) || !binary.endsWith("node")
-        ? spawn(binary, argv)
-        : ({ status: 1, stdout: "", stderr: "Cannot find module" } as never),
-    );
-    const invocations: ParsedArgs["flags"][] = [
-      { "dry-run": true },
-      { yes: true },
-      { yes: true, "release-tested": true },
-    ];
-    for (const flags of invocations) {
-      io.reset();
-      expect(
-        harnessInstallCommand(
-          args(["harness", "install", "codex"], { target: "local", ...flags }),
-          true,
-          opts(w, realistic),
-        ),
-      ).toBe(1);
-      const payload = io.json();
-      expect(payload).toMatchObject({
-        ok: false,
-        code: "embedded_npm_missing",
-        harness: "codex",
-        installLocation: "~/.claudexor/node/bin",
-      });
-      const refusal = String(payload.refusal);
-      expect(refusal).toContain(npmCli);
-      expect(refusal).toContain("nothing was executed");
-      expect(refusal).not.toContain("retry");
-      expect(refusal).not.toContain("registry");
-    }
-    expect(runHarnessUpdate("codex", "latest", opts(w, realistic))).toMatchObject({
+    expect(receipt).toMatchObject({
       ok: false,
-      code: "embedded_npm_missing",
+      problem: { code, message: error.message },
+      exitCode: null,
+      commands: [],
       mutation: "none",
     });
-    expect(inspectHarness("codex", { ...opts(w, realistic), latest: true })).toMatchObject({
-      available: null,
-      availableProblem: { code: "embedded_npm_missing", retryable: false },
-    });
-    // No npm child at all: neither the latest lookup nor an install started.
-    expect(realistic).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
   });
-
-  it.each(["1.0.0", "2.0.0"])(
-    "an exact target installs up or down from %s and records the proved previous one",
-    (before) => {
+  it.each(
+    [true, false].flatMap((acceptable) => [false, true].map((linked) => ({ acceptable, linked }))),
+  )(
+    "recovers a killed conversion's fixed hidden package through ordinary or linked HOME: %j",
+    async ({ acceptable, linked }) => {
       const w = world();
-      w.installCodex(before);
-      const { spawn, calls } = fakeSpawn(w);
-      const receipt = runHarnessUpdate("codex", "1.2.3", opts(w, spawn));
+      if (linked) {
+        const actual = join(w.home, "actual-home"),
+          home = join(w.home, "linked-home");
+        mkdirSync(actual);
+        symlinkSync(actual, home);
+        w.home = home;
+        w.installed = join(home, ".vendor/bin/fixture-harness");
+        w.options.home = home;
+        w.options.sourceEnv!.HOME = home;
+      }
+      const old = oldCopy(w);
+      w.program.versionScheme = "semver";
+      executable(w.installed, "2.0.0");
+      const hidden = `${old.pkg}.claudexor-converted`;
+      const script = join(w.home, "killed-conversion.mjs");
+      writeFileSync(
+        script,
+        `
+import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolveSelectedProgram, defineHarnessProgram } from ${JSON.stringify(new URL("../../core/dist/index.js", import.meta.url).href)};
+import { installerRuntime } from ${JSON.stringify(new URL("../dist/harness-install-runtime.js", import.meta.url).href)};
+import { productNpmCopy, retireProductNpmCopy } from ${JSON.stringify(new URL("../dist/harness-npm-conversion.js", import.meta.url).href)};
+const program = defineHarnessProgram(${JSON.stringify(w.program)});
+const runtime = installerRuntime(program, ${JSON.stringify(w.options)});
+runtime.spawn = (bin, args, options) => {
+  if (existsSync(${JSON.stringify(hidden)})) process.kill(process.pid, 'SIGKILL');
+  return spawnSync(bin, args, options);
+};
+const before = resolveSelectedProgram(program, runtime);
+retireProductNpmCopy(program, productNpmCopy(program, before, runtime), runtime, before);
+throw new Error('The child must die while the package is hidden');
+`,
+      );
+      const child = spawnSync(process.execPath, [script], { encoding: "utf8", timeout: 15_000 });
+      expect(child.signal, child.stderr).toBe("SIGKILL");
+      expect(existsSync(hidden)).toBe(true);
+      expect(existsSync(old.pkg)).toBe(false);
+      expect(lstatSync(old.launcher).isSymbolicLink()).toBe(true);
+      if (!acceptable) executable(w.installed, "0.9.0");
+      const acknowledgments: string[] = [];
+      w.options.beforeMutation = async (receipt) => {
+        acknowledgments.push(
+          ...receipt.limitations.filter((line) => line.startsWith("Recovering interrupted")),
+        );
+      };
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        return result("Vendor command result", acceptable ? 0 : 1);
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(acknowledgments).toContain(`Recovering interrupted npm conversion at ${hidden}.`);
+      expect(existsSync(hidden)).toBe(false);
+      expect(existsSync(old.pkg)).toBe(!acceptable);
+      expect(existsSync(old.launcher)).toBe(!acceptable);
+      expect(receipt.after?.version).toBe(acceptable ? "2.0.0" : "1.0.0");
+      expect(receipt.ok).toBe(acceptable);
+      expect(receipt.limitations.join(" ")).not.toContain("hidden package identity is not proven");
+    },
+  );
+  it("preserves a hidden package whose real parent escapes the product prefix", async () => {
+    const w = world(),
+      old = oldCopy(w);
+    const hidden = `${old.pkg}.claudexor-converted`;
+    renameSync(old.pkg, hidden);
+    const elsewhere = join(w.home, "outside-prefix");
+    renameSync(dirname(old.pkg), elsewhere);
+    symlinkSync(elsewhere, dirname(old.pkg));
+    executable(w.installed, "2.0.0");
+    const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(receipt.ok).toBe(true);
+    expect(existsSync(hidden)).toBe(true);
+    expect(existsSync(old.pkg)).toBe(false);
+    expect(receipt.limitations.join(" ")).toContain("hidden package identity is not proven");
+  });
+  it.each(
+    ["install", "update", "exact"].flatMap((route) =>
+      [false, true].map((answers) => ({ route, answers })),
+    ),
+  )(
+    "settles from the final version answer without repeating the vendor command: %j",
+    async ({ route, answers }) => {
+      const w = world();
+      if (route !== "install") executable(w.installed);
+      const marker = join(w.home, "version-asked");
+      let commands = 0;
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        commands++;
+        executable(w.installed);
+        writeFileSync(
+          w.installed,
+          `#!/bin/sh
+if [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+${answers ? "echo 2.0.0" : "exit 1"}
+`,
+        );
+        return result("Vendor command completed");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", route === "exact" ? "2.0.0" : undefined, {
+        ...w.options,
+        installOnly: route === "install",
+      });
+      expect(commands).toBe(1);
+      expect(receipt).toMatchObject({
+        ok: answers,
+        exitCode: 0,
+        after: { version: answers ? "2.0.0" : null },
+      });
+      expect(receipt.problem).toEqual(
+        answers ? null : expect.objectContaining({ code: "program_verification_failed" }),
+      );
+      expect(
+        receipt.limitations.filter((line) => line.includes("next check answered")),
+      ).toHaveLength(answers ? 1 : 0);
+    },
+  );
+  it.each(
+    ["replacement", "before-exact", "hidden", "exact"].flatMap((phase) =>
+      [false, true].map((answers) => ({ phase, answers })),
+    ),
+  )(
+    "checks a missing answer once more before committing conversion or exact version: %j",
+    async ({ phase, answers }) => {
+      const w = world(),
+        old = oldCopy(w);
+      const marker = join(w.home, "version-asked");
+      let commands = 0;
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        commands++;
+        executable(w.installed);
+        const check =
+          phase === "hidden"
+            ? `[ -d '${old.pkg}.claudexor-converted' ]`
+            : phase === "exact" && commands === 1
+              ? "false"
+              : "true";
+        writeFileSync(
+          w.installed,
+          `#!/bin/sh
+if ${check}; then
+  if [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+  ${answers ? ":" : "exit 1"}
+fi
+echo ${commands === 1 ? "2.0.0" : "3.0.0"}
+`,
+        );
+        return result("Vendor command completed");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate(
+        "fixture",
+        phase === "exact" || phase === "before-exact" ? "3.0.0" : undefined,
+        w.options,
+      );
+      expect(receipt.ok).toBe(answers);
+      const exactRan = phase === "exact" || (phase === "before-exact" && answers);
+      expect(commands).toBe(exactRan ? 2 : 1);
+      expect(receipt.after?.version).toBe(answers ? (exactRan ? "3.0.0" : "2.0.0") : "1.0.0");
+      expect(existsSync(old.pkg)).toBe(!answers);
+      expect(existsSync(old.launcher)).toBe(!answers);
+      expect(existsSync(`${old.pkg}.claudexor-converted`)).toBe(false);
+      if (answers) {
+        expect(receipt.problem).toBeNull();
+        expect(
+          receipt.limitations.filter((line) => line.includes("next check answered")),
+        ).toHaveLength(1);
+      } else expect(receipt.problem).not.toBeNull();
+    },
+  );
+  it("updates a person's npm copy without converting when the adapter never owned that package", async () => {
+    const w = world();
+    const old = oldCopy(w);
+    w.program.legacyNpmPackage = GROK_PROGRAM.legacyNpmPackage;
+    const calls: string[] = [];
+    const fetcher = vi.fn();
+    w.options.fetch = fetcher;
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      calls.push(bin);
+      return result("Vendor update handled this copy");
+    }) as typeof spawnSync;
+    expect((await runHarnessUpdate("fixture", undefined, w.options)).ok).toBe(true);
+    expect(calls).toEqual([old.launcher]);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(existsSync(old.pkg)).toBe(true);
+    expect(existsSync(old.launcher)).toBe(true);
+  });
+  it.each([false, true])("updates an arbitrary selected entry (override: %s)", async (override) => {
+    const w = world();
+    const selected = join(w.home, "hand-placed", override ? "wrapper" : "fixture-harness");
+    executable(selected);
+    w.options.sourceEnv!.PATH = dirname(selected);
+    if (override) w.options.sourceEnv!.FIXTURE_BIN = selected;
+    const calls: string[] = [];
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      calls.push(bin);
+      executable(selected, "2.0.0");
+      return result("Updated selected program");
+    }) as typeof spawnSync;
+    const receipt = await runHarnessUpdate("fixture", undefined, {
+      ...w.options,
+      activeRunsAtStart: 3,
+      requester: { source: "test", requestId: "a" },
+    });
+    expect(calls).toEqual([selected]);
+    expect(receipt).toMatchObject({
+      ok: true,
+      outcome: "changed",
+      mutation: "applied",
+      activeRunsAtStart: 3,
+      requester: { source: "test", requestId: "a" },
+      before: { path: selected, version: "1.0.0", overrideEnv: override ? "FIXTURE_BIN" : null },
+      after: { path: selected, version: "2.0.0" },
+    });
+  });
+  it("runs a hand-placed engine-bin wrapper beside stale npm metadata without replacing it", async () => {
+    const w = world();
+    const old = oldCopy(w);
+    rmSync(old.launcher);
+    const wrapper = join(w.home, "custom/wrapper");
+    executable(wrapper);
+    symlinkSync(wrapper, old.launcher);
+    const bytes = readFileSync(wrapper);
+    const calls: string[] = [];
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      calls.push(bin);
+      return result("Use your own installer to update this copy.");
+    }) as typeof spawnSync;
+    const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(calls).toEqual([old.launcher]);
+    expect(receipt).toMatchObject({
+      ok: true,
+      outcome: "not_changed",
+      mutation: "none",
+      progress: ["Use your own installer to update this copy."],
+    });
+    expect(readFileSync(wrapper)).toEqual(bytes);
+    expect(existsSync(old.pkg)).toBe(true);
+  });
+  it.each([false, true])(
+    "converts a proven old npm copy only after a vendor copy answers (remote: %s)",
+    async (remote) => {
+      const w = world();
+      const old = oldCopy(w, remote);
+      const calls: string[] = [];
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "query") return result("", 1);
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        calls.push(bin);
+        executable(w.installed, "2.0.0");
+        return result("Installed vendor copy");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(calls).toEqual(["/bin/sh"]);
       expect(receipt).toMatchObject({
         ok: true,
-        mutation: "applied",
-        requestedVersion: "1.2.3",
-        resolvedVersion: "1.2.3",
-        previousVersion: before,
-        before: { version: before, selection: "managed", proved: true },
-        after: { version: "1.2.3", selected: true, proved: true },
+        outcome: "changed",
+        before: { path: old.launcher, version: "1.0.0" },
+        after: { path: w.installed, version: "2.0.0" },
       });
-      expect(calls.filter((call) => call.includes("install"))).toHaveLength(1);
-      expect(calls.find((call) => call.includes("install"))?.at(-1)).toBe("@openai/codex@1.2.3");
-      expect(calls.filter((call) => call.includes("view"))).toHaveLength(0);
+      expect(existsSync(old.pkg)).toBe(false);
+      expect(existsSync(old.launcher)).toBe(false);
+      expect(receipt.commands[0]!.script).toEqual({
+        url: "https://example.invalid/install",
+        size: Buffer.byteLength(SCRIPT),
+        sha256: createHash("sha256").update(SCRIPT).digest("hex"),
+      });
+      expect(existsSync(receipt.commands[0]!.args[0]!)).toBe(false);
     },
   );
-
-  it("the public Update command without a version selects latest, never the bundled baseline", () => {
-    const w = world();
-    w.installCodex("99.0.0");
-    const { spawn, calls } = fakeSpawn(w, "100.0.0");
-    const out: string[] = [];
-    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      out.push(String(chunk));
-      return true;
-    });
-    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const code = harnessUpdateCommand(
-      args(["harness", "update", "codex"], { yes: true }),
-      true,
-      opts(w, spawn),
-    );
-    expect(code).toBe(0);
-    expect(calls.filter((call) => call.includes("view"))).toHaveLength(1);
-    expect(calls.find((call) => call.includes("install"))?.at(-1)).toBe("@openai/codex@100.0.0");
-    expect(JSON.parse(out.join(""))).toMatchObject({
-      ok: true,
-      before: { version: "99.0.0" },
-      after: { version: "100.0.0", selected: true, proved: true },
-      resolvedVersion: "100.0.0",
-      mutation: "applied",
-    });
-  });
-
-  it("latest is resolved ONCE to an exact version before the install", () => {
-    const w = world();
-    w.installCodex("1.0.0");
-    const { spawn, calls } = fakeSpawn(w, "7.7.7");
-    const receipt = runHarnessUpdate("codex", "latest", opts(w, spawn));
-    expect(calls.filter((call) => call.includes("view"))).toHaveLength(1);
-    expect(calls.find((call) => call.includes("install"))?.at(-1)).toBe("@openai/codex@7.7.7");
-    expect(receipt).toMatchObject({
-      ok: true,
-      requestedVersion: "latest",
-      resolvedVersion: "7.7.7",
-    });
-  });
-
-  it("a failed install keeps the proved before fact and reports an unknown effect", () => {
-    const w = world();
-    w.installCodex("1.0.0");
-    const { spawn } = fakeSpawn(w, "7.7.7", false);
-    const receipt = runHarnessUpdate("codex", "2.0.0", opts(w, spawn));
-    expect(receipt).toMatchObject({
-      ok: false,
-      mutation: "unknown",
-      previousVersion: "1.0.0",
-      before: { version: "1.0.0", proved: true },
-    });
-  });
-
-  it("an explicit override is not falsely activated: no install, typed remedy", () => {
-    const w = world();
-    w.installCodex("1.0.0");
-    const custom = exe(join(w.root, "custom", "codex"), "#!/bin/sh\necho codex-cli 5.0.0\n");
-    const { spawn, calls } = fakeSpawn(w);
-    const env = { ...w.sourceEnv, CLAUDEXOR_CODEX_BIN: custom };
-    const row = inspectHarness("codex", { ...opts(w, spawn), sourceEnv: env });
-    expect(row).toMatchObject({
-      maintainable: false,
-      targets: [],
-      selection: {
-        kind: "override",
-        binary: custom,
-        version: "5.0.0",
-        overrideEnv: "CLAUDEXOR_CODEX_BIN",
-      },
-      installed: { version: "1.0.0", proved: true },
-    });
-    const receipt = runHarnessUpdate("codex", "2.0.0", { ...opts(w, spawn), sourceEnv: env });
-    expect(receipt).toMatchObject({
-      ok: false,
-      code: "harness_not_maintainable",
-      mutation: "none",
-    });
-    expect(calls.some((call) => call.includes("install"))).toBe(false);
-  });
-
-  it("a selected copy outside the managed prefix is not silently taken over", () => {
-    const w = world();
-    exe(join(w.home, ".local", "bin", "codex"), "#!/bin/sh\necho codex-cli 0.153.3\n");
-    const { spawn } = fakeSpawn(w);
-    const row = inspectHarness("codex", opts(w, spawn));
-    expect(row).toMatchObject({
-      maintainable: false,
-      selection: { kind: "path", version: "0.153.3" },
-      installed: { version: null, proved: false },
-    });
-    expect(row.remedy).toContain("outside Claudexor's managed prefix");
-  });
-
-  it("inspection never installs or logs in; --latest is one registry read", () => {
-    const w = world();
-    w.installCodex("1.0.0");
-    const { spawn, calls } = fakeSpawn(w, "3.0.0");
-    const row = inspectHarness("codex", { ...opts(w, spawn), latest: true });
-    expect(row.available?.version).toBe("3.0.0");
-    expect(row.releaseTested.version).toBe(CODEX_VENDOR_CLI_VERSION);
-    expect(row.selection.version).toBe("1.0.0");
-    expect(calls.some((call) => call.includes("install") || call.includes("login"))).toBe(false);
-    expect(calls.filter((call) => call.includes("view"))).toHaveLength(1);
-  });
-
-  it("Windows: Codex and Claude keep their supported npm entrypoint; others keep their facts", () => {
-    for (const harness of ["codex", "claude"] as const) {
-      expect(localPlatformRefusal(harness, "win32", "x64")).toBeNull();
-      expect(localPlatformRefusal(harness, "win32", "arm64")).toBeNull();
-      expect(harnessMaintenanceRecipe(harness, "win32").mechanism).toBe("managed_npm");
-    }
-    expect(localPlatformRefusal("copilot", "win32", "x64")?.code).toBe("unsupported_platform");
-    expect(localPlatformRefusal("opencode", "win32", "x64")?.code).toBe("unsupported_platform");
-    expect(harnessMaintenanceRecipe("cursor", "win32")).toMatchObject({
-      mechanism: "vendor_script",
-      targets: [],
-    });
-    expect(harnessMaintenanceRecipe("agy", "darwin").targets).toEqual(["latest"]);
-  });
-});
-
-describe("vendor updater (cursor/agy): latest only, canonical HOME launcher", () => {
-  /** A Cursor-shaped install: the canonical launcher reads a version file that
-   * its own `update` rewrites, so the re-probe observes the real effect. */
-  function cursorWorld(updateTo: string | null) {
-    const w = world();
-    const state = join(w.root, "cursor-version");
-    writeFileSync(state, "2026.08.11-e8db854");
-    const launcher = exe(
-      join(w.home, ".local", "bin", "cursor-agent"),
-      `#!/bin/sh\ncat ${state}\n`,
-    );
-    const calls: string[][] = [];
-    const spawn = vi.fn((binary: string, argv: readonly string[]) => {
-      calls.push([binary, ...argv]);
-      if (argv.includes("--version"))
-        return { status: 0, stdout: `${readFileSync(state, "utf8")}\n`, stderr: "" } as never;
-      if (argv[0] === "update") {
-        if (updateTo !== null) writeFileSync(state, updateTo);
-        return { status: 0 } as never;
-      }
-      return { status: 0, stdout: "", stderr: "" } as never;
-    });
-    return { w, launcher, spawn, calls };
-  }
-
-  it("runs the selected launcher's own update and re-probes the new version", () => {
-    const { w, launcher, spawn, calls } = cursorWorld("2026.10.01-e373342");
-    const receipt = runHarnessUpdate("cursor", undefined, opts(w, spawn));
-    expect(calls.find((call) => call.at(-1) === "update")?.[0]).toBe(launcher);
-    expect(receipt).toMatchObject({
-      ok: true,
-      mechanism: "vendor_updater",
-      mutation: "applied",
-      before: { version: "2026.08.11-e8db854", binary: launcher, selection: "path" },
-      after: { version: "2026.10.01-e373342", binary: launcher, selected: true },
-    });
-    expect(receipt.limitations).toContain("vendor_resolves_latest");
-  });
-
-  it("an unchanged version after exit 0 is 'no change observed', never 'updated'", () => {
-    const { w, spawn } = cursorWorld(null);
-    const receipt = runHarnessUpdate("cursor", undefined, opts(w, spawn));
-    expect(receipt).toMatchObject({ ok: true, mutation: "none", resolvedVersion: null });
-    expect(receipt.limitations).toContain("no_version_change_observed");
-  });
-
-  it("exit zero without a post-update version leaves possible mutation unknown", () => {
-    const { w, spawn } = cursorWorld("");
-    const receipt = runHarnessUpdate("cursor", undefined, opts(w, spawn));
-    expect(receipt).toMatchObject({
-      ok: false,
-      code: "install_verification_failed",
-      mutation: "unknown",
-      after: { version: null, proved: false },
-    });
-  });
-
-  it("declares no latest check, and an explicit check is a typed unsupported problem", () => {
-    const { w, spawn, calls } = cursorWorld(null);
-    const row = inspectHarness("cursor", { ...opts(w, spawn), latest: true });
-    expect(row).toMatchObject({
-      maintainable: true,
-      canCheckLatest: false,
-      targets: ["latest"],
-      available: null,
-      availableProblem: { code: "latest_check_unsupported", retryable: false },
-    });
-    expect(calls.some((call) => call.at(-1) === "update" || call.includes("view"))).toBe(false);
-    expect(inspectHarness("codex", opts(w, spawn)).canCheckLatest).toBe(true);
-  });
-
-  it("refuses an exact version: the vendor resolves latest itself", () => {
-    const { w, spawn, calls } = cursorWorld("x");
-    const receipt = runHarnessUpdate("cursor", "1.2.3", opts(w, spawn));
-    expect(receipt).toMatchObject({ ok: false, code: "version_selection_unsupported" });
-    expect(calls.some((call) => call.at(-1) === "update")).toBe(false);
-  });
-
-  it("a version-pinned override elsewhere is not updated through another launcher", () => {
-    const { w, spawn, calls } = cursorWorld("x");
-    const pinned = exe(
-      join(w.home, ".local", "share", "cursor-agent", "versions", "old", "cursor-agent"),
-      "#!/bin/sh\necho 2025.01.01-old\n",
-    );
-    const env = { ...w.sourceEnv, CLAUDEXOR_CURSOR_BIN: pinned };
-    const row = inspectHarness("cursor", { ...opts(w, spawn), sourceEnv: env });
-    expect(row).toMatchObject({
-      maintainable: false,
-      selection: { kind: "override", binary: pinned },
-    });
-    const receipt = runHarnessUpdate("cursor", undefined, { ...opts(w, spawn), sourceEnv: env });
-    expect(receipt.code).toBe("harness_not_maintainable");
-    expect(calls.some((call) => call.at(-1) === "update")).toBe(false);
-  });
-
-  it("an alias-only Cursor install (agent -> versions/<v>/cursor-agent) is the selected launcher", () => {
-    const w = world();
-    const state = join(w.root, "cursor-version");
-    writeFileSync(state, "2026.08.11-e8db854");
-    const payload = exe(
-      join(
-        w.home,
-        ".local",
-        "share",
-        "cursor-agent",
-        "versions",
-        "2026.08.11-e8db854",
-        "cursor-agent",
+  it.each([true, false])(
+    "converts a Windows product npm .cmd shim only after a versioned replacement (verified: %s)",
+    async (verified) => {
+      const w = world(),
+        prefix = join(w.home, ".claudexor/node");
+      const pkg = join(prefix, "node_modules/@fixture/harness"),
+        entry = join(pkg, "bin/fixture-harness.exe");
+      const launcher = join(prefix, "fixture-harness.cmd"),
+        installed = `${w.installed}.exe`;
+      const image = (path: string) => {
+        const bytes = Buffer.alloc(512);
+        bytes.write("MZ");
+        bytes.writeUInt32LE(128, 60);
+        bytes.write("PE\0\0", 128);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, bytes);
+      };
+      image(entry);
+      writeFileSync(
+        join(pkg, "package.json"),
+        JSON.stringify({
+          name: "@fixture/harness",
+          bin: { "fixture-harness": "bin/fixture-harness.exe" },
+        }),
+      );
+      writeFileSync(
+        launcher,
+        [
+          "@ECHO off",
+          "GOTO start",
+          ":find_dp0",
+          "SET dp0=%~dp0",
+          "EXIT /b",
+          ":start",
+          "SETLOCAL",
+          "CALL :find_dp0",
+          '"%dp0%\\node_modules\\@fixture\\harness\\bin\\fixture-harness.exe"   %*',
+        ].join("\r\n"),
+      );
+      w.program.platforms.win32 = {
+        ...w.program.platforms.darwin!,
+        install: { kind: "exec", command: "fixture-installer.exe", args: [] },
+      };
+      image(join(w.home, "tools/fixture-installer.exe"));
+      w.options.platform = "win32";
+      w.options.sourceEnv!.PATH = join(w.home, "tools");
+      const commands: string[] = [];
+      w.options.spawn = ((bin: string, args: readonly string[] = []) => {
+        if (args[0] === "query") return result("", 1);
+        if (args[0] === "--version")
+          return result(
+            bin === entry ? "1.0.0" : verified ? "2.0.0" : "",
+            bin === entry || verified ? 0 : 1,
+          );
+        commands.push(bin);
+        image(installed);
+        return result("Installed vendor copy");
+      }) as typeof spawnSync;
+      expect((await inspectHarness("fixture", w.options)).actions.update.commands).toEqual([
+        { kind: "exec", command: "fixture-installer.exe", args: [] },
+      ]);
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(receipt.ok).toBe(verified);
+      expect(commands).toEqual(["fixture-installer.exe"]);
+      expect(receipt.before).toMatchObject({ path: entry, realPath: entry, version: "1.0.0" });
+      expect(receipt.after).toMatchObject({
+        path: verified ? installed : entry,
+        version: verified ? "2.0.0" : "1.0.0",
+      });
+      expect(existsSync(pkg)).toBe(!verified);
+      expect(existsSync(launcher)).toBe(!verified);
+    },
+  );
+  it.each(["installer", "missing-version", "explicit-old-override"])(
+    "failed conversion preserves the old copy (%s)",
+    async (failure) => {
+      const w = world();
+      const old = oldCopy(w);
+      if (failure === "explicit-old-override") w.options.sourceEnv!.FIXTURE_BIN = old.launcher;
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "query") return result("", 1);
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        if (failure !== "installer")
+          executable(w.installed, failure === "missing-version" ? "" : "2.0.0");
+        return result(
+          failure === "installer" ? "Download failed" : "Installed",
+          failure === "installer" ? 9 : 0,
+        );
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(receipt.ok).toBe(false);
+      expect(receipt.problem?.message).toMatch(
+        failure === "installer"
+          ? /Download failed/
+          : failure === "explicit-old-override"
+            ? /override pins/
+            : /old copy is unchanged/,
+      );
+      expect(existsSync(old.pkg)).toBe(true);
+      expect((await inspectHarness("fixture", w.options)).selection).toMatchObject({
+        path: old.launcher,
+        version: "1.0.0",
+      });
+    },
+  );
+  it.each(
+    [false, true].flatMap((failExact) =>
+      [0, 2316632107].map((installerExit) => ({ failExact, installerExit })),
+    ),
+  )(
+    "converts before an exact native verb and retains both command results: %j",
+    async ({ failExact, installerExit }) => {
+      const w = world();
+      const old = oldCopy(w);
+      const prepared: unknown[] = [];
+      w.options.beforeMutation = async (receipt) => {
+        prepared.push(structuredClone(receipt.commands));
+        expect(existsSync(old.pkg)).toBe(true);
+      };
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        options: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "query") return result("", 1);
+        if (args[0] === "--version") return spawnSync(bin, args, options);
+        if (bin === "/bin/sh") {
+          executable(w.installed, "2.0.0");
+          return result("Native installed", installerExit);
+        }
+        expect(bin).toBe(w.installed);
+        expect(args).toEqual(["update", "--version", "3.4.5"]);
+        if (failExact) return result("Exact release unavailable", 7);
+        executable(w.installed, "3.4.5");
+        return result("Exact installed");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", "3.4.5", w.options);
+      expect(prepared).toHaveLength(2);
+      expect(receipt.commands).toHaveLength(2);
+      expect(receipt.exitCode).toBe(failExact ? 7 : 0);
+      expect(receipt.limitations).toContain(`Vendor installer exit status: ${installerExit}.`);
+      expect(receipt.ok).toBe(!failExact);
+      expect(existsSync(old.pkg)).toBe(failExact);
+      expect(receipt.after).toMatchObject({
+        path: failExact ? old.launcher : w.installed,
+        version: failExact ? "1.0.0" : "3.4.5",
+      });
+      if (failExact)
+        expect(receipt.progress).toEqual(["Native installed", "Exact release unavailable"]);
+    },
+  );
+  it.each(["0.153.3", "0.162.1", "0.167.1", "unorderable-build"])(
+    "retires npm only when the resulting vendor program is not known older (%s)",
+    async (replacement) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.program.versionScheme = "semver";
+      executable(old.entry, "0.162.1");
+      executable(w.installed, replacement);
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) =>
+        args[0] === "--version"
+          ? spawnSync(bin, args, opts)
+          : result("Installer did nothing")) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      const accepted = replacement !== "0.153.3";
+      expect(receipt).toMatchObject({
+        ok: accepted,
+        exitCode: 0,
+        progress: ["Installer did nothing"],
+      });
+      expect(existsSync(old.pkg)).toBe(!accepted);
+      expect(receipt.after?.version).toBe(accepted ? replacement : "0.162.1");
+      if (!accepted)
+        expect(receipt.problem?.message).toContain(
+          `version 0.153.3 is found first and is older than the selected 0.162.1`,
+        );
+    },
+  );
+  it.each(
+    [0, 1].flatMap((exit) =>
+      [false, true].flatMap((exact) =>
+        ["1.19.5", "2.2.7"].map((replacement) => ({ exit, exact, replacement })),
       ),
-      `#!/bin/sh\ncat ${state}\n`,
+    ),
+  )(
+    "keeps conversion and its exact step on the adapter's declared major: %j",
+    async ({ exit, exact, replacement }) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.program.majorVersion = OPENCODE_PROGRAM.majorVersion;
+      w.program.versionScheme = OPENCODE_PROGRAM.versionScheme;
+      executable(old.entry, "1.18.9");
+      const commands: string[] = [];
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        commands.push(bin);
+        if (bin === "/bin/sh") {
+          executable(w.installed, replacement);
+          return result("Installer result", exit);
+        }
+        executable(w.installed, "1.19.6");
+        return result("Exact version selected");
+      }) as typeof spawnSync;
+      const accepted = replacement === "1.19.5";
+      const receipt = await runHarnessUpdate("fixture", exact ? "1.19.6" : undefined, w.options);
+      expect(receipt.ok).toBe(accepted);
+      expect(existsSync(old.pkg)).toBe(!accepted);
+      expect(existsSync(old.launcher)).toBe(!accepted);
+      expect(receipt.after?.version).toBe(accepted ? (exact ? "1.19.6" : "1.19.5") : "1.18.9");
+      expect(commands).toHaveLength(accepted && exact ? 2 : 1);
+      if (!accepted) {
+        expect(receipt.exitCode).toBe(exit);
+        expect(receipt.problem?.code).toBe(
+          exit ? "vendor_command_failed" : "conversion_unsupported_major",
+        );
+      }
+    },
+  );
+  it("names the stale first-found replacement and keeps npm until the installer copy becomes selected", async () => {
+    const w = world(),
+      old = oldCopy(w);
+    w.program.versionScheme = "semver";
+    executable(old.entry, "1.18.9");
+    const shadow = join(w.home, ".local/bin/fixture-harness");
+    const installed = join(w.home, "installer-finished"),
+      asked = join(w.home, "shadow-asked");
+    executable(shadow, "1.18.0");
+    writeFileSync(
+      shadow,
+      `#!/bin/sh
+if [ -e '${installed}' ] && [ ! -e '${asked}' ]; then : > '${asked}'; exit 1; fi
+echo 1.18.0
+`,
     );
-    mkdirSync(join(w.home, ".local", "bin"), { recursive: true });
-    symlinkSync(payload, join(w.home, ".local", "bin", "agent"));
-    const spawn = vi.fn((_binary: string, argv: readonly string[]) => {
-      if (argv.includes("--version"))
-        return { status: 0, stdout: `${readFileSync(state, "utf8")}\n`, stderr: "" } as never;
-      if (argv[0] === "update") writeFileSync(state, "2026.10.01-e373342");
-      return { status: 0, stdout: "", stderr: "" } as never;
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      executable(w.installed, "1.19.5");
+      writeFileSync(installed, "done");
+      return result("Installed 1.19.5");
+    }) as typeof spawnSync;
+    const refused = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(refused.problem).toMatchObject({
+      code: "conversion_older_program",
+      message: `After the installer, ${shadow} version 1.18.0 is found first and is older than the selected 1.18.9; the installer's copy may be hidden behind it. Nothing was removed.`,
     });
-    const row = inspectHarness("cursor", opts(w, spawn));
-    expect(row).toMatchObject({
-      maintainable: true,
-      selection: { kind: "path", binary: join(w.home, ".local", "bin", "agent") },
+    expect(existsSync(w.installed)).toBe(true);
+    expect(existsSync(old.pkg)).toBe(true);
+    expect(refused.after?.path).toBe(old.launcher);
+    expect(refused.limitations.filter((line) => line.includes("next check answered"))).toHaveLength(
+      1,
+    );
+    rmSync(shadow);
+    const converted = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(converted).toMatchObject({ ok: true, after: { path: w.installed, version: "1.19.5" } });
+    expect(converted.limitations.some((line) => line.includes("next check answered"))).toBe(false);
+    expect(existsSync(old.pkg)).toBe(false);
+  });
+  it.each([false, true])(
+    "accepts a nonzero installer only when it leaves an acceptable replacement (%s)",
+    async (healthy) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.program.versionScheme = "semver";
+      executable(w.installed, healthy ? "1.0.109" : "0.9.0");
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) =>
+        args[0] === "--version"
+          ? spawnSync(bin, args, opts)
+          : result("No available upgrade found", 2316632107)) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(receipt).toMatchObject({
+        ok: healthy,
+        exitCode: 2316632107,
+        progress: ["No available upgrade found"],
+      });
+      expect(existsSync(old.pkg)).toBe(!healthy);
+      if (healthy) expect(receipt.limitations.join(" ")).toContain("installer exited 2316632107");
+      else expect(receipt.problem?.message).toBe("No available upgrade found");
+    },
+  );
+  it.each([false, true])(
+    "recognizes vendor removal of the npm copy only when ordinary resolution proves the replacement (%s)",
+    async (healthy) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        rmSync(old.pkg, { recursive: true });
+        rmSync(old.launcher);
+        if (healthy) executable(w.installed, "2.1.322");
+        return result("Cleaning up npm installations");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(receipt).toMatchObject({
+        ok: healthy,
+        exitCode: 0,
+        progress: ["Cleaning up npm installations"],
+      });
+      expect(existsSync(old.pkg)).toBe(false);
+      expect(receipt.after?.version).toBe(healthy ? "2.1.322" : null);
+      if (!healthy) expect(receipt.problem?.code).toBe("conversion_verification_failed");
+    },
+  );
+  it("offers conversion only when an override does not pin the old product copy", async () => {
+    const w = world(),
+      old = oldCopy(w);
+    expect((await inspectHarness("fixture", w.options)).actions.update.available).toBe(true);
+    w.options.sourceEnv!.FIXTURE_BIN = old.launcher;
+    const row = await inspectHarness("fixture", w.options);
+    expect(row.actions.update).toEqual({
+      available: false,
+      commands: [],
+      reason: expect.stringMatching(
+        /override pins.*old product-made.*clearing the override.*Update/,
+      ),
     });
-    const receipt = runHarnessUpdate("cursor", undefined, opts(w, spawn));
+    expect(row.actions.exactVersion).toEqual(row.actions.update);
+    const fetcher = vi.fn(w.options.fetch);
+    const cleanup = vi.fn(() => ({
+      paths: [],
+      limitations: [],
+      execute: () => ({ removed: [], limitations: [] }),
+    }));
+    w.options.planProfileProgramCleanup = cleanup;
+    w.options.credentialProfiles = [];
+    w.options.fetch = fetcher;
+    for (const target of [undefined, "3.4.5"]) {
+      const receipt = await runHarnessUpdate("fixture", target, w.options);
+      expect(receipt).toMatchObject({
+        ok: false,
+        commands: [],
+        exitCode: null,
+        problem: { code: "program_action_unavailable", message: row.actions.update.reason },
+      });
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(existsSync(old.entry)).toBe(true);
+    delete w.options.sourceEnv!.FIXTURE_BIN;
+    expect((await inspectHarness("fixture", w.options)).actions.update.available).toBe(true);
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      executable(w.installed, "2.0.0");
+      return result();
+    }) as typeof spawnSync;
+    expect((await runHarnessUpdate("fixture", undefined, w.options)).ok).toBe(true);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it.each(
+    [false, true].flatMap((dryRun) =>
+      ["answers", "second", "never"].map((answer) => ({ dryRun, answer })),
+    ),
+  )(
+    "Install verifies its before and final state, including a dry run: %j",
+    async ({ dryRun, answer }) => {
+      const w = world();
+      const healthy = answer !== "never";
+      executable(w.installed);
+      const marker = join(w.home, "first-version-ask");
+      writeFileSync(
+        w.installed,
+        `#!/bin/sh
+if [ '${answer}' = never ]; then exit 1; fi
+if [ '${answer}' = second ] && [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+echo 1.0.0
+`,
+      );
+      const receipt = await runHarnessUpdate("fixture", undefined, {
+        ...w.options,
+        installOnly: true,
+        dryRun,
+      });
+      expect(receipt).toMatchObject({
+        ok: healthy,
+        outcome: healthy ? "not_changed" : "unknown",
+        commands: [],
+        exitCode: null,
+        mutation: "none",
+      });
+      expect(receipt.problem).toEqual(
+        healthy ? null : expect.objectContaining({ code: "program_verification_failed" }),
+      );
+      expect(receipt.before?.version).toBe(healthy ? "1.0.0" : null);
+      expect(receipt.after?.version).toBe(healthy ? "1.0.0" : null);
+      expect(
+        receipt.limitations.filter((line) => line.includes("next check answered")),
+      ).toHaveLength(answer === "second" ? 1 : 0);
+    },
+  );
+  it.each([false, true])(
+    "uses the verified npm version for the downgrade guard (answers on second ask: %s)",
+    async (answers) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.program.versionScheme = "semver";
+      const marker = join(w.home, "npm-version-asked");
+      writeFileSync(
+        old.entry,
+        `#!/bin/sh
+if [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+${answers ? "echo 1.5.0" : "exit 1"}
+`,
+      );
+      let commands = 0;
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        commands++;
+        executable(w.installed, "1.0.0");
+        return result("Installed 1.0.0");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(commands).toBe(1);
+      expect(receipt).toMatchObject({
+        ok: !answers,
+        before: { version: answers ? "1.5.0" : null },
+        after: { path: answers ? old.launcher : w.installed, version: answers ? "1.5.0" : "1.0.0" },
+        outcome: answers ? "changed_elsewhere" : "changed",
+        mutation: "applied",
+        problem: answers ? { code: "conversion_older_program" } : null,
+      });
+      expect(existsSync(old.pkg)).toBe(answers);
+      expect(existsSync(old.launcher)).toBe(answers);
+      expect(
+        receipt.limitations.filter((line) => line.includes("next check answered")),
+      ).toHaveLength(answers ? 1 : 0);
+    },
+  );
+  it("states the missing vendor installer when a platform cannot convert its old npm copy", async () => {
+    const w = world();
+    const old = oldCopy(w);
+    delete w.program.platforms.darwin!.install;
+    w.program.platforms.darwin!.reasons = {
+      install: "No unattended vendor installer on this platform (#fixture).",
+    };
+    const row = await inspectHarness("fixture", w.options);
+    expect(row.actions.update).toEqual({
+      available: false,
+      reason: "No unattended vendor installer on this platform (#fixture).",
+      commands: [],
+    });
+    expect(row.actions.exactVersion).toEqual(row.actions.update);
+    expect((await runHarnessUpdate("fixture", "2.0.0", w.options)).ok).toBe(false);
+    expect(existsSync(old.pkg)).toBe(true);
+  });
+  it("acknowledges profile cleanup paths before removal and records effects even when the program stays unchanged", async () => {
+    const w = world();
+    executable(w.installed);
+    const removedPath = join(w.home, "obsolete-profile-program");
+    writeFileSync(removedPath, "fixture");
+    const acknowledgments: unknown[] = [];
+    const receipt = await runHarnessUpdate("fixture", undefined, {
+      ...w.options,
+      credentialProfiles: [],
+      planProfileProgramCleanup: (_profiles, _selected, mode) => ({
+        paths: mode?.recoverOnly ? [] : [removedPath],
+        limitations: [],
+        execute: () => {
+          expect(acknowledgments).toHaveLength(2);
+          rmSync(removedPath);
+          return { removed: [removedPath], limitations: [] };
+        },
+      }),
+      beforeMutation: async (evidence) => {
+        acknowledgments.push(JSON.parse(JSON.stringify(evidence)));
+        expect(existsSync(removedPath)).toBe(true);
+      },
+    });
     expect(receipt).toMatchObject({
       ok: true,
+      outcome: "not_changed",
       mutation: "applied",
-      after: { version: "2026.10.01-e373342" },
+      profileCleanup: { plannedPaths: [removedPath], removedPaths: [removedPath] },
+    });
+    expect((acknowledgments[1] as typeof receipt).profileCleanup?.removedPaths).toEqual([]);
+    expect((acknowledgments[1] as typeof receipt).after).toMatchObject({
+      path: w.installed,
+      version: "1.0.0",
     });
   });
-
-  it("an override naming the canonical launcher shares the vendor recipe", () => {
-    const { w, launcher, spawn } = cursorWorld("2026.10.01-e373342");
-    const env = { ...w.sourceEnv, CLAUDEXOR_CURSOR_BIN: launcher };
-    const receipt = runHarnessUpdate("cursor", "latest", { ...opts(w, spawn), sourceEnv: env });
-    expect(receipt).toMatchObject({
-      ok: true,
-      mutation: "applied",
-      before: { selection: "override" },
+  it.each([
+    { answer: "answers", copies: 2 },
+    { answer: "second", copies: 2 },
+    { answer: "never", copies: 0 },
+    { answer: "never", copies: 18 },
+  ])("plans ordinary cleanup only after a verified result: %j", async ({ answer, copies }) => {
+    const w = world();
+    vi.stubEnv("CLAUDEXOR_CONFIG_DIR", w.home);
+    executable(w.installed);
+    const profiles = Array.from({ length: copies }, (_, index) => {
+      const home = join(w.home, `profiles/cursor-${index}`);
+      executable(join(home, ".local/share/cursor-agent/versions/current/cursor-agent"));
+      return {
+        profile_id: String(index),
+        harness_id: "cursor",
+        display_name: String(index),
+        credential_kind: "config_dir_login" as const,
+        isolation_locator: home,
+        enabled: true,
+        secret_ref: null,
+        created_at: null,
+      };
     });
+    const plan = vi.fn(planCursorProfileProgramCleanup);
+    const acknowledgments: Array<{ after: unknown; cleanup: unknown }> = [];
+    let commands = 0,
+      asksAfterCommand = 0;
+    const marker = join(w.home, "first-result-ask");
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") {
+        if (commands) asksAfterCommand++;
+        return spawnSync(bin, args, opts);
+      }
+      commands++;
+      writeFileSync(
+        w.installed,
+        `#!/bin/sh
+if [ '${answer}' = never ]; then exit 1; fi
+if [ '${answer}' = second ] && [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+echo 2.0.0
+`,
+      );
+      return result("Updated");
+    }) as typeof spawnSync;
+    const receipt = await runHarnessUpdate("fixture", undefined, {
+      ...w.options,
+      credentialProfiles: profiles,
+      planProfileProgramCleanup: plan,
+      beforeMutation: async (evidence) => {
+        acknowledgments.push(
+          JSON.parse(
+            JSON.stringify({ after: evidence.after, cleanup: evidence.profileCleanup ?? null }),
+          ),
+        );
+      },
+    });
+    const healthy = answer !== "never";
+    expect(commands).toBe(1);
+    expect(plan.mock.calls.filter(([, , mode]) => mode?.recoverOnly)).toHaveLength(1);
+    expect(plan.mock.calls.filter(([, , mode]) => !mode?.recoverOnly)).toHaveLength(
+      healthy ? 1 : 0,
+    );
+    expect(acknowledgments).toHaveLength(healthy ? 2 : 1);
+    if (healthy)
+      expect(acknowledgments[1]?.after).toMatchObject({ path: w.installed, version: "2.0.0" });
+    else {
+      // Two post-command asks and two final asks, independent of profile count.
+      expect(asksAfterCommand).toBe(4);
+      expect(receipt.profileCleanup).toBeUndefined();
+    }
+    for (const profile of profiles) {
+      expect(existsSync(join(profile.isolation_locator, ".local/share/cursor-agent"))).toBe(
+        !healthy,
+      );
+      expect(
+        existsSync(join(profile.isolation_locator, ".local/share/.cursor-agent.claudexor-hidden")),
+      ).toBe(false);
+    }
+    expect(receipt).toMatchObject({
+      ok: healthy,
+      after: { version: healthy ? "2.0.0" : null },
+      outcome: "changed",
+      mutation: "applied",
+      problem: healthy ? null : { code: "program_verification_failed" },
+    });
+    expect(receipt.limitations.some((line) => line.includes("in use"))).toBe(false);
+    expect(receipt.limitations.filter((line) => line.includes("next check answered"))).toHaveLength(
+      answer === "second" ? 1 : 0,
+    );
+  });
+  it.each([false, true])(
+    "verifies the selected program after cleanup (cleanup breaks selection: %s)",
+    async (breaks) => {
+      const w = world();
+      executable(w.installed);
+      const path = join(w.home, "obsolete");
+      writeFileSync(path, "old");
+      const receipt = await runHarnessUpdate("fixture", undefined, {
+        ...w.options,
+        credentialProfiles: [],
+        planProfileProgramCleanup: (_profiles, _selected, mode) => ({
+          paths: mode?.recoverOnly ? [] : [path],
+          limitations: [],
+          execute() {
+            rmSync(path);
+            if (breaks) rmSync(w.installed);
+            return { removed: [path], limitations: [] };
+          },
+        }),
+      });
+      expect(receipt.ok).toBe(!breaks);
+      expect(receipt.after?.version).toBe(breaks ? null : "1.0.0");
+      expect(receipt.problem).toEqual(
+        breaks ? expect.objectContaining({ code: "program_verification_failed" }) : null,
+      );
+    },
+  );
+  it.each(
+    [false, true].flatMap((dependent) =>
+      [false, true].flatMap((override) =>
+        [false, true].map((recover) => ({ dependent, override, recover })),
+      ),
+    ),
+  )(
+    "maintains real-shaped Cursor launchers and recovers interrupted hides: %j",
+    async ({ dependent, override, recover }) => {
+      const w = world();
+      vi.stubEnv("CLAUDEXOR_CONFIG_DIR", w.home);
+      const home = join(w.home, "profiles/cursor-a"),
+        tree = join(home, ".local/share/cursor-agent");
+      const vendor = (base: string, name: string) => {
+        const dir = join(base, "share/cursor-agent/versions/current"),
+          link = join(base, "bin", name);
+        mkdirSync(dir, { recursive: true });
+        mkdirSync(dirname(link), { recursive: true });
+        writeFileSync(
+          join(dir, "cursor-agent"),
+          '#!/usr/bin/env bash\nset -euo pipefail\nSCRIPT_DIR="$(dirname "$(realpath "$0")")"\nexec "$SCRIPT_DIR/node" "$SCRIPT_DIR/index.js" "$@"\n',
+          { mode: 0o755 },
+        );
+        writeFileSync(join(dir, "node"), "#!/bin/sh\necho 2026.11.10-731fb78\n", { mode: 0o755 });
+        writeFileSync(join(dir, "index.js"), "fixture");
+        symlinkSync(join(dir, "cursor-agent"), link);
+        return link;
+      };
+      const target = vendor(join(home, ".local"), "cursor-agent");
+      const selected = vendor(join(w.home, ".vendor"), "fixture-harness");
+      if (dependent) writeFileSync(realpathSync(selected), `#!/bin/sh\nexec '${target}' "$@"\n`);
+      w.options.sourceEnv!.PATH = "/usr/bin:/bin";
+      if (override) w.options.sourceEnv!.FIXTURE_BIN = selected;
+      const hidden = join(dirname(tree), ".cursor-agent.claudexor-hidden");
+      if (recover) {
+        const died = spawnSync(process.execPath, [
+          "--input-type=module",
+          "-e",
+          "import {renameSync} from 'node:fs'; renameSync(process.argv[1], process.argv[2]); process.exit(17)",
+          tree,
+          hidden,
+        ]);
+        expect(died.status).toBe(17);
+      }
+      const receipt = await runHarnessUpdate("fixture", undefined, {
+        ...w.options,
+        credentialProfiles: [
+          {
+            profile_id: "a",
+            harness_id: "cursor",
+            display_name: "A",
+            credential_kind: "config_dir_login",
+            isolation_locator: home,
+            enabled: true,
+            secret_ref: null,
+            created_at: null,
+          },
+        ],
+        planProfileProgramCleanup: planCursorProfileProgramCleanup,
+      });
+      expect(receipt).toMatchObject({ ok: true, after: { version: "2026.11.10-731fb78" } });
+      expect(existsSync(target)).toBe(dependent);
+      expect(existsSync(hidden)).toBe(false);
+      if (dependent) {
+        expect(receipt.profileCleanup?.removedPaths).toEqual([]);
+        expect(receipt.limitations.join(" ")).toContain("in use");
+      } else {
+        expect(receipt.profileCleanup?.removedPaths).toContain(target);
+        expect(receipt.limitations.join(" ")).not.toContain("in use");
+      }
+    },
+  );
+  it("a newest read failure cannot block Update", async () => {
+    const w = world();
+    executable(w.installed);
+    const fetcher = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    w.options.fetch = fetcher;
+    expect((await inspectHarness("fixture", { ...w.options, latest: true })).newest).toMatchObject({
+      status: "unavailable",
+      problem: { message: "offline" },
+    });
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      executable(w.installed, "2.0.0");
+      return result();
+    }) as typeof spawnSync;
+    expect((await runHarnessUpdate("fixture", undefined, w.options)).ok).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it("reports a changed unselected copy while keeping the selected wrapper", async () => {
+    const w = world();
+    const selected = join(w.home, "wrapper");
+    executable(selected);
+    executable(w.installed);
+    w.options.sourceEnv!.FIXTURE_BIN = selected;
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      executable(w.installed, "2.0.0");
+      return result("Installed another copy");
+    }) as typeof spawnSync;
+    expect(await runHarnessUpdate("fixture", undefined, w.options)).toMatchObject({
+      ok: true,
+      outcome: "changed_elsewhere",
+      mutation: "applied",
+      before: { path: selected, version: "1.0.0" },
+      after: { path: selected, version: "1.0.0" },
+      elsewhere: { before: { version: "1.0.0" }, after: { version: "2.0.0" } },
+    });
+  });
+  it("uses installation HOME and declared inputs in a clean environment, with bounded redacted vendor advice", async () => {
+    const w = world();
+    executable(w.installed);
+    Object.assign(w.options.sourceEnv!, {
+      CODEX_HOME: join(w.home, "codex-state"),
+      XDG_CONFIG_HOME: join(w.home, "config"),
+      ANTHROPIC_API_KEY: "unrelated-secret",
+      RANDOM_SECRET: "also-secret",
+    });
+    let env: NodeJS.ProcessEnv | undefined;
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      env = opts.env;
+      return result(
+        Array.from({ length: 45 }, (_, i) => `line ${i}`).join("\n") +
+          "\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789\n",
+      );
+    }) as typeof spawnSync;
+    const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(env).toMatchObject({
+      HOME: w.home,
+      CODEX_HOME: join(w.home, "codex-state"),
+      XDG_CONFIG_HOME: join(w.home, "config"),
+    });
+    expect(env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(env).not.toHaveProperty("RANDOM_SECRET");
+    expect(receipt.progress).toHaveLength(40);
+    expect(receipt.progress.join("\n")).not.toContain("abcdefghijklmnopqrstuvwxyz0123456789");
+  });
+  it("awaits durable evidence before mutation and does not mutate if it is rejected", async () => {
+    const w = world();
+    executable(w.installed);
+    let mutated = false;
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      mutated = true;
+      return result();
+    }) as typeof spawnSync;
+    const receipt = await runHarnessUpdate("fixture", undefined, {
+      ...w.options,
+      beforeMutation: async (evidence) => {
+        expect(evidence).toMatchObject({
+          phase: "installing",
+          before: { version: "1.0.0" },
+          commands: [{ binary: w.installed, args: ["update"] }],
+        });
+        throw new Error("store unavailable");
+      },
+    });
+    expect(mutated).toBe(false);
+    expect(receipt).toMatchObject({
+      ok: false,
+      mutation: "none",
+      problem: { message: "store unavailable" },
+    });
+  });
+  it("only a declared exact-version command can select an explicit target", async () => {
+    const w = world();
+    executable(w.installed);
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      expect(args).toEqual(["update", "--version", "3.4.5"]);
+      executable(w.installed, "3.4.5");
+      return result();
+    }) as typeof spawnSync;
+    expect(await runHarnessUpdate("fixture", "3.4.5", w.options)).toMatchObject({
+      ok: true,
+      after: { version: "3.4.5" },
+    });
+    for (const target of ["previous", "baseline", "^3.0.0", "$(echo bad)"])
+      expect((await runHarnessUpdate("fixture", target, w.options)).problem?.message).toContain(
+        "--vendor-version",
+      );
   });
 });

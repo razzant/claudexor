@@ -9,6 +9,8 @@ import { join } from "node:path";
 import type { ArtifactStore, RunPaths } from "@claudexor/artifact-store";
 import type { BudgetLedger } from "@claudexor/budget";
 import {
+  AnswerAssembly,
+  appendHarnessEvent,
   countsAsAgentProgress,
   type InteractionChannel,
   type ProcessingAdmission,
@@ -22,15 +24,17 @@ import type {
   HarnessRunSpec,
   Intent,
 } from "@claudexor/schema";
-import { appendLine, redactSecrets, safeInvoke } from "@claudexor/util";
+import { redactSecrets, safeInvoke } from "@claudexor/util";
 import {
+  attemptInterruption,
   finalizeAttempt,
+  interruptionDetail,
   unrecoveredToolErrorFailure,
   webEvidenceFailure,
   type AttemptOutcomeClass,
 } from "./attemptFinalize.js";
 import {
-  unwrapWorkReportEnvelope,
+  unwrapAttemptAnswer,
   type UnwrappedAnswer,
   type WorkReportEnvelopeMode,
 } from "./workReportEnvelope.js";
@@ -44,17 +48,18 @@ import {
   type AttemptTelemetry,
 } from "./attemptTelemetry.js";
 import { settleGrantedAttemptLease } from "./attemptUsageCost.js";
+import { observeUsageSpend } from "./laneStreamEvents.js";
 import { observeNativeSessionEvent } from "./credential-profiles.js";
 import type { BudgetDenial } from "./budgetFailure.js";
 import { declaredFailure, type DeclaredFailure } from "./runTerminalResults.js";
+import { endsPendingLimit, pinnedTypedLimit } from "./quota-refusal-scope.js";
+import { marksAgentProgress } from "./attemptOutputMarkers.js";
 import { runModelGovernedRoute } from "./modelGovernance.js";
-import { CountedAnswerAssembly } from "./secretDiff.js";
 import type { RoutedAdapter, RunInput } from "./orchestrator.js";
 import {
   harnessEventPayload,
   observeAuthSwitch,
   observeBudgetSignals,
-  redactHarnessEvent,
   safeErrorMessage,
 } from "./runSupport.js";
 
@@ -70,7 +75,6 @@ export interface PlannerAttemptOutcome {
   harnessFailedBeforeReport: boolean;
   reportProblem?: UnwrappedAnswer["reportProblem"];
   text: string | null;
-  answerMatches?: number;
   telemetry: AttemptTelemetry | null;
   budgetDenied: boolean;
   budgetDenial?: BudgetDenial | null;
@@ -84,9 +88,13 @@ export function plannerAttemptSummary(outcome: PlannerAttemptOutcome) {
     harnessId: outcome.harnessId,
     status: outcome.status,
     outcomeClass: outcome.outcomeClass,
+    // The typed limit that interrupted this attempt (#299); null when none did.
+    interruption:
+      outcome.outcomeClass === "interrupted"
+        ? (attemptInterruption(outcome.telemetry) ?? "context_capacity_exhausted")
+        : null,
     error: outcome.error,
     declaredFailure: outcome.declaredFailure,
-    answerMatches: outcome.answerMatches,
   };
 }
 
@@ -200,7 +208,7 @@ export async function runPlannerAttempt(
     return {
       ...prepared,
       attemptEventsPath: join(paths.attemptsDir, attemptId, "events.jsonl"),
-      answer: new CountedAnswerAssembly(),
+      answer: new AnswerAssembly(),
       telemetry: createAttemptTelemetry(
         prepared.knobs.webPolicy,
         contract.external_context.web_required,
@@ -262,6 +270,11 @@ export async function runPlannerAttempt(
   let harnessError: string | null = null;
   let processingDenial: BudgetDenial | null = null;
   let declared: DeclaredFailure | undefined;
+  let lastLimit: {
+    resetsAt: string | null;
+    constraintId: string | null;
+    reopening: "unknown" | null;
+  } | null = null;
   const budgetSignalState = { quotaPressureDisclosed: false };
   try {
     log.emit("harness.started", {
@@ -280,40 +293,55 @@ export async function runPlannerAttempt(
         },
         isSuspended: () => (planInteraction?.pendingCount?.() ?? 0) > 0,
         suspensionVersion: () => planInteraction?.suspensionVersion?.() ?? 0,
+        stopSignal: input.signal,
       });
       for await (const ev of watchedPlan) {
-        const safeEv = redactHarnessEvent(ev);
-        if (safeEv.payload?.["buffered"] !== true) safeInvoke(input.onHarnessEvent, safeEv);
-        if (args.laneRun) observeNativeSessionEvent(input, adapter.id, safeEv);
-        observeAuthSwitch(log, adapter.id, attemptId, safeEv);
+        // A read after Stop is evidence only: stored, never shown live.
+        const stoppedBefore = input.signal?.aborted === true;
+        const shown = !stoppedBefore && ev.payload?.["buffered"] !== true;
+        if (shown) safeInvoke(input.onHarnessEvent, ev);
+        if (args.laneRun && !stoppedBefore) observeNativeSessionEvent(input, adapter.id, ev);
+        observeAuthSwitch(log, adapter.id, attemptId, ev);
+        // Re-sampled: the callback above may itself have pressed Stop.
         log.emit(
           "harness.event",
-          harnessEventPayload(adapter.id, attemptId, safeEv),
-          safeEv.payload?.["buffered"] !== true,
+          harnessEventPayload(adapter.id, attemptId, ev),
+          shown && !input.signal?.aborted,
         );
-        appendLine(attemptEventsPath, JSON.stringify(safeEv));
-        if (input.signal?.aborted) break;
-        observeAttemptTelemetry(telemetry, safeEv);
-        if (safeEv.plan_progress) {
+        appendHarnessEvent(attemptEventsPath, ev);
+        // After Stop the watchdog drains the cancelled source within its
+        // cleanup bound: what it still reports is recorded, never used.
+        // Rechecked after the callback, which can itself press Stop.
+        if (input.signal?.aborted) continue;
+        observeAttemptTelemetry(telemetry, ev);
+        if (ev.rate_limit)
+          lastLimit = {
+            resetsAt: ev.rate_limit.resets_at ?? null,
+            constraintId: ev.rate_limit.constraint_id ?? null,
+            reopening: ev.rate_limit.reopening ?? null,
+          };
+        // Agent work after the limit means the vendor's retry recovered, and the
+        // vendor's own typed non-quota failure ends the try for its own cause:
+        // either way that limit no longer explains how the try ends.
+        else if (marksAgentProgress(ev) || endsPendingLimit(ev)) lastLimit = null;
+        if (ev.plan_progress) {
           log.emit("plan.progress", {
             attempt_id: attemptId,
             harness_id: adapter.id,
-            items: safeEv.plan_progress.items,
+            items: ev.plan_progress.items,
           });
         }
-        observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
-        deps.quotaEventSink?.(adapter.id, safeEv);
-        if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
-          cost += safeEv.usage.cost_usd;
-          if (safeEv.usage.estimated) costEstimated = true;
-          log.emit("budget.observation", {
-            harness_id: adapter.id,
-            attempt_id: attemptId,
-            kind: "spend",
-            usd: safeEv.usage.cost_usd,
-            estimated: safeEv.usage.estimated === true,
-          });
-        }
+        observeBudgetSignals(ledger, log, adapter.id, attemptId, ev, budgetSignalState);
+        deps.quotaEventSink?.(adapter.id, ev);
+        const spend = observeUsageSpend(
+          ev,
+          (type, payload) => log.emit(type, payload),
+          adapter.id,
+          attemptId,
+          telemetry.usageCost,
+        );
+        cost += spend.costUsd;
+        costEstimated ||= spend.estimated;
         const streamDenial = updateProcessingStreamHold(
           spec,
           telemetry.usageCost,
@@ -329,9 +357,9 @@ export async function runPlannerAttempt(
           void adapter.cancel?.(spec.session_id)?.catch(() => {});
           break;
         }
-        answer.observeCounted(ev, safeEv);
-        if (safeEv.type === "error")
-          harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
+        answer.observe(ev);
+        if (ev.type === "error")
+          harnessError = ev.error ? redactSecrets(ev.error) : "harness emitted an error";
       }
     }
   } catch (error) {
@@ -355,10 +383,13 @@ export async function runPlannerAttempt(
       });
   }
 
-  const planUnwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", planWorkMode, {
-    sideToolReport: telemetry.sideToolWorkReport ?? undefined,
-  });
-  const planText = redactSecrets(planUnwrapped.deliverable);
+  const planUnwrapped = unwrapAttemptAnswer(
+    answer.machineText() ?? "",
+    harnessError !== null && !answer.hasFinal(),
+    planWorkMode,
+    { sideToolReport: telemetry.sideToolWorkReport ?? undefined },
+  );
+  const planText = planUnwrapped.deliverable;
   const hasPlanText = planText.trim().length > 0;
   const harnessFailedBeforeReport = harnessError !== null;
   const webBlocked = webUnsatisfied(telemetry);
@@ -371,18 +402,44 @@ export async function runPlannerAttempt(
     workReportSource: planUnwrapped.source,
     workReportViolation: planUnwrapped.contractViolation,
     workReportUnverified: planUnwrapped.unverified ?? null,
-    contextTerminalExhausted: telemetry.contextExhausted,
+    interruption: attemptInterruption(telemetry),
   });
   if (!harnessError && finalized.outcomeClass === "contract_failure") {
     harnessError = `work_report contract: ${planUnwrapped.contractViolation}`;
   }
   if (!harnessError && finalized.outcomeClass === "interrupted") {
-    harnessError = "context capacity exhausted before the plan completed";
+    harnessError = interruptionDetail(finalized.reason);
   }
   const attemptError =
     harnessError ??
     (finalized.deliverablePresent ? null : "planner produced no plan text") ??
     (input.signal?.aborted ? "planner cancelled" : null);
+  // A typed vendor limit on a strict pin ends the Plan try typed, like Agent and
+  // Ask: a pin never rotates, and code, reset and basis reach failure.yaml. Only
+  // a limit still unrecovered when the stream itself failed counts. Context
+  // exhaustion, an empty plan, a work_report contract failure, a later typed
+  // request refusal or non-quota API failure, or a thrown terminal keeps its
+  // own cause, and cancellation stays cancellation.
+  const pinnedId = input.credentialProfileId;
+  if (
+    harnessFailedBeforeReport &&
+    !telemetry.contextExhausted &&
+    lastLimit &&
+    pinnedId != null &&
+    !webBlocked &&
+    !processingDenial &&
+    !telemetry.requestRefusal &&
+    !input.signal?.aborted &&
+    declared === undefined
+  )
+    declared = declaredFailure(
+      pinnedTypedLimit(
+        spec.credential_profile?.profile_id ?? pinnedId,
+        adapter.id,
+        lastLimit,
+        telemetry.outputMarkers.sawAgentProgress,
+      ),
+    );
   setAttemptOutcome(telemetry, {
     deliverablePresent: finalized.deliverablePresent,
     gatesPassed: null,
@@ -429,7 +486,6 @@ export async function runPlannerAttempt(
     harnessFailedBeforeReport,
     reportProblem: planUnwrapped.reportProblem,
     text,
-    answerMatches: answer.secretLikeMatches(),
     telemetry,
     budgetDenied: false,
   };

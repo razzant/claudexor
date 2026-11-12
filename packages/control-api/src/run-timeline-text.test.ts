@@ -10,7 +10,7 @@ import { createClaudeParser } from "../../harness-claude/src/parse.js";
 import { parseCodexEvent } from "../../harness-codex/src/parse.js";
 import { codexAppServerEvents } from "../../harness-codex/src/app-server-protocol.js";
 import { createCursorParser } from "../../harness-cursor/src/parse.js";
-import { harnessEventPayload, redactHarnessEvent } from "../../orchestrator/src/runSupport.js";
+import { harnessEventPayload } from "../../orchestrator/src/runSupport.js";
 import {
   createAttemptTelemetry,
   observeAttemptTelemetry,
@@ -160,8 +160,7 @@ describe("timeline text metadata across native parser and event-log projection",
     const events = native
       .split("\n")
       .filter(Boolean)
-      .flatMap((line) => parse(JSON.parse(line), "s1") ?? [])
-      .map(redactHarnessEvent);
+      .flatMap((line) => parse(JSON.parse(line), "s1") ?? []);
     const dir = mkdtempSync(join(tmpdir(), "claude-speech-chain-"));
     try {
       // The orchestrator's journaling path: one harness.event per normalized event.
@@ -227,7 +226,7 @@ describe("timeline text metadata across native parser and event-log projection",
     }
   });
 
-  it("keeps full text and redaction in detail when the title is abbreviated", () => {
+  it("keeps full exact text in detail when the title is abbreviated", () => {
     const text = `  ${"word ".repeat(130)}\n`;
     const rows = timelineEvents(
       {},
@@ -245,8 +244,7 @@ describe("timeline text metadata across native parser and event-log projection",
         { type: "message", session_id: "s1", ts: "t", text: `value ${secret} end` },
       ]),
     );
-    expect(redacted[0]?.detail).not.toContain(secret);
-    expect(redacted[0]?.detail).toContain("[redacted]");
+    expect(redacted[0]?.detail).toBe(`value ${secret} end`);
   });
 
   it("leaves legacy and non-text rows separate even when they carry incidental delta fields", () => {

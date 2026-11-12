@@ -22,7 +22,7 @@ import type { ModelResourceQueries } from "./store/command-queries.js";
 import {
   emptyDispatch,
   operationError,
-  readModelPayload,
+  readModelPayloadAsync,
   executeModelOperation,
   type Evidence,
 } from "./model-operation-execution.js";
@@ -32,6 +32,7 @@ export const MODEL_OPERATION_ID = "model.operation.create";
 /** Existing ResourceStore supplies these purpose-bound byte operations. */
 export interface ModelPayloadStore {
   readModel(ref: ModelPayloadRef): Buffer;
+  readModelAsync(ref: ModelPayloadRef): Promise<Buffer>;
   publishModel(bytes: Uint8Array): ModelPayloadRef;
   releaseModel(ref: ModelPayloadRef): void;
   expireModel(ref: ModelPayloadRef, expiredAt: string): void;
@@ -131,11 +132,27 @@ export class ModelOperations {
     let id = replay?.id;
     if (!id) {
       // Validate only a NEW request. A settled replay's input has been released.
-      // model_request_invalid from this boundary proves no command was accepted:
-      // the idempotency lookup above succeeded and validation precedes enqueue.
-      if (requestKind === "image") this.readImageRequest(request);
-      else this.readRequest(request);
-      id = (await this.deps.enqueue(envelope)).id;
+      // The read yields to the event loop, so a same-key call may be accepted, settle
+      // and release this input meanwhile: a failed read asks the idempotency record
+      // again and answers with that accepted handle. Only when none exists does the
+      // failure stand, and then model_request_invalid proves no command was accepted.
+      let requestedModel: string | undefined;
+      try {
+        requestedModel = (
+          requestKind === "image"
+            ? await this.readImageRequest(request)
+            : await this.readRequest(request)
+        ).model;
+      } catch (error) {
+        const accepted = findAcceptedCommand(this.deps.commands, envelope);
+        if (!accepted) throw error;
+        id = accepted.id;
+      }
+      // The bytes just validated name the model in the durable params, outside
+      // idempotency identity, for a terminal whose execution never reads them (#649).
+      id ??= (
+        await this.deps.enqueue({ ...envelope, request: { ...envelope.request, requestedModel } })
+      ).id;
     }
     // Re-uploaded copies can lose either the early lookup or the enqueue race.
     // Release only the unused copy; another live command may still own it.
@@ -229,8 +246,6 @@ export class ModelOperations {
     }
   }
 
-  /** Existing maintenance invokes this after journal recovery/admission. Live
-   * command refs protect bytes; operational blobs cannot recreate a terminal. */
   reconcileResources(dryRun = false): { released: string[]; errors: string[] } {
     const report = { released: [] as string[], errors: [] as string[] };
     const now = this.now().getTime();
@@ -286,14 +301,14 @@ export class ModelOperations {
     return (this.deps.now ?? (() => new Date()))();
   }
 
-  private readRequest(ref: ModelPayloadRef): ModelCallRequest {
-    return readModelPayload(this.deps.resources(), ref, ModelCallRequest, "ModelCallRequest");
+  private readRequest(ref: ModelPayloadRef): Promise<ModelCallRequest> {
+    return readModelPayloadAsync(this.deps.resources(), ref, ModelCallRequest, "ModelCallRequest");
   }
 
-  private readImageRequest(ref: ModelPayloadRef): ImageCallRequest {
+  private readImageRequest(ref: ModelPayloadRef): Promise<ImageCallRequest> {
     if (ref.sizeBytes > 144 * 1024 * 1024)
       throw operationError("image_request_too_large", "The image request exceeds 144 MiB", 413);
-    return readModelPayload(this.deps.resources(), ref, ImageCallRequest, "ImageCallRequest");
+    return readModelPayloadAsync(this.deps.resources(), ref, ImageCallRequest, "ImageCallRequest");
   }
 
   private record(id: string): JobRecord {
@@ -320,11 +335,32 @@ export class ModelOperations {
     if (isTerminalLifecycle(record.state) && evidence.dispatch.state === "started") {
       evidence.dispatch = { ...evidence.dispatch, state: "unknown" };
     }
+    // A terminal without an execution receipt (queued cancel, restart recovery)
+    // names the params declaration (create's parsed bytes, or a raw enqueue's
+    // unverified claim); historical params carry none, so they read as before
+    // (#649).
+    const params = ModelOperationParams.safeParse(record.params);
+    const requestedModel = params.success ? params.data.requestedModel : undefined;
     if (!evidence.problem && record.error)
       evidence.problem = ControlProblem.parse({
         code: record.errorCode || "model_operation_interrupted",
         message: redactSecrets(record.error),
         retryable: false,
+        context: requestedModel ? { requestedModel } : {},
+      });
+    else if (
+      !evidence.problem &&
+      requestedModel &&
+      record.state === "cancelled" &&
+      evidence.dispatch.startedAt === null &&
+      evidence.response.state === "absent"
+    )
+      // Cancelled before any send was attempted: an honest cancellation, never a failure.
+      evidence.problem = ControlProblem.parse({
+        code: "model_operation_cancelled",
+        message: "The model operation was cancelled before it started; nothing was sent.",
+        retryable: false,
+        context: { requestedModel },
       });
     return evidence;
   }

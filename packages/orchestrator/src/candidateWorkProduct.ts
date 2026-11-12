@@ -4,7 +4,7 @@ import type { EventLog } from "@claudexor/event-log";
 import type { ModeKind, RunOutcomeFacts } from "@claudexor/schema";
 import { newId } from "@claudexor/util";
 import { createRevertAnchorOrNull } from "@claudexor/workspace";
-import type { CandidateRun } from "./candidateEvidence.js";
+import { hasCandidateChanges, type CandidateRun } from "./candidateEvidence.js";
 import { persistFinalPatch } from "./secretDiff.js";
 
 /** Publish captured Git work without accepting it or performing another mutation. */
@@ -19,13 +19,19 @@ export async function publishUnverifiedGitCandidate(input: {
   facts: RunOutcomeFacts;
   live: boolean;
   execRoot: string;
+  projectRoot: string;
   preTurnSha: string | null;
   postTurnSha: string | null;
   attempts?: number;
 }): Promise<void> {
-  if (!input.run.diff.trim() || input.run.captureRefusal) return;
+  if (!hasCandidateChanges(input.run) || input.run.captureRefusal) return;
   const revertAnchorId = input.live
-    ? await createRevertAnchorOrNull(input.execRoot, input.preTurnSha, input.postTurnSha)
+    ? await createRevertAnchorOrNull(
+        input.execRoot,
+        input.preTurnSha,
+        input.postTurnSha,
+        input.projectRoot,
+      )
     : null;
   const applyState = input.live ? "applied_review_blocked" : "not_applied";
   const saved = persistFinalPatch(input.store, input.paths.finalDir, input.run);
@@ -56,5 +62,7 @@ export async function publishUnverifiedGitCandidate(input: {
     producer_attempt_id: input.run.attemptId,
     apply_state: applyState,
   });
-  input.log.emit("output.ready", { kind: "patch", path: "final/patch.diff", state: "diagnostic" });
+  // An unrendered object result (#535) has no patch.diff: its work product is the artifact.
+  const path = saved.meta["patch_view"] ? "final/work_product.yaml" : "final/patch.diff";
+  input.log.emit("output.ready", { kind: "patch", path, state: "diagnostic" });
 }

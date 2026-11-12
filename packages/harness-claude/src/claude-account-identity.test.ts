@@ -44,7 +44,7 @@ describe("claudeAccountIdentity", () => {
     if (prevConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = prevConfig;
     rmSync(ownedRoot, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("projects {email, plan} from a valid oauthAccount in an owned store", () => {
     const dir = join(ownedRoot, "profiles", "claude-work");

@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { putUploadInTx, readUploadRow } from "./resource-rows.js";
 import { runMutation } from "./mutation.js";
 import { chunks, resourceFixture, type ResourceFixture } from "./test-support/resource-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const roots: string[] = [];
 const fixtures: ResourceFixture[] = [];
@@ -20,13 +21,18 @@ async function open(path = root()) {
   return f;
 }
 async function close(f: ResourceFixture) {
-  fixtures.splice(fixtures.indexOf(f), 1);
+  // The fixture stays listed: teardown awaits the same close, whose outcome a second call
+  // shares, so a close that failed or settled late keeps this test's root (#376).
   await f.close();
 }
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   vi.restoreAllMocks();
   for (const f of fixtures.splice(0)) await f.close();
-  for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
+  return () => {
+    for (const path of ownedRoots) rmSync(path, { recursive: true, force: true });
+  };
 });
 
 const bytes = Buffer.from("keyed import bytes\n");
@@ -152,13 +158,25 @@ describe("keyed upload import over the upload owner", () => {
     const begun = f.resources.importUpload(body(f, { content }), "k");
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
-    async function* slow(): AsyncIterable<Uint8Array> {
-      yield bytes.subarray(0, 4);
-      await gate;
-      yield bytes.subarray(4);
-    }
-    const writing = f.resources.write(begun.uploadId, slow());
-    await vi.waitFor(() => expect(f.resources.status(begun.uploadId).receivedBytes).toBe(4));
+    let paused!: () => void;
+    const writing = f.resources.write(
+      begun.uploadId,
+      (async function* () {
+        yield bytes.subarray(0, 4);
+        paused();
+        await gate;
+        yield bytes.subarray(4);
+      })(),
+    );
+    await new Promise<void>((resolve) => {
+      paused = resolve;
+    });
+    // The begin receipt is visible while the PUT is still in flight. The byte
+    // count lands with the finish receipt, not with each chunk.
+    expect(f.resources.status(begun.uploadId)).toMatchObject({
+      state: "uploading",
+      receivedBytes: 0,
+    });
     expect(f.resources.cancel(begun.uploadId).state).toBe("cancelled");
     release();
     await expect(writing).rejects.toMatchObject({ code: "upload_cancelled" });
@@ -236,13 +254,9 @@ describe("keyed upload import over the upload owner", () => {
     expect(count(second, "resource")).toBe(1);
   });
 
-  it("applies the sensitive name and content policy", async () => {
+  it("imports credential-named and credential-shaped files exactly (INV-146)", async () => {
     const f = await open();
-    expect(code(() => f.resources.importUpload(body(f, { content, name: ".env" }), "n"))).toBe(
-      "sensitive_resource_rejected",
-    );
-    expect(effects(f)).toEqual([0, 0, 0, 0]);
-    // Split so the repository secret scan never sees a literal key block.
+    // Split so no literal key block lives in this source file.
     const secret = Buffer.from(
       "-----BEGIN " + "PRIVATE KEY-----\nAAAA\n-----END " + "PRIVATE KEY-----\n",
     );
@@ -250,10 +264,10 @@ describe("keyed upload import over the upload owner", () => {
       sizeBytes: secret.length,
       sha256: `sha256:${createHash("sha256").update(secret).digest("hex")}`,
     };
-    const begun = f.resources.importUpload(body(f, { content: secretContent }), "s");
+    const begun = f.resources.importUpload(body(f, { content: secretContent, name: ".env" }), "s");
     await f.resources.write(begun.uploadId, chunks(secret));
-    expect(code(() => f.resources.importUpload(body(f), "s"))).toBe("sensitive_resource_rejected");
-    expect(f.resources.importUpload(body(f), "s").state).toBe("cancelled");
-    expect(count(f, "resource")).toBe(0);
+    const finished = f.resources.importUpload(body(f, { name: ".env" }), "s");
+    expect(finished.state).not.toBe("cancelled");
+    expect(count(f, "resource")).toBe(1);
   });
 });

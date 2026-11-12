@@ -1,9 +1,15 @@
-import { createHash, type Hash } from "node:crypto";
+import { createHash } from "node:crypto";
 import { closeSync, constants, ftruncateSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { ControlUploadCreateRequest, ControlUploadStatus } from "@claudexor/schema";
-import { hashJson, newId, sensitiveResourcePolicy } from "@claudexor/util";
-import { ensureDirectory, externalWriteFlags, unlinkExternalFile } from "./external-files.js";
+import { hashJson, newId } from "@claudexor/util";
+import {
+  ensureDirectory,
+  externalWriteFlags,
+  unlinkExternalFile,
+  writeExternalIncremental,
+} from "./external-files.js";
+import { wakeUploadWriteSlots } from "./libuv-pool.js";
 import { mapStoreError } from "./errors.js";
 import { deleteUnownedInlineInTx } from "./blob-files.js";
 import { bindIdempotencyInTx } from "./idempotency.js";
@@ -12,7 +18,6 @@ import {
   putUploadInTx,
   readUploadRow,
   resourceError,
-  sensitiveResourceError,
   type UploadImportBinding,
   type UploadRow,
 } from "./resource-rows.js";
@@ -73,6 +78,14 @@ export async function cleanupUploadPart(
 export class SqlUploads {
   readonly bindings: UploadBindings;
   private readonly writing = new Set<string>();
+  /** Cancel and a failed write set this. The pool writer reads it; it is not a SQL poll. */
+  private readonly cancelled = new Set<string>();
+  /**
+   * Bare sha256 hex of bytes this process wrote. Lost on restart, so a later
+   * finalize reads the part. Never stored in `upload.finalize_sha` (that column
+   * is a blob ownership reference).
+   */
+  private readonly digests = new Map<string, string>();
 
   constructor(
     private readonly store: EngineStore,
@@ -94,8 +107,6 @@ export class SqlUploads {
   /** Omitting a caller key mints a new internal upload, with no historical replay to resolve. */
   create(raw: unknown, callerKey?: string): ControlUploadStatus {
     const request = ControlUploadCreateRequest.parse(raw);
-    if (sensitiveResourcePolicy.classifyPath(request.name).sensitive)
-      throw sensitiveResourceError();
     const requestDigest = hashJson(request);
     const key = callerKey ?? newId("model-create");
     const prior =
@@ -176,26 +187,70 @@ export class SqlUploads {
     return join(this.store.paths.uploads, `${id}.part`);
   }
 
+  /** Bare sha256 hex written by this process, or absent after a restart. */
+  writeDigest(id: string): string | undefined {
+    return this.digests.get(id);
+  }
+
+  /** Publication committed its digest; replay and recovery verify the bytes instead. */
+  forgetDigest(id: string): void {
+    this.digests.delete(id);
+  }
+
   async write(id: string, chunks: AsyncIterable<Uint8Array>): Promise<ControlUploadStatus> {
     const row = this.get(id);
     if (row.status.state !== "open")
       throw resourceError(`upload ${id} is ${row.status.state}`, 409, "upload_not_open");
-    const fd = this.beginWrite(row);
-    // An import verifies its declared digest while receiving.
-    const hash = row.import ? createHash("sha256") : undefined;
+    // Registered before the first await so cancel observes an in-flight PUT.
     this.writing.add(id);
+    this.digests.delete(id);
+    const hash = createHash("sha256");
     try {
-      for await (const chunk of chunks) this.writeChunk(row, fd, chunk, hash);
-      return this.finishWrite(row, hash);
+      this.rejectIfCancelled(id);
+      // One receipt that a PUT has started. receivedBytes stays 0 until it finishes:
+      // a restart resets `uploading` to byte zero, so per-chunk totals were not a resume.
+      row.status = { ...row.status, state: "uploading", receivedBytes: 0 };
+      this.save(row);
+      const received = await writeExternalIncremental(this.partPath(id), chunks, {
+        cancelled: () => this.rejectIfCancelled(id),
+        accept: (chunk, soFar) => {
+          this.rejectIfCancelled(id);
+          if (soFar + chunk.byteLength > row.status.expectedBytes)
+            throw resourceError("upload exceeds declared size", 413, "upload_size_exceeded");
+        },
+        committed: (chunk) => {
+          hash.update(chunk);
+        },
+      });
+      this.rejectIfCancelled(id);
+      if (received !== row.status.expectedBytes)
+        throw resourceError(
+          `upload size mismatch: expected ${row.status.expectedBytes}, received ${received}`,
+          400,
+          "upload_size_mismatch",
+        );
+      const digest = hash.digest("hex");
+      if (row.import && `sha256:${digest}` !== row.import.sha256)
+        throw resourceError(
+          "uploaded bytes do not match the import's declared sha256",
+          409,
+          "digest_mismatch",
+        );
+      this.digests.set(id, digest);
+      row.status = { ...row.status, receivedBytes: received };
+      return this.finishWrite(row);
     } catch (error) {
+      this.digests.delete(id);
       // An import keeps its key: an unverified transfer restarts from byte zero.
       if (row.import) this.reopen(id);
       else this.markCancelled(row);
       throw mapStoreError(error, "writing upload part");
     } finally {
-      closeSync(fd);
       this.writing.delete(id);
-      if (readUploadRow(this.store, id)?.state === "discarded") this.cleanPart(id);
+      if (this.cancelled.has(id)) {
+        this.cleanPart(id);
+        this.cancelled.delete(id);
+      }
     }
   }
 
@@ -203,10 +258,26 @@ export class SqlUploads {
   writeAll(id: string, bytes: Uint8Array): void {
     const row = this.get(id);
     const fd = this.beginWrite(row);
+    const hash = createHash("sha256");
     try {
-      this.writeChunk(row, fd, bytes);
+      this.rejectIfCancelled(row.status.uploadId);
+      if (bytes.byteLength > row.status.expectedBytes)
+        throw resourceError("upload exceeds declared size", 413, "upload_size_exceeded");
+      let offset = 0;
+      while (offset < bytes.byteLength)
+        offset += writeSync(fd, bytes, offset, bytes.byteLength - offset);
+      hash.update(bytes);
+      if (bytes.byteLength !== row.status.expectedBytes)
+        throw resourceError(
+          `upload size mismatch: expected ${row.status.expectedBytes}, received ${bytes.byteLength}`,
+          400,
+          "upload_size_mismatch",
+        );
+      this.digests.set(row.status.uploadId, hash.digest("hex"));
+      row.status = { ...row.status, receivedBytes: bytes.byteLength };
       this.finishWrite(row);
     } catch (error) {
+      this.digests.delete(row.status.uploadId);
       this.markCancelled(row);
       throw mapStoreError(error, "writing model result part");
     } finally {
@@ -220,11 +291,16 @@ export class SqlUploads {
       throw resourceError("upload finalization has already started", 409, "upload_finalizing");
     this.markCancelled(row);
     // A streaming descriptor is closed by its writer before unlink (also required on Windows).
-    if (!this.writing.has(id)) this.cleanPart(id);
+    if (!this.writing.has(id)) {
+      this.cleanPart(id);
+      this.cancelled.delete(id);
+    }
     return ControlUploadStatus.parse(row.status);
   }
 
   discard(id: string): void {
+    this.digests.delete(id);
+    this.cancelled.delete(id);
     const row = readUploadRow(this.store, id);
     if (!row) return;
     runMutation(this.store, (tx) => {
@@ -252,40 +328,22 @@ export class SqlUploads {
       throw mapStoreError(error, "opening upload part for writing");
     }
   }
-  private writeChunk(row: UploadRow, fd: number, bytes: Uint8Array, hash?: Hash): void {
-    this.assertNotCancelled(row.status.uploadId);
-    const next = row.status.receivedBytes + bytes.byteLength;
-    if (next > row.status.expectedBytes)
-      throw resourceError("upload exceeds declared size", 413, "upload_size_exceeded");
-    let offset = 0;
-    while (offset < bytes.byteLength)
-      offset += writeSync(fd, bytes, offset, bytes.byteLength - offset);
-    hash?.update(bytes);
-    row.status = { ...row.status, receivedBytes: next };
-    this.save(row);
-  }
-  private finishWrite(row: UploadRow, hash?: Hash): ControlUploadStatus {
-    this.assertNotCancelled(row.status.uploadId);
+  private finishWrite(row: UploadRow): ControlUploadStatus {
+    this.rejectIfCancelled(row.status.uploadId);
     if (row.status.receivedBytes !== row.status.expectedBytes)
       throw resourceError(
         `upload size mismatch: expected ${row.status.expectedBytes}, received ${row.status.receivedBytes}`,
         400,
         "upload_size_mismatch",
       );
-    if (hash && `sha256:${hash.digest("hex")}` !== row.import?.sha256)
-      throw resourceError(
-        "uploaded bytes do not match the import's declared sha256",
-        409,
-        "digest_mismatch",
-      );
-    // O_DSYNC writes made the bytes durable; this commit is the import's byte receipt.
+    // O_DSYNC writes made the bytes durable; this commit is the byte receipt.
     row.status = { ...row.status, state: "uploaded" };
     row.state = "uploaded";
     this.save(row);
     return ControlUploadStatus.parse(row.status);
   }
-  private assertNotCancelled(id: string): void {
-    if (readUploadRow(this.store, id)?.state === "discarded")
+  private rejectIfCancelled(id: string): void {
+    if (this.cancelled.has(id))
       throw resourceError(`upload ${id} was cancelled`, 409, "upload_cancelled");
   }
   /** Unverified import bytes are not a receipt. An explicit cancel stays final. */
@@ -297,6 +355,9 @@ export class SqlUploads {
     this.save(row);
   }
   private markCancelled(row: UploadRow): void {
+    this.cancelled.add(row.status.uploadId);
+    wakeUploadWriteSlots();
+    this.digests.delete(row.status.uploadId);
     row.status = { ...row.status, state: "cancelled" };
     row.state = "discarded";
     this.save(row);

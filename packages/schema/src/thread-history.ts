@@ -65,7 +65,7 @@ export const ThreadHistoryTextFacts = z
     textBytes: ordinal,
     totalTextBytes: ordinal
       .nullable()
-      .describe("Complete redacted UTF-8 length, only when known; never an estimated remainder."),
+      .describe("Complete UTF-8 length, only when known; never an estimated remainder."),
     truncated: z.boolean(),
   })
   .strict();

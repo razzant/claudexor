@@ -13,3 +13,11 @@ export { collectNativeRunSessions } from "./native-run-sessions.js";
 export { retainedNativeSessions } from "./native-retention-references.js";
 
 export { createThreadHistoryRead } from "./thread-history-read.js";
+export {
+  createThreadExport,
+  verifyLaneRemoval,
+  type NativeLayout,
+  type NativeStoreRef,
+  type ThreadExportClosure,
+  type ThreadExportDeps,
+} from "./thread-export.js";

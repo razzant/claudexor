@@ -88,7 +88,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function file(path: string, bytes: Buffer | string): string {
   mkdirSync(dirname(path), { recursive: true });

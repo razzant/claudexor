@@ -72,12 +72,12 @@ describe("ACP run-control applicability", () => {
     );
   });
 
-  it("rejects inline secret fixtures with the typed ACP error code", () => {
-    const rejected = validateRunControls({
-      mode: "agent",
-      prompt: `use sk-${"a".repeat(32)}`,
-    });
-    expect(rejected).toMatchObject({ code: "inline_secret_rejected" });
-    expect(rejected?.message).toMatch(/secret-like/i);
+  it("accepts credential-shaped fixtures in the prompt exactly (INV-146)", () => {
+    expect(
+      validateRunControls({
+        mode: "agent",
+        prompt: `review: sk-${"a".repeat(32)} and Authorization: Bearer ${"b".repeat(32)}`,
+      }),
+    ).toBeNull();
   });
 });

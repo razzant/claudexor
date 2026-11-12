@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ModelAdapter } from "@claudexor/core";
 import {
   CredentialProfile,
@@ -15,10 +15,17 @@ import {
 import { DaemonClient } from "./client.js";
 import { DaemonServer } from "./server.js";
 import { ModelOperations } from "./model-operations.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 73, 72]);
@@ -137,11 +144,11 @@ async function fixture(
     onCommandTerminal: (record) => operations.onCommandTerminal(record),
   });
   await server.start();
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   cleanup.push(async () => {
     await server.stop();
     operations.close();
     await sql.close();
-    rmSync(root, { recursive: true, force: true });
   });
   const upload = (body: unknown = imageRequest()): ModelPayloadRef =>
     resources.publishModel(Buffer.from(JSON.stringify(body)));
@@ -249,7 +256,9 @@ describe("image requests over the existing model-operation substrate", () => {
       undefined,
       "image",
     );
-    await vi.waitFor(() => expect(sends).toHaveBeenCalledTimes(1));
+    // The send follows the dispatch barrier (one flusher pass, much slower
+    // under disk contention, #441); a 1 s window is not part of the contract.
+    await vi.waitFor(() => expect(sends).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     const queued = await f.operations.create(
       f.upload(imageRequest("queued")),
       "image-queued",
@@ -257,9 +266,13 @@ describe("image requests over the existing model-operation substrate", () => {
       undefined,
       "image",
     );
+    // Never sent: only the image model create validated is named, no failure (#649).
     expect(await f.operations.cancel(queued.id)).toMatchObject({
       state: "cancelled",
-      dispatch: { state: "not_started" },
+      dispatch: { state: "not_started", startedAt: null, route: null },
+      response: { state: "absent" },
+      cost: null,
+      problem: { code: "model_operation_cancelled", context: { requestedModel: "gpt-image-2" } },
     });
     await f.operations.cancel(first.id);
     release();
@@ -308,11 +321,16 @@ describe("image requests over the existing model-operation substrate", () => {
     const done = await f.terminal(created.id);
     expect(done).toMatchObject({
       state: "failed",
-      dispatch: { state: "response_received" },
+      dispatch: { state: "response_received", route: { model: null } },
       usage: { input_tokens: 1474 },
-      problem: { code: "response_rejected" },
+      problem: { code: "response_rejected", context: { requestedModel: "gpt-image-2" } },
       response: { state: "ready" },
     });
+    // The published result carries the same named problem as the receipt.
+    expect(
+      ImageCallResult.parse(JSON.parse(f.operations.readResult(created.id).bytes.toString()))
+        .problem,
+    ).toEqual(done.problem);
   });
 
   it("marks an interrupted image send unknown rather than never-sent", async () => {
@@ -348,7 +366,7 @@ describe("image requests over the existing model-operation substrate", () => {
     expect(done).toMatchObject({
       state: "failed",
       dispatch: { state: "not_started" },
-      problem: { code: "model_source_unavailable" },
+      problem: { code: "model_source_unavailable", context: { requestedModel: "gpt-image-2" } },
     });
   });
 });

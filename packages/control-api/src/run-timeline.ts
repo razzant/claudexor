@@ -8,15 +8,17 @@ import { closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import {
+  commandOutcomeUnconfirmed,
   ControlTimelineEvent,
   type ControlEvidenceIntegrity,
   ControlWebEvidence,
   FallbackReason,
+  WorkspacePreparedPayload,
+  workspacePreparationSummary,
   HarnessSpeech,
   type RunTelemetry,
   type TaskContract,
 } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { projectionRead } from "./projection-context.js";
 
@@ -72,7 +74,7 @@ export interface RunEventsRead {
   integrity: RunEventsIntegrity;
 }
 
-const COMPLETE_INTEGRITY: RunEventsIntegrity = {
+export const COMPLETE_INTEGRITY: Readonly<RunEventsIntegrity> = {
   absent: false,
   unreadable: false,
   malformedLines: 0,
@@ -104,49 +106,65 @@ export function readRunEventsWithIntegrity(rec: RunDirCarrier, maxBytes?: number
   );
 }
 
-function readEventsSnapshot(rec: RunDirCarrier, maxBytes?: number): RunEventsRead {
+/** The events.jsonl path a reader may open, or the integrity of a run with no,
+ * a missing or an unsafe log. Shared by the snapshot and the folded reader. */
+export function runEventsSource(rec: RunDirCarrier): string | RunEventsIntegrity {
   const integrity: RunEventsIntegrity = { ...COMPLETE_INTEGRITY };
-  if (!rec.runDir) return { events: [], integrity };
+  if (!rec.runDir) return integrity;
   const path = safeArtifactPath(rec.runDir, "events.jsonl");
   // safeArtifactPath returns null for a MISSING file (ENOENT — the legitimate
   // queued/never-written case) AND for an unsafe one (symlink/traversal). Only
   // the latter is an integrity problem: an absent file is honestly empty, an
   // unsafe/unreadable one must disclose as unavailable rather than empty-clean.
-  if (!path) {
-    const base = safeArtifactRoot(rec.runDir);
-    if (base) {
-      try {
-        // lstat does NOT follow symlinks: any existing node here (symlink/other)
-        // was refused by the path guard and is genuinely unreadable-as-events.
-        lstatSync(join(base, "events.jsonl"));
-        return { events: [], integrity: { ...integrity, unreadable: true } };
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT")
-          return { events: [], integrity: { ...integrity, absent: true } };
-      }
-    }
-    return { events: [], integrity: { ...integrity, unreadable: true } };
+  const base = path ?? safeArtifactRoot(rec.runDir);
+  if (!base) return { ...integrity, unreadable: true };
+  try {
+    // lstat does NOT follow symlinks: a symlink or directory in place of the
+    // log is genuinely unreadable-as-events, as is any node the guard refused.
+    const st = lstatSync(path ?? join(base, "events.jsonl"));
+    if (path && !st.isSymbolicLink() && !st.isDirectory()) return path;
+    return { ...integrity, unreadable: true };
+  } catch (err) {
+    const absent = (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
+    return { ...integrity, ...(absent ? { absent } : { unreadable: true }) };
   }
+}
+
+/** One events.jsonl line: blank lines are skipped; unparseable and non-object
+ * lines are counted in `integrity`, never silently dropped (QA-074). */
+export function parseEventLine(
+  line: string,
+  integrity: RunEventsIntegrity,
+): Record<string, unknown> | null {
+  if (!line.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    integrity.malformedLines++;
+    return null;
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+    return parsed as Record<string, unknown>;
+  integrity.nonObjectLines++;
+  return null;
+}
+
+/** A completed read of events.jsonl, whole or appended suffix (the D15 counter). */
+export function countEventsRead(): void {
+  eventsParseCount++;
+}
+
+function readEventsSnapshot(rec: RunDirCarrier, maxBytes?: number): RunEventsRead {
+  const path = runEventsSource(rec);
+  if (typeof path !== "string") return { events: [], integrity: path };
+  const integrity: RunEventsIntegrity = { ...COMPLETE_INTEGRITY };
   const out: Record<string, unknown>[] = [];
   const parseLine = (line: string): void => {
-    if (!line.trim()) return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      integrity.malformedLines++;
-      return;
-    }
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      out.push(parsed as Record<string, unknown>);
-    } else {
-      integrity.nonObjectLines++;
-    }
+    const event = parseEventLine(line, integrity);
+    if (event) out.push(event);
   };
   try {
-    const st = lstatSync(path);
-    if (st.isSymbolicLink() || st.isDirectory())
-      return { events: [], integrity: { ...integrity, unreadable: true } };
     const fd = openSync(path, "r");
     try {
       // Freeze the end on the opened descriptor: concurrent appends belong to
@@ -204,7 +222,7 @@ export function eventPayload(ev: Record<string, unknown>): Record<string, unknow
 }
 
 export function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? redactSecrets(value) : null;
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 /** Project the orchestrator-owned telemetry artifact without reconstructing evidence. */
@@ -228,6 +246,9 @@ export function controlWebEvidence(
     attempted: telemetry.web.attempted,
     satisfied: telemetry.web.satisfied,
     status: telemetry.web.status,
+    verification: telemetry.web.verification,
+    verifiedContent: telemetry.web.verified_content,
+    observation: telemetry.web.observation,
     tool: telemetry.web.tool,
     target: telemetry.web.target,
     errorSummary: telemetry.web.error_summary,
@@ -251,6 +272,8 @@ const WARNING_EVENT_TYPES = new Set([
   "delegation.belt.degraded",
   "policy.web.upgraded",
   "run.blocked",
+  // The outcome stands; kept work or a stale tree needs the operator's attention.
+  "workspace.settlement_failed",
 ]);
 const ERROR_EVENT_TYPES = new Set(["run.failed", "reviewer.failed", "reviewer.timed_out"]);
 
@@ -260,6 +283,9 @@ function timelineSeverity(
   tool: Record<string, unknown>,
 ): "info" | "warning" | "error" {
   if (payload["error"] || tool["status"] === "error" || ERROR_EVENT_TYPES.has(type)) return "error";
+  // #450: a command still running in a background shell, timed out or in an
+  // unknown state is not a finished success (typed fact, never row text).
+  if (commandOutcomeUnconfirmed(tool["command_outcome"])) return "warning";
   const reason = FallbackReason.safeParse(payload["reason"]);
   if (
     type === "route.fallback.auth_switched" &&
@@ -281,30 +307,62 @@ function timelineSeverity(
   return "info";
 }
 
+/** The rows the timeline displays: the newest eligible events (a ring in file
+ * order) and how many eligible events the whole log holds. */
+export interface TimelineWindow {
+  rows: Record<string, unknown>[];
+  /** Source line bytes per row; 0 when folded from already parsed values. */
+  sizes: number[];
+  next: number;
+  eligible: number;
+  bytes: number;
+}
+
+export function emptyTimelineWindow(): TimelineWindow {
+  return { rows: [], sizes: [], next: 0, eligible: 0, bytes: 0 };
+}
+
+/** Select rows before any projection or schema work. Raw slice(-500)
+ * is not equivalent: buffered harness rows never occupy a slot. Every type is
+ * converted, preserving corrupted-log rejection even outside the window. */
+export function addTimelineEvent(
+  window: TimelineWindow,
+  ev: Record<string, unknown>,
+  size = 0,
+): void {
+  if (
+    String(ev["type"] ?? "event") === "harness.event" &&
+    eventPayload(eventPayload(ev))["buffered"] === true
+  )
+    return;
+  window.eligible++;
+  if (window.rows.length < TIMELINE_EVENTS_MAX) {
+    window.rows.push(ev);
+    window.sizes.push(size);
+  } else {
+    window.bytes -= window.sizes[window.next]!;
+    window.rows[window.next] = ev;
+    window.sizes[window.next] = size;
+    window.next = (window.next + 1) % TIMELINE_EVENTS_MAX;
+  }
+  window.bytes += size;
+}
+
 export function timelineEvents(
   rec: RunDirCarrier,
-  events?: Record<string, unknown>[],
+  events?: Record<string, unknown>[] | TimelineWindow,
   integrity?: RunEventsIntegrity,
 ): ControlTimelineEvent[] {
-  const snapshot = events ?? readRunEvents(rec);
-  const tail: Record<string, unknown>[] = [];
-  let eligible = 0;
-  // Select rows before doing any redaction, projection or schema work. Raw
-  // slice(-500) is not equivalent: buffered harness rows never occupy a slot.
-  // Visit every type, preserving corrupted-log rejection even outside the tail;
-  // only selected rows have their payloads projected. Leave the snapshot whole.
-  for (let i = snapshot.length - 1; i >= 0; i--) {
-    const ev = snapshot[i]!;
-    if (
-      String(ev["type"] ?? "event") === "harness.event" &&
-      eventPayload(eventPayload(ev))["buffered"] === true
-    )
-      continue;
-    eligible++;
-    if (tail.length < TIMELINE_EVENTS_MAX) tail.push(ev);
+  let window = events;
+  if (!window || Array.isArray(window)) {
+    // Fold a caller's snapshot without changing it; only selected rows project.
+    const snapshot = window ?? readRunEvents(rec);
+    window = emptyTimelineWindow();
+    for (const ev of snapshot) addTimelineEvent(window, ev);
   }
+  const { rows, next, eligible } = window;
   const out: ControlTimelineEvent[] = [];
-  for (const ev of tail.reverse()) {
+  for (const ev of next ? [...rows.slice(next), ...rows.slice(0, next)] : rows) {
     const payload = eventPayload(ev);
     const type = String(ev["type"] ?? "event");
     const textKind =
@@ -336,28 +394,36 @@ export function timelineEvents(
         : null;
     const partialGitInitialization =
       type === "project.git.initialized" && payload["partial"] === true;
+    // Its severity follows the payload: nothing copied or a selected path missing.
+    const prepared =
+      type === "workspace.prepared" ? WorkspacePreparedPayload.safeParse(payload).data : undefined;
+    const preparation = prepared ? workspacePreparationSummary(prepared) : null;
     const title =
       (partialGitInitialization
         ? "Git repository initialization incomplete"
-        : stringOrNull(
-            payload["title"] ??
-              payload["message"] ??
-              payload["summary"] ??
-              payload["text"] ??
-              payload["error"],
-          )) ?? prettyEventType(type);
+        : preparation
+          ? "Isolated workspace copy prepared"
+          : stringOrNull(
+              payload["title"] ??
+                payload["message"] ??
+                payload["summary"] ??
+                payload["text"] ??
+                payload["error"],
+            )) ?? prettyEventType(type);
     const errorSummary = stringOrNull(tool["error_summary"] ?? payload["error"]);
     const detail = textKind
       ? stringOrNull(payload["text"])
       : partialGitInitialization
         ? `Stopped during ${String(payload["failed_stage"] ?? "unknown")} at ${String(payload["repo_root"] ?? "?")}; partial Git metadata may remain.`
-        : (stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ??
-          stringOrNull(tool["content_summary"]) ??
-          errorSummary);
+        : preparation
+          ? preparation.text
+          : (stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ??
+            stringOrNull(tool["content_summary"]) ??
+            errorSummary);
     const toolName = stringOrNull(tool["name"]);
     const target = stringOrNull(tool["target"]);
     // INV-105 disclosure (QA-070): unsupported per-harness knobs the route could
-    // not honor ride harness.started as `ignored_settings`. Project them (redacted,
+    // not honor ride harness.started as `ignored_settings`. Project them (exact,
     // bounded) so the row renders a visible warning instead of a benign start; a
     // non-empty list also lifts severity to `warning` (the raw event is info-shaped).
     const ignoredSettings = Array.isArray(payload["ignored_settings"])
@@ -366,7 +432,7 @@ export function timelineEvents(
           .filter((s): s is string => s !== null)
       : [];
     const severity =
-      ignoredSettings.length > 0 || partialGitInitialization
+      ignoredSettings.length > 0 || partialGitInitialization || preparation?.warning
         ? "warning"
         : timelineSeverity(type, payload, tool);
     out.push(
@@ -444,6 +510,24 @@ function incompletenessMarker(integrity?: RunEventsIntegrity): ControlTimelineEv
   });
 }
 
+/** The plan.progress candidates: the last one, and the last one per attempt id
+ * (the winner comes from decision.yaml at projection time). */
+export interface PlanCandidates {
+  last: Record<string, unknown> | null;
+  byAttempt: Map<string, Record<string, unknown>>;
+}
+
+export function emptyPlanCandidates(): PlanCandidates {
+  return { last: null, byAttempt: new Map() };
+}
+
+export function addPlanEvent(plans: PlanCandidates, ev: Record<string, unknown>): void {
+  if (ev["type"] !== "plan.progress") return;
+  plans.last = ev;
+  const attempt = eventPayload(ev)["attempt_id"];
+  if (typeof attempt === "string") plans.byAttempt.set(attempt, ev);
+}
+
 /** The LAST plan.progress event's typed items (the live plan checklist), or
  * null when the run never emitted one. Last-wins by construction: plan tools
  * re-emit the whole list on every revision. On RACES the candidates' lists
@@ -452,27 +536,22 @@ function incompletenessMarker(integrity?: RunEventsIntegrity): ControlTimelineEv
 export function latestPlanProgress(
   rec: RunDirCarrier,
   winnerAttemptId?: string | null,
-  eventsSnapshot?: Record<string, unknown>[],
+  eventsSnapshot?: Record<string, unknown>[] | PlanCandidates,
   integrity?: RunEventsIntegrity,
 ): {
   items: Array<{ id: string; title: string; status: "pending" | "in_progress" | "completed" }>;
   evidence: ControlEvidenceIntegrity;
 } | null {
-  const read = eventsSnapshot
-    ? { events: eventsSnapshot, integrity: integrity ?? COMPLETE_INTEGRITY }
-    : readRunEventsWithIntegrity(rec);
-  const events = read.events;
-  const evidence = evidenceLevel(read.integrity);
-  const pick = (matchWinner: boolean): Record<string, unknown> | null => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      const ev = events[i];
-      if (ev?.["type"] !== "plan.progress") continue;
-      if (matchWinner && eventPayload(ev)["attempt_id"] !== winnerAttemptId) continue;
-      return ev;
-    }
-    return null;
-  };
-  const chosen = (winnerAttemptId ? pick(true) : null) ?? pick(false);
+  let plans = eventsSnapshot;
+  let read = integrity ?? COMPLETE_INTEGRITY;
+  if (!plans || Array.isArray(plans)) {
+    const snapshot = plans ? { events: plans, integrity: read } : readRunEventsWithIntegrity(rec);
+    plans = emptyPlanCandidates();
+    for (const ev of snapshot.events) addPlanEvent(plans, ev);
+    read = snapshot.integrity;
+  }
+  const evidence = evidenceLevel(read);
+  const chosen = (winnerAttemptId ? plans.byAttempt.get(winnerAttemptId) : undefined) ?? plans.last;
   {
     const ev = chosen;
     if (!ev) {

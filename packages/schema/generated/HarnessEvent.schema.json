@@ -4,6 +4,38 @@
     "HarnessEvent": {
       "type": "object",
       "properties": {
+        "program": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "versionSource": {
+              "type": "string",
+              "enum": [
+                "vendor_stream",
+                "version_probe",
+                "remembered",
+                "unknown"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "version",
+            "versionSource"
+          ],
+          "additionalProperties": false
+        },
         "request_refusal": {
           "anyOf": [
             {
@@ -142,9 +174,41 @@
                 "reported_source"
               ],
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "vendor_not_retryable"
+                },
+                "source": {
+                  "type": "string",
+                  "const": "agy_stderr"
+                },
+                "error_id": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The vendor's own error id from the same record, verbatim; null when absent."
+                }
+              },
+              "required": [
+                "kind",
+                "source",
+                "error_id"
+              ],
+              "additionalProperties": false
             }
           ],
-          "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes carry their own evidence."
+          "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes and an explicit vendor not-retryable verdict carry their own evidence."
         },
         "effort_resolution": {
           "type": "object",
@@ -456,6 +520,58 @@
           "additionalProperties": false,
           "description": "Requested, configured and observed prompt-cache lifetime facts for one attempt. Lifecycle, outcome and cost are separate facts and never derive from this receipt."
         },
+        "route_controls": {
+          "type": "object",
+          "properties": {
+            "web_mechanism": {
+              "type": "string",
+              "enum": [
+                "native",
+                "tools",
+                "uncontrolled",
+                "none"
+              ],
+              "description": "How this route's own web tools are switched for its web policy (the manifest's web_policy)."
+            },
+            "access": {
+              "type": "string",
+              "enum": [
+                "readonly",
+                "workspace_write",
+                "full",
+                "inherit_native"
+              ],
+              "description": "Access profile handed to this spawn."
+            },
+            "native_access": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The vendor access setting the adapter builds for that profile, in the vendor's own spelling (argv or request parameters) and from the helper that passes it; null when it passes none or does not disclose it."
+            },
+            "access_mechanism": {
+              "type": "string",
+              "enum": [
+                "fs_sandbox",
+                "permission_deny",
+                "tool_allowlist",
+                "tool_policy",
+                "native_settings",
+                "none"
+              ],
+              "description": "How the route's access profile reaches the harness: fs_sandbox (the vendor's own file-system sandbox, as the vendor applies it), permission_deny, tool_allowlist or tool_policy (vendor tool permissions; the manifest declares no OS file boundary), native_settings (inherit_native: Claudexor passes no access profile, so the harness's own configuration decides and what it confines is unknown here), or none (full access, or a route that declares no control)."
+            }
+          },
+          "required": [
+            "web_mechanism",
+            "access",
+            "native_access",
+            "access_mechanism"
+          ],
+          "additionalProperties": false,
+          "description": "Per-spawn receipt of the native web and access controls prepared for a route, recorded just before dispatch; not proof that a native process ran with them. Claudexor adds no outer boundary."
+        },
         "type": {
           "type": "string",
           "enum": [
@@ -543,7 +659,7 @@
             },
             "target": {
               "type": "string",
-              "description": "Redacted, bounded human-readable target (query/url/path/command)."
+              "description": "Bounded human-readable target (query/url/path/command), as the agent issued it."
             },
             "status": {
               "type": "string",
@@ -555,17 +671,83 @@
               ],
               "description": "Outcome of the tool use; required on tool_result events (a missing status is never treated as ok)."
             },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "started",
+                "completed"
+              ],
+              "description": "Native lifecycle frame of a file_change (started or completed); absent when the adapter does not type it. Completion is not success: the outcome stays in status."
+            },
             "error_summary": {
               "type": "string",
-              "description": "Redacted, bounded error detail for status=error results."
+              "description": "Error detail for status=error results: the tool's own output, unmasked, within the adapter's bound and whitespace normalization."
             },
             "content_summary": {
               "type": "string",
-              "description": "Redacted, bounded content detail for results (success or failure)."
+              "description": "Content detail for results (success or failure), unmasked, within the adapter's bound and whitespace normalization."
             },
             "exit_code": {
               "type": "integer",
               "description": "Process exit code for command tools, when known."
+            },
+            "command_outcome": {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "exited",
+                    "timed_out",
+                    "backgrounded",
+                    "completion_reported",
+                    "unknown"
+                  ],
+                  "description": "exited: the tool observed the command end; timed_out: the tool's timeout elapsed before an observed end (the process may still run or may have been signalled); backgrounded: the command was handed to a background shell and was still running when the result returned; completion_reported: after such a handoff, a later vendor notification reported that the command ended, without an exit code; unknown: the native result established none of these."
+                },
+                "signal": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Vendor-reported signal name of an exited command."
+                },
+                "timeout_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "The elapsed tool timeout behind timed_out or a timeout-driven background handoff."
+                },
+                "background_reason": {
+                  "type": "string",
+                  "enum": [
+                    "timeout",
+                    "requested"
+                  ],
+                  "description": "Why a backgrounded command left the foreground: its timeout or a request."
+                },
+                "shell_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Vendor handle of the background shell that kept the command."
+                },
+                "pid": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "description": "Vendor-reported process id."
+                },
+                "completion_status": {
+                  "type": "string",
+                  "enum": [
+                    "success",
+                    "error",
+                    "aborted"
+                  ],
+                  "description": "What the vendor reported about a completion_reported command; never an exit code."
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "additionalProperties": false,
+              "description": "Command process facts (#450), separate from status; absent means not reported."
             },
             "web_retrieval": {
               "type": "string",
@@ -575,13 +757,21 @@
                 "failed"
               ],
               "description": "Adapter-stamped web/browser retrieval outcome (verified/dispatched/failed), distinct from the tool-call status lifecycle."
+            },
+            "web_content": {
+              "type": "string",
+              "enum": [
+                "page",
+                "search_results"
+              ],
+              "description": "What a verified web retrieval returned: page (a fetched or loaded page) or search_results (a web search's results, not a fetched page)."
             }
           },
           "required": [
             "name"
           ],
           "additionalProperties": false,
-          "description": "Typed tool info; set on tool_call and tool_result events."
+          "description": "Typed tool info; set on tool_call and tool_result events, and on a status event with payload.code command_outcome_refined, where it names the earlier call (use_id) and carries its refined command_outcome."
         },
         "interaction": {
           "type": "object",
@@ -663,6 +853,15 @@
               ],
               "default": null,
               "description": "Native tool that raised the request (e.g. \"AskUserQuestion\")."
+            },
+            "delivery": {
+              "type": "string",
+              "enum": [
+                "blocking",
+                "async"
+              ],
+              "description": "How the asking agent waits for the answer: blocking (its native tool call waits until the question is answered, declined, expired or released) or async (the agent keeps working and an answer reaches it later as its next user message). Silence, expiry and the run's end never answer either kind.",
+              "default": "blocking"
             }
           },
           "required": [
@@ -713,7 +912,7 @@
                         "type": "null"
                       }
                     ],
-                    "description": "Base-tree blob oid, or null only when the path is absent in the base tree."
+                    "description": "Blob oid in the packet's exact tree, or null only when that tree lacks the path."
                   }
                 },
                 "required": [
@@ -748,9 +947,130 @@
             "raw_patch_stale_preimage",
             "raw_patch_binary_unsupported",
             "raw_patch_truncated",
-            "raw_patch_apply_failed"
+            "raw_patch_apply_failed",
+            "raw_context_exceeds_window"
           ],
           "description": "Typed refusal code for a rejected raw patch contract."
+        },
+        "raw_context": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Model the request named."
+            },
+            "estimated_request_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Estimated tokens of the whole rendered request (chars/4, plus a fixed figure per image); never a tokenizer count."
+            },
+            "budget": {
+              "type": "object",
+              "properties": {
+                "estimator": {
+                  "type": "string",
+                  "const": "chars_div_4"
+                },
+                "basis": {
+                  "type": "string",
+                  "enum": [
+                    "model_context_window",
+                    "assumed_ceiling"
+                  ]
+                },
+                "model": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Model whose catalog row was consulted; null when the producer reported none."
+                },
+                "context_window": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "output_allowance_tokens": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "framing_tokens": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Estimated tokens of the request outside this packet; null when unmeasured."
+                },
+                "selection_limit_tokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "description": "Limit the optional selection honoured: the packet's share of the window, or the assumed ceiling on file contents."
+                },
+                "estimated_packet_tokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "omitted_for_budget": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Optional files left out to honour selection_limit_tokens (listed in omissions)."
+                },
+                "mandatory_paths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "description": "Project mandatory files, each delivered complete in readable_files."
+                }
+              },
+              "required": [
+                "estimator",
+                "basis",
+                "model",
+                "context_window",
+                "output_allowance_tokens",
+                "framing_tokens",
+                "selection_limit_tokens",
+                "estimated_packet_tokens",
+                "omitted_for_budget",
+                "mandatory_paths"
+              ],
+              "additionalProperties": false,
+              "description": "Sizing evidence for a raw context packet; disclosed, never a tokenizer count."
+            }
+          },
+          "required": [
+            "model",
+            "estimated_request_tokens",
+            "budget"
+          ],
+          "additionalProperties": false,
+          "description": "Set on the status event that discloses, just before the POST, how a raw-api request was sized (#147)."
         },
         "permission_denial": {
           "type": "object",
@@ -1178,7 +1498,14 @@
                   "type": "null"
                 }
               ],
-              "description": "Canonical model ids/aliases this rejection applies to; omitted/null means every model."
+              "description": "Canonical model ids/aliases this rejection applies to; omitted/null (with no prefixes) means every model."
+            },
+            "applies_to_model_prefixes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/HarnessEvent/properties/credential_profile_id"
+              },
+              "description": "Producer-declared model-family prefixes this rejection also applies to, as on QuotaConstraint."
             },
             "resets_at": {
               "type": [
@@ -1200,6 +1527,13 @@
               ],
               "default": null,
               "description": "Suggested retry delay in milliseconds, when reported."
+            },
+            "reopening": {
+              "type": "string",
+              "enum": [
+                "unknown"
+              ],
+              "description": "unknown: the vendor's own typed code refused further usage on this account and named no reopening time, and the refusal is not known to be a timed window (Codex usage_limit_exceeded and AGY's structured `Individual quota reached` also cover refusals whose scope is not a timed window). No reset is derived from it; the vendor's original failure evidence remains alongside the signal. Admission/continuation consumers decide whether the account is retried, and a typed refusal must not be mistaken for a transport failure. Absent: resets_at, retry_delay_ms and the vendor's window say when to come back, as before."
             }
           },
           "additionalProperties": false,
@@ -1353,6 +1687,33 @@
           ],
           "additionalProperties": false,
           "description": "Typed context-management signal (compaction boundary / capacity exhaustion) set by the adapter; orthogonal to the transient-retry taxonomy."
+        },
+        "turn_limit": {
+          "type": "object",
+          "properties": {
+            "native_code": {
+              "type": "string",
+              "description": "The vendor's own terminal subtype, verbatim."
+            },
+            "num_turns": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Turns the vendor counted."
+            }
+          },
+          "required": [
+            "native_code",
+            "num_turns"
+          ],
+          "additionalProperties": false,
+          "description": "Typed max-turns stop set by the adapter on the error event that ends a capped native turn; orthogonal to the transient-retry taxonomy."
         },
         "error": {
           "type": "string",

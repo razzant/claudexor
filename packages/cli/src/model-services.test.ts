@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CredentialUnusableLedger,
   DaemonClient,
@@ -23,6 +23,7 @@ import {
   ModelCallResult,
   QuotaAbsence,
   QuotaSnapshot,
+  REOPENING_UNKNOWN_COOLDOWN_ID,
   ControlAccountRoutingEvidenceResponse,
   ControlModelOperationDetail,
   isModelOperation,
@@ -38,10 +39,17 @@ import { accountObservations } from "./account-observations.js";
 beforeEach(() => accountObservations.invalidate());
 
 import { createModelServices } from "./model-services.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const dispose of cleanups.splice(0).reverse()) await dispose();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 function model(id = "test-model"): ModelCatalogEntry {
@@ -117,6 +125,7 @@ async function fixture(
     credentialProfileId: profile.profile_id,
     accountFingerprint: profile.profile_id,
     observedAt: new Date().toISOString(),
+    sourceProgram: null,
     provenance: "fixture exact catalog",
     clientVersion: "0.156.1",
     clientVersionSource: "verified_transport",
@@ -180,7 +189,10 @@ async function fixture(
     capabilities,
     refusals,
     migrationGate: () => null,
-    registry: new Map([["codex", { ...createCodexAdapter(), probeCredentialProfile: probe }]]),
+    // These provider/readiness stubs read no native program; program-observation tests own that boundary.
+    registry: new Map([
+      ["codex", { ...createCodexAdapter(), program: undefined, probeCredentialProfile: probe }],
+    ]),
     sources: [
       {
         adapter: options.adapter ?? {
@@ -204,11 +216,11 @@ async function fixture(
     onCommandTerminal: (record) => services.operations.onCommandTerminal(record),
   });
   if (!options.lazy) await server.start();
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   cleanups.push(async () => {
     services.close();
     await server.stop();
     await sql.close();
-    rmSync(root, { recursive: true, force: true });
   });
   const run = async (
     account: ModelCallRequest["account"] = { mode: "auto" },
@@ -280,6 +292,66 @@ async function fixture(
 }
 
 describe("production model service composition", () => {
+  it("model operations and catalog selection judge each window at the decision (#457)", async () => {
+    const f = await fixture();
+    f.cfg.harnesses.codex = GlobalConfig.parse({
+      harnesses: {
+        codex: {
+          profile_policy: {
+            limit_action: "rotate",
+            rotation_eligible: [],
+            headroom_threshold: 0.9,
+          },
+        },
+      },
+    }).harnesses.codex!;
+    // A three-minute-old reading: the short window reset a minute ago, the
+    // weekly window is current at 95% against the 90% reserve.
+    const at = (ms: number) => new Date(Date.now() + ms).toISOString();
+    f.quota.upsert({
+      subject: {
+        harness: "codex",
+        credential_route: "vendor_native",
+        plan_label: null,
+        subject_id: "a",
+      },
+      source: "codex_app_server",
+      observed_at: at(-3 * 60_000),
+      freshness: "fresh",
+      constraints: [
+        {
+          id: "codex:primary",
+          label: "5h",
+          used_ratio: 1,
+          window_seconds: 18_000,
+          resets_at: at(-60_000),
+          cooldown_until: null,
+        },
+        {
+          id: "codex:secondary",
+          label: "weekly",
+          used_ratio: 0.95,
+          window_seconds: 604_800,
+          resets_at: at(3 * 86_400_000),
+          cooldown_until: null,
+        },
+      ],
+    });
+    // Display keeps aggregate aging; selection does not lose the weekly reserve.
+    expect(f.quota.read().snapshots[0]?.freshness).toBe("stale");
+    const pinned = await f.run({ mode: "pin", profileId: "a" });
+    expect(pinned.problem).toMatchObject({
+      code: "subscription_window_exhausted",
+      context: { refusal_basis: "owner_reserve", constraint_id: "codex:secondary" },
+    });
+    expect(pinned.dispatch.state).toBe("not_started");
+    expect((await f.run()).dispatch.route?.credentialProfileId).toBe("b");
+    expect((await f.services.routes.modelCatalog("codex")).credentialProfileId).toBe("b");
+    expect(f.invoke.mock.calls.every(([, context]) => context.profile.profile_id === "b")).toBe(
+      true,
+    );
+  });
+
   it.each(["model_unavailable", "model_capability_refused"])(
     "retains a dispatched %s with explicit model_not_found at model scope",
     async (code) => {
@@ -561,6 +633,7 @@ describe("production model service composition", () => {
         credentialProfileId: "a",
         accountFingerprint: "a",
         observedAt,
+        sourceProgram: null,
         provenance: "existing_cache",
         clientVersion: null,
         clientVersionSource: null,
@@ -571,6 +644,7 @@ describe("production model service composition", () => {
     expect(partial.partial).toBe(true);
     expect(partial.accounts[0]?.catalog).toMatchObject({
       observedAt,
+      sourceProgram: null,
       provenance: "existing_cache",
     });
     expect(partial.accounts[1]).toMatchObject({
@@ -735,22 +809,23 @@ describe("production model service composition", () => {
     f.catalogModels.a = [];
     f.failures.a = "subscription_window_exhausted";
     await f.run({ mode: "pin", profileId: "a" });
-    const readQuota = f.quota.read.bind(f.quota);
-    vi.spyOn(f.quota, "read").mockImplementation(() => {
-      const state = readQuota();
-      return {
-        ...state,
-        snapshots: state.snapshots.map((row) => ({
-          ...row,
-          constraints: row.constraints.map((constraint) => ({
-            ...constraint,
-            applies_to_models: ["test-model"],
-            applies_to_model_prefixes: [],
-            applies_to_unspecified_model: false,
-          })),
+    // Display and admission reads see the same model-scoped windows.
+    const scoped = <T extends { snapshots: QuotaSnapshot[] }>(state: T): T => ({
+      ...state,
+      snapshots: state.snapshots.map((row) => ({
+        ...row,
+        constraints: row.constraints.map((constraint) => ({
+          ...constraint,
+          applies_to_models: ["test-model"],
+          applies_to_model_prefixes: [],
+          applies_to_unspecified_model: false,
         })),
-      };
+      })),
     });
+    const readQuota = f.quota.read.bind(f.quota);
+    const readAdmission = f.quota.readAdmission.bind(f.quota);
+    vi.spyOn(f.quota, "read").mockImplementation(() => scoped(readQuota()));
+    vi.spyOn(f.quota, "readAdmission").mockImplementation(() => scoped(readAdmission()));
     const other = await f.services.routes.modelCatalog("codex", "a", "other-model", true);
     expect(other.admission?.requestedModel).toBe("other-model");
     const blocked = await f.run({ mode: "pin", profileId: "a" });
@@ -902,6 +977,124 @@ describe("production model service composition", () => {
       JSON.parse((await f.services.routes.readModelResult(failed.id)).bytes.toString()),
     ).not.toHaveProperty("modelMismatch");
     expect(f.substitutions.live()).toEqual([]);
+  });
+
+  it("names the requested model on a failure beside, never instead of, the observed one (#649)", async () => {
+    const f = await fixture();
+    const stored = async (id: string) =>
+      ModelCallResult.parse(
+        JSON.parse((await f.services.routes.readModelResult(id)).bytes.toString()),
+      );
+    // A pinned non-capability HTTP failure: no capability decoration names it.
+    f.failures.a = "provider_failed";
+    f.failureContext.a = { httpStatus: 503 };
+    f.served.a = null;
+    const unobserved = await f.run({ mode: "pin", profileId: "a" });
+    expect(unobserved).toMatchObject({
+      state: "failed",
+      dispatch: { state: "response_received", route: { credentialProfileId: "a", model: null } },
+      problem: {
+        code: "provider_failed",
+        context: { httpStatus: 503, requestedModel: "test-model" },
+      },
+    });
+    expect((await stored(unobserved.id)).problem).toEqual(unobserved.problem);
+    // A failed terminal that disclosed another model keeps it as the observed route model.
+    f.served.a = "other-model";
+    const substituted = await f.run({ mode: "pin", profileId: "a" });
+    expect(substituted).toMatchObject({
+      dispatch: { route: { model: "other-model" } },
+      problem: { context: { requestedModel: "test-model" } },
+    });
+    expect(await stored(substituted.id)).not.toHaveProperty("modelMismatch");
+    expect(f.invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("states a mismatch on an incomplete answer unchanged while its problem names the request (#649)", async () => {
+    const f = await fixture({
+      adapter: {
+        id: "codex",
+        catalog: async ({ profile }) => ({
+          source: "codex",
+          credentialProfileId: profile.profile_id,
+          accountFingerprint: profile.profile_id,
+          observedAt: new Date().toISOString(),
+          sourceProgram: null,
+          provenance: "fixture exact catalog",
+          clientVersion: "0.156.1",
+          clientVersionSource: "verified_transport",
+          models: [model()],
+        }),
+        invoke: async (request, context) => {
+          const route = {
+            source: "codex",
+            credentialProfileId: context.profile.profile_id,
+            accountFingerprint: context.profile.profile_id,
+            model: request.model,
+          };
+          await context.onDispatch(route);
+          return ModelCallResult.parse({
+            outcome: "incomplete",
+            message: { role: "assistant", content: "partial reply" },
+            route: { ...route, model: "other-model" },
+            usage: { input_tokens: 5, output_tokens: 3 },
+            cost: {
+              knowledge: "unknown",
+              billing: "unknown",
+              source: "fixture",
+              provenance: ["f"],
+            },
+            appliedOptions: {},
+            problem: { code: "provider_incomplete", message: "ran out of room", retryable: false },
+          });
+        },
+      },
+    });
+    const done = await f.run({ mode: "pin", profileId: "a" });
+    expect(done).toMatchObject({
+      state: "interrupted",
+      dispatch: { state: "response_received", route: { model: "other-model" } },
+      problem: { code: "provider_incomplete", context: { requestedModel: "test-model" } },
+    });
+    expect(
+      ModelCallResult.parse(
+        JSON.parse((await f.services.routes.readModelResult(done.id)).bytes.toString()),
+      ),
+    ).toMatchObject({
+      outcome: "incomplete",
+      route: { model: "other-model" },
+      modelMismatch: { requested: "test-model", observed: "other-model" },
+      problem: done.problem,
+    });
+  });
+
+  it("names the requested model on refusals before any dispatch, with no route (#649)", async () => {
+    const f = await fixture();
+    const unknownPin = await f.run({ mode: "pin", profileId: "missing" });
+    expect(unknownPin).toMatchObject({
+      state: "failed",
+      dispatch: { state: "not_started", route: null },
+      response: { state: "absent" },
+      problem: { code: "model_account_unavailable", context: { requestedModel: "test-model" } },
+    });
+    f.catalog.mockRejectedValueOnce(
+      Object.assign(new Error("catalog unavailable"), {
+        problem: ControlProblem.parse({
+          code: "catalog_unavailable",
+          message: "catalog unavailable",
+          retryable: false,
+        }),
+      }),
+    );
+    const catalogRefusal = await f.run({ mode: "pin", profileId: "a" }, { model: "other-model" });
+    expect(catalogRefusal).toMatchObject({
+      dispatch: { state: "not_started", route: null },
+      problem: {
+        code: "catalog_unavailable",
+        context: { source: "codex", credentialProfileId: "a", requestedModel: "other-model" },
+      },
+    });
+    expect(f.invoke).not.toHaveBeenCalled();
   });
 
   it("types an all-quota pool before catalog polling or another generation", async () => {
@@ -1104,6 +1297,74 @@ describe("production model service composition", () => {
     expect(done.dispatch.route?.credentialProfileId).toBe("b");
     expect(f.quota.read().snapshots).toEqual([]);
     expect(f.unusable.live()).toEqual([]);
+  });
+
+  it("a Codex usage refusal with no reopening keeps raw-model demand off the account until its own recheck, whatever a read says (#318)", async () => {
+    const t0 = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: t0, shouldAdvanceTime: true });
+    try {
+      const f = await fixture();
+      const refusedAt = Date.now();
+      // The Codex adapter's typed refusal, through the daemon's own ingest.
+      f.quota.ingest("codex", {
+        type: "status",
+        session_id: "earlier-run",
+        ts: new Date().toISOString(),
+        credential_route: "vendor_native",
+        credential_profile_id: "a",
+        rate_limit: {
+          applies_to_request_kinds: ["text"],
+          resets_at: null,
+          retry_delay_ms: null,
+          reopening: "unknown",
+        },
+      });
+      const refusal = () =>
+        f.quota
+          .read()
+          .snapshots.flatMap((snapshot) => snapshot.constraints)
+          .filter((constraint) => constraint.id === REOPENING_UNKNOWN_COOLDOWN_ID);
+      const [kept] = refusal();
+      const recheck = Date.parse(kept!.cooldown_until!);
+      // The existing bounded default: five minutes from the refusal, no vendor time.
+      expect(recheck - refusedAt).toBeGreaterThanOrEqual(5 * 60_000);
+      expect(recheck - Date.now()).toBeLessThanOrEqual(5 * 60_000);
+      vi.setSystemTime(recheck - 60_000);
+      // A Refresh's newer recognized read with nothing measured retires nothing.
+      f.quota.upsert({
+        subject: {
+          harness: "codex",
+          credential_route: "vendor_native",
+          plan_label: null,
+          subject_id: "a",
+        },
+        constraints: [],
+        source: "codex_app_server",
+        observed_at: new Date().toISOString(),
+        freshness: "fresh",
+      });
+      expect(refusal()).toEqual([kept]);
+      const early = await f.run({ mode: "pin", profileId: "a" });
+      expect(early.dispatch.state).toBe("not_started");
+      // Typed, with no invented reset, and naming the requested model (#649).
+      expect(early.problem).toMatchObject({
+        code: "vendor_limit_rejected",
+        context: { resetsAt: null, requestedModel: "test-model" },
+      });
+      // Auto demand meanwhile is served by the other account, never by "a".
+      expect((await f.run()).dispatch.route?.credentialProfileId).toBe("b");
+      expect(f.invoke.mock.calls.map(([, context]) => context.profile.profile_id)).toEqual(["b"]);
+      vi.setSystemTime(recheck);
+      const due = await f.run({ mode: "pin", profileId: "a" });
+      expect(due.state).toBe("succeeded");
+      expect(due.dispatch.route?.credentialProfileId).toBe("a");
+      expect(f.invoke.mock.calls.map(([, context]) => context.profile.profile_id)).toEqual([
+        "b",
+        "a",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("leaves a status-less provider failure without a cooldown or a verdict", async () => {
@@ -1936,7 +2197,7 @@ describe("account/model capability routing", () => {
       ControlAccountRoutingEvidenceResponse.omit({ capabilities: true }).strict().parse(evidence),
     ).not.toThrow();
     // Only a client that asks receives the field (its rows are covered by the HTTP consumer test).
-    expect(await f.routingStatus(true)).toHaveProperty("capabilities");
+    expect(await f.routingStatus({ capabilities: true })).toHaveProperty("capabilities");
     const routed = await f.run();
     expect(routed.routing?.selectionReason).toBeDefined();
   });

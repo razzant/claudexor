@@ -107,7 +107,7 @@ invariant or operator decision before proceeding.
 - **INV-012** Missing, unauthenticated, degraded, or intent-incompatible
   harnesses are visible with reasons but never silently selectable; explicit
   selection of an unavailable harness fails loudly. verify: orchestrator
-  routing tests; canary (unavailable-harness story, planned).
+  routing tests; canary `[INV-012:explicit-unavailable-refused]`.
 - **INV-013** Adapters are translational and orchestration is centralized:
   `harness-*` packages only translate native CLI/API streams into typed
   events and I/O. They never orchestrate, select winners, manage budgets,
@@ -186,11 +186,11 @@ invariant or operator decision before proceeding.
   `applied_review_blocked`, emits the WorkProduct event before the terminal, and
   preserves a revert anchor; it never misreports the tree as untouched.
   Secret-like output takes no exception here: the live bytes stay where the
-  harness wrote them, the WorkProduct and its revert anchor are recorded as
-  for any other turn, and INV-062 hides the matches only in persisted copies.
-  The diff owner still inspects immutable binary preimages and postimages as
-  well as text (non-Git binary stubs through a bounded no-follow descriptor),
-  but only to decide what a saved copy must hide. A capture that could not
+  harness wrote them, and the WorkProduct, its exact result (with its patch
+  view when one renders) and its revert anchor are recorded as for any other
+  turn (INV-146). The capture inspects no
+  content: the `pr` publication boundary scans the outgoing commits themselves
+  (INV-146). A capture that could not
   observe the live changes at all remains a sanitized `adopted:true`/
   `applied_review_blocked` receipt with no patch and no anchor; nothing is
   rolled back and it never claims false revertability. A later
@@ -267,11 +267,16 @@ invariant or operator decision before proceeding.
   target, never from model edit narration. Directory work products record observed
   file bytes in a digest-bound manifest; a text diff is only a preview. Copied
   file results retain the selected baseline and complete output bytes for exact
-  delivery, while direct effects disclose any unknown preimages. Captured diffs must round-trip:
-  the exact patch object recorded as the work product must `git apply` cleanly to
-  the base it was captured against (no silent corruption — CRLF, quoted
-  paths, binary — between capture and delivery); persisted copies may be masked
-  under INV-062 and are display-only. verify: workspace diff
+  delivery, while direct effects disclose any unknown preimages. Captured results must round-trip:
+  the work product of a Git capture is its base and candidate trees as Git
+  objects, which must reproduce the candidate exactly on the base it was
+  captured against; a patch is only a view of that pair, rendered only when an
+  estimate computed from its blob sizes and the render itself both fit 256 MiB,
+  must `git apply` cleanly to that base, and is otherwise a typed absence,
+  never an empty patch
+  (no silent corruption — CRLF, quoted paths, binary — between capture and
+  delivery); saved copies are that exact view (INV-146), and only historical
+  runs kept a masked display copy beside a private exact object. verify: workspace diff
   tests incl. the CRLF and binary round-trip cases (byte-faithful raw
   capture; `git diff --binary`).
 - **INV-042** Reviews are trusted only when reviewer output is parseable,
@@ -279,14 +284,15 @@ invariant or operator decision before proceeding.
   argv echo), reviewer telemetry is persisted, and the reviewer read the
   candidate evidence files rather than a giant prompt-only diff. A reviewer
   workspace is an explicit candidate projection, never a recursive copy of
-  the live checkout: Git-visible files plus exact diff-touched paths, subject to
-  the shared sensitive-resource boundary, are the candidate plane; the
-  sealed/redacted evidence packet is a separate explicit plane. Gitignored
+  the live checkout: Git-visible files plus exact diff-touched paths (for a Git
+  result with no rendered patch, only its exact changed paths), subject to
+  root and symlink containment, are the candidate plane; the sealed evidence
+  packet (exact bytes, INV-146) is a separate explicit plane. Gitignored
   local state that is absent from the diff never crosses the reviewer boundary.
   For an explicit directory result, the complete selected file manifest supplies
   the candidate inventory instead of Git membership. Retained unchanged inputs
   and observed output bytes remain available, with baseline/output evidence in
-  the explicit packet and the same sensitive-resource boundary. A selected file
+  the explicit packet and the same containment boundary. A selected file
   is not excluded merely because its directory name usually denotes generated
   output; unselected source siblings are never implicitly copied.
   verify: reviewEngine route-proof,
@@ -325,8 +331,15 @@ invariant or operator decision before proceeding.
   orchestrator tests;
   `packages/orchestrator/src/inrun-continuity.integration.test.ts`.
 - **INV-047** A repeated identical diff against a still-failing required
-  gate is reported honestly as `stuck_no_progress`, never success. verify:
-  until-clean stuck test.
+  gate is reported honestly as `stuck_no_progress`, never success. Only
+  accepted results count toward that repetition: a round whose patch was
+  refused with a typed model-correctable code applied nothing, so it neither
+  repeats nor resets the accepted results' history, and its own failure is
+  that refusal. The next ordinary revise round may correct it within the run's
+  existing limits; no retry allowance is added. A state-integrity refusal
+  (isolation, evidence, digest, base) still ends convergence. verify:
+  until-clean stuck test; the INV-047 cases in
+  `packages/cli/src/raw-api-rounds.integration.test.ts`.
 - **INV-048** Interactive FLOW-CONTROL tools are not work tools: a declined
   or timed-out `AskUserQuestion`/`ExitPlanMode` is a benign timeline event,
   never a blocking tool error; an ANSWERED interaction flows through the
@@ -345,17 +358,21 @@ invariant or operator decision before proceeding.
   only the gate/test-path policy and never bypasses built-in
   critical/security human gates. Path parsing for these gates must handle
   every path git can emit (quoted, non-ASCII) — the shared quote-aware
-  diff parser is the one owner. verify: policy tests; core diff parser
+  diff parser is the one owner for a rendered patch; an unrendered result
+  takes paths from NUL-delimited `diff-tree --raw -z` records. verify: policy
+  tests; core diff parser
   tests.
 - **INV-051** Run artifacts live in two honest planes that are never
   conflated: the run tree under the external per-project runtime namespace
-  (`~/.claudexor/v3/projects/<project-sha256>/runs/<id>/`) is Claudexor's
+  (`~/.claudexor/v3/projects/<project-sha256>/runs/<id>/`; a one-shot run of an
+  explicitly ephemeral root lives in the one-shot namespace
+  `~/.claudexor/v3/one-shot/runs/<id>/`, CONCEPT-CHANGE(INV-051), #503) is Claudexor's
   internal orchestration evidence, while the project's produced outputs (the
   repo `artifacts/` dir served via `/runs/:id/produced`) are user
   deliverables. Surfaces label which plane they show. verify: control-api
   produced/artifacts endpoint tests; thread-workspace Artifacts review.
 
-## 6. Secrets Never Become Artifacts
+## 6. Engine Credentials Stay Private, Work Stays Exact
 
 - **INV-060** Native harness auth is ready only after the exact source-targeted
   doctor probe and, for setup success, an isolated same-harness capability smoke
@@ -394,36 +411,87 @@ invariant or operator decision before proceeding.
   copied auth store or independent refresh mechanism is introduced. Model
   account Auto keeps a suitable preferred profile then uses the existing pool;
   pin never rotates or falls back to an API credential.
-- **INV-062** Raw secrets must not appear in run params, the command journal, task
-  contracts, events, summaries, persisted patch copies, PR text, logs, or
-  docs. The PROMPT
-  is included: a secret-like value inside the prompt text is hard-blocked at
-  every ingress surface (CLI, POST /runs, thread turns, MCP, ACP, daemon
-  enqueue) with a typed `inline_secret_rejected` error and remediation —
-  prompts are durable artifacts and there is deliberately NO bypass flag.
-  Agent OUTPUT is a different axis: it is not rolled back, discarded or
-  failed for containing secret-like text. The changed files keep the exact
-  bytes; persisted and served copies hide the matches; the run discloses
-  paths and counts, never values. A redacted copy is display-only — apply
-  binds to the digest of the exact bytes and reads the private exact patch
-  object or refuses typed (`patch_exact_bytes_unavailable`). `pr` delivery
-  never publishes secret-like text. A capture that cannot observe the
-  changes is the only capture-time refusal, under its own name.
-  verify: secret-scan CI step; redaction tests; inline-secret rejection
-  tests; canary `[INV-062:prompt-secret-block]`; keep-and-mask tests
-  (`packages/orchestrator/src/persistedPatch.test.ts`,
-  `packages/orchestrator/src/secretDiff.test.ts`, the orchestrator in-place,
-  isolated, binary, raster and best-of runs, the delivery exact-digest and
-  `pr` refusal tests, the Control API exact-object Apply and
-  `patch_exact_bytes_unavailable` tests, the thread delivery tests).
-  Model-purpose request/response resources are the narrow content boundary:
-  caller-supplied conversation bytes pass without secret-like-text filtering,
-  just as on a model API. They cannot be used as ordinary Agent attachments.
-  This is not a general bypass flag. Engine OAuth and control credentials are
-  never injected into that content, and the journal retains only compact
-  identities, digests, state, usage and cost evidence, never the conversation.
+- **INV-062** RETIRED (superseded by INV-146, owner decision 29 Oct 2026, issue
+  #555). It hard-blocked secret-like text at every ingress, masked it in task
+  contracts, events, summaries, thread history, saved patches, reviewer packets
+  and served artifacts, and withheld matching media. That blocked and corrupted
+  ordinary work on authentication code and test fixtures while protecting no
+  credential the engine owns. Historical runs written under it keep their
+  masked copies and private exact patch objects; they are read, never restored.
+  verify: retired; see INV-146.
+- **INV-146** Authorized working content is exact. Prompts, instructions,
+  output schemas, test and gate commands, live and deferred messages,
+  interaction questions and answers, attachments, project files, context,
+  answers, events, thread history, task contracts, command journal records,
+  patches, reviewer evidence and served artifacts carry the bytes the user and
+  the harness produced. No surface refuses, masks, omits or withholds them for
+  looking like a credential, by content pattern or by file name. Review reads
+  the same exact result that apply consumes: its rendered patch view, or the
+  exact changed files of a result with no rendered patch view (a file it cannot
+  read is named, and the review cannot pass clean); there is no second masked copy.
+  For a Git-object result, both views come from its saved objects alone: no
+  configured filter driver runs, so a Git LFS pointer or an encrypted blob is
+  reviewed as stored, which shows nothing of the content it stands for.
+  Tool results keep unmasked summaries of a tool's output within each
+  adapter's existing bound and whitespace normalization; answers, patches and
+  artifact bytes stay byte-exact.
+  Claudexor never places engine-owned credentials (daemon tokens, provider
+  keys, OAuth stores, account homes) into working content: they stay in their
+  physical stores (INV-060, INV-061, INV-063), outside every authorized root,
+  behind real authentication, explicit grants, read-only/trust policy, root
+  and symlink containment and digest integrity. A harness process can read the
+  credential the engine hands it, and whatever the harness prints is ordinary
+  output, kept exactly in local records as in the vendor's own transcript; the
+  ACP adapter removes the managed token it injected, by value. Masking never
+  replaces the only copy of working content (model-authored or user-provided
+  material: answers, a failed completion's partial output, tool-call targets
+  and tool output, required inputs, disclosed gate argv) in an answer, event or
+  record. Engine and vendor diagnostics (errors, stderr tails, probe and
+  vendor-failure text, native warnings, retry notices) are not working content
+  and may be retained only in masked form.
+  Reading an
+  arbitrary host path for import remains guarded by its path classes, and
+  review risk may still rise for credential-named paths; neither refuses
+  project material. Model-purpose request/response resources (INV-064) still
+  cannot be used as ordinary Agent attachments; engine OAuth and control
+  credentials are never injected into them, and the journal retains only
+  compact identities, digests, state, usage and cost evidence, never the
+  conversation. The one content boundary is publication: before the first
+  external send, `pr` delivery scans what would leave the machine (every
+  commit a push URL lacks, what each merge itself changed, their messages, the
+  branch name and the PR title and body) with the pinned Betterleaks scanner
+  and refuses typed on a finding (`publication_scan_findings`), an unavailable
+  scanner (`publication_scan_unavailable`) or a failed scan
+  (`publication_scan_failed`); the scanner skips some binary, archive and
+  lockfile content, so a clean scan is not proof of absence. A Git result's
+  `pr` passes the same scan on the commit of the tree it delivers; `pr` of a
+  result with no rendered patch view is refused typed (`pr_unrendered_result`)
+  before any scan, and scanning such a result for `pr` is a follow-up. Local
+  apply, branch and commit stay available. Apply binds a Git result to its
+  digest v1: its trees are read from the target repository or the private
+  project object store; trees missing from both refuse apply and revert typed
+  (`result_objects_missing`), and another store fault refuses with its own
+  typed code: `space_insufficient` for a full disk, `git_stalled` for a Git
+  child stopped after making no progress, `git_signal` for one a signal
+  terminated, and `git_failed` for any other. A capture that cannot observe or keep the
+  changes is the only capture-time refusal, under its own name
+  (`capture_refused`). A run the old
+  rule saved with `persisted_patch: redacted` still binds apply to its exact
+  patch object or refuses typed (`patch_exact_bytes_unavailable`). verify:
+  canary `[INV-146:exact-working-content]`; ingress, contract and thread
+  tests; `packages/orchestrator/src/secretDiff.test.ts`;
+  `packages/orchestrator/src/runSupport.test.ts`; reviewer-workspace and
+  evidence tests; the delivery `pr` publication-scanner tests
+  (`packages/delivery/src/publication-scan.test.ts`) and the Git-result `pr`
+  and `pr_unrendered_result` tests (`packages/delivery/src/object-delivery.test.ts`);
+  `packages/control-api/src/run-delivery-refusal-code.test.ts`;
+  `packages/orchestrator/src/unrendered-result.integration.test.ts`;
+  `packages/orchestrator/src/capture-overflow.test.ts`; the Control API
+  historical exact-object Apply and `patch_exact_bytes_unavailable` tests.
 - **INV-063** Scoped harness homes/config dirs stay outside every mutation
-  worktree, in the external per-project runtime namespace, so `git add -A`
+  worktree, in the external engine runtime namespace (the project's, or the
+  one-shot namespace of a one-shot run on an explicitly ephemeral root,
+  CONCEPT-CHANGE(INV-063)), so `git add -A`
   can never capture auth files, plugin downloads, sqlite logs, or transcripts
   into a patch. verify: workspace env tests; T3 audit sweep.
 - **INV-064** User attachments (images, files) are persisted only in a
@@ -432,14 +500,34 @@ invariant or operator decision before proceeding.
   its pending binding (digest, key, request digest and result) before consuming
   that file, publishes digest-bound immutable bytes by hard link, and removes
   the part only after the flusher confirms publication. Run/turn requests accept
-  only the returned resource IDs. verify: resource-store and control-api upload
-  tests.
+  only the returned resource IDs. Finalized bytes reach every lane exactly; a
+  file's name or content is never a reason to refuse it (INV-146), while
+  digest and size integrity still are. verify: resource-store and control-api
+  upload tests.
+  CONCEPT-CHANGE(INV-064), #249: a NEW ordinary keyed import may opt in to a
+  managed lifetime. Its caller may then release the ID: every new reference (a
+  run, continuation, Exact Retry, thread turn or Turn Retry, or next message;
+  only an accepted turn's own first dispatch inherits its hold) is refused typed
+  (`resource_released`) inside the transaction that would accept it, while the
+  commands, turns and next messages accepted before keep exactly those bytes
+  until their existing owners retire them, and other resources sharing the
+  digest keep theirs. Default and legacy resources keep indefinite reuse. No TTL
+  or age rule applies. Rationale: a host that knows all of its consumers are
+  finished had no way to let accepted work end the bytes' life. verify:
+  `packages/daemon/src/store/managed-resource-lifetime.test.ts`.
   Model resources use the same upload/blob owner with atomic, replayable
   finalization. Request bytes are released when the operation terminates;
   response bytes after explicit digest-bound acknowledgement, or 30 days from
-  readiness if unacknowledged. The compact command receipt survives cleanup:
-  repeat retrieval cannot turn into another generation. Existing maintenance
-  reclaims crash residue; the caller retains conversation history.
+  readiness if unacknowledged. Existing maintenance reclaims crash residue;
+  the caller retains conversation history.
+  CONCEPT-CHANGE(INV-064), #637: the compact command receipt and its
+  idempotency binding last 30 days after the terminal and never before the
+  response and both resources settle; until then a same-key create cannot turn
+  into another generation. A missing receipt proves neither non-dispatch nor
+  cost. Rationale: an uncapped receipt per model call grew without bound, and
+  its host retries only within a live call. verify:
+  `packages/daemon/src/model-operations.test.ts`,
+  `packages/daemon/src/store/model-receipt-retention.test.ts`.
 - **INV-065** Every selected lane must declare finite MIME, byte/count and
   transport support for every mandatory attachment. Mixed pools fail before
   enqueue when any selected lane cannot receive the same bytes; adapters verify
@@ -526,7 +614,13 @@ invariant or operator decision before proceeding.
 - **INV-072** Ordinary project runs (and Best-of candidates) execute in
   isolated envelopes under the external per-project runtime namespace
   (`~/.claudexor/v3/projects/<project-sha256>/workspaces/.../tree`), with the
-  harness cwd at the envelope worktree. Explicit directory execution uses either
+  harness cwd at the envelope worktree. That is the project's own namespace even
+  when another tree executes (an isolated thread worktree, a delegated
+  workspace); a one-shot run of an explicitly ephemeral root keeps its envelopes
+  in the one-shot namespace beside, never inside, its run trees. Each envelope records
+  its execution root, and recovery, adoption and release act on its recorded
+  location; an envelope adopted by a successor keeps its path
+  (CONCEPT-CHANGE(INV-072), #503). Explicit directory execution uses either
   the selected live folder or an isolated copy of the caller-selected footprint,
   without initializing Git. Stable project identity and execution address remain
   separate facts. The repository's `.claudexor/`
@@ -547,11 +641,15 @@ invariant or operator decision before proceeding.
   (`packages/cli/src/thread-delegated-workspace.test.ts`,
   `packages/control-api/src/thread-delegated.test.ts`); canary
   `[INV-073:delegated-thread-two-rounds]`.
-- **INV-074** Absolute host paths such as `/tmp/...` are not project diffs
-  and do not prove project success. Project tmp requests default to
-  project-local `tmp/...` or run artifacts unless the user explicitly
-  selects a verified host-side-effect mode. verify: tmp-semantics telemetry
-  tests.
+- **INV-074** Capture follows the physical execution root, not a path's
+  spelling: project work product is what the envelope worktree, live in-place
+  tree, or selected directory footprint holds, plus declared run artifacts
+  and the text answer. A root may itself live under `/tmp`. A write outside
+  the root, such as an absolute `/tmp/...` host path, does not enter the
+  project patch or directory capture automatically and is not by itself
+  proof of delivered project work; capture neither refuses nor redirects it,
+  and the access profile decides whether the harness may write there.
+  verify: `packages/workspace/src/capture-boundary.test.ts`.
 - **INV-075** Git-backed mutating run shapes need a Git boundary. A non-git
   project folder is initialized automatically (`git init` + a deterministic
   baseline commit) when the first mutating isolated turn or another Git-backed
@@ -621,7 +719,12 @@ invariant or operator decision before proceeding.
   no-op. While a turn runs, Send swaps to a server-owned Stop. verify:
   composer state tests (ComposerTurnState).
 - **INV-093** Every turn shows its HONEST outcome: a plan says "no files
-  changed" and offers to implement; a patch shows its diffstat; a race shows
+  changed" and offers to implement; a patch shows its diffstat, and a Git
+  result with no rendered patch shows no diffstat but its typed absence:
+  with the bounded list of its largest changed files in `claudexor inspect`
+  and `summary.md`, with the number of its changed files in the macOS
+  Changes view and the MCP result (the macOS candidate card hides the line
+  counts); a race shows
   the adopted winner; a terminal failure with no output renders an inline
   failure card with the engine's reason. A turn whose run was refused BEFORE
   it started (trust gate, preflight) persists the refusal on the turn
@@ -699,16 +802,32 @@ invariant or operator decision before proceeding.
   Negotiated requested-model admission tells callers they may attempt the model,
   not that it was listed or generation-proven; wait/readiness readers use the same
   declaration. Raw-api and opencode stay authoritative by declaration, not by
-  proof of completeness.
-  Residuals, disclosed: the explicit reviewer panel forwards without the
-  run-event disclosure (its spawn does not pass the per-spawn gate); on the CLI
+  proof of completeness. A failed live read is no list: it neither admits a model
+  nor proves it absent. On an authoritative harness, when the catalog is
+  temporarily unavailable or unusable (no answer, a timeout, another HTTP status,
+  a malformed or partial answer), an EXPLICIT model is forwarded byte-identical on
+  the same key with a visible note that it could not be verified, and the provider
+  accepts or refuses it; a missing or rejected credential (HTTP 401/403), a
+  harness-declared refused variant (OpenRouter `:online`), known limits and a
+  prohibited route still refuse, and a successfully read absence stays a refusal.
+  A failed read never erases a successful read of the same credential identity
+  earlier in the same run: that read's presence, absences and window still
+  answer, disclosed as such. No other account, key or model is substituted, and
+  a forwarded attempt is not promised to be free (owner decision 2026-10-29
+  «А»).
+  Residuals, disclosed: the explicit reviewer panel discloses an unverified
+  model on its review-preflight event rather than the per-spawn run event (its
+  spawn does not pass the per-spawn gate); on the CLI
   run path a vendor model refusal arrives as an untyped error carrying the
   vendor's text; a mistyped explicit model on an advisory harness costs one
   spawn, and bounded account failover may spend one start per account before a
   typed account-independent stop exists. verify: canaries
   `[INV-104:model-truth-refusal]`, `[INV-104:models-manifest-fallback]`,
-  `[INV-104:settings-write-strict]`, `[INV-104:settings-write-advisory]`;
-  settings-service tests; modelGovernance preflight tests;
+  `[INV-104:settings-write-strict]`, `[INV-104:settings-write-advisory]`,
+  `[INV-104:models-catalog-unavailable]`, `[INV-104:models-catalog-key-rejected]`;
+  settings-service tests; modelGovernance preflight and per-spawn tests;
+  `packages/orchestrator/src/catalog-key-identity.test.ts`;
+  `packages/cli/src/raw-api-context.integration.test.ts`;
   `packages/core/src/model.test.ts`; `packages/cli/src/model-truth.test.ts`;
   `packages/orchestrator/src/reviewerPanel.test.ts`;
   `packages/harness-codex/src/astra.test.ts`. Operator decisions 2026-09-21
@@ -741,11 +860,11 @@ invariant or operator decision before proceeding.
   negotiated major, while unversioned product aliases are refused. verify:
   control-api handshake/catalog tests; docs-truth catalog parity; UI review.
 - **INV-111** Apply is allowed only for successful runs with a successful
-  decision record and a digest-bound patch or copied-files WorkProduct for the original verified repo
+  decision record and a digest-bound Git result, patch or copied-files WorkProduct for the original verified repo
   root — with one typed, server-owned exception: an operator decision
   (`POST /v2/runs/:id/decision`, `accept_risk`/`override_needs_human`)
-  persists an auditable, patch-hash-bound record that unblocks apply for a
-  `blocked` run; a mutated patch invalidates the override. The human
+  persists an auditable, result-digest-bound record that unblocks apply for a
+  `blocked` run; a mutated result invalidates the override. The human
   decision is never client-faked state. Direct file effects are already in place
   and do not offer a second apply or an unproved full rollback. Explicit discard
   ends pending copy delivery without applying or reverting files; existing
@@ -760,7 +879,7 @@ invariant or operator decision before proceeding.
   permits successful unreviewed work to be applied normally, with honest
   `not_run` review facts and no extra risk-acceptance step for that absence.
   Required checks, independent policy findings, work-completion requirements,
-  and fresh patch-integrity verification remain enforced. Historical records
+  and fresh result-integrity verification remain enforced. Historical records
   without the intent field retain the previous review-required meaning.
   Requested review must actually pass; it is never fabricated as approved.
   A clean cross-family verified review is sufficient verification even
@@ -790,31 +909,45 @@ invariant or operator decision before proceeding.
   `--in-place` targets) and each
   git-mode ENVELOPE worktree (an envelope materializes only the committed tree,
   so an untracked project-root bridge never reaches a candidate; the envelope
-  write emits no event and is EXCLUDED from the candidate patch ONLY when
+  write emits no event and is EXCLUDED from the captured result ONLY when
   Claudexor created the bridge THIS run AND its bytes still equal
   `CLAUDE_BRIDGE_CONTENT` exactly (A-3), so a candidate-authored `CLAUDE.md` — or
   any candidate EDIT of the bridge, even one that keeps the ownership marker —
-  differs from those bytes and IS captured in `patch.diff`). An
+  differs from those bytes and IS captured in the result). An
   unlisted mutation path is a release blocker. verify: mutation-path
   inventory in ARCHITECTURE; delivered-prefix and active-turn thread-apply
   tests; claude-bridge exclusive-create/no-follow/race/idempotency tests +
   envelope-bridge patch-cleanliness test (locked operator decision).
 - **INV-114** Apply/adoption captures and rechecks the exact target preimage
-  immediately around the mutation; stale or conflicting targets are refused
+  immediately around the mutation (as Git sees it: an edit that keeps a file's
+  size and times stays invisible to a `branch`, `commit` or `pr` checkout, the
+  limit `git checkout` has); stale or conflicting targets are refused
   without destructive rollback. `adopted:false`/`not_applied` means the tree
-  is unchanged. Revert changes only the Claudexor-recorded postimage and
-  refuses overlap with later user edits. verify: protected-apply conflict and
+  is unchanged (as Git holds it), except after a copied directory result's
+  partial delivery, which stays `not_applied` and lists the files it wrote in
+  `appliedPaths`. Revert changes only the Claudexor-recorded postimage and
+  refuses overlap with later user edits that differ from the reverted
+  content; for a Git result, an identical outcome already present in the target
+  is not a conflict, except at rename and copy endpoints. A Git result's apply,
+  check or revert that must write or remove a path outside the target's
+  sparse-checkout patterns refuses typed before writing
+  (`delivery_outside_sparse_checkout`), naming those paths; where the target's
+  Git cannot check those patterns (before 2.41), every apply, check and revert
+  of a Git result in that sparse checkout refuses `git_failed` before writing.
+  verify: protected-apply conflict and
   concurrent-edit tests (byte-identical index/worktree preservation).
-- **INV-115** Before an envelope-produced patch is applied or adopted —
+- **INV-115** Before an envelope-produced result is applied or adopted —
   manual apply, race winner, thread delivery, or convergence result — it is
   re-verified by the delivery owner in a fresh
-  envelope (`git apply` to a clean base + configured deterministic gates
-  there) immediately before the target preimage check; a copied directory result
+  envelope (a Git result: composed onto the current target, then written by
+  checkout into a fresh private clone at the target snapshot; a legacy patch:
+  `git apply` to a clean base; plus configured deterministic gates there)
+  immediately before the target preimage check; a copied directory result
   instead verifies its manifest, full content hashes, and reproduction on the
   retained selected baseline through that same verifier owner. The result is recorded
   in the decision/receipt, and a missing, stale, or failed verifier
   infrastructure error blocks fail-closed exactly like a proven failure.
-  A patch that cannot survive a clean base does not touch the live tree.
+  A result that cannot survive a clean base does not touch the live tree.
   In-place turns are exempt: their diff is produced against the LIVE tree,
   and a bare snapshot worktree (no gitignored deps) would false-block
   green work. Deterministic gates must be hermetic to the checkout for the
@@ -868,7 +1001,10 @@ invariant or operator decision before proceeding.
   is not retried and never changes the verdict; the detail still sends
   processScope as explicit null, meaning unknown, never clean. The next daemon start does the
   same for a crashed generation. What could not be ended or read is recorded
-  instead of declared clean, and the record states its completeness honestly:
+  instead of declared clean: a recorded group skipped because another birth now
+  holds its id is proved gone, and any other skip leaves its possibly owned live
+  members unread and unsignalled, so the scope stays unresolved until they leave.
+  The record states its completeness honestly:
   provable only where the census read every same-uid environment (Linux),
   never on macOS for a system binary started in the background by a shell
   that exited before capture, never on Windows, never after a settlement
@@ -879,10 +1015,33 @@ invariant or operator decision before proceeding.
   incomplete, never a late signal, never a verdict). The outcome is a disclosure, not a
   verdict axis: it never turns a delivered answer into a failure. Work meant
   to outlive a run belongs to a longer-lived custodian, never to pid 1.
+  CONCEPT-CHANGE(INV-144), #613: the expired attempt itself still never signals
+  late. While the daemon that opened a FINISHED run's scope stays live, a scope
+  left unresolved gets later attempts, one at a time and spaced by their own
+  budget times the attempt number, each a new census and identity proof under
+  the same pid, group and birth rules with its own budget; their number is not
+  capped, none extends or resumes the expired attempt, and none touches an open
+  run, another or an unreadable owner's scope, or a host without a census. Each is
+  recorded beside the unchanged terminal record (`processScopeLater`); a settled
+  one retires the index entry and may return a next message held only for that
+  custody. A settled report that could not be recorded or returned is owed and
+  repeated by that daemon without another reap, and an unsettled one gives way to
+  the next attempt's report; after a restart the draft stays held. An index write
+  that failed is repeated too, without a reap or a report. Reports bind
+  with each store generation's executors and end before that store closes or the
+  daemon stops; while none is bound no attempt starts, a reap already running finishes
+  without retiring its entry, and a consumer is told before its entry is recorded, so
+  nothing settles unreported.
+  Rationale: on a loaded host the single terminal deadline expired before
+  every source was read, leaving scopes unresolved although a later bounded proof
+  could show their processes gone; the terminal verdict and record stay as they were.
   verify: core scope census/reap tests (fake kernel and real orphan
   fixtures incl. a platform-binary child ended through its recorded group),
   the orchestrator run-scope barrier tests (terminal after settlement), the
-  cli run-scope index spawn-seed and start/settle tests, the control-api
+  cli run-scope index spawn-seed and start/settle tests,
+  `packages/cli/src/run-scope-late-settlement.test.ts` (bounded, uncapped later attempts
+  and owed reports and index writes), `packages/cli/src/claudexord-later-settlement.test.ts`
+  (the built daemon's attach, store replacement and shutdown), the control-api
   run-detail projection test and CLI joined Codex drain/detail integration test.
 
 ## 12. Keep The Codebase Small And Direct
@@ -916,7 +1075,7 @@ invariant or operator decision before proceeding.
   capability-preservation tests.
 - **INV-142** Retained-command reads name an address or a bounded keyset page
   before public projection. Collection answers contain summary facts and a
-  redacted prompt preview, never unrelated prompt bodies, instructions or full
+  bounded prompt preview, never unrelated prompt bodies, instructions or full
   results. Full detail and Exact Retry remain addressed; transitive cancellation
   stays uncapped, and the synchronous durable enqueue owns successor admission.
   This bounds transport amplification, not resident journal history. verify:
@@ -944,6 +1103,8 @@ invariant or operator decision before proceeding.
   to finish that history before it serves Stop, admission or an attention read.
   verify: `packages/control-api/src/bulk-worker-isolation.test.ts`
   ("serves admission, inbox attention and control requests, then stops while a real bulk worker is blocked");
+  `packages/cli/src/thread-retirement.integration.test.ts`
+  ("serves health, admission, inbox attention and Stop while an export's read holds the worker");
   `packages/control-api/src/bulk-server.test.ts`;
   `packages/control-api/src/bulk-executor.test.ts`.
 - **INV-123** Dead code is deleted, not allowlisted (justified, dated
@@ -1068,7 +1229,18 @@ invariant or operator decision before proceeding.
   for that subject and route, including an early purchased or vendor-granted
   reset; unknown usage is never zero. Independently scoped restrictions remain
   unless corresponding evidence replaces them. The same durable projection
-  governs every consumer and survives restart. A row that recently answered this
+  governs every consumer and survives restart.
+  **CONCEPT-CHANGE(INV-135), #318:** a typed usage refusal that names no
+  reopening time (`cooldown:reopening_unknown`) is not such an unclassified
+  refusal: no read retires or moves it, whatever quota the read shows, and it
+  ends only at its own bounded engine recheck, after which the next demanded
+  attempt may try the row; nothing probes the vendor for it. Rationale: one
+  vendor code covers a spent window and a workspace out of credits alike, and
+  a successful read does not show that the refused usage or credits returned,
+  so retiring the refusal on any read let a Refresh or the background poll
+  re-admit an account the vendor had just refused. The operator accepted the
+  cost: after a refill the row waits out that recheck.
+  A row that recently answered this
   model's request with a different model (a live, self-expiring
   model-substitution observation), or whose session an unpinned run started
   on it recently ended before any progress for this same requested model (a
@@ -1159,7 +1331,9 @@ invariant or operator decision before proceeding.
   `packages/orchestrator/src/rowAdmission.test.ts` (#363 stale admission);
   `packages/daemon/src/store/account-service.test.ts` +
   `packages/cli/src/account-last-service.integration.test.ts` (last-served
-  order across a restart).
+  order across a restart); `packages/daemon/src/quota-recovery.integration.test.ts`
+  + `packages/cli/src/codex-usage-refusal-recheck.integration.test.ts` (#318
+  refusal recheck).
 - **INV-136** High-volume UI evidence is PROGRESSIVE, BOUNDED, and honest:
   per-run milestone bursts are exactly one in-flight request plus at most one
   trailing refresh (events during the trailing load cannot chain more GETs);

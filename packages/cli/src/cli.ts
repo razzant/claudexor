@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
-import { ArtifactStore } from "@claudexor/artifact-store";
-import { CLAUDEXOR_VERSION, noProjectRepoRoot, readTextSafe, userConfigDir } from "@claudexor/util";
+import { join, relative, sep } from "node:path";
+import { CLAUDEXOR_VERSION, readTextSafe } from "@claudexor/util";
 import { resolveInstructions, taskGroupOptions } from "./run-options.js";
 import { releaseCommand } from "./release-command.js";
 import { serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
 import { dispatchAcpCommand } from "./acp-auth-command.js";
 import { initProjectConfig } from "@claudexor/config";
 import {
+  commandOutcomeLabel,
   DecisionRecord,
   AccessProfile,
   EFFORT_HINT_HELP,
@@ -33,9 +33,14 @@ import {
   TaskContract,
   type TestCommandInvocation,
   type ResourceAttachmentRef,
+  CaptureChangeInventory,
+  captureInventoryLines,
   runOutcomeLabel,
-  taskGroupReceiptMetadata,
+  acceptedReceiptMetadata,
+  CONTROL_STORE_IDENTITY_HEADER,
 } from "@claudexor/schema";
+import { projectObjectResultDisclosure } from "./mcp-run-projections.js";
+import { accessRouteLines, webRouteLines } from "./inspect-route-lines.js";
 import {
   flagBool,
   flagStr,
@@ -73,11 +78,9 @@ import { retryCommand, runAgainCommand } from "./retry-command.js";
 import { dispatchRetainedCommand } from "./retained-command-dispatch.js";
 import { uploadCommand } from "./upload-command.js";
 import { UPLOAD_COMMAND_SPECS } from "./upload-command-specs.js";
-import { assertCliRunParamsHaveNoInlineSecrets } from "./run-secret-scan.js";
 import { resolveLocalAttachment, type LocalAttachment } from "./local-attachment.js";
 import { uploadLocalAttachment } from "./attachment-upload.js";
 import {
-  connectDaemonIfRunning,
   daemonOutcomeSummary,
   ensureDaemon,
   enqueueAndAwait,
@@ -89,6 +92,7 @@ import {
   projectOutcomeBanner,
   projectRunOutcomeFacts,
   mergeDaemonRunOutcome,
+  type DaemonRunOutcome,
 } from "./daemon-run.js";
 import {
   inspectDelegationLines,
@@ -97,6 +101,7 @@ import {
 } from "./delegation-output.js";
 import { inspectBudgetLine } from "./run-detail-projections.js";
 import { readRunFactsArtifact } from "./run-facts-projection.js";
+import { resolveRunStore, type ResolvedRunStore } from "./run-store-lookup.js";
 import { projectTerminalRunOutput, terminalRunRequiredActionLines } from "./terminal-run-output.js";
 import { runPlanQuestionLoop } from "./plan-question-loop.js";
 import { decisionAnswerLines, resolveDecisionBody } from "./decision.js";
@@ -412,30 +417,7 @@ async function orchestrate(
   try {
     const cliTests = testCommands(args) ?? [];
     tests = cliTests.length > 0 ? cliTests : undefined;
-    assertCliRunParamsHaveNoInlineSecrets({
-      prompt,
-      instructions: resolvedInstructions,
-      attachments: attachmentRequest,
-      mode,
-      harnesses: resolvedHarnesses,
-      primaryHarness: resolvedPrimaryHarness,
-      model: resolvedModel,
-      effort: resolvedEffort,
-      processingPreference,
-      review,
-      reviewerPanel: resolvedReviewerPanel,
-      reviewerModels: resolvedReviewerModels,
-      reviewerEfforts: reviewerEffortOverrides,
-      tests,
-      protectedPathApprovals: resolvedProtectedPathApprovals,
-      paidBudget,
-      access: resolvedAccess,
-      web: resolvedWebPolicy,
-      externalContextPolicy: resolvedWebPolicy,
-      synthesis: resolvedSynthesis,
-    });
   } catch (err) {
-    // Preserves the typed `inline_secret_rejected` code (never echoing the token).
     return renderOutputFailure(outputMode, err, {
       defaultCategory: "usage",
       messagePrefix: "claudexor:",
@@ -531,6 +513,11 @@ interface DaemonRunParams {
   forced: { deepScan?: boolean; create?: boolean; race?: boolean };
 }
 
+/** The accepted job and receipt store (or group pair) a machine failure after admission keeps. */
+function acceptedRunFacts(out: DaemonRunOutcome): Record<string, unknown> {
+  return { ...(out.jobId ? { jobId: out.jobId } : {}), ...acceptedReceiptMetadata(out) };
+}
+
 /**
  * All five product modes enter through the managed daemon and control API.
  * `--json` prints one stable `{ runId, runDir, status }` machine envelope.
@@ -563,9 +550,7 @@ async function daemonRun(
   let threadId = flagStr(args, "thread");
   if (threadId === undefined && flagBool(args, "resume")) {
     try {
-      const res = await controlApiFetch(addr, "/threads", {
-        headers: { Authorization: `Bearer ${addr.token}` },
-      });
+      const res = await controlApiFetch(addr, "/threads");
       if (!res.ok) throw new Error(`GET /threads failed: ${res.status}`);
       // Parse through the typed DTO — the field is camelCase `updatedAt`, and a
       // hand-rolled `updated_at` read silently sorts undefined and throws.
@@ -660,6 +645,9 @@ async function daemonRun(
   // a per-command extra: a run that DID start (or finish) must keep its handle
   // even when a post-terminal read raises (e.g. 500 run_facts_invalid).
   let terminalRunId = "";
+  // The same run's accepted job and receipt store (or group pair), kept beside
+  // it for the machine envelope: a failed later read must not lose them either.
+  let acceptedRun: Record<string, unknown> = {};
   try {
     if (jsonStream) {
       // NDJSON machine surface (W13): an EARLY runId frame first, every run
@@ -673,9 +661,10 @@ async function daemonRun(
         return exitCodeForState(started.status);
       }
       terminalRunId = started.runId;
+      acceptedRun = acceptedRunFacts(started);
       printJsonLine({
         frame: "run.started",
-        ...taskGroupReceiptMetadata(started),
+        ...acceptedReceiptMetadata(started),
         runId: started.runId,
         runDir: started.runDir,
         jobId: started.jobId,
@@ -702,6 +691,7 @@ async function daemonRun(
       // Pure machine surface: await the terminal outcome and print one JSON object.
       const out = await enqueueAndAwait(client, addr, body, { waitForTerminal: true });
       terminalRunId = out.runId;
+      acceptedRun = acceptedRunFacts(out);
       // ADD-ONLY key (bench contract keeps {runId,runDir,status}): the derived
       // apply-gate verdict, so machine callers act on truth instead of
       // re-implying eligibility from status. ONE GET /runs/:id feeds all three
@@ -795,7 +785,7 @@ async function daemonRun(
     return renderCliFailure(json || jsonStream, err, {
       messagePrefix: "claudexor:",
       stream: jsonStream,
-      ...(terminalRunId ? { extras: { runId: terminalRunId } } : {}),
+      ...(terminalRunId ? { extras: { runId: terminalRunId, ...acceptedRun } } : {}),
     });
   }
 }
@@ -811,7 +801,7 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
   if (!runId) {
     return printUsageError(
       json,
-      'usage: claudexor decision <run_id> --accept-risk | --override | --revert | --accept-clean-patch [--apply-mode <m>] | --rerun --feedback "<text>"',
+      'usage: claudexor decision <run_id> --accept-risk | --override | --revert | --discard | --taken | --accept-clean-patch [--apply-mode <m>] | --rerun --feedback "<text>"',
     );
   }
   const resolved = resolveDecisionBody(args);
@@ -824,7 +814,10 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
     const { addr } = await ensureDaemon();
     const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/decision`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        [CONTROL_STORE_IDENTITY_HEADER]: "1",
+      },
       body: JSON.stringify(body),
     });
     const text = await res.text();
@@ -844,64 +837,6 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
   } catch (err) {
     return renderCliFailure(json, err, { messagePrefix: "claudexor decision:" });
   }
-}
-
-/**
- * Resolve the ArtifactStore that owns a given run, regardless of the cwd the
- * CLI is invoked from. Order:
- *   1. the project store rooted at the current cwd (the common case);
- *   2. the user store (~/.claudexor/v3/runs) used by no-project Ask runs;
- *   3. a daemon-tracked run that started in ANOTHER project — agent/race/create
- *      runs live under that project's external runtime namespace, so we ask
- *      the daemon for the run's absolute runDir (GET /runs/:id ->
- *      summary.runDir) and rebuild a store whose runPaths(runId).root matches.
- * Returns null when no store can be located (the run does not exist anywhere
- * reachable). Daemon absence falls through; a typed refusal (#93) propagates.
- */
-async function resolveRunStore(
-  runId: string,
-): Promise<{ store: ArtifactStore; root: string } | null> {
-  // An id that fails the store's shape fence (separators, `..`) can never
-  // name a run: report it as "no such run" through the normal typed path —
-  // the fence must not turn a typo'd id into a raw crash that breaks --json
-  // purity on inspect/apply/follow.
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) return null;
-  // 1. project cwd store
-  const cwdStore = new ArtifactStore(process.cwd());
-  if (existsSync(cwdStore.runPaths(runId).root))
-    return { store: cwdStore, root: cwdStore.runPaths(runId).root };
-  // 2. user-level (no-project Ask) store
-  const userStore = new ArtifactStore(noProjectRepoRoot(), { claudexorDir: userConfigDir() });
-  if (existsSync(userStore.runPaths(runId).root))
-    return { store: userStore, root: userStore.runPaths(runId).root };
-  // 3. daemon-tracked run in another project: ask the daemon for its runDir.
-  //    Connect ONLY to an already-running daemon — never auto-spawn one for a
-  //    read-only lookup (a typo'd id must report "no such run", not silently
-  //    launch a background daemon). Acting paths (decision/enqueue) still use
-  //    ensureDaemon().
-  const conn = await connectDaemonIfRunning(); // typed refusal (#93) propagates
-  if (!conn) return null;
-  const { addr } = conn;
-  try {
-    const resp = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { Authorization: `Bearer ${addr.token}` },
-    });
-    if (resp.ok) {
-      const detail = (await resp.json()) as { summary?: { runDir?: string } };
-      const runDir = detail.summary?.runDir;
-      if (runDir && existsSync(runDir)) {
-        // Reconstruct a store from the daemon-authoritative absolute runDir:
-        // runId -> runs -> owned runtime root.
-        const claudexorDir = resolve(runDir, "..", "..");
-        const ds = new ArtifactStore(dirname(claudexorDir), { claudexorDir });
-        if (existsSync(ds.runPaths(runId).root))
-          return { store: ds, root: ds.runPaths(runId).root };
-      }
-    }
-  } catch {
-    /* daemon unavailable: fall through */
-  }
-  return null;
 }
 
 function printPreflightError(args: ParsedArgs, outputMode: CliOutputMode, error: string): number {
@@ -1087,18 +1022,20 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
       return reviewCommand(args, json);
 
     case "inspect": {
-      const runId = args._[1];
-      if (!runId) {
+      const requestedRunId = args._[1];
+      if (!requestedRunId) {
         return printUsageError(json, "usage: claudexor inspect <run_id>");
       }
       // Resolve the owning store from any cwd: project store, user-level Ask
       // store, or a daemon-tracked run that started in another project.
-      const resolved = await resolveRunStore(runId);
-      if (!resolved) {
-        // D-7 projector: canonical envelope, run id as a per-command extra.
-        return renderCliFailure(json, new Error(`no such run ${runId}`), { extras: { runId } });
+      let resolved: ResolvedRunStore;
+      try {
+        resolved = await resolveRunStore(requestedRunId);
+      } catch (err) {
+        // D-7 projector: each lookup outcome keeps its typed code (#235).
+        return renderCliFailure(json, err, { extras: { runId: requestedRunId } });
       }
-      const store = resolved.store;
+      const { store, runId } = resolved;
       const paths = store.runPaths(runId);
       const decision = store.readYaml(join(paths.arbitrationDir, "decision.yaml"));
       const workProduct = store.readYaml(join(paths.finalDir, "work_product.yaml"));
@@ -1149,6 +1086,17 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
       const toolWarnings = inspectToolRecords
         .filter((record) => !record.blocking)
         .map(({ attemptId, tool, target, summary }) => ({ attemptId, tool, target, summary }));
+      // #546: a vendor's word about a command, read apart from both lists above.
+      const reportedCommands = telemetry
+        ? telemetry.attempts.flatMap((a) =>
+            (a.reported_command_outcomes?.recent ?? []).flatMap((row) => {
+              const report = commandOutcomeLabel(row.command_outcome);
+              return report
+                ? [{ attemptId: a.attempt_id, tool: row.tool, target: row.target, report }]
+                : [];
+            }),
+          )
+        : [];
       const artifacts = listCliArtifacts(paths.root).filter((p) => !p.endsWith("/"));
       const outputReadyState =
         runFacts?.presentation?.state ??
@@ -1173,6 +1121,7 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
           failure,
           toolErrors,
           toolWarnings,
+          reportedCommands,
           primaryOutput: primary,
           decision,
           work_product: workProduct,
@@ -1182,13 +1131,16 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
         return summary || primary ? 0 : 1;
       }
       print(`run ${runId} @ ${paths.root}`);
-      if (runFacts) print(`lifecycle: ${runFacts.outcome.lifecycle}`);
+      const reason = runFacts?.outcome.reason;
+      if (runFacts)
+        print(`lifecycle: ${runFacts.outcome.lifecycle}${reason ? ` (${reason})` : ""}`);
       if (contract.success) {
         print(`mode: ${contract.data.mode.kind}`);
         print(
           `access: requested=${contract.data.access.requested_profile} effective=${contract.data.access.effective_profile}`,
         );
       }
+      for (const line of accessRouteLines(telemetry)) print(line);
       for (const line of inspectDelegationLines(telemetry?.delegation ?? null)) print(line);
       if (telemetry) {
         print(
@@ -1199,18 +1151,32 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
             `${requirement.capability}: harness=${requirement.harness_id} requested=true effective=${requirement.effective} reason=${requirement.reason}`,
           );
         }
+        for (const line of webRouteLines(telemetry)) print(line);
       } else if (contract.success) {
         print(
           `web: policy=${contract.data.external_context.policy} required=${contract.data.external_context.web_required} evidence=unavailable (no telemetry.yaml)`,
         );
       }
       print(`output: ${outputReadyState}${primary ? ` ${primary.path}` : ""}`);
+      const objectResult = projectObjectResultDisclosure({ workProduct });
+      if (objectResult?.patchView === "unavailable") {
+        // #535: an exact result too large to render as one patch is still deliverable.
+        print(
+          `result: kept exactly as Git objects (${objectResult.digest}); no patch view (${objectResult.reason}, estimated ${objectResult.estimatedBytes ?? "?"} bytes) — apply and revert still work`,
+        );
+        const changes = CaptureChangeInventory.safeParse(
+          (workProduct as { meta?: Record<string, unknown> } | null)?.meta?.["change_inventory"],
+        );
+        if (changes.success) for (const line of captureInventoryLines(changes.data)) print(line);
+      }
       if (failure) {
         print(
           `failure: ${failure.category}${failure.code ? `/${failure.code}` : ""} phase=${failure.phase}${failure.harnessId ? ` harness=${failure.harnessId}` : ""}${failure.vendorFailure?.code ? ` vendor_code=${failure.vendorFailure.code} (${failure.vendorFailure.source})` : ""}`,
         );
         print(`failure message: ${failure.safeMessage}`);
         for (const action of failure.nextActions) print(`next action: ${action}`);
+        const inventory = failure.captureFailure?.inventory;
+        if (inventory) for (const line of captureInventoryLines(inventory)) print(line);
       }
       {
         // Structured-output contract receipt (only present when the run was
@@ -1271,11 +1237,26 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
             `  - ${err.attemptId} ${err.tool}: ${err.summary}${err.target ? ` (${err.target})` : ""}`,
           );
       }
+      if (reportedCommands.length) {
+        // The attempts' true counts; the list below prints the last eight.
+        const total = (telemetry?.attempts ?? []).reduce(
+          (sum, a) => sum + (a.reported_command_outcomes?.total ?? 0),
+          0,
+        );
+        const shown = Math.min(reportedCommands.length, 8);
+        print(
+          `reported command outcomes (not tool errors${total > shown ? `; showing ${shown} of ${total}` : ""}):`,
+        );
+        for (const row of reportedCommands.slice(-8))
+          print(
+            `  - ${row.attemptId} ${row.tool}: ${row.report}${row.target ? ` (${row.target})` : ""}`,
+          );
+      }
       if (primary?.text.trim()) {
         print("");
         print(primary.text.trim());
       } else {
-        print(summary ?? "(no summary — run may not exist)");
+        print(summary ?? "(no summary or primary output in the run directory)");
       }
       if (artifacts.length) {
         print("");
@@ -1372,8 +1353,12 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
           const model = h.configuredModel
             ? ` model=${h.configuredModel}${h.configuredModelValid === false ? " (REJECTED)" : ""}`
             : "";
+          // A failed read is not an empty catalog (#393): name it, count nothing.
+          const models = h.models.problem
+            ? `unavailable (${h.models.source}: ${h.models.problem.message})`
+            : `${h.models.count} (${h.models.source})`;
           print(
-            `  ${statusGlyph(h.status)} ${h.id}: ${h.status}; intents=${h.enabledIntents.join(",") || "-"}; models=${h.models.count} (${h.models.source})${model}`,
+            `  ${statusGlyph(h.status)} ${h.id}: ${h.status}; intents=${h.enabledIntents.join(",") || "-"}; models=${models}${model}`,
           );
         }
         print(`mcp tools: ${catalog.mcpTools.join(", ")}`);

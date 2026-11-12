@@ -12,8 +12,10 @@ import { BulkExecutor } from "./bulk-executor.js";
 import { lruGet, lruSet } from "./run-list.js";
 import { producedRepoRoot, resolveProducedRoot } from "./artifact-serve-routes.js";
 import { unboundRunStartResponse } from "./run-start.js";
+import { CONTROL_STORE_IDENTITY_HEADER } from "@claudexor/schema";
 import { OPERATION_CATALOG } from "./operation-catalog.js";
 import {
+  chmodSync,
   existsSync,
   appendFileSync,
   mkdtempSync,
@@ -61,7 +63,7 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-}, 30_000);
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
   if (input instanceof Request) return globalThis.fetch(input, init);
@@ -861,6 +863,12 @@ describe("DaemonControlApiServer", () => {
         }),
         expect.objectContaining({
           name: "snapshot",
+          location: "query",
+          enum: ["true", "false"],
+        }),
+        // #138: API-key rows are negotiated; strict clients that omit it see none.
+        expect.objectContaining({
+          name: "includeApiKeys",
           location: "query",
           enum: ["true", "false"],
         }),
@@ -1784,7 +1792,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("withholds a served image whose bytes match the secret-like policy; safe media is served as before (INV-062)", async () => {
+  it("serves media whose bytes look credential-shaped exactly, like any other media (INV-146)", async () => {
     const { daemon, record } = fakeDaemon();
     // Assembled at runtime so no secret-shaped literal lives in this file.
     const secret = ["sk", "m".repeat(24)].join("-");
@@ -1823,11 +1831,9 @@ describe("DaemonControlApiServer", () => {
           "/projects/prj-media/outputs/leaky.png",
           "/runs/run-d1/artifacts/final/leaky.png",
         ]) {
-          const refused = await get(path);
-          expect(refused.status, path).toBe(409);
-          const body = await refused.text();
-          expect(body).toContain("secret_like_content_withheld");
-          expect(body).not.toContain(secret);
+          const served = await get(path);
+          expect(served.status, path).toBe(200);
+          expect(Buffer.from(await served.arrayBuffer()).equals(leaky), path).toBe(true);
         }
         for (const path of [
           "/runs/run-d1/produced/clean.png",
@@ -1844,39 +1850,25 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("REFUSES to serve `.env`-class credential files (Ф2): typed 409, no bytes leaked, across fetch families", async () => {
+  it("serves `.env`-class project and run files exactly across fetch families (INV-146)", async () => {
     const { daemon, record } = fakeDaemon();
-    // Runtime-assembled so this test's own source never holds a contiguous
-    // secret. Matches the anthropic_api_key detector.
+    // Runtime-assembled so this test's own source never holds a contiguous token.
     const secret = ["sk-ant", "A".repeat(40)].join("-");
-    // A `.env` has no file extension, so it took the BINARY path and was served
-    // raw (octet-stream), bypassing redaction — the leak this refusal closes.
     mkdirSync(join(record.runDir as string, "artifacts"), { recursive: true });
     writeFileSync(join(record.runDir as string, "artifacts", ".env"), `API_KEY=${secret}\n`);
     writeFileSync(join(record.runDir as string, "artifacts", ".env.production"), `K=${secret}\n`);
     writeFileSync(join(record.runDir as string, "artifacts", "aws-credentials"), `k=${secret}\n`);
-    // The direct run-artifacts family serves straight from runDir.
     writeFileSync(join(record.runDir as string, ".env"), `API_KEY=${secret}\n`);
     await withDaemonServer(daemon, async (base) => {
-      const paths = [
-        `${base}/runs/run-d1/produced/.env`,
-        `${base}/runs/run-d1/produced/.env.production`,
-        `${base}/runs/run-d1/produced/aws-credentials`,
-        `${base}/runs/run-d1/artifacts/.env`,
-      ];
-      for (const url of paths) {
+      for (const [url, body] of [
+        [`${base}/runs/run-d1/produced/.env`, `API_KEY=${secret}\n`],
+        [`${base}/runs/run-d1/produced/.env.production`, `K=${secret}\n`],
+        [`${base}/runs/run-d1/produced/aws-credentials`, `k=${secret}\n`],
+        [`${base}/runs/run-d1/artifacts/.env`, `API_KEY=${secret}\n`],
+      ] as const) {
         const res = await apiFetch(url, { headers: { authorization: `Bearer ${token}` } });
-        expect(res.status).toBe(409);
-        // The daemon normalizes >=400 JSON to problem+json: the typed `code`
-        // survives and the refusal class rides in `context` (non-reserved field).
-        const body = (await res.json()) as {
-          code?: string;
-          context?: { sensitiveClass?: string };
-        };
-        expect(body.code).toBe("sensitive_file_refused");
-        expect(typeof body.context?.sensitiveClass).toBe("string");
-        // The refusal happens BEFORE any bytes are read: the token never leaks.
-        expect(JSON.stringify(body)).not.toContain(secret);
+        expect(res.status, url).toBe(200);
+        expect(await res.text(), url).toBe(body);
       }
     });
   });
@@ -5648,6 +5640,7 @@ describe("DaemonControlApiServer", () => {
       availableHarnesses: [],
       modes: ["ask", "plan", "agent"],
       runControlKeys: [],
+      runDecisionActions: [],
       outputSchemaDialects: [
         {
           dialect: "draft-07",
@@ -6565,40 +6558,18 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("redacts secret-like strings from JSON artifacts before serving them", async () => {
+  it("serves JSON and semantic-text artifacts with credential-shaped text exactly (INV-146)", async () => {
     const { daemon, record } = fakeDaemon();
-    writeFileSync(
-      join(record.runDir as string, "final", "metadata.json"),
-      JSON.stringify({ token: "sk-" + "a".repeat(24) }),
-    );
-    await withDaemonServer(daemon, async (base) => {
-      const res = await apiFetch(`${base}/runs/run-d1/artifacts/final/metadata.json`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toContain("application/json");
-      const text = await res.text();
-      expect(text).toContain("[redacted]");
-      expect(text).not.toContain("sk-" + "a".repeat(24));
-    });
-  });
-
-  it("redacts secret-like text from semantic-text artifacts incl. code/config extensions (semantic-text policy, QA-067)", async () => {
-    const { daemon, record } = fakeDaemon();
-    // Assemble the marker at runtime so the secret scanner does not trip on this
-    // test's own source (repo convention).
+    // Assemble the marker at runtime (repo convention for synthetic fixtures).
     const secret = "sk-" + "b".repeat(24);
     const runDir = record.runDir as string;
-    // One file per newly-covered extension; each carries the marker.
     const cases = [
+      { file: "final/metadata.json", body: JSON.stringify({ token: secret }) },
       { file: "final/report.csv", body: `col\n${secret}\n` },
       { file: "final/data.xml", body: `<r><k>${secret}</k></r>` },
       { file: "final/pic.svg", body: `<svg><desc>${secret}</desc></svg>` },
       { file: "final/notes.markdown", body: `# t\n${secret}\n` },
       { file: "final/raw.text", body: `${secret}\n` },
-      // Newly-covered code/config extensions (QA-067 broadening): each falls
-      // through `contentType` to application/octet-stream, so without the
-      // semantic-text set they would skip redaction on the binary path.
       { file: "final/mod.ts", body: `const k = "${secret}";\n` },
       { file: "final/app.py", body: `k = "${secret}"\n` },
       { file: "final/config.toml", body: `key = "${secret}"\n` },
@@ -6610,70 +6581,41 @@ describe("DaemonControlApiServer", () => {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(res.status, c.file).toBe(200);
-        const text = await res.text();
-        expect(text, c.file).toContain("[redacted]");
-        expect(text, c.file).not.toContain(secret);
+        expect(await res.text(), c.file).toBe(c.body);
       }
     });
   });
 
-  it("rejects secret-like string values in run params before enqueue", async () => {
-    const { daemon } = fakeDaemon();
-    const secret = "sk-" + "c".repeat(24);
-    await withDaemonServer(daemon, async (base) => {
-      const start = await apiFetch(`${base}/runs`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: "safe", mode: "ask", tests: [`echo ${secret}`] }),
-      });
-      expect(start.status).toBe(400);
-      expect(await start.text()).toContain("secret-like value is not accepted");
-    });
-  });
-
-  it("rejects a secret-like value inside the PROMPT itself on POST /runs and POST /threads/:id/turns (hard block, 400)", async () => {
-    const { daemon } = fakeDaemon();
+  it("accepts credential-shaped prompts and run params on POST /runs exactly (INV-146)", async () => {
+    const base0 = fakeDaemon();
+    const enqueued: unknown[] = [];
+    const daemon: DaemonFacadeClient = {
+      ...base0.daemon,
+      async enqueue(...args: Parameters<DaemonFacadeClient["enqueue"]>) {
+        enqueued.push(args[0]);
+        return base0.daemon.enqueue(...args);
+      },
+    };
     const secret = "sk-" + "d".repeat(24);
+    const prompt = `review: expect(auth).toBe("Bearer ${secret}")`;
     await withDaemonServer(daemon, async (base) => {
       const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: `use ${secret} to auth`, mode: "agent" }),
+        body: JSON.stringify({
+          prompt,
+          mode: "agent",
+          scope: { kind: "project", root: tmpdir() },
+          tests: [{ program: "echo", args: [secret] }],
+        }),
       });
-      expect(start.status).toBe(400);
-      const body = (await start.json()) as { message: string; code?: string };
-      expect(body.message).toContain("durable run artifacts");
-      // The machine-readable class rides the envelope, not just prose.
-      expect(body.code).toBe("inline_secret_rejected");
+      expect(start.status, await start.clone().text()).toBe(200);
     });
+    expect(JSON.stringify(enqueued)).toContain(JSON.stringify(prompt).slice(1, -1));
+    expect(JSON.stringify(enqueued)).toContain(secret);
 
-    // The thread-turn ingress (REPL/app path): the fence runs BEFORE thread
-    // resolution, so a minimal threads-capable server proves the block
-    // without a real thread. createThreadTurn must never be reached.
-    let turnCreated = 0;
-    await withDaemonServer(
-      daemon,
-      async (base) => {
-        const turn = await apiFetch(`${base}/threads/th-any/turns`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ prompt: `retry with ${secret}` }),
-        });
-        expect(turn.status).toBe(400);
-        const turnBody = (await turn.json()) as { message: string; code?: string };
-        expect(turnBody.message).toContain("durable run artifacts");
-        expect(turnBody.code).toBe("inline_secret_rejected");
-        expect(turnCreated).toBe(0);
-      },
-      undefined,
-      {
-        threadDetail: async () => ({ thread: {}, sessions: [], turns: [] }),
-        createThreadTurn: async () => {
-          turnCreated += 1;
-          return {};
-        },
-      },
-    );
+    // The thread-turn ingress has no fence either; exact turn storage is
+    // pinned in packages/daemon/src/store/thread-contract.test.ts.
   });
 
   it("fronts the durable daemon registry for start/list/cancel and tails events.jsonl", async () => {
@@ -6901,11 +6843,120 @@ describe("DaemonControlApiServer", () => {
                   questions: [],
                   requestedAt: "t",
                   timeoutAt: null,
+                  delivery: "blocking",
                 },
               ]
             : [],
       },
     );
+  });
+
+  it("fails a live run's own detail on a failed pending read and degrades only rows of wider reads", async () => {
+    const { daemon, record } = fakeDaemon();
+    const row = (runId: string, state: string, delegatedFromRunId?: string): DaemonRunRecord => ({
+      id: `job-${runId}`,
+      runId,
+      state,
+      params: delegatedFromRunId ? { delegatedFromRunId } : {},
+    });
+    const records = [
+      record,
+      row("run-child-waiting", "running", "run-d1"),
+      row("run-child-broken", "running", "run-d1"),
+      row("run-live-broken", "running"),
+      row("run-done-broken", "succeeded"),
+    ];
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async list() {
+        return records;
+      },
+    };
+    const question = (runId: string) => ({
+      interactionId: `int-${runId}`,
+      runId,
+      attemptId: "a01",
+      harnessId: "claude",
+      sourceTool: "AskUserQuestion",
+      questions: [],
+      requestedAt: "t",
+      timeoutAt: null,
+      delivery: "blocking" as const,
+    });
+    let healed = false;
+    await withDaemonServer(
+      wrapped,
+      async (base) => {
+        const get = (path: string) =>
+          apiFetch(`${base}${path}`, { headers: { authorization: `Bearer ${token}` } });
+        // The addressed live run cannot report a list it could not read.
+        const live = await get("/runs/run-live-broken");
+        expect(live.status).toBe(503);
+        const problem = (await live.json()) as Record<string, unknown>;
+        expect(problem).toMatchObject({ code: "store_busy", retryable: true });
+        expect(problem).not.toHaveProperty("pendingInteractions");
+        // A finished run has no live question left: its results stay readable.
+        const done = await get("/runs/run-done-broken");
+        expect(done.status).toBe(200);
+        expect(
+          ((await done.json()) as { pendingInteractions: unknown[] }).pendingInteractions,
+        ).toEqual([]);
+        // A wider read keeps every row: only the unreadable row loses attention.
+        const list = await get("/runs");
+        expect(list.status).toBe(200);
+        const rows = ((await list.json()) as { runs: Array<Record<string, unknown>> }).runs;
+        expect(rows).toHaveLength(records.length);
+        expect(rows.find((run) => run["runId"] === "run-child-waiting")).toMatchObject({
+          waitingOnUser: true,
+        });
+        expect(rows.find((run) => run["runId"] === "run-live-broken")).toMatchObject({
+          waitingOnUser: false,
+        });
+        // One unreadable child does not take its parent's detail with it.
+        const parent = await get("/runs/run-d1");
+        expect(parent.status).toBe(200);
+        const children = ((await parent.json()) as { children: Array<Record<string, unknown>> })
+          .children;
+        expect(children.find((run) => run["runId"] === "run-child-waiting")).toMatchObject({
+          waitingOnUser: true,
+        });
+        expect(children.find((run) => run["runId"] === "run-child-broken")).toMatchObject({
+          waitingOnUser: false,
+        });
+        // The next healthy read reports the real list: nothing was cached.
+        healed = true;
+        const recovered = await get("/runs/run-live-broken");
+        expect(recovered.status).toBe(200);
+        expect(
+          ((await recovered.json()) as { pendingInteractions: unknown[] }).pendingInteractions,
+        ).toHaveLength(1);
+      },
+      undefined,
+      {
+        pendingInteractions: (runId) => {
+          if (runId.endsWith("-broken")) {
+            if (!healed)
+              throw Object.assign(new Error("engine store is busy: reading interactions"), {
+                status: 503,
+                code: "store_busy",
+                retryable: true,
+              });
+            return [question(runId)];
+          }
+          return runId === "run-child-waiting" ? [question(runId)] : [];
+        },
+      },
+    );
+    // A build without the pending-read service still has a real, empty answer.
+    await withDaemonServer(wrapped, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-live-broken`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(detail.status).toBe(200);
+      expect(
+        ((await detail.json()) as { pendingInteractions: unknown[] }).pendingInteractions,
+      ).toEqual([]);
+    });
   });
 
   it("returns queued job metadata when a daemon job has not produced run artifacts yet", async () => {
@@ -7892,7 +7943,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  describe("saved patch copies with hidden secret-like strings (INV-062, V4C T2)", () => {
+  describe("historical saved patch copies with hidden secret-like strings (retired INV-062)", () => {
     // Assembled at runtime so no secret-shaped literal lives in this file.
     const secret = ["sk", "x".repeat(24)].join("-");
     const exactPatch = [
@@ -8156,50 +8207,43 @@ describe("DaemonControlApiServer", () => {
       }, "blocked");
     });
 
-    it.each([
-      { finding: "text", meta: undefined },
-      {
-        finding: "blob-only",
-        meta: "  secret_like:\n    files: []\n    binary_paths:\n      - assets/x.bin\n    media_withheld: []\n    answer_matches: 0\n    total_matches: 0",
-      },
-    ])(
-      "refuses 'pr' delivery for a $finding finding before any branch or push; 'commit' stays allowed",
-      async ({ finding, meta }) => {
-        await withAppliableProject(async (base, project, record) => {
-          if (finding === "text") {
-            redactedRun(record, project);
-          } else {
-            // An exact, text-clean saved patch whose disclosure names a binary.
-            const workProduct = join(record.runDir as string, "final", "work_product.yaml");
-            writeFileSync(workProduct, `${readFileSync(workProduct, "utf8")}${meta}\n`);
-          }
-          const branchesBefore = execFileSync("git", ["branch", "--list"], {
-            cwd: project,
-          }).toString();
-
+    it("refuses 'pr' typed when the publication scanner is unavailable, before any branch; 'commit' stays allowed (INV-146)", async () => {
+      await withAppliableProject(async (base, project) => {
+        const branchesBefore = execFileSync("git", ["branch", "--list"], {
+          cwd: project,
+        }).toString();
+        const saved = process.env.CLAUDEXOR_BETTERLEAKS_PATH;
+        // Any file that is not the pinned build: the gate must refuse, never pass.
+        process.env.CLAUDEXOR_BETTERLEAKS_PATH = join(project, "x");
+        try {
           const pr = await apiFetch(`${base}/runs/run-d1/apply`, {
             method: "POST",
             headers: authed(),
             body: JSON.stringify({ mode: "pr", branch: "claudexor/v4c-pr" }),
           });
           expect(pr.status).toBe(409);
-          expect(JSON.stringify(await pr.json())).toContain("refusing 'pr' delivery");
-          expect(execFileSync("git", ["branch", "--list"], { cwd: project }).toString()).toBe(
-            branchesBefore,
-          );
-          expect(readFileSync(join(project, "x"), "utf8")).toBe("old\n");
+          const body = (await pr.json()) as { code?: string; message?: string };
+          expect(body.code).toBe("publication_scan_unavailable");
+          expect(body.message).toContain("refusing 'pr' delivery");
+        } finally {
+          if (saved === undefined) delete process.env.CLAUDEXOR_BETTERLEAKS_PATH;
+          else process.env.CLAUDEXOR_BETTERLEAKS_PATH = saved;
+        }
+        expect(execFileSync("git", ["branch", "--list"], { cwd: project }).toString()).toBe(
+          branchesBefore,
+        );
+        expect(readFileSync(join(project, "x"), "utf8")).toBe("old\n");
 
-          // Local delivery of the same patch is allowed: the bytes are already here.
-          const commit = await apiFetch(`${base}/runs/run-d1/apply`, {
-            method: "POST",
-            headers: authed(),
-            body: JSON.stringify({ mode: "commit", message: "local" }),
-          });
-          expect(commit.status).toBe(200);
-          expect(((await commit.json()) as { applied: boolean }).applied).toBe(true);
+        // Local delivery of the same patch is allowed: the bytes are already here.
+        const commit = await apiFetch(`${base}/runs/run-d1/apply`, {
+          method: "POST",
+          headers: authed(),
+          body: JSON.stringify({ mode: "commit", message: "local" }),
         });
-      },
-    );
+        expect(commit.status).toBe(200);
+        expect(((await commit.json()) as { applied: boolean }).applied).toBe(true);
+      });
+    });
   });
 
   it("enforces contradictory canonical RunFacts through apply/check, decision, apply, and delivery overlay", async () => {
@@ -8424,6 +8468,77 @@ describe("DaemonControlApiServer", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #535 R14 O3: a record that is there but cannot be read is no missing evidence:
+  // the contribution check refuses it typed, not as thread_run_unverifiable.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "refuses a thread run whose result record cannot be read, typed and naming the read",
+    async () => {
+      const dir = reapMk(join(tmpdir(), "claudexor-thread-unreadable-record-"));
+      const runDir = join(dir, "run");
+      mkdirSync(join(runDir, "final"), { recursive: true });
+      const record = join(runDir, "final/work_product.yaml");
+      writeFileSync(record, "id: wp\nkind: patch\nmeta: {}\n");
+      chmodSync(record, 0o000);
+      const now = new Date().toISOString();
+      const run = { id: "job", state: "succeeded", runId: "run-unreadable", runDir };
+      const daemon: DaemonFacadeClient = {
+        async enqueue() {
+          return { id: "job", state: "queued" };
+        },
+        async status() {
+          return run;
+        },
+        async list() {
+          return [run];
+        },
+        async cancel() {
+          return { ok: true };
+        },
+      };
+      let applied = 0;
+      const server = new DaemonControlApiServer({
+        ...readyIdentity,
+        token,
+        daemon,
+        services: {
+          threadDetail: async () => ({
+            thread: {
+              id: "th-unreadable",
+              created_at: now,
+              updated_at: now,
+              repo: { root: dir, base_ref: "HEAD" },
+              workspace: { mode: "in_place", base_sha: "abc" },
+              run_ids: ["run-unreadable"],
+              head_run_id: "run-unreadable",
+              state: "active",
+            },
+            sessions: [],
+            turns: [],
+          }),
+          applyThread: async () => {
+            applied += 1;
+            return { applied: true, status: "applied" };
+          },
+        },
+      });
+      const { host, port } = await server.start();
+      try {
+        const response = await apiFetch(`http://${host}:${port}/threads/th-unreadable/apply`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ mode: "apply" }),
+        });
+        expect(response.status).toBe(503);
+        expect(((await response.json()) as { code: string }).code).toBe("artifact_read_failed");
+        expect(applied).toBe(0);
+      } finally {
+        chmodSync(record, 0o600);
+        await server.stop();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("refuses a successful thread run whose required patch artifact is missing", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-thread-missing-patch-"));
@@ -10382,6 +10497,55 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
+  it("rerun_with_feedback names an ordinary successor's store only for a request that opted in", async () => {
+    const { daemon, record } = fakeDaemon();
+    const store = "22222222-2222-4222-8222-222222222222";
+    record.state = "succeeded";
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
+    );
+    const successor: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        return { id: "job-rerun", state: "queued" };
+      },
+      async status(id: string) {
+        return id === record.id
+          ? record
+          : { id, state: "running", runId: "run-rerun", runDir: record.runDir };
+      },
+    };
+    const server = new DaemonControlApiServer({
+      ...readyIdentity,
+      token,
+      daemon: successor,
+      pollMs: 5,
+      storeId: () => store,
+    });
+    const { host, port } = await server.start();
+    try {
+      for (const optIn of [false, true]) {
+        const res = await apiFetch(`http://${host}:${port}/runs/run-d1/decision`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "Idempotency-Key": `decision-rerun-${optIn}`,
+            ...(optIn ? { [CONTROL_STORE_IDENTITY_HEADER]: "1" } : {}),
+          },
+          body: JSON.stringify({ action: "rerun_with_feedback", feedback: "Name the store." }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body).toMatchObject({ status: "requeued", newJobId: "job-rerun" });
+        expect(body["storeId"]).toBe(optIn ? store : undefined);
+        expect(body).not.toHaveProperty("taskGroupId");
+      }
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("POST /runs replays a durable command before mutable preflight changes", async () => {
     const { daemon, record } = fakeDaemon();
     let accepted = false;
@@ -11829,83 +11993,16 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("redacts prompts in summaries; a raw secret-like patch artifact is neither served nor applyable", async () => {
+  it("lists exact prompts and serves exact patch, text, jsonl and SSE content (INV-146)", async () => {
     const { daemon, record } = fakeDaemon();
     const secret = "sk-" + "a".repeat(24);
     record.params = { prompt: `use ${secret}`, mode: "agent", routingGoal: "auto" };
-    writeFileSync(
-      join(record.runDir as string, "final", "patch.diff"),
-      `diff --git a/.env b/.env\n+OPENAI_API_KEY=${secret}\n`,
-    );
-    await withDaemonServer(daemon, async (base) => {
-      const list = (await (
-        await apiFetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })
-      ).json()) as {
-        runs: { prompt?: string }[];
-      };
-      expect(list.runs[0]?.prompt).toContain("[redacted]");
-      expect(list.runs[0]?.prompt).not.toContain(secret);
-
-      const patch = await apiFetch(`${base}/runs/run-d1/artifacts/final/patch.diff`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(patch.status).toBe(409);
-
-      // V4C: there is no separate "secret-like token" apply refusal any more.
-      // A raw artifact that is not the recorded exact patch is refused by the
-      // apply gate's digest binding, like any other tampered patch file.
-      const apply = await apiFetch(`${base}/runs/run-d1/apply/check`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-        body: "{}",
-      });
-      expect(apply.status).toBe(409);
-      const refusal = await apply.text();
-      expect(refusal).toContain("patch artifact hash does not match the recorded work product");
-      expect(refusal).not.toContain("secret-like token");
-      expect(refusal).not.toContain(secret);
-    });
-  });
-
-  it("redacts secret-like text artifacts before serving them", async () => {
-    const { daemon, record } = fakeDaemon();
-    const secret = "sk-" + "b".repeat(24);
+    const patchText = `diff --git a/.env b/.env\n+OPENAI_API_KEY=${secret}\n`;
+    writeFileSync(join(record.runDir as string, "final", "patch.diff"), patchText);
     writeFileSync(
       join(record.runDir as string, "final", "summary.md"),
       `# Summary\n\nToken ${secret}\n`,
     );
-    await withDaemonServer(daemon, async (base) => {
-      const summary = await apiFetch(`${base}/runs/run-d1/artifacts/final/summary.md`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(summary.status).toBe(200);
-      const text = await summary.text();
-      expect(text).toContain("[redacted]");
-      expect(text).not.toContain(secret);
-    });
-  });
-
-  it("redacts secret-like jsonl artifacts before serving them", async () => {
-    const { daemon, record } = fakeDaemon();
-    const secret = "sk-" + "d".repeat(24);
-    writeFileSync(
-      join(record.runDir as string, "events.jsonl"),
-      JSON.stringify({ type: "message", text: secret }) + "\n",
-    );
-    await withDaemonServer(daemon, async (base) => {
-      const events = await apiFetch(`${base}/runs/run-d1/artifacts/events.jsonl`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(events.status).toBe(200);
-      const text = await events.text();
-      expect(text).toContain("[redacted]");
-      expect(text).not.toContain(secret);
-    });
-  });
-
-  it("redacts secret-like run events before daemon SSE replay", async () => {
-    const { daemon, record } = fakeDaemon();
-    const secret = "sk-" + "e".repeat(24);
     writeFileSync(
       join(record.runDir as string, "events.jsonl"),
       [
@@ -11915,14 +12012,30 @@ describe("DaemonControlApiServer", () => {
       ].join("\n"),
     );
     await withDaemonServer(daemon, async (base) => {
-      const events = await apiFetch(`${base}/runs/run-d1/events`, {
+      const get = (path: string) =>
+        apiFetch(`${base}${path}`, { headers: { authorization: `Bearer ${token}` } });
+      const list = (await (await get("/runs")).json()) as { runs: { prompt?: string }[] };
+      expect(list.runs[0]?.prompt).toBe(`use ${secret}`);
+      const patch = await get("/runs/run-d1/artifacts/final/patch.diff");
+      expect(patch.status).toBe(200);
+      expect(await patch.text()).toBe(patchText);
+      expect(await (await get("/runs/run-d1/artifacts/final/summary.md")).text()).toContain(secret);
+      expect(await (await get("/runs/run-d1/artifacts/events.jsonl")).text()).toContain(secret);
+      const sse = await (await get("/runs/run-d1/events")).text();
+      expect(sse).toContain(secret);
+      expect(sse).toContain("event: run.completed");
+
+      // A raw artifact that is not the recorded exact patch is refused by the
+      // apply gate's digest binding, like any other tampered patch file.
+      const apply = await apiFetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
         headers: { authorization: `Bearer ${token}` },
+        body: "{}",
       });
-      expect(events.status).toBe(200);
-      const text = await events.text();
-      expect(text).toContain("[redacted]");
-      expect(text).not.toContain(secret);
-      expect(text).toContain("event: run.completed");
+      expect(apply.status).toBe(409);
+      expect(await apply.text()).toContain(
+        "patch artifact hash does not match the recorded work product",
+      );
     });
   });
 
@@ -12212,10 +12325,18 @@ describe("DaemonControlApiServer", () => {
               location: "query",
               enum: ["resources", "constraint_freshness", "resources_freshness"],
             }),
+            expect.objectContaining({
+              name: "includeApiKeys",
+              location: "query",
+              enum: ["true", "false"],
+            }),
           ],
         });
         expect(operations.find((operation) => operation.id === "post:quota")).toMatchObject({
-          parameters: [expect.objectContaining({ name: "view", enum: ["resources"] })],
+          parameters: [
+            expect.objectContaining({ name: "view", enum: ["resources"] }),
+            expect.objectContaining({ name: "includeApiKeys", enum: ["true", "false"] }),
+          ],
         });
         // A service must honor negotiation, never silently downgrade or leak
         // the new shape to a strict legacy consumer.
@@ -12382,14 +12503,17 @@ describe("DaemonControlApiServer", () => {
                 ],
                 requestedAt: "t",
                 timeoutAt: null,
+                delivery: "blocking",
               },
             ]
           : [],
       answerInteraction: (runId: string, interactionId: string, answers: unknown) => {
         delivered.push({ runId, interactionId, answers });
-        return interactionId === "int-1"
-          ? { status: "delivered" }
-          : { status: "not_found", message: "missing" };
+        if (interactionId === "int-1") return { status: "delivered" };
+        if (interactionId === "int-closed") return { status: "already_resolved" };
+        if (interactionId === "int-invalid")
+          return { status: "rejected", message: "question q needs an answer" };
+        return { status: "not_found", message: "missing" };
       },
     };
     await withDaemonServer(
@@ -12432,12 +12556,29 @@ describe("DaemonControlApiServer", () => {
           },
         });
 
-        const missing = await apiFetch(`${base}/runs/run-d1/interactions/int-404/answer`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ answers: [] }),
-        });
-        expect(missing.status).toBe(404);
+        // A refused answer is a ControlProblem whose context carries the reply;
+        // the macOS app's refusal tests decode these exact bodies.
+        for (const [id, status, message, answerStatus] of [
+          ["int-404", 404, "missing", "not_found"],
+          ["int-closed", 409, "request failed with status 409", "already_resolved"],
+          ["int-invalid", 409, "question q needs an answer", "rejected"],
+        ] as const) {
+          const refused = await apiFetch(`${base}/runs/run-d1/interactions/${id}/answer`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify({ answers: [] }),
+          });
+          expect(refused.status).toBe(status);
+          expect(await refused.json()).toEqual({
+            code: `http_${status}`,
+            message,
+            retryable: false,
+            fieldErrors: {},
+            requiredActions: [],
+            evidenceRefs: [],
+            context: { accepted: false, status: answerStatus },
+          });
+        }
       },
       undefined,
       services,
@@ -12483,26 +12624,29 @@ describe("DaemonControlApiServer", () => {
     const calls: string[] = [];
     const emitted = new Set<string>();
     const services: DaemonControlApiOptions["services"] = {
-      journalEvents: async (partition, afterCursor) => {
-        const call = `${partition}:${afterCursor ?? ""}`;
+      journalEvents: async (partition, { after }) => {
+        const call = `${partition}:${after ?? ""}`;
         calls.push(call);
-        if (afterCursor === "stale")
+        if (after === "stale")
           throw Object.assign(new Error("journal cursor is stale; resnapshot is required"), {
             code: "journal_cursor_invalid",
             status: 409,
           });
-        if (emitted.has(call)) return [];
+        const cursor = partition === "global" ? "global-next" : "project-next";
+        if (emitted.has(call) || after === cursor)
+          return { events: [], position: after, through: "head", more: false };
         emitted.add(call);
-        return [
+        const events = [
           {
             schemaVersion: 1,
-            cursor: partition === "global" ? "global-next" : "project-next",
+            cursor,
             partition,
             type: "command.enqueued",
             observedAt: "2026-07-14T00:00:00.000Z",
             payload: { id: "cmd-1" },
           },
         ];
+        return { events, position: cursor, through: "head", more: false };
       },
     };
     const readOne = async (response: Response): Promise<string> => {
