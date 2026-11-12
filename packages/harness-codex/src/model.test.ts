@@ -1,5 +1,8 @@
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import * as zlib from "node:zlib";
+import { zstdDecompressSync } from "node:zlib";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getGlobalDispatcher, setGlobalDispatcher, type Dispatcher } from "undici";
 import {
   CredentialProfile,
   ModelCallRequest,
@@ -7,12 +10,20 @@ import {
   ModelCatalogEntry,
 } from "@claudexor/schema";
 import { createCodexModelAdapter, parseCodexModelCatalog } from "./model.js";
+import { CODEX_REQUEST_COMPRESSION_ENV, codexRequestCompression } from "./request-compression.js";
 import {
   CODEX_HTTP_CLIENT_VERSION,
   type CodexCatalogClientVersion,
 } from "./http-client-version.js";
 import { CODEX_MODEL_INVENTORY } from "./processing-session.js";
 import { CODEX_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
+import { requestBodyText } from "./test-support/request-body.js";
+
+// The request compressor, observable: a test can act while it is in flight.
+vi.mock("node:zlib", async (original) => {
+  const actual = await original<typeof import("node:zlib")>();
+  return { ...actual, zstdCompress: vi.fn(actual.zstdCompress) };
+});
 
 const catalog = {
   models: [
@@ -67,6 +78,7 @@ function setup(
   respond: (init: RequestInit | undefined) => Response | Promise<Response> = () => terminal(),
   now: () => number = () => 1900000000000,
   clientVersion: CodexCatalogClientVersion = VERIFIED_CLIENT,
+  requestCompression?: () => boolean,
 ) {
   const profile = CredentialProfile.parse({
     profile_id: "work",
@@ -105,11 +117,12 @@ function setup(
       fetch: async (url, init) =>
         fetcher(
           url,
-          init?.method === "POST" ? { ...init, body: await new Response(init.body).text() } : init,
+          init?.method === "POST" ? { ...init, body: await requestBodyText(init) } : init,
         ),
       readAuthFile,
       now,
       clientVersion: async () => clientVersion,
+      ...(requestCompression ? { requestCompression } : {}),
     }),
     context: { profile, onDispatch, signal: new AbortController().signal },
     request: ModelCallRequest.parse({
@@ -1019,6 +1032,125 @@ describe("single-generation Codex adapter", () => {
     );
     expect(JSON.stringify(result)).not.toContain("DO_NOT_EXPOSE_BODY");
   });
+  it("reads the provider's 408 as a request it did not receive: not delivered, retryable, one POST", async () => {
+    const fixture = setup(() =>
+      Response.json(
+        { error: { message: "DO_NOT_EXPOSE_BODY", code: "request_timeout" } },
+        { status: 408, headers: { "x-request-id": "req-408", "retry-after": "2" } },
+      ),
+    );
+    const result = await fixture.adapter.invoke(fixture.request, fixture.context);
+    expect(result.outcome).toBe("failed");
+    expect(result.problem).toMatchObject({
+      code: "transport_not_delivered",
+      retryable: true,
+      context: {
+        httpStatus: 408,
+        // The refusal's own facts stay beside the delivery fact.
+        requestId: "req-408",
+        vendorCode: "request_timeout",
+        retryAfterMs: 2_000,
+        generationStarted: false,
+        requestDelivery: {
+          state: "not_delivered",
+          basis: "http_408",
+          bodyBytes: expect.any(Number),
+        },
+      },
+    });
+    expect(fixture.fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(
+      1,
+    );
+    expect(JSON.stringify(result)).not.toContain("DO_NOT_EXPOSE_BODY");
+  });
+  it.each([400, 409, 413])(
+    "keeps HTTP %s a provider refusal, never a delivery fact",
+    async (status) => {
+      const fixture = setup(() => Response.json({ error: { message: "refused" } }, { status }));
+      const result = await fixture.adapter.invoke(fixture.request, fixture.context);
+      expect(result.outcome).toBe("failed");
+      expect(result.problem?.code).not.toBe("transport_not_delivered");
+      expect(result.problem?.context.requestDelivery).toBeUndefined();
+      expect(result.problem?.context.httpStatus).toBe(status);
+    },
+  );
+  it("asks the dispatcher for its own two bounds on the inference request", async () => {
+    const original = getGlobalDispatcher();
+    const seen: Array<Record<string, unknown>> = [];
+    setGlobalDispatcher(
+      new Proxy(original, {
+        get(target, key) {
+          if (key === "dispatch")
+            return (options: Record<string, unknown>) => {
+              seen.push(options);
+              return true;
+            };
+          return Reflect.get(target, key, target);
+        },
+      }),
+    );
+    try {
+      const fixture = setup((init) => {
+        // What the adapter's own dispatcher hands on is what the library would get.
+        (init!.dispatcher as unknown as Dispatcher).dispatch(
+          { origin: "http://localhost", path: "/", method: "POST" },
+          {},
+        );
+        return terminal();
+      });
+      await fixture.adapter.invoke(fixture.request, fixture.context);
+    } finally {
+      setGlobalDispatcher(original);
+    }
+    expect(seen).toEqual([
+      expect.objectContaining({ headersTimeout: 300_000, bodyTimeout: 300_000 }),
+    ]);
+  });
+  it("names the library's response-head timeout in words and keeps its code as the fact", async () => {
+    const fixture = setup(() => {
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new Error("library timeout"), { code: "UND_ERR_HEADERS_TIMEOUT" }),
+      });
+    });
+    const result = await fixture.adapter.invoke(fixture.request, fixture.context);
+    expect(result.outcome).toBe("unknown");
+    expect(result.problem).toMatchObject({
+      code: "transport_unknown",
+      message:
+        "The Codex generation outcome is unknown; it was not retried. The HTTP library reported a response-head timeout; the engine asks for 300 s on this request.",
+      context: { errorCode: "UND_ERR_HEADERS_TIMEOUT" },
+    });
+  });
+  it.each([
+    [
+      "UND_ERR_BODY_TIMEOUT",
+      "Codex response stream was interrupted or malformed. The HTTP library reported a response-body timeout; the engine asks for 300 s on this request.",
+    ],
+    // Any other break of the stream claims no bound.
+    ["ECONNRESET", "Codex response stream was interrupted or malformed."],
+  ])("a stream broken by %s says so in words and keeps the code", async (code, message) => {
+    const fixture = setup(
+      () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.error(
+                Object.assign(new TypeError("terminated"), {
+                  cause: Object.assign(new Error("library error"), { code }),
+                }),
+              );
+            },
+          }),
+        ),
+    );
+    const result = await fixture.adapter.invoke(fixture.request, fixture.context);
+    expect(result.outcome).toBe("unknown");
+    expect(result.problem).toMatchObject({
+      code: "transport_unknown",
+      message,
+      context: { errorCode: code },
+    });
+  });
   it("keeps network loss after dispatch unknown and never sends another POST", async () => {
     const fixture = setup(() => {
       throw new Error("network loss");
@@ -1026,6 +1158,10 @@ describe("single-generation Codex adapter", () => {
     const result = await fixture.adapter.invoke(fixture.request, fixture.context);
     expect(result.outcome).toBe("unknown");
     expect(result.problem?.code).toBe("transport_unknown");
+    // No bound was reached, so the message claims none.
+    expect(result.problem?.message).toBe(
+      "The Codex generation outcome is unknown; it was not retried.",
+    );
     expect(fixture.fetcher).toHaveBeenCalledTimes(2);
     expect(result.cost.cashUsd).toBeNull();
   });
@@ -1195,4 +1331,117 @@ describe("declared input modalities", () => {
       ]);
     },
   );
+});
+
+describe("the inference request body on the wire", () => {
+  // The switch in the environment of whoever runs the tests must not decide them.
+  beforeEach(() => void vi.stubEnv(CODEX_REQUEST_COMPRESSION_ENV, ""));
+  afterEach(() => void vi.unstubAllEnvs());
+
+  /** The POST exactly as the adapter hands it to fetch: headers and raw body bytes. */
+  async function wire(requestCompression?: () => boolean) {
+    const sent: Array<{ headers: Headers; bytes: Buffer }> = [];
+    const fixture = setup(undefined, undefined, undefined, requestCompression);
+    const adapter = createCodexModelAdapter({
+      fetch: async (_url, init) => {
+        if (init?.method !== "POST") return Response.json(catalog);
+        sent.push({
+          headers: new Headers(init.headers),
+          bytes: Buffer.from(await new Response(init.body).arrayBuffer()),
+        });
+        return terminal();
+      },
+      readAuthFile: fixture.readAuthFile,
+      now: () => 1900000000000,
+      clientVersion: async () => VERIFIED_CLIENT,
+      ...(requestCompression ? { requestCompression } : {}),
+    });
+    const result = await adapter.invoke(fixture.request, fixture.context);
+    expect(result.outcome).toBe("completed");
+    expect(sent).toHaveLength(1);
+    return sent[0]!;
+  }
+
+  it("is zstd by default: the declared encoding and length are those of the bytes sent", async () => {
+    const { headers, bytes } = await wire();
+    expect(headers.get("content-encoding")).toBe("zstd");
+    expect(headers.get("content-length")).toBe(String(bytes.length));
+    const json = zstdDecompressSync(bytes).toString("utf8");
+    expect(JSON.parse(json)).toMatchObject({ model: "model-one", store: false, stream: true });
+    // Not the JSON itself under another name.
+    expect(bytes.equals(Buffer.from(json, "utf8"))).toBe(false);
+  });
+
+  it("is the plain JSON, with no content encoding, when the switch is off", async () => {
+    const { headers, bytes } = await wire(() => false);
+    expect(headers.has("content-encoding")).toBe(false);
+    expect(headers.get("content-length")).toBe(String(bytes.length));
+    expect(JSON.parse(bytes.toString("utf8"))).toMatchObject({ model: "model-one" });
+  });
+
+  it.each([
+    ["off", false],
+    [" OFF ", false],
+    // What an operator types from memory in an outage.
+    ["0", false],
+    ["false", false],
+    ["No", false],
+    [undefined, true],
+    ["", true],
+    ["on", true],
+    ["1", true],
+  ] as const)("reads the switch %j from the environment as compression %s", (value, expected) => {
+    expect(
+      codexRequestCompression(
+        value === undefined ? {} : { [CODEX_REQUEST_COMPRESSION_ENV]: value },
+      ),
+    ).toBe(expected);
+  });
+
+  it("counts the bytes as sent in its delivery facts", async () => {
+    const lengths: number[] = [];
+    const fixture = setup((init) => {
+      lengths.push(Number(new Headers(init?.headers).get("content-length")));
+      return Response.json({ error: { message: "request timeout" } }, { status: 408 });
+    });
+    const result = await fixture.adapter.invoke(fixture.request, fixture.context);
+    const plain = Buffer.byteLength(
+      fixture.fetcher.mock.calls.find(([, init]) => init?.method === "POST")![1]!.body as string,
+    );
+    expect(lengths[0]).toBeLessThan(plain);
+    expect(result.problem?.context.requestDelivery).toMatchObject({ bodyBytes: lengths[0] });
+  });
+
+  it.each([
+    ["just before the body is encoded", false],
+    ["while the compressor is running", true],
+  ] as const)("sends nothing when the call is cancelled %s", async (_when, inFlight) => {
+    const controller = new AbortController();
+    const compressor = vi.mocked(zlib.zstdCompress);
+    compressor.mockClear();
+    if (inFlight) {
+      const actual = await vi.importActual<typeof import("node:zlib")>("node:zlib");
+      // The work is handed to the compressor first; the cancellation arrives under it.
+      compressor.mockImplementationOnce(((...args: Parameters<typeof actual.zstdCompress>) => {
+        actual.zstdCompress(...args);
+        controller.abort();
+      }) as typeof zlib.zstdCompress);
+    }
+    // The switch is read immediately before encoding.
+    const fixture = setup(undefined, undefined, undefined, () => {
+      if (!inFlight) controller.abort();
+      return true;
+    });
+    const result = await fixture.adapter.invoke(fixture.request, {
+      ...fixture.context,
+      signal: controller.signal,
+    });
+    expect(compressor).toHaveBeenCalledTimes(1);
+    expect(result.outcome).toBe("failed");
+    expect(result.problem?.code).toBe("cancelled");
+    expect(fixture.onDispatch).not.toHaveBeenCalled();
+    expect(fixture.fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(
+      0,
+    );
+  });
 });

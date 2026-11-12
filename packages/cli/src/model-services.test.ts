@@ -40,6 +40,7 @@ beforeEach(() => accountObservations.invalidate());
 
 import { createModelServices } from "./model-services.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
+import { requestBodyText } from "../../harness-codex/src/test-support/request-body.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 const removals: Array<() => void> = [];
@@ -506,7 +507,7 @@ describe("production model service composition", () => {
             },
           ],
         });
-      const body = JSON.parse(await new Response(init.body).text());
+      const body = JSON.parse(await requestBodyText(init));
       expect(body.reasoning.effort).toBe("max");
       return new Response(
         `data: ${JSON.stringify({
@@ -2583,7 +2584,7 @@ describe("account/model capability routing", () => {
       fetch: async (_url, init) => {
         if (init?.method !== "POST") return Response.json({ models: [{ slug: "gpt-6.1-sol" }] });
         const account = new Headers(init.headers).get("chatgpt-account-id")!;
-        posts.push({ account, body: JSON.parse(await new Response(init.body).text()) });
+        posts.push({ account, body: JSON.parse(await requestBodyText(init)) });
         if (account === "a")
           return Response.json(
             {

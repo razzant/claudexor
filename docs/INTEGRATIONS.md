@@ -2165,33 +2165,36 @@ later reply is discarded.
 ## Project Instruction Files (AGENTS.md)
 
 Keep ONE `AGENTS.md` at your project root as the source of truth for
-project-specific agent instructions. Codex, Cursor, and OpenCode read `AGENTS.md`
-natively; Claude Code reads `CLAUDE.md`. Claudexor bridges that gap for you so
-the same instructions reach every route, without asking you to maintain two
-files:
+project-specific agent instructions. Codex, Cursor, and OpenCode have their own
+native project-file semantics. Claude Code has its own native discovery rules;
+Claudexor does not claim that every route reads the same text, and a file-write
+receipt is never a model-read receipt.
 
 - Codex routes get `CLAUDE.md` added to codex's `project_doc_fallback_filenames`
   (a stateless per-run config override — your `~/.codex/config.toml` is never
   touched), so a project that has only a `CLAUDE.md` and no `AGENTS.md` still
   works on codex. Per codex's own semantics the fallback is consulted ONLY when
   no `AGENTS.md` is present; it is never merged on top of an existing one.
-- For a project that has `AGENTS.md` and no `CLAUDE.md`, Git-backed write preparation creates
-  a thin `CLAUDE.md` whose entire body is the official Anthropic import
-  `@AGENTS.md` plus a Claudexor ownership marker, so Claude Code reads the same
-  file. It is written both at the project root (announced via the
-  `project.claude_bridge.created` run event; deleting the generated file stops the
-  bridging) and inside each isolated envelope worktree a candidate races in —
-  because a Git envelope materializes committed files, so an untracked
-  project-root bridge would not reach a candidate. The envelope copy carries no
-  run event and is excluded from the candidate's diff only when Claudexor created
-  it for that run and its bytes still exactly match the generated bridge. Any
+- For an isolated Git envelope that contains `AGENTS.md` but no `CLAUDE.md`,
+  workspace preparation may create a disposable, envelope-local thin
+  `CLAUDE.md` whose body is the official Anthropic import `@AGENTS.md` plus a
+  Claudexor ownership marker. It is never written into the durable project root,
+  never removes an existing user file, and emits no new run event. The envelope
+  copy is excluded from the candidate diff only when Claudexor created it for
+  that run and its bytes still exactly match the generated bridge. Any
   candidate-authored or candidate-edited `CLAUDE.md` is captured normally, even
-  if it retains the ownership marker. Both creates are exclusive and never follow
-  a symlink, so a hand-written `CLAUDE.md` is never overwritten. The project-root
-  write is skipped for read-only runs and `--in-place` stateful targets.
+  if it retains the ownership marker. Creation, `open(wx)`, and CLI display are
+  file-operation evidence only; they do not prove that a model read the file.
 
-Both behaviors are automatic. If you would rather manage the files yourself,
-keep your own `CLAUDE.md` (it is never touched) or add an `AGENTS.md`.
+The envelope bridge covers only isolated Git envelopes. In-place, thread,
+directory and read-only runs get no generated bridge. If a Claude route must
+follow an `AGENTS.md`-only project, commit your own `CLAUDE.md` that imports
+it (`@AGENTS.md`) where that route loads project instructions, or put the
+required instructions in the prompt. Claude read-only routes pass
+`--setting-sources ""`. In a November 2026 check with Claude Code 2.1.322, such a
+route did not return an initial-context canary from either an `AGENTS.md`-only
+project or a `CLAUDE.md` importing it, so automatic loading was not confirmed.
+A `CLAUDE.md` you keep is never touched. Claudexor does not build a second instruction resolver.
 
 ## External Harness Adapters
 
@@ -2988,6 +2991,7 @@ subscription sessions are always preferred.
 | `CLAUDEXOR_CODEX_BIN` / `CLAUDEXOR_CLAUDE_BIN` / `CLAUDEXOR_CURSOR_BIN` / `CLAUDEXOR_OPENCODE_BIN` / `CLAUDEXOR_AGY_BIN` / `CLAUDEXOR_COPILOT_BIN` / `CLAUDEXOR_GROK_BIN` | adapters | Explicit vendor CLI binary when PATH discovery is not enough. |
 | `CLAUDEXOR_CODEX_API_KEY` / `CLAUDEXOR_ANTHROPIC_API_KEY` / `CLAUDEXOR_CURSOR_API_KEY` | adapters | Claudexor-scoped API-key overrides (take precedence over provider env names). |
 | `CLAUDEXOR_CODEX_MODEL` | codex adapter | Default model override for the codex route. |
+| `CLAUDEXOR_CODEX_REQUEST_COMPRESSION` | codex model adapter | `off` (also `0`, `false`, `no`; any case) sends the caller-owned model request body as plain JSON; unset or any other value keeps it zstd-compressed (`Content-Encoding: zstd`). An operator's switch for a provider or an intermediary that stops accepting compressed requests. The daemon reads its own environment at each model call, so set it where the daemon is launched: it takes effect when the daemon is restarted with it. |
 | `CLAUDEXOR_CODEX_NATIVE_HOME` / `CLAUDEXOR_CLAUDE_NATIVE_DIR` | adapters | Explicit Claudexor-owned Codex profile or Claude native config directory overrides. |
 | `CLAUDEXOR_FAKE_NATIVE_STORE` | fake harness | Test fixture store where `fake-session` writes its own session files; absent means none are written. |
 | `CLAUDEXOR_PROFILE_LOCATOR` | engine → adapter `continuity` (internal, never a child env) | The registry `isolation_locator` of the credential profile whose store holds (or will hold) a native session, named by the engine on the EnvMap it hands to the adapter's `continuity.locate` / `continuity.move`; the adapter maps it onto its own vendor store variable. Users never set it. |

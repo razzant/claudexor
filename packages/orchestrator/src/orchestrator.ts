@@ -286,7 +286,7 @@ import {
   type ResolvedRouteContext,
 } from "./routeContext.js";
 import { resolveAutoReviewerPanel, resolveExplicitReviewerPanel } from "./reviewerPanel.js";
-import { ensureClaudeBridgeForRun, ensureWriteModeGitBoundary } from "./git-precondition.js";
+import { ensureWriteModeGitBoundary } from "./git-precondition.js";
 import { buildContinuation, type ContinuityDisclosureResult } from "./continuity.js";
 import { resolveContinuitySummary, threadContinuityRequest } from "./continuity-facts.js";
 import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./diffReview.js";
@@ -3088,11 +3088,6 @@ export class Orchestrator {
         };
       }
     }
-    // Same run-prep stage as the git boundary: if the PROJECT root uses AGENTS.md
-    // with no CLAUDE.md, bridge it so a Claude Code candidate reads it (INV-113).
-    if (mutatingRun && input.workspaceKind !== "directory") {
-      ensureClaudeBridgeForRun(input.repoRoot, input.inPlace === true, log);
-    }
     // Pre-turn snapshot of the live tree for in-place runs: the revert restore
     // target (server-owned revertInPlace). A snapshot failure must never fail the
     // run — revert is simply unavailable then.
@@ -4677,11 +4672,6 @@ export class Orchestrator {
           candidates: [],
         };
       }
-      // Same run-prep stage as the git boundary (and the same `!inPlace`
-      // exclusion — we are inside that branch, so inPlace is false here): bridge
-      // an AGENTS.md-only PROJECT root so a Claude Code convergence attempt reads
-      // it (INV-113).
-      ensureClaudeBridgeForRun(input.repoRoot, false, log);
     }
 
     const reviewDir = join(paths.root, "review-evidence");
