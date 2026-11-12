@@ -392,7 +392,7 @@ export async function runHarnessUpdate(
         if (!native.path || !native.version)
           throw Object.assign(
             new Error(
-              "The vendor installer did not produce a versioned replacement; the old npm copy is unchanged.",
+              "The vendor installer did not produce a versioned replacement; conversion removed nothing.",
             ),
             { code: "conversion_verification_failed" },
           );
@@ -412,7 +412,7 @@ export async function runHarnessUpdate(
         if (replacementProgram(program, copy, runtime, receipt.limitations).version !== version)
           throw Object.assign(
             new Error(
-              "The new vendor program did not report the requested exact version; the old npm copy is unchanged.",
+              "The new vendor program did not report the requested exact version; conversion removed nothing.",
             ),
             { code: "conversion_verification_failed" },
           );

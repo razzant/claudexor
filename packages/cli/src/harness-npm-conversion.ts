@@ -101,7 +101,7 @@ export function replacementProgram(
   )
     throw Object.assign(
       new Error(
-        `The replacement found first at ${selected.path} reports ${selected.version}; ${program.id} requires ${program.majorVersion}.x (#668). Nothing was removed.`,
+        `The replacement found first at ${selected.path} reports ${selected.version}; ${program.id} requires ${program.majorVersion}.x (#668). Conversion removed nothing.`,
       ),
       { code: "conversion_unsupported_major" },
     );
@@ -123,14 +123,14 @@ export function retireProductNpmCopy(
   if (!expected.path || !expected.version)
     throw Object.assign(
       new Error(
-        "Vendor installation did not produce a selected program with a version while the old npm launcher was masked; the old copy is unchanged",
+        "Vendor installation did not produce a selected program with a version while the old npm launcher was masked; conversion removed nothing",
       ),
       { code: "conversion_verification_failed" },
     );
   if (programUpdateAvailable(program.versionScheme, expected.version, previous.version) === "yes")
     throw Object.assign(
       new Error(
-        `After the installer, ${expected.path} version ${expected.version} is found first and is older than the selected ${previous.version}; the installer's copy may be hidden behind it. Nothing was removed.`,
+        `After the installer, ${expected.path} version ${expected.version} is found first and is older than the selected ${previous.version}; the installer's copy may be hidden behind it. Conversion removed nothing.`,
       ),
       { code: "conversion_older_program" },
     );
@@ -155,7 +155,9 @@ export function retireProductNpmCopy(
   const current = productNpmCopy(program, ordinary, runtime);
   if (!current || JSON.stringify(current) !== JSON.stringify(copy))
     throw Object.assign(
-      new Error("The old package/launcher relation changed during conversion; nothing was removed"),
+      new Error(
+        "The old package/launcher relation changed during conversion; conversion removed nothing",
+      ),
       { code: "conversion_source_changed" },
     );
   // Leave the proven launchers in place while their package is hidden. Their

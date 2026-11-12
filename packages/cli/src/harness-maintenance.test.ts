@@ -475,7 +475,7 @@ echo ${commands === 1 ? "2.0.0" : "3.0.0"}
           ? /Download failed/
           : failure === "explicit-old-override"
             ? /override pins/
-            : /old copy is unchanged/,
+            : /conversion removed nothing/,
       );
       expect(existsSync(old.pkg)).toBe(true);
       expect((await inspectHarness("fixture", w.options)).selection).toMatchObject({
@@ -636,7 +636,7 @@ echo 1.18.0
     const refused = await runHarnessUpdate("fixture", undefined, w.options);
     expect(refused.problem).toMatchObject({
       code: "conversion_older_program",
-      message: `After the installer, ${shadow} version 1.18.0 is found first and is older than the selected 1.18.9; the installer's copy may be hidden behind it. Nothing was removed.`,
+      message: `After the installer, ${shadow} version 1.18.0 is found first and is older than the selected 1.18.9; the installer's copy may be hidden behind it. Conversion removed nothing.`,
     });
     expect(existsSync(w.installed)).toBe(true);
     expect(existsSync(old.pkg)).toBe(true);
@@ -683,7 +683,7 @@ echo 1.18.0
           message: "No available upgrade found",
         });
         expect(receipt.limitations).toContain(
-          `After the installer exited 2316632107, npm copy conversion failed (conversion_older_program): After the installer, ${w.installed} version 0.9.0 is found first and is older than the selected 1.0.0; the installer's copy may be hidden behind it. Nothing was removed.`,
+          `After the installer exited 2316632107, npm copy conversion failed (conversion_older_program): After the installer, ${w.installed} version 0.9.0 is found first and is older than the selected 1.0.0; the installer's copy may be hidden behind it. Conversion removed nothing.`,
         );
       }
     },
@@ -703,7 +703,7 @@ echo 1.18.0
       after: { path: old.launcher, version: "1.0.0" },
     });
     expect(receipt.limitations).toContain(
-      "After the installer exited 2316632107, npm copy conversion failed (conversion_verification_failed): Vendor installation did not produce a selected program with a version while the old npm launcher was masked; the old copy is unchanged",
+      "After the installer exited 2316632107, npm copy conversion failed (conversion_verification_failed): Vendor installation did not produce a selected program with a version while the old npm launcher was masked; conversion removed nothing",
     );
     expect(existsSync(old.pkg)).toBe(true);
     expect(existsSync(old.launcher)).toBe(true);
@@ -745,9 +745,9 @@ echo 1.18.0
     expect(existsSync(hidden)).toBe(false);
     expect(existsSync(old.pkg)).toBe(false);
   });
-  it.each([false, true])(
-    "recognizes vendor removal of the npm copy only when ordinary resolution proves the replacement (%s)",
-    async (healthy) => {
+  it.each([false, true].flatMap((healthy) => [0, 2316632107].map((exit) => ({ healthy, exit }))))(
+    "recognizes vendor removal of the npm copy only when ordinary resolution proves the replacement: %j",
+    async ({ healthy, exit }) => {
       const w = world(),
         old = oldCopy(w);
       w.options.spawn = ((
@@ -759,17 +759,35 @@ echo 1.18.0
         rmSync(old.pkg, { recursive: true });
         rmSync(old.launcher);
         if (healthy) executable(w.installed, "2.1.322");
-        return result("Cleaning up npm installations");
+        return result("Cleaning up npm installations", exit);
       }) as typeof spawnSync;
       const receipt = await runHarnessUpdate("fixture", undefined, w.options);
       expect(receipt).toMatchObject({
         ok: healthy,
-        exitCode: 0,
+        exitCode: exit,
         progress: ["Cleaning up npm installations"],
       });
       expect(existsSync(old.pkg)).toBe(false);
       expect(receipt.after?.version).toBe(healthy ? "2.1.322" : null);
-      if (!healthy) expect(receipt.problem?.code).toBe("conversion_verification_failed");
+      if (healthy) return;
+      // The vendor removed the old copy itself; the failure speaks only for
+      // conversion and never claims that copy is unchanged.
+      const reason =
+        "Vendor installation did not produce a selected program with a version while the old npm launcher was masked; conversion removed nothing";
+      if (exit) {
+        expect(receipt.problem).toMatchObject({
+          code: "vendor_command_failed",
+          message: "Cleaning up npm installations",
+        });
+        expect(receipt.limitations).toContain(
+          `After the installer exited ${exit}, npm copy conversion failed (conversion_verification_failed): ${reason}`,
+        );
+      } else
+        expect(receipt.problem).toMatchObject({
+          code: "conversion_verification_failed",
+          message: reason,
+        });
+      expect(JSON.stringify(receipt)).not.toContain("unchanged");
     },
   );
   it("offers conversion only when an override does not pin the old product copy", async () => {
