@@ -3373,7 +3373,10 @@ accepts custody before ACK and recovers a lost local reply through the same
 operation identity. Request bytes are released at terminal state, response bytes
 after ACK and unacknowledged responses 30 days after readiness; existing
 maintenance reclaims crash residue, then calls the daemon's `pruneHistory`
-owner (including cancellation-set cleanup) through both runtime compositions. A recorded response expiry stays the release
+owner (including cancellation-set cleanup) through both runtime compositions.
+That reclaim and the response-expiry timer list the payloads still in custody
+through the resource state index, so the listing reads the ready resources only,
+not the released and expired rows the table keeps. A recorded response expiry stays the release
 timestamp through delayed cleanup and restart, while an ordinary ACK uses its
 actual release time. Redundant uploads on an idempotent create are released
 without touching another live command's input. Outside the Agent history cap, a
@@ -5991,7 +5994,13 @@ kept only for cold import and an independent frozen copy kept for tests.
   can keep the total above that cap. Each pass selects at most 100 oldest
   eligible victims through keyset pages over a partial
   index, with needs-decision rows outside the candidate index and continuation/
-  retained-envelope exemptions checked once per candidate. Remaining excess is
+  retained-envelope exemptions checked once per candidate. The prune runs after
+  every terminal, so a page is bounded on that index at both ends: below by its
+  keyset position, above by the age cutoff on the creation time the index is
+  ordered by. The engine stamps a finish after its creation, in one timestamp
+  shape, so the bound removes no expired row; a row that breaks this waits until
+  both times have aged. A page with nothing expired reads no command created
+  after the cutoff. Remaining excess is
   handled on later passes; model and account-reset receipts are exempt. No
   separate 256 MiB prompt budget shortens this lifetime. Journal
   cursors keep their encoding and map onto the current partition generation;

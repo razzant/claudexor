@@ -11,7 +11,15 @@ import {
   uploadRequest,
   type ResourceFixture,
 } from "./test-support/resource-fixture.js";
-import { readUploadRow, putResourceInTx, putUploadInTx, readResourceRow } from "./resource-rows.js";
+import {
+  readUploadRow,
+  putResourceInTx,
+  putUploadInTx,
+  readResourceRow,
+  type ResourceRow,
+} from "./resource-rows.js";
+import { MODEL_READY_RESOURCES_SQL } from "./resources.js";
+import { queryPlan } from "./retention.js";
 import type { SqlWriteContext } from "./mutation.js";
 import { lookupIdempotency } from "./idempotency.js";
 import { uploadKeyDigest } from "./upload-binding-retention.js";
@@ -238,6 +246,45 @@ describe("SQL ResourceStore contract", () => {
     expect(fs.existsSync(f.blobs.filePath(a.sha256.slice(7)))).toBe(false);
     expect(f.resources.listModelResources()).toEqual([]);
     expect(f.logs).toEqual([]);
+  });
+
+  it("lists the model payloads in custody through the state index, whatever the table's history and statistics", async () => {
+    const f = await fixture();
+    const plan = () => queryPlan(f.store, MODEL_READY_RESOURCES_SQL).join("\n");
+    const throughState = /SEARCH resource USING INDEX resource_expiry \(state=\?\)/;
+    expect(plan()).toMatch(throughState);
+    const first = f.resources.publishModel(Buffer.from("payload"));
+    const template = readResourceRow(f.store, first.resourceId)!;
+    const sql: SqlWriteContext = {
+      prepare: f.store.prepare.bind(f.store),
+      get inTransaction() {
+        return f.store.inTransaction;
+      },
+    };
+    const put = (id: string, state: ResourceRow["state"], model = true) => {
+      const { purpose: _purpose, ...plain } = template.resource;
+      const resource = model ? template.resource : plain;
+      putResourceInTx(sql, { ...template, state, resource: { ...resource, resourceId: id } });
+    };
+    // Written out of id order: only the statement's own ORDER BY restores it.
+    f.store.transaction(() => {
+      for (const id of ["res_m3", "res_m1", "res_m2"]) put(id, "ready");
+      put("res_attachment", "ready", false);
+    });
+    // Statistics taken while every row is ready, as on a young store. Nothing refreshes them, and
+    // with them a statement left to the planner reads the whole table in primary-key order.
+    f.store.prepare("ANALYZE").run();
+    expect(plan()).toMatch(throughState);
+    // History: released and expired payloads stay in the table.
+    f.store.transaction(() => {
+      for (let i = 0; i < 300; i += 1) put(`res_gone${i}`, i % 2 ? "released" : "expired");
+    });
+    expect(plan()).toMatch(throughState);
+    // The listing executes that statement, not a copy the planner is free to plan otherwise.
+    const prepared = vi.spyOn(f.store, "prepare");
+    const listed = f.resources.listModelResources().map((ref) => ref.resourceId);
+    expect(prepared.mock.calls.map(([sql]) => sql)).toEqual([MODEL_READY_RESOURCES_SQL]);
+    expect(listed).toEqual([first.resourceId, "res_m1", "res_m2", "res_m3"].sort());
   });
 
   it("isolates image request uploads from Agent attachments without filtering caller image content", async () => {
