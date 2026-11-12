@@ -2,10 +2,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EventLog } from "@claudexor/event-log";
 import {
   ControlRunMessageResponse,
   type LiveMessageDelivery,
   type LiveMessageInput,
+  type RunEvent,
 } from "@claudexor/schema";
 import { sha256 } from "@claudexor/util";
 import {
@@ -493,5 +495,89 @@ describe("POST /v2/runs/:id/messages for an accepted job that has no run yet", (
       });
       expect(send).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("POST /v2/runs/:id/messages on a live run's queued log", () => {
+  it("answers after each row landed: a refused admission sends nothing, a refused closing row answers 500, and neither poisons the run's log", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const record = runRecord();
+      const persisted: string[] = [];
+      const refused = new Set<string>();
+      // The run's live writer: its lines land off the request thread, and its
+      // durable sink takes each one when it lands.
+      const log = new EventLog(
+        join(record.runDir as string, "events.jsonl"),
+        "run-m1",
+        "task-m1",
+        (event: RunEvent) => {
+          persisted.push(event.type);
+          if (refused.has(event.type)) throw new Error(`journal refused ${event.type}`);
+        },
+        undefined,
+        undefined,
+        { queued: true },
+      );
+      const send = sendStub({ outcome: "delivered", attemptId: "a01", harnessId: "codex" });
+      await withServer([record], { ...ledger(), sendRunMessage: send }, async (base) => {
+        const delivered = await post(base, "run-m1", { text: TEXT });
+        expect(delivered.status).toBe(200);
+        expect(ControlRunMessageResponse.parse(await delivered.json()).outcome).toBe("delivered");
+        // Both rows had landed, and their sink taken them, when the receipt came.
+        expect(rows(record).map((row) => row.type)).toEqual([
+          "run.created",
+          "message.accepted",
+          "message.delivered",
+        ]);
+        expect(persisted).toEqual(["message.accepted", "message.delivered"]);
+
+        refused.add("message.accepted");
+        const admission = await post(base, "run-m1", { text: TEXT });
+        expect(admission.status).toBe(200);
+        expect(ControlRunMessageResponse.parse(await admission.json())).toMatchObject({
+          accepted: false,
+          outcome: "rejected",
+          reason: "admission_persist_failed",
+        });
+        expect(send).toHaveBeenCalledTimes(1);
+        refused.clear();
+
+        refused.add("message.delivered");
+        const headers = { "Idempotency-Key": "msg-closing-refused" };
+        const closing = await post(base, "run-m1", { text: TEXT }, headers);
+        expect(closing.status).toBe(500);
+        expect(((await closing.json()) as { code: string }).code).toBe(
+          "message_receipt_unavailable",
+        );
+        // The failed command replays as the same 500: never a second dispatch.
+        expect((await post(base, "run-m1", { text: TEXT }, headers)).status).toBe(500);
+        expect(send).toHaveBeenCalledTimes(2);
+        refused.clear();
+      });
+      // A refused row was its request's failure alone: the run's log goes on.
+      expect(() => log.emit("output.ready", { kind: "summary" })).not.toThrow();
+      await expect(log.emitTerminal("run.completed", {})).resolves.toMatchObject({
+        type: "run.completed",
+      });
+      expect(rows(record).map((row) => row.type)).toEqual([
+        "run.created",
+        "message.accepted",
+        "message.delivered",
+        "message.accepted",
+        "message.accepted",
+        "message.delivered",
+        "output.ready",
+        "run.completed",
+      ]);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 });
