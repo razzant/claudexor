@@ -24,7 +24,7 @@ import type {
   HarnessRunSpec,
   Intent,
 } from "@claudexor/schema";
-import { redactSecrets, safeInvoke } from "@claudexor/util";
+import { pacedByAppends, redactSecrets, safeInvoke } from "@claudexor/util";
 import {
   attemptInterruption,
   finalizeAttempt,
@@ -295,7 +295,7 @@ export async function runPlannerAttempt(
         suspensionVersion: () => planInteraction?.suspensionVersion?.() ?? 0,
         stopSignal: input.signal,
       });
-      for await (const ev of watchedPlan) {
+      for await (const ev of pacedByAppends(watchedPlan, [paths.eventsPath, attemptEventsPath])) {
         // A read after Stop is evidence only: stored, never shown live.
         const stoppedBefore = input.signal?.aborted === true;
         const shown = !stoppedBefore && ev.payload?.["buffered"] !== true;

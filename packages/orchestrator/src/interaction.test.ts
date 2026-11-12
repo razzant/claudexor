@@ -1,16 +1,28 @@
 import { getEventListeners } from "node:events";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InteractionChannelError } from "@claudexor/core";
-import { INTERACTION_TIMEOUT_MAX_MS, type InteractionHandlerResult } from "@claudexor/schema";
+import { EventLog } from "@claudexor/event-log";
+import {
+  INTERACTION_TIMEOUT_MAX_MS,
+  type InteractionHandlerResult,
+  type RunEvent,
+} from "@claudexor/schema";
+import { orderedAppender } from "@claudexor/util";
 import { interactionChannelFor } from "./interaction.js";
 
 type CapturedEvent = { type: string; payload: Record<string, unknown> };
 
+/** An inline log: a line is captured when emitted, and `emitLanded` settles at once. */
 function eventLog(events: CapturedEvent[]) {
+  const emit = (type: string, payload: Record<string, unknown>) => {
+    events.push({ type, payload });
+  };
   return {
-    emit(type: string, payload: Record<string, unknown>) {
-      events.push({ type, payload });
-    },
+    emit,
+    emitLanded: async (type: string, payload: Record<string, unknown>) => emit(type, payload),
   };
 }
 
@@ -626,6 +638,8 @@ describe("interactionChannelFor answer-surface failure (#622 class)", () => {
       (error: unknown) => error,
     );
     expect(channel.pendingCount!()).toBe(1);
+    // The wait, and its listener on the run, begins once the announcement landed.
+    await vi.advanceTimersByTimeAsync(0);
     expect(getEventListeners(run.signal, "abort")).toHaveLength(1);
     fail("bridge lost");
     const error = await outcome;
@@ -652,9 +666,8 @@ describe("interactionChannelFor answer-surface failure (#622 class)", () => {
         },
       },
       {
-        emit: () => {
-          throw appendFailure;
-        },
+        // The journal refuses the announcement when its line lands.
+        emitLanded: () => Promise.reject(appendFailure),
       } as never,
       "run-failure",
       "task-failure",
@@ -813,5 +826,93 @@ describe("interactionChannelFor answer-surface failure (#622 class)", () => {
     await channel.request({ ...request(), delivery: "async" } as never);
     expect(seen).toEqual(["blocking", "async"]);
     expect(events.map((event) => event.payload["delivery"])).toEqual(["blocking", "async"]);
+  });
+});
+
+describe("interactionChannelFor on a run's queued log", () => {
+  const ANSWERS = {
+    interaction_id: "int-1",
+    answers: [{ question_id: "q1", selected_labels: ["Yes"], free_text: null }],
+  };
+
+  it("waits on an answer only once the announcement has landed, and withdraws a question whose landing the journal refused", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-interaction-landing-"));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const order: string[] = [];
+      const refusal = new Error("journal refused interaction.requested");
+      let refuse = false;
+      const log = new EventLog(
+        join(root, "events.jsonl"),
+        "run-q",
+        "task-q",
+        (event: RunEvent) => {
+          order.push(`persist:${event.type}`);
+          if (refuse && event.type === "interaction.requested") throw refusal;
+        },
+        undefined,
+        undefined,
+        { queued: true },
+      );
+      let surfaceSignal: AbortSignal | undefined;
+      const channel = interactionChannelFor(
+        {
+          interactionTimeoutMs: 60_000,
+          onInteraction: (ctx) => {
+            order.push("registered");
+            surfaceSignal = ctx.signal;
+            // An immediate answer: the request still waits for its announcement.
+            return refuse ? new Promise(() => undefined) : Promise.resolve(ANSWERS);
+          },
+        },
+        log,
+        "run-q",
+        "task-q",
+        "a01",
+        "claude",
+        true,
+      )!;
+
+      await expect(channel.request(request() as never)).resolves.toEqual(ANSWERS);
+      order.push("answered");
+      expect(order).toEqual(["registered", "persist:interaction.requested", "answered"]);
+      // `interaction.answered` needs no wait; it lands after the answer returns.
+      await orderedAppender.settled(join(root, "events.jsonl"));
+
+      refuse = true;
+      order.length = 0;
+      const before = channel.suspensionVersion!();
+      await expect(channel.request(request() as never)).rejects.toBe(refusal);
+      // Registered, refused at landing, and withdrawn through the surface's signal.
+      expect(order).toEqual(["registered", "persist:interaction.requested"]);
+      expect(surfaceSignal?.aborted).toBe(true);
+      expect(channel.pendingCount!()).toBe(0);
+      expect(channel.suspensionVersion!()).toBe(before + 2);
+      // The refusal was the request's alone: the log goes on and terminalizes.
+      expect(() => log.emit("output.ready", { kind: "summary" })).not.toThrow();
+      await expect(log.emitTerminal("run.completed", {})).resolves.toMatchObject({
+        type: "run.completed",
+      });
+      const types = readFileSync(join(root, "events.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => (JSON.parse(line) as RunEvent).type);
+      expect(types).toEqual([
+        "interaction.requested",
+        "interaction.answered",
+        "interaction.requested",
+        "output.ready",
+        "run.completed",
+      ]);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

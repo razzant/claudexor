@@ -378,6 +378,7 @@ import {
   measureSync,
   newId,
   noProjectRepoRoot,
+  pacedByAppends,
   redactSecrets,
   safeInvoke,
   userConfigDir,
@@ -2574,7 +2575,7 @@ export class Orchestrator {
             suspensionVersion: () => interaction?.suspensionVersion?.() ?? 0,
             stopSignal: signal, // after Stop: drained events are recorded, never used
           });
-          for await (const ev of watched) {
+          for await (const ev of pacedByAppends(watched, [paths.eventsPath])) {
             // After Stop: stored evidence only, but file paths are still collected for the capture.
             const stopped = signal?.aborted === true;
             if (!stopped) rawLane.observe(ev);
@@ -3031,7 +3032,7 @@ export class Orchestrator {
     const mutatingRun = isMutatingAccess(contract.access.effective_profile);
     const planBrief = verifiedPlanBrief(input);
     const quotaSnapshots = this.quotaSnapshotPreflight();
-    const { store, paths, log, ledger, runContext } = beginAnnouncedRun(
+    const { store, paths, log, ledger, runContext } = await beginAnnouncedRun(
       {
         input,
         contract,
@@ -4621,7 +4622,7 @@ export class Orchestrator {
     const contract = this.buildContract(input, taskId, mode);
     const planBrief = verifiedPlanBrief(input);
     const quotaSnapshots = this.quotaSnapshotPreflight();
-    const { store, paths, log, ledger, runContext } = beginAnnouncedRun(
+    const { store, paths, log, ledger, runContext } = await beginAnnouncedRun(
       {
         input,
         contract,
@@ -5777,7 +5778,7 @@ export class Orchestrator {
     // contract validation runs BEFORE the run is announced (see runRace).
     const contract = this.buildContract(input, taskId, "plan");
     const quotaSnapshots = this.quotaSnapshotPreflight();
-    const { store, paths, log, ledger } = beginAnnouncedRun(
+    const { store, paths, log, ledger } = await beginAnnouncedRun(
       {
         input,
         contract,
@@ -6296,7 +6297,7 @@ export class Orchestrator {
       opts.mode,
     );
     const quotaSnapshots = this.quotaSnapshotPreflight();
-    const { store, paths, log, ledger, runContext } = beginAnnouncedRun(
+    const { store, paths, log, ledger, runContext } = await beginAnnouncedRun(
       {
         input,
         contract,
@@ -6773,7 +6774,8 @@ export class Orchestrator {
               suspensionVersion: () => reportInteraction?.suspensionVersion?.() ?? 0,
               stopSignal: input.signal, // after Stop: drained events are recorded, never used
             });
-            for await (const ev of watchedReport) {
+            const read = pacedByAppends(watchedReport, [paths.eventsPath, attemptEventsPath]);
+            for await (const ev of read) {
               // A read after Stop is stored evidence only; a callback may itself press Stop.
               const shown = !input.signal?.aborted && ev.payload?.["buffered"] !== true;
               if (shown) safeInvoke(input.onHarnessEvent, ev);

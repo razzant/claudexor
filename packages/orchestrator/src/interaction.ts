@@ -16,8 +16,9 @@
  * expiry (`interaction.timeout`), a withdrawal (`interaction.withdrawn`) or the
  * run's end resolves null; a failed answer surface rejects with
  * InteractionChannelError, never a decline-shaped null. A journal that cannot
- * append `interaction.requested` rejects the request with its own error, after
- * the surface's registration was withdrawn through the request's signal.
+ * land `interaction.requested` (its write or durable sink refused) rejects the
+ * request with its own error, after the surface's registration was withdrawn
+ * through the request's signal.
  *
  * Capability gate: the channel is OFFERED only to routes whose manifest
  * declares `interactive` — a non-interactive harness never gets a surface it
@@ -146,7 +147,8 @@ export function interactionChannelFor(
           throw new InteractionChannelError(error);
         }
         try {
-          log.emit("interaction.requested", {
+          // The wait begins once the announcement has landed in the journal.
+          await log.emitLanded("interaction.requested", {
             interaction_id: request.interaction_id,
             attempt_id: attemptId,
             harness_id: harnessId,
@@ -161,8 +163,8 @@ export function interactionChannelFor(
           // and this request fails here: an answer could never reach the
           // harness. Withdraw it through the request lifecycle the surface
           // honours (the daemon registry releases it as interrupted), then
-          // fail with the journal's own error. The record stays missing, so
-          // the failure stays a failure.
+          // fail with the journal's own error. The durable record stays
+          // missing, so the failure stays a failure.
           release.abort(error);
           throw error;
         }

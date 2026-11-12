@@ -19,7 +19,7 @@ import {
   countsAsAgentProgress,
   withInactivityWatchdog,
 } from "@claudexor/core";
-import { redactSecrets, safeInvoke } from "@claudexor/util";
+import { pacedByAppends, redactSecrets, safeInvoke } from "@claudexor/util";
 import type { RunPaths } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
 import { buildDeepScanReducerPrompt } from "@claudexor/synthesis";
@@ -381,7 +381,8 @@ export async function runDeepScanReducer(
       isSuspended: () => false,
       cleanupDeadlineMs: cleanupGraceMs,
     });
-    const iterator = watched[Symbol.asyncIterator]();
+    const read = pacedByAppends(watched, [paths.eventsPath, attemptEventsPath]);
+    const iterator = read[Symbol.asyncIterator]();
     for (;;) {
       const pending = iterator.next();
       const next = await Promise.race([

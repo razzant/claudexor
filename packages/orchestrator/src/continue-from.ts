@@ -34,7 +34,7 @@ import {
   type RunContinuityReceipt,
   type SessionCapsule,
 } from "@claudexor/schema";
-import { readTextSafe } from "@claudexor/util";
+import { orderedAppender, readTextSafe } from "@claudexor/util";
 import {
   ownsContinuationSource,
   readContinuationEvidence,
@@ -218,8 +218,11 @@ export async function openContinuity(
 ): Promise<{ continuity: InRunContinuity; spec: HarnessRunSpec }> {
   const { spec, continuation, store } = first;
   const from = continuation?.from;
-  if (continuation?.planned && !from && deps.later)
+  if (continuation?.planned && !from && deps.later) {
+    // The plan's evidence index reads this run's journals raw: they land first.
+    await orderedAppender.settledUnder(deps.runDir);
     return openLaterAttempt(deps, { spec, later: deps.later }, continuation.planned);
+  }
   if (!continuation || !from) return { continuity: new InRunContinuity(deps), spec };
   continuation.from = null;
   const pred = readPredecessor(from);
