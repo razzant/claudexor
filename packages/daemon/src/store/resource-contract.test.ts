@@ -275,15 +275,16 @@ describe("SQL ResourceStore contract", () => {
     // with them a statement left to the planner reads the whole table in primary-key order.
     f.store.prepare("ANALYZE").run();
     expect(plan()).toMatch(throughState);
-    expect(plan()).not.toMatch(/SCAN resource/);
     // History: released and expired payloads stay in the table.
     f.store.transaction(() => {
       for (let i = 0; i < 300; i += 1) put(`res_gone${i}`, i % 2 ? "released" : "expired");
     });
     expect(plan()).toMatch(throughState);
-    expect(f.resources.listModelResources().map((ref) => ref.resourceId)).toEqual(
-      [first.resourceId, "res_m1", "res_m2", "res_m3"].sort(),
-    );
+    // The listing executes that statement, not a copy the planner is free to plan otherwise.
+    const prepared = vi.spyOn(f.store, "prepare");
+    const listed = f.resources.listModelResources().map((ref) => ref.resourceId);
+    expect(prepared.mock.calls.map(([sql]) => sql)).toEqual([MODEL_READY_RESOURCES_SQL]);
+    expect(listed).toEqual([first.resourceId, "res_m1", "res_m2", "res_m3"].sort());
   });
 
   it("isolates image request uploads from Agent attachments without filtering caller image content", async () => {

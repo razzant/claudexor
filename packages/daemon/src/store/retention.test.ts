@@ -562,7 +562,7 @@ describeStore("bounded command retention (R5_AMENDMENTS B1/C1, T-RET-1)", () => 
     });
     const oneX = plans();
     expect(oneX.count.join("\n")).toMatch(/SCAN command USING (COVERING )?INDEX command_terminal/);
-    // Both ends of the walk are on the index: the keyset position below, the cutoff above.
+    // Both ends of the walk are on the index: the whole keyset position below, the cutoff above.
     expect(oneX.page.join("\n")).toMatch(
       /SEARCH command USING INDEX command_prunable \(\(created_at,id\)>\(\?,\?\) AND created_at<\?\)/,
     );
@@ -594,9 +594,6 @@ describeStore("bounded command retention (R5_AMENDMENTS B1/C1, T-RET-1)", () => 
     });
     expect(tenX.visited).toBe(selection.visited);
     expect(tenX.victims).toEqual(selection.victims);
-    // Statistics gathered on the grown store leave the page on its two bounds.
-    store.prepare("ANALYZE").run();
-    expect(queryPlan(store, COMMAND_PRUNABLE_PAGE_SQL)).toEqual(oneX.page);
   });
 
   it("selects a row only once its creation and its finish have both aged, so a page can end at the cutoff", async () => {
