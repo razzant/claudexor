@@ -87,8 +87,16 @@ composer](docs/assets/app-agent-run.jpg)
 
 ## Prerequisites
 
-- Node.js >= 24.15 (the daemon, CLI, and every surface run on Node)
-- pnpm (via corepack: `corepack enable pnpm`)
+- **macOS app:** macOS 26 or newer. The app includes its own Node runtime; you
+  do not need to install Node or pnpm.
+- **CLI and daemon from npm:** Node.js 24.15 or newer and npm, on macOS or
+  Linux; use the latest Node 24 release for its security fixes. Windows support
+  is partial: daemon and vendor-program installation checks run there, but
+  login and runs on Windows are not qualified yet (see
+  [docs/FEATURES.md](docs/FEATURES.md)).
+- **Building from source:** the same Node.js and pnpm (`corepack enable pnpm`);
+  on macOS also the Xcode Command Line Tools, which compile a native helper.
+  See [From a source checkout](#from-a-source-checkout).
 - Git for Git-backed worktrees, candidate envelopes, and source-control delivery.
   Explicit directory execution supports direct work and selected-input copies
   without Git; Doctor reports Git availability, and
@@ -100,31 +108,15 @@ composer](docs/assets/app-agent-run.jpg)
   `ANTHROPIC_API_KEY`, ... as fallbacks; the raw-API route needs only a key).
   Log in through Claudexor, not the bare vendor CLI — see
   [Install And Login](docs/AGENT_ONBOARDING.md#install-and-login)
-- macOS for the desktop app; the CLI/daemon also run on Linux
 
 ## Install
 
-CLI + daemon from npm (installs the `claudexor` and `claudexord` bins):
+### macOS app
 
-```bash
-npm install -g claudexor
-claudexor doctor
-```
+The signed and notarized app requires **macOS 26 or newer**.
 
-`pr` delivery requires the pinned publication scanner, which the npm packages do
-not bundle. Prepare it once with `claudexor scanner prepare`, or offline from the
-official archive with `claudexor scanner prepare --from-archive <file>`; a running
-daemon picks it up at its next `pr`. See
-[Publication scanner](docs/ARCHITECTURE.md#publication-scanner).
-
-You can also build from source — see Quickstart below.
-
-On a Mac, the app is the easiest way in — it ships as a signed and
-notarized DMG, so it installs like any ordinary Mac app, with no Gatekeeper
-warnings:
-
-1. Download `Claudexor-<version>.dmg` from
-   [Releases](https://github.com/razzant/claudexor/releases).
+1. Download `Claudexor-<version>.dmg` from the
+   [latest release](https://github.com/razzant/claudexor/releases/latest).
 2. Drag `Claudexor.app` into `Applications`.
 3. Open it. The app starts its bundled Claudexor engine, then onboarding checks
    the external Git and harness route needed by the work you select.
@@ -137,6 +129,28 @@ Claudexor CLI is only needed for terminal use. Git and vendor harnesses remain
 separate capabilities checked before a run starts. (The v1.0.0 DMG was unsigned
 — if you kept it, either upgrade or approve it via System Settings → Privacy &
 Security → Open Anyway.)
+
+### CLI from npm
+
+With **Node.js 24.15 or newer** (use the latest Node 24 release), install the
+CLI and daemon from npm:
+
+```bash
+npm install -g claudexor
+claudexor doctor
+```
+
+This installs the `claudexor` and `claudexord` commands; you need neither a
+source checkout nor pnpm. Continue with the [quickstart](#quickstart) to
+connect an account and ask a first question.
+
+`pr` delivery requires the pinned publication scanner, which the npm packages do
+not bundle. Prepare it once with `claudexor scanner prepare`, or offline from the
+official archive with `claudexor scanner prepare --from-archive <file>`; a running
+daemon picks it up at its next `pr`. See
+[Publication scanner](docs/ARCHITECTURE.md#publication-scanner).
+
+### Harness setup
 
 Install a missing vendor program with
 `claudexor harness install <harness> --yes --json`; a host may bind that explicit
@@ -248,6 +262,36 @@ client verifiers themselves stay fail-closed for the waived versions too).
   fail-closed (npm users update via npm).
 
 ## Quickstart
+
+Start with one coding agent and one account. In the macOS app, follow
+onboarding to connect that account, choose a small project and select **Ask**.
+Try: "Explain how this project is organized and where its tests live."
+The answer and its execution evidence stay in the conversation.
+
+With the CLI, sign in through Claudexor, never with the bare vendor CLI. A
+subscription login is the default route; an API key is a paid fallback (see
+[Routing, Auth, And Secrets](#routing-auth-and-secrets) for other harnesses,
+keys and when a key is used). If `claudexor doctor` cannot find the agent's
+program, install it first ([Harness setup](#harness-setup)). Complete a Codex
+sign-in in a private browser window or one signed into no other OpenAI account.
+Then ask from your project directory:
+
+```bash
+claudexor auth login codex    # or: claude, cursor
+cd /path/to/your/project
+claudexor ask "Explain how this project is organized and where its tests live."
+```
+
+With a subscription login, usage counts against that plan; an API key is billed
+by its provider. When the run ends, the CLI prints its run ID:
+`claudexor inspect <run_id>` shows that run's answer and evidence again, and
+`claudexor follow <run_id>` replays it and, while it is still running, lets you
+answer its questions. Do not repeat the task just to read its result. You can
+add accounts, request changes or compare approaches later.
+
+### From a source checkout
+
+These build steps are for contributors and source installations:
 
 ```bash
 pnpm install --frozen-lockfile
