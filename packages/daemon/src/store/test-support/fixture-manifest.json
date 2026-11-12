@@ -2543,7 +2543,7 @@
   ],
   "externalPackages": {
     "yaml": "2.9.1",
-    "zod/v3": "4.6.5"
+    "zod/v3": "4.6.7"
   },
   "fixtures": [
     {

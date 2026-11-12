@@ -314,7 +314,7 @@ test("a Codex Browser stream reaches the journal with provable page evidence", (
   expect(JSON.stringify(withoutReads)).toContain(page.value);
 });
 
-// Real results of the pinned Browser MCP (@playwright/mcp 0.0.83), captured
+// Real results of the Browser MCP pinned when captured (@playwright/mcp 0.0.83),
 // without a model from an isolated headless browser; each scenario served its
 // own probe-shaped page, whose path was requested at least once.
 const pinned = {
