@@ -1,5 +1,6 @@
 import { lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { withPoolWriteSlot } from "./libuv-pool.js";
 
 export interface RemoveTreeOptions {
   /** Node's `rm` retries for EBUSY, EMFILE, ENFILE, ENOTEMPTY and EPERM. They
@@ -27,7 +28,8 @@ const gone = (error: unknown): boolean => {
  * envelope's markers, `lastEntry` last of all) are the last to go: a crash
  * mid-delete leaves a tree its recovery still recognizes. A root that is a link
  * is removed as a link, never followed. An entry that is already gone is no
- * failure; any other failure stops the walk and rejects.
+ * failure; any other failure stops the walk and rejects. Each removal holds one
+ * slot of the pool write gate for that call alone; listings are reads, ungated.
  */
 export async function removeTree(root: string, options: RemoveTreeOptions = {}): Promise<void> {
   const rmOptions = {
@@ -38,7 +40,7 @@ export async function removeTree(root: string, options: RemoveTreeOptions = {}):
   };
   const remove = async (path: string): Promise<void> => {
     try {
-      await rm(path, rmOptions);
+      await withPoolWriteSlot(undefined, () => rm(path, rmOptions));
     } catch (error) {
       if (!gone(error)) throw error;
     }

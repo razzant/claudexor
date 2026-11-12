@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { access, lstat, open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { withPoolWriteSlot } from "@claudexor/util";
 
 /**
  * D-14 layer 3 (AGENTS.md compatibility) — an envelope-local `CLAUDE.md` bridge.
@@ -63,7 +64,7 @@ export interface ClaudeBridgeResult {
  * The caller restricts this to a disposable envelope or another explicitly
  * owned compatibility directory; it must never target a user's live project
  * root. It runs at lane start, so it awaits the disk instead of holding the
- * main thread.
+ * main thread; each write call holds one pool write slot.
  */
 export async function ensureClaudeBridge(projectRoot: string): Promise<ClaudeBridgeResult> {
   const agentsPath = join(projectRoot, "AGENTS.md");
@@ -91,18 +92,17 @@ export async function ensureClaudeBridge(projectRoot: string): Promise<ClaudeBri
   // if any path (including a symlink) appears between the lstat above and this
   // open, the open fails EEXIST and we DO NOT overwrite. Exactly one concurrent
   // prep wins; the losers report `race_lost`.
-  let handle;
+  const handle = await withPoolWriteSlot(undefined, () => open(claudePath, "wx", 0o644)).catch(
+    (err: NodeJS.ErrnoException) => {
+      if (err.code === "EEXIST") return null;
+      throw err;
+    },
+  );
+  if (handle === null) return { created: false, path: claudePath, reason: "race_lost" };
   try {
-    handle = await open(claudePath, "wx", 0o644);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST")
-      return { created: false, path: claudePath, reason: "race_lost" };
-    throw err;
-  }
-  try {
-    await handle.writeFile(CLAUDE_BRIDGE_CONTENT);
+    await withPoolWriteSlot(undefined, () => handle.writeFile(CLAUDE_BRIDGE_CONTENT));
   } finally {
-    await handle.close();
+    await withPoolWriteSlot(undefined, () => handle.close());
   }
   return { created: true, path: claudePath, reason: "created" };
 }
@@ -169,14 +169,14 @@ export async function writeBridgeCreatedMarker(
   envelopeBase: string,
   envelopeId: string,
 ): Promise<void> {
+  const marker = JSON.stringify({
+    envelope_id: envelopeId,
+    created_at: new Date().toISOString(),
+    generation: CURRENT_CLAUDE_BRIDGE_GENERATION,
+  });
   try {
-    await writeFile(
-      join(envelopeBase, "bridge-created.json"),
-      JSON.stringify({
-        envelope_id: envelopeId,
-        created_at: new Date().toISOString(),
-        generation: CURRENT_CLAUDE_BRIDGE_GENERATION,
-      }) + "\n",
+    await withPoolWriteSlot(undefined, () =>
+      writeFile(join(envelopeBase, "bridge-created.json"), marker + "\n"),
     );
   } catch {
     /* marker is an optimization over the in-memory set; never fail create */

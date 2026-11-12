@@ -67,6 +67,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 const { removeTree } = await import("./remove-tree.js");
+const { withPoolWriteSlot } = await import("./libuv-pool.js");
 
 const roots: string[] = [];
 afterAll(() => {
@@ -160,6 +161,37 @@ describe("removeTree (#688)", () => {
     const plain = leaf.removed.map((path) => relative(again, path));
     expect(new Set(plain.slice(-6, -1))).toEqual(new Set(rootOwn));
     expect(plain.at(-1)).toBe("");
+  });
+
+  it("waits for a pool write slot for each removal, and removes once one is released", async () => {
+    const applied = Symbol.for("claudexor.libuvPoolSize");
+    const global = globalThis as Record<symbol, unknown>;
+    const saved = global[applied];
+    global[applied] = 3; // a pool of three leaves one write slot
+    try {
+      const base = envelope();
+      let release!: () => void;
+      const holder = withPoolWriteSlot(
+        undefined,
+        () => new Promise<void>((resolve) => (release = resolve)),
+      );
+      const removal = removeTree(base, { lastEntry: "owner.json" });
+      for (let turn = 0; turn < 40; turn += 1) await new Promise((r) => setImmediate(r));
+      // Direction 1: listing goes on (reads are not gated), but no entry is removed
+      // while another write holds the only slot.
+      expect(leaf.removed).toEqual([]);
+      expect(existsSync(join(base, "home", ".codex", "sessions", "rollout.jsonl"))).toBe(true);
+      release();
+      await holder;
+      await removal;
+      // Direction 2: released, every entry went, one slot at a time.
+      expect(existsSync(base)).toBe(false);
+      expect(leaf.removed).toHaveLength(21);
+      expect(leaf.maxInFlight).toBe(1);
+    } finally {
+      if (saved === undefined) delete global[applied];
+      else global[applied] = saved;
+    }
   });
 
   it.runIf(process.platform !== "win32")(

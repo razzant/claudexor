@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,7 +19,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const patched = { mkdir: vi.fn(actual.mkdir), writeFile: vi.fn(actual.writeFile) };
   return { ...actual, ...patched, default: { ...actual, ...patched } };
 });
-const { processTiming, writeText, writeTextAsync } = await import("./index.js");
+const { processTiming, withPoolWriteSlot, writeText, writeTextAsync } = await import("./index.js");
 
 const root = mkdtempSync(join(tmpdir(), "claudexor-write-text-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
@@ -73,5 +73,38 @@ describe("writeTextAsync (#688)", () => {
     const file = join(root, "plain-file-async");
     await writeTextAsync(file, "x");
     await expect(writeTextAsync(join(file, "child.md"), "y")).rejects.toThrow(/ENOTDIR/);
+  });
+});
+
+describe("writeTextAsync under the pool write gate (#688)", () => {
+  it("waits for a write slot while the gate is full, and writes once one is released", async () => {
+    const applied = Symbol.for("claudexor.libuvPoolSize");
+    const global = globalThis as Record<symbol, unknown>;
+    const saved = global[applied];
+    global[applied] = 3; // a pool of three leaves one write slot
+    try {
+      let release!: () => void;
+      const holder = withPoolWriteSlot(
+        undefined,
+        () => new Promise<void>((resolve) => (release = resolve)),
+      );
+      const path = join(root, "gated", "file.md");
+      const write = writeTextAsync(path, "gated\n");
+      for (let turn = 0; turn < 20; turn += 1) await new Promise((r) => setImmediate(r));
+      // Direction 1: while another write holds the only slot, nothing reached the disk.
+      expect(fsp.writeFile).not.toHaveBeenCalled();
+      expect(fsp.mkdir).not.toHaveBeenCalled();
+      expect(existsSync(path)).toBe(false);
+      release();
+      await holder;
+      await write;
+      // Direction 2: released, the write ran, its directory made on the way, each in its own slot.
+      expect(readFileSync(path, "utf8")).toBe("gated\n");
+      expect(fsp.mkdir).toHaveBeenCalledTimes(1);
+      expect(fsp.writeFile).toHaveBeenCalledTimes(2);
+    } finally {
+      if (saved === undefined) delete global[applied];
+      else global[applied] = saved;
+    }
   });
 });

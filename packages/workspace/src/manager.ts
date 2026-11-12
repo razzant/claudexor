@@ -1,5 +1,5 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { readdir, stat, writeFile } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type {
@@ -18,7 +18,14 @@ import { repositoryObjectFormat } from "./git-result.js";
 import { assertProjectObjectFormat } from "./object-store.js";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
 import { WorkspaceError } from "@claudexor/core";
-import { ensureDirAsync, newId, nowIso, projectRuntimeDir, removeTree } from "@claudexor/util";
+import {
+  ensureDirAsync,
+  newId,
+  nowIso,
+  projectRuntimeDir,
+  removeTree,
+  writeTextAsync,
+} from "@claudexor/util";
 import { ensureLaneHomeEnv, type LaneHomeEnv } from "./lanes.js";
 import { ensureHarnessHome, ensureHarnessHomeAsync, harnessHomeEnv } from "./harness-home.js";
 import { ArtifactOwnership } from "./artifact-ownership.js";
@@ -174,18 +181,16 @@ export class WorkspaceManager {
     // daemon-tracked runs. Pid + ps START TIME form a recycling-proof identity
     // (command names/titles mutate — vitest, daemons and tools retitle
     // themselves; the kernel start time never does).
-    await writeFile(
-      join(base, "owner.json"),
-      JSON.stringify({
-        pid: process.pid,
-        started: processStartTime(process.pid),
-        created_at: nowIso(),
-        envelope_id: envelopeId,
-        workspace_mode: workspaceMode,
-        workspace_kind: opts.workspaceKind,
-        execution_root: this.repoRoot,
-      }) + "\n",
-    );
+    const owner = JSON.stringify({
+      pid: process.pid,
+      started: processStartTime(process.pid),
+      created_at: nowIso(),
+      envelope_id: envelopeId,
+      workspace_mode: workspaceMode,
+      workspace_kind: opts.workspaceKind,
+      execution_root: this.repoRoot,
+    });
+    await writeTextAsync(join(base, "owner.json"), owner + "\n");
 
     if (opts.workspaceKind === "directory") {
       return createDirectoryEnvelope({
@@ -272,7 +277,7 @@ export class WorkspaceManager {
     await isolatedCloneAdd(this.repoRoot, path, branch, baseSha, storeObjects).catch(async (e) => {
       throw madeHere ? await discardUnstartedEnvelope(base, e) : e;
     });
-    await writeFile(join(base, "private-clone-v1"), "private Git authority\n");
+    await writeTextAsync(join(base, "private-clone-v1"), "private Git authority\n");
 
     // AGENTS.md compatibility bridge (INV-113): the checkout omits any
     // untracked project-root file, so a Claude Code candidate may need an
@@ -519,8 +524,7 @@ export class WorkspaceManager {
     // baseline, including any route-scoped API auth material), derived from task/attempt ids.
     // For git mode this equals dirname(worktree_path); for in-place it is a sibling
     // under the external runtime workspaces root, so deriving from ids prevents
-    // dispose() from ever deleting the live tree. The removal walks the tree off
-    // the main thread, one entry at a time, `owner.json` last (#688).
+    // dispose() from ever deleting the live tree. Off the main thread, owner.json last (#688).
     try {
       await removeTree(this.baseOf(env), { lastEntry: "owner.json" });
     } catch {

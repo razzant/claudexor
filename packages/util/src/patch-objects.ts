@@ -15,6 +15,7 @@ import { copyFile, link, lstat, open, readFile, readdir, rename, unlink } from "
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { ensureDir, fsyncDirectory, sha256 } from "./index.js";
+import { withPoolWriteSlot } from "./libuv-pool.js";
 import { ensureDirAsync } from "./write-async.js";
 
 const LINK_UNAVAILABLE = new Set(["EXDEV", "EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EMLINK"]);
@@ -96,7 +97,7 @@ export function writePatchObject(
 
 async function unlinkIfPresent(path: string): Promise<void> {
   try {
-    await unlink(path);
+    await withPoolWriteSlot(undefined, () => unlink(path));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -112,7 +113,8 @@ const publishing = new Map<string, Promise<void>>();
  * anchor keeps the synchronous writer; it is written at apply time. Two
  * publications of the same bytes run one after the other, as the synchronous
  * writer's do: interleaved, one could unlink the cache entry the other is about
- * to link.
+ * to link. Each write call holds one pool write slot for itself; the chain waits
+ * outside any slot, so slots never nest.
  */
 export async function writePatchObjectAsync(
   runtimeDir: string,
@@ -147,13 +149,13 @@ async function publishObject(
   if (!reusable) {
     const temp = `${object}.tmp-${crypto.randomUUID()}`;
     try {
-      const handle = await open(temp, "wx", 0o600);
+      const handle = await withPoolWriteSlot(undefined, () => open(temp, "wx", 0o600));
       try {
-        await handle.writeFile(patch, "utf8");
+        await withPoolWriteSlot(undefined, () => handle.writeFile(patch, "utf8"));
       } finally {
-        await handle.close();
+        await withPoolWriteSlot(undefined, () => handle.close());
       }
-      await rename(temp, object);
+      await withPoolWriteSlot(undefined, () => rename(temp, object));
     } finally {
       await unlinkIfPresent(temp);
     }
@@ -162,17 +164,17 @@ async function publishObject(
   const temp = `${target}.tmp-${crypto.randomUUID()}`;
   try {
     try {
-      await link(object, temp);
+      await withPoolWriteSlot(undefined, () => link(object, temp));
     } catch (error) {
       if (!LINK_UNAVAILABLE.has((error as NodeJS.ErrnoException).code ?? "")) throw error;
-      await copyFile(object, temp);
+      await withPoolWriteSlot(undefined, () => copyFile(object, temp));
     }
-    await rename(temp, target);
+    await withPoolWriteSlot(undefined, () => rename(temp, target));
   } finally {
     await unlinkIfPresent(temp);
   }
   // A filesystem without hard links keeps the published copy, not an extra cache copy.
-  if ((await lstat(object)).nlink === 1) await unlink(object);
+  if ((await lstat(object)).nlink === 1) await withPoolWriteSlot(undefined, () => unlink(object));
 }
 
 /** Cache entries have no authority of their own. Anchors and run paths own their lifetime. */

@@ -23,7 +23,7 @@ import {
 import { rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { EnvelopeCustody, type ResumableCause, type WorkspaceEnvelope } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
+import { nowIso, withPoolWriteSlot } from "@claudexor/util";
 import { reachableFile } from "./fs-presence.js";
 import { git } from "./git.js";
 import { rawIgnoredAcceptedPaths } from "./raw-patch.js";
@@ -93,14 +93,15 @@ export function writeEnvelopeCustody(base: string, custody: EnvelopeCustody): vo
   renameSync(tmp, path);
 }
 
-/** The same atomic write at lane start (`live` custody), without waiting on the main thread. */
+/** The same atomic write at lane start (`live` custody), without waiting on the main
+ * thread; each call holds one pool write slot. */
 export async function writeEnvelopeCustodyAsync(
   base: string,
   custody: EnvelopeCustody,
 ): Promise<void> {
   const { path, tmp, text } = custodyWrite(base, custody);
-  await writeFile(tmp, text, { mode: 0o600 });
-  await rename(tmp, path);
+  await withPoolWriteSlot(undefined, () => writeFile(tmp, text, { mode: 0o600 }));
+  await withPoolWriteSlot(undefined, () => rename(tmp, path));
 }
 
 /** End custody (adoption hand-over or disposition); the envelope becomes ordinary. */
