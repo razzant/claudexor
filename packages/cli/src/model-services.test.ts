@@ -3237,9 +3237,55 @@ describe("fresh decisions after catalog waits", () => {
       });
       const result = await f.services.routes.modelCatalog("codex", "a").catch((e) => e);
       expect(physical.aborted).toBe(change === "row");
-      expect(result).toMatchObject(
-        change === "row" ? { code: "auth_changed" } : { credentialProfileId: "a" },
-      );
+      // The row's own change ends its read, which runs once more under the new generation.
+      expect(result).toMatchObject({ credentialProfileId: "a" });
+      expect(f.catalog).toHaveBeenCalledTimes(change === "row" ? 2 : 1);
+    },
+  );
+  it.each(["its login window closes", "its caller leaves", "its account changes"])(
+    "a pinned catalog read in flight when %s",
+    async (event) => {
+      const f = await fixture({ lazy: true });
+      const raw = f.catalog.getMockImplementation()!;
+      const generations: number[] = [];
+      let loginWindow = event === "its login window closes";
+      const caller = new AbortController();
+      let first!: AbortSignal;
+      f.catalog.mockImplementation(async (context) => {
+        generations.push(context.credentialGeneration ?? Number.NaN);
+        return raw(context);
+      });
+      f.catalog.mockImplementationOnce(async (context) => {
+        first = context.signal;
+        generations.push(context.credentialGeneration ?? Number.NaN);
+        if (event === "its caller leaves") caller.abort(new Error("caller left"));
+        if (event === "its login window closes") {
+          loginWindow = false;
+          f.unusable.noteCredentialChange();
+        }
+        if (event === "its account changes") f.unusable.clearSubject("codex", "a");
+        // The ended read still answers, as a vendor may, for the old account.
+        return { ...(await raw(context)), accountFingerprint: "old account" };
+      });
+      bindCredentialMutationWindow(() => loginWindow);
+      try {
+        const result = await f.services.routes
+          .modelCatalog("codex", "a", undefined, false, caller.signal)
+          .catch((e) => e);
+        expect(first.aborted).toBe(true);
+        if (event === "its caller leaves") {
+          expect(result).toMatchObject({ message: "caller left" });
+          expect(generations).toHaveLength(1);
+        } else {
+          // One more read under the new generation; the ended read is never served.
+          expect(result).toMatchObject({ credentialProfileId: "a", accountFingerprint: "a" });
+          expect(generations).toHaveLength(2);
+          expect(Number.isFinite(generations[1])).toBe(true);
+          expect(generations[1]).not.toBe(generations[0]);
+        }
+      } finally {
+        bindCredentialMutationWindow(null);
+      }
     },
   );
   it("passes catalog cancellation and shutdown to raw work", async () => {

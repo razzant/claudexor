@@ -6,13 +6,16 @@ import { modelError } from "./model-service-refusals.js";
 /** Each consumer keeps its own generation fence, including its cancellation
  * subscription, and learns the generation it read under. Raw adapter I/O may
  * be shared; these decisions never are. A login window reads as unknown (NaN);
- * only two known, different generations prove that the account changed. */
+ * only two known, different generations prove that the account changed. A read
+ * this fence ended (not its caller, and not the read's own answer) runs once more
+ * under the new generation; nothing from it is returned; a second change surfaces. */
 export async function modelCredentialRead<T>(
   credentials: CredentialGeneration,
   harnessId: string,
   profile: CredentialProfile,
   caller: AbortSignal,
   read: (signal: AbortSignal, generation: number) => Promise<T>,
+  retry = true,
 ): Promise<{ value: T; generation: number }> {
   const generation = credentials.generation(harnessId, profile.profile_id);
   const changed = new AbortController();
@@ -35,7 +38,10 @@ export async function modelCredentialRead<T>(
     if (Number.isFinite(generation) && Number.isFinite(after) && generation !== after) refuse();
     signal.throwIfAborted();
     return { value, generation };
+  } catch (error) {
+    if (!retry || caller.aborted || error !== changed.signal.reason) throw error;
   } finally {
     unsubscribe();
   }
+  return modelCredentialRead(credentials, harnessId, profile, caller, read, false);
 }

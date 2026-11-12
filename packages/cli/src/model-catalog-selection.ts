@@ -176,21 +176,29 @@ async function readCatalog(
   refusals: Map<string, ControlProblem>,
 ): Promise<ControlModelCatalogResponse | null> {
   args.signal.throwIfAborted();
-  const evidence = bindModelAccountEvidence({
-    harnessId: args.harnessId,
-    profileId: profile.profile_id,
-    model: args.model,
-    unusable: args.unusable,
-    quota: args.quota,
-  });
+  const bind = () =>
+    bindModelAccountEvidence({
+      harnessId: args.harnessId,
+      profileId: profile.profile_id,
+      model: args.model,
+      unusable: args.unusable,
+      quota: args.quota,
+    });
+  let evidence = bind();
   try {
     const { value, generation } = await modelCredentialRead(
       args.capabilities.credentials,
       args.harnessId,
       profile,
       args.signal,
-      (signal, credentialGeneration) =>
-        args.adapter.catalog({ profile, signal, credentialGeneration }),
+      (signal, credentialGeneration) => {
+        // A repeated read records its evidence under its own generation.
+        if (!evidence.current()) {
+          evidence.finish();
+          evidence = bind();
+        }
+        return args.adapter.catalog({ profile, signal, credentialGeneration });
+      },
     );
     const catalog = ControlModelCatalogResponse.parse(value);
     if (catalog.source !== args.adapter.id || catalog.credentialProfileId !== profile.profile_id)
