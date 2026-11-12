@@ -22,7 +22,7 @@ import {
 } from "./index.js";
 
 const APPLIED_POOL = Symbol.for("claudexor.libuvPoolSize");
-const realAppendFile = promises.appendFile;
+const realOpen = promises.open;
 const roots: string[] = [];
 const unhandled: unknown[] = [];
 const onUnhandled = (reason: unknown): void => {
@@ -87,37 +87,60 @@ interface HeldWrite {
   fail(error: unknown): void;
 }
 
+type HandleWrite = (
+  buffer: Uint8Array,
+  offset: number,
+  length: number,
+  position: number | null,
+) => Promise<{ bytesWritten: number; buffer: Uint8Array }>;
+
+/** Spy `fs.promises.open`, the appender's first call of a batch write, and let
+ * `write` replace the write of each handle opened under this test's folders. */
+function patchWrites(write: (path: string, original: HandleWrite) => HandleWrite) {
+  return vi.spyOn(promises, "open").mockImplementation((async (
+    ...args: Parameters<typeof promises.open>
+  ) => {
+    const handle = await realOpen(...args);
+    const path = String(args[0]);
+    if (!roots.some((root) => path.startsWith(root))) return handle;
+    const patched = write(path, handle.write.bind(handle) as unknown as HandleWrite);
+    handle.write = patched as unknown as typeof handle.write;
+    return handle;
+  }) as typeof promises.open);
+}
+
 /**
- * Run `body` with every `fs.promises.appendFile` held until the test releases
+ * Run `body` with the first write of every batch held until the test releases
  * or fails it. "before": nothing reaches the file until release. "after": the
  * bytes reach the file, but the write reports nothing until release. "torn":
- * the first half of the bytes reaches the file, the rest at release.
- * Afterwards every held write is released and its file drained.
+ * the first half of the bytes reaches the file; at release that write reports
+ * half, and the appender writes the rest. Afterwards every held write is
+ * released and its file drained.
  */
 async function holding(
   mode: "before" | "after" | "torn",
   body: (calls: HeldWrite[]) => Promise<void>,
 ): Promise<void> {
   const calls: HeldWrite[] = [];
-  const spy = vi.spyOn(promises, "appendFile").mockImplementation((async (
-    ...args: Parameters<typeof promises.appendFile>
-  ) => {
-    const [file, data, options] = args;
-    const text = String(data);
-    let release!: () => void;
-    let fail!: (error: unknown) => void;
-    const gate = new Promise<void>((resolve, reject) => {
-      release = resolve;
-      fail = reject;
-    });
-    const half = Math.floor(text.length / 2);
-    if (mode === "after") await realAppendFile(file, text, options);
-    if (mode === "torn") await realAppendFile(file, text.slice(0, half), options);
-    calls.push({ path: String(file), release, fail });
-    await gate;
-    if (mode === "before") await realAppendFile(file, text, options);
-    if (mode === "torn") await realAppendFile(file, text.slice(half), options);
-  }) as typeof promises.appendFile);
+  const spy = patchWrites((path, write) => {
+    let first = true;
+    return async (buffer, offset, length, position) => {
+      if (!first) return write(buffer, offset, length, position);
+      first = false;
+      let release!: () => void;
+      let fail!: (error: unknown) => void;
+      const gate = new Promise<void>((resolve, reject) => {
+        release = resolve;
+        fail = reject;
+      });
+      let done: Awaited<ReturnType<HandleWrite>> | undefined;
+      if (mode === "after") done = await write(buffer, offset, length, position);
+      if (mode === "torn") done = await write(buffer, offset, Math.floor(length / 2), position);
+      calls.push({ path, release, fail });
+      await gate;
+      return done ?? write(buffer, offset, length, position);
+    };
+  });
   try {
     await body(calls);
   } finally {
@@ -125,6 +148,18 @@ async function holding(
     for (const call of calls) call.release();
     await Promise.all(calls.map((call) => orderedAppender.drained(call.path)));
   }
+}
+
+/** Writes under this test's folders stop after `limit` bytes: the write that
+ * reaches the limit is cut short there, and the next one fails. */
+function failAfter(limit: number, error: Error) {
+  let budget = limit;
+  return patchWrites((_path, write) => async (buffer, offset, length, position) => {
+    if (budget <= 0) throw error;
+    const take = Math.min(length, budget);
+    budget -= take;
+    return write(buffer, offset, take, position);
+  });
 }
 
 async function until(label: string, predicate: () => boolean): Promise<void> {
@@ -458,6 +493,62 @@ describe("a queued EventLog", () => {
       [2, "harness.event"],
     ]);
     expect(readRunEvents(path).events.at(-1)?.payload["text"]).toBe("d");
+    expect(unhandled).toEqual([]);
+  });
+
+  it("keeps a line a failing write put on disk whole, and continues the seq after it", async () => {
+    const { path } = runDir();
+    const persisted: Array<number | undefined> = [];
+    const log = queuedLog(path, { onPersist: (event) => persisted.push(event.seq) });
+    log.emit("run.created", {});
+    await orderedAppender.settled(path);
+    const full = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    const whole = log.emit("harness.event", { text: "whole" });
+    log.emit("harness.event", { text: "cut" });
+    const spy = failAfter(Buffer.byteLength(`${JSON.stringify(whole)}\n`), full);
+    try {
+      await orderedAppender.drained(path);
+    } finally {
+      spy.mockRestore();
+    }
+    // The line on disk landed: onPersist saw it, and its seq is spent.
+    expect(persisted).toEqual([1, 2]);
+    expect(log.lastSeq()).toBe(2);
+    expect(() => log.emit("harness.event", { text: "next" })).toThrow(full);
+    expect(log.emit("harness.event", { text: "after" }).seq).toBe(3);
+    await orderedAppender.settled(path);
+    expect(onDisk(path)).toEqual([
+      [1, "run.created"],
+      [2, "harness.event"],
+      [3, "harness.event"],
+    ]);
+    expect(unhandled).toEqual([]);
+  });
+
+  it("consumes no seq for a line a failing write tore", async () => {
+    const { path } = runDir();
+    const persisted: Array<number | undefined> = [];
+    const log = queuedLog(path, { onPersist: (event) => persisted.push(event.seq) });
+    log.emit("run.created", {});
+    await orderedAppender.settled(path);
+    const full = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    log.emit("harness.event", { text: "torn" });
+    const spy = failAfter(5, full);
+    try {
+      await orderedAppender.drained(path);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(persisted).toEqual([1]);
+    expect(log.lastSeq()).toBe(1);
+    expect(() => log.emit("harness.event", { text: "next" })).toThrow(full);
+    expect(log.emit("harness.event", { text: "after" }).seq).toBe(2);
+    await orderedAppender.settled(path);
+    // The torn start stays a malformed line, which the next line joins, as
+    // after a torn inline append.
+    const read = readRunEvents(path);
+    expect(read.events.map((event) => event.seq)).toEqual([1]);
+    expect(read.malformed).toBe(1);
     expect(unhandled).toEqual([]);
   });
 

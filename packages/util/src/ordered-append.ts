@@ -8,10 +8,10 @@ import { withPoolWriteSlot } from "./libuv-pool.js";
  * request thread, in the order the appends were made to their file.
  */
 export interface AppendLanding {
-  /** The bytes are on disk. A throw here is this landing's failure. */
+  /** Every one of the bytes is in the file. A throw here is this landing's failure. */
   landed?(): void;
-  /** The bytes will not be written: their write failed, and every append still
-   * queued for the file fails with it. */
+  /** Not all of the bytes reached the file: their write failed first (a torn
+   * start may be on disk), and every later append to the file fails with it. */
   lost?(): void;
   /** The caller awaiting this landing. It alone receives the landing's failure. */
   waiter?: { resolve(): void; reject(error: unknown): void };
@@ -49,25 +49,35 @@ interface AppendFile {
   drainWaiters: Array<() => void>;
 }
 
-/** The mode of a file an append creates; the encoding of string data. As `appendLine`. */
-const APPEND_OPTIONS = { encoding: "utf8", mode: 0o600 } as const;
+/** What one batch write did: the bytes that reached the file, and why it stopped
+ * short, or why closing failed after every byte was written. */
+interface WriteOutcome {
+  written: number;
+  failure?: { error: unknown };
+  closeFailure?: { error: unknown };
+}
 
 /**
  * Appends to files off the request thread, in call order per file. One
- * registry by absolute path. An append queues its bytes; at most one
- * `fs.promises.appendFile` runs per file at a time, and it carries every byte
- * queued while the previous one ran, so batching comes only from the disk's
- * own pace (no timer, no batch size). No descriptor stays open between writes.
- * Each filesystem call takes one slot of the process's pool write gate for
- * that call alone, so slots never nest.
+ * registry by absolute path. An append queues its bytes; at most one batch
+ * write runs per file at a time, and it carries every byte queued while the
+ * previous one ran, so batching comes only from the disk's own pace (no timer,
+ * no batch size). A batch write is the calls `fs.promises.appendFile` makes,
+ * made here so the bytes that reached the file are counted: open the file for
+ * appending, write until every byte is written, close. No descriptor stays
+ * open between writes. A batch's open, writes and close run under one slot of
+ * the process's pool write gate, held for them alone; making a missing
+ * directory takes a slot of its own, so slots never nest.
  *
- * Errors: a failed write fails its appends and every append queued behind
- * them; none is retried, because a write that failed part-way may already
- * have put some of its bytes on disk. A landing fails when its write fails or
- * its `landed` throws. The failure goes to the caller awaiting that landing,
- * else to every barrier in flight that covers it. With nobody waiting, the
- * file holds the failure, and the next append or barrier for that file
- * consumes it once. A failure never poisons later appends or barriers and
+ * Errors: when a write fails, each append whose bytes all reached the file has
+ * landed, and the others fail, with every append queued behind them; none is
+ * retried. A landing also fails when its `landed` throws. The failure goes to
+ * the caller awaiting that landing, else to every barrier in flight that
+ * covers it. With nobody waiting, the file holds the failure, and the next
+ * append or barrier for that file consumes it once. A close that fails after
+ * every byte was written fails no landing: write accepted every byte, as an
+ * inline append's does, so the batch has landed, and the file holds the close
+ * failure the same way. A failure never poisons later appends or barriers and
  * never becomes an unhandled rejection.
  */
 class OrderedAppender {
@@ -179,42 +189,55 @@ class OrderedAppender {
   private async pump(file: AppendFile): Promise<void> {
     while (file.queue.length > 0) {
       let batch: QueuedAppend[] = [];
-      try {
-        await this.write(file, (taken) => {
-          batch = taken;
-        });
-      } catch (error) {
-        // Nothing queued after a failed write is written: its bytes follow
-        // bytes that may be missing or torn.
-        this.lose(file, [...batch, ...file.queue.splice(0)], error);
-        continue;
+      const outcome = await this.write(file, (taken) => {
+        batch = taken;
+      });
+      let whole = 0;
+      for (let end = 0; whole < batch.length; whole += 1) {
+        end += batch[whole]!.bytes;
+        if (end > outcome.written) break;
       }
-      this.land(file, batch);
+      this.land(file, batch.slice(0, whole));
+      // Nothing after a failed write is written: its bytes would follow bytes
+      // that are missing or torn.
+      if (outcome.failure)
+        this.lose(file, [...batch.slice(whole), ...file.queue.splice(0)], outcome.failure.error);
+      else if (outcome.closeFailure) this.hold(file, outcome.closeFailure.error);
     }
     file.writing = false;
     this.forgetIdle(file);
   }
 
-  /** One `appendFile` of everything queued when its slot is granted. The parent
-   * directory is created only when the append proves it missing, as
-   * `appendLine` does, each call under a slot of its own. */
-  private async write(file: AppendFile, take: (batch: QueuedAppend[]) => void): Promise<void> {
-    let data = "";
-    try {
-      await withPoolWriteSlot(undefined, () => {
-        const batch = file.queue.splice(0);
-        take(batch);
-        data = batch.length === 1 ? batch[0]!.data : batch.map((append) => append.data).join("");
-        return fsPromises.appendFile(file.path, data, APPEND_OPTIONS);
+  /** One batch write of everything queued when its slot is granted. The parent
+   * directory is made only when the open proves it missing, as `appendLine`
+   * does, under a slot of its own, and the batch is written again. Never rejects. */
+  private async write(
+    file: AppendFile,
+    take: (batch: QueuedAppend[]) => void,
+  ): Promise<WriteOutcome> {
+    let data: Buffer | null = null;
+    const attempt = (): Promise<WriteOutcome> =>
+      withPoolWriteSlot(undefined, () => {
+        if (!data) {
+          const batch = file.queue.splice(0);
+          take(batch);
+          data = Buffer.from(batch.map((append) => append.data).join(""), "utf8");
+        }
+        return writeAll(file.path, data);
       });
+    try {
+      return await attempt();
     } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT")
+        return { written: 0, failure: { error } };
+    }
+    try {
       await withPoolWriteSlot(undefined, () =>
         fsPromises.mkdir(dirname(file.path), { recursive: true, mode: 0o700 }),
       );
-      await withPoolWriteSlot(undefined, () =>
-        fsPromises.appendFile(file.path, data, APPEND_OPTIONS),
-      );
+      return await attempt();
+    } catch (error) {
+      return { written: 0, failure: { error } };
     }
   }
 
@@ -261,7 +284,11 @@ class OrderedAppender {
     const covering = file.barriers.filter((barrier) => barrier.target > append.index);
     for (const barrier of covering)
       if (!barrier.failures.includes(error)) barrier.failures.push(error);
-    if (covering.length > 0) return;
+    if (covering.length === 0) this.hold(file, error);
+  }
+
+  /** Keep a failure nobody awaited for the next append or barrier. */
+  private hold(file: AppendFile, error: unknown): void {
     if (!file.held) file.held = { error };
     else if (file.held.error !== error)
       file.held = {
@@ -290,6 +317,34 @@ class OrderedAppender {
     )
       this.files.delete(file.path);
   }
+}
+
+/**
+ * Open for appending (mode 0o600 when created), write until every byte is
+ * written or a write fails, and close: the calls `fs.promises.appendFile`
+ * makes, counting the bytes that reached the file. A failed open rejects; the
+ * rest is reported in the outcome. A close failure after a failed write adds
+ * nothing to the write's own failure.
+ */
+async function writeAll(path: string, data: Buffer): Promise<WriteOutcome> {
+  const handle = await fsPromises.open(path, "a", 0o600);
+  let written = 0;
+  let failure: { error: unknown } | undefined;
+  try {
+    while (written < data.length) {
+      const { bytesWritten } = await handle.write(data, written, data.length - written, null);
+      if (bytesWritten <= 0) throw new Error(`short write of ${path}`);
+      written += bytesWritten;
+    }
+  } catch (error) {
+    failure = { error };
+  }
+  try {
+    await handle.close();
+  } catch (error) {
+    if (!failure) return { written, closeFailure: { error } };
+  }
+  return failure ? { written, failure } : { written };
 }
 
 /** The process's one ordered appender (one registry, one pool gate). */

@@ -288,8 +288,9 @@ export class EventLog {
     }
   }
 
-  /** A queued line will not land: its write failed, and every line queued
-   * after it fails with it. As with a failed inline append, no seq is consumed. */
+  /** A queued line did not reach the file whole: its write failed first, and
+   * every later line fails with it. The counter continues after the last line
+   * that landed, so a seq on disk is never reused, and these consume none. */
   private lost(): void {
     this.unlanded!.shift();
     if (this.unlanded!.length === 0) this.nextSeq = this.landedSeq + 1;

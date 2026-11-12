@@ -7,7 +7,7 @@ import { withPoolWriteSlot } from "./libuv-pool.js";
 import { orderedAppender } from "./ordered-append.js";
 
 const APPLIED_POOL = Symbol.for("claudexor.libuvPoolSize");
-const realAppendFile = promises.appendFile;
+const realOpen = promises.open;
 const roots: string[] = [];
 const unhandled: unknown[] = [];
 const onUnhandled = (reason: unknown): void => {
@@ -45,27 +45,69 @@ interface HeldWrite {
   fail(error: unknown): void;
 }
 
+type HandleWrite = (
+  buffer: Uint8Array,
+  offset: number,
+  length: number,
+  position: number | null,
+) => Promise<{ bytesWritten: number; buffer: Uint8Array }>;
+
 /**
- * Run `body` with every `fs.promises.appendFile` held until the test releases
+ * Spy `fs.promises.open`, the appender's first call of a batch write, and let
+ * `patch` replace the write or close of each handle opened under this test's
+ * folders.
+ */
+function patchHandles(
+  patch: (
+    path: string,
+    write: HandleWrite,
+    close: () => Promise<void>,
+  ) => { write?: HandleWrite; close?: () => Promise<void> },
+) {
+  return vi.spyOn(promises, "open").mockImplementation((async (
+    ...args: Parameters<typeof promises.open>
+  ) => {
+    const handle = await realOpen(...args);
+    const path = String(args[0]);
+    if (!roots.some((root) => path.startsWith(root))) return handle;
+    const patched = patch(
+      path,
+      handle.write.bind(handle) as unknown as HandleWrite,
+      handle.close.bind(handle),
+    );
+    if (patched.write) handle.write = patched.write as unknown as typeof handle.write;
+    if (patched.close) handle.close = patched.close;
+    return handle;
+  }) as typeof promises.open);
+}
+
+/**
+ * Run `body` with the first write of every batch held until the test releases
  * or fails it; a released write then lands for real. Afterwards every write
  * still held is released and its file drained (which consumes no held
  * failure), so no test leaves a pool slot occupied.
  */
 async function holding(body: (calls: HeldWrite[]) => Promise<void>): Promise<void> {
   const calls: HeldWrite[] = [];
-  const spy = vi.spyOn(promises, "appendFile").mockImplementation((async (
-    ...args: Parameters<typeof promises.appendFile>
-  ) => {
-    let release!: () => void;
-    let fail!: (error: unknown) => void;
-    const gate = new Promise<void>((resolve, reject) => {
-      release = resolve;
-      fail = reject;
-    });
-    calls.push({ path: String(args[0]), data: String(args[1]), release, fail });
-    await gate;
-    return realAppendFile(...args);
-  }) as typeof promises.appendFile);
+  const spy = patchHandles((path, write) => {
+    let first = true;
+    return {
+      write: async (buffer, offset, length, position) => {
+        if (!first) return write(buffer, offset, length, position);
+        first = false;
+        let release!: () => void;
+        let fail!: (error: unknown) => void;
+        const gate = new Promise<void>((resolve, reject) => {
+          release = resolve;
+          fail = reject;
+        });
+        const data = Buffer.from(buffer.subarray(offset, offset + length)).toString("utf8");
+        calls.push({ path, data, release, fail });
+        await gate;
+        return write(buffer, offset, length, position);
+      },
+    };
+  });
   try {
     await body(calls);
   } finally {
@@ -73,6 +115,20 @@ async function holding(body: (calls: HeldWrite[]) => Promise<void>): Promise<voi
     for (const call of calls) call.release();
     await Promise.all(calls.map((call) => orderedAppender.drained(call.path)));
   }
+}
+
+/** Writes under this test's folders stop after `limit` bytes: the write that
+ * reaches the limit is cut short there, and the next one fails. */
+function failAfter(limit: number, error: Error) {
+  let budget = limit;
+  return patchHandles((_path, write) => ({
+    write: async (buffer, offset, length, position) => {
+      if (budget <= 0) throw error;
+      const take = Math.min(length, budget);
+      budget -= take;
+      return write(buffer, offset, take, position);
+    },
+  }));
 }
 
 async function until(label: string, predicate: () => boolean): Promise<void> {
@@ -270,12 +326,96 @@ describe("ordered appender", () => {
     for (const path of [events, journal, sibling]) expect(readFileSync(path, "utf8")).toBe("x\n");
   });
 
-  it("holds a pool slot only around each filesystem call, so slots never nest", async () => {
+  it("lands the appends a failing write put on disk whole, and fails the rest", async () => {
+    const path = join(freshRoot(), "events.jsonl");
+    const full = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    const landed: string[] = [];
+    const lost: string[] = [];
+    const whole = deferred();
+    const cut = deferred();
+    const spy = failAfter(Buffer.byteLength("a\n"), full);
+    try {
+      for (const [line, waiter] of [
+        ["a", whole],
+        ["b", cut],
+        ["c", undefined],
+      ] as const)
+        orderedAppender.append(path, `${line}\n`, {
+          landed: () => landed.push(line),
+          lost: () => lost.push(line),
+          ...(waiter ? { waiter } : {}),
+        });
+      await expect(whole.promise).resolves.toBeUndefined();
+      await expect(cut.promise).rejects.toBe(full);
+      await orderedAppender.drained(path);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(landed).toEqual(["a"]);
+    expect(lost).toEqual(["b", "c"]);
+    expect(readFileSync(path, "utf8")).toBe("a\n");
+    // `c` had nobody waiting: the next append hears the failure, once.
+    expect(() => orderedAppender.append(path, "d\n")).toThrow(full);
+    orderedAppender.append(path, "e\n");
+    await orderedAppender.settled(path);
+    expect(readFileSync(path, "utf8")).toBe("a\ne\n");
+    expect(unhandled).toEqual([]);
+  });
+
+  it("fails an append a failing write tore, as one it never began", async () => {
+    const path = join(freshRoot(), "events.jsonl");
+    const full = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    const landed: string[] = [];
+    const torn = deferred();
+    const spy = failAfter(1, full);
+    try {
+      orderedAppender.append(path, "a\n", { landed: () => landed.push("a"), waiter: torn });
+      await expect(torn.promise).rejects.toBe(full);
+      await orderedAppender.drained(path);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(landed).toEqual([]);
+    // The torn start stays in the file; the next append follows it.
+    expect(readFileSync(path, "utf8")).toBe("a");
+    orderedAppender.append(path, "b\n");
+    await orderedAppender.settled(path);
+    expect(readFileSync(path, "utf8")).toBe("ab\n");
+    expect(unhandled).toEqual([]);
+  });
+
+  it("lands every append when only the close fails, and holds that failure once", async () => {
+    const path = join(freshRoot(), "events.jsonl");
+    const closing = new Error("close failed");
+    const landed: string[] = [];
+    const waiter = deferred();
+    const spy = patchHandles((_path, _write, close) => ({
+      close: async () => {
+        await close();
+        throw closing;
+      },
+    }));
+    try {
+      orderedAppender.append(path, "a\n", { landed: () => landed.push("a"), waiter });
+      orderedAppender.append(path, "b\n", { landed: () => landed.push("b") });
+      await expect(waiter.promise).resolves.toBeUndefined();
+      await orderedAppender.drained(path);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(landed).toEqual(["a", "b"]);
+    expect(readFileSync(path, "utf8")).toBe("a\nb\n");
+    await expect(orderedAppender.settled(path)).rejects.toBe(closing);
+    await expect(orderedAppender.settled(path)).resolves.toBeUndefined();
+    expect(unhandled).toEqual([]);
+  });
+
+  it("holds a pool slot only around a batch's own file calls, so slots never nest", async () => {
     const global = globalThis as Record<symbol, unknown>;
     global[APPLIED_POOL] = 3; // one write slot
     const path = join(freshRoot(), "missing", "deeper", "events.jsonl");
-    // The parent is missing: the append fails, makes the directory and appends
-    // again, each under its own slot. Nested slots would deadlock the only one.
+    // The parent is missing: the open fails, the directory is made and the batch
+    // written again, each under its own slot. Nested slots would deadlock the only one.
     orderedAppender.append(path, "a\n");
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([
