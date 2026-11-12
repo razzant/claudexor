@@ -528,6 +528,12 @@ echo ${commands === 1 ? "2.0.0" : "3.0.0"}
       });
       if (failExact)
         expect(receipt.progress).toEqual(["Native installed", "Exact release unavailable"]);
+      // A failed installer stays the problem, and the exact step's failure stays visible.
+      expect(
+        receipt.limitations.includes(
+          `After the installer exited ${installerExit}, npm copy conversion failed (vendor_command_failed): Exact release unavailable`,
+        ),
+      ).toBe(failExact && installerExit !== 0);
     },
   );
   it.each(["0.153.3", "0.162.1", "0.167.1", "unorderable-build"])(
@@ -666,10 +672,79 @@ echo 1.18.0
         progress: ["No available upgrade found"],
       });
       expect(existsSync(old.pkg)).toBe(!healthy);
-      if (healthy) expect(receipt.limitations.join(" ")).toContain("installer exited 2316632107");
-      else expect(receipt.problem?.message).toBe("No available upgrade found");
+      if (healthy) {
+        expect(receipt.limitations.join(" ")).toContain("installer exited 2316632107");
+        expect(receipt.limitations.join(" ")).not.toContain("npm copy conversion failed");
+      } else {
+        // The installer's exit remains the problem; the conversion's own
+        // reason is retained beside it instead of disappearing (#672).
+        expect(receipt.problem).toMatchObject({
+          code: "vendor_command_failed",
+          message: "No available upgrade found",
+        });
+        expect(receipt.limitations).toContain(
+          `After the installer exited 2316632107, npm copy conversion failed (conversion_older_program): After the installer, ${w.installed} version 0.9.0 is found first and is older than the selected 1.0.0; the installer's copy may be hidden behind it. Nothing was removed.`,
+        );
+      }
     },
   );
+  it("retains why conversion failed after a nonzero installer left no versioned replacement", async () => {
+    const w = world(),
+      old = oldCopy(w);
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) =>
+      args[0] === "--version"
+        ? spawnSync(bin, args, opts)
+        : result("No available upgrade found", 2316632107)) as typeof spawnSync;
+    const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(receipt).toMatchObject({
+      ok: false,
+      exitCode: 2316632107,
+      problem: { code: "vendor_command_failed", message: "No available upgrade found" },
+      after: { path: old.launcher, version: "1.0.0" },
+    });
+    expect(receipt.limitations).toContain(
+      "After the installer exited 2316632107, npm copy conversion failed (conversion_verification_failed): Vendor installation did not produce a selected program with a version while the old npm launcher was masked; the old copy is unchanged",
+    );
+    expect(existsSync(old.pkg)).toBe(true);
+    expect(existsSync(old.launcher)).toBe(true);
+  });
+  it("keeps the commit-point failure and the hidden package when the old npm copy cannot be restored", async () => {
+    const w = world(),
+      old = oldCopy(w);
+    w.program.versionScheme = "semver";
+    executable(w.installed, "2.0.0");
+    const hidden = `${old.pkg}.claudexor-converted`;
+    const manifest = readFileSync(join(old.pkg, "package.json"), "utf8");
+    let planted = false;
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] !== "--version") return result("Installed");
+      if (!planted && existsSync(hidden)) {
+        // While the package is hidden, something occupies its path and the
+        // selection moves, so the commit check fails and restore must refuse.
+        planted = true;
+        mkdirSync(old.pkg);
+        executable(w.installed, "2.0.1");
+      }
+      return spawnSync(bin, args, opts);
+    }) as typeof spawnSync;
+    const failed = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(failed).toMatchObject({ ok: false, exitCode: 0 });
+    expect(failed.problem?.message).toBe(
+      `Selection changed before conversion committed; the old npm package could not be restored (Cannot restore hidden program over a replacement: ${old.pkg}) and remains hidden at ${hidden} until the next explicit maintenance recovers it`,
+    );
+    expect(failed.problem?.message).not.toMatch(/\brestored the\b|is runnable/);
+    expect(readFileSync(join(hidden, "package.json"), "utf8")).toBe(manifest);
+    expect(lstatSync(old.launcher).isSymbolicLink()).toBe(true);
+
+    // The retained bytes keep the existing recovery contract.
+    rmSync(old.pkg, { recursive: true });
+    const recovered = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(recovered.limitations).toContain(`Recovering interrupted npm conversion at ${hidden}.`);
+    expect(recovered.limitations).toContain(`Retired interrupted npm conversion at ${old.pkg}.`);
+    expect(recovered).toMatchObject({ ok: true, after: { path: w.installed, version: "2.0.1" } });
+    expect(existsSync(hidden)).toBe(false);
+    expect(existsSync(old.pkg)).toBe(false);
+  });
   it.each([false, true])(
     "recognizes vendor removal of the npm copy only when ordinary resolution proves the replacement (%s)",
     async (healthy) => {

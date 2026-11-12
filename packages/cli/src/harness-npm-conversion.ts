@@ -180,7 +180,21 @@ export function retireProductNpmCopy(
     if (!launchers.every(unchanged))
       throw new Error("An npm launcher changed before conversion committed");
   } catch (error) {
-    hidden.restore();
+    try {
+      hidden.restore();
+    } catch (restoreError) {
+      // Keep the commit-point failure. The package stays at its fixed hidden
+      // sibling, which the next explicit maintenance restores or retires.
+      const text = (value: unknown) => (value instanceof Error ? value.message : String(value));
+      const code = (error as { code?: unknown } | null)?.code;
+      throw Object.assign(
+        new Error(
+          `${text(error)}; the old npm package could not be restored (${text(restoreError)}) and remains hidden at ${hiddenPackage(copy.packageRoot)} until the next explicit maintenance recovers it`,
+          { cause: error },
+        ),
+        typeof code === "string" ? { code } : {},
+      );
+    }
     throw error;
   }
   const retired = hidden.retire();

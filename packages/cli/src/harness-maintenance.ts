@@ -425,7 +425,14 @@ export async function runHarnessUpdate(
           );
       }
     } catch (error) {
-      throw installerFailure ?? error;
+      if (!installerFailure) throw error;
+      // The installer's own exit stays the problem; the conversion's reason
+      // must not disappear behind it.
+      const code = (error as { code?: unknown } | null)?.code;
+      receipt.limitations.push(
+        `After the installer exited ${installerExit}, npm copy conversion failed${typeof code === "string" ? ` (${code})` : ""}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+      );
+      throw installerFailure;
     }
     receipt.ok = true;
     if (cleanup) {

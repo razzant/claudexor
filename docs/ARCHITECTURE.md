@@ -8520,7 +8520,8 @@ with a declared major requires that line, including before an exact-version
 command; OpenCode 2.x cannot replace its product-made 1.x copy. An unorderable
 version is acceptable only when no declared major excludes it. The installer's status and lines remain in the receipt;
 a nonzero exit can complete conversion with a limitation when the resulting
-program passes the same proof. A vendor that already removed npm completes
+program passes the same proof; otherwise that exit stays the problem and the
+conversion's own code and message become a limitation. A vendor that already removed npm completes
 conversion when ordinary and masked resolution agree.
 An exact-version conversion verifies its second command before retirement too.
 An older-copy refusal names the path and version found first, the selected
@@ -8531,6 +8532,8 @@ packages; a person's Grok npm copy is not eligible for conversion. Folder
 containment or stale sibling metadata never authorizes removal of a hand-placed
 wrapper or symlink. Retirement hides the package at the fixed sibling
 `<package>.claudexor-converted`, keeping the launchers in place until removal.
+If a failed commit check cannot restore it, the failure names the restore error
+and the hidden sibling instead of claiming the old copy is back.
 The next explicit maintenance restores a leftover and applies the same
 version/major/ordering proof to retire it or leave it restored. A linked HOME is
 accepted when the real package parent stays inside the real product prefix. Colliding or
