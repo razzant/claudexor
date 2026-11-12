@@ -46,7 +46,10 @@ export async function runCaptureRaw(
     stdio: ["pipe", "pipe", "pipe"],
     ...backgroundSpawnShape(process.platform, opts.windowsConsole),
   });
-  if (typeof child.pid === "number") registerChildProcess(child.pid, cmd, runScopeMarkerOf(env));
+  const registration =
+    typeof child.pid === "number"
+      ? registerChildProcess(child.pid, cmd, runScopeMarkerOf(env))
+      : undefined;
   child.once("exit", (code, signal) => opts.onExit?.(code, signal));
   let captureChildClosed = false;
   child.once("close", () => {
@@ -67,7 +70,12 @@ export async function runCaptureRaw(
   const captureGroupService = opts.processGroups ?? defaultProcessGroupService;
   let captureGroupHandle: ProcessGroupHandle | undefined;
   if (process.platform !== "win32" && typeof child.pid === "number") {
-    const capture = captureGroupService.captureLeader(child.pid);
+    // Reuse the registration's identity read (one helper run per child), unless
+    // an injected service reads its own.
+    const capture =
+      registration && captureGroupService === defaultProcessGroupService
+        ? registration
+        : captureGroupService.captureLeader(child.pid);
     if (capture.status === "known") captureGroupHandle = capture.handle;
   }
   const killTree = (signal: NodeJS.Signals): void => {
