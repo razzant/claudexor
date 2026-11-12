@@ -126,10 +126,17 @@ export async function admitModelAccount(args: {
   return { sourceId: source.adapter.id, harnessId, policy, profiles, probe, pinnedProfile, signal };
 }
 
-/** After a wait only the picked account's own live facts decide again: its row
- * is still enabled, its credential is neither revoked nor unusable, and its quota
- * and headroom admit it now, judged as a strict pin of it is. Marks only reorder;
- * selection reads them live. No probe or vendor read; the refusal, or null. */
+const LIVE_REFUSALS = {
+  model_account_unavailable:
+    "The selected managed model account is unknown, disabled, or incompatible",
+  auth_required: "The selected managed model account requires sign-in",
+  auth_unavailable: "The selected model account has no verified current authentication",
+};
+
+/** After a wait only the account waited for is judged again, from its own live
+ * facts: its row is enabled, its credential is neither revoked nor unusable, and
+ * its quota and headroom admit it now, judged as a strict pin of it is. Marks only
+ * reorder; selection reads them live. No probe or vendor read; the refusal, or null. */
 export async function liveAccountRefusal(args: {
   sourceId: string;
   harnessId: string;
@@ -142,60 +149,46 @@ export async function liveAccountRefusal(args: {
   unusable: readonly CredentialUnusableObservation[];
 }): Promise<ControlProblem | null> {
   const { harnessId, profileId, model, quota, unusable } = args;
-  const refusal = (code: string, message: string, observedAt?: string | null) =>
-    ControlProblem.parse({
-      code,
-      message,
-      retryable: false,
-      context: {
-        source: args.sourceId,
-        credentialProfileId: profileId,
-        ...(observedAt ? { observedAt } : {}),
-      },
-    });
   const row = args.config.credential_profiles.find(
-    (p) =>
-      p.harness_id === harnessId &&
-      p.profile_id === profileId &&
-      p.credential_kind === "config_dir_login",
+    (p) => p.harness_id === harnessId && p.profile_id === profileId && p.enabled,
   );
-  if (!row?.enabled || args.config.harnesses[harnessId]?.enabled === false)
-    return refusal(
-      "model_account_unavailable",
-      "The selected managed model account is unknown, disabled, or incompatible",
-    );
-  const dead = applicableCredentialUnusable(row, {
-    quota,
-    unusable,
-    model,
-    route: "vendor_native",
-  });
+  const dead =
+    row && applicableCredentialUnusable(row, { quota, unusable, model, route: "vendor_native" });
   const vendor = vendorCredentialObservation(quota, harnessId, profileId);
   const revokedAt =
     (dead?.code === "auth_revoked" ? dead.observed_at : null) ??
     (vendor?.outcome === "revoked" ? vendor.observed_at : null);
-  if (revokedAt)
-    return refusal(
-      "auth_required",
-      "The selected managed model account requires sign-in",
-      revokedAt,
-    );
-  if (dead)
-    return refusal(
-      "auth_unavailable",
-      "The selected model account has no verified current authentication",
-    );
+  const code: keyof typeof LIVE_REFUSALS | null =
+    row?.credential_kind !== "config_dir_login" ||
+    args.config.harnesses[harnessId]?.enabled === false
+      ? "model_account_unavailable"
+      : revokedAt
+        ? "auth_required"
+        : dead
+          ? "auth_unavailable"
+          : null;
+  if (code)
+    return ControlProblem.parse({
+      code,
+      message: LIVE_REFUSALS[code],
+      retryable: false,
+      context: {
+        source: args.sourceId,
+        credentialProfileId: profileId,
+        ...(code === "auth_required" ? { observedAt: revokedAt } : {}),
+      },
+    });
   try {
     await resolveAccountForRun({
       harnessId,
-      registry: [row],
+      registry: [row!],
       policy: args.policy,
       snapshots: quota.snapshots,
       quota,
       unusable,
       requestKind: args.requestKind,
       probe: undefined,
-      pinnedProfile: row,
+      pinnedProfile: row!,
       boundProfileId: null,
       threadId: null,
       model,
