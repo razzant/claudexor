@@ -13191,26 +13191,29 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     });
   });
 
-  it("bridges an AGENTS.md-only project to CLAUDE.md and announces it (D-14/INV-113)", async () => {
-    const dir = reapMk(join(tmpdir(), "claudexor-agents-bridge-"));
-    writeFileSync(join(dir, "AGENTS.md"), "# project instructions\n");
-    const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
-    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
-      repoRoot: dir,
-      prompt: "x",
-      mode: "agent",
-      harnesses: ["impl"],
-      n: 1,
-    });
-    const claude = readFileSync(join(dir, "CLAUDE.md"), "utf8");
-    expect(claude).toContain("@AGENTS.md");
-    expect(claude).toContain("claudexor:generated claude-bridge");
-    const events = readRunEvents(res.runDir);
-    const bridge = events.find((e) => e.type === "project.claude_bridge.created");
-    expect(bridge).toBeDefined();
-    expect(bridge?.payload["path"]).toBe("CLAUDE.md");
-    expect(bridge?.payload["source"]).toBe("AGENTS.md");
-  });
+  it.each([
+    ["ordinary", false],
+    ["convergence", true],
+  ])(
+    "does not mutate an AGENTS.md-only live project during %s write preparation (CX590)",
+    async (_label, untilClean) => {
+      const dir = reapMk(join(tmpdir(), "claudexor-agents-bridge-"));
+      writeFileSync(join(dir, "AGENTS.md"), "# project instructions\n");
+      const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
+      const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
+        repoRoot: dir,
+        prompt: "x",
+        mode: "agent",
+        untilClean,
+        harnesses: ["impl"],
+        n: 1,
+      });
+      expect(existsSync(join(dir, ".git"))).toBe(true);
+      expect(existsSync(join(dir, "CLAUDE.md"))).toBe(false);
+      const events = readRunEvents(res.runDir);
+      expect(events.some((e) => e.type === "project.claude_bridge.created")).toBe(false);
+    },
+  );
 
   it("never overwrites an existing CLAUDE.md and emits no bridge event", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-agents-nobridge-"));

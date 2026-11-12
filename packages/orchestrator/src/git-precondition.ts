@@ -5,7 +5,6 @@ import { makeOutcomeFacts, type ModeKind, type RunReason } from "@claudexor/sche
 import { noProjectRepoRoot } from "@claudexor/util";
 import {
   ensureGitRepository,
-  ensureClaudeBridge,
   GitBoundaryRootRefusedError,
   GitCapabilityError,
   GitInitializationError,
@@ -94,23 +93,5 @@ export async function ensureWriteModeGitBoundary(
       failure_ref: "final/failure.yaml",
     });
     return { message, reason };
-  }
-}
-
-/** Optional project instruction bridge; readonly and explicitly live sources stay untouched. */
-export function ensureClaudeBridgeForRun(repoRoot: string, inPlace: boolean, log: EventLog): void {
-  if (repoRoot === NO_PROJECT_ROOT || inPlace) return;
-  let result;
-  try {
-    result = ensureClaudeBridge(repoRoot);
-  } catch {
-    return;
-  }
-  if (result.created) {
-    log.emit("project.claude_bridge.created", {
-      project_root: repoRoot,
-      path: "CLAUDE.md",
-      source: "AGENTS.md",
-    });
   }
 }

@@ -29,7 +29,11 @@ import { createRevertAnchor, readRevertPair } from "./anchor-store.js";
 import { treeOf } from "./git-result.js";
 import { importIntoRepository } from "./object-store.js";
 import { revertDeliveryPair } from "./object-revert.js";
-import { CLAUDE_BRIDGE_CONTENT, CLAUDE_BRIDGE_MARKER } from "./claude-bridge.js";
+import {
+  CLAUDE_BRIDGE_CONTENT,
+  CLAUDE_BRIDGE_MARKER,
+  LEGACY_CLAUDE_BRIDGE_CONTENT,
+} from "./claude-bridge.js";
 import { WorkspaceManager } from "./manager.js";
 import { relativizePlainDiffHeaders } from "./plain-diff.js";
 import { advanceThreadWorktree, ensureThreadWorktree, purgeThreadWorktree } from "./thread-tree.js";
@@ -218,7 +222,7 @@ describe("WorkspaceManager", () => {
     const env = await mgr.create({ taskId: "task-bridge", attemptId: "a01", baseRef: "HEAD" });
 
     // The worktree (materialized only from the COMMITTED tree) now carries a
-    // generated CLAUDE.md so a Claude Code candidate reads the same instructions.
+    // generated compatibility CLAUDE.md (creation only; reading is not proven).
     const bridgePath = join(env.worktree_path, "CLAUDE.md");
     expect(existsSync(bridgePath)).toBe(true);
     const bridge = readFileSync(bridgePath, "utf8");
@@ -326,6 +330,73 @@ describe("WorkspaceManager", () => {
     const diff = await restarted.diff(env);
     expect(diff).toContain("feature.ts");
     expect(diff).not.toContain("CLAUDE.md");
+    await creator.dispose(env);
+  });
+
+  it("CX590: captures a candidate that rewrites this run's bridge to the other generation's exact bytes", async () => {
+    // The created-this-run fact names WHICH bytes Claudexor wrote. A candidate
+    // that turns the current generated bridge into the exact legacy bytes made
+    // a real edit; neither the creating manager nor a restarted one may drop it.
+    const repo = reapMk(join(tmpdir(), "claudexor-ws-bridge-generation-"));
+    await git(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "AGENTS.md"), "# project agents guidance\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
+
+    const runtimeRoot = reapMk(join(tmpdir(), "claudexor-ws-bridge-generation-rt-"));
+    const creator = new WorkspaceManager(repo, { runtimeRoot });
+    const env = await creator.create({
+      taskId: "task-bridge-gen",
+      attemptId: "a01",
+      baseRef: "HEAD",
+    });
+    const bridgePath = join(env.worktree_path, "CLAUDE.md");
+    expect(readFileSync(bridgePath, "utf8")).toBe(CLAUDE_BRIDGE_CONTENT);
+
+    writeFileSync(bridgePath, LEGACY_CLAUDE_BRIDGE_CONTENT);
+    for (const mgr of [creator, new WorkspaceManager(repo, { runtimeRoot })]) {
+      const diff = await mgr.diff(env);
+      expect(diff).toContain("CLAUDE.md");
+      expect(diff).toContain("delete to stop bridging");
+    }
+    await creator.dispose(env);
+  });
+
+  it("CX590: a pre-upgrade envelope marker still means the legacy bytes, and only those", async () => {
+    // An envelope prepared before CX590 recorded only its id; its writer could
+    // emit only the legacy bytes. A restarted manager keeps that pristine
+    // bridge out of the patch, and captures a candidate rewrite to the
+    // current generation's bytes.
+    const repo = reapMk(join(tmpdir(), "claudexor-ws-bridge-legacy-marker-"));
+    await git(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "AGENTS.md"), "# project agents guidance\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
+
+    const runtimeRoot = reapMk(join(tmpdir(), "claudexor-ws-bridge-legacy-marker-rt-"));
+    const creator = new WorkspaceManager(repo, { runtimeRoot });
+    const env = await creator.create({
+      taskId: "task-bridge-legacy",
+      attemptId: "a01",
+      baseRef: "HEAD",
+    });
+    const bridgePath = join(env.worktree_path, "CLAUDE.md");
+    // Reproduce the pre-CX590 envelope on disk: legacy bytes, id-only marker.
+    writeFileSync(bridgePath, LEGACY_CLAUDE_BRIDGE_CONTENT);
+    writeFileSync(
+      join(dirname(env.worktree_path), "bridge-created.json"),
+      JSON.stringify({ envelope_id: env.id, created_at: "2026-11-01T00:00:00.000Z" }) + "\n",
+    );
+    writeFileSync(join(env.worktree_path, "feature.ts"), "export const x = 1;\n");
+
+    const pristine = await new WorkspaceManager(repo, { runtimeRoot }).diff(env);
+    expect(pristine).toContain("feature.ts");
+    expect(pristine).not.toContain("CLAUDE.md");
+
+    writeFileSync(bridgePath, CLAUDE_BRIDGE_CONTENT);
+    const rewritten = await new WorkspaceManager(repo, { runtimeRoot }).diff(env);
+    expect(rewritten).toContain("CLAUDE.md");
+    expect(rewritten).toContain("disposable compatibility file");
     await creator.dispose(env);
   });
 

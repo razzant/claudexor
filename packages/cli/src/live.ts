@@ -53,7 +53,7 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       }
       return `initialized git repository at ${String(p["repo_root"] ?? "?")} (baseline commit)`;
     case "project.claude_bridge.created":
-      return `bridged ${String(p["source"] ?? "AGENTS.md")} → ${String(p["path"] ?? "CLAUDE.md")} for Claude Code`;
+      return `created instruction bridge ${String(p["source"] ?? "AGENTS.md")} → ${String(p["path"] ?? "CLAUDE.md")} (file creation; reading not confirmed)`;
     case "harness.started": {
       // INV-105 (QA-070): disclose any unsupported per-harness knob the route
       // could not honor as a visible warning suffix — a silent benign "started"

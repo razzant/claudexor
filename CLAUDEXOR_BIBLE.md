@@ -900,23 +900,18 @@ invariant or operator decision before proceeding.
   apply path, CONCEPT-CHANGE(INV-113));
   race adoption applies only on a verified clean terminal; `revert_run` is
   content/preimage-fenced; thread apply considers every run not yet recorded
-  as delivered and is serialized against active turns; the thin `CLAUDE.md`
-  bridge (an `AGENTS.md`-only project-root mutation independently fenced from
-  Git admission, CONCEPT-CHANGE(INV-113)) is exclusive-create + no-follow
-  so it never overwrites a hand-written file or writes through a symlink, and is
-  written in TWO places — the durable project root (announced via a typed
-  `project.claude_bridge.created` event; skipped for read-only modes AND
-  `--in-place` targets) and each
-  git-mode ENVELOPE worktree (an envelope materializes only the committed tree,
-  so an untracked project-root bridge never reaches a candidate; the envelope
-  write emits no event and is EXCLUDED from the captured result ONLY when
-  Claudexor created the bridge THIS run AND its bytes still equal
-  `CLAUDE_BRIDGE_CONTENT` exactly (A-3), so a candidate-authored `CLAUDE.md` — or
-  any candidate EDIT of the bridge, even one that keeps the ownership marker —
-  differs from those bytes and IS captured in the result). An
-  unlisted mutation path is a release blocker. verify: mutation-path
-  inventory in ARCHITECTURE; delivered-prefix and active-turn thread-apply
-  tests; claude-bridge exclusive-create/no-follow/race/idempotency tests +
+  as delivered and is serialized against active turns; the compatibility
+  `CLAUDE.md` bridge is now envelope-local only (CONCEPT-CHANGE(INV-113)).
+  It is exclusive-create + no-follow so it never overwrites a hand-written file
+  or writes through a symlink, and it is excluded from a captured result only
+  when Claudexor created it in that disposable envelope this run and its bytes
+  still equal what that envelope's writer generation emitted (A-3). A project-root bridge is
+  never created implicitly by run preparation; existing user files are never
+  deleted or rewritten. File creation, event replay and CLI presentation are
+  observations of a write, not proof that a model read the file. An
+  unlisted mutation path is a release blocker. verify: mutation-path inventory
+  in ARCHITECTURE; delivered-prefix and active-turn thread-apply tests;
+  claude-bridge exclusive-create/no-follow/race/idempotency tests +
   envelope-bridge patch-cleanliness test (locked operator decision).
 - **INV-114** Apply/adoption captures and rechecks the exact target preimage
   immediately around the mutation (as Git sees it: an edit that keeps a file's

@@ -593,8 +593,8 @@ as unready. Admission deliberately does not probe readiness to resolve that edge
 Account readiness, quota and model admission belong to the run (owner decision),
 so a named profile admits its harness even when the default store is logged out.
 An accepted run whose selected account is not ready fails after run preparation
-(artifacts, Git boundary, `CLAUDE.md` bridge, in-place snapshot) and before any
-provider starts; run-level Exact Retry replays the same request. A direct
+(artifacts, Git boundary and any in-place snapshot) and before any provider
+starts; run-level Exact Retry replays the same request. A direct
 `POST /v2/runs` carrying `threadId` is refused before admission reads that thread.
 
 Read-only routing additionally re-derives the env-sensitive readiness
@@ -6975,35 +6975,23 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    conflicting user edit is refused and left untouched, and an anchor that is
    missing or unreadable is the typed 409 `revert_refused` (reason
    `reverse_apply_failed`, the detail naming the anchor), with nothing changed.
-7. **Thin `CLAUDE.md` bridge** — under its own write-envelope preparation rule
-   (INV-113), a project root that has `AGENTS.md`
-   and no `CLAUDE.md` gets a thin `CLAUDE.md` whose body is the official Anthropic
-   import form (`@AGENTS.md`) plus a Claudexor ownership marker, so a Claude Code
-   route reads the same instruction file Codex/Cursor/OpenCode read natively
-   (Codex additionally gets `CLAUDE.md` as a project-doc fallback via config, and
-   a CLAUDE.md-only project needs no write at all). The bridge is written in TWO
-   places, because an isolated envelope checkout materializes only the COMMITTED
-   tree and so never sees an untracked project-root bridge: (a) the PROJECT root
-   (the durable, in-place/thread-visible write, announced via a typed
-   `project.claude_bridge.created` run event — never silent); and (b) each
-   git-mode ENVELOPE checkout at workspace prep, so a Claude Code candidate racing
-   inside an envelope reads the same instructions. The envelope write emits NO run
-   event — the envelope is disposable and Claudexor-owned — and capture
-   EXCLUDES the generated bridge from the captured result by exact path, gated on
-   BOTH the created-this-run fact AND BYTE-EQUALITY with the generated bridge
-   content (A-3: byte-equality alone is necessary but not sufficient — it cannot
-   tell our fresh bridge from a candidate that rewrote a pre-existing committed
-   `CLAUDE.md` to the exact bytes, so `WorkspaceManager.diff` AND-gates it with
-   "Claudexor created the bridge this run"). Only a pristine, untouched bridge is
-   excluded; a candidate-authored `CLAUDE.md`, or any candidate EDIT of the bridge
-   — even one that keeps the ownership marker comment — differs from the exact
-   bytes and is captured in the result like any other real change, the same
-   positive-ownership doctrine as the marker-bound artifact-child exclusion.
-   Fences on both writes: the create is EXCLUSIVE (`O_CREAT|O_EXCL`)
-   and NO-FOLLOW, so a hand-written `CLAUDE.md`, a symlink (even dangling), or a
-   directory at that path is never overwritten or written through; it is
-   idempotent, so a second or concurrent prep is a no-op; the project-root write
-   is skipped for read-only modes and `--in-place` stateful targets. Git
+7. **Envelope-local `CLAUDE.md` compatibility bridge** — under its own write-envelope preparation rule
+   (INV-113), a disposable Git envelope that contains `AGENTS.md` may get a
+   thin `CLAUDE.md` whose body is the official Anthropic import form
+   (`@AGENTS.md`) plus a Claudexor ownership marker. Run preparation never
+   writes this bridge into the durable project root, and file creation is not
+   proof that a model read the instructions.
+   An envelope-only bridge emits no run event because the envelope is disposable
+   and Claudexor-owned. Capture excludes it by exact path only when both the
+   created-this-run fact and byte equality with the bytes its recorded writer
+   generation emitted hold (A-3);
+   a candidate-authored or candidate-edited `CLAUDE.md` is captured as real work.
+   Codex additionally gets `CLAUDE.md` as a project-doc fallback via config, and
+   a CLAUDE.md-only project needs no write at all.
+   The envelope create is EXCLUSIVE (`O_CREAT|O_EXCL`) and NO-FOLLOW, so a
+   hand-written `CLAUDE.md`, a symlink (even dangling), or a directory at that
+   path is never overwritten or written through; it is idempotent. A pre-existing
+   project-root `CLAUDE.md` is user-owned and is never removed or rewritten. Git
    admission is determined independently by the semantic run-shape predicate
    above. A bridge failure never fails the run (it is a convenience, not a
    precondition).
