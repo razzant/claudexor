@@ -169,9 +169,10 @@ describe("no harness-event journal writer bypasses the seam", () => {
     "orchestrator/src/laneStreamEvents.ts",
     "orchestrator/src/retainedOutput.ts",
   ]);
-  // The EventLog itself appends run envelopes; their harness payloads are the
+  // The EventLog itself appends run envelopes, inline and through the live
+  // writers' out-of-band append; their harness payloads are the
   // `harnessEventPayload` projections the emit check above covers.
-  const RUN_ENVELOPE_WRITER = "event-log/src/index.ts";
+  const RUN_ENVELOPE_WRITERS = new Set(["event-log/src/index.ts", "event-log/src/live-writers.ts"]);
 
   it("emits harness.event only through harnessEventPayload (or an engine-authored status)", () => {
     const offenders: string[] = [];
@@ -190,7 +191,7 @@ describe("no harness-event journal writer bypasses the seam", () => {
   it("never appends a raw harness event to a journal", () => {
     const offenders: string[] = [];
     for (const path of sources) {
-      if (relative(packagesDir, path) === RUN_ENVELOPE_WRITER) continue;
+      if (RUN_ENVELOPE_WRITERS.has(relative(packagesDir, path))) continue;
       const lines = readFileSync(path, "utf8").split("\n");
       lines.forEach((line, index) => {
         if (/appendLine\([^)]*JSON\.stringify\((ev|event|raw|persistedEvent)\)/.test(line))
