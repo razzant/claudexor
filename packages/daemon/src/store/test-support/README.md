@@ -48,8 +48,11 @@ No method body changes. The manifest records original Git blob IDs, original
 SHA-256, copied SHA-256 and each import rewrite; the smoke reconstructs the
 original bytes without Git history. Scoped Git attributes retain LF.
 
-The only shared runtime packages are yaml 2.9.1 and zod 4.6.5 (v3 entry).
-Their resolved versions are checked independently. Current workspace source,
+The only shared runtime packages are yaml 2.9.1 and zod 4.6.7 (v3 entry).
+Their resolved versions are checked independently. A bump reseals the version
+only after the package's imported entry closure compares byte-identical (zod
+4.6.5→4.6.7: every `zod/v3` file and its imports unchanged); otherwise the
+oracle is no longer the baseline and needs review. Current workspace source,
 release versions and unrelated lockfile entries can evolve without changing
 this baseline. There are no unused-declaration exceptions or live-source pins.
 

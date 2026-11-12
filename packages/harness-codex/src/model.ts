@@ -37,13 +37,14 @@ import {
 import { processingAdmissionProblem } from "./processing-refusal.js";
 import { ResponseFailureCapture } from "./failure-evidence.js";
 import { RequestDelivery } from "./request-delivery.js";
+import { codexRequestCompression, encodeRequestBody } from "./request-compression.js";
+import { boundReached, CODEX_RESPONSE_BOUNDS } from "./response-bounds.js";
 import { codexModelEfforts, codexModelEffortResolution } from "./model-effort.js";
 import { createCodexImageFacet } from "./images.js";
 
 const ENDPOINT = "https://chatgpt.com/backend-api/codex";
 const CLIENT = "claudexor";
 const TURN_FORMAT = "codex.turn.v1";
-
 /** Transport state belongs to a caller's live turn, never to assistant history. */
 function prepareTurnContinuation(
   native: ModelNativeContinuation | null | undefined,
@@ -77,6 +78,8 @@ function prepareTurnContinuation(
 
 export interface CodexModelAdapterDeps extends CodexModelAuthDeps {
   fetch?: typeof fetch;
+  /** Whether the inference body is compressed (see request-compression.ts). */
+  requestCompression?: () => boolean;
   /** The client version the catalog read declares (see http-client-version.ts). */
   clientVersion?: () => Promise<CodexCatalogClientVersion>;
 }
@@ -247,6 +250,7 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
   const fetcher = deps.fetch ?? globalThis.fetch;
   const now = deps.now ?? Date.now;
   const clientVersion = deps.clientVersion ?? (() => codexCatalogClientVersion());
+  const requestCompression = deps.requestCompression ?? codexRequestCompression;
   return {
     id: "codex",
     // Same managed account, auth and delivery owners; a different wire.
@@ -376,9 +380,13 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
           },
         };
         const body = JSON.stringify(buildResponsesRequest(physicalRequest, route));
-        delivery = new RequestDelivery(body);
+        // Encoded before the dispatch receipt: nothing was sent while this awaits.
+        const encoded = await encodeRequestBody(Buffer.from(body, "utf8"), requestCompression());
+        delivery = new RequestDelivery(encoded.bytes);
         const requestHeaders = new Headers(headers(auth));
         requestHeaders.set("Content-Length", String(delivery.bytes.length));
+        if (encoded.contentEncoding)
+          requestHeaders.set("Content-Encoding", encoded.contentEncoding);
         if (nativeContinuation) {
           requestHeaders.set(
             "x-codex-turn-state",
@@ -403,13 +411,34 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
         const response = await fetcher(`${ENDPOINT}/responses`, {
           method: "POST",
           headers: requestHeaders,
-          ...delivery.request(),
+          ...delivery.request(CODEX_RESPONSE_BOUNDS),
           signal: context.signal,
           redirect: "error",
         });
         if (!response.ok) {
           const result = emptyModelResult({ ...route, model: null });
           const error = await capture.readRefusal(response);
+          if (response.status === 408) {
+            // Request Timeout is the peer saying it did not receive a complete
+            // request, so no generation began. An intermediary that answered 408
+            // after the origin accepted the whole body would make this false.
+            // The refusal's own facts (request id, vendor code, retry hint) stay.
+            result.problem = new CodexModelError(
+              "transport_not_delivered",
+              "The provider did not receive the complete Codex request; generation did not start.",
+              {
+                ...providerProblem(408, error, response.headers).context,
+                generationStarted: false,
+                requestDelivery: {
+                  state: "not_delivered",
+                  basis: "http_408",
+                  ...delivery.facts(),
+                },
+              },
+              true,
+            ).problem;
+            return withTurnState(capture.finish(result));
+          }
           result.problem = processingAdmissionProblem(
             codexCapabilityRefusal(
               authenticatedProblem(response, error, auth, now()),
@@ -451,7 +480,7 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
                     ? "cancelled"
                     : "model_unavailable",
                 dispatched
-                  ? "The Codex generation outcome is unknown; it was not retried."
+                  ? `The Codex generation outcome is unknown; it was not retried.${boundReached(error)}`
                   : context.signal.aborted
                     ? "The model operation was cancelled before dispatch."
                     : "The Codex model request could not be prepared.",

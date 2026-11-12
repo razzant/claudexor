@@ -1590,9 +1590,7 @@
         </div>
         <div class="nav-actions">
           <a class="nav-source" href="https://github.com/razzant/claudexor">GitHub</a>
-          <a class="nav-download" href="https://github.com/razzant/claudexor/releases/latest"
-            >Get Claudexor</a
-          >
+          <a class="nav-download" href="#install">Get Claudexor</a>
         </div>
       </nav>
     </header>
@@ -1616,7 +1614,7 @@
                   >
                   <a class="btn s" href="#install">Install the CLI <small>npm</small></a>
                 </div>
-                <p class="meta">MIT · no telemetry · macOS app, Linux CLI</p>
+                <p class="meta">MIT · no telemetry · macOS 26+ app · macOS/Linux CLI</p>
                 <p class="aside">
                   <span class="m" id="aside"
                     >Your five-hour window resets at <i>14:02</i>. Your deadline does not.</span
@@ -1951,25 +1949,40 @@
                   <p class="kick">install</p>
                   <h2>Start with the app, or stay in the terminal.</h2>
                   <p class="lead">
-                    The macOS app bundles its own runtime and updates in place against a signed
-                    manifest. The CLI and daemon also run on Linux.
+                    On macOS 26 or newer, download the app and drag it to Applications; it brings
+                    its own runtime, so you need no Node or pnpm. In a terminal on macOS or Linux,
+                    install the npm package with Node.js 24.15 or newer (use the latest Node 24
+                    release), or build it from source.
                   </p>
                   <div class="acts">
                     <a class="btn p" href="https://github.com/razzant/claudexor/releases/latest"
-                      >Latest release</a
+                      >Download macOS app</a
                     >
-                    <a class="btn s" href="https://github.com/razzant/claudexor">View source</a>
+                    <a class="btn s" href="https://github.com/razzant/claudexor#quickstart"
+                      >First steps</a
+                    >
+                    <a
+                      class="btn s"
+                      href="https://github.com/razzant/claudexor#from-a-source-checkout"
+                      >Build from source</a
+                    >
                   </div>
+                  <p class="note">
+                    Connect one coding agent through Claudexor, choose a project and try an Ask
+                    question. A subscription login counts against that plan; an API key is a paid
+                    fallback. Git and the selected coding agent are checked during setup.
+                  </p>
                 </div>
                 <div class="flat term" style="overflow: hidden">
                   <div class="bar"><i></i><i></i><i></i><span>terminal</span></div>
                   <pre><span class="p">$</span> npm install -g claudexor
 <span class="p">$</span> claudexor doctor
 
-<span class="c"># ask, compare, inspect, apply</span>
+<span class="c"># sign in through Claudexor, then ask</span>
+<span class="p">$</span> claudexor auth login codex
+<span class="p">$</span> cd /path/to/your/project
 <span class="p">$</span> claudexor ask <span class="s">"map this repo"</span>
-<span class="p">$</span> claudexor best-of <span class="s">"fix add()"</span> --n 3
-<span class="p">$</span> claudexor apply &lt;run_id&gt; --dry-run</pre>
+<span class="p">$</span> claudexor inspect &lt;run_id&gt;</pre>
                 </div>
               </div>
             </section>

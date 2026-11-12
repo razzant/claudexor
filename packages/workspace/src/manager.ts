@@ -42,10 +42,12 @@ import { rawAcceptedPaths, rawAwareSnapshot } from "./raw-patch.js";
 import { capturePlainDiff } from "./plain-diff-capture.js";
 import {
   CLAUDE_BRIDGE_BASENAME,
-  bridgeCreatedMarkerMatches,
+  CURRENT_CLAUDE_BRIDGE_GENERATION,
+  bridgeCreatedMarkerGeneration,
   ensureClaudeBridge,
   isGeneratedClaudeBridge,
   writeBridgeCreatedMarker,
+  type ClaudeBridgeGeneration,
 } from "./claude-bridge.js";
 import {
   branchDelete,
@@ -270,9 +272,9 @@ export class WorkspaceManager {
     });
     writeFileSync(join(base, "private-clone-v1"), "private Git authority\n");
 
-    // AGENTS.md bridge (INV-113): the checkout omits the untracked project-root bridge,
-    // envelope — a Claude Code candidate here would otherwise lack CLAUDE.md.
-    // Write an envelope-local bridge so the candidate reads the same AGENTS.md.
+    // AGENTS.md compatibility bridge (INV-113): the checkout omits any
+    // untracked project-root file, so a Claude Code candidate may need an
+    // envelope-local bridge. Never mutate the user's live project root here.
     // Self-fenced (acts only with a committed AGENTS.md and no CLAUDE.md),
     // best-effort, and no run event. `diff()` excludes the generated bridge so it never enters
     // the candidate patch.
@@ -403,8 +405,9 @@ export class WorkspaceManager {
     // Exclude the envelope-local generated CLAUDE.md bridge (INV-113) from the
     // candidate patch — by EXACT path, and only when BOTH conditions hold: (1)
     // THIS run's prep actually created the bridge (the recorded created-this-run
-    // fact), and (2) the worktree file is still BYTE-IDENTICAL to the generated
-    // bridge content. A git pathspec cannot express either condition, so the
+    // fact), and (2) the worktree file is still BYTE-IDENTICAL to the bytes
+    // that fact says were written (current, or legacy for a pre-CX590
+    // envelope). A git pathspec cannot express either condition, so the
     // decision is computed in code here. Condition (1) closes the A-3 residual:
     // byte-equality alone cannot tell our freshly written bridge from a candidate
     // that rewrote a PRE-EXISTING committed CLAUDE.md to exactly the bridge bytes,
@@ -415,8 +418,9 @@ export class WorkspaceManager {
     // the marker-bound artifact-child exclusion. The fact survives a manager
     // restart via the persisted bridge-created.json marker (envelope-id-bound),
     // read only when the in-memory set lacks the id.
+    const bridgeGeneration = this.bridgeCreatedGeneration(env);
     const bridgeExcludes =
-      this.bridgeCreatedFact(env) && isGeneratedClaudeBridge(env.worktree_path)
+      bridgeGeneration !== null && isGeneratedClaudeBridge(env.worktree_path, bridgeGeneration)
         ? [`:(exclude,top)${CLAUDE_BRIDGE_BASENAME}`]
         : [];
     // What an accepted raw patch wrote is the candidate's, ignored or not (#594).
@@ -460,11 +464,12 @@ export class WorkspaceManager {
     });
   }
 
-  /** The created-this-run bridge fact for diff(): in-memory set first, else
-   *  the persisted envelope-id-bound marker (survives manager recreation). */
-  private bridgeCreatedFact(env: WorkspaceEnvelope): boolean {
-    if (this.bridgeCreatedEnvelopes.has(env.id)) return true;
-    return bridgeCreatedMarkerMatches(this.baseOf(env), env.id);
+  /** The created-this-run bridge fact for diff(), naming the generation whose
+   *  bytes were written: in-memory set first (this process's writer), else the
+   *  persisted envelope-id-bound marker (survives manager recreation). */
+  private bridgeCreatedGeneration(env: WorkspaceEnvelope): ClaudeBridgeGeneration | null {
+    if (this.bridgeCreatedEnvelopes.has(env.id)) return CURRENT_CLAUDE_BRIDGE_GENERATION;
+    return bridgeCreatedMarkerGeneration(this.baseOf(env), env.id);
   }
 
   /** Keep this envelope on disk past `dispose()`: it holds the only exact copy

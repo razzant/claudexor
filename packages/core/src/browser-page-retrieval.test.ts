@@ -8,7 +8,8 @@ import { BROWSER_MCP_SERVER, browserPageRetrieval } from "./browser-mcp.js";
  * without that proof, and no retrieval at all when it read no web page. The
  * recording holds real replies of the pinned Browser MCP against loopback pages
  * (`.review-evidence/scripts/capture-browser-producer.mjs`; ports and temp
- * paths neutralized).
+ * paths neutralized). The previous pin's recording of the same scenarios stays
+ * as history and must classify the same way.
  */
 interface Reply {
   label: string;
@@ -16,9 +17,16 @@ interface Reply {
   isError: boolean;
   content: { type: string; text?: string }[];
 }
-const recording = JSON.parse(
-  readFileSync(new URL("../fixtures/browser-mcp-0.0.83-replies.json", import.meta.url), "utf8"),
-) as { producer: { package: string; version: string }; replies: Reply[] };
+type Recording = { producer: { package: string; version: string }; replies: Reply[] };
+const readRecording = (version: string): Recording =>
+  JSON.parse(
+    readFileSync(
+      new URL(`../fixtures/browser-mcp-${version}-replies.json`, import.meta.url),
+      "utf8",
+    ),
+  ) as Recording;
+const recording = readRecording("0.0.84");
+const previous = readRecording("0.0.83");
 const corePackage = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ) as { dependencies: Record<string, string> };
@@ -63,17 +71,20 @@ describe("Browser page retrieval against the real pinned producer (#118)", () =>
     expect(corePackage.dependencies["@playwright/mcp"]).toBe(recording.producer.version);
   });
 
-  it("classifies every recorded successful reply", () => {
-    const successes = recording.replies.filter((candidate) => !candidate.isError);
-    expect(successes.length).toBeGreaterThan(25);
-    for (const candidate of successes) {
-      // Everything else (closing, clicking, tabs, evaluating, a screenshot, going
-      // back, about:blank or data: pages) retrieved no web page: no stamp.
-      expect(browserPageRetrieval(candidate.tool, textOf(candidate)), candidate.label).toEqual(
-        RETRIEVED.has(candidate.label) ? PAGE : ERROR_PAGES.has(candidate.label) ? REACHED : {},
-      );
-    }
-  });
+  it.each([recording, previous])(
+    "classifies every recorded successful reply of $producer.version",
+    ({ replies }) => {
+      const successes = replies.filter((candidate) => !candidate.isError);
+      expect(successes.length).toBeGreaterThan(25);
+      for (const candidate of successes) {
+        // Everything else (closing, clicking, tabs, evaluating, a screenshot, going
+        // back, about:blank or data: pages) retrieved no web page: no stamp.
+        expect(browserPageRetrieval(candidate.tool, textOf(candidate)), candidate.label).toEqual(
+          RETRIEVED.has(candidate.label) ? PAGE : ERROR_PAGES.has(candidate.label) ? REACHED : {},
+        );
+      }
+    },
+  );
 
   it("the recording really holds the non-proof shapes: close, no tabs, blank, status, failure", () => {
     expect(textOf(reply("close-after-pages"))).toContain("No open tabs");

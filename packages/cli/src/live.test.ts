@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeOutcomeFacts } from "@claudexor/schema";
+import { makeOutcomeFacts, RunEvent } from "@claudexor/schema";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
 import { CliError, controlProblemError, renderCliFailure } from "./cli-error.js";
 import { ENGINE_STOP_REMEDY, observedEngineSkew, recordEngineSkew } from "./engine-skew.js";
@@ -112,6 +112,22 @@ describe("claudexor follow", () => {
         },
       }),
     ).toBe("git repository setup stopped during init at /tmp/project; partial metadata may remain");
+  });
+
+  it("replays a historical CLAUDE.md bridge event as a file creation, not a model read (CX590)", () => {
+    // An events.jsonl line written before CX590 still parses and is labelled
+    // only as what it recorded: Claudexor created a file.
+    const historical = RunEvent.parse({
+      seq: 3,
+      ts: "2026-11-01T00:00:00.000Z",
+      run_id: "run-1",
+      task_id: "task-1",
+      type: "project.claude_bridge.created",
+      payload: { project_root: "/tmp/project", path: "CLAUDE.md", source: "AGENTS.md" },
+    });
+    expect(formatRunEventLine(historical)).toBe(
+      "created instruction bridge AGENTS.md → CLAUDE.md (file creation; reading not confirmed)",
+    );
   });
 
   it("renders deadline and operator cancellation from canonical terminal facts", () => {

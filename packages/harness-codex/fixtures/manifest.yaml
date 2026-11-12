@@ -92,7 +92,7 @@ fixtures:
   # its `McpToolCallEndEvent` mapping: `completed` only for a result without
   # `isError`, `failed` for an `isError` result (kept in `result`) or an
   # `error.message`. Every result `content` text is the REAL output of the
-  # pinned @playwright/mcp 0.0.83 (headless, isolated) for a one-use loopback
+  # then-pinned @playwright/mcp 0.0.83 (headless, isolated) for a one-use loopback
   # probe page, captured 2026-10-29 without a model or account; only the
   # snapshot file link was rewritten to the run-artifact layout. Request ids
   # 1..6 are the adapter's own, so conformance.test.ts replays it 1:1 through
@@ -100,7 +100,7 @@ fixtures:
   app-server/synthetic-browser-mcp-0.162.1.jsonl:
     source: synthetic
   # A REAL Browser run (claudexor#215), every stdout frame in order, captured
-  # through runCodexAppServer without an account: codex-cli 0.162.1, the pinned
+  # through runCodexAppServer without an account: codex-cli 0.162.1, the then-pinned
   # @playwright/mcp 0.0.83 launcher with its start delayed 5 s, real headless
   # Chrome, one-use loopback page, and a local scripted Responses provider
   # standing in for the model (so token counts and the model's words are scripted;

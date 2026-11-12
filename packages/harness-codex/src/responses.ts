@@ -9,6 +9,7 @@ import type {
 } from "@claudexor/schema";
 import { ModelMessage as ModelMessageSchema } from "@claudexor/schema";
 import { ResponseFailureCapture } from "./failure-evidence.js";
+import { boundReached } from "./response-bounds.js";
 
 export const CODEX_CONTINUATION_FORMAT = "codex.responses.v1";
 
@@ -465,7 +466,7 @@ export async function readResponsesStream(
       terminal ? "response_rejected" : "transport_unknown",
       terminal
         ? "Codex returned a terminal response whose message could not be used."
-        : "Codex response stream was interrupted or malformed.",
+        : `Codex response stream was interrupted or malformed.${boundReached(error)}`,
     ).problem;
   } finally {
     await reader.cancel().catch(() => {});
