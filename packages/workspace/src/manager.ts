@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type {
@@ -17,9 +18,9 @@ import { repositoryObjectFormat } from "./git-result.js";
 import { assertProjectObjectFormat } from "./object-store.js";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
 import { WorkspaceError } from "@claudexor/core";
-import { ensureDir, newId, nowIso, projectRuntimeDir } from "@claudexor/util";
+import { ensureDirAsync, newId, nowIso, projectRuntimeDir, removeTree } from "@claudexor/util";
 import { ensureLaneHomeEnv, type LaneHomeEnv } from "./lanes.js";
-import { ensureHarnessHome, harnessHomeEnv } from "./harness-home.js";
+import { ensureHarnessHome, ensureHarnessHomeAsync, harnessHomeEnv } from "./harness-home.js";
 import { ArtifactOwnership } from "./artifact-ownership.js";
 import {
   captureDirectoryWorkspace,
@@ -35,7 +36,7 @@ import {
 import {
   isRetainedEnvelope,
   liveEnvelopeCustody,
-  writeEnvelopeCustody,
+  writeEnvelopeCustodyAsync,
 } from "./envelope-custody.js";
 import { snapshotLegacyDirectoryBaseline } from "./plain-diff.js";
 import { rawAcceptedPaths, rawAwareSnapshot } from "./raw-patch.js";
@@ -162,17 +163,18 @@ export class WorkspaceManager {
     const base = this.envelopeBase(opts.taskId, opts.attemptId);
     const envelopeId = newId("env");
     const workspaceMode = opts.inPlace ? "in_place" : "isolated";
-    const madeHere = !existsSync(base); // only an envelope this call made is removed on refusal
-    ensureDir(base);
+    // Lane start awaits the disk (#688); only an envelope this call made is removed on refusal.
+    const madeHere = (await stat(base).catch(() => null)) === null;
+    await ensureDirAsync(base);
     const homeDir = join(base, "home");
-    const harnessConfigDirs = ensureHarnessHome(homeDir);
+    const harnessConfigDirs = await ensureHarnessHomeAsync(homeDir);
     // Liveness marker for crash GC: the sweeper must never dispose an envelope
     // whose creating process (daemon, CLI, MCP/ACP serve) is still alive —
     // startup GC's "nothing can own an envelope" premise only holds for
     // daemon-tracked runs. Pid + ps START TIME form a recycling-proof identity
     // (command names/titles mutate — vitest, daemons and tools retitle
     // themselves; the kernel start time never does).
-    writeFileSync(
+    await writeFile(
       join(base, "owner.json"),
       JSON.stringify({
         pid: process.pid,
@@ -267,10 +269,10 @@ export class WorkspaceManager {
       baseSha,
       [base, ...(opts.custody ? [opts.custody.runDir] : [])],
     );
-    await isolatedCloneAdd(this.repoRoot, path, branch, baseSha, storeObjects).catch((error) => {
-      throw madeHere ? discardUnstartedEnvelope(base, error) : error;
+    await isolatedCloneAdd(this.repoRoot, path, branch, baseSha, storeObjects).catch(async (e) => {
+      throw madeHere ? await discardUnstartedEnvelope(base, e) : e;
     });
-    writeFileSync(join(base, "private-clone-v1"), "private Git authority\n");
+    await writeFile(join(base, "private-clone-v1"), "private Git authority\n");
 
     // AGENTS.md compatibility bridge (INV-113): the checkout omits any
     // untracked project-root file, so a Claude Code candidate may need an
@@ -282,7 +284,7 @@ export class WorkspaceManager {
     // exclude it; a CLAUDE.md already present is never excluded (A-3 residual).
     let bridgeCreatedHere = false;
     try {
-      bridgeCreatedHere = ensureClaudeBridge(path).created;
+      bridgeCreatedHere = (await ensureClaudeBridge(path)).created;
     } catch {
       /* a missing bridge is harmless; never fail envelope creation over it */
     }
@@ -309,9 +311,10 @@ export class WorkspaceManager {
     // the fact CAPTURES a pristine generated bridge into patch.diff.
     if (bridgeCreatedHere) {
       this.bridgeCreatedEnvelopes.add(envelope.id);
-      writeBridgeCreatedMarker(base, envelope.id);
+      await writeBridgeCreatedMarker(base, envelope.id);
     }
-    if (opts.custody) writeEnvelopeCustody(base, liveEnvelopeCustody(envelope, opts.custody));
+    if (opts.custody)
+      await writeEnvelopeCustodyAsync(base, liveEnvelopeCustody(envelope, opts.custody));
     return envelope;
   }
 
@@ -516,9 +519,10 @@ export class WorkspaceManager {
     // baseline, including any route-scoped API auth material), derived from task/attempt ids.
     // For git mode this equals dirname(worktree_path); for in-place it is a sibling
     // under the external runtime workspaces root, so deriving from ids prevents
-    // dispose() from ever deleting the live tree.
+    // dispose() from ever deleting the live tree. The removal walks the tree off
+    // the main thread, one entry at a time, `owner.json` last (#688).
     try {
-      rmSync(this.baseOf(env), { recursive: true, force: true });
+      await removeTree(this.baseOf(env), { lastEntry: "owner.json" });
     } catch {
       /* best-effort */
     }
@@ -526,15 +530,10 @@ export class WorkspaceManager {
     // guarded to stay strictly inside the workspaces dir.
     try {
       const taskDir = join(this.workspacesDir(), env.task_id);
-      if (
-        taskDir.startsWith(this.workspacesDir() + sep) &&
-        existsSync(taskDir) &&
-        readdirSync(taskDir).length === 0
-      ) {
-        rmSync(taskDir, { recursive: true, force: true });
-      }
+      if (taskDir.startsWith(this.workspacesDir() + sep) && (await readdir(taskDir)).length === 0)
+        await removeTree(taskDir);
     } catch {
-      /* best-effort */
+      /* best-effort: an absent task dir has nothing to prune */
     }
     if (!inPlace && env.workspace_kind !== "directory") {
       try {

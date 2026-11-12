@@ -23,16 +23,16 @@ describe("ensureClaudeBridge (D-14 layer 3)", () => {
     rmSync(dir, { recursive: true, force: true });
   }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
-  it("does nothing when there is no AGENTS.md", () => {
-    const res = ensureClaudeBridge(dir);
+  it("does nothing when there is no AGENTS.md", async () => {
+    const res = await ensureClaudeBridge(dir);
     expect(res.created).toBe(false);
     expect(res.reason).toBe("no_agents");
     expect(existsSync(join(dir, "CLAUDE.md"))).toBe(false);
   });
 
-  it("creates a thin @AGENTS.md import + ownership marker when AGENTS.md exists", () => {
+  it("creates a thin @AGENTS.md import + ownership marker when AGENTS.md exists", async () => {
     writeFileSync(join(dir, "AGENTS.md"), "# instructions\n");
-    const res = ensureClaudeBridge(dir);
+    const res = await ensureClaudeBridge(dir);
     expect(res.created).toBe(true);
     expect(res.reason).toBe("created");
     const body = readFileSync(join(dir, "CLAUDE.md"), "utf8");
@@ -43,30 +43,30 @@ describe("ensureClaudeBridge (D-14 layer 3)", () => {
     expect(body.split("\n").filter((l) => l.startsWith("@AGENTS.md"))).toHaveLength(1);
   });
 
-  it("is idempotent: a second run sees the file and does nothing (no overwrite)", () => {
+  it("is idempotent: a second run sees the file and does nothing (no overwrite)", async () => {
     writeFileSync(join(dir, "AGENTS.md"), "# instructions\n");
-    expect(ensureClaudeBridge(dir).created).toBe(true);
+    expect((await ensureClaudeBridge(dir)).created).toBe(true);
     const first = readFileSync(join(dir, "CLAUDE.md"), "utf8");
-    const second = ensureClaudeBridge(dir);
+    const second = await ensureClaudeBridge(dir);
     expect(second.created).toBe(false);
     expect(second.reason).toBe("claude_exists");
     expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe(first);
   });
 
-  it("NEVER overwrites a hand-written CLAUDE.md", () => {
+  it("NEVER overwrites a hand-written CLAUDE.md", async () => {
     writeFileSync(join(dir, "AGENTS.md"), "# a\n");
     writeFileSync(join(dir, "CLAUDE.md"), "# my own instructions\n");
-    const res = ensureClaudeBridge(dir);
+    const res = await ensureClaudeBridge(dir);
     expect(res.created).toBe(false);
     expect(res.reason).toBe("claude_exists");
     expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe("# my own instructions\n");
   });
 
-  it("refuses to follow a symlink at CLAUDE.md (no-follow), even a dangling one", () => {
+  it("refuses to follow a symlink at CLAUDE.md (no-follow), even a dangling one", async () => {
     writeFileSync(join(dir, "AGENTS.md"), "# a\n");
     const target = join(dir, "secret-elsewhere.md");
     symlinkSync(target, join(dir, "CLAUDE.md")); // dangling: target does not exist
-    const res = ensureClaudeBridge(dir);
+    const res = await ensureClaudeBridge(dir);
     expect(res.created).toBe(false);
     expect(res.reason).toBe("claude_exists");
     // The symlink target was never created through the link.
@@ -75,10 +75,7 @@ describe("ensureClaudeBridge (D-14 layer 3)", () => {
 
   it("two concurrent preps yield exactly one file, one created=true, and a typed refusal for the loser", async () => {
     writeFileSync(join(dir, "AGENTS.md"), "# a\n");
-    const results = await Promise.all([
-      Promise.resolve().then(() => ensureClaudeBridge(dir)),
-      Promise.resolve().then(() => ensureClaudeBridge(dir)),
-    ]);
+    const results = await Promise.all([ensureClaudeBridge(dir), ensureClaudeBridge(dir)]);
     const created = results.filter((r) => r.created);
     expect(created).toHaveLength(1);
     expect(created[0]?.reason).toBe("created");
@@ -148,8 +145,8 @@ describe("bridgeCreatedMarkerGeneration (created-this-run fact names its bytes)"
   const writeMarker = (marker: unknown) =>
     writeFileSync(join(dir, "bridge-created.json"), JSON.stringify(marker) + "\n");
 
-  it("reads back the current generation the writer records", () => {
-    writeBridgeCreatedMarker(dir, "env-1");
+  it("reads back the current generation the writer records", async () => {
+    await writeBridgeCreatedMarker(dir, "env-1");
     expect(bridgeCreatedMarkerGeneration(dir, "env-1")).toBe(CURRENT_CLAUDE_BRIDGE_GENERATION);
     expect(bridgeCreatedMarkerGeneration(dir, "env-2")).toBeNull();
   });

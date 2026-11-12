@@ -20,6 +20,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { EnvelopeCustody, type ResumableCause, type WorkspaceEnvelope } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
@@ -76,14 +77,30 @@ export function readEnvelopeCustody(base: string): EnvelopeCustody | null {
   }
 }
 
+function custodyWrite(base: string, custody: EnvelopeCustody) {
+  const path = join(base, ENVELOPE_CUSTODY_FILE);
+  return {
+    path,
+    tmp: `${path}.${process.pid}.tmp`,
+    text: JSON.stringify(EnvelopeCustody.parse(custody), null, 2) + "\n",
+  };
+}
+
 /** Atomic write: a reader sees the previous record or the new one, never a torn file. */
 export function writeEnvelopeCustody(base: string, custody: EnvelopeCustody): void {
-  const path = join(base, ENVELOPE_CUSTODY_FILE);
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(EnvelopeCustody.parse(custody), null, 2) + "\n", {
-    mode: 0o600,
-  });
+  const { path, tmp, text } = custodyWrite(base, custody);
+  writeFileSync(tmp, text, { mode: 0o600 });
   renameSync(tmp, path);
+}
+
+/** The same atomic write at lane start (`live` custody), without waiting on the main thread. */
+export async function writeEnvelopeCustodyAsync(
+  base: string,
+  custody: EnvelopeCustody,
+): Promise<void> {
+  const { path, tmp, text } = custodyWrite(base, custody);
+  await writeFile(tmp, text, { mode: 0o600 });
+  await rename(tmp, path);
 }
 
 /** End custody (adoption hand-over or disposition); the envelope becomes ordinary. */

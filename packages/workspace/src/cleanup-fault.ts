@@ -1,4 +1,5 @@
 import { rmSync } from "node:fs";
+import { removeTree } from "@claudexor/util";
 
 /**
  * Keep a cleanup fault beside the outcome it followed, never in its place: a
@@ -48,14 +49,15 @@ export async function withDisposableScratch<T>(
 /**
  * An envelope whose creation failed before it was returned never started: no harness
  * ran in it, and no caller holds it to dispose of. Its creator, which made `base` in
- * this same call, removes it whole (#501); the orphan sweeper keeps a directory whose
- * creating process is alive, so nothing else would. A removal that fails leaves it,
- * keeps `refusal` as the outcome and says so: the fault is noted beside it and named
- * after its message. Returns what to throw.
+ * this same call, removes it whole (#501) without waiting on the main thread, its
+ * `owner.json` last; the orphan sweeper keeps a directory whose creating process is
+ * alive, so nothing else would. A removal that fails leaves it, keeps `refusal` as
+ * the outcome and says so: the fault is noted beside it and named after its message.
+ * Resolves to what to throw.
  */
-export function discardUnstartedEnvelope(base: string, refusal: unknown): unknown {
+export async function discardUnstartedEnvelope(base: string, refusal: unknown): Promise<unknown> {
   try {
-    rmSync(base, { recursive: true, force: true });
+    await removeTree(base, { lastEntry: "owner.json" });
   } catch (fault) {
     noteCleanupFault(refusal, fault);
     if (refusal instanceof Error) {

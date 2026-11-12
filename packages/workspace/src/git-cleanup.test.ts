@@ -1,24 +1,24 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceError } from "@claudexor/core";
 
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>();
-  return {
-    ...actual,
-    rmSync: (
-      path: Parameters<typeof actual.rmSync>[0],
-      options?: { recursive?: boolean; force?: boolean },
-    ) => {
-      actual.rmSync(path, options);
-      if (String(path).includes("claudexor-transient-diff-")) {
-        throw new Error("scratch cleanup sentinel");
-      }
-    },
+// The scratch is removed one entry at a time, its root last (#688): the sentinel
+// fails that last removal, after every byte below it is gone.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const rm = async (
+    path: Parameters<typeof actual.rm>[0],
+    options?: Parameters<typeof actual.rm>[1],
+  ) => {
+    await actual.rm(path, options);
+    if (basename(String(path)).startsWith("claudexor-transient-diff-")) {
+      throw new Error("scratch cleanup sentinel");
+    }
   };
+  return { ...actual, default: { ...actual, rm }, rm };
 });
 
 import { captureWorkingTreeTransient } from "./git.js";
