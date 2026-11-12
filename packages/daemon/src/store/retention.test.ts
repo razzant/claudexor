@@ -562,8 +562,9 @@ describeStore("bounded command retention (R5_AMENDMENTS B1/C1, T-RET-1)", () => 
     });
     const oneX = plans();
     expect(oneX.count.join("\n")).toMatch(/SCAN command USING (COVERING )?INDEX command_terminal/);
+    // Both ends of the walk are on the index: the keyset position below, the cutoff above.
     expect(oneX.page.join("\n")).toMatch(
-      /SEARCH command USING INDEX command_prunable \(created_at>\?|\(\(created_at,id\)>/,
+      /SEARCH command USING INDEX command_prunable \(\(created_at,id\)>\(\?,\?\) AND created_at<\?\)/,
     );
     expect(oneX.page.join("\n")).not.toMatch(/TEMP B-TREE|SCAN command/);
     expect(oneX.predecessor.join("\n")).toMatch(/MULTI-INDEX OR|command_run|PRIMARY KEY/);
@@ -593,5 +594,39 @@ describeStore("bounded command retention (R5_AMENDMENTS B1/C1, T-RET-1)", () => 
     });
     expect(tenX.visited).toBe(selection.visited);
     expect(tenX.victims).toEqual(selection.victims);
+    // Statistics gathered on the grown store leave the page on its two bounds.
+    store.prepare("ANALYZE").run();
+    expect(queryPlan(store, COMMAND_PRUNABLE_PAGE_SQL)).toEqual(oneX.page);
+  });
+
+  it("selects a row only once its creation and its finish have both aged, so a page can end at the cutoff", async () => {
+    const store = await openStore();
+    const insert = store.prepare(
+      `INSERT INTO command(id, pid, operation, state, run_id, created_at, finished_at, summary, params_sha, kind, live, needs_decision)
+       VALUES(?, 1, 'run.create', 'succeeded', ?, ?, ?, x'00', 'sha', 'product', 1, 0)`,
+    );
+    const DAY = 86_400_000;
+    const ago = (days: number) => new Date(NOW.getTime() - days * DAY).toISOString();
+    store.transaction(() => {
+      insert.run("aged", "run-aged", ago(40), ago(39));
+      // A long run: created before the 30-day cutoff, finished after it.
+      insert.run("long", "run-long", ago(40), ago(10));
+      // A clock stepped back: the finish reads earlier than the creation.
+      insert.run("stepped", "run-stepped", ago(20), ago(35));
+      insert.run("young", "run-young", ago(5), ago(5));
+    });
+    const victims = (daysOn: number) =>
+      commandRetentionCandidates(store, {
+        now: new Date(NOW.getTime() + daysOn * DAY),
+        retentionMs: MONTH,
+        cap: 0,
+      }).victims.map((victim) => victim.id);
+    // `stepped` waits for its creation to age: later than its finish alone would allow, never earlier.
+    expect(victims(0)).toEqual(["aged"]);
+    expect(victims(15)).toEqual(["aged", "stepped"]);
+    // `long` waits for its finish, as before.
+    expect(victims(22)).toEqual(["aged", "long", "stepped"]);
+    // A row exactly at the cutoff has aged, as before.
+    expect(victims(25)).toEqual(["aged", "long", "stepped", "young"]);
   });
 });
