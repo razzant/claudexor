@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  promises,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -12,10 +13,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { getDefaultHighWaterMark } from "node:stream";
+import { describe, expect, it, vi } from "vitest";
 import { reviewUsageCostSettlement } from "@claudexor/budget";
 import { credentialProfileUnpinned, type HarnessAdapter } from "@claudexor/core";
 import type { CredentialProfile, ProviderFamily } from "@claudexor/schema";
+import { orderedAppender } from "@claudexor/util";
 import {
   ConformanceReport,
   ConvergencePredicate,
@@ -579,9 +582,10 @@ describe("sealed release native reviewer contract", () => {
           credential_route: "vendor_native",
           text,
         };
-        sawLiveTranscriptProgress =
-          readFileSync(join(artifactsDir, "01-release-reviewer", "transcript.md"), "utf8") ===
-          `${text}\n`;
+        // The progress bytes are queued on the ordered appender: read them once landed.
+        const transcript = join(artifactsDir, "01-release-reviewer", "transcript.md");
+        await orderedAppender.settled(transcript);
+        sawLiveTranscriptProgress = readFileSync(transcript, "utf8") === `${text}\n`;
         const finalEvent = {
           type: "message",
           session_id: spec.session_id,
@@ -4752,5 +4756,231 @@ describe("reviewer dispatch consumes ONE prepared result (model-id effort carrie
       rmSync(cwd, { recursive: true, force: true });
       rmSync(artifactsDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("reviewer files on the ordered appender (#688)", () => {
+  const APPLIED_POOL = Symbol.for("claudexor.libuvPoolSize");
+
+  /** Hold every ordered-append write to a file `matches` names until `release`.
+   * The appender opens each batch through `fs.promises.open`, read at call time. */
+  function holdAppendWrites(matches: (path: string) => boolean) {
+    const global = globalThis as Record<symbol, unknown>;
+    const savedPool = global[APPLIED_POOL];
+    global[APPLIED_POOL] = 8; // six write slots: a held write never starves the others
+    let open = false;
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const held: string[] = [];
+    const realOpen = promises.open;
+    const spy = vi.spyOn(promises, "open").mockImplementation((async (
+      ...args: Parameters<typeof promises.open>
+    ) => {
+      const handle = await realOpen(...args);
+      const path = String(args[0]);
+      if (open || !matches(path)) return handle;
+      const write = handle.write.bind(handle) as (...writeArgs: unknown[]) => Promise<unknown>;
+      handle.write = (async (...writeArgs: unknown[]) => {
+        held.push(path);
+        await gate;
+        return write(...writeArgs);
+      }) as unknown as typeof handle.write;
+      return handle;
+    }) as typeof promises.open);
+    return {
+      held,
+      release() {
+        open = true;
+        releaseGate();
+        spy.mockRestore();
+        if (savedPool === undefined) delete global[APPLIED_POOL];
+        else global[APPLIED_POOL] = savedPool;
+      },
+    };
+  }
+
+  async function quiet(): Promise<void> {
+    for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  async function until(label: string, predicate: () => boolean): Promise<void> {
+    const deadline = Date.now() + 10_000;
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+
+  function messageReviewer(
+    id: string,
+    messages: readonly string[],
+    progress: { pulled: number; finished: boolean },
+    final = "[]",
+  ): ReviewerSpec {
+    const adapter: HarnessAdapter = {
+      id,
+      async discover() {
+        return readerManifest(id);
+      },
+      async doctor() {
+        throw new Error("not used");
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        for (const text of messages) {
+          progress.pulled += 1;
+          yield { type: "message", session_id: spec.session_id, ts, text };
+        }
+        yield { type: "message", session_id: spec.session_id, ts, text: final, final: true };
+        progress.finished = true;
+      },
+    };
+    return { adapter, providerFamily: "openai" };
+  }
+
+  const DIFF = "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
+
+  it("resolves a review only once its reviewers' files have landed", async () => {
+    const lines = (path: string) => readFileSync(path, "utf8").split("\n").filter(Boolean);
+    const review = async (hold: boolean) => {
+      const { cwd, evidenceDir } = makeReviewWorkspace("claudexor-review-landing-");
+      const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-landing-artifacts-"));
+      const progress = { pulled: 0, finished: false };
+      const held = hold ? holdAppendWrites((path) => path.startsWith(artifactsDir)) : null;
+      let resolved = false;
+      const reviewing = reviewCandidate({
+        candidateLabel: "Landing candidate",
+        diff: DIFF,
+        evidenceDir,
+        artifactsDir,
+        cwd,
+        reviewers: [messageReviewer("landing-reviewer", ["a finding"], progress)],
+      }).then((result) => {
+        resolved = true;
+        return result;
+      });
+      const dir = join(artifactsDir, "01-landing-reviewer");
+      if (held) {
+        // The reviewer is done and its metadata written; only its appends are held.
+        await until("the reviewer completes", () => progress.finished);
+        await until("its metadata says completed", () =>
+          readFileSync(join(dir, "metadata.json"), "utf8").includes('"status": "completed"'),
+        );
+        await quiet();
+        expect(held.held.length).toBeGreaterThan(0);
+        expect(resolved).toBe(false);
+        held.release();
+      }
+      await reviewing;
+      // Read without a barrier: everything the review appended is on disk.
+      expect(lines(join(dir, "raw-normalized-stream.jsonl"))).toHaveLength(2);
+      expect(readFileSync(join(dir, "transcript.md"), "utf8")).toBe("a finding\n[]\n");
+      expect(
+        lines(join(artifactsDir, "reviewer-progress.jsonl")).map(
+          (line) => (JSON.parse(line) as { type: string }).type,
+        ),
+      ).toEqual(["reviewer.started", "reviewer.first_event", "reviewer.completed"]);
+    };
+    await review(false);
+    await review(true);
+  });
+
+  it("settles a sealed reviewer's transcript before the sealed text replaces its progress bytes", async () => {
+    const { cwd, evidenceDir } = makeReviewWorkspace("claudexor-sealed-landing-");
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-sealed-landing-artifacts-"));
+    writeFileSync(join(evidenceDir, "DIFF.patch"), DIFF);
+    writeFileSync(join(evidenceDir, "DIFF_SUMMARY.md"), "one release file changed\n");
+    writeFileSync(join(evidenceDir, "FREEZE.json"), "{}\n");
+    writeFileSync(join(evidenceDir, "MANIFEST.sha256"), "sealed fixture\n");
+    initGitFixture(cwd);
+    const envelope = JSON.stringify({
+      completion: {
+        verdict: "PASS",
+        checklist: [
+          "sealed_evidence",
+          "intent_and_scope",
+          "runtime_and_security",
+          "tests_and_release",
+        ].map((item) => ({ item, completed: true })),
+        findingCount: 0,
+      },
+      findings: [],
+    });
+    const transcript = join(artifactsDir, "01-sealed-reviewer", "transcript.md");
+    const progress = { pulled: 0, finished: false };
+    // Only the transcript's appends are held: its progress bytes stay in flight.
+    const held = holdAppendWrites((path) => path === transcript);
+    let resolved = false;
+    const reviewing = reviewCandidate({
+      candidateLabel: "Release candidate",
+      diff: DIFF,
+      evidenceDir,
+      evidenceReadOnly: true,
+      frozenIdentity: {
+        candidateSha: "a".repeat(40),
+        candidateTree: "b".repeat(40),
+        packetManifestSha256: "c".repeat(64),
+      },
+      env: { CLAUDEXOR_REVIEW_WAVE_ID: "33333333-3333-4333-8333-333333333333" },
+      artifactsDir,
+      cwd,
+      reviewers: [messageReviewer("sealed-reviewer", [envelope], progress, envelope)],
+    }).then((result) => {
+      resolved = true;
+      return result;
+    });
+    try {
+      await until("the reviewer's stream ends", () => progress.finished);
+      await quiet();
+      // The sealed overwrite waits for the progress bytes still in flight.
+      expect(held.held).toContain(transcript);
+      expect(readFileSync(transcript, "utf8")).toBe("");
+      expect(resolved).toBe(false);
+    } finally {
+      held.release();
+    }
+    const result = await reviewing;
+    // The sealed projection replaced every progress byte: nothing landed after it.
+    expect(readFileSync(transcript, "utf8")).toBe(`${envelope}\n`);
+    expect(result.findings).toEqual([]);
+  });
+
+  it("stops reading a reviewer's stream while its files are full, and reads on once they drain", async () => {
+    const { cwd, evidenceDir } = makeReviewWorkspace("claudexor-review-paced-");
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-paced-artifacts-"));
+    const dir = join(artifactsDir, "01-paced-reviewer");
+    const transcriptPath = join(dir, "transcript.md");
+    // Each message's transcript line is half the runtime's high-water mark: the
+    // second one fills the transcript while its writes are held.
+    const half = getDefaultHighWaterMark(false) / 2;
+    const messages = Array.from({ length: 10 }, (_, index) => String(index).repeat(half));
+    const progress = { pulled: 0, finished: false };
+    const held = holdAppendWrites((path) => path.startsWith(dir));
+    const reviewing = reviewCandidate({
+      candidateLabel: "Paced candidate",
+      diff: DIFF,
+      evidenceDir,
+      artifactsDir,
+      cwd,
+      reviewers: [messageReviewer("paced-reviewer", messages, progress)],
+    });
+    try {
+      await until("the reviewer's writes are held", () => held.held.length > 0);
+      await until("the transcript is full", () => orderedAppender.full(transcriptPath));
+      await quiet();
+      expect(progress.pulled).toBe(2);
+    } finally {
+      held.release();
+    }
+    await reviewing;
+    expect(progress.pulled).toBe(10);
+    expect(progress.finished).toBe(true);
+    const stream = readFileSync(join(dir, "raw-normalized-stream.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean);
+    expect(stream).toHaveLength(11);
+    expect(readFileSync(transcriptPath, "utf8")).toBe(`${messages.join("\n")}\n[]\n`);
   });
 });

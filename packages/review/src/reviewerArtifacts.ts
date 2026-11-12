@@ -1,9 +1,16 @@
-import { appendFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { ReviewFinding } from "@claudexor/schema";
+import type { HarnessEvent, ReviewFinding } from "@claudexor/schema";
 import { ReviewFinding as ReviewFindingSchema } from "@claudexor/schema";
-import { appendLine, ensureDir, newId, redactSecrets, writeJson, writeText } from "@claudexor/util";
+import {
+  ensureDir,
+  newId,
+  orderedAppender,
+  pacedByAppends,
+  redactSecrets,
+  writeJson,
+  writeText,
+} from "@claudexor/util";
 import type { ReviewerSpec, ReviewCandidateInput, TransientRetryPolicy } from "./reviewEngine.js";
 import type {
   ReviewerArtifactContext,
@@ -71,9 +78,23 @@ export function createReviewerArtifactContext(
 }
 
 /** Append transcript bytes exactly as projected (`ReviewerTextProjection`):
- * nothing is added here, so a stream fragment never gains a line break. */
+ * nothing is added here, so a stream fragment never gains a line break. The
+ * bytes are queued on the ordered appender, in call order. */
 export function appendTranscript(path: string, text: string): void {
-  appendFileSync(path, text, { encoding: "utf8", mode: 0o600 });
+  orderedAppender.append(path, text);
+}
+
+/** The reviewer's harness stream, read no faster than its own files land: the
+ * normalized stream, the transcript and the panel's progress journal. */
+export function pacedReviewerStream(
+  events: AsyncIterable<HarnessEvent>,
+  artifact: ReviewerArtifactContext,
+): AsyncIterable<HarnessEvent> {
+  return pacedByAppends(events, [
+    artifact.eventsPath,
+    artifact.transcriptPath,
+    artifact.progressPath,
+  ]);
 }
 
 export function safeFilePart(value: string): string {
@@ -107,7 +128,7 @@ export function emitReviewerProgress(
     ...patch,
   };
   const redacted = redactValue(event);
-  appendLine(artifact.progressPath, JSON.stringify(redacted));
+  orderedAppender.append(artifact.progressPath, `${JSON.stringify(redacted)}\n`);
   try {
     onReviewerEvent?.(redacted);
   } catch {

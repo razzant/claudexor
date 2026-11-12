@@ -8,7 +8,7 @@ import {
   harnessHostFactsEnv,
 } from "@claudexor/core";
 import { prepareReviewerRunSpec, recordPreparedEffort } from "./reviewerPreparation.js";
-import { preflightEvidence, type DiffEvidence, writeDiffEvidence } from "@claudexor/context";
+import { preflightEvidence, writeDiffEvidence } from "@claudexor/context";
 import type { HarnessEvent, ProviderFamily, ReviewFinding, RouteProof } from "@claudexor/schema";
 import { HarnessRunSpec, ReviewFinding as ReviewFindingSchema } from "@claudexor/schema";
 import { createHash } from "node:crypto";
@@ -16,14 +16,15 @@ import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "
 import { join, relative, resolve } from "node:path";
 import {
   engineBuildIdentity,
-  ensureDir,
+  ensureDirAsync,
   newId,
   nowIso,
+  orderedAppender,
   readTextSafe,
   redactSecrets,
   sha256,
-  writeJson,
-  writeText,
+  writeJsonAsync,
+  writeTextAsync,
 } from "@claudexor/util";
 import {
   dedupeFindings,
@@ -46,6 +47,7 @@ import {
   extractDiffPostimagePaths,
   isSameOrInside,
   prepareReviewerWorkspace,
+  readExistingDiffEvidence,
   selectReviewerWorkspaceBaseDir,
   uninspectableFacts,
 } from "./reviewerWorkspace.js";
@@ -76,6 +78,7 @@ import {
   createReviewerArtifactContext,
   emitReviewerProgress,
   insufficientEvidenceFinding,
+  pacedReviewerStream,
   safeFilePart,
   sleep,
   transientRetryDelayMs,
@@ -129,19 +132,6 @@ const DEFAULT_REVIEWER_TRANSIENT_RETRY_POLICY: TransientRetryPolicy = {
   maxDelayMs: 10_000,
 };
 const REVIEW_WAVE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function readExistingDiffEvidence(dir: string, diff: string): DiffEvidence {
-  const diffText = diff.endsWith("\n") ? diff : `${diff}\n`;
-  const summaryPath = join(dir, "DIFF_SUMMARY.md");
-  const summary = readTextSafe(summaryPath);
-  if (summary === null) throw new Error("sealed review packet is missing DIFF_SUMMARY.md");
-  return {
-    diffPath: join(dir, "DIFF.patch"),
-    summaryPath,
-    diffSha256: sha256(diffText),
-    summary,
-  };
-}
 
 function reviewerRouteProof(
   reviewer: ReviewerSpec,
@@ -313,7 +303,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
   ) {
     throw new Error("sealed release review requires a fresh empty artifacts directory");
   }
-  ensureDir(artifactsBaseDir);
+  await ensureDirAsync(artifactsBaseDir);
   const persistentEvidenceDir = join(artifactsBaseDir, "evidence");
   await copyReviewEvidencePacket(
     input.evidenceDir,
@@ -324,8 +314,8 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     ? readExistingDiffEvidence(persistentEvidenceDir, input.diff)
     : writeDiffEvidence(persistentEvidenceDir, input.diff);
   if (candidateInventory.mode === "explicit_paths")
-    writeJson(join(persistentEvidenceDir, CHANGED_PATHS_FILE), input.candidatePaths);
-  writeJson(
+    await writeJsonAsync(join(persistentEvidenceDir, CHANGED_PATHS_FILE), input.candidatePaths);
+  await writeJsonAsync(
     input.evidenceReadOnly
       ? join(artifactsBaseDir, "evidence-metadata.json")
       : join(persistentEvidenceDir, "metadata.json"),
@@ -451,7 +441,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
           };
           await input.onBeforeDispatch!(index, actual);
         };
-      writeText(artifact.promptPath, spec.prompt);
+      await writeTextAsync(artifact.promptPath, spec.prompt);
       updateReviewerMetadata(artifact, {
         session_id: spec.session_id,
         external_context_policy: spec.external_context_policy,
@@ -586,7 +576,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       : null;
     const jsonBlocks = sealedParse?.blocks ?? extractJsonBlocks(text);
     // The reviewer's parsed findings are its work product, kept exact (INV-146).
-    writeJson(artifact.parsedPath, jsonBlocks);
+    await writeJsonAsync(artifact.parsedPath, jsonBlocks);
     if (sealedParse && (sealedProjectionError || sealedParse.error)) {
       const detail = sealedProjectionError ?? sealedParse.error ?? "invalid sealed review output";
       writeParseError(artifact, {
@@ -718,6 +708,8 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     };
   } finally {
     await cleanupTemporaryReviewerWorkspaceBaseDir(reviewerWorkspaceBaseDir, artifactsBaseDir);
+    // A review never resolves with its reviewers' files still in flight.
+    await orderedAppender.settledUnder(artifactsBaseDir);
   }
 }
 
@@ -804,7 +796,7 @@ async function collectReviewerOutput(
     let attemptObservedCredentialProfileId: string | undefined;
     let attemptObservedSource: RouteProof["observed"]["evidence_source"] = "unavailable";
     const sealedMessageEvents: unknown[] = [];
-    for await (const ev of iter) {
+    for await (const ev of pacedReviewerStream(iter, artifact)) {
       const eventTime = nowIso();
       // Reviewer text is kept exact; diagnostics are masked by the shared seam.
       const persistedEvent = appendHarnessEvent(artifact.eventsPath, ev);
@@ -914,10 +906,12 @@ async function collectReviewerOutput(
     }
     let sealedProjectionError: string | undefined;
     if (sealed) {
+      // The progress bytes appended above land before the sealed text replaces them.
+      await orderedAppender.settledUnder(artifact.dir);
       try {
         text = sealedReviewTranscriptFromEvents(sealedMessageEvents);
         partialText = text;
-        writeText(artifact.transcriptPath, text);
+        await writeTextAsync(artifact.transcriptPath, text);
       } catch (error) {
         sealedProjectionError = error instanceof Error ? error.message : String(error);
       }

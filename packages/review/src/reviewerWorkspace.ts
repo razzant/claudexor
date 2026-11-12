@@ -3,7 +3,15 @@ import { constants, existsSync, lstatSync, readlinkSync, realpathSync, statSync 
 import { cp, mkdir, open, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import { newId, redactSecrets, sensitiveResourcePolicy, writeJson } from "@claudexor/util";
+import type { DiffEvidence } from "@claudexor/context";
+import {
+  newId,
+  readTextSafe,
+  redactSecrets,
+  sensitiveResourcePolicy,
+  sha256,
+  writeJsonAsync,
+} from "@claudexor/util";
 import type {
   ReviewerInventoryMode,
   ReviewerWorkspace,
@@ -164,6 +172,21 @@ async function copyCandidate(
   return uninspectable;
 }
 
+/** The diff evidence a sealed packet already holds: its DIFF.patch and
+ * DIFF_SUMMARY.md, read back instead of written. */
+export function readExistingDiffEvidence(dir: string, diff: string): DiffEvidence {
+  const diffText = diff.endsWith("\n") ? diff : `${diff}\n`;
+  const summaryPath = join(dir, "DIFF_SUMMARY.md");
+  const summary = readTextSafe(summaryPath);
+  if (summary === null) throw new Error("sealed review packet is missing DIFF_SUMMARY.md");
+  return {
+    diffPath: join(dir, "DIFF.patch"),
+    summaryPath,
+    diffSha256: sha256(diffText),
+    summary,
+  };
+}
+
 export async function copyReviewEvidencePacket(
   sourceEvidenceDir: string,
   persistentEvidenceDir: string,
@@ -320,7 +343,7 @@ export async function cleanupTemporaryReviewerWorkspaceBaseDir(
     await rm(workspaceBaseDir, { recursive: true, force: true });
   } catch (err) {
     try {
-      writeJson(join(artifactsBaseDir, "reviewer-workspace-base-cleanup-error.json"), {
+      await writeJsonAsync(join(artifactsBaseDir, "reviewer-workspace-base-cleanup-error.json"), {
         reviewer_workspace_base_cleanup: "failed",
         workspace_base_dir: workspaceBaseDir,
         error: redactSecrets(err instanceof Error ? err.message : String(err)),

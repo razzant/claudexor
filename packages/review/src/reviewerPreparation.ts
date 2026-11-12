@@ -4,7 +4,7 @@ import {
   type HarnessAdapter,
 } from "@claudexor/core";
 import type { EffortResolution, HarnessRunSpec } from "@claudexor/schema";
-import { appendLine } from "@claudexor/util";
+import { orderedAppender } from "@claudexor/util";
 import { redactValue, updateReviewerMetadata } from "./reviewerArtifacts.js";
 import type { ReviewerArtifactContext } from "./reviewRuntimeTypes.js";
 
@@ -40,9 +40,11 @@ export async function prepareReviewerRunSpec(
 /**
  * Record the prepared effort receipt exactly as a flag adapter's in-stream
  * receipt is recorded: the status event goes into the reviewer's normalized
- * stream, the receipt into `metadata.json`, and an adaptation/model-change disclosure
- * into the reviewer's `ignored_settings`. Nothing is injected into the live
- * adapter stream, so first-event timing keeps meaning "the adapter spoke".
+ * stream (queued on the ordered appender, so it keeps its place among the
+ * stream's harness events), the receipt into `metadata.json`, and an
+ * adaptation/model-change disclosure into the reviewer's `ignored_settings`.
+ * Nothing is injected into the live adapter stream, so first-event timing
+ * keeps meaning "the adapter spoke".
  */
 export function recordPreparedEffort(
   artifact: ReviewerArtifactContext,
@@ -53,7 +55,7 @@ export function recordPreparedEffort(
 ): void {
   if (!receipt) return;
   const event = effortResolutionEvent(sessionId, receipt, spec);
-  appendLine(artifact.eventsPath, JSON.stringify(redactValue(event)));
+  orderedAppender.append(artifact.eventsPath, `${JSON.stringify(redactValue(event))}\n`);
   const disclosures = event.payload?.["ignored_settings"];
   if (Array.isArray(disclosures))
     for (const item of disclosures) if (typeof item === "string") ignoredSettings.add(item);
