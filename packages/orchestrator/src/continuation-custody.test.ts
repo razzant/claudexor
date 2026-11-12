@@ -84,7 +84,7 @@ function setup(retain: boolean, signal?: AbortSignal) {
 
 describe("candidate envelope custody (A9)", () => {
   it.each([true, false])(
-    "releases terminal deferral when settlement throws (terminal already pending: %s)",
+    "still publishes the terminal when settlement throws (terminal already pending: %s)",
     async (pending) => {
       const repo = initRepo();
       const store = new ArtifactStore(repo);
@@ -118,8 +118,14 @@ describe("candidate envelope custody (A9)", () => {
         await expect(flushContinuationTerminal(context, facts)).rejects.toThrow(
           "injected settle failure",
         );
-        // With no deferred event, the terminal guard must still be able to publish its fallback.
-        if (!pending) log.emit("run.failed", { facts });
+        // With no deferred event, the terminal guard must still be able to publish
+        // its fallback: the deferral stands until a terminal commits, so the
+        // fallback is held, and the guard's flush publishes it.
+        if (!pending) {
+          log.emit("run.failed", { facts });
+          expect(log.terminalCommitted()).toBe(false);
+          await flushContinuationTerminal(context, facts);
+        }
         expect(log.terminalCommitted()).toBe(true);
         const written = readRunEvents(paths.eventsPath).events;
         // #411(f): the failure is disclosed once, before the terminal, which still publishes.

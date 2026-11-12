@@ -1,10 +1,19 @@
 import type { RunEvent, RunEventType, RunTelemetry } from "@claudexor/schema";
 import { RunEvent as RunEventSchema } from "@claudexor/schema";
 import { existsSync, statSync, truncateSync, unlinkSync } from "node:fs";
-import { appendLine, nowIso } from "@claudexor/util";
-import { lastSeqInFile, readRunEvents, terminalEventInFile } from "./event-file.js";
+import { dirname } from "node:path";
+import { appendLine, nowIso, orderedAppender } from "@claudexor/util";
+import { lastSeqInFile, readEventFile, terminalEventInFile, withUnlanded } from "./event-file.js";
+import { activeEventLogs, terminalTypeOf } from "./live-writers.js";
 export { RETAINED_OUTPUT_PATH, retainedOutput, writeRetainedOutput } from "./retained-output.js";
-export { lastSeqInFile, readRunEvents } from "./event-file.js";
+export { lastSeqInFile } from "./event-file.js";
+export {
+  appendRunEvent,
+  appendRunEventLanded,
+  lastRunEventSeq,
+  liveRunEventSeq,
+  readRunEvents,
+} from "./live-writers.js";
 
 export type TerminalRunEventType = Extract<
   RunEventType,
@@ -45,6 +54,15 @@ export type TerminalStagingHook = (
   telemetry: RunTelemetry | null,
 ) => Promise<void>;
 
+export interface EventLogOptions {
+  /**
+   * Queue each line on the ordered appender instead of writing it inline: `emit`
+   * returns once the line is queued, and the line's `onPersist` and `onPublish`
+   * run when it lands. The terminal commits through `emitTerminal`.
+   */
+  queued?: boolean;
+}
+
 interface PreparedTerminal {
   event: RunEvent;
   prepared: PreparedTerminalEvent | void;
@@ -71,13 +89,20 @@ export class EventLog {
   private terminalWriterPoisoned = false;
   private terminalPersistence?: TerminalPersistenceHook;
   private terminalStaging?: TerminalStagingHook;
-  /** A prepared terminal's bytes are being staged; ordinary events may append. */
+  /** A terminal is being committed through `emitTerminal`; ordinary events may append. */
   private terminalStaged = false;
   private prepareOutput?: (type: TerminalRunEventType, payload: Record<string, unknown>) => void;
   private beforeTerminal?: (
     type: TerminalRunEventType,
     payload: Record<string, unknown>,
   ) => PreparedTerminalEvent | void;
+  /** Queued mode: stamped events whose lines have not landed, in seq order.
+   * Null when lines are written inline. */
+  private readonly unlanded: RunEvent[] | null;
+  /** Queued mode: the highest seq whose line has landed. */
+  private landedSeq: number;
+  /** `dispose` was called while lines were in flight; it completes when they land. */
+  private disposeWhenLanded = false;
 
   constructor(
     private readonly path: string,
@@ -97,29 +122,40 @@ export class EventLog {
     private readonly threadId?: string,
     /** Best-effort live observer, invoked only after terminal finalization. */
     private readonly onPublish?: (event: RunEvent) => void,
+    options: EventLogOptions = {},
   ) {
-    this.nextSeq = lastSeqInFile(path) + 1;
-    this.terminalCommittedFlag = terminalEventInFile(path);
-    if (!this.terminalCommittedFlag) {
-      if (activeEventLogs.has(path)) {
-        throw new Error("an active EventLog already owns this event path");
-      }
-      activeEventLogs.set(path, this);
+    // The live owner is checked before the tail is read: a live queued writer's
+    // file may still be missing lines it has stamped.
+    const live = activeEventLogs.get(path);
+    if (live && !live.releaseRecoveredTerminalFence()) {
+      throw new Error("an active EventLog already owns this event path");
     }
+    this.nextSeq = lastSeqInFile(path) + 1;
+    this.landedSeq = this.nextSeq - 1;
+    this.unlanded = options.queued ? [] : null;
+    this.terminalCommittedFlag = terminalEventInFile(path);
+    if (!this.terminalCommittedFlag) activeEventLogs.set(path, this);
   }
 
   /**
    * Unregister this log as the live writer for its path. Out-of-band
    * appenders fall back to file-tail stamping afterwards, which is safe once
-   * the owning run is terminal (nobody else holds an in-memory counter).
+   * the owning run is terminal (nobody else holds an in-memory counter). With
+   * lines still in flight, the log stays registered until the last one lands
+   * or is lost, so nobody stamps from a file that is still short.
    */
   dispose(): void {
+    if (this.unlanded?.length) {
+      this.disposeWhenLanded = true;
+      return;
+    }
     if (activeEventLogs.get(this.path) === this) activeEventLogs.delete(this.path);
   }
 
   /** Hold the one terminal event while a Delegate parent drains children.
    * Non-terminal events (notably aggregate budget.cash) continue to append and
-   * therefore remain ordered before the eventual final event. */
+   * therefore remain ordered before the eventual final event. The hold stays
+   * until a terminal commits; only `emitTerminal` commits a held terminal. */
   deferTerminal(): void {
     this.deferTerminalEvents = true;
   }
@@ -164,27 +200,66 @@ export class EventLog {
     this.terminalStaging = hook;
   }
 
-  /** Highest seq this writer has appended: its in-memory counter, no file read. */
+  /** Highest seq whose line this writer has appended (queued mode: landed):
+   * its in-memory counter, no file read. */
   lastSeq(): number {
-    return this.nextSeq - 1;
+    return this.unlanded ? this.landedSeq : this.nextSeq - 1;
   }
 
   /** Append a typed run event. Validates against the schema before writing. */
   emit(type: RunEventType, payload: Record<string, unknown> = {}, publish = true): RunEvent {
+    return this.emitEvent(type, payload, publish);
+  }
+
+  /**
+   * `emit`, settled once the event's line has landed and its `onPersist`
+   * accepted it. A queued log's write or `onPersist` failure rejects this
+   * await alone: it is not held for the log's next emit, and the log stays
+   * usable. An inline log has settled by the time this returns.
+   */
+  emitLanded(
+    type: Exclude<RunEventType, TerminalRunEventType>,
+    payload: Record<string, unknown> = {},
+    publish = true,
+  ): Promise<RunEvent> {
+    return new Promise((resolve, reject) => {
+      if (this.unlanded) this.emitEvent(type, payload, publish, { resolve, reject });
+      else resolve(this.emitEvent(type, payload, publish));
+    });
+  }
+
+  private emitEvent(
+    type: RunEventType,
+    payload: Record<string, unknown>,
+    publish: boolean,
+    landing?: { resolve(event: RunEvent): void; reject(error: unknown): void },
+  ): RunEvent {
     this.assertEmittable();
-    const terminalType: TerminalRunEventType | null =
-      type === "run.completed" || type === "run.failed" || type === "run.blocked" ? type : null;
+    const terminalType = terminalTypeOf(type);
     if (terminalType && this.terminalStaged) {
       throw new Error("run terminal event commit is already in progress");
     }
+    // A queued line's failure that nobody awaited is reported here, once.
+    if (this.unlanded) orderedAppender.throwHeld(this.path);
     if (this.deferTerminalEvents && terminalType) {
       if (this.deferredTerminal) throw new Error("run terminal event was emitted more than once");
       this.deferredTerminal = { type, payload };
       return this.stamp(type, payload);
     }
-    if (terminalType)
-      return this.commitTerminal(this.prepareTerminal(terminalType, payload), publish);
+    if (terminalType) return this.commitNow(terminalType, payload, publish);
     const event = this.stamp(type, payload);
+    if (this.unlanded) {
+      orderedAppender.append(this.path, `${JSON.stringify(event)}\n`, {
+        landed: () => this.landed(event, publish),
+        lost: () => this.lost(),
+        ...(landing
+          ? { waiter: { resolve: () => landing.resolve(event), reject: landing.reject } }
+          : {}),
+      });
+      this.nextSeq += 1;
+      this.unlanded.push(event);
+      return event;
+    }
     appendLine(this.path, JSON.stringify(event));
     this.nextSeq += 1;
     this.onPersist?.(event);
@@ -196,16 +271,53 @@ export class EventLog {
     return event;
   }
 
+  /** A queued line landed: it counts, `onPersist` takes it, then `onPublish`
+   * (an `onPersist` throw is this landing's failure and skips `onPublish`). */
+  private landed(event: RunEvent, publish: boolean): void {
+    this.unlanded!.shift();
+    this.landedSeq = event.seq ?? this.landedSeq;
+    try {
+      this.onPersist?.(event);
+      try {
+        if (publish) this.onPublish?.(event);
+      } catch {
+        /* best-effort live observer */
+      }
+    } finally {
+      this.releaseWhenLanded();
+    }
+  }
+
+  /** A queued line will not land: its write failed, and every line queued
+   * after it fails with it. As with a failed inline append, no seq is consumed. */
+  private lost(): void {
+    this.unlanded!.shift();
+    if (this.unlanded!.length === 0) this.nextSeq = this.landedSeq + 1;
+    this.releaseWhenLanded();
+  }
+
+  private releaseWhenLanded(): void {
+    if (!this.disposeWhenLanded || this.unlanded!.length > 0) return;
+    this.disposeWhenLanded = false;
+    this.dispose();
+  }
+
   /**
-   * The terminal commit with its durable bytes staged first. The terminal is
-   * prepared synchronously (canonical type, receipt and outcome frozen), the
-   * staging hook writes its bytes off the request thread, and the unchanged
-   * synchronous commit adopts them. While staging awaits, another terminal is
-   * refused as in progress and an ordinary event (an audit, a live-message
-   * receipt) appends before the terminal, which then takes the next seq and
-   * keeps the time its verdict was prepared. A staging failure leaves the
-   * writes to the commit. Without a hook, or while terminals are held, this is
-   * `emit`, committed before this function first yields.
+   * The terminal commit, with its durable bytes staged first when a staging
+   * hook is set. The terminal is prepared synchronously (canonical type,
+   * receipt and outcome frozen), the staging hook writes its bytes off the
+   * request thread, and the unchanged synchronous commit adopts them. While
+   * this runs another terminal is refused as in progress, and an ordinary
+   * event (an audit, a live-message receipt) appends before the terminal,
+   * which then takes the next seq and keeps the time its verdict was prepared.
+   * A staging failure leaves the writes to the commit. This commits a held
+   * terminal too; it never holds one.
+   *
+   * A queued log first settles every ordered append under its run directory,
+   * prepares its output, settles again, and only then freezes the rollback
+   * boundary and prepares the terminal; after staging it settles until its own
+   * queue is empty. An inline log without a staging hook commits before this
+   * function first yields.
    */
   async emitTerminal(
     type: TerminalRunEventType,
@@ -213,31 +325,80 @@ export class EventLog {
     publish = true,
   ): Promise<RunEvent> {
     const stage = this.terminalStaging;
-    if (!stage || this.deferTerminalEvents) return this.emit(type, payload, publish);
     this.assertEmittable();
     if (this.terminalStaged) throw new Error("run terminal event commit is already in progress");
-    const terminal = this.prepareTerminal(type, payload);
-    this.terminalCommitInProgress = false;
+    if (!stage && !this.unlanded) return this.commitNow(type, payload, publish);
+    // Raised before the first await, so no callback during it commits a terminal.
     this.terminalStaged = true;
     try {
-      await stage(terminal.event, terminal.prepared?.telemetry ?? null);
-    } catch {
-      // Whatever was not staged, the synchronous commit writes itself.
+      if (this.unlanded) await this.settleRun();
+      this.prepareOutput?.(type, payload);
+      if (this.unlanded) await this.settleRun();
+      const terminal = this.prepareTerminal(type, payload);
+      this.terminalCommitInProgress = false;
+      if (stage) {
+        try {
+          await stage(terminal.event, terminal.prepared?.telemetry ?? null);
+        } catch {
+          // Whatever was not staged, the synchronous commit writes itself.
+        }
+      }
+      if (this.unlanded) {
+        try {
+          await this.settleRun();
+        } catch (error) {
+          this.rollbackTerminal(this.fileBytes(), terminal.prepared, error);
+        }
+      }
+      this.terminalStaged = false;
+      return this.commitTerminal(terminal, publish);
     } finally {
       this.terminalStaged = false;
     }
-    return this.commitTerminal(terminal, publish);
   }
 
   /** Commit the terminal held by `deferTerminal()` through `emitTerminal`, so
-   * its bytes are staged first when a staging hook is set. */
+   * its bytes are staged first when a staging hook is set. The hold stays. */
   async commitDeferredTerminal(): Promise<RunEvent | null> {
     const pending = this.deferredTerminal;
     this.deferredTerminal = null;
-    this.deferTerminalEvents = false;
     return pending
       ? this.emitTerminal(pending.type as TerminalRunEventType, pending.payload)
       : null;
+  }
+
+  /** Every ordered append under the run directory has settled, and this log has
+   * no line in flight. Rejects with a failure nobody awaited. */
+  private async settleRun(): Promise<void> {
+    const runDir = dirname(this.path);
+    do await orderedAppender.settledUnder(runDir);
+    while (this.unlanded!.length > 0);
+  }
+
+  /** The synchronous terminal commit. A queued log refuses it while a line is in
+   * flight, since the terminal line would land ahead of it (a programming-error
+   * fence: every queued run commits its terminal through `emitTerminal`). */
+  private commitNow(
+    terminalType: TerminalRunEventType,
+    payload: Record<string, unknown>,
+    publish: boolean,
+  ): RunEvent {
+    this.assertNothingInFlight();
+    // Derived output may announce its file before the terminal sequence/receipt
+    // is frozen. Deferred terminals reach this only when they are flushed.
+    this.prepareOutput?.(terminalType, payload);
+    this.assertNothingInFlight();
+    return this.commitTerminal(this.prepareTerminal(terminalType, payload), publish);
+  }
+
+  private assertNothingInFlight(): void {
+    if (!this.unlanded?.length) return;
+    throw Object.assign(
+      new Error(
+        "a queued event log commits a terminal synchronously only with no writes in flight",
+      ),
+      { code: "terminal_writes_in_flight" },
+    );
   }
 
   private assertEmittable(): void {
@@ -268,15 +429,12 @@ export class EventLog {
     return existsSync(this.path) ? statSync(this.path).size : null;
   }
 
-  /** Freeze a terminal: its derived output, event and receipt. The fence stays
-   * up until the commit; a failed preparation rolls back and rethrows. */
+  /** Freeze a terminal: its event and receipt. The fence stays up until the
+   * commit; a failed preparation rolls back and rethrows. */
   private prepareTerminal(
     terminalType: TerminalRunEventType,
     payload: Record<string, unknown>,
   ): PreparedTerminal {
-    // Derived output may announce its file before the terminal sequence/receipt
-    // is frozen. Deferred terminals reach this only when they are flushed.
-    this.prepareOutput?.(terminalType, payload);
     let prepared: PreparedTerminalEvent | void = undefined;
     let event = this.stamp(terminalType, payload);
     // Snapshot before terminal preparation: the hook may materialize sibling
@@ -343,6 +501,7 @@ export class EventLog {
       }
     }
     this.nextSeq += 1;
+    this.landedSeq = event.seq ?? this.landedSeq;
     // The durable journal, canonical prepared receipt, and per-run event are
     // now one committed terminal unit. Only now may observers see it.
     this.terminalCommittedFlag = true;
@@ -388,6 +547,10 @@ export class EventLog {
     return true;
   }
 
+  /** No queued byte lies past the cut: `emitTerminal` freezes `previousBytes`
+   * and commits only after a settle, and rolls a failed settle back at the
+   * current size; `commitNow` refuses a queued log with lines in flight.
+   * Landed bytes past the cut are truncated. */
   private rollbackTerminal(
     previousBytes: number | null,
     prepared: PreparedTerminalEvent | void,
@@ -423,66 +586,9 @@ export class EventLog {
     throw originalError;
   }
 
-  /** Read and parse all events (skipping malformed lines, which are surfaced separately). */
+  /** Read and parse all events (skipping malformed lines, which are surfaced
+   * separately), followed by those stamped and not yet landed. */
   readAll(): { events: RunEvent[]; malformed: number } {
-    return readRunEvents(this.path);
+    return withUnlanded(readEventFile(this.path), this.unlanded ?? []);
   }
-}
-
-/**
- * Live writers by events.jsonl path (one daemon process hosts the
- * orchestrator AND the control API). While a run is active its EventLog owns
- * the in-memory seq counter; any other same-process appender stamping from
- * the file tail would duplicate ids the moment the live counter is ahead.
- */
-const activeEventLogs = new Map<string, EventLog>();
-
-/**
- * Append an out-of-band event (e.g. a control-api audit record) into a run's
- * canonical log WITHOUT corrupting the seq space: routes through the live
- * EventLog when the run is still active (same counter, same onEmit sink), and
- * falls back to file-tail stamping for terminal runs.
- */
-export function appendRunEvent(
-  path: string,
-  runId: string,
-  taskId: string,
-  type: RunEventType,
-  payload: Record<string, unknown> = {},
-): RunEvent {
-  const live = activeEventLogs.get(path);
-  if (live && !live.releaseRecoveredTerminalFence()) return live.emit(type, payload);
-  const terminal = type === "run.completed" || type === "run.failed" || type === "run.blocked";
-  if (terminal && terminalEventInFile(path)) {
-    throw new Error("run terminal event is already committed");
-  }
-  const event = RunEventSchema.parse({
-    seq: lastSeqInFile(path) + 1,
-    ts: nowIso(),
-    run_id: runId,
-    task_id: taskId,
-    type,
-    payload: payload,
-  });
-  appendLine(path, JSON.stringify(event));
-  return event;
-}
-
-/**
- * A registered live writer's authoritative in-memory cursor, or null when no
- * live writer owns this path. This never reads files or initiates recovery;
- * a poisoned writer keeps its conservative counter until recovery releases it.
- */
-export function liveRunEventSeq(path: string): number | null {
-  return activeEventLogs.get(path)?.lastSeq() ?? null;
-}
-
-/**
- * The run's highest event `seq` for snapshot fencing. A live writer answers from
- * its in-memory counter (the one seq owner; its file holds exactly the events up
- * to that seq); any other log answers from its file through `lastSeqInFile`.
- */
-export function lastRunEventSeq(path: string): number {
-  const live = activeEventLogs.get(path);
-  return live && !live.releaseRecoveredTerminalFence() ? live.lastSeq() : lastSeqInFile(path);
 }

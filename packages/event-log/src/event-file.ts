@@ -5,22 +5,52 @@ import { readTextSafe } from "@claudexor/util";
 
 /* Readers of a run's events.jsonl file: no live writer state is consulted. */
 
-/** Shared reader for live terminal preparation and selected interrupted-run recovery. */
-export function readRunEvents(path: string): { events: RunEvent[]; malformed: number } {
+export interface EventFileRead {
+  events: RunEvent[];
+  malformed: number;
+  /** The file ends in a line that has no newline and does not parse: torn,
+   * or still being written. It is counted in `malformed`. */
+  tornTail: boolean;
+}
+
+/** The raw reader, for a path without a live writer. */
+export function readEventFile(path: string): EventFileRead {
   const text = readTextSafe(path);
-  if (text === null) return { events: [], malformed: 0 };
+  if (text === null) return { events: [], malformed: 0, tornTail: false };
   const events: RunEvent[] = [];
   let malformed = 0;
-  for (const line of text.split("\n")) {
+  let tornTail = false;
+  const lines = text.split("\n");
+  for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
       events.push(RunEventSchema.parse(JSON.parse(trimmed)));
     } catch {
       malformed += 1;
+      tornTail = index === lines.length - 1;
     }
   }
-  return { events, malformed };
+  return { events, malformed, tornTail };
+}
+
+/**
+ * A live writer's file followed by its stamped events that have not landed:
+ * those with a higher seq than any line on disk, so a line already written is
+ * not repeated. A torn last line is the start of one of them and is replaced
+ * by its in-memory copy.
+ */
+export function withUnlanded(
+  read: EventFileRead,
+  unlanded: readonly RunEvent[],
+): { events: RunEvent[]; malformed: number } {
+  if (unlanded.length === 0) return { events: read.events, malformed: read.malformed };
+  let onDisk = 0;
+  for (const event of read.events) if ((event.seq ?? 0) > onDisk) onDisk = event.seq ?? 0;
+  return {
+    events: [...read.events, ...unlanded.filter((event) => (event.seq ?? 0) > onDisk)],
+    malformed: read.malformed - (read.tornTail ? 1 : 0),
+  };
 }
 
 /** How much of a log's end `lastSeqInFile` reads before it scans the whole file. */

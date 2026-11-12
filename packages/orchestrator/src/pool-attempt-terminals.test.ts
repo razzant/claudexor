@@ -1199,17 +1199,20 @@ describe("a cancel that lands after the strategy's verdict is the terminal's sta
 
   it("control: a cancel after the success terminal durably committed changes nothing", async () => {
     const cancel = new AbortController();
-    const original = EventLog.prototype.emit;
+    const original = EventLog.prototype.emitTerminal;
     // Abort only once the canonical terminal is durable (receipt and event
-    // committed), never on the strategy's mere success verdict.
-    const committed = vi.spyOn(EventLog.prototype, "emit").mockImplementation(function (
-      this: EventLog,
-      ...args: Parameters<EventLog["emit"]>
-    ) {
-      const event = original.apply(this, args);
-      if (this.terminalCommitted() && !cancel.signal.aborted) cancel.abort("user_cancelled");
-      return event;
-    });
+    // committed), never on the strategy's mere success verdict. The run's held
+    // terminal commits through emitTerminal.
+    const committed = vi
+      .spyOn(EventLog.prototype, "emitTerminal")
+      .mockImplementation(async function (
+        this: EventLog,
+        ...args: Parameters<EventLog["emitTerminal"]>
+      ) {
+        const event = await original.apply(this, args);
+        if (this.terminalCommitted() && !cancel.signal.aborted) cancel.abort("user_cancelled");
+        return event;
+      });
     try {
       const o = await run({
         mode: "agent",
