@@ -66,7 +66,9 @@ async function initRepo(): Promise<string> {
   return repo;
 }
 
-/** A harness that streams `events` messages, edits one file and finishes. */
+/** A harness that streams `events` steps, edits one file and finishes. Each step
+ * is the mix an adapter emits per turn: a message, a tool call and its result,
+ * and a usage report, each stamped with the route's credential and observed model. */
 function streaming(events: number): HarnessAdapter {
   return {
     id: "stream",
@@ -89,8 +91,21 @@ function streaming(events: number): HarnessAdapter {
     },
     async *run(spec) {
       const ts = new Date().toISOString();
-      for (let index = 0; index < events; index += 1)
-        yield { type: "message", session_id: spec.session_id, ts, text: `step ${index}` };
+      const route = { credential_route: "local", observed_model: "stream-model" } as const;
+      for (let index = 0; index < events; index += 1) {
+        const session_id = spec.session_id;
+        const tool = { name: "Read", kind: "file", use_id: `t${index}`, target: "a.txt" } as const;
+        yield { type: "message", session_id, ts, text: `step ${index}`, ...route };
+        yield { type: "tool_call", session_id, ts, tool, ...route };
+        yield { type: "tool_result", session_id, ts, tool: { ...tool, status: "ok" }, ...route };
+        yield {
+          type: "usage",
+          session_id,
+          ts,
+          usage: { input_tokens: 10, output_tokens: 2 },
+          ...route,
+        };
+      }
       writeFileSync(join(spec.cwd, "CHANGED.txt"), "change\n");
       yield { type: "message", session_id: spec.session_id, ts, text: "done", final: true };
       yield { type: "completed", session_id: spec.session_id, ts };
@@ -115,14 +130,18 @@ async function measuredRun(events: number) {
     calls.counting = false;
     const total = (prefix: string) =>
       [...calls.byName].filter(([name]) => name.startsWith(prefix)).reduce((n, [, v]) => n + v, 0);
-    const messages = readFileSync(join(result.runDir, "events.jsonl"), "utf8")
+    const harnessEvents = readFileSync(join(result.runDir, "events.jsonl"), "utf8")
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as RunEvent)
-      .filter((event) => event.type === "harness.event" && event.payload["type"] === "message");
+      .filter((event) => event.type === "harness.event");
+    const ofType = (type: string) =>
+      harnessEvents.filter((event) => event.payload["type"] === type).length;
     return {
       result,
-      messages: messages.length,
+      messages: ofType("message"),
+      toolCalls: ofType("tool_call"),
+      toolResults: ofType("tool_result"),
       fsSync: total("fs."),
       childSync: total("child_process."),
       terminalFsyncs: calls.byName.get("fs.fsyncSync") ?? 0,
@@ -155,6 +174,7 @@ describe("a run's main thread and its streamed harness events (#688)", { timeout
     ] as const) {
       expect(measured.result.lifecycle).toBe("succeeded");
       expect(measured.messages).toBe(events + 1);
+      expect([measured.toolCalls, measured.toolResults]).toEqual([events, events]);
       expect(measured.terminalFsyncs).toBeGreaterThan(0);
     }
   });
