@@ -1,0 +1,289 @@
+# #672 temporary QA, published ONLY on qa/c672-copilot-conversion-diagnostic.
+# The `windows-test` job of this branch's ci.yml, copied verbatim (same steps,
+# order, timeout; no continue-on-error, no retry) for its windows-latest /
+# Node 24.22.3 leg on four independent fresh runners of the stage-1 diagnostic
+# build. Disclosed differences: push trigger on this branch; matrix reduced to
+# that leg x shard 1-4; job name carries the shard; the vendor smoke step gets
+# `id: smoke` and byte-exact stdout/stderr/exit capture of the same
+# `node scripts/vendor-program-smoke.mjs` (same cwd and environment); two
+# `if: always()` steps record how far the job got and upload the evidence.
+# A failed earlier step stays failed and the smoke is then reported not reached.
+# One fixed batch, not a statistical qualification; all-green is no diagnosis.
+name: c672 copilot conversion diagnostic
+
+on:
+  push:
+    branches: [qa/c672-copilot-conversion-diagnostic]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-test:
+    name: Windows ${{ matrix.runner }} (Node ${{ matrix.node-version }}) shard ${{ matrix.shard }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # c672: only the windows-latest leg, four independent fresh runners.
+        runner: [windows-latest]
+        node-version: [24.22.3]
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Initialize pinned x64 MSVC environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe is unavailable on the hosted Windows image"
+          }
+          $installation = (& $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath | Select-Object -First 1).Trim()
+          if (-not $installation) { throw "x64 MSVC build tools are unavailable" }
+          $devCmd = Join-Path $installation "Common7\Tools\VsDevCmd.bat"
+          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) {
+            throw "VsDevCmd.bat is unavailable at $devCmd"
+          }
+          $setup = Join-Path $env:RUNNER_TEMP "claudexor-msvc-env.cmd"
+          "@call `"$devCmd`" -no_logo -arch=x64 -host_arch=x64`r`n@set`r`n" |
+            Set-Content -LiteralPath $setup -Encoding ascii
+          $developer = @{}
+          & $env:ComSpec /d /s /c "`"$setup`"" | ForEach-Object {
+            $separator = $_.IndexOf("=")
+            if ($separator -gt 0) {
+              $developer[$_.Substring(0, $separator)] = $_.Substring($separator + 1)
+            }
+          }
+          foreach ($name in @("Path", "INCLUDE", "LIB", "LIBPATH", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion", "UCRTVersion")) {
+            if ($developer.ContainsKey($name)) {
+              Add-Content -LiteralPath $env:GITHUB_ENV -Value "$name=$($developer[$name])" -Encoding utf8
+            }
+          }
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Build native ConPTY fixture
+        run: pnpm --filter @claudexor/core build:win32-fixtures
+
+      # The Windows-shaped surfaces, and only suites whose fixtures are
+      # portable: the absolute-path contract, win32 process identity and
+      # termination, and the legacy reader whose separator bug reproduces
+      # ONLY here. Suites built on POSIX mode bits, symlinks or `#!/bin/sh`
+      # fixtures stay on the Linux/macOS legs; their win32 branches are
+      # proven by injected-platform unit tests instead. The CLI exit tail runs
+      # here because only Windows libuv aborts a forced exit after fetch(). The
+      # release smoke's daemon stop loop runs under this runner's pwsh.
+      - name: Test (platform auth, agy print, ConPTY, setup transport, SQL recovery, CLI exit)
+        run: >
+          pnpm vitest run packages/schema/src/schema.test.ts
+          packages/schema/src/platform-auth-policy.test.ts
+          packages/core/src/process-identity.test.ts
+          packages/core/src/process-tree.test.ts
+          packages/core/src/proc-windows-hide.test.ts
+          packages/core/src/capabilities.test.ts
+          packages/core/src/win32-conpty-helper.test.ts
+          packages/harness-agy/src/conformance.test.ts
+          packages/harness-agy/src/win32-print-acceptance.test.ts
+          packages/cli/src/setup-login-capability.test.ts
+          packages/cli/src/setup-login-pty.test.ts
+          packages/cli/src/setup-login-runner-transport.test.ts
+          packages/cli/src/profile-login-win32.integration.test.ts
+          packages/cli/src/setup-login-recovery.test.ts
+          packages/cli/src/setup-recovery-command.test.ts
+          packages/cli/src/live-auth-status.test.ts
+          packages/core/src/credential-mutation-window.test.ts
+          packages/core/src/proc-exit.test.ts
+          packages/harness-cursor/src/auth-timeout.test.ts
+          packages/harness-cursor/src/status-cache.test.ts
+          packages/harness-cursor/src/status-cache-clock.test.ts
+          packages/cli/src/cli-io.test.ts
+          packages/daemon/src/store/store.test.ts
+          packages/daemon/src/store/runtime.test.ts
+          packages/daemon/src/store/schema.test.ts
+          packages/daemon/src/store/flusher.test.ts
+          packages/daemon/src/store/external-files.test.ts
+          packages/daemon/src/store/blob-files.test.ts
+          packages/daemon/src/store/obligations.test.ts
+          packages/daemon/src/store/maintenance.test.ts
+          packages/daemon/src/store/retention.test.ts
+          packages/daemon/src/store/cursors.test.ts
+          packages/daemon/src/store/main-thread-sync.test.ts
+          packages/cli/src/store-worker-bundle.test.ts
+          packages/cli/src/bulk-worker-bundle.test.ts
+          packages/control-api/src/bulk-executor.test.ts
+          packages/control-api/src/bulk-worker-isolation.test.ts
+          packages/control-api/src/event-replay-batch.test.ts
+          packages/event-log/src/live-seq.test.ts
+          packages/daemon/src/store/legacy-journal/frame-reader.test.ts
+          packages/daemon/src/store/legacy-journal/frame-reader-shrink.test.ts
+          packages/daemon/src/store/command-contract.test.ts
+          packages/daemon/src/store/terminal-contract.test.ts
+          packages/daemon/src/store/import-faults.test.ts
+          packages/daemon/src/store/engine-state-recovery.test.ts
+          packages/daemon/src/store/sql-recovery.test.ts
+          packages/daemon/src/store/store-close.test.ts
+          packages/daemon/src/store/statement-observer.test.ts
+          packages/cli/src/sql-startup-storage.test.ts
+          packages/cli/src/sql-daemon-storage.test.ts
+          packages/cli/src/sql-daemon-storage-owner.test.ts
+          packages/harness-codex/src/model-auth.test.ts
+          packages/harness-codex/src/model.test.ts
+          packages/harness-codex/src/responses.test.ts
+          packages/daemon/src/model-operations.test.ts
+          packages/control-api/src/files-result.test.ts
+          packages/workspace/src/directory-portable.test.ts
+          packages/daemon/src/resource-store.model.test.ts
+          packages/daemon/src/command-retention.test.ts
+          packages/control-api/src/model-routes.test.ts
+          scripts/lib/release-windows-stop.test.mjs
+
+      # Default-path writer birth: real FILETIME reads, an owned witness process
+      # and the built daemon on its default named pipe. The mismatched record is
+      # seeded and labelled synthetic; nothing forces real PID recycling. Kept
+      # apart from the parallel step above so its timing line reads this lane's
+      # own PowerShell and stop latency. That line is an observation, not a gate.
+      - name: Writer birth identity and built daemon lifecycle (credential-free native processes)
+        run: >
+          pnpm vitest run packages/daemon/src/writer-lease-pid-reuse.test.ts
+          packages/cli/src/claudexord-writer-birth.test.ts
+
+      - name: Reproduce Codex cleanup control loss on the known broken control (Windows, no credentials)
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/windows-codex-verdict-1755'
+        shell: pwsh
+        env:
+          CLEANUP_BASE_SHA: 211a8f52acbde19803e9104960639c903c54f752
+        run: |
+          $ErrorActionPreference = "Stop"
+          $source = (Get-Location).Path
+          $baseline = Join-Path $env:RUNNER_TEMP "codex-cleanup-base"
+          git fetch --no-tags origin $env:CLEANUP_BASE_SHA
+          if ($LASTEXITCODE -ne 0) { throw "base fetch failed" }
+          git worktree add --detach $baseline $env:CLEANUP_BASE_SHA
+          if ($LASTEXITCODE -ne 0) { throw "base checkout failed" }
+          foreach ($file in @("packages/harness-codex/src/app-server-cleanup-native.test.ts", "packages/harness-codex/fixtures/app-server/cleanup-peer.mjs")) {
+            Copy-Item -LiteralPath (Join-Path $source $file) -Destination (Join-Path $baseline $file)
+          }
+          Push-Location $baseline
+          try {
+            pnpm install --frozen-lockfile --offline
+            if ($LASTEXITCODE -ne 0) { throw "base dependency setup failed" }
+            pnpm build
+            if ($LASTEXITCODE -ne 0) { throw "base build failed" }
+            $env:CX_CLEANUP_BASELINE = "1"
+            Write-Output "Native baseline subject: $env:CLEANUP_BASE_SHA; expected control loss, not repaired behavior"
+            pnpm vitest run packages/harness-codex/src/app-server-cleanup-native.test.ts
+            if ($LASTEXITCODE -ne 0) { throw "expected baseline failure signature not reproduced" }
+          } finally {
+            Remove-Item Env:CX_CLEANUP_BASELINE -ErrorAction SilentlyContinue
+            Pop-Location
+          }
+
+      - name: Codex completed-answer and cleanup boundary (credential-free native processes)
+        run: >
+          pnpm vitest run packages/harness-codex/src/app-server-cleanup.test.ts
+          packages/harness-codex/src/app-server-cleanup-native.test.ts
+          packages/orchestrator/src/codex-cleanup-review.test.ts
+
+      - name: Exercise SQLite writers, flush barriers and maintenance together
+        shell: pwsh
+        env:
+          RATE: "200"
+          K: "2"
+          SECONDS: "3"
+          OUT: ${{ runner.temp }}/claudexor-store-load.jsonl
+        run: |
+          $ErrorActionPreference = "Stop"
+          node scripts/store-load-bench.mjs
+          if ($LASTEXITCODE -ne 0) { throw "store-load-bench exited $LASTEXITCODE" }
+          node --input-type=module -e 'import {readFileSync} from "node:fs"; const r=JSON.parse(readFileSync(process.env.OUT,"utf8").trim().split("\n").at(-1)); if(r.integrity?.ok!==true || !(r.flusher.counters.barriers>0) || !(r.flushed?.n>0)) throw new Error("store load smoke did not prove integrity and flush completion");'
+          if ($LASTEXITCODE -ne 0) { throw "store load smoke did not pass" }
+
+      # The same real-vendor proof as the `vendor-programs` job, here because
+      # the Windows build needs this job's MSVC environment. One runner is enough.
+      # All phases share its actual Windows profile: winget/MSI do not honor a fake HOME.
+      - name: Vendor installation, update and npm-copy replacement routes
+        id: smoke
+        if: matrix.runner == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # c672 capture: same command, cwd and environment; stdout/stderr go
+          # byte-exact to files, are echoed below, and the exit status is the step's.
+          # Each shard is its own runner, so the folder needs no shard suffix.
+          $evidence = Join-Path $env:RUNNER_TEMP "c672-smoke"
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          $out = Join-Path $evidence "smoke.stdout.log"
+          $err = Join-Path $evidence "smoke.stderr.log"
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $started = Get-Date -Format o
+          # No -Wait: on Windows it waits for every descendant too. Wait for the
+          # root node process only; reading Handle first keeps ExitCode available.
+          $smoke = Start-Process -FilePath $node -ArgumentList "scripts/vendor-program-smoke.mjs" `
+            -WorkingDirectory (Get-Location).Path -NoNewWindow -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+          $handle = $smoke.Handle
+          $smoke.WaitForExit()
+          $code = $smoke.ExitCode
+          @("node=$node", "pid=$($smoke.Id)", "handle=$($null -ne $handle)", "started=$started", "ended=$(Get-Date -Format o)", "exit=$code") |
+            Set-Content -LiteralPath (Join-Path $evidence "exit.txt") -Encoding utf8
+          Write-Output "----- smoke stdout"
+          Get-Content -LiteralPath $out
+          Write-Output "----- smoke stderr"
+          Get-Content -LiteralPath $err
+          Write-Output "----- smoke exit $code"
+          if ($null -eq $code) { throw "smoke exit status was not observed" }
+          if ($code -ne 0) { throw "vendor program smoke exited $code" }
+
+      # c672 evidence: how far the job got, even when an earlier step failed
+      # (then the smoke outcome is "skipped": it was not reached).
+      - name: Record job progress
+        if: always()
+        shell: pwsh
+        env:
+          C672_SHARD: ${{ matrix.shard }}
+          C672_JOB_STATUS: ${{ job.status }}
+          C672_SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP "c672-smoke"
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          @(
+            "shard=$env:C672_SHARD",
+            "commit=$(git rev-parse HEAD)",
+            "tree=$(git rev-parse 'HEAD^{tree}')",
+            "smoke-blob=$(git rev-parse 'HEAD:scripts/vendor-program-smoke.mjs')",
+            "job-status=$env:C672_JOB_STATUS",
+            "smoke-outcome=$env:C672_SMOKE_OUTCOME",
+            "imageOS=$env:ImageOS",
+            "imageVersion=$env:ImageVersion",
+            "runner=$env:RUNNER_NAME"
+          ) | Set-Content -LiteralPath (Join-Path $evidence "progress.txt") -Encoding utf8
+          Get-Content -LiteralPath (Join-Path $evidence "progress.txt")
+
+      - name: Keep every outcome
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: c672-smoke-${{ matrix.shard }}
+          path: ${{ runner.temp }}\c672-smoke
+          if-no-files-found: warn
+          retention-days: 14
