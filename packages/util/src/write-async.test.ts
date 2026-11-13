@@ -1,8 +1,16 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Count util's own filesystem calls (it imports both modules by name).
@@ -73,6 +81,28 @@ describe("writeTextAsync (#688)", () => {
     const file = join(root, "plain-file-async");
     await writeTextAsync(file, "x");
     await expect(writeTextAsync(join(file, "child.md"), "y")).rejects.toThrow(/ENOTDIR/);
+  });
+
+  it("replaces a file whole, so a reader sees the old text or the new one, and keeps its mode (#704)", async () => {
+    const path = join(root, "replace", "summary.md");
+    await writeTextAsync(path, "old text\n");
+    chmodSync(path, 0o640);
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    let midway: string | null = null;
+    vi.mocked(fsp.writeFile).mockImplementationOnce(async (file, data, options) => {
+      // The new text is half written where the write goes; a reader looks now.
+      await actual.writeFile(file, String(data).slice(0, 4), options as never);
+      midway = readFileSync(path, "utf8");
+      await actual.writeFile(file, data, options as never);
+    });
+    await writeTextAsync(path, "new text\n");
+    // Direction 1: the file read whole and unchanged while the new text was written.
+    expect(midway).toBe("old text\n");
+    // Direction 2: the new text replaced it whole (a rename over the existing
+    // file), with the file's own mode, and no temporary sibling is left.
+    expect(readFileSync(path, "utf8")).toBe("new text\n");
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o640);
+    expect(readdirSync(dirname(path))).toEqual(["summary.md"]);
   });
 });
 
