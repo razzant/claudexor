@@ -1,8 +1,15 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { EventLog, appendRunEvent, lastRunEventSeq, lastSeqInFile } from "./index.js";
+import {
+  EventLog,
+  appendRunEvent,
+  lastRunEventSeq,
+  lastSeqInFile,
+  liveRunEventSeq,
+  readRunEvents,
+} from "./index.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -493,6 +500,26 @@ describe("appendRunEvent single-counter invariant", () => {
     const second = new EventLog(path, "run-1", "task-1");
     expect(appendRunEvent(path, "run-1", "task-1", "control.requested", {}).seq).toBe(2);
     expect(second.emit("run.completed", {}).seq).toBe(3);
+  });
+
+  it("names one live writer for every spelling of its path (#704)", () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-eventlog-"));
+    mkdirSync(join(dir, "run"));
+    const path = join(dir, "run", "events.jsonl");
+    const other = join(dir, "run", "..", "run", "events.jsonl");
+    const relativeSpelling = relative(process.cwd(), path);
+    const log = new EventLog(other, "run-1", "task-1");
+    log.emit("run.created", {});
+    // Direction 1: the other spellings find the live writer and its counter.
+    expect(() => new EventLog(path, "run-1", "task-1")).toThrow(/already owns/);
+    expect(liveRunEventSeq(path)).toBe(1);
+    expect(liveRunEventSeq(relativeSpelling)).toBe(1);
+    expect(appendRunEvent(path, "run-1", "task-1", "control.requested", {}).seq).toBe(2);
+    expect(readRunEvents(relativeSpelling).events.map((event) => event.seq)).toEqual([1, 2]);
+    // Direction 2: once it disposes, any spelling opens the path again.
+    log.dispose();
+    expect(liveRunEventSeq(other)).toBeNull();
+    expect(new EventLog(relativeSpelling, "run-1", "task-1").emit("run.completed", {}).seq).toBe(3);
   });
 });
 

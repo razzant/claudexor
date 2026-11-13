@@ -1,10 +1,17 @@
-import type { RunEvent, RunEventType, RunTelemetry } from "@claudexor/schema";
+import type { RunEvent, RunEventType } from "@claudexor/schema";
 import { RunEvent as RunEventSchema } from "@claudexor/schema";
 import { existsSync, statSync, truncateSync, unlinkSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { appendLine, nowIso, orderedAppender } from "@claudexor/util";
 import { lastSeqInFile, readEventFile, terminalEventInFile, withUnlanded } from "./event-file.js";
 import { activeEventLogs, terminalTypeOf } from "./live-writers.js";
+import type {
+  EventLogOptions,
+  PreparedTerminalEvent,
+  TerminalPersistenceHook,
+  TerminalRunEventType,
+  TerminalStagingHook,
+} from "./types.js";
 export { RETAINED_OUTPUT_PATH, retainedOutput, writeRetainedOutput } from "./retained-output.js";
 export { lastSeqInFile } from "./event-file.js";
 export {
@@ -15,53 +22,16 @@ export {
   readRunEvents,
 } from "./live-writers.js";
 
-export type TerminalRunEventType = Extract<
-  RunEventType,
-  "run.completed" | "run.failed" | "run.blocked"
->;
+export type {
+  EventLogOptions,
+  PreparedTerminalEvent,
+  TerminalPersistenceHook,
+  TerminalRunEventType,
+  TerminalStagingHook,
+} from "./types.js";
 
-export interface PreparedTerminalEvent {
-  type: TerminalRunEventType;
-  payload: Record<string, unknown>;
-  /** Prepared in memory by the receipt owner; a SQL terminal sink writes it. */
-  telemetry?: RunTelemetry | null;
-  /**
-   * Publish the prepared receipt's canonical commit marker after the durable
-   * journal accepts the terminal, but before file-tail/live observers can see
-   * the per-run terminal event.
-   */
-  commit?: () => void;
-  /**
-   * Undo preparation/commit side effects when no durable journal authority was
-   * established. The callback must be idempotent.
-   */
-  rollback?: () => void;
-}
-
-/** A synchronous replacement for terminal persistence and file finalization.
- * A throw means no authority committed; pending means it committed and repair
- * remains owed. The event log never repeats the sink's file writes. */
-export type TerminalPersistenceHook = (
-  event: RunEvent,
-  telemetry: RunTelemetry | null,
-) => { state: "materialized" } | { state: "pending"; error: unknown };
-
-/** Writes a prepared terminal's durable bytes off the request thread before
- * its synchronous commit, which then adopts them; anything not staged the
- * commit writes itself. */
-export type TerminalStagingHook = (
-  event: RunEvent,
-  telemetry: RunTelemetry | null,
-) => Promise<void>;
-
-export interface EventLogOptions {
-  /**
-   * Queue each line on the ordered appender instead of writing it inline: `emit`
-   * returns once the line is queued, and the line's `onPersist` and `onPublish`
-   * run when it lands. The terminal commits through `emitTerminal`.
-   */
-  queued?: boolean;
-}
+/** Who awaits an event's landing: resolved with the event, or given its failure. */
+type Landing = { resolve(event: RunEvent): void; reject(error: unknown): void };
 
 interface PreparedTerminal {
   event: RunEvent;
@@ -81,6 +51,8 @@ interface PreparedTerminal {
  * writer) continues the sequence instead of restarting it.
  */
 export class EventLog {
+  /** Absolute, as the live-writer registry and the ordered appender key it. */
+  private readonly path: string;
   private nextSeq: number;
   private deferTerminalEvents = false;
   private deferredTerminal: { type: RunEventType; payload: Record<string, unknown> } | null = null;
@@ -105,7 +77,7 @@ export class EventLog {
   private disposeWhenLanded = false;
 
   constructor(
-    private readonly path: string,
+    path: string,
     private readonly runId: string,
     private readonly taskId: string,
     /**
@@ -124,17 +96,18 @@ export class EventLog {
     private readonly onPublish?: (event: RunEvent) => void,
     options: EventLogOptions = {},
   ) {
+    this.path = resolve(path);
     // The live owner is checked before the tail is read: a live queued writer's
     // file may still be missing lines it has stamped.
-    const live = activeEventLogs.get(path);
+    const live = activeEventLogs.get(this.path);
     if (live && !live.releaseRecoveredTerminalFence()) {
       throw new Error("an active EventLog already owns this event path");
     }
-    this.nextSeq = lastSeqInFile(path) + 1;
+    this.nextSeq = lastSeqInFile(this.path) + 1;
     this.landedSeq = this.nextSeq - 1;
     this.unlanded = options.queued ? [] : null;
-    this.terminalCommittedFlag = terminalEventInFile(path);
-    if (!this.terminalCommittedFlag) activeEventLogs.set(path, this);
+    this.terminalCommittedFlag = terminalEventInFile(this.path);
+    if (!this.terminalCommittedFlag) activeEventLogs.set(this.path, this);
   }
 
   /**
@@ -228,19 +201,33 @@ export class EventLog {
     });
   }
 
+  /** @internal An out-of-band emit (`appendRunEvent`, `appendRunEventLanded`):
+   * it leaves a failure held for the run's own lines to them, and its own
+   * failure goes to `landing` alone, never held for the run (#704). */
+  emitAside(
+    type: Exclude<RunEventType, TerminalRunEventType>,
+    payload: Record<string, unknown>,
+    landing: Landing,
+  ): RunEvent {
+    const event = this.emitEvent(type, payload, true, { ...landing, aside: true });
+    if (!this.unlanded) landing.resolve(event);
+    return event;
+  }
+
   private emitEvent(
     type: RunEventType,
     payload: Record<string, unknown>,
     publish: boolean,
-    landing?: { resolve(event: RunEvent): void; reject(error: unknown): void },
+    landing?: Landing & { aside?: boolean },
   ): RunEvent {
     this.assertEmittable();
     const terminalType = terminalTypeOf(type);
     if (terminalType && this.terminalStaged) {
       throw new Error("run terminal event commit is already in progress");
     }
-    // A queued line's failure that nobody awaited is reported here, once.
-    if (this.unlanded) orderedAppender.throwHeld(this.path);
+    // A queued line's failure that nobody awaited is reported here, once, to
+    // the run's own producers.
+    if (this.unlanded && !landing?.aside) orderedAppender.throwHeld(this.path);
     if (this.deferTerminalEvents && terminalType) {
       if (this.deferredTerminal) throw new Error("run terminal event was emitted more than once");
       this.deferredTerminal = { type, payload };
@@ -253,7 +240,10 @@ export class EventLog {
         landed: () => this.landed(event, publish),
         lost: () => this.lost(),
         ...(landing
-          ? { waiter: { resolve: () => landing.resolve(event), reject: landing.reject } }
+          ? {
+              aside: landing.aside === true,
+              waiter: { resolve: () => landing.resolve(event), reject: landing.reject },
+            }
           : {}),
       });
       this.nextSeq += 1;

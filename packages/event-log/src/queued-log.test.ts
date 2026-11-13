@@ -470,6 +470,39 @@ describe("a queued EventLog", () => {
     expect(unhandled).toEqual([]);
   });
 
+  it("lets an out-of-band append neither take the run's held failure nor leave its own for the run", async () => {
+    const { path } = runDir();
+    const lost = new Error("journal refused the run's line");
+    const auditRefused = new Error("journal refused the audit");
+    const log = queuedLog(path, {
+      onPersist: (event) => {
+        if (event.type === "harness.event" && event.payload["text"] === "lost") throw lost;
+        if (event.type === "control.applied") throw auditRefused;
+      },
+    });
+    log.emit("run.created", {});
+    // An audit's own landing failure is dropped, as its catch-all drops a
+    // thrown one: it is never held for the run's next emit.
+    expect(appendRunEvent(path, "run-1", "task-1", "control.applied", {}).seq).toBe(2);
+    await orderedAppender.drained(path);
+    expect(log.emit("harness.event", { text: "after the audit" }).seq).toBe(3);
+    log.emit("harness.event", { text: "lost" });
+    await orderedAppender.drained(path);
+    // Direction 1: a live message and an audit are not refused for the run's
+    // failure, and leave it held.
+    await expect(
+      appendRunEventLanded(path, "run-1", "task-1", "message.accepted", {}),
+    ).resolves.toMatchObject({ type: "message.accepted" });
+    expect(appendRunEvent(path, "run-1", "task-1", "control.requested", {}).seq).toBe(6);
+    await orderedAppender.drained(path);
+    // Direction 2: the run's own producers still hear it, once.
+    await expect(log.emitLanded("interaction.requested", {})).rejects.toBe(lost);
+    expect(log.emit("harness.event", { text: "next" }).seq).toBe(7);
+    await expect(orderedAppender.settled(path)).resolves.toBeUndefined();
+    await expect(log.emitTerminal("run.completed", {})).resolves.toMatchObject({ seq: 8 });
+    expect(unhandled).toEqual([]);
+  });
+
   it("consumes no seq for a failed write, failing the lines queued behind it", async () => {
     const { path } = runDir();
     const log = queuedLog(path);
