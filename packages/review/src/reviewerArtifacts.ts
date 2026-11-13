@@ -145,11 +145,20 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Merge `patch` into the reviewer's metadata and rewrite `metadata.json` only
+ * when a value changes: adapters stamp their route facts (credential route,
+ * profile, observed model) on every event, so the synchronous rewrite follows
+ * a change, never each event (#688). */
 export function updateReviewerMetadata(
   artifact: ReviewerArtifactContext,
   patch: Record<string, unknown>,
 ): void {
-  artifact.metadata = { ...artifact.metadata, ...redactValue(patch) };
+  const redacted = redactValue(patch);
+  const changed = Object.entries(redacted).some(
+    ([key, value]) => JSON.stringify(artifact.metadata[key]) !== JSON.stringify(value),
+  );
+  if (!changed) return;
+  artifact.metadata = { ...artifact.metadata, ...redacted };
   writeJson(artifact.metadataPath, artifact.metadata);
 }
 
