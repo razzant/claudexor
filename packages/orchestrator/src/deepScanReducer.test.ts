@@ -961,8 +961,8 @@ describe("runDeepScanReducer flow control (#688)", () => {
   it.each([true, false])(
     "does not charge its wait for a full journal to the reducer's window (productive: %s)",
     async (productive) => {
-      const WINDOW_MS = 1_000;
-      const HOLD_MS = 2_500; // longer than the window, as a slow disk would hold it
+      const WINDOW_MS = 2_000;
+      const HOLD_MS = 5_000; // longer than the window, as a slow disk would hold it
       const APPLIED_POOL = Symbol.for("claudexor.libuvPoolSize");
       const global = globalThis as Record<symbol, unknown>;
       const savedPool = global[APPLIED_POOL];

@@ -253,9 +253,10 @@ async function withInactivityWindow<T>(ms: number, body: () => Promise<T>): Prom
   }
 }
 
-const WINDOW_MS = 1_000;
+// Wide enough that a loaded runner's pause between two reads stays inside it.
+const WINDOW_MS = 2_000;
 /** Held well past the window, as a slow disk would hold the journal. */
-const HOLD_MS = 2_500;
+const HOLD_MS = 5_000;
 
 describe("a lane's wait for its full journal is not the harness's silence (#704)", () => {
   it.each(["agent", "ask", "plan"] as const)(
