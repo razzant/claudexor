@@ -22,6 +22,7 @@ import { poolFailure } from "./pool-attempt-evidence.js";
 import { reconcileDecisionBudget, type SettledBudgetSnapshot } from "./decisionBudget.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
+import { flushContinuationTerminal } from "./continuation-custody.js";
 import { cancellationStatement, writeFailure } from "./runTerminalResults.js";
 import {
   clearFailureArtifact,
@@ -222,6 +223,29 @@ export function isTerminalRecoveryRequired(error: unknown): boolean {
     "code" in error &&
     (error as { code?: unknown }).code === "terminal_recovery_required"
   );
+}
+
+/**
+ * The failure net's flush: settle custody, then commit its held terminal. A
+ * landing failure that interrupts the commit is consumed by the commit's own
+ * barrier and leaves the terminal held, so the flush that follows commits it
+ * (#704); a failure of that one is the run's to throw, as before.
+ */
+export async function commitNetTerminal(
+  a: AnnouncedRunContext,
+  facts: RunOutcomeFactsType,
+): Promise<void> {
+  try {
+    await flushContinuationTerminal(a, facts);
+  } catch (error) {
+    if (
+      isTerminalRecoveryRequired(error) ||
+      a.log.terminalCommitted() ||
+      !a.log.deferredTerminalPending()
+    )
+      throw error;
+    await flushContinuationTerminal(a, facts);
+  }
 }
 
 export function committedOutcome(a: AnnouncedRunContext): RunOutcomeFactsType | null {

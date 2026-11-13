@@ -521,6 +521,33 @@ describe("appendRunEvent single-counter invariant", () => {
     expect(liveRunEventSeq(other)).toBeNull();
     expect(new EventLog(relativeSpelling, "run-1", "task-1").emit("run.completed", {}).seq).toBe(3);
   });
+
+  it("keeps a poisoned writer registered as the path's fence when disposed (#704)", () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-eventlog-"));
+    const path = join(dir, "events.jsonl");
+    const poisoned = new EventLog(path, "run-1", "task-1", (event) => {
+      if (event.type === "run.completed") throw new Error("durable journal unavailable");
+    });
+    poisoned.setBeforeTerminal(() => ({
+      type: "run.completed",
+      payload: {},
+      rollback: () => {
+        throw new Error("receipt restore failed");
+      },
+    }));
+    poisoned.emit("run.created", {});
+    expect(() => poisoned.emit("run.completed", {})).toThrow(/rollback was incomplete/);
+    // Direction 1: dispose leaves the poison fence in place.
+    poisoned.dispose();
+    expect(liveRunEventSeq(path)).toBe(1);
+    expect(() => new EventLog(path, "run-1", "task-1")).toThrow(/already owns/);
+    // Direction 2: a writer that is not poisoned unregisters, terminal or not.
+    const clean = join(dir, "clean.jsonl");
+    const log = new EventLog(clean, "run-1", "task-1");
+    log.emit("run.created", {});
+    log.dispose();
+    expect(liveRunEventSeq(clean)).toBeNull();
+  });
 });
 
 /** The full-parse answer `lastSeqInFile` must keep: the highest per-line value,

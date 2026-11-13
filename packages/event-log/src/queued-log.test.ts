@@ -313,6 +313,10 @@ describe("a queued EventLog", () => {
     log.emit("run.completed", { lifecycle: "succeeded" });
     await expect(log.commitDeferredTerminal()).rejects.toThrow(/terminal store unavailable/);
     expect(log.terminalCommitted()).toBe(false);
+    // The failed commit leaves its terminal pending (#704); the failure net
+    // replaces it with its own, as guardAnnouncedRun does.
+    expect(log.deferredTerminalPending()?.type).toBe("run.completed");
+    log.clearDeferredTerminal();
     await holding("before", async (calls) => {
       // The failure net: its output, then a synchronous terminal while that
       // output is still in flight.
@@ -467,6 +471,38 @@ describe("a queued EventLog", () => {
     await expect(log.emitTerminal("run.completed", {})).rejects.toBe(refused);
     expect(log.terminalCommitted()).toBe(false);
     await expect(log.emitTerminal("run.failed", {})).resolves.toMatchObject({ seq: 5 });
+    expect(unhandled).toEqual([]);
+  });
+
+  it("keeps a held terminal pending when a landing failure interrupts its commit, and the next flush commits it", async () => {
+    const { path } = runDir();
+    const refused = new Error("journal refused");
+    const persisted: string[] = [];
+    const log = queuedLog(path, {
+      onPersist: (event) => {
+        if (event.type === "output.ready") throw refused;
+        persisted.push(event.type);
+      },
+    });
+    log.emit("run.created", {});
+    log.deferTerminal();
+    // The failure net's output is still in flight when its flush starts.
+    log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
+    log.emit("run.failed", { lifecycle: "failed" });
+    // Direction 1: the commit's barrier consumes the landing failure and the
+    // terminal stays pending, not lost.
+    await expect(log.commitDeferredTerminal()).rejects.toBe(refused);
+    expect(log.terminalCommitted()).toBe(false);
+    expect(log.deferredTerminalPending()?.type).toBe("run.failed");
+    // Direction 2: the flush that follows commits it, once.
+    await expect(log.commitDeferredTerminal()).resolves.toMatchObject({ type: "run.failed" });
+    expect(log.terminalCommitted()).toBe(true);
+    expect(log.deferredTerminalPending()).toBeNull();
+    expect(onDisk(path).filter(([, type]) => type.startsWith("run."))).toEqual([
+      [1, "run.created"],
+      [3, "run.failed"],
+    ]);
+    expect(persisted).toEqual(["run.created", "run.failed"]);
     expect(unhandled).toEqual([]);
   });
 

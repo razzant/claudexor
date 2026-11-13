@@ -115,9 +115,11 @@ export class EventLog {
    * appenders fall back to file-tail stamping afterwards, which is safe once
    * the owning run is terminal (nobody else holds an in-memory counter). With
    * lines still in flight, the log stays registered until the last one lands
-   * or is lost, so nobody stamps from a file that is still short.
+   * or is lost, so nobody stamps from a file that is still short. A poisoned
+   * writer stays registered as the path's fence until recovery releases it.
    */
   dispose(): void {
+    if (this.terminalWriterPoisoned && !this.terminalCommittedFlag) return;
     if (this.unlanded?.length) {
       this.disposeWhenLanded = true;
       return;
@@ -359,10 +361,11 @@ export class EventLog {
   }
 
   /** Commit the terminal held by `deferTerminal()` through `emitTerminal`, so
-   * its bytes are staged first when a staging hook is set. The hold stays. */
+   * its bytes are staged first when a staging hook is set. The hold stays, and
+   * so does the terminal until it commits: a commit that throws leaves it
+   * pending for the flush that follows (#704). */
   async commitDeferredTerminal(): Promise<RunEvent | null> {
     const pending = this.deferredTerminal;
-    this.deferredTerminal = null;
     return pending
       ? this.emitTerminal(pending.type as TerminalRunEventType, pending.payload)
       : null;
@@ -504,6 +507,7 @@ export class EventLog {
     // The durable journal, canonical prepared receipt, and per-run event are
     // now one committed terminal unit. Only now may observers see it.
     this.terminalCommittedFlag = true;
+    this.deferredTerminal = null;
     this.terminalCommitInProgress = false;
     this.beforeTerminal = undefined;
     this.dispose();
