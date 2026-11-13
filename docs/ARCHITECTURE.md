@@ -5178,7 +5178,12 @@ until the lines queued there before the wait (its own included) have landed or b
 lost (`drained`). Lines appended after the wait, by the loop or by another producer
 of the same file, do not hold it; if the file is still full, the loop waits again on
 its next event. A harness that outruns the disk is therefore slowed through the
-stream limits it already has, and the engine adds no constant of its own.
+stream limits it already has, and the engine adds no constant of its own. Such a wait
+is the engine's pace, not the harness's silence: in the four loops with an inactivity
+watchdog (agent, read-only report, planner, deep-scan reducer) it suspends the window
+as a pending question does (`laneSuspension` over the loop's `AppendPacing`), so a
+fresh window starts after the drain, and a harness that stays silent after it still
+times out. The reviewer's deadline is a whole-review limit and keeps running.
 
 Failures are reported per line. When a batch write fails, each append whose bytes
 all reached the file has landed; the others fail, together with every append queued
@@ -5352,7 +5357,9 @@ product and summary) are awaited writes that replace a file whole: the text goes
 a temporary sibling, renamed over the file (an existing file keeps its mode), so the
 daemon's own readers see the old text or the new one. Patch publication keeps its
 reuse check, link and rename order, and publications of the same bytes in one
-process run one after another. Keeping an unfinished run's envelope for
+process run one after another. Between the object's rename and the target's link an
+object has one link, as an unused one has, so a retention pass skips an object while a
+publication of it is in flight in this process. Keeping an unfinished run's envelope for
 continuation at the run end awaits its auth strip, its disk-use walk (one listing or
 entry at a time), its custody record and the run's pointer. Deletes go through
 `removeTree`: depth first, one entry at a time, each
@@ -8325,7 +8332,9 @@ changes, plan progress, and completed context compaction. Starts, status/retry/
 reconnect/keepalive chatter, usage-only updates, transient errors, terminal
 frames, and unknown future event kinds stay observable but do not extend the
 lease. Waiting on a typed user interaction suspends the watchdog under the
-separate finite-or-disabled interaction policy. Long active runs therefore stay
+separate finite-or-disabled interaction policy, and so does the lane's own wait for a
+full journal (flow control under [Main thread and disk waits](#main-thread-and-disk-waits)).
+Long active runs therefore stay
 alive while they make real progress; a tool call that streams nothing for the
 whole window remains indistinguishable from a hang and is killed. An explicit
 Stop reuses the timeout's bounded drain: from the attempt's next read after
@@ -8454,7 +8463,8 @@ shared inode before publishing its durable authoritative link. The cache path is
 advisory. A mismatching cache object is atomically replaced with fresh supplied bytes before linking a new publication; existing links to the old inode are never rewritten. Filesystems that cannot link receive independent byte-identical copies. Masked display copies
 and their different exact bytes remain separate objects. Existing plain-file
 run trees and anchors stay readable without migration. Retention removes cache
-entries only after their last run/anchor link is gone; anchors follow the
+entries only after their last run/anchor link is gone, and never one whose
+publication is in flight in the daemon; anchors follow the
 run-owned [retention contract](#7-control-api).
 
 `final/telemetry.yaml` (`RunTelemetry` in the schema) is the single engine-owned

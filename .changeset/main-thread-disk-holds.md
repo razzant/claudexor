@@ -23,13 +23,14 @@ or busy disk each write held every control request, event stream and other lane
 until the disk answered. These writes now go to the disk in the background, in
 order and one write at a time per file, and a lane whose harness produces events
 faster than the disk takes them slows down to the disk's pace while the rest of
-the daemon keeps serving. Creating and removing a lane's workspace, removing a
-read-only lane's scratch home, keeping an unfinished run's workspace for a later
-continuation, writing a run's final answer, patch, facts and summary (the run
-telemetry file is still written on the main thread, under its own label) and the
-Git watchdog's progress check no longer wait on the disk either, and a spawned
-process's identity is read once instead of twice. A final file being replaced is
-never seen half written.
+the daemon keeps serving; that wait does not count as the harness being silent
+for `runtime.harness_inactivity_timeout_ms`. Creating and removing a lane's
+workspace, removing a read-only lane's scratch home, keeping an unfinished run's
+workspace for a later continuation, writing a run's final answer, patch, facts
+and summary (the run telemetry file is still written on the main thread, under
+its own label) and the Git watchdog's progress check no longer wait on the disk
+either, and a spawned process's identity is read once instead of twice. A final
+file being replaced is never seen half written.
 
 A run's progress lines reach `events.jsonl` and live streams a moment after the
 harness produced them, never out of order. The lines a run waits for (its
