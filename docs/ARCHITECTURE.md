@@ -3598,8 +3598,8 @@ timestamp. Labels cover `store.begin_immediate`, `store.commit`, `store.external
 `scope.persist`; `control.run_detail` and `control.run_summary` remain accepted
 so clients can parse status from engines that report those synchronous spans.
 `process.identity_capture`, `run.telemetry_write`, `metrics.harness_write`,
-`file.write_text` and `daemon.log_line` name the synchronous work that stays on
-the main thread by design ([Main thread and disk waits](#main-thread-and-disk-waits)).
+`file.write_text`, `file.capture_write` and `daemon.log_line` name the synchronous
+work that stays on the main thread by design ([Main thread and disk waits](#main-thread-and-disk-waits)).
 Detail and summary report worker queue/projection wall time in `bulk`.
 Scope persistence measures synchronous serialization, not its asynchronous file writes. These
 samples may overlap and do not identify the cause of a delay. A `store.external_write`
@@ -4896,10 +4896,11 @@ its global/project partition generation before live bus publication. Per-token
 `events.jsonl` and the in-process bus, so scoped event streams replay the run
 LIFECYCLE after restart, never token-level progress. Failure to commit a retained
 lifecycle event fails its producer or run instead of being swallowed as a live-only
-gap: the caller awaiting that line hears it, or the log's next emit or barrier
-throws it ([Main thread and disk waits](#main-thread-and-disk-waits) names the one
-audit path that discards it); progress outside that set does not enter the SQL
-sink.
+gap: the caller awaiting that line hears it, or the run's next emit or barrier
+throws it and the failure net states it in the run's terminal
+([Main thread and disk waits](#main-thread-and-disk-waits) names the one line whose
+own failure is dropped: a best-effort control audit); progress outside that set
+does not enter the SQL sink.
 `GET /v2/runs/:id` returns `lastSeq`, a conservative event fence captured
 BEFORE pending interactions and projection reads. It does not claim an atomic
 snapshot of files and live state: later events may already be reflected in the
@@ -5084,11 +5085,15 @@ whose count grows with work: per harness event, per spawned child, per lane star
 per run end, per timer tick. Startup, shutdown, recovery and the terminal commit's
 synchronous SQL section are outside this rule, and so is the one deliberate
 synchronous capture of a spawned child's identity (INV-144). Work that stays
-synchronous for a stated reason names itself in `worstSync` (end of this section).
+synchronous for a stated reason names itself in `worstSync`, and the synchronous
+sites the rule does not cover yet are listed by name (both at the end of this section).
 
 **Ordered appends.** `orderedAppender` (`@claudexor/util`) appends to files off the
 main thread, in call order per file, from one registry keyed by absolute path. An
-append queues its bytes and returns at once. At most one batch write runs per file,
+append queues its bytes, encoded when queued, and returns at once; a batch writes
+those encoded bytes, so the bytes it counts are the bytes it writes (two appends
+that split one character each write a replacement character, as two synchronous
+appends did). At most one batch write runs per file,
 and it carries every byte queued while the previous one ran, so batching comes only
 from the disk's own pace: there is no timer and no batch size. A batch is one open
 for appending (a new file gets mode 0600; a missing parent directory is made only
@@ -5112,11 +5117,14 @@ all reached the file has landed; the others fail, together with every append que
 behind them, and nothing is retried, because later bytes would follow a hole or a
 torn line. A torn start of a line stays in the file and the next line follows it, so
 the two read as one malformed line, as after a torn synchronous append. A close that
-fails after every byte was written fails no landing. A failure goes to the caller
+fails after every byte was written fails no landing; it goes to every barrier in
+flight that covers the batch, else the file holds it. A failure goes to the caller
 awaiting that landing alone; with no such caller, to every barrier in flight that
 covers it; with neither, the file holds it, and the next append or barrier for that
-file consumes it once. A failure never poisons later appends or barriers and never
-becomes an unhandled rejection. The barriers wait for the appends made before them:
+file consumes it once. An append made aside (an out-of-band writer through a live
+writer, below) neither consumes nor throws a held failure. A failure never poisons
+later appends or barriers and never becomes an unhandled rejection. The barriers
+wait for the appends made before them:
 `settled(path)`, `settledUnder(dir)` (every file under a directory) and
 `settledAll()` (daemon stop), and each rejects with a failure nobody awaited.
 `drained` neither consumes nor reports a failure and never rejects.
@@ -5159,9 +5167,12 @@ disk is never reused. Readers of a live log never miss a stamped line and never 
 for one: `readRunEvents(path)` and `readAll()` return the landed file followed by
 the live writer's events that have not landed yet; a line on disk is not repeated,
 and a torn last line is replaced by its copy in memory. A path with no live writer
-is read raw. `dispose` keeps the log registered as the live writer until its last
-line has landed or been lost, so no appender stamps a `seq` from a file that is
-still short.
+is read raw. The live-writer registry is keyed by the absolute path, as the appender
+keys the file, so every spelling of a path names one writer. `dispose` keeps the log
+registered as the live writer until its last line has landed or been lost, so no
+appender stamps a `seq` from a file that is still short; a poisoned writer (terminal
+recovery owed, or an incomplete rollback) stays registered as the path's fence until
+recovery releases it.
 
 Three callers await a landing, its sink included, before they go on:
 
@@ -5177,20 +5188,36 @@ Three callers await a landing, its sink included, before they go on:
   500 `message_receipt_unavailable` and keeps the command failed).
 
 Such a refusal reaches that caller alone, and the log stays usable for recovery and
-terminalization. Any other landing failure is held, and the run's next `emit` or
-barrier (the terminal's drain included) throws it once to its caller. A control
-audit that emits into a live run discards its own append errors, so a failure it
-meets there is consumed without failing the run.
+terminalization. Any other landing failure of the run's own lines is held, and the
+run's next `emit` or barrier (the terminal's drain included) throws it once to its
+caller; the failure net states it in the run's terminal (below). Out-of-band appends
+through a live writer (`appendRunEvent` for a control audit, `appendRunEventLanded`
+for a live-message row) are made aside: they neither consume nor throw a failure held
+for the run, which the run still hears. A live message hears its own rows' failures
+through their awaited landings; a control audit's own landing failure is dropped, as
+its catch-all drops a thrown one, so an audit never changes control behavior.
 `interaction.answered`, `interaction.timeout`, `interaction.withdrawn` and
 `output.ready` reach the SQL ledger when they land; the terminal's drain covers
 `output.ready`.
 
 **The terminal.** Every orchestrated run defers its terminal: a terminal `emit` is
 held until `commitTerminal` commits one, and only `emitTerminal` (through
-`flushContinuationTerminal` and `commitDeferredTerminal`) commits it. When a first
-commit throws, the failure net's `run.failed` is held again and committed by the
-flush that follows, so the run still gets exactly one terminal. `emitTerminal` on a
-queued log raises its fence before its first await, so no callback during an await
+`flushContinuationTerminal` and `commitDeferredTerminal`) commits it. A held terminal
+stays pending until it commits; a commit that throws leaves it pending. A verdict
+whose commit throws, after the strategy returned or after it threw, is replaced by
+the failure net's terminal. The failure net (`guardAnnouncedRun`) first awaits the
+barrier of everything under the run directory, the run's journal and its side
+journals: a landing failure held or in flight when the strategy threw or was
+cancelled is stated in the terminal the net builds ("Run events did not reach the
+journal: ..."), never thrown out of the net. `failTerminally` and `cancelledResult`
+likewise take a failure the run's journal holds before they append their own lines,
+for every caller, and state it beside their own cause. The net's flush commits its
+terminal; when a landing failure of a line appended after its barrier (the net's own
+output, a settlement event) interrupts that commit, the flush that follows commits
+the pending terminal, so the run still gets exactly one terminal on disk and in the
+store, and that later failure is not restated. A writer whose terminal never
+committed is disposed when the run settles, except a poisoned one. `emitTerminal` on
+a queued log raises its fence before its first await, so no callback during an await
 takes the synchronous terminal path. It then:
 
 1. waits until every ordered append under the run directory has settled
@@ -5202,6 +5229,13 @@ takes the synchronous terminal path. It then:
 6. stages the terminal's bytes, while ordinary events may still append, and waits
    again until the log's own queue is empty;
 7. runs the unchanged synchronous commit, which appends the terminal line itself.
+
+Each wait loops on the barrier until the log's own queue is empty, and the step it
+guards (preparing the terminal, committing it) runs in the same synchronous segment
+as that last check, so no line of the log lands after its terminal and no `seq` is
+reused. Only the log's own queue is rechecked: a side journal appended after the
+last barrier may still be in flight at the commit, and no reader of it depends on
+the terminal.
 
 It drains even when no staging hook is set; an inline log without one still commits
 before its first yield. A terminal that fails is rolled back with nothing in flight,
@@ -5217,7 +5251,8 @@ carry no `seq` and no sink, so their readers await a barrier instead:
 
 - a sealed reviewer's progress bytes settle before the sealed text replaces
   `transcript.md`;
-- `reviewCandidate` resolves only after its reviewers' files have settled;
+- `reviewCandidate` resolves only after its reviewers' files have settled; a
+  review that fails keeps its own error, and a file's failure travels as its cause;
 - after a try, the in-run continuation settles the run directory before its carrier
   and input readers read the journals (`afterTry`), and a planned later attempt
   settles it before its evidence index is built (`openContinuity`); those readers
@@ -5230,19 +5265,27 @@ harness event, although adapters stamp their route facts on every event.
 
 **Lane start, run end, deletes, identity, watchdog.** `WorkspaceManager.create()`
 awaits its directories, harness home, `owner.json`, clone marker, Claude bridge and
-custody record off the main thread; `owner.json` is written before `create` returns,
-and this process's own start time is read once. Run-end artifacts (an attempt's
-answer, patch and record, the scope facts, the final patch, work product and
-summary) are awaited writes; patch publication keeps its reuse check, link and
-rename order, and publications of the same bytes in one process run one after
-another. Deletes go through `removeTree`: depth first, one entry at a time, each
+custody record off the main thread; `owner.json` is written as soon as the base
+directory exists, and this process's own start time is read once. Run-end artifacts
+(an attempt's answer, patch and record, the scope facts, the final patch, work
+product and summary) are awaited writes that replace a file whole: the text goes to
+a temporary sibling, renamed over the file (an existing file keeps its mode), so the
+daemon's own readers see the old text or the new one. Patch publication keeps its
+reuse check, link and rename order, and publications of the same bytes in one
+process run one after another. Keeping an unfinished run's envelope for
+continuation at the run end awaits its auth strip, its disk-use walk (one listing or
+entry at a time), its custody record and the run's pointer. Deletes go through
+`removeTree`: depth first, one entry at a time, each
 removed with `fs.promises.rm` (keeping the retries a caller had); the envelope
 root's own entries go last and `owner.json` last of all, so a crash mid-delete
 leaves an envelope the startup sweeper still recognizes. One entry at a time is the
 synchronous removal's order moved off the thread, not a tuning number. Envelope
 disposal (orphans included), the discard of an envelope whose clone failed, the
-delivery verifier's clone, transient capture scratch and Codex's temporary homes use
-it. `registerChildProcess` returns its synchronous identity capture and the spawn
+delivery verifier's clone, transient capture scratch, Codex's temporary homes and a
+read-only lane's scoped home use it. Disposal prunes its task directory with a
+non-recursive `rmdir`, which removes it only while it is empty, so a sibling
+envelope another `create` makes meanwhile stays. `registerChildProcess` returns its
+synchronous identity capture and the spawn
 sites reuse it, so the identity helper runs once per spawned child; the signal path
 still reads the leader's identity fresh. The Git watchdog's progress probe
 (object-directory growth and free disk space) is one awaited probe with at most one
@@ -5254,8 +5297,26 @@ last completed probe.
 `run.telemetry_write` (`final/telemetry.yaml`), `metrics.harness_write` (the shared
 read-modify-write of `harness-metrics.json`), `file.write_text` (a remaining
 synchronous text or JSON write, which creates its directory only when the write
-proves it missing) and `daemon.log_line` (a daemon log line: the startup diagnostics
-writer rotates the same file with synchronous calls).
+proves it missing), `file.capture_write` (a chunk of a Git child's output streamed
+to its capture file: the capture projection is synchronous and the child's output
+has no other backpressure) and `daemon.log_line` (a daemon log line: the startup
+diagnostics writer rotates the same file with synchronous calls).
+
+**Not covered yet.** These synchronous sites run on paths whose count grows with
+work and are not converted or labeled: resolving and inspecting each spawned
+child's program on `PATH` (about 22 synchronous calls per child, in
+`core/src/runtime-env.ts`, `npm-launch.ts` and `executable-inspection.ts`; a cache is
+a follow-up); making a read-only lane's scoped home (`readOnlyHomeEnv`: a temporary
+directory and the harness home's directories; its callers include synchronous
+factories); `isolatedCloneAdd`'s alternates append and shallow-clone copy at lane
+start; the removal of an in-place envelope's artifact directory on dispose
+(`removeDirectory` of `ArtifactOwnership`); produced images copied at run end
+(`persistCandidateOutputs`); a reviewer's `metadata.json` rewritten per usage event,
+whose totals change each time (labeled `file.write_text`); the run's directory
+stubs (`createRun` of `ArtifactStore`) and a reviewer's artifact directory and empty
+files (`createReviewerArtifactContext`, its writes labeled `file.write_text`); and
+the retention of a capture-refused source (`preserveCaptureSource`), whose callers
+are synchronous.
 
 **Trade-offs.** On a saturated disk a lane slows to the disk's pace instead of the
 whole daemon stopping. A process crash can lose progress lines that had not landed
