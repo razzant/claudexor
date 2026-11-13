@@ -429,12 +429,15 @@ private func seedSuccessorProjections(_ model: AppModel) throws {
 
         for (index, path) in ["/v2/secrets", "/v2/threads", "/v2/projects"].enumerated() {
             let arrived = GenerationFenceCallCounter()
+            // The old response is held until the test has moved to the next generation,
+            // so the fence is exercised on every machine, however slow (#705).
+            let release = DispatchSemaphore(value: 0)
             GenerationFenceURLProtocol.handler = { request in
                 guard request.url?.path == path else {
                     throw GenerationFenceTestError.unexpectedRequest
                 }
                 arrived.increment()
-                Thread.sleep(forTimeInterval: 0.12)
+                _ = release.wait(timeout: .now() + 10)
                 let body: String = switch path {
                 case "/v2/secrets": #"{"backend":"file","secrets":[]}"#
                 case "/v2/threads": #"{"threads":[]}"#
@@ -451,6 +454,7 @@ private func seedSuccessorProjections(_ model: AppModel) throws {
                 arrived, message: "old hydration success never started")
             model.connectionGeneration += 1
             model.adoptClientForReconnect(generationFenceGateway(port: 41161 + index))
+            release.signal()
             await request.value
         }
 
@@ -471,12 +475,13 @@ private func seedSuccessorProjections(_ model: AppModel) throws {
 
         for (index, path) in ["/v2/secrets", "/v2/threads", "/v2/projects"].enumerated() {
             let arrived = GenerationFenceCallCounter()
+            let release = DispatchSemaphore(value: 0)  // held until the next generation (#705)
             GenerationFenceURLProtocol.handler = { request in
                 guard request.url?.path == path else {
                     throw GenerationFenceTestError.unexpectedRequest
                 }
                 arrived.increment()
-                Thread.sleep(forTimeInterval: 0.12)
+                _ = release.wait(timeout: .now() + 10)
                 return (generationFenceResponse(request, status: 503), Data("{}".utf8))
             }
             let request: Task<Void, Never> = switch path {
@@ -488,6 +493,7 @@ private func seedSuccessorProjections(_ model: AppModel) throws {
                 arrived, message: "old hydration failure never started")
             model.connectionGeneration += 1
             model.adoptClientForReconnect(generationFenceGateway(port: 41165 + index))
+            release.signal()
             await request.value
         }
 
