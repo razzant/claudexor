@@ -14,15 +14,7 @@ import {
   type QuotaRegistry,
 } from "@claudexor/daemon";
 import { createCodexModelAdapter } from "@claudexor/harness-codex";
-import {
-  probeCredentialProfileStatus,
-  profileStatusAdmits,
-  resolveAccountForRun,
-  resolveCredentialProfile,
-  composeCredentialProfileEvidence,
-  applicableCredentialUnusable,
-  vendorCredentialObservation,
-} from "@claudexor/orchestrator";
+import { resolveAccountForRun } from "@claudexor/orchestrator";
 import {
   ControlModelCatalogResponse,
   ControlModelAccountCatalogResponse,
@@ -36,7 +28,13 @@ import {
   type ModelRoutingEvidence,
   type JobAdmission,
 } from "@claudexor/schema";
-import { errorCode, noProjectRepoRoot, redactSecrets } from "@claudexor/util";
+import {
+  errorCode,
+  noProjectRepoRoot,
+  redactSecrets,
+  measureModelPreparation,
+  measureModelPreparationSync,
+} from "@claudexor/util";
 import { accountsMigrationGate } from "./accounts-unified-migration.js";
 import { buildRegistry } from "./registry.js";
 import { afterRetention, type RetentionRunner } from "./retention-lifetime.js";
@@ -45,7 +43,10 @@ import { bindModelAccountEvidence, withImageAccountEvidence } from "./model-acco
 import { modelOperationControlServices } from "./model-operation-control.js";
 import { selectModelCatalog } from "./model-catalog-selection.js";
 import { historyBoundTo, modelCapabilityOutcome } from "./model-capability-outcome.js";
-import { modelError, poolExhausted } from "./model-service-refusals.js";
+import { admitModelAccount, liveAccountRefusal } from "./model-account-admission.js";
+import { ModelLoginReadiness } from "./model-login-readiness.js";
+import { modelCredentialRead } from "./model-credential-read.js";
+import { modelError, poolExhausted, refusalProblem } from "./model-service-refusals.js";
 
 interface ModelSource {
   adapter: ModelAdapter;
@@ -87,6 +88,9 @@ export function createModelServices(deps: Dependencies) {
   // Selection judges each window at the decision, exactly like run admission (#457).
   const admissionEvidence = () => ({ ...quotaEvidence(), ...deps.quota().readAdmission() });
   const lifetime = new AbortController();
+  const readiness = new ModelLoginReadiness(capabilities.credentials);
+  const readSignal = (signal?: AbortSignal) =>
+    signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
   const getSource = (id: string): ModelSource => {
     const source = sources.find((entry) => entry.adapter.id === id);
     if (!source) throw modelError("model_source_unavailable", "No such model source", 404);
@@ -110,79 +114,50 @@ export function createModelServices(deps: Dependencies) {
       boundHistory?: (profileId: string, fingerprint: string | null) => boolean;
     } = {},
   ) => {
-    const admitted = await admitAccount(source, account, model, signal);
-    return resolveCatalog(source, account, model, signal, admitted, options);
+    signal = readSignal(signal);
+    return measureModelPreparation("selection", async () => {
+      const admitted = await measureModelPreparation("admission", () =>
+        admitAccount(source, account, model, signal),
+      );
+      return resolveCatalog(source, account, model, signal, admitted, options);
+    });
   };
 
-  /** Pin/pool admission shared by text and image selection: harness enabled,
-   * managed-login rows only, strict pin revocation and probe checks. */
-  const admitAccount = async (
+  const admitAccount = (
     source: ModelSource,
     account: ModelAccountChoice,
     model: string | null,
     signal: AbortSignal,
-  ) => {
-    signal.throwIfAborted();
-    const cfg = config();
-    const harnessId = source.credentialHarness;
-    const harness = cfg.harnesses[harnessId];
-    if (harness?.enabled === false)
-      throw modelError("model_source_unavailable", "This model source is disabled in settings");
-    // The first model transport admits only the existing managed-login rows.
-    // API-key and OAuth secret-reference rows remain Agent capabilities.
-    const profiles = cfg.credential_profiles.filter(
-      (row) => row.credential_kind === "config_dir_login",
-    );
-    let pinnedProfile: CredentialProfile | null = null;
-    if (account.mode === "pin") {
-      try {
-        pinnedProfile = resolveCredentialProfile(profiles, account.profileId, harnessId);
-      } catch {
-        throw modelError(
-          "model_account_unavailable",
-          "The pinned managed model account is unknown, disabled, or incompatible",
-        );
-      }
-    }
-    const probe = registry.get(harnessId)?.probeCredentialProfile?.bind(registry.get(harnessId));
-    const quota = quotaEvidence();
-    if (pinnedProfile) {
-      // Preserve a confirmed sign-in remedy across subsequent pinned calls.
-      // Local probe failures and generic unavailability do not prove revocation.
-      const evidence = { quota, unusable: unusable.live(), model, route: "vendor_native" as const };
-      const refusal = applicableCredentialUnusable(pinnedProfile, evidence);
-      const revoked = refusal?.code === "auth_revoked" ? refusal : null;
-      const vendor = vendorCredentialObservation(quota, harnessId, pinnedProfile.profile_id);
-      const revokedAt =
-        revoked?.observed_at ?? (vendor?.outcome === "revoked" ? vendor.observed_at : null);
-      if (revokedAt)
-        throw Object.assign(
-          modelError("auth_required", "The pinned managed model account requires sign-in"),
-          {
-            problem: ControlProblem.parse({
-              code: "auth_required",
-              message: "The pinned managed model account requires sign-in",
-              retryable: false,
-              context: {
-                source: source.adapter.id,
-                credentialProfileId: pinnedProfile.profile_id,
-                observedAt: revokedAt,
-              },
-            }),
-          },
-        );
-      const status = composeCredentialProfileEvidence(
-        await probeCredentialProfileStatus(pinnedProfile, probe),
-        evidence,
-      );
-      if (!profileStatusAdmits(pinnedProfile, status))
-        throw modelError(
-          "auth_unavailable",
-          "The pinned model account has no verified current authentication",
-        );
-    }
-    return { cfg, harnessId, harness, profiles, probe, pinnedProfile };
-  };
+  ) =>
+    admitModelAccount({
+      source,
+      account,
+      model,
+      signal,
+      config,
+      registry,
+      readiness,
+      quotaEvidence,
+      unusable,
+    });
+
+  /** After a wait, only the picked account's own live facts decide again. */
+  const recheck = (
+    admitted: Awaited<ReturnType<typeof admitAccount>>,
+    model: string | null,
+    requestKind: QuotaRequestKind,
+    profileId: string,
+    quota = admissionEvidence(),
+  ) =>
+    liveAccountRefusal({
+      ...admitted,
+      profileId,
+      model,
+      requestKind,
+      config: config(),
+      quota,
+      unusable: unusable.live(),
+    });
 
   /** One pool pick for the given model, or a typed pool refusal. The resolver
    * never generates; an `excluded` set lets a selection epoch move on. */
@@ -196,63 +171,73 @@ export function createModelServices(deps: Dependencies) {
     requestKind: QuotaRequestKind = "text",
     poolEvents: ModelRoutingEvidence["poolEvents"] = [],
   ): Promise<CredentialProfile> => {
-    const { harnessId, harness, profiles, probe, pinnedProfile } = admitted;
-    const currentQuota = admissionEvidence();
-    let profile: CredentialProfile | null;
-    try {
-      profile = await resolveAccountForRun({
-        harnessId,
-        registry: profiles,
-        policy:
-          harness?.profile_policy ??
-          GlobalConfig.parse({ harnesses: { [harnessId]: {} } }).harnesses[harnessId]!
-            .profile_policy,
-        profileCardinality: credentialProfilePolicyState({
-          adapter: registry.get(harnessId),
+    const { harnessId, policy, profiles, probe, pinnedProfile } = admitted;
+    for (;;) {
+      const currentQuota = admissionEvidence();
+      let profile: CredentialProfile | null;
+      try {
+        profile = await resolveAccountForRun({
+          harnessId,
           registry: profiles,
-        }),
-        snapshots: currentQuota.snapshots,
-        requestKind,
-        quota: currentQuota,
-        unusable: unusable.live(),
-        substitutions: substitutions.live(),
-        refusals: deps.refusals?.live(),
-        lastService: deps.lastService,
-        probe,
-        pinnedProfile,
-        boundProfileId:
-          account.mode === "auto" &&
-          !capabilities.state(harnessId, account.preferredProfileId ?? "", model) &&
-          !deps.refusals
-            ?.live()
-            .some(
-              (row) =>
-                row.harness_id === harnessId &&
-                row.profile_id === account.preferredProfileId &&
-                row.requested_model === model,
-            )
-            ? (account.preferredProfileId ?? null)
-            : null,
-        threadId: null,
-        model,
-        excludedProfileIds: excluded,
-        defaultRoute: null,
-        // Model calls cannot borrow an unregistered/default login or a paid route.
-        nativeCredentialsDisabled: true,
-        authPreference: "subscription",
-        notePoolApiKeyRoute: () => {},
-        emit: (type, payload) => {
-          poolEvents.push({ type, payload });
-        },
-      });
-    } catch (error) {
-      if (errorCode(error) === "credential_pool_exhausted")
-        throw poolExhausted(source.adapter.id, error, catalogRefusals);
-      throw error;
+          policy,
+          profileCardinality: credentialProfilePolicyState({
+            adapter: registry.get(harnessId),
+            registry: profiles,
+          }),
+          snapshots: currentQuota.snapshots,
+          requestKind,
+          quota: currentQuota,
+          unusable: unusable.live(),
+          substitutions: substitutions.live(),
+          refusals: deps.refusals?.live(),
+          lastService: deps.lastService,
+          probe,
+          pinnedProfile,
+          boundProfileId:
+            account.mode === "auto" &&
+            !capabilities.state(harnessId, account.preferredProfileId ?? "", model) &&
+            !deps.refusals
+              ?.live()
+              .some(
+                (row) =>
+                  row.harness_id === harnessId &&
+                  row.profile_id === account.preferredProfileId &&
+                  row.requested_model === model,
+              )
+              ? (account.preferredProfileId ?? null)
+              : null,
+          threadId: null,
+          model,
+          excludedProfileIds: excluded,
+          defaultRoute: null,
+          // Model calls cannot borrow an unregistered/default login or a paid route.
+          nativeCredentialsDisabled: true,
+          authPreference: "subscription",
+          notePoolApiKeyRoute: () => {},
+          emit: (type, payload) => {
+            poolEvents.push({ type, payload });
+          },
+        });
+      } catch (error) {
+        admitted.signal.throwIfAborted();
+        if (errorCode(error) !== "credential_pool_exhausted") throw error;
+        // Causes of this decision: a live block outranks an earlier refusal.
+        const causes = new Map(catalogRefusals);
+        for (const [id, refusal] of causes) {
+          const live = await recheck(admitted, model, requestKind, id, currentQuota);
+          causes.set(id, live ? refusalProblem(live) : refusal);
+        }
+        throw poolExhausted(source.adapter.id, error, causes);
+      }
+      if (!profile)
+        throw modelError("model_account_unavailable", "Connect a managed account for model calls");
+      // A pin was judged after its probe; a pool pick on facts read before them.
+      if (pinnedProfile) return profile;
+      const refusal = await recheck(admitted, model, requestKind, profile.profile_id);
+      if (!refusal) return profile;
+      catalogRefusals.set(profile.profile_id, refusalProblem(refusal));
+      excluded.add(profile.profile_id);
     }
-    if (!profile)
-      throw modelError("model_account_unavailable", "Connect a managed account for model calls");
-    return profile;
   };
 
   const resolveCatalog = async (
@@ -281,8 +266,9 @@ export function createModelServices(deps: Dependencies) {
       unusable,
       quota: deps.quota,
       warn: deps.warn,
-      refusals: deps.refusals?.live(),
-      substitutions: substitutions.live(),
+      refusals: () => deps.refusals?.live(),
+      substitutions: () => substitutions.live(),
+      recheck: (profile) => recheck(admitted, model, "text", profile.profile_id),
       ...options,
       pick: (excluded, refusals) =>
         pickAccount(
@@ -303,6 +289,7 @@ export function createModelServices(deps: Dependencies) {
     request: ImageCallRequest,
     signal: AbortSignal,
   ): Promise<{ profile: CredentialProfile; adapter: ModelAdapter }> => {
+    signal = readSignal(signal);
     const source = getSource(request.source);
     const image = source.adapter.image;
     if (!image)
@@ -362,7 +349,10 @@ export function createModelServices(deps: Dependencies) {
       let selected = await select();
       let binding = capabilities.bind(source.credentialHarness, selected.catalog, request.model);
       signal.throwIfAborted();
-      while (request.account.mode === "auto" && !capabilities.reserve(binding, operationId)) {
+      while (
+        request.account.mode === "auto" &&
+        !measureModelPreparationSync("reserve", () => capabilities.reserve(binding, operationId))
+      ) {
         excluded.add(selected.profile.profile_id);
         try {
           selected = await select();
@@ -408,6 +398,7 @@ export function createModelServices(deps: Dependencies) {
             try {
               const served = await source.adapter.invoke(input, {
                 ...context,
+                signal: readSignal(context.signal),
                 catalog,
                 onDispatch: async (route) => {
                   await context.onDispatch(route);
@@ -519,6 +510,7 @@ export function createModelServices(deps: Dependencies) {
         credentialProfileId?: string,
         requestedModel?: string,
         includeAdmission = false,
+        signal?: AbortSignal,
       ) => {
         if (includeAdmission && !requestedModel)
           throw modelError("invalid_request", "Admission observation requires requestedModel", 400);
@@ -527,7 +519,7 @@ export function createModelServices(deps: Dependencies) {
           source,
           credentialProfileId ? { mode: "pin", profileId: credentialProfileId } : { mode: "auto" },
           requestedModel ?? null,
-          lifetime.signal,
+          readSignal(signal),
         );
         return {
           ...catalog,
@@ -542,24 +534,38 @@ export function createModelServices(deps: Dependencies) {
           models: catalog.models.map(({ processing: _processing, ...model }) => model),
         };
       },
-      modelAccountCatalog: async (sourceId: string, credentialProfileId?: string) => {
+      modelAccountCatalog: async (
+        sourceId: string,
+        credentialProfileId?: string,
+        signal?: AbortSignal,
+      ) => {
         const source = getSource(sourceId);
         const context = { config: config(), quota: quotaEvidence(), unusable: unusable.live() };
+        const adapter = registry.get(source.credentialHarness);
         const accounts = await enumerateAccountCatalogs({
           observationKey: `model-source:${sourceId}`,
+          signal: readSignal(signal),
           context,
-          adapter: registry.get(source.credentialHarness),
+          adapter: adapter?.probeCredentialProfile
+            ? {
+                ...adapter,
+                probeCredentialProfile: (profile, signal) =>
+                  readiness.probe(profile, adapter, signal ?? lifetime.signal),
+              }
+            : adapter,
           profiles: catalogProfiles(context, source.credentialHarness, credentialProfileId, true),
-          read: async (profile, canReadCatalog) => {
-            lifetime.signal.throwIfAborted();
+          read: async (profile, canReadCatalog, physicalSignal) => {
+            physicalSignal.throwIfAborted();
             if (!canReadCatalog) return null;
-            const generation = capabilities.credentials.generation(
+            const { value, generation } = await modelCredentialRead(
+              capabilities.credentials,
               source.credentialHarness,
-              profile.profile_id,
+              profile,
+              physicalSignal,
+              (signal, credentialGeneration) =>
+                source.adapter.catalog({ profile, signal, credentialGeneration }),
             );
-            const catalog = ControlModelCatalogResponse.parse(
-              await source.adapter.catalog({ profile, signal: lifetime.signal }),
-            );
+            const catalog = ControlModelCatalogResponse.parse(value);
             if (catalog.source !== sourceId || catalog.credentialProfileId !== profile.profile_id)
               throw modelError(
                 "model_catalog_identity_mismatch",
@@ -585,6 +591,7 @@ export function createModelServices(deps: Dependencies) {
       }),
     close: () => {
       lifetime.abort("host_cancelled");
+      readiness.close();
       operations.close();
     },
   };

@@ -1,3 +1,4 @@
+import { ModelPreparationTiming } from "@claudexor/util";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -857,4 +858,19 @@ describe("windows kill fallback (wave FIX_FIRST: failed taskkill must not strand
     expect(calls).toBeGreaterThan(0);
     expect(result.signal).toBe("SIGKILL");
   });
+});
+
+it("counts child launch preparation including leader capture, without counting an idle interval", async () => {
+  const idle = new ModelPreparationTiming();
+  expect(idle.finish().process.childLaunches).toBe(0);
+  const timing = new ModelPreparationTiming();
+  await timing.run(async () => {
+    for await (const _event of spawnProcess(process.execPath, ["-e", "process.exit(0)"])) {
+      /* drain owned child */
+    }
+  });
+  const measured = timing.finish();
+  expect(measured.process.childLaunches).toBe(1);
+  expect(measured.process.childLaunchMs).toBeGreaterThan(0);
+  expect(measured.process.childLaunchMs).toBeLessThanOrEqual(measured.totalMs);
 });

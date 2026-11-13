@@ -494,11 +494,52 @@ export function isModelOperation(params: unknown): boolean {
   );
 }
 
+const PreparationSamples = z
+  .object({
+    count: z.number().int().nonnegative(),
+    totalMs: z.number().finite().nonnegative(),
+    maxMs: z.number().finite().nonnegative(),
+  })
+  .strict();
+export const ModelPreparationTiming = z
+  .object({
+    totalMs: z.number().finite().nonnegative(),
+    steps: z
+      .object({
+        payloadRead: PreparationSamples.optional(),
+        payloadParse: PreparationSamples.optional(),
+        admission: PreparationSamples.optional(),
+        loginProbe: PreparationSamples.optional(),
+        loginReady: PreparationSamples.optional(),
+        catalogRead: PreparationSamples.optional(),
+        catalogTransport: PreparationSamples.optional(),
+        selection: PreparationSamples.optional(),
+        reserve: PreparationSamples.optional(),
+        adapterAuth: PreparationSamples.optional(),
+        adapterBody: PreparationSamples.optional(),
+      })
+      .strict(),
+    process: z
+      .object({
+        eventLoopActiveMs: z.number().finite().nonnegative(),
+        eventLoopIdleMs: z.number().finite().nonnegative(),
+        childLaunches: z.number().int().nonnegative(),
+        childLaunchMs: z.number().finite().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict()
+  .describe(
+    "Preparation timings in milliseconds, frozen at dispatch or pre-dispatch failure. totalMs is elapsed time; each step's totalMs is the summed waits of this operation, so concurrent waits can sum above elapsed time and a wait that joined a shared read counts only its remaining part. Steps overlap. loginProbe counts physical login probes this operation launched or joined; loginReady counts reused readiness. Process deltas include concurrent operations, not attributed CPU cost.",
+  );
+export type ModelPreparationTiming = z.infer<typeof ModelPreparationTiming>;
+
 export const ModelOperationReceipt = z
   .object({
     lifecycle: RunLifecycle.exclude(["queued", "running"]),
     dispatch: ModelDispatch,
     routing: ModelRoutingEvidence.optional(),
+    preparation: ModelPreparationTiming.optional(),
     response: ModelResponseCustody,
     usage: ModelUsage,
     cost: ModelCostEvidence.nullable(),
@@ -539,6 +580,7 @@ export const ControlModelOperationDetail = z
     finishedAt: IsoTimestamp.nullable(),
     dispatch: ModelDispatch,
     routing: ModelRoutingEvidence.optional(),
+    preparation: ModelPreparationTiming.optional(),
     response: ModelResponseCustody,
     usage: ModelUsage,
     cost: ModelCostEvidence.nullable(),

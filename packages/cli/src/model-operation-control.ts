@@ -7,14 +7,15 @@ export function modelOperationControlServices(
   operations: Pick<ModelOperations, "create" | "inspect" | "readResult" | "acknowledge" | "cancel">,
   admission?: (id: string) => JobAdmission | null,
 ) {
-  const snapshot = (id: string) => {
-    const detail = operations.inspect(id);
+  const snapshot = (id: string, includePreparation = false) => {
+    const detail = includePreparation ? operations.inspect(id, true) : operations.inspect(id);
     return admission ? { ...detail, admission: admission(id) } : detail;
   };
   return {
     createModelOperation: async (...args: Parameters<ModelOperations["create"]>) =>
       snapshot((await operations.create(...args)).id),
-    getModelOperation: async (id: string) => snapshot(id),
+    getModelOperation: async (id: string, includePreparation = false) =>
+      snapshot(id, includePreparation),
     readModelResult: async (id: string) => operations.readResult(id),
     acknowledgeModelResult: async (id: string, sha256: string) =>
       snapshot(operations.acknowledge(id, sha256).id),

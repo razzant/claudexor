@@ -26,6 +26,16 @@ interface Remembered {
 }
 const remembered = new Map<string, Remembered>();
 let sequence = 0;
+const listeners = new Set<(harness?: string) => void>();
+/** In-flight consumers end their epoch when maintenance or a passive identity
+ * observation detects replacement. No polling or file watcher is installed. */
+export function onProgramObservationChange(listener: (harness?: string) => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+function changed(harness?: string): void {
+  for (const listener of listeners) listener(harness);
+}
 function remember(entry: Remembered, selection: SelectedHarnessProgram): void {
   // A failed ask is still an observation, but never erases this identity's answer.
   if (selection.version !== null || entry.selection.version === null) entry.selection = selection;
@@ -47,6 +57,7 @@ function entryFor(program: HarnessProgram, options: ProgramResolutionOptions) {
   const key = `${program.id}\0${selected.observed.path ?? "missing"}`;
   let entry = remembered.get(key);
   if (!entry || entry.identity !== identity) {
+    if (entry) changed(program.id);
     entry = { identity, sequence: ++sequence, known: false, selection: selected.observed };
     remembered.set(key, entry);
   }
@@ -65,6 +76,7 @@ function observation(
   };
 }
 export function invalidateProgramObservations(harness?: string): void {
+  changed(harness);
   for (const key of remembered.keys())
     if (!harness || key.startsWith(`${harness}\0`)) remembered.delete(key);
 }
@@ -86,6 +98,7 @@ export function programObservationPublisher(
       selected.realPath !== entry.selection.realPath
     )
       return false;
+    if (entry.known && entry.selection.version !== selected.version) changed(program.id);
     remember(entry, selected);
     entry.pending = undefined;
     return true;
@@ -130,6 +143,7 @@ export async function observeHarnessProgram(
         entry.sequence === revision &&
         entryFor(program, resolution).entry === entry
       ) {
+        if (entry.known && entry.selection.version !== answer.version) changed(program.id);
         remember(entry, answer);
         return observation(
           entry.selection,

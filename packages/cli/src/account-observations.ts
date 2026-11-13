@@ -1,4 +1,9 @@
-import { observeHarnessProgram, assertSameProgram, type ProgramObservation } from "@claudexor/core";
+import {
+  observeHarnessProgram,
+  assertSameProgram,
+  waitForRead,
+  type ProgramObservation,
+} from "@claudexor/core";
 import type { HarnessProgram } from "@claudexor/schema";
 import { globalConfigPath } from "@claudexor/config";
 import type { CredentialAccountProbeReceipt, HarnessAdapter } from "@claudexor/core";
@@ -21,6 +26,8 @@ interface Entry {
   fingerprint: string;
   promise: Promise<Observation<unknown>>;
   pending: boolean;
+  controller?: AbortController;
+  readers?: number;
 }
 
 /** Display acquisition is cold-once, including failure. TTL ages evidence; it
@@ -37,6 +44,7 @@ class AccountObservations {
   }
 
   invalidate(): void {
+    for (const entry of this.entries.values()) entry.controller?.abort();
     this.entries.clear();
     this.generation += 1;
     this.harnessGenerations.clear();
@@ -54,12 +62,18 @@ class AccountObservations {
   invalidateHarness(harnessId: string): void {
     this.harnessGenerations.set(harnessId, (this.harnessGenerations.get(harnessId) ?? 0) + 1);
     for (const key of this.entries.keys())
-      if (key.split("\0")[2] === harnessId) this.entries.delete(key);
+      if (key.split("\0")[2] === harnessId) {
+        this.entries.get(key)?.controller?.abort();
+        this.entries.delete(key);
+      }
   }
 
   invalidateCatalogs(): void {
     for (const key of this.entries.keys())
-      if (key.split("\0")[1] !== "profile") this.entries.delete(key);
+      if (key.split("\0")[1] !== "profile") {
+        this.entries.get(key)?.controller?.abort();
+        this.entries.delete(key);
+      }
   }
 
   observeProfile(
@@ -92,14 +106,19 @@ class AccountObservations {
   async read<T>(
     kind: string,
     profile: CredentialProfile,
-    acquire: () => Promise<T>,
+    acquire: (signal: AbortSignal) => Promise<T>,
     fresh = false,
     program?: HarnessProgram,
+    signal: AbortSignal = new AbortController().signal,
   ): Promise<Observation<T>> {
+    signal.throwIfAborted();
     const key = [globalConfigPath(), kind, profile.harness_id, profile.profile_id].join("\0");
     const generation = this.generationFor(profile.harness_id);
     const sequence = this.startObservation();
-    const observed = await observeHarnessProgram(program, undefined, undefined, { fresh });
+    const observed = await waitForRead(
+      observeHarnessProgram(program, undefined, undefined, { fresh }),
+      signal,
+    );
     if (generation !== this.generationFor(profile.harness_id))
       throw new Error("Account changed during program observation; read it again");
     const fingerprint = JSON.stringify([profile, observed.key]);
@@ -111,20 +130,30 @@ class AccountObservations {
         throw Object.assign(new Error("A newer program observation superseded this account read"), {
           code: "account_observation_superseded",
         });
-      return current.promise as Promise<Observation<T>>;
+      return this.wait<T>(key, current, signal);
     }
     if (current?.fingerprint === fingerprint && (!fresh || current.pending))
-      return current.promise as Promise<Observation<T>>;
+      return this.wait<T>(key, current, signal);
+    current?.controller?.abort();
+    const controller = new AbortController();
     const entry: Entry = {
+      controller,
+      readers: 0,
       sequence,
       fingerprint,
       pending: true,
       promise: Promise.resolve(null as never),
     };
-    entry.promise = Promise.resolve()
-      .then(acquire)
+    entry.promise = waitForRead(
+      Promise.resolve().then(() => acquire(controller.signal)),
+      controller.signal,
+    )
       .then(async (value) => {
-        assertSameProgram(observed, await observeHarnessProgram(program));
+        assertSameProgram(
+          observed,
+          await waitForRead(observeHarnessProgram(program), controller.signal),
+        );
+        controller.signal.throwIfAborted();
         if (this.entries.get(key) !== entry)
           throw Object.assign(
             new Error("Account observation changed during acquisition; refresh again"),
@@ -135,7 +164,8 @@ class AccountObservations {
       .catch((error: unknown) => {
         const code = (error as { code?: string } | null)?.code;
         if (
-          (code === "program_changed_during_observation" ||
+          (controller.signal.aborted ||
+            code === "program_changed_during_observation" ||
             code === "account_observation_superseded") &&
           this.entries.get(key) === entry
         )
@@ -146,7 +176,20 @@ class AccountObservations {
         entry.pending = false;
       });
     this.entries.set(key, entry);
-    return entry.promise as Promise<Observation<T>>;
+    return this.wait<T>(key, entry, signal);
+  }
+
+  private async wait<T>(key: string, entry: Entry, signal: AbortSignal): Promise<Observation<T>> {
+    entry.readers = (entry.readers ?? 0) + 1;
+    try {
+      return (await waitForRead(entry.promise, signal)) as Observation<T>;
+    } finally {
+      entry.readers -= 1;
+      if (entry.pending && entry.readers === 0) {
+        if (this.entries.get(key) === entry) this.entries.delete(key);
+        entry.controller?.abort();
+      }
+    }
   }
 }
 
@@ -165,17 +208,18 @@ export async function displayAccountObservation(
   profile: CredentialProfile,
   adapter?: HarnessAdapter,
   fresh = false,
+  signal?: AbortSignal,
 ): Promise<CredentialAccountProbeReceipt> {
   const observed = await accountObservations.read(
     "profile",
     profile,
-    async () => {
+    async (physicalSignal) => {
       let identity = profileAccountIdentity(profile);
       const status = await probeCredentialProfileStatus(
         profile,
         adapter?.probeCredentialAccount
           ? async (candidate) => {
-              const receipt = await adapter.probeCredentialAccount!(candidate);
+              const receipt = await adapter.probeCredentialAccount!(candidate, physicalSignal);
               if (
                 receipt.status.profile_id !== candidate.profile_id ||
                 receipt.status.harness_id !== candidate.harness_id
@@ -185,12 +229,16 @@ export async function displayAccountObservation(
                 receipt.identity === null ? null : AccountIdentitySchema.parse(receipt.identity);
               return receipt.status;
             }
-          : adapter?.probeCredentialProfile?.bind(adapter),
+          : adapter?.probeCredentialProfile
+            ? (candidate) => adapter.probeCredentialProfile!(candidate, physicalSignal)
+            : undefined,
       );
+      physicalSignal.throwIfAborted();
       return { status, identity };
     },
     fresh,
     adapter?.program,
+    signal,
   );
   const age = Math.max(0, Date.now() - observed.at);
   if (age <= STATUS_PROJECTION_TTL_MS) return observed.value;

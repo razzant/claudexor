@@ -1,25 +1,20 @@
+import { measureModelPreparation } from "@claudexor/util";
+import {
+  createCodexCatalogReader,
+  authenticatedProblem,
+  codexModelHeaders as headers,
+} from "./model-catalog.js";
+export { parseCodexModelCatalog } from "./model-catalog.js";
 import { codexCapabilityRefusal } from "./model-capability-refusal.js";
 import {
-  codexProcessingCapability,
   prepareCodexProcessing,
   observeCodexProcessing,
   codexProcessingCost,
 } from "./processing.js";
 import type { ProcessingReceipt, EffortResolution } from "@claudexor/schema";
-import type { ModelAdapter, ModelAdapterContext } from "@claudexor/core";
-import type {
-  ControlModelCatalogResponse,
-  ModelCallResult,
-  ModelCatalogEntry,
-  ModelNativeContinuation,
-  ModelRoute,
-} from "@claudexor/schema";
-import { CLAUDEXOR_VERSION } from "@claudexor/util";
-import {
-  prepareCodexModelAuth,
-  type CodexModelAuth,
-  type CodexModelAuthDeps,
-} from "./model-auth.js";
+import type { ModelAdapter } from "@claudexor/core";
+import type { ModelCallResult, ModelNativeContinuation, ModelRoute } from "@claudexor/schema";
+import { prepareCodexModelAuth, type CodexModelAuthDeps } from "./model-auth.js";
 import {
   buildResponsesRequest,
   CodexModelError,
@@ -39,11 +34,10 @@ import { ResponseFailureCapture } from "./failure-evidence.js";
 import { RequestDelivery } from "./request-delivery.js";
 import { codexRequestCompression, encodeRequestBody } from "./request-compression.js";
 import { boundReached, CODEX_RESPONSE_BOUNDS } from "./response-bounds.js";
-import { codexModelEfforts, codexModelEffortResolution } from "./model-effort.js";
+import { codexModelEffortResolution } from "./model-effort.js";
 import { createCodexImageFacet } from "./images.js";
 
 const ENDPOINT = "https://chatgpt.com/backend-api/codex";
-const CLIENT = "claudexor";
 const TURN_FORMAT = "codex.turn.v1";
 /** Transport state belongs to a caller's live turn, never to assistant history. */
 function prepareTurnContinuation(
@@ -84,172 +78,12 @@ export interface CodexModelAdapterDeps extends CodexModelAuthDeps {
   clientVersion?: () => Promise<CodexCatalogClientVersion>;
 }
 
-function headers(auth: CodexModelAuth): Record<string, string> {
-  return {
-    Authorization: `Bearer ${auth.accessToken}`,
-    "ChatGPT-Account-ID": auth.accountId,
-    "Content-Type": "application/json",
-    originator: CLIENT,
-    "User-Agent": `${CLIENT}/${CLAUDEXOR_VERSION}`,
-  };
-}
-
-function capacity(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
-}
-
-/** Declared input kinds verbatim (open vocabulary). Only a wholly valid, non-empty
- * list counts: a missing, empty, non-array or partly invalid one is unknown (`[]`),
- * never a filtered subset that would read as a confident negative. */
-function declaredInputModalities(value: unknown): string[] {
-  return Array.isArray(value) && value.length > 0 && value.every((item) => text(item)?.trim())
-    ? [...value]
-    : [];
-}
-
-/** An expired/opaque access token's 401 is not proof that a new login is needed. */
-function authenticatedProblem(
-  response: Response,
-  body: unknown,
-  auth: CodexModelAuth,
-  now: number,
-) {
-  const problem = providerProblem(response.status, body, response.headers);
-  return response.status === 401 && (auth.expiresAt === null || auth.expiresAt <= now)
-    ? new CodexModelError(
-        "auth_refresh_failed",
-        "Codex refused access credentials whose freshness could not be confirmed.",
-        problem.context,
-      ).problem
-    : problem;
-}
-
-/** Exact backend metadata only; no CLI alias list, compaction limit, or historical default. */
-export function parseCodexModelCatalog(value: unknown): ModelCatalogEntry[] {
-  const models = record(value)?.models;
-  if (!Array.isArray(models))
-    throw new CodexModelError("catalog_unavailable", "Codex did not return a model catalog.");
-  // Mirror ModelsManager::build_available_models + mark_default_by_picker_visibility
-  // using THIS account's metadata. Incomplete metadata does not invent a default.
-  const hasPriority = models.every((value) => {
-    const item = record(value);
-    return (
-      Number.isSafeInteger(item?.priority) &&
-      ["list", "hide", "none"].includes(String(item?.visibility))
-    );
-  });
-  const ordered = hasPriority
-    ? [...models].sort((a, b) => Number(record(a)?.priority) - Number(record(b)?.priority))
-    : models;
-  const defaultEntry = hasPriority
-    ? (ordered.find((value) => record(value)?.visibility === "list") ?? ordered[0])
-    : null;
-  return ordered.map((value) => {
-    const entry = record(value),
-      id = text(entry?.slug);
-    if (!entry || !id)
-      throw new CodexModelError(
-        "catalog_unavailable",
-        "Codex returned an invalid model catalog entry.",
-      );
-    const reportedEfforts = entry.supported_reasoning_levels;
-    const reasoningEffortsVerified =
-      Array.isArray(reportedEfforts) &&
-      reportedEfforts.every((item) => text(record(item)?.effort)?.trim());
-    const efforts = reasoningEffortsVerified
-      ? reportedEfforts.map((item) => text(record(item)?.effort)!)
-      : [];
-    const projectedEfforts = codexModelEfforts(efforts);
-    return {
-      id,
-      processing: codexProcessingCapability(entry, "codex.models"),
-      label: text(entry.display_name),
-      isDefault: value === defaultEntry,
-      contextWindow: capacity(entry.context_window),
-      maxContextWindow: capacity(entry.max_context_window),
-      // Backend output-cap parameters are unsupported even when a model has a published output capacity.
-      maxOutputTokens: capacity(entry.max_output_tokens),
-      inputModalities: declaredInputModalities(entry.input_modalities),
-      ...projectedEfforts,
-      reasoningEffortsVerified,
-      defaultReasoningEffort:
-        entry.default_reasoning_level === "ultra" ? null : text(entry.default_reasoning_level),
-      supportedOptions: [
-        "toolChoice",
-        "cacheKey",
-        "serviceTier",
-        "processingPreference",
-        ...(projectedEfforts.reasoningEfforts.length ? ["reasoningEffort"] : []),
-        ...(entry.supports_parallel_tool_calls === true ? ["parallelToolCalls"] : []),
-      ],
-    };
-  });
-}
-
-async function catalogFor(
-  auth: CodexModelAuth,
-  context: Omit<ModelAdapterContext, "onDispatch">,
-  fetcher: typeof fetch,
-  now: () => number,
-  clientVersion: () => Promise<CodexCatalogClientVersion>,
-): Promise<ControlModelCatalogResponse> {
-  context.signal.throwIfAborted();
-  // Server discovery varies with the declared client version. This transport's
-  // verified level is raised by a newer installed CLI, never the installer pin.
-  // A missing row does not establish a minimum-version or entitlement refusal.
-  const declared = await clientVersion();
-  let response: Response;
-  try {
-    const query = `client_version=${encodeURIComponent(declared.version)}`;
-    response = await fetcher(`${ENDPOINT}/models?${query}`, {
-      headers: headers(auth),
-      signal: context.signal,
-      redirect: "error",
-    });
-  } catch {
-    context.signal.throwIfAborted();
-    throw new CodexModelError(
-      "catalog_unavailable",
-      "The selected Codex account's catalog could not be reached.",
-      {},
-      true,
-    );
-  }
-  let body: unknown = null;
-  try {
-    body = await response.json();
-  } catch {
-    if (response.ok)
-      throw new CodexModelError(
-        "catalog_unavailable",
-        "Codex returned an unreadable model catalog.",
-      );
-  }
-  if (!response.ok) {
-    const problem = authenticatedProblem(response, body, auth, now());
-    const code = problem.code === "provider_failed" ? "catalog_unavailable" : problem.code;
-    throw new CodexModelError(code, problem.message, problem.context, problem.retryable);
-  }
-  const models = parseCodexModelCatalog(body);
-  return {
-    source: "codex",
-    credentialProfileId: context.profile.profile_id,
-    accountFingerprint: auth.accountFingerprint,
-    capabilityFingerprint: auth.capabilityFingerprint,
-    observedAt: new Date(now()).toISOString(),
-    provenance: "provider_http",
-    sourceProgram: declared.program ?? null,
-    clientVersion: declared.version,
-    clientVersionSource: declared.source,
-    models,
-  };
-}
-
 /** One adapter-owned generation, with the official CLI owning token refresh. */
 export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): ModelAdapter {
   const fetcher = deps.fetch ?? globalThis.fetch;
   const now = deps.now ?? Date.now;
   const clientVersion = deps.clientVersion ?? (() => codexCatalogClientVersion());
+  const catalogFor = createCodexCatalogReader(fetcher, now, clientVersion);
   const requestCompression = deps.requestCompression ?? codexRequestCompression;
   return {
     id: "codex",
@@ -257,8 +91,10 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
     image: createCodexImageFacet(deps),
     inventoryAbsence: "advisory",
     async catalog(context) {
-      const auth = await prepareCodexModelAuth(context.profile, context.signal, deps);
-      return catalogFor(auth, context, fetcher, now, clientVersion);
+      const auth = await measureModelPreparation("adapterAuth", () =>
+        prepareCodexModelAuth(context.profile, context.signal, deps),
+      );
+      return catalogFor(auth, context);
     },
     async invoke(request, context) {
       let route: ModelRoute = {
@@ -328,7 +164,9 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
         }
         // Refuse unsupported explicit options before auth helpers, catalog I/O, or dispatch.
         validateCodexModelOptions(request.options);
-        const auth = await prepareCodexModelAuth(context.profile, context.signal, deps);
+        const auth = await measureModelPreparation("adapterAuth", () =>
+          prepareCodexModelAuth(context.profile, context.signal, deps),
+        );
         route = { ...route, accountFingerprint: auth.accountFingerprint };
         nativeContinuation = prepareTurnContinuation(request.nativeContinuation, route);
         const discovered = context.catalog;
@@ -349,7 +187,7 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
         // obtain fresh metadata rather than inventing a fingerprint or a limit.
         const catalog = discovered?.accountFingerprint
           ? discovered
-          : await catalogFor(auth, context, fetcher, now, clientVersion);
+          : await catalogFor(auth, context);
         // The raw source declares what a valid catalog miss proves (INV-104).
         // Missing metadata never becomes a fabricated model row or sibling limits.
         const model = catalog.models.find((entry) => entry.id === request.model);
@@ -379,9 +217,10 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
             ...(processing?.submittedNative ? { serviceTier: processing.submittedNative } : {}),
           },
         };
-        const body = JSON.stringify(buildResponsesRequest(physicalRequest, route));
-        // Encoded before the dispatch receipt: nothing was sent while this awaits.
-        const encoded = await encodeRequestBody(Buffer.from(body, "utf8"), requestCompression());
+        const encoded = await measureModelPreparation("adapterBody", () => {
+          const body = JSON.stringify(buildResponsesRequest(physicalRequest, route));
+          return encodeRequestBody(Buffer.from(body, "utf8"), requestCompression());
+        });
         delivery = new RequestDelivery(encoded.bytes);
         const requestHeaders = new Headers(headers(auth));
         requestHeaders.set("Content-Length", String(delivery.bytes.length));
