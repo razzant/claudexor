@@ -1,5 +1,5 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { rmdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type {
@@ -24,6 +24,7 @@ import {
   nowIso,
   projectRuntimeDir,
   removeTree,
+  withPoolWriteSlot,
   writeTextAsync,
 } from "@claudexor/util";
 import { ensureLaneHomeEnv, type LaneHomeEnv } from "./lanes.js";
@@ -173,10 +174,9 @@ export class WorkspaceManager {
     // Lane start awaits the disk (#688); only an envelope this call made is removed on refusal.
     const madeHere = (await stat(base).catch(() => null)) === null;
     await ensureDirAsync(base);
-    const homeDir = join(base, "home");
-    const harnessConfigDirs = await ensureHarnessHomeAsync(homeDir);
-    // Liveness marker for crash GC: the sweeper must never dispose an envelope
-    // whose creating process (daemon, CLI, MCP/ACP serve) is still alive —
+    // Liveness marker for crash GC, written whole once the base exists: the
+    // sweeper must never dispose an envelope whose creating process (daemon,
+    // CLI, MCP/ACP serve) is still alive —
     // startup GC's "nothing can own an envelope" premise only holds for
     // daemon-tracked runs. Pid + ps START TIME form a recycling-proof identity
     // (command names/titles mutate — vitest, daemons and tools retitle
@@ -191,6 +191,8 @@ export class WorkspaceManager {
       execution_root: this.repoRoot,
     });
     await writeTextAsync(join(base, "owner.json"), owner + "\n");
+    const homeDir = join(base, "home");
+    const harnessConfigDirs = await ensureHarnessHomeAsync(homeDir);
 
     if (opts.workspaceKind === "directory") {
       return createDirectoryEnvelope({
@@ -531,14 +533,12 @@ export class WorkspaceManager {
       /* best-effort */
     }
     // Prune the now-empty per-task parent dir (envelopeBase = <task>/<attempt>),
-    // guarded to stay strictly inside the workspaces dir.
-    try {
-      const taskDir = join(this.workspacesDir(), env.task_id);
-      if (taskDir.startsWith(this.workspacesDir() + sep) && (await readdir(taskDir)).length === 0)
-        await removeTree(taskDir);
-    } catch {
-      /* best-effort: an absent task dir has nothing to prune */
-    }
+    // guarded to stay strictly inside the workspaces dir. The kernel removes it
+    // only while it is empty, so a sibling another `create` makes meanwhile
+    // stays (#704); best-effort: ENOTEMPTY and ENOENT leave nothing to prune.
+    const taskDir = join(this.workspacesDir(), env.task_id);
+    if (taskDir.startsWith(this.workspacesDir() + sep))
+      await withPoolWriteSlot(undefined, () => rmdir(taskDir)).catch(() => undefined);
     if (!inPlace && env.workspace_kind !== "directory") {
       try {
         await worktreePrune(this.repoRoot);

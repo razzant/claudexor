@@ -16,6 +16,44 @@ vi.mock("node:fs", async (importOriginal) => {
   const patched = { mkdirSync: vi.fn(actual.mkdirSync), rmSync: vi.fn(actual.rmSync) };
   return { ...actual, ...patched, default: { ...actual, ...patched } };
 });
+/** Hooks into the awaited lifecycle calls: the task directory's prune and the
+ * scoped home's creation (#704). */
+const lifecycle = vi.hoisted(() => ({
+  pruneOf: null as string | null,
+  atPrune: null as (() => Promise<void>) | null,
+  homeOf: null as string | null,
+  ownerAtHome: [] as boolean[],
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const { existsSync: exists } = await vi.importActual<typeof import("node:fs")>("node:fs");
+  const { join: joinPath } = await vi.importActual<typeof import("node:path")>("node:path");
+  const prune = async (path: unknown): Promise<void> => {
+    const during = lifecycle.atPrune;
+    if (!during || String(path) !== lifecycle.pruneOf) return;
+    lifecycle.atPrune = null;
+    await during();
+  };
+  const patched = {
+    // A listing of the task directory returns, then the hook runs (a slow disk).
+    readdir: (async (...args: Parameters<typeof actual.readdir>) => {
+      const listed = await actual.readdir(...args);
+      await prune(args[0]);
+      return listed;
+    }) as typeof actual.readdir,
+    rmdir: (async (...args: Parameters<typeof actual.rmdir>) => {
+      await prune(args[0]);
+      return actual.rmdir(...args);
+    }) as typeof actual.rmdir,
+    mkdir: (async (...args: Parameters<typeof actual.mkdir>) => {
+      const home = lifecycle.homeOf;
+      if (home && String(args[0]).startsWith(joinPath(home, "home")))
+        lifecycle.ownerAtHome.push(exists(joinPath(home, "owner.json")));
+      return actual.mkdir(...args);
+    }) as typeof actual.mkdir,
+  };
+  return { ...actual, ...patched, default: { ...actual, ...patched } };
+});
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   const patched = { execFileSync: vi.fn(actual.execFileSync) };
@@ -111,6 +149,57 @@ describe(
       expect(vi.mocked(fs.mkdirSync)).not.toHaveBeenCalled();
       expect(recursiveRmSyncCalls()).toEqual([]);
       expect(psCalls()).toEqual([]);
+    });
+
+    it("prunes an empty task directory, never a sibling envelope another create makes meanwhile (#704)", async () => {
+      const { repo, runtimeRoot } = project();
+      const manager = new WorkspaceManager(repo, { runtimeRoot });
+      const taskDir = join(runtimeRoot, "workspaces", "race");
+      const a = await manager.create({ taskId: "race", attemptId: "a01" });
+      let b: Awaited<ReturnType<typeof manager.create>> | null = null;
+      // While dispose(A) prunes the task directory, create(B) of the same task runs whole.
+      lifecycle.pruneOf = taskDir;
+      lifecycle.atPrune = async () => {
+        b = await manager.create({ taskId: "race", attemptId: "a02" });
+      };
+      try {
+        await manager.dispose(a);
+      } finally {
+        lifecycle.atPrune = null;
+      }
+      // Direction 1: B was made during the prune and is whole after it.
+      expect(b).not.toBeNull();
+      const baseB = join(taskDir, "a02");
+      expect(existsSync(join(baseB, "owner.json"))).toBe(true);
+      expect(existsSync(b!.home_dir)).toBe(true);
+      expect(readFileSync(join(b!.worktree_path, "a.txt"), "utf8")).toBe("a\n");
+      // Direction 2: with no sibling left, the prune removes the empty directory.
+      await manager.dispose(b!);
+      expect(existsSync(taskDir)).toBe(false);
+    });
+
+    it("writes owner.json before it makes the envelope's scoped home (#704)", async () => {
+      const { repo, runtimeRoot } = project();
+      const manager = new WorkspaceManager(repo, { runtimeRoot });
+      lifecycle.homeOf = join(runtimeRoot, "workspaces", "owner-first", "a01");
+      lifecycle.ownerAtHome = [];
+      try {
+        const envelope = await manager.create({ taskId: "owner-first", attemptId: "a01" });
+        // Direction 1: the crash sweeper's liveness marker was on disk, whole,
+        // when the first directory of the scoped home was made.
+        expect(lifecycle.ownerAtHome.length).toBeGreaterThan(0);
+        expect(lifecycle.ownerAtHome[0]).toBe(true);
+        // Direction 2: the envelope is whole when `create` returns.
+        const owner = JSON.parse(readFileSync(join(lifecycle.homeOf, "owner.json"), "utf8")) as {
+          pid: number;
+          envelope_id: string;
+        };
+        expect(owner).toMatchObject({ pid: process.pid, envelope_id: envelope.id });
+        expect(existsSync(join(envelope.home_dir, ".codex"))).toBe(true);
+        await manager.dispose(envelope);
+      } finally {
+        lifecycle.homeOf = null;
+      }
     });
 
     it("the spies observe the synchronous calls they guard (negative control)", () => {
