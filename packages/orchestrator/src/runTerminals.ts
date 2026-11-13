@@ -13,12 +13,13 @@ import {
   RunOutcomeFacts,
   type RunOutcomeFacts as RunOutcomeFactsType,
 } from "@claudexor/schema";
-import { orderedAppender, readTextSafe, redactSecrets } from "@claudexor/util";
+import { orderedAppender, redactSecrets } from "@claudexor/util";
 import { reconcileDecisionBudget, settledBudgetSnapshot } from "./decisionBudget.js";
 import {
   cancelReasonFromSignalToken,
   cancellationFacts,
   commitCancellation,
+  commitFallbackTerminal,
   committedOutcome,
   committedResult,
   commitNetTerminal,
@@ -532,38 +533,13 @@ export async function guardAnnouncedRun(
         }
       } else result = await failureNet(a, err);
     }
-    // Defensive fallback for a strategy that returned without a terminal emit:
-    // materialize/announce a summary when needed, then pass through the same
-    // pre-terminal receipt transaction as every normal strategy.
+    // A strategy that returned without a terminal emit gets the defensive
+    // fallback's; a throw from it goes into the net, as a strategy's own does (#704).
     const a = announced as AnnouncedRunContext | null;
     if (a && !a.log.terminalCommitted()) {
-      const events = a.log.readAll().events;
-      if (!events.some((event) => event.type === "output.ready")) {
-        const summaryPath = join(a.paths.finalDir, "summary.md");
-        let summaryPresent = readTextSafe(summaryPath) !== null;
-        if (!summaryPresent) {
-          try {
-            await a.store.writeTextAsync(
-              summaryPath,
-              `# Run ${a.runId} (${a.mode})\n\n${redactSecrets(result.summary)}\n`,
-            );
-            summaryPresent = true;
-          } catch {
-            /* never point output.ready at a file that did not materialize */
-          }
-        }
-        if (summaryPresent) {
-          a.log.emit("output.ready", {
-            kind: "summary",
-            path: "final/summary.md",
-            state: "diagnostic",
-          });
-        }
-      }
-      await a.log.emitTerminal(terminalEventTypeFor("run.completed", result.facts), {
-        lifecycle: result.facts.lifecycle,
-        facts: result.facts,
-        reason: result.facts.reason,
+      await commitFallbackTerminal(a, result).catch(async (error: unknown) => {
+        if (isTerminalRecoveryRequired(error) || a.log.terminalCommitted()) throw error;
+        result = await failureNet(a, error);
       });
     }
     // TS cannot see assignments performed inside EventLog's hook closure.

@@ -336,6 +336,45 @@ describe("a landing failure meets the failure net (#704)", () => {
     expect(String(f.terminals()[0]?.payload["error"])).toContain("journal refused harness.event");
   });
 
+  it.each([true, false])(
+    "sends a throw from the fallback of a run that returned without a terminal into the net (its output lost: %s)",
+    async (lost) => {
+      let refusals = lost ? 1 : 0;
+      const f = queuedFixture(
+        `run-net-fallback-${lost}`,
+        (event) => event.type === "output.ready" && refusals-- > 0,
+      );
+      const result = await guardAnnouncedRun(undefined, async (announce) => {
+        await f.start(announce);
+        return {
+          lifecycle: "succeeded",
+          facts: makeOutcomeFacts("succeeded"),
+          summary: "done",
+          candidates: [],
+        } as unknown as OrchestratorResult;
+      });
+      expect(f.terminals()).toHaveLength(1);
+      expect(liveRunEventSeq(f.paths.eventsPath)).toBeNull();
+      if (lost) {
+        // Direction 1: the fallback's commit failed; the net's terminal states it.
+        expect(result.lifecycle).toBe("failed");
+        expect(f.sinkTerminals()).toEqual(["run.failed"]);
+        expect(String(f.terminals()[0]?.payload["error"])).toContain(
+          "journal refused output.ready",
+        );
+      } else {
+        // Direction 2: the fallback commits the returned verdict after its output.
+        expect(result.lifecycle).toBe("succeeded");
+        expect(f.sinkTerminals()).toEqual(["run.completed"]);
+        expect(f.events().map((event) => event.type)).toEqual([
+          "run.created",
+          "output.ready",
+          "run.completed",
+        ]);
+      }
+    },
+  );
+
   it("settles envelope custody through the net's flush after a line was lost", async () => {
     const repo = gitRepo();
     const f = queuedFixture("run-net-custody", (event) => event.payload["text"] === "lost");
