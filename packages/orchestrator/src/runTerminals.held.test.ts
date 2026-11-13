@@ -181,13 +181,13 @@ function gitRepo(): string {
   return repo;
 }
 
-/** The next open of `path` fails with a transient EIO, once. */
-function failNextOpen(path: string): () => number {
+/** The next `times` opens of `path` fail with a transient EIO. */
+function failNextOpen(path: string, times = 1): () => number {
   let failed = 0;
   vi.spyOn(promises, "open").mockImplementation((async (
     ...args: Parameters<typeof promises.open>
   ) => {
-    if (String(args[0]) === path && failed === 0) {
+    if (String(args[0]) === path && failed < times) {
       failed += 1;
       throw Object.assign(new Error("EIO: transient"), { code: "EIO" });
     }
@@ -520,8 +520,8 @@ const stoppedFacts = {
 };
 
 /** A queued run whose daemon custody keeps its envelope (`forRun` wired). */
-function keptRun(runId: string) {
-  const f = queuedFixture(runId);
+function keptRun(runId: string, refuse?: (event: RunEvent) => boolean) {
+  const f = queuedFixture(runId, refuse);
   const kept = forRun({ continuation: { retain: true } }, true, runId, f.paths, f.log);
   const wsm = new WorkspaceManager(gitRepo());
   let env: WorkspaceEnvelope | undefined;
@@ -636,32 +636,43 @@ describe("a landing failure while custody keeps an edited envelope (#704 r2)", (
     },
   );
 
-  it.each([true, false])(
-    "a run that throws after editing kept work resolves with the net's one terminal (its output lost: %s)",
-    async (lost) => {
-      const r = keptRun(`run-kept-net-${lost}`);
+  it.each([
+    { faults: 0, via: "open" },
+    { faults: 1, via: "open" },
+    { faults: 2, via: "open" },
+    { faults: 2, via: "sink" },
+  ] as const)(
+    "a run that throws after editing kept work resolves with the net's one terminal ($faults of the net's own lines lost, $via)",
+    async ({ faults, via }) => {
+      // In order: the net's own output.ready, then custody's workspace.retained.
+      const netLines = ["output.ready", "workspace.retained"].slice(0, faults);
+      const r = keptRun(
+        `run-kept-net-${faults}-${via}`,
+        (event) => via === "sink" && netLines.includes(event.type),
+      );
       const result = await guardAnnouncedRun(undefined, async (announce) => {
         await r.start(announce);
         await r.settle(stoppedCandidate(await r.edit()));
-        // The net's own output.ready is the next line to open the journal.
-        if (lost) failNextOpen(r.paths.eventsPath);
+        // The net's own lines are the next ones to open the journal.
+        if (via === "open" && faults > 0) failNextOpen(r.paths.eventsPath, faults);
         throw new Error("strategy failed after partial edits");
       });
-      // Both directions: the guard resolves with the net's committed terminal,
+      // Every direction: the guard resolves with the net's committed terminal,
       // and the edited work is kept under it.
       expect(result.lifecycle).toBe("failed");
       expect(r.sinkTerminals()).toEqual(["run.failed"]);
       expect(r.summary()).toContain("strategy failed after partial edits");
       expect(r.custody()).toMatchObject({ state: "retained", cause: null });
       expect(r.pointer()).not.toBeNull();
-      // A line that fails after the net's own barrier (its output.ready) is not
-      // named in its terminal (docs/ARCHITECTURE.md, the failure net).
-      expect(r.types()).toEqual(
-        lost
-          ? ["run.created", "workspace.retained", "run.failed"]
-          : ["run.created", "output.ready", "workspace.retained", "run.failed"],
-      );
       expect(liveRunEventSeq(r.paths.eventsPath)).toBeNull();
+      // A line the net appends after its own barrier is not named in its terminal
+      // (docs/ARCHITECTURE.md, the failure net).
+      expect(r.summary()).not.toContain("did not reach the journal");
+      const journal = ["run.created", "output.ready", "workspace.retained", "run.failed"];
+      // A refused line is on disk, though the sink refused it; a failed open wrote none.
+      expect(r.types()).toEqual(
+        via === "sink" ? journal : journal.filter((type) => !netLines.includes(type)),
+      );
     },
   );
 });

@@ -264,16 +264,19 @@ export class RunEventsLost extends Error {
 }
 
 /** Settle custody after the strategy and Delegate budget verdict, before terminal
- * publication. What the run directory holds or still has in flight settles first:
- * a landing failure rejects here (`RunEventsLost`), before custody changes or the
- * terminal commits, so it reaches the failure net, which settles custody under its
- * own facts (#704). */
+ * publication. What the run directory holds or still has in flight settles first.
+ * On a verdict's flush a landing failure rejects there (`RunEventsLost`), before
+ * custody changes or the terminal commits, so it reaches the failure net, which
+ * settles custody under its own facts. The net's own flush (`net`) does not reject
+ * there: what it meets is either named by the net already or one of the net's own
+ * lines, which its terminal does not restate (#704). */
 export async function flushContinuationTerminal(
   context: AnnouncedRunContext,
   facts: RunOutcomeFacts,
+  net = false,
 ): Promise<void> {
   await orderedAppender.settledUnder(context.paths.root).catch((error: unknown) => {
-    throw new RunEventsLost(error);
+    if (!net) throw new RunEventsLost(error);
   });
   const finish = pendingRuns.get(context.log);
   try {

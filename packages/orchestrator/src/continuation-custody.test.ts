@@ -227,12 +227,16 @@ describe("candidate envelope custody (A9)", () => {
     }
   });
 
-  it.each([true, false])(
-    "settles the run directory before custody: a line lost first leaves custody and the terminal for the net (lost: %s)",
-    async (lost) => {
+  it.each([
+    { lost: true, net: false },
+    { lost: true, net: true },
+    { lost: false, net: false },
+  ])(
+    "settles the run directory before custody: a line lost first leaves a verdict's custody and terminal for the net, not the net's (lost: $lost, net: $net)",
+    async ({ lost, net }) => {
       const repo = initRepo();
       const store = new ArtifactStore(repo);
-      const runId = `run-settle-first-${lost}`;
+      const runId = `run-settle-first-${lost}-${net}`;
       const paths = store.createRun(runId);
       const log = new EventLog(
         paths.eventsPath,
@@ -272,9 +276,9 @@ describe("candidate envelope custody (A9)", () => {
       log.emit("run.failed", { facts });
       const types = () => readRunEvents(paths.eventsPath).events.map((event) => event.type);
       try {
-        if (lost) {
-          // Direction 1: the flush rejects before custody or the terminal moved,
-          // with the lost line for the net to name.
+        if (lost && !net) {
+          // Direction 1: a verdict's flush rejects before custody or the terminal
+          // moved, with the lost line for the net to name.
           const rejected = await flushContinuationTerminal(context, facts).catch((e) => e);
           expect(rejected).toBeInstanceOf(RunEventsLost);
           expect(String((rejected as RunEventsLost).lost)).toContain(
@@ -285,9 +289,9 @@ describe("candidate envelope custody (A9)", () => {
           expect(log.deferredTerminalPending()?.type).toBe("run.failed");
           expect(types().filter((type) => type.startsWith("workspace."))).toEqual([]);
         }
-        // Direction 2 (and the net's next flush): custody keeps the work, once,
-        // before the terminal.
-        await flushContinuationTerminal(context, facts);
+        // Direction 2: the net's own flush (and a flush with nothing lost) does
+        // not reject there; custody keeps the work, once, before the terminal.
+        await flushContinuationTerminal(context, facts, net);
         expect(readEnvelopeCustody(envelopeBaseOf(env))?.state).toBe("retained");
         expect(log.terminalCommitted()).toBe(true);
         expect(types().filter((type) => type !== "harness.event")).toEqual([
