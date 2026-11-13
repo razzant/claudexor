@@ -1,5 +1,14 @@
 # claudexor
 
+## 6.1.0
+
+### Patch Changes
+
+- Updated dependencies [577e275]
+- Updated dependencies
+- Updated dependencies [4eec413]
+  - @claudexor/cli@6.1.0
+
 ## 6.0.0
 
 ### Major Changes

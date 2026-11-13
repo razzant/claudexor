@@ -1,5 +1,16 @@
 # @claudexor/core
 
+## 6.1.0
+
+### Patch Changes
+
+- 577e275: Reuse verified recent login readiness and share identical in-flight model discovery reads. Cancel abandoned catalog work, bound the Codex catalog transport, recheck the waited-for account's live routing evidence after each wait, and expose optional preparation timings. Every selection still reads a fresh vendor catalog.
+- Updated dependencies [b789380]
+- Updated dependencies [577e275]
+- Updated dependencies
+  - @claudexor/schema@6.1.0
+  - @claudexor/util@6.1.0
+
 ## 6.0.0
 
 ### Patch Changes
