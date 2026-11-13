@@ -1,14 +1,28 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, promises, readFileSync, realpathSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  promises,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { BudgetLedger } from "@claudexor/budget";
 import { EventLog, liveRunEventSeq, readRunEvents } from "@claudexor/event-log";
-import { makeOutcomeFacts, type RunEvent } from "@claudexor/schema";
+import { makeOutcomeFacts, type RunEvent, type WorkspaceEnvelope } from "@claudexor/schema";
 import { orderedAppender } from "@claudexor/util";
-import { WorkspaceManager, envelopeBaseOf } from "@claudexor/workspace";
+import {
+  WorkspaceManager,
+  envelopeBaseOf,
+  readEnvelopeCustody,
+  retainedEnvelopeOfRun,
+} from "@claudexor/workspace";
+import type { CandidateRun } from "./candidateEvidence.js";
 import { forRun } from "./continuation-custody.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import { guardAnnouncedRun, type AnnouncedRunContext } from "./runTerminals.js";
@@ -150,6 +164,21 @@ function queuedFixture(runId: string, refuse: (event: RunEvent) => boolean = () 
       log.deferTerminal();
     },
   };
+}
+
+/** A repository with one committed file, `a.txt`. */
+function gitRepo(): string {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "cx-net-repo-")));
+  dirs.push(repo);
+  writeFileSync(join(repo, "a.txt"), "initial\n");
+  const as = ["-c", "user.email=t@t", "-c", "user.name=t"];
+  for (const args of [
+    ["init", "-q"],
+    ["add", "-A"],
+    [...as, "commit", "-q", "-m", "init"],
+  ])
+    execFileSync("git", ["-C", repo, ...args]);
+  return repo;
 }
 
 /** The next open of `path` fails with a transient EIO, once. */
@@ -308,25 +337,7 @@ describe("a landing failure meets the failure net (#704)", () => {
   });
 
   it("settles envelope custody through the net's flush after a line was lost", async () => {
-    const repo = realpathSync(mkdtempSync(join(tmpdir(), "cx-net-repo-")));
-    dirs.push(repo);
-    for (const args of [
-      ["init", "-q", repo],
-      [
-        "-C",
-        repo,
-        "-c",
-        "user.email=t@t",
-        "-c",
-        "user.name=t",
-        "commit",
-        "-q",
-        "--allow-empty",
-        "-m",
-        "init",
-      ],
-    ])
-      execFileSync("git", args);
+    const repo = gitRepo();
     const f = queuedFixture("run-net-custody", (event) => event.payload["text"] === "lost");
     const kept = forRun({ continuation: { retain: true } }, true, f.context.runId, f.paths, f.log);
     const wsm = new WorkspaceManager(repo);
@@ -384,4 +395,187 @@ describe("a landing failure meets the failure net (#704)", () => {
     ).rejects.toMatchObject({ code: "terminal_recovery_required" });
     expect(liveRunEventSeq(g.paths.eventsPath)).not.toBeNull();
   });
+});
+
+/** A candidate that edited its envelope and stopped: in `state`, or failed. */
+function stoppedCandidate(
+  env: WorkspaceEnvelope,
+  state?: "needs_input" | "incomplete",
+): CandidateRun {
+  return {
+    attemptId: env.attempt_id,
+    harnessId: "fake",
+    label: "Candidate A",
+    diff: "diff --git a/a.txt b/a.txt\n",
+    reviewCwd: env.worktree_path,
+    gates: [],
+    cost: 0,
+    errored: state === undefined,
+    costEstimated: false,
+    errors: [],
+    telemetry: (state ? { outcome: { workState: { state } } } : {}) as CandidateRun["telemetry"],
+  };
+}
+
+/** The verdict of a run that stopped with its work unfinished. */
+const stoppedFacts = {
+  needs_input: makeOutcomeFacts("succeeded", {
+    reason: "input_required",
+    work_state: {
+      state: "needs_input",
+      source: "validated",
+      required_inputs: [{ kind: "decision", locator: null, description: "choose" }],
+    },
+  }),
+  incomplete: makeOutcomeFacts("succeeded", {
+    reason: "work_incomplete",
+    work_state: { state: "incomplete", source: "constrained" },
+  }),
+};
+
+/** A queued run whose daemon custody keeps its envelope (`forRun` wired). */
+function keptRun(runId: string) {
+  const f = queuedFixture(runId);
+  const kept = forRun({ continuation: { retain: true } }, true, runId, f.paths, f.log);
+  const wsm = new WorkspaceManager(gitRepo());
+  let env: WorkspaceEnvelope | undefined;
+  return {
+    ...f,
+    /** The envelope, created under `live` custody, with its file edited. */
+    edit: async () => {
+      env = await kept.envelope(wsm, { taskId: "task-net", attemptId: "a01", baseRef: "HEAD" });
+      writeFileSync(join(env.worktree_path, "a.txt"), "edited\n");
+      return env;
+    },
+    settle: (run: CandidateRun) => kept.settle(wsm, env!, [run]),
+    custody: () => readEnvelopeCustody(envelopeBaseOf(env!)),
+    pointer: () => retainedEnvelopeOfRun(f.paths.root, runId),
+    types: () => f.events().map((event) => event.type),
+    /** The verdict a stopped strategy returns, its terminal held. */
+    stopped: (facts: ReturnType<typeof makeOutcomeFacts>) => {
+      f.store.writeText(join(f.paths.finalDir, "summary.md"), "stopped\n");
+      f.log.emit("output.ready", { path: "final/summary.md", kind: "summary" });
+      f.log.emit("run.blocked", { lifecycle: "succeeded", facts });
+      return {
+        runId,
+        taskId: "task-net",
+        mode: "agent",
+        lifecycle: "succeeded",
+        facts,
+        winner: null,
+        runDir: f.paths.root,
+        summary: "stopped",
+        candidates: [],
+      } as unknown as OrchestratorResult;
+    },
+  };
+}
+
+describe("a landing failure while custody keeps an edited envelope (#704 r2)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    { state: "needs_input", lost: true },
+    { state: "needs_input", lost: false },
+    { state: "incomplete", lost: true },
+    { state: "incomplete", lost: false },
+  ] as const)(
+    "a returned $state run whose output fails at landing fails through the net (lost: $lost)",
+    async ({ state, lost }) => {
+      const r = keptRun(`run-kept-${state}-${lost}`);
+      const result = await guardAnnouncedRun(undefined, async (announce) => {
+        await r.start(announce);
+        await r.settle(stoppedCandidate(await r.edit(), state));
+        if (lost) failNextOpen(r.paths.eventsPath);
+        return r.stopped(stoppedFacts[state]);
+      });
+      // Both: the edited work is kept once, and no settlement is reported failed.
+      const cause = state === "needs_input" ? "input_required" : null;
+      expect(r.custody()).toMatchObject({ state: "retained", cause });
+      expect(r.pointer()).not.toBeNull();
+      expect(r.types().filter((type) => type.startsWith("workspace."))).toEqual([
+        "workspace.retained",
+      ]);
+      expect(r.terminals()).toHaveLength(1);
+      if (lost) {
+        // Direction 1: the run fails, and its one terminal states the loss.
+        expect(result.lifecycle).toBe("failed");
+        expect(r.sinkTerminals()).toEqual(["run.failed"]);
+        expect(String(r.terminals()[0]?.payload["error"])).toContain("EIO: transient");
+        expect(r.summary()).toContain("EIO: transient");
+      } else {
+        // Direction 2: the strategy's verdict stands, after its output.
+        expect(result.lifecycle).toBe("succeeded");
+        expect(r.sinkTerminals()).toEqual(["run.blocked"]);
+        expect(r.types()).toEqual([
+          "run.created",
+          "output.ready",
+          "workspace.retained",
+          "run.blocked",
+        ]);
+      }
+      expect(liveRunEventSeq(r.paths.eventsPath)).toBeNull();
+    },
+  );
+
+  it.each([true, false])(
+    "a run that held its verdict over edited work and then threw, its output lost: %s",
+    async (lost) => {
+      const r = keptRun(`run-kept-held-${lost}`);
+      const result = await guardAnnouncedRun(undefined, async (announce) => {
+        await r.start(announce);
+        await r.settle(stoppedCandidate(await r.edit(), "needs_input"));
+        if (lost) failNextOpen(r.paths.eventsPath);
+        r.stopped(stoppedFacts.needs_input);
+        throw new Error("late explosion after the held verdict");
+      });
+      expect(r.custody()).toMatchObject({ state: "retained", cause: "input_required" });
+      expect(r.types().filter((type) => type.startsWith("workspace."))).toEqual([
+        "workspace.retained",
+      ]);
+      expect(r.terminals()).toHaveLength(1);
+      if (lost) {
+        // Direction 1: the held verdict is replaced by the net, which states the loss.
+        expect(result.lifecycle).toBe("failed");
+        expect(r.sinkTerminals()).toEqual(["run.failed"]);
+        expect(String(r.terminals()[0]?.payload["error"])).toContain("EIO: transient");
+      } else {
+        // Direction 2: the held verdict stands.
+        expect(result.lifecycle).toBe("succeeded");
+        expect(r.sinkTerminals()).toEqual(["run.blocked"]);
+      }
+      expect(liveRunEventSeq(r.paths.eventsPath)).toBeNull();
+    },
+  );
+
+  it.each([true, false])(
+    "a run that throws after editing kept work resolves with the net's one terminal (its output lost: %s)",
+    async (lost) => {
+      const r = keptRun(`run-kept-net-${lost}`);
+      const result = await guardAnnouncedRun(undefined, async (announce) => {
+        await r.start(announce);
+        await r.settle(stoppedCandidate(await r.edit()));
+        // The net's own output.ready is the next line to open the journal.
+        if (lost) failNextOpen(r.paths.eventsPath);
+        throw new Error("strategy failed after partial edits");
+      });
+      // Both directions: the guard resolves with the net's committed terminal,
+      // and the edited work is kept under it.
+      expect(result.lifecycle).toBe("failed");
+      expect(r.sinkTerminals()).toEqual(["run.failed"]);
+      expect(r.summary()).toContain("strategy failed after partial edits");
+      expect(r.custody()).toMatchObject({ state: "retained", cause: null });
+      expect(r.pointer()).not.toBeNull();
+      // A line that fails after the net's own barrier (its output.ready) is not
+      // named in its terminal (docs/ARCHITECTURE.md, the failure net).
+      expect(r.types()).toEqual(
+        lost
+          ? ["run.created", "workspace.retained", "run.failed"]
+          : ["run.created", "output.ready", "workspace.retained", "run.failed"],
+      );
+      expect(liveRunEventSeq(r.paths.eventsPath)).toBeNull();
+    },
+  );
 });

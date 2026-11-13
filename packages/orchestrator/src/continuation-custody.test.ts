@@ -54,14 +54,15 @@ function initRepo(): string {
 
 function fakeLog() {
   const events: { type: string; payload: Record<string, unknown> }[] = [];
-  const log = {
-    deferTerminal() {},
-    emit: (type: string, payload: Record<string, unknown> = {}) => {
-      events.push({ type, payload });
-      return {} as never;
-    },
-  } as unknown as EventLog;
-  return { log, events };
+  /** Types whose emit throws, as an emit throws a landing failure the journal holds. */
+  const refused = new Set<string>();
+  const record = (type: string, payload: Record<string, unknown> = {}) => {
+    if (refused.has(type)) throw new Error(`journal refused ${type}`);
+    events.push({ type, payload });
+    return {} as never;
+  };
+  const log = { deferTerminal() {}, emit: record, emitAside: record } as unknown as EventLog;
+  return { log, events, refused };
 }
 
 function candidate(
@@ -89,11 +90,11 @@ function setup(retain: boolean, signal?: AbortSignal) {
   const repo = initRepo();
   const runDir = temp("run");
   const paths = { root: runDir, attemptsDir: join(runDir, "attempts") };
-  const { log, events } = fakeLog();
+  const { log, events, refused } = fakeLog();
   const kept = forRun({ continuation: { retain }, signal }, true, "run-1", paths, log);
   const wsm = new WorkspaceManager(repo);
   const create = () => kept.envelope(wsm, { taskId: "task-1", attemptId: "a01", baseRef: "HEAD" });
-  return { repo, runDir, paths, kept, wsm, create, events };
+  return { repo, runDir, paths, kept, wsm, create, events, refused };
 }
 
 describe("candidate envelope custody (A9)", () => {
@@ -216,6 +217,90 @@ describe("candidate envelope custody (A9)", () => {
       settle.mockRestore();
       log.dispose();
     }
+  });
+
+  it.each([true, false])(
+    "settles the run directory before custody: a line lost first leaves custody and the terminal for the net (lost: %s)",
+    async (lost) => {
+      const repo = initRepo();
+      const store = new ArtifactStore(repo);
+      const runId = `run-settle-first-${lost}`;
+      const paths = store.createRun(runId);
+      const log = new EventLog(
+        paths.eventsPath,
+        runId,
+        "task-settle",
+        (event) => {
+          if (event.payload["text"] === "lost") throw new Error("journal refused harness.event");
+        },
+        undefined,
+        undefined,
+        { queued: true },
+      );
+      const context: AnnouncedRunContext = {
+        store,
+        paths,
+        log,
+        runId,
+        taskId: "task-settle",
+        mode: "agent",
+        phase: "settle",
+      };
+      const kept = forRun({ continuation: { retain: true } }, true, runId, paths, log);
+      const wsm = new WorkspaceManager(repo);
+      const env = await kept.envelope(wsm, {
+        taskId: "task-settle",
+        attemptId: "a01",
+        baseRef: "HEAD",
+      });
+      writeFileSync(join(env.worktree_path, "a.txt"), "edited\n");
+      await kept.settle(wsm, env, [
+        candidate(env, { diff: "diff --git a/a b/a\n", errored: true }),
+      ]);
+      const facts = makeOutcomeFacts("failed");
+      await log.emitLanded("run.created", { prompt: "Test terminal settlement" });
+      // The run's last line, refused at landing while nobody awaits it.
+      if (lost) log.emit("harness.event", { text: "lost" });
+      log.emit("run.failed", { facts });
+      const types = () => readRunEvents(paths.eventsPath).events.map((event) => event.type);
+      try {
+        if (lost) {
+          // Direction 1: the flush rejects before custody or the terminal moved.
+          await expect(flushContinuationTerminal(context, facts)).rejects.toThrow(
+            "journal refused harness.event",
+          );
+          expect(readEnvelopeCustody(envelopeBaseOf(env))?.state).toBe("live");
+          expect(log.terminalCommitted()).toBe(false);
+          expect(log.deferredTerminalPending()?.type).toBe("run.failed");
+          expect(types().filter((type) => type.startsWith("workspace."))).toEqual([]);
+        }
+        // Direction 2 (and the net's next flush): custody keeps the work, once,
+        // before the terminal.
+        await flushContinuationTerminal(context, facts);
+        expect(readEnvelopeCustody(envelopeBaseOf(env))?.state).toBe("retained");
+        expect(log.terminalCommitted()).toBe(true);
+        expect(types().filter((type) => type !== "harness.event")).toEqual([
+          "run.created",
+          "workspace.retained",
+          "run.failed",
+        ]);
+      } finally {
+        log.dispose();
+      }
+    },
+  );
+
+  it("a journal failure after the envelope was kept is not reported as a failed settlement", async () => {
+    const { kept, wsm, create, events, refused, runDir } = setup(true);
+    const env = await create();
+    await kept.settle(wsm, env, [candidate(env, { diff: "diff --git a/a b/a\n", errored: true })]);
+    refused.add("workspace.retained");
+    // Direction 1: the journal's failure is the run's, thrown as it is.
+    await expect(kept.finish(makeOutcomeFacts("failed"))).rejects.toThrow("journal refused");
+    expect(events.filter((event) => event.type === "workspace.settlement_failed")).toEqual([]);
+    // Direction 2: the envelope is kept all the same.
+    expect(readEnvelopeCustody(envelopeBaseOf(env))?.state).toBe("retained");
+    expect(retainedEnvelopeOfRun(runDir, "run-1")?.envelope.id).toBe(env.id);
   });
 
   it("keeps the envelope of an errored candidate that changed files and discloses it", async () => {

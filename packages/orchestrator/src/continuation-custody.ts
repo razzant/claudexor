@@ -30,6 +30,7 @@ import {
   type CreateEnvelopeOptions,
   type WorkspaceManager,
 } from "@claudexor/workspace";
+import { orderedAppender } from "@claudexor/util";
 import { hasCandidateChanges, type CandidateRun } from "./candidateEvidence.js";
 import type { ContinueFromSource } from "./continue-from.js";
 import type { ContinuationPlan } from "./continuation-later.js";
@@ -212,6 +213,7 @@ async function settleCandidateEnvelope(
   },
 ): Promise<void> {
   let stage: SettlementStage = "custody";
+  let kept: Record<string, unknown>;
   try {
     const custody = readEnvelopeCustody(envelopeBaseOf(env));
     if (custody?.state !== "live" || custody.envelope.id !== env.id) {
@@ -234,25 +236,32 @@ async function settleCandidateEnvelope(
     for (const resumable of [run?.resumable, run?.resumableOnFailure])
       if (resumable)
         Object.assign(resumable.workspace, { kind: "retained_envelope", root: env.worktree_path });
-    ctx.log?.emit("workspace.retained", {
+    kept = {
       attempt_id: run?.attemptId ?? env.attempt_id,
       root: env.worktree_path,
       cause,
       bytes: retained.bytes,
-    });
+    };
   } catch (error) {
     settlementFailed(ctx.log, env, stage, error);
     throw error;
   }
+  // The envelope is kept on disk: a journal failure from here on is the run's
+  // own, never a failure of this settlement (#704).
+  ctx.log?.emit("workspace.retained", kept);
 }
 
 const pendingRuns = new WeakMap<EventLog, (facts: RunOutcomeFacts) => Promise<void>>();
 
-/** Settle custody after the strategy and Delegate budget verdict, before terminal publication. */
+/** Settle custody after the strategy and Delegate budget verdict, before terminal
+ * publication. What the run directory holds or still has in flight settles first:
+ * a landing failure rejects here, before custody changes or the terminal commits,
+ * so it reaches the failure net, which settles custody under its own facts (#704). */
 export async function flushContinuationTerminal(
   context: AnnouncedRunContext,
   facts: RunOutcomeFacts,
 ): Promise<void> {
+  await orderedAppender.settledUnder(context.paths.root);
   const finish = pendingRuns.get(context.log);
   try {
     if (finish) {
