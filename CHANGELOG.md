@@ -4,7 +4,17 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
-- **v6.1.0** (2026-11-13): **Recover accepted work without repeating it.** Hosts
+- **v6.1.1** (2026-11-13): The first published release of the 6.1 line. v6.1.0
+  was tagged, but its publish run stopped at timing-dependent tests in the macOS
+  release gates, so it was never published; everything listed under v6.1.0 ships
+  here with the limits stated there. The SSH-runtime manifest of this release
+  requires Claudexor.app 6.1.1; the local-engine manifest still requires
+  Claudexor.app 6.0.0, and control protocol major 3 and store schema 8 are
+  unchanged. Also new: three macOS app tests no longer depend on the speed of the
+  machine that runs them (#705).
+
+- **v6.1.0** (2026-11-13, tagged but not published; shipped as v6.1.1): **Recover
+  accepted work without repeating it.** Hosts
   can look up a run start or thread turn by its original request and idempotency
   key. The new read-only lookup operations return the retained job or turn,
   including a job that failed before a run existed. They do not enqueue work or
