@@ -48,7 +48,8 @@ import Testing
             _ = try await task.value
             Issue.record("cancelled SSH process unexpectedly succeeded")
         } catch is CancellationError {
-            // A hang guard, not a speed SLA: a lost cancellation never ends (#705).
+            // Not a speed SLA (#705): a loaded runner took 3.5 s. A lost cancellation would
+            // instead hang this test until the release step's own time limit.
             #expect(ContinuousClock.now - started < .seconds(20))
         }
         await manager.shutdown()
@@ -131,7 +132,8 @@ import Testing
         } catch let error as SSHConnectionError {
             #expect(error.localizedDescription.contains("could not finish sending"))
         }
-        // A hang guard, not a speed SLA: a write stuck on a closed pipe never ends (#705).
+        // Not a speed SLA (#705): a loaded runner took 3.2 s. A write stuck on a closed
+        // pipe would instead hang this test until the release step's own time limit.
         #expect(ContinuousClock.now - started < .seconds(20))
         await manager.shutdown()
     }

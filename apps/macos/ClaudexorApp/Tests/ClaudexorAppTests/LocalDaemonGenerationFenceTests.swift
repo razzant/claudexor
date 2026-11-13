@@ -432,6 +432,7 @@ private func seedSuccessorProjections(_ model: AppModel) throws {
             // The old response is held until the test has moved to the next generation,
             // so the fence is exercised on every machine, however slow (#705).
             let release = DispatchSemaphore(value: 0)
+            defer { release.signal() }  // an early throw never leaves the stub thread waiting
             GenerationFenceURLProtocol.handler = { request in
                 guard request.url?.path == path else {
                     throw GenerationFenceTestError.unexpectedRequest
@@ -476,6 +477,7 @@ private func seedSuccessorProjections(_ model: AppModel) throws {
         for (index, path) in ["/v2/secrets", "/v2/threads", "/v2/projects"].enumerated() {
             let arrived = GenerationFenceCallCounter()
             let release = DispatchSemaphore(value: 0)  // held until the next generation (#705)
+            defer { release.signal() }  // an early throw never leaves the stub thread waiting
             GenerationFenceURLProtocol.handler = { request in
                 guard request.url?.path == path else {
                     throw GenerationFenceTestError.unexpectedRequest
