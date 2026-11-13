@@ -497,4 +497,53 @@ describe("pacedByAppends", () => {
     expect(readFileSync(large, "utf8").split("\n").filter(Boolean)).toHaveLength(10);
     expect(unhandled).toEqual([]);
   });
+
+  it("resumes once its own lines land while another producer keeps appending to the file", async () => {
+    const mark = getDefaultHighWaterMark(false);
+    const path = join(freshRoot(), "events.jsonl");
+    // A second producer that never paces appends a line during every write of
+    // the file while it is on, so the file's queue is never empty meanwhile.
+    let chatty = true;
+    let chattyLines = 0;
+    const spy = patchHandles((_path, write) => ({
+      write: async (buffer, offset, length, position) => {
+        if (chatty) {
+          chattyLines += 1;
+          orderedAppender.append(path, "c\n");
+        }
+        return write(buffer, offset, length, position);
+      },
+    }));
+    const waits = vi.spyOn(orderedAppender, "drained");
+    const pulled = { count: 0 };
+    const seen: number[] = [];
+    let finished = false;
+    const reading = (async () => {
+      // Two lines of half the mark exceed it: the reader waits on the file.
+      for await (const value of pacedByAppends(counted(10, pulled), [path])) {
+        orderedAppender.append(path, `${"x".repeat(mark / 2)}\n`);
+        seen.push(value);
+      }
+      finished = true;
+    })();
+    try {
+      // Direction 1: the reader waited on the full file, and each wait ended
+      // once the lines queued before it landed, while the other producer was
+      // still appending.
+      await until("the reader reads every value", () => finished);
+      expect(chattyLines).toBeGreaterThan(0);
+      expect(waits).toHaveBeenCalled();
+      expect(seen).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    } finally {
+      chatty = false;
+      spy.mockRestore();
+      await reading;
+      await orderedAppender.settled(path);
+    }
+    // Direction 2: every line of both producers landed, none lost or doubled.
+    const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
+    expect(lines.filter((line) => line.startsWith("x"))).toHaveLength(10);
+    expect(lines.filter((line) => line === "c")).toHaveLength(chattyLines);
+    expect(unhandled).toEqual([]);
+  });
 });

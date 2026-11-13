@@ -33,6 +33,13 @@ interface Barrier {
   readonly done: () => void;
 }
 
+/** A producer waiting for the appends made before its wait to settle. */
+interface DrainWaiter {
+  /** Resolved once this many appends to the file have settled. */
+  readonly target: number;
+  readonly done: () => void;
+}
+
 interface AppendFile {
   readonly path: string;
   /** Appends not yet taken by a write. */
@@ -46,7 +53,7 @@ interface AppendFile {
   /** A failure nobody awaited, kept until the next append or barrier consumes it. */
   held: { error: unknown } | null;
   barriers: Barrier[];
-  drainWaiters: Array<() => void>;
+  drainWaiters: DrainWaiter[];
 }
 
 /** What one batch write did: the bytes that reached the file, and why it stopped
@@ -134,13 +141,18 @@ class OrderedAppender {
     return (this.files.get(resolve(path))?.queuedBytes ?? 0) > getDefaultHighWaterMark(false);
   }
 
-  /** Resolves when everything appended to the file has landed or been lost
-   * (Node's Writable `drain`): at once when nothing is queued. Never rejects. */
+  /** Resolves when every append made to the file before this call has landed
+   * or been lost: at once when nothing is queued. Appends made after the call,
+   * by this producer or another one of the same file, do not hold it, so a
+   * paced producer resumes once its own lines have landed; if the file is
+   * still full it waits again. It neither consumes nor reports a failure, and
+   * never rejects. */
   drained(path: string): Promise<void> {
     const file = this.files.get(resolve(path));
     if (!file || file.settled === file.appended) return Promise.resolve();
+    const target = file.appended;
     return new Promise((done) => {
-      file.drainWaiters.push(done);
+      file.drainWaiters.push({ target, done });
     });
   }
 
@@ -301,8 +313,10 @@ class OrderedAppender {
     if (done.length > 0)
       file.barriers = file.barriers.filter((barrier) => barrier.target > file.settled);
     for (const barrier of done) barrier.done();
-    if (file.settled === file.appended)
-      for (const drained of file.drainWaiters.splice(0)) drained();
+    const drained = file.drainWaiters.filter((waiter) => waiter.target <= file.settled);
+    if (drained.length > 0)
+      file.drainWaiters = file.drainWaiters.filter((waiter) => waiter.target > file.settled);
+    for (const waiter of drained) waiter.done();
   }
 
   /** Drop an idle file from the registry; a held failure keeps it. */
@@ -352,10 +366,13 @@ export const orderedAppender = new OrderedAppender();
 
 /**
  * Flow control for a lane loop: yields `source`'s values, and before reading
- * the next one waits for each of `files` the appender reports full to drain.
+ * the next one waits, for each of `files` the appender reports full, until the
+ * lines queued there before the wait (the loop's own included) have landed or
+ * been lost.
  * By then the loop has queued the value's lines, so a harness that outruns
- * the disk slows through the stream limits it already has. The high-water
- * mark is the runtime's own; this adds no constant.
+ * the disk slows through the stream limits it already has; another producer
+ * of the same file cannot keep it waiting. The high-water mark is the
+ * runtime's own; this adds no constant.
  */
 export async function* pacedByAppends<T>(
   source: AsyncIterable<T>,
