@@ -5822,7 +5822,7 @@ export class Orchestrator {
         runId,
       );
     } catch (err) {
-      roHome.dispose();
+      await roHome.dispose();
       const message = safeErrorMessage(err);
       writeRoutingFailureTerminal(store, paths, log, {
         runId,
@@ -5848,7 +5848,7 @@ export class Orchestrator {
     try {
       contextSection = await this.lazyContextSection(input, contract, store, paths, log);
     } catch (err) {
-      roHome.dispose();
+      await roHome.dispose();
       const message = safeErrorMessage(err);
       await store.writeTextAsync(
         join(paths.contextDir, "context_error.md"),
@@ -5997,7 +5997,7 @@ export class Orchestrator {
       }
     } finally {
       // Planners done (or threw) — reclaim scoped scratch/API-route state.
-      roHome.dispose();
+      await roHome.dispose();
     }
 
     if (input.signal?.aborted) {
@@ -6355,7 +6355,7 @@ export class Orchestrator {
           ),
       }));
     } catch (err) {
-      roHome.dispose();
+      await roHome.dispose();
       const message = safeErrorMessage(err);
       writeRoutingFailureTerminal(store, paths, log, {
         runId,
@@ -7170,7 +7170,7 @@ export class Orchestrator {
     } finally {
       // All read-only attempts done (or threw) — reclaim scoped scratch and
       // injected API-route state. Vendor-owned native credentials were not copied.
-      roHome.dispose();
+      await roHome.dispose();
     }
 
     const candidateSummaries = attempts.map((a) => ({

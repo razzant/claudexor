@@ -142,7 +142,7 @@ function timeoutDrainingReducerAdapter(finalText: string): HarnessAdapter {
 
 function makeDeps(mode: WorkReportEnvelopeMode): DeepScanReducerDeps {
   return {
-    newReadOnlyHome: () => ({ env: {}, dispose: () => {} }),
+    newReadOnlyHome: () => ({ env: {}, dispose: async () => {} }),
     costEvidence: () =>
       routeCostEvidence({
         billing: "metered",
@@ -498,7 +498,7 @@ describe("runDeepScanReducer WorkReport contract parity (D-16)", () => {
     const ledger = new BudgetLedger({ kind: "finite", maxUsd: 1 });
     let homeAlive = true;
     let preparationObservedHomeAlive = false;
-    const dispose = vi.fn(() => {
+    const dispose = vi.fn(async () => {
       homeAlive = false;
     });
     try {
@@ -599,7 +599,7 @@ describe("runDeepScanReducer WorkReport contract parity (D-16)", () => {
     const ledger = new BudgetLedger({ kind: "finite", maxUsd: 1 });
     let homeAlive = true;
     let streamObservedHomeAlive = false;
-    const dispose = vi.fn(() => {
+    const dispose = vi.fn(async () => {
       homeAlive = false;
     });
     const adapter: HarnessAdapter = {

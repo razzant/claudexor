@@ -67,7 +67,7 @@ async function waitForCleanup(work: Promise<unknown>, graceMs: number): Promise<
 /** A disposable read-only route context (env + reclaim). */
 export interface ReducerHome {
   env: Record<string, string>;
-  dispose: () => void;
+  dispose: () => Promise<void>;
 }
 
 /** Engine-owned dependencies; private route/session machinery stays with the caller. */
@@ -204,7 +204,7 @@ export async function runDeepScanReducer(
     clearTimeout(hardTimer);
     args.signal?.removeEventListener("abort", onOuterAbort);
     try {
-      reducerHome?.dispose();
+      void reducerHome?.dispose();
     } finally {
       settleGrantedAttemptLease({
         ledger,

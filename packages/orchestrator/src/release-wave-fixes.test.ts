@@ -48,7 +48,7 @@ describe("scoped route probe fails CLOSED on absent evidence (release wave sol #
         env: { HOME: "/tmp/disposable-home" },
         envForHarness: (harnessId) =>
           harnessId === "claude" ? { HOME: "/tmp/durable-claude-home" } : null,
-        dispose: () => {},
+        dispose: async () => {},
       },
       "claude",
       "subscription",

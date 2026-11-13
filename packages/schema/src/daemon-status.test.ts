@@ -39,6 +39,7 @@ describe("daemon timing contract", () => {
         "run.telemetry_write",
         "metrics.harness_write",
         "file.write_text",
+        "file.capture_write",
         "daemon.log_line",
       ].map(sample),
     };

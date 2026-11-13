@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
-import { gitObserved, GitOperationError } from "./git-observed.js";
+import { processTiming } from "@claudexor/util";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { fileSink, gitObserved, GitOperationError } from "./git-observed.js";
 
 const repos: string[] = [];
 afterAll(() => {
@@ -64,5 +65,27 @@ describe.runIf(process.platform !== "win32")("git stall watchdog probe (#688)", 
     expect(result.code).toBe(0);
     expect(calls).toBeGreaterThan(3);
     expect(maxInFlight).toBe(1);
+  });
+});
+
+describe("a Git child's output streamed to its capture file (#704)", () => {
+  it("labels each chunk it writes synchronously in worstSync, and writes every byte", () => {
+    const path = join(repo(), "out.patch");
+    const recorded = vi.spyOn(processTiming, "recordSync");
+    try {
+      const sink = fileSink(path);
+      sink.write(Buffer.from("diff --git a/x b/x\n"));
+      sink.write(Buffer.from("+line\n"));
+      sink.end();
+      // Direction 1: each synchronous chunk write names itself.
+      expect(
+        recorded.mock.calls.filter(([operation]) => operation === "file.capture_write"),
+      ).toHaveLength(2);
+      // Direction 2: the file holds every byte, in order.
+      expect(readFileSync(path, "utf8")).toBe("diff --git a/x b/x\n+line\n");
+      expect(sink.bytes()).toBe(25);
+    } finally {
+      recorded.mockRestore();
+    }
   });
 });

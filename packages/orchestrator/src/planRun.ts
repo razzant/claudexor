@@ -74,7 +74,7 @@ export async function runCouncilPlan(
     log: EventLog;
     ledger: BudgetLedger;
     adapters: RoutedAdapter[];
-    roHome: { env: Record<string, string>; dispose: () => void };
+    roHome: { env: Record<string, string>; dispose: () => Promise<void> };
     contextSection: string;
     laneRun: boolean;
     estimateUsdFloor: number;
@@ -172,12 +172,12 @@ export async function runCouncilPlan(
     // QA-047 root cause 2: the success path keeps roHome alive so the merge
     // REUSES the admitted context (draft authenticated there) instead of a
     // fresh HOME whose cold native-status probe times out. Leak-safe here.
-    roHome.dispose();
+    await roHome.dispose();
     throw err;
   }
 
   if (input.signal?.aborted) {
-    roHome.dispose();
+    await roHome.dispose();
     return cancelledResult(
       log,
       runId,
@@ -207,7 +207,7 @@ export async function runCouncilPlan(
   }
 
   if (mergeInputs.length === 0) {
-    roHome.dispose();
+    await roHome.dispose();
     return writePlanHarnessFailure(
       deps,
       {
@@ -257,7 +257,7 @@ export async function runCouncilPlan(
       reservationEstimateUsd: input.delegatedFromRunId ? args.estimateUsdFloor : undefined,
     });
   } finally {
-    roHome.dispose();
+    await roHome.dispose();
   }
   if (mergeOutcome.telemetry)
     attemptTelemetries.push({

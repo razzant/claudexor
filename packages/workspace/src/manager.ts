@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { rmdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -341,22 +341,18 @@ export class WorkspaceManager {
    * home never bridges the OS Keychain; an adapter that declares
    * `scoped_home_keychain_bridge` may create a vendor-only disposable child
    * HOME without copying credentials (INV-067). Caller disposes all scoped
-   * state when the run ends.
+   * state when the run ends, off the main thread (#704); making the small fixed
+   * home stays synchronous for its synchronous callers.
    */
-  readOnlyHomeEnv(): { env: Record<string, string>; dispose: () => void } {
+  readOnlyHomeEnv(): { env: Record<string, string>; dispose: () => Promise<void> } {
     // A throwaway temp base — never under the project / synthetic repo root, so a
     // no-project Ask leaves nothing in its cwd (§7) and nothing in any worktree (§6).
     const base = mkdtempSync(join(tmpdir(), "claudexor-ro-"));
     const homeDir = join(base, "home");
     return {
       env: harnessHomeEnv(homeDir, ensureHarnessHome(homeDir)),
-      dispose: () => {
-        try {
-          rmSync(base, { recursive: true, force: true });
-        } catch {
-          /* best-effort: a leftover scoped home is harmless and gc-able */
-        }
-      },
+      // Best-effort: a leftover scoped home is harmless and gc-able.
+      dispose: () => removeTree(base).catch(() => undefined),
     };
   }
 

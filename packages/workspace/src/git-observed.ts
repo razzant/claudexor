@@ -6,6 +6,7 @@ import {
   WorkspaceError,
   type CaptureProjection,
 } from "@claudexor/core";
+import { measureSync } from "@claudexor/util";
 
 /** Typed classes of a Git child failure on an object path (capture, store, delivery). */
 export type GitOperationFailureCode =
@@ -241,15 +242,20 @@ export function diskProgress(path: string): () => Promise<number> {
   };
 }
 
-/** Stream stdout straight to a file (patch and pack bytes never become a JS string). */
+/** Stream stdout straight to a file (patch and pack bytes never become a JS string).
+ * Each chunk is written synchronously, labeled in `worstSync`: the capture
+ * projection's `write` and `end` are synchronous and the child's stdout has no
+ * other backpressure, so this write deliberately stays on the main thread (#704). */
 export function fileSink(path: string): CaptureProjection & { bytes: () => number } {
   const fd = openSync(path, "w", 0o600);
   let bytes = 0;
   let closed = false;
   return {
     write(chunk) {
-      let done = 0;
-      while (done < chunk.length) done += writeSync(fd, chunk, done, chunk.length - done);
+      measureSync("file.capture_write", () => {
+        let done = 0;
+        while (done < chunk.length) done += writeSync(fd, chunk, done, chunk.length - done);
+      });
       bytes += chunk.length;
     },
     end() {

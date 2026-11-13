@@ -99,7 +99,7 @@ export async function resolveExplicitReviewerPanel(
   >();
   const specs: ReviewerSpec[] = [];
   const reviewModelHome: {
-    current: { env: Record<string, string>; dispose: () => void } | null;
+    current: { env: Record<string, string>; dispose: () => Promise<void> } | null;
   } = { current: null };
   try {
     const reviewModelEnv = (): Record<string, string> => {
@@ -324,7 +324,7 @@ export async function resolveExplicitReviewerPanel(
       }
     }
   } finally {
-    reviewModelHome.current?.dispose();
+    await reviewModelHome.current?.dispose();
   }
   return specs;
 }
@@ -518,7 +518,7 @@ export async function resolveAutoReviewerPanel(
       if (specs.length >= 2) break;
     }
   } finally {
-    reviewHome.dispose();
+    await reviewHome.dispose();
   }
   return specs;
 }

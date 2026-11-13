@@ -465,7 +465,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         message: `Reviewer setup failed: ${message}`,
       });
       if (reviewerWorkspace) await cleanupReviewerWorkspace(reviewerWorkspace, artifact);
-      reviewerScratch.dispose();
+      await reviewerScratch.dispose();
       const proof = reviewerRouteProof(reviewer, null, undefined, "unavailable", reviewerFamilies);
       routeProofs[index] = proof;
       findingsByReviewer[index]?.push(
@@ -549,7 +549,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       writeParseError(artifact, { error: reviewerError });
     } finally {
       await cleanupReviewerWorkspace(reviewerWorkspace, artifact);
-      reviewerScratch.dispose();
+      await reviewerScratch.dispose();
     }
 
     const proof = reviewerRouteProof(

@@ -3,7 +3,7 @@ import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -200,6 +200,24 @@ describe(
       } finally {
         lifecycle.homeOf = null;
       }
+    });
+
+    it("disposes a read-only scoped home off the main thread (#704)", async () => {
+      const { repo, runtimeRoot } = project();
+      const manager = new WorkspaceManager(repo, { runtimeRoot });
+      const readOnly = manager.readOnlyHomeEnv();
+      const home = readOnly.env["HOME"] as string;
+      // Native state a harness left in the scoped home.
+      fs.mkdirSync(join(home, ".codex", "sessions"), { recursive: true });
+      for (let i = 0; i < 5; i += 1)
+        writeFileSync(join(home, ".codex", "sessions", `s${i}.jsonl`), "{}\n");
+      vi.mocked(fs.rmSync).mockClear();
+      await readOnly.dispose();
+      // Direction 1: no recursive removal waited on the main thread.
+      expect(recursiveRmSyncCalls()).toEqual([]);
+      // Direction 2: the scoped home and its throwaway base are gone.
+      expect(existsSync(home)).toBe(false);
+      expect(existsSync(dirname(home))).toBe(false);
     });
 
     it("the spies observe the synchronous calls they guard (negative control)", () => {
