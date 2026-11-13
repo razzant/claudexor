@@ -316,15 +316,24 @@ export class EventLog {
     publish = true,
   ): Promise<RunEvent> {
     const stage = this.terminalStaging;
+    const queued = this.unlanded;
     this.assertEmittable();
     if (this.terminalStaged) throw new Error("run terminal event commit is already in progress");
-    if (!stage && !this.unlanded) return this.commitNow(type, payload, publish);
+    if (!stage && !queued) return this.commitNow(type, payload, publish);
     // Raised before the first await, so no callback during it commits a terminal.
     this.terminalStaged = true;
     try {
-      if (this.unlanded) await this.settleRun();
+      // Each wait ends in the synchronous step it guards, so a line emitted while
+      // a barrier settled is awaited too, never landing after the terminal
+      // (#704). Only this log's queue is rechecked: a side journal appended after
+      // the last barrier may still be in flight at the commit (no reader needs it).
+      if (queued)
+        do await this.runSettled();
+        while (queued.length > 0);
       this.prepareOutput?.(type, payload);
-      if (this.unlanded) await this.settleRun();
+      if (queued)
+        do await this.runSettled();
+        while (queued.length > 0);
       const terminal = this.prepareTerminal(type, payload);
       this.terminalCommitInProgress = false;
       if (stage) {
@@ -334,9 +343,10 @@ export class EventLog {
           // Whatever was not staged, the synchronous commit writes itself.
         }
       }
-      if (this.unlanded) {
+      if (queued) {
         try {
-          await this.settleRun();
+          do await this.runSettled();
+          while (queued.length > 0);
         } catch (error) {
           this.rollbackTerminal(this.fileBytes(), terminal.prepared, error);
         }
@@ -358,12 +368,10 @@ export class EventLog {
       : null;
   }
 
-  /** Every ordered append under the run directory has settled, and this log has
-   * no line in flight. Rejects with a failure nobody awaited. */
-  private async settleRun(): Promise<void> {
-    const runDir = dirname(this.path);
-    do await orderedAppender.settledUnder(runDir);
-    while (this.unlanded!.length > 0);
+  /** The barrier of every ordered append under the run directory made before
+   * this call. Rejects with a failure nobody awaited. */
+  private runSettled(): Promise<void> {
+    return orderedAppender.settledUnder(dirname(this.path));
   }
 
   /** The synchronous terminal commit. A queued log refuses it while a line is in

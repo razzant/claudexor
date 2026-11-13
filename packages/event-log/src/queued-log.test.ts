@@ -470,6 +470,57 @@ describe("a queued EventLog", () => {
     expect(unhandled).toEqual([]);
   });
 
+  it("awaits a line a landing emits while the terminal settles, so the terminal lands last", async () => {
+    // A landing callback emits N microtask turns after a line lands: inside the
+    // terminal's last barrier, at its end, or once the terminal committed.
+    for (const staged of [true, false])
+      for (let turns = 0; turns <= 14; turns += 1) {
+        const { path } = runDir();
+        let log!: EventLog;
+        const late: string[] = [];
+        const onPublish = (event: RunEvent): void => {
+          if (event.type !== "message.accepted") return;
+          let chain = Promise.resolve();
+          for (let turn = 0; turn < turns; turn += 1) chain = chain.then(() => undefined);
+          void chain.then(() => {
+            try {
+              late.push(`landed ${log.emit("message.delivered", {}).seq}`);
+            } catch (error) {
+              late.push((error as Error).message);
+            }
+          });
+        };
+        log = queuedLog(path, { onPublish });
+        log.deferTerminal();
+        if (staged) log.setTerminalStaging(async () => void log.emit("message.accepted", {}));
+        log.emit("run.created", {});
+        if (!staged) log.emit("message.accepted", {});
+        log.emit("run.failed", { lifecycle: "failed" });
+        await log.commitDeferredTerminal();
+        await quiet();
+        await orderedAppender.settled(path);
+        const lines = onDisk(path);
+        const label = `staged=${staged} turns=${turns}: ${JSON.stringify(lines)} ${late}`;
+        // Direction 1: the terminal is the last line and the seqs on disk ascend.
+        expect(lines.at(-1)?.[1], label).toBe("run.failed");
+        const seqs = lines.map(([seq]) => seq ?? 0);
+        expect(seqs, label).toEqual([...seqs].sort((a, b) => a - b));
+        expect(new Set(seqs).size, label).toBe(seqs.length);
+        // Direction 2: the late line landed before the terminal, or was refused
+        // because the terminal had committed; it was never lost silently.
+        expect(late, label).toHaveLength(1);
+        if (late[0]!.startsWith("landed"))
+          expect(
+            lines.map(([, type]) => type),
+            label,
+          ).toContain("message.delivered");
+        else expect(late[0], label).toBe("run terminal event is already committed");
+        // A later out-of-band append continues after the terminal's seq.
+        const audit = appendRunEvent(path, "run-1", "task-1", "control.applied", {});
+        expect(audit.seq, label).toBe(Math.max(...seqs) + 1);
+      }
+  });
+
   it("lets an out-of-band append neither take the run's held failure nor leave its own for the run", async () => {
     const { path } = runDir();
     const lost = new Error("journal refused the run's line");
