@@ -4,6 +4,34 @@ An account that cannot serve a requested Codex model is demoted for that model.
 Other models, account enablement, quota and authentication retain their existing
 rules. Each model operation still sends inference at most once.
 
+Selection's raw login readiness may reuse a dated positive probe for the same
+profile, `auth.json` and `config.toml` file versions, known credential generation
+and observed program identity. Its age starts at the physical probe, uses the
+positive doctor TTL (`CLAUDEXOR_DOCTOR_TTL_MS`, default 90 seconds), and never
+renews on a hit. Negative, unknown, failed, undated or stale results always
+probe again. This admission owner is separate from the display cache; quota
+and revocation overlays remain live, including on a hit. The existing strict
+pin and `last_positive_after_timeout` distinction is unchanged.
+
+Concurrent identical login probes and catalog HTTP reads share only raw I/O.
+Unknown or different identities never join and never cancel each other. After
+each wait a consumer rechecks only the account it waited for: its enablement,
+live usage against the headroom threshold read at admission, a revoked or
+unusable credential, refusals, substitutions and capability marks. It keeps the
+catalogs it read and its exclusions; a change
+about another account never restarts the selection or re-reads a catalog, and
+an account whose read failed is not tried again in that selection. Selection,
+capability binding/reservation and release remain its own work. The last
+departed reader, shutdown, or a change of that read's own credential generation
+or program cancels pending I/O and fences late results. Catalog fetch and body
+together have a 60-second transport limit; expiry is typed
+`catalog_unavailable`, so Auto can try the next account. A completed catalog is
+never retained for admission: the next selection and selected-account catalog
+GET read again. A GET that arrives while an identical read is in flight joins
+it: its `observedAt` is that read's completion time, and the vendor request may
+have been sent before the GET arrived. The account display view keeps its
+separate explicit-refresh observation policy.
+
 Auto selection reads live per-account catalogs. It prefers a listed model,
 then an advisory miss, then an account with a soft observation for the model (a
 live refusal, or a served-model substitution unless it is the preferred account),
@@ -232,5 +260,6 @@ off it) for up to its hour. The host must use correlation for deterministic diff
 settlement. An unrelated later success on another account does not confirm a
 mark. A success on the marked account clears its own mark. Strict consumers of
 the earlier shapes keep validating: `routing` and `capabilities[]` appear only
-on request, and catalog responses keep their fields. `problem.context` is an
+on request, catalog responses keep their fields, and operation GET exposes
+preparation timings only with `includePreparation=true`. `problem.context` is an
 open map and gains its fields without a flag.

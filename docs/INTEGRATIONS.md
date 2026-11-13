@@ -2882,14 +2882,15 @@ created on such a root stays unregistered with its commands in the global partit
 while its turns share that root's project namespace with the thread's lanes. An explicitly
 bound host data root keeps its own location.
 
-The current SQLite schema is version 7. Its atomic 6→7 upgrade adds the
-managed-resource holders and two next-message columns without rewriting any row.
-The 5→6 upgrade moved task-group membership into a lower-case column, backfilled
-from accepted summaries, and rebuilt both group indexes on it. Earlier versions
-follow 1→2 (account service), 2→3 (task-group indexes), 3→4 (deferred messages),
-4→5 (the guarded plan-answer index for thread history), 5→6, then 6→7. Reopening
-version 7 is write-free; older readers refuse an upgraded store. See [SQLite engine store](ARCHITECTURE.md#sqlite-engine-store)
-for migration and complete-backup downgrade precautions.
+The current SQLite schema is version 8. Its atomic 7→8 upgrade adds question
+`delivery` (default `blocking` for existing rows) and a covering pending-delivery
+index. The 6→7 upgrade added managed-resource holders and deferred-message and
+turn-dispatch columns. The 5→6 upgrade backfilled lower-case task-group membership
+and rebuilt its indexes. Earlier steps are 1→2 (account service), 2→3 (task-group
+indexes), 3→4 (deferred messages) and 4→5 (the guarded plan-answer index).
+Reopening version 8 is write-free; older readers refuse an upgraded store. See
+[SQLite engine store](ARCHITECTURE.md#sqlite-engine-store) for migration and
+complete-backup downgrade precautions.
 
 The 4.0 migration requires Node 24.15.0 or newer with supported bundled SQLite.
 Desktop application 4.0 is required before engine 4.0; the existing updater

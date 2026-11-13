@@ -39,6 +39,8 @@ export const CODEX_HTTP_CLIENT_VERSION: VendorCliVersionStamp = "0.156.1";
 export type CodexCatalogClientVersion = {
   version: string;
   program?: HarnessProgramIdentity | null;
+  /** Full file/interpreter/version identity for in-flight raw reads. */
+  programKey?: string;
   source: NonNullable<ControlModelCatalogResponse["clientVersionSource"]>;
 };
 
@@ -90,13 +92,18 @@ export async function codexCatalogClientVersion(
     : await observeHarnessProgram(CODEX_PROGRAM, env, bin);
   const program = observation.program;
   const installed = codexVersionTriple(program?.version);
-  if (installed === null) return { ...VERIFIED, program };
+  if (installed === null)
+    return {
+      ...VERIFIED,
+      program,
+      ...("key" in observation ? { programKey: observation.key } : {}),
+    };
   const verified = codexVersionTriple(CODEX_HTTP_CLIENT_VERSION)!;
   const value: CodexCatalogClientVersion =
     compareTriples(installed, verified) > 0
       ? { version: installed.join("."), source: "installed_cli" }
       : VERIFIED;
-  return { ...value, program };
+  return { ...value, program, ...("key" in observation ? { programKey: observation.key } : {}) };
 }
 
 /** One phrasing of the declared client version for refusals and diagnostics,

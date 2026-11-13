@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+import { recordChildLaunch } from "@claudexor/util";
 import { spawn } from "node:child_process";
 import { registerChildProcess, unregisterChildProcess } from "./process-registry.js";
 import { readProcessLines, type ProcessStreamLimits } from "./process-lines.js";
@@ -166,6 +168,7 @@ export async function* spawnProcess(
   args: string[],
   opts: SpawnOptions = {},
 ): AsyncGenerator<ProcEvent> {
+  const launchStarted = performance.now();
   const invocation = prepareHarnessCommand(
     cmd,
     args,
@@ -227,6 +230,8 @@ export async function* spawnProcess(
         : groupService.captureLeader(child.pid);
     if (capture.status === "known") directGroupHandle = capture.handle;
   }
+
+  recordChildLaunch(performance.now() - launchStarted);
 
   // Identity-proven-only direct-group belt (round-4 #1). A raw
   // `process.kill(-child.pid, signal)` — including the delayed SIGKILL fallback —

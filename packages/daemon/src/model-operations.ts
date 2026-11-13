@@ -167,9 +167,10 @@ export class ModelOperations {
     );
   }
 
-  inspect(id: string): ControlModelOperationDetail {
+  inspect(id: string, includePreparation = false): ControlModelOperationDetail {
     const record = this.record(id);
     const evidence = this.evidence(record);
+    if (!includePreparation) delete evidence.preparation;
     const response = this.responseAt(evidence.response, this.now().getTime());
     return ControlModelOperationDetail.parse({
       id,
@@ -331,6 +332,7 @@ export class ModelOperations {
       cost: result.cost ?? null,
       problem: result.problem ?? null,
       ...(result.routing ? { routing: result.routing } : {}),
+      ...(result.preparation ? { preparation: result.preparation } : {}),
     };
     if (isTerminalLifecycle(record.state) && evidence.dispatch.state === "started") {
       evidence.dispatch = { ...evidence.dispatch, state: "unknown" };

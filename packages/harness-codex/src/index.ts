@@ -1,3 +1,4 @@
+import { codexProfileLoginIdentity } from "./profile-login-identity.js";
 import { CODEX_PROGRAM } from "./program.js";
 import {
   CODEX_MODEL_INVENTORY,
@@ -9,7 +10,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 export { parseCodexRateLimitsResponse, parseCodexAccountResources } from "./quota.js";
 export { CodexRpcError, parseCodexRpcError, codexRpcErrorDetail } from "./rpc-error.js";
 export { createCodexModelAdapter } from "./model.js";
-
 export { describeCodexClientVersion } from "./http-client-version.js";
 import { withCodexVendorFailure } from "./vendor-failure.js";
 import { resolveSecret } from "@claudexor/secrets";
@@ -583,7 +583,6 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
     async cancel(sessionId: string): Promise<void> {
       await controllers.get(sessionId)?.cancel();
     },
-
     // Live input rides the app-server controller of the session (turn/steer);
     // a session without one (legacy exec path, unknown id) has no channel.
     async message(sessionId: string, input: { messageId: string; text: string }) {
@@ -592,6 +591,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
         ? controller.steer(input)
         : { outcome: "unsupported" as const, reason: "no_live_session" as const };
     },
+    credentialProfileIdentity: codexProfileLoginIdentity,
     probeCredentialProfile(
       profile: CredentialProfile,
       abortSignal?: AbortSignal,

@@ -546,3 +546,4 @@ export { readFileUtf8BoundedSync } from "./bounded-file-read.js";
 export * from "./run-stores.js";
 export * from "./remove-tree.js";
 export * from "./write-async.js";
+export * from "./model-preparation-timing.js";

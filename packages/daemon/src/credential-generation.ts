@@ -15,6 +15,18 @@ export class CredentialGeneration {
   private accountChangedAt = new Map<string, number>();
   private dispatchOrder = 0;
   private retired = false;
+  private readonly listeners = new Set<(scope: CredentialInvalidation) => void>();
+
+  /** Raw reads stop immediately when their credential epoch ends. Only rows
+   * whose generation moved are told; the default subject has no row reader. */
+  onChange(listener: (scope: CredentialInvalidation) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private changed(scope: CredentialInvalidation): void {
+    for (const listener of this.listeners) listener(scope);
+  }
 
   constructor(
     private readonly mutating: (harnessId: string) => boolean = credentialMutationWindowOpen,
@@ -55,11 +67,14 @@ export class CredentialGeneration {
    * outcome of a run from the closed graph neither records nor clears. */
   retire(): void {
     this.retired = true;
+    this.changed(null);
+    this.listeners.clear();
   }
 
   noteCredentialChange(): void {
     this.accountChangedAt.clear();
     this.everyAccountChangedAt = ++this.changes;
+    this.changed(null);
     this.invalidated(null);
   }
 
@@ -68,7 +83,8 @@ export class CredentialGeneration {
    * but leaves that binding's durable facts. */
   clearSubject(harnessId: string, profileId: string | null, keepsBinding = false): void {
     this.accountChangedAt.set(key(harnessId, profileId), ++this.changes);
-    // Durable facts exist only for registered rows, never the default subject.
+    // Readers and durable facts exist only for registered rows, never the default subject.
+    if (profileId !== null) this.changed({ harnessId, profileId });
     if (profileId !== null && !keepsBinding) this.invalidated({ harnessId, profileId });
   }
 
