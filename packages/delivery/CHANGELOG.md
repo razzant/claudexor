@@ -1,5 +1,19 @@
 # @claudexor/delivery
 
+## 6.1.0
+
+### Patch Changes
+
+- Updated dependencies [b789380]
+- Updated dependencies [577e275]
+- Updated dependencies
+  - @claudexor/schema@6.1.0
+  - @claudexor/core@6.1.0
+  - @claudexor/util@6.1.0
+  - @claudexor/workspace@6.1.0
+  - @claudexor/policy@6.1.0
+  - @claudexor/review@6.1.0
+
 ## 6.0.0
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # claudexor-benchmark-runner
 
+## 6.1.0
+
+### Patch Changes
+
+- Updated dependencies [577e275]
+  - @claudexor/util@6.1.0
+
 ## 6.0.0
 
 ### Patch Changes

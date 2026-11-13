@@ -1,5 +1,38 @@
 # @claudexor/daemon
 
+## 6.1.0
+
+### Patch Changes
+
+- 577e275: Reuse verified recent login readiness and share identical in-flight model discovery reads. Cancel abandoned catalog work, bound the Codex catalog transport, recheck the waited-for account's live routing evidence after each wait, and expose optional preparation timings. Every selection still reads a fresh vendor catalog.
+- 69e17cb: The history cleanup that runs after every finished job no longer reads every
+  younger terminal command when nothing has aged out. Its candidate page tested
+  the finish time, which the candidate index does not hold, so a page with fewer
+  expired rows than it asked for visited the whole index with a table read per
+  entry. On a store with tens of thousands of terminal commands inside the 30-day
+  window that held the daemon's event loop for up to several seconds after each
+  finished job, and control requests waited. The page is now also bounded by the
+  age cutoff on the creation time, which the index is ordered by. A command whose
+  recorded finish is earlier than its recorded creation is removed once both have
+  aged. The listing of
+  model payloads in custody names the resource state index, so stale planner
+  statistics can no longer turn it into a read of the whole resource table.
+- 4eec413: Reclaiming expired upload bindings no longer stops the daemon at the end of a
+  retention pass. It used to read every binding's upload and resource in one
+  synchronous loop; on a store with hundreds of thousands of uploads that held the
+  event loop for minutes, and every model operation, upload and control request
+  waited. The cleanup now works in bounded steps (a window of rows, or a batch of
+  at most 100 upload targets) and yields after each one. It stops when the pass is
+  cancelled, and such a pass is recorded as truncated. A finished scan repeats at
+  the hourly age revisit, not after every continuation pass.
+- Updated dependencies [b789380]
+- Updated dependencies [577e275]
+- Updated dependencies
+  - @claudexor/schema@6.1.0
+  - @claudexor/core@6.1.0
+  - @claudexor/util@6.1.0
+  - @claudexor/workspace@6.1.0
+
 ## 6.0.0
 
 ### Minor Changes
