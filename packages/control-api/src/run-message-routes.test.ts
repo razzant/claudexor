@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, promises, readFileSync, rmSync, writeFileSync } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EventLog } from "@claudexor/event-log";
+import { EventLog, readRunEvents } from "@claudexor/event-log";
 import {
   ControlRunMessageResponse,
   type LiveMessageDelivery,
@@ -16,6 +17,7 @@ import {
   type DaemonFacadeClient,
   type DaemonRunRecord,
 } from "./daemon-server.js";
+import { handleRunMessageRoute } from "./run-message-routes.js";
 
 const token = "daemon-token-live-message";
 const dirs: string[] = [];
@@ -578,6 +580,88 @@ describe("POST /v2/runs/:id/messages on a live run's queued log", () => {
       expect(unhandled).toEqual([]);
     } finally {
       process.off("unhandledRejection", onUnhandled);
+    }
+  });
+});
+
+describe("a live message that lands while the run's terminal commits (#704)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("never lands a row after the terminal with a lower seq, whatever the adapter's latency", async () => {
+    const realOpen = promises.open;
+    for (let turns = 0; turns <= 12; turns += 1) {
+      const record = runRecord();
+      const path = join(record.runDir as string, "events.jsonl");
+      rmSync(path);
+      const log = new EventLog(path, "run-m1", "task-m1", () => undefined, undefined, undefined, {
+        queued: true,
+      });
+      log.deferTerminal();
+      log.emit("run.created", {});
+      // The run journal's writes are held from the message's arrival until the
+      // terminal waits on them, so its admission row lands inside that wait.
+      let hold = false;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const spy = vi.spyOn(promises, "open").mockImplementation((async (
+        ...args: Parameters<typeof promises.open>
+      ) => {
+        if (hold && String(args[0]) === path) await gate;
+        return realOpen(...args);
+      }) as typeof promises.open);
+      let answered: number | null = null;
+      // The adapter answers that the lane has ended, after `turns` microtask turns.
+      const send = async (): Promise<LiveMessageDelivery> => {
+        for (let turn = 0; turn < turns; turn += 1) await Promise.resolve();
+        return { outcome: "not_active", reason: "no_live_session", message: "lane ended" };
+      };
+      log.setTerminalStaging(async () => {
+        hold = true;
+        void handleRunMessageRoute(
+          {
+            services: { ...ledger(), sendRunMessage: send } as never,
+            findRun: async () => record,
+            readBody: async () => ({ text: TEXT }),
+            json: (_res: unknown, status: number) => {
+              answered = status;
+            },
+            requestError: () => {
+              answered = 500;
+            },
+          } as never,
+          "POST",
+          "/runs/run-m1/messages",
+          { headers: { "idempotency-key": `msg-gap-${turns}` } } as unknown as IncomingMessage,
+          {} as ServerResponse,
+        );
+        while (!readRunEvents(path).events.some((event) => event.type === "message.accepted"))
+          await new Promise((resolve) => setImmediate(resolve));
+        setTimeout(() => {
+          hold = false;
+          release();
+        }, 5);
+      });
+      log.emit("run.completed", { lifecycle: "succeeded" });
+      await log.commitDeferredTerminal();
+      for (let wait = 0; wait < 200 && answered === null; wait += 1)
+        await new Promise((resolve) => setTimeout(resolve, 2));
+      spy.mockRestore();
+      const lines = rows(record).map((row) => [row.seq, row.type] as const);
+      const label = `turns=${turns}: ${JSON.stringify(lines)}`;
+      // Direction 1: file order is seq order, each seq once, so no row of the
+      // run lands after the terminal and no later append reuses a seq.
+      const seqs = lines.map(([seq]) => seq);
+      expect(seqs, label).toEqual([...seqs].sort((a, b) => a - b));
+      expect(new Set(seqs).size, label).toBe(seqs.length);
+      // Direction 2: the message is answered and both its rows are journaled,
+      // the closing one before the terminal or after it with the next seq.
+      expect(answered, label).toBe(200);
+      expect(
+        lines.map(([, type]) => type).filter((type) => type.startsWith("message.")),
+        label,
+      ).toEqual(["message.accepted", "message.refused"]);
     }
   });
 });
