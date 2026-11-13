@@ -15,10 +15,16 @@ export interface AppendLanding {
   lost?(): void;
   /** The caller awaiting this landing. It alone receives the landing's failure. */
   waiter?: { resolve(): void; reject(error: unknown): void };
+  /** Appended aside, not by the file's own producer (an out-of-band writer
+   * routed through it): a failure the file holds is left for the producer,
+   * neither thrown here nor consumed. */
+  aside?: boolean;
 }
 
 interface QueuedAppend {
-  readonly data: string;
+  /** The append's bytes, encoded once when it is queued: what is counted is
+   * what is written, also when a batch joins the halves of a split character. */
+  readonly data: Buffer;
   readonly bytes: number;
   /** This append's position among every append made to its file. */
   readonly index: number;
@@ -81,11 +87,12 @@ interface WriteOutcome {
  * retried. A landing also fails when its `landed` throws. The failure goes to
  * the caller awaiting that landing, else to every barrier in flight that
  * covers it. With nobody waiting, the file holds the failure, and the next
- * append or barrier for that file consumes it once. A close that fails after
- * every byte was written fails no landing: write accepted every byte, as an
- * inline append's does, so the batch has landed, and the file holds the close
- * failure the same way. A failure never poisons later appends or barriers and
- * never becomes an unhandled rejection.
+ * append (not one made aside) or barrier for that file consumes it once. A
+ * close that fails after every byte was written fails no landing: write
+ * accepted every byte, as an inline append's does, so the batch has landed;
+ * the close failure goes to every barrier in flight that covers the batch,
+ * else the file holds it the same way. A failure never poisons later appends
+ * or barriers and never becomes an unhandled rejection.
  */
 class OrderedAppender {
   private readonly files = new Map<string, AppendFile>();
@@ -95,11 +102,12 @@ class OrderedAppender {
    * file is now full: its queued bytes exceed the runtime's own
    * `stream.getDefaultHighWaterMark(false)`. A producer that reads a full
    * file awaits `drained` before it produces more. A failure held for the
-   * file is thrown instead, consumed, and nothing is queued.
+   * file is thrown instead, consumed, and nothing is queued, unless the
+   * append is made aside (`landing.aside`).
    */
   append(path: string, data: string, landing?: AppendLanding): boolean {
     const key = resolve(path);
-    this.throwHeld(key);
+    if (!landing?.aside) this.throwHeld(key);
     let file = this.files.get(key);
     if (!file) {
       file = {
@@ -115,10 +123,10 @@ class OrderedAppender {
       };
       this.files.set(key, file);
     }
-    const bytes = Buffer.byteLength(data, "utf8");
-    file.queue.push({ data, bytes, index: file.appended, landing });
+    const encoded = Buffer.from(data, "utf8");
+    file.queue.push({ data: encoded, bytes: encoded.length, index: file.appended, landing });
     file.appended += 1;
-    file.queuedBytes += bytes;
+    file.queuedBytes += encoded.length;
     if (!file.writing) {
       file.writing = true;
       void this.pump(file);
@@ -209,12 +217,19 @@ class OrderedAppender {
         end += batch[whole]!.bytes;
         if (end > outcome.written) break;
       }
+      // A close failure is the batch's own: the barriers that cover the batch
+      // hear it before it lands (landing resolves them); else it is held after.
+      const closing = outcome.closeFailure;
+      const heard =
+        closing !== undefined &&
+        batch.length > 0 &&
+        this.toBarriers(file, batch[0]!.index, closing.error);
       this.land(file, batch.slice(0, whole));
       // Nothing after a failed write is written: its bytes would follow bytes
       // that are missing or torn.
       if (outcome.failure)
         this.lose(file, [...batch.slice(whole), ...file.queue.splice(0)], outcome.failure.error);
-      else if (outcome.closeFailure) this.hold(file, outcome.closeFailure.error);
+      else if (closing && !heard) this.hold(file, closing.error);
     }
     file.writing = false;
     this.forgetIdle(file);
@@ -233,7 +248,7 @@ class OrderedAppender {
         if (!data) {
           const batch = file.queue.splice(0);
           take(batch);
-          data = Buffer.from(batch.map((append) => append.data).join(""), "utf8");
+          data = Buffer.concat(batch.map((append) => append.data));
         }
         return writeAll(file.path, data);
       });
@@ -289,14 +304,17 @@ class OrderedAppender {
    * append; else the file holds it. */
   private fail(file: AppendFile, append: QueuedAppend, error: unknown): void {
     const waiter = append.landing?.waiter;
-    if (waiter) {
-      waiter.reject(error);
-      return;
-    }
-    const covering = file.barriers.filter((barrier) => barrier.target > append.index);
+    if (waiter) waiter.reject(error);
+    else if (!this.toBarriers(file, append.index, error)) this.hold(file, error);
+  }
+
+  /** Give the failure to every barrier in flight that covers the append at
+   * `index`; false when none does. */
+  private toBarriers(file: AppendFile, index: number, error: unknown): boolean {
+    const covering = file.barriers.filter((barrier) => barrier.target > index);
     for (const barrier of covering)
       if (!barrier.failures.includes(error)) barrier.failures.push(error);
-    if (covering.length === 0) this.hold(file, error);
+    return covering.length > 0;
   }
 
   /** Keep a failure nobody awaited for the next append or barrier. */

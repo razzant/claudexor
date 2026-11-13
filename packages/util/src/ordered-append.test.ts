@@ -410,6 +410,108 @@ describe("ordered appender", () => {
     expect(unhandled).toEqual([]);
   });
 
+  it("gives a close failure to the barrier that covers its batch, and holds it only when none does", async () => {
+    const path = join(freshRoot(), "events.jsonl");
+    const closing = new Error("close failed");
+    const spy = patchHandles((_path, _write, close) => ({
+      close: async () => {
+        await close();
+        throw closing;
+      },
+    }));
+    try {
+      // Direction 1: a barrier in flight over the batch hears its close failure.
+      orderedAppender.append(path, "a\n");
+      await expect(orderedAppender.settled(path)).rejects.toBe(closing);
+      // ...and consumed it: nothing is held for the next append.
+      expect(orderedAppender.append(path, "b\n")).toBe(false);
+      // Direction 2: with no barrier in flight, the file holds the failure once.
+      await orderedAppender.drained(path);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(() => orderedAppender.append(path, "c\n")).toThrow(closing);
+    await expect(orderedAppender.settled(path)).resolves.toBeUndefined();
+    expect(readFileSync(path, "utf8")).toBe("a\nb\n");
+    expect(unhandled).toEqual([]);
+  });
+
+  it("counts the bytes it writes when one batch joins the halves of a split character", async () => {
+    const path = join(freshRoot(), "transcript.md");
+    let entered = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const spy = patchHandles((_path, write) => ({
+      write: async (buffer, offset, length, position) => {
+        if (!entered) {
+          entered = true;
+          await gate;
+        }
+        return write(buffer, offset, length, position);
+      },
+    }));
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      orderedAppender.append(path, "a");
+      await until("the first write starts", () => entered);
+      // A stream delta ends with a high surrogate, the next starts with the low
+      // one; both are queued for the same batch write.
+      orderedAppender.append(path, "x\ud83d");
+      orderedAppender.append(path, "\ude00y");
+      release();
+      await Promise.race([
+        orderedAppender.settled(path),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("an append never settled")), 2_000);
+        }),
+      ]).finally(() => clearTimeout(timer));
+    } finally {
+      spy.mockRestore();
+    }
+    // Each delta is written as its own text (a lone half becomes U+FFFD, as two
+    // inline appends wrote it), and every counted byte was written.
+    expect(readFileSync(path, "utf8")).toBe("ax��y");
+    expect(orderedAppender.full(path)).toBe(false);
+    await expect(orderedAppender.drained(path)).resolves.toBeUndefined();
+    // A whole character in one append is written intact.
+    orderedAppender.append(path, "😀");
+    await orderedAppender.settled(path);
+    expect(readFileSync(path, "utf8")).toBe("ax��y\u{1f600}");
+  });
+
+  it("leaves a held failure to the file's own producer when an append is made aside", async () => {
+    const path = join(freshRoot(), "events.jsonl");
+    const failure = new Error("EIO");
+    await holding(async (calls) => {
+      orderedAppender.append(path, "run line\n");
+      await until("the write starts", () => calls.length === 1);
+      calls[0]!.fail(failure);
+      await orderedAppender.drained(path);
+    });
+    // Direction 1: an aside append neither throws nor consumes the held failure,
+    // and lands.
+    const aside = deferred();
+    expect(orderedAppender.append(path, "audit\n", { aside: true, waiter: aside })).toBe(false);
+    await expect(aside.promise).resolves.toBeUndefined();
+    // Direction 2: the file's own producer still hears it, once.
+    expect(() => orderedAppender.append(path, "next\n")).toThrow(failure);
+    // An aside append's own failure goes to its waiter alone, never held.
+    const own = new Error("aside refused");
+    const refused = deferred();
+    orderedAppender.append(path, "audit 2\n", {
+      aside: true,
+      waiter: refused,
+      landed: () => {
+        throw own;
+      },
+    });
+    await expect(refused.promise).rejects.toBe(own);
+    expect(orderedAppender.append(path, "after\n")).toBe(false);
+    await expect(orderedAppender.settled(path)).resolves.toBeUndefined();
+    expect(readFileSync(path, "utf8")).toBe("audit\naudit 2\nafter\n");
+    expect(unhandled).toEqual([]);
+  });
+
   it("holds a pool slot only around a batch's own file calls, so slots never nest", async () => {
     const global = globalThis as Record<symbol, unknown>;
     global[APPLIED_POOL] = 3; // one write slot
