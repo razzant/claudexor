@@ -274,6 +274,7 @@ import {
   transientRetryPolicy,
   reviewerTimeoutMs,
   harnessInactivityTimeoutMs,
+  laneSuspension,
   observeAuthSwitch,
   emitPoolDegraded,
   deliveryRefusalFailure,
@@ -2561,6 +2562,7 @@ export class Orchestrator {
         const rateLimitStart = telemetry.rateLimits.length;
         rawLane.beginTry();
         try {
+          const pacing = { waiting: false, version: 0 };
           const watched = withInactivityWatchdog(runModelGovernedRoute(routed, runSpec, dispatch), {
             timeoutMs: inactivityMs,
             countsAsProgress: countsAsAgentProgress,
@@ -2570,12 +2572,11 @@ export class Orchestrator {
             },
             // Waiting on the USER is legitimate silence. The interaction policy
             // either enforces a finite deadline or waits until answer/cancel/
-            // terminal/restart when the timeout is disabled.
-            isSuspended: () => (interaction?.pendingCount?.() ?? 0) > 0,
-            suspensionVersion: () => interaction?.suspensionVersion?.() ?? 0,
+            // terminal/restart when the timeout is disabled. So is the journal wait.
+            ...laneSuspension(pacing, interaction),
             stopSignal: signal, // after Stop: drained events are recorded, never used
           });
-          for await (const ev of pacedByAppends(watched, [paths.eventsPath])) {
+          for await (const ev of pacedByAppends(watched, [paths.eventsPath], pacing)) {
             // After Stop: stored evidence only, but file paths are still collected for the capture.
             const stopped = signal?.aborted === true;
             if (!stopped) rawLane.observe(ev);
@@ -6763,6 +6764,7 @@ export class Orchestrator {
             ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
           });
           try {
+            const pacing = { waiting: false, version: 0 };
             const watchedReport = withInactivityWatchdog(runModelGovernedRoute(routed, runSpec), {
               timeoutMs: harnessInactivityTimeoutMs(this.config(input.repoRoot)),
               countsAsProgress: countsAsAgentProgress,
@@ -6770,11 +6772,11 @@ export class Orchestrator {
                 tryAbort.abort();
                 void adapter.cancel?.(activeSessionId)?.catch(() => {});
               },
-              isSuspended: () => (reportInteraction?.pendingCount?.() ?? 0) > 0,
-              suspensionVersion: () => reportInteraction?.suspensionVersion?.() ?? 0,
+              ...laneSuspension(pacing, reportInteraction),
               stopSignal: input.signal, // after Stop: drained events are recorded, never used
             });
-            const read = pacedByAppends(watchedReport, [paths.eventsPath, attemptEventsPath]);
+            const files = [paths.eventsPath, attemptEventsPath];
+            const read = pacedByAppends(watchedReport, files, pacing);
             for await (const ev of read) {
               // A read after Stop is stored evidence only; a callback may itself press Stop.
               const shown = !input.signal?.aborted && ev.payload?.["buffered"] !== true;

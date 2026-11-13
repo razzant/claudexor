@@ -3,7 +3,7 @@
  * prompt constraints, harness-event payload projection, and the
  * run summary/findings renderers. Pure functions — no orchestrator state.
  */
-import { maskHarnessEventDiagnostics } from "@claudexor/core";
+import { maskHarnessEventDiagnostics, type InteractionChannel } from "@claudexor/core";
 import type {
   HarnessEvent,
   ModeKind,
@@ -24,7 +24,7 @@ import type { BudgetObservation, RouteDropStage } from "@claudexor/schema";
 import { emitBestEffort, type EventLog } from "@claudexor/event-log";
 import { isBlocking, quotaConstraintAppliesToRequestKind } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
-import { displayPreview, redactSecrets } from "@claudexor/util";
+import { displayPreview, redactSecrets, type AppendPacing } from "@claudexor/util";
 import { observationsFromEvent, recordHarnessMetric } from "@claudexor/budget";
 import { attemptRoutingCostSample, type AttemptUsageCost } from "./attemptUsageCost.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
@@ -388,6 +388,22 @@ export function reviewerTimeoutMs(cfg: ResolvedConfigLike): number {
 
 export function harnessInactivityTimeoutMs(cfg: ResolvedConfigLike): number | null {
   return cfg.global.runtime.harness_inactivity_timeout_ms;
+}
+
+/**
+ * A lane watchdog's legitimate silence: a question awaiting its answer, or the
+ * loop's own wait for a full journal (`pacedByAppends` marks it on `pacing`),
+ * which is the engine's pace, not the harness's (#704). Either ends with a
+ * fresh window; a harness that stays silent after it still times out.
+ */
+export function laneSuspension(
+  pacing: AppendPacing,
+  interaction?: Pick<InteractionChannel, "pendingCount" | "suspensionVersion">,
+): { isSuspended: () => boolean; suspensionVersion: () => number } {
+  return {
+    isSuspended: () => pacing.waiting || (interaction?.pendingCount?.() ?? 0) > 0,
+    suspensionVersion: () => pacing.version + (interaction?.suspensionVersion?.() ?? 0),
+  };
 }
 
 /** Typed auth-switch disclosure: adapters mark auth_switched on a message;

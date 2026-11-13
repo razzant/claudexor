@@ -600,6 +600,45 @@ describe("pacedByAppends", () => {
     expect(unhandled).toEqual([]);
   });
 
+  it("marks each wait for a full file on the reader's pacing, and no other step (#704)", async () => {
+    const mark = getDefaultHighWaterMark(false);
+    const root = freshRoot();
+    const large = join(root, "large.jsonl");
+    const small = join(root, "small.jsonl");
+    const pacing = { waiting: false, version: 0 };
+    const seenWaiting: boolean[] = [];
+    let reading!: Promise<void>;
+    await holding(async (calls) => {
+      reading = (async () => {
+        for await (const value of pacedByAppends(counted(4, { count: 0 }), [large], pacing)) {
+          seenWaiting.push(pacing.waiting);
+          orderedAppender.append(large, `${"x".repeat(mark / 2)}\n`);
+          void value;
+        }
+      })();
+      await until("the first write is held", () => calls.length === 1);
+      await quiet();
+      // Direction 1: the reader waits for the full file, marked as waiting.
+      expect(orderedAppender.full(large)).toBe(true);
+      expect(pacing).toEqual({ waiting: true, version: 1 });
+    });
+    await reading;
+    // Each wait ended, its start and end counted; the reader's own steps between
+    // waits were never marked.
+    expect(pacing.waiting).toBe(false);
+    expect(pacing.version).toBeGreaterThanOrEqual(2);
+    expect(pacing.version % 2).toBe(0);
+    expect(seenWaiting).toEqual([false, false, false, false]);
+    // Direction 2: a file that never fills is never waited for, nor marked.
+    const unpaced = { waiting: false, version: 0 };
+    for await (const value of pacedByAppends(counted(4, { count: 0 }), [small], unpaced)) {
+      orderedAppender.append(small, `${value}\n`);
+    }
+    await orderedAppender.settled(small);
+    expect(unpaced).toEqual({ waiting: false, version: 0 });
+    expect(unhandled).toEqual([]);
+  });
+
   it("resumes once its own lines land while another producer keeps appending to the file", async () => {
     const mark = getDefaultHighWaterMark(false);
     const path = join(freshRoot(), "events.jsonl");

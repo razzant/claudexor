@@ -27,7 +27,12 @@ import { type BudgetDenial, classifyBudgetFailure } from "./budgetFailure.js";
 import type { RoutedAdapter } from "./orchestrator.js";
 import { attemptInterruption, finalizeAttempt } from "./attemptFinalize.js";
 import { unwrapAttemptAnswer, type WorkReportEnvelopeMode } from "./workReportEnvelope.js";
-import { harnessEventPayload, observeBudgetSignals, safeErrorMessage } from "./runSupport.js";
+import {
+  harnessEventPayload,
+  laneSuspension,
+  observeBudgetSignals,
+  safeErrorMessage,
+} from "./runSupport.js";
 import {
   type AttemptTelemetry,
   createAttemptTelemetry,
@@ -371,6 +376,7 @@ export async function runDeepScanReducer(
       external_context_policy: built.webPolicy,
       ...(built.ignored?.length ? { ignored_settings: built.ignored } : {}),
     });
+    const pacing = { waiting: false, version: 0 };
     const watched = withInactivityWatchdog(runModelGovernedRoute(args.routed, spec), {
       timeoutMs: deps.inactivityTimeoutMs,
       countsAsProgress: countsAsAgentProgress,
@@ -378,10 +384,10 @@ export async function runDeepScanReducer(
         reducerAbort.abort();
         cancelActiveSession();
       },
-      isSuspended: () => false,
+      ...laneSuspension(pacing),
       cleanupDeadlineMs: cleanupGraceMs,
     });
-    const read = pacedByAppends(watched, [paths.eventsPath, attemptEventsPath]);
+    const read = pacedByAppends(watched, [paths.eventsPath, attemptEventsPath], pacing);
     const iterator = read[Symbol.asyncIterator]();
     for (;;) {
       const pending = iterator.next();

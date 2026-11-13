@@ -383,6 +383,17 @@ async function writeAll(path: string, data: Buffer): Promise<WriteOutcome> {
 export const orderedAppender = new OrderedAppender();
 
 /**
+ * A lane loop's waits for its journals, as its inactivity watchdog reads them
+ * (`isSuspended`, `suspensionVersion`): `waiting` while `pacedByAppends` waits
+ * for a full file, `version` counting each wait's start and end. Waiting on the
+ * disk is the engine's pace, not the harness's silence (#704).
+ */
+export interface AppendPacing {
+  waiting: boolean;
+  version: number;
+}
+
+/**
  * Flow control for a lane loop: yields `source`'s values, and before reading
  * the next one waits, for each of `files` the appender reports full, until the
  * lines queued there before the wait (the loop's own included) have landed or
@@ -390,14 +401,29 @@ export const orderedAppender = new OrderedAppender();
  * By then the loop has queued the value's lines, so a harness that outruns
  * the disk slows through the stream limits it already has; another producer
  * of the same file cannot keep it waiting. The high-water mark is the
- * runtime's own; this adds no constant.
+ * runtime's own; this adds no constant. Each wait is marked on `pacing`.
  */
 export async function* pacedByAppends<T>(
   source: AsyncIterable<T>,
   files: readonly string[],
+  pacing?: AppendPacing,
 ): AsyncGenerator<T, void, undefined> {
   for await (const value of source) {
     yield value;
-    for (const file of files) if (orderedAppender.full(file)) await orderedAppender.drained(file);
+    for (const file of files) {
+      if (!orderedAppender.full(file)) continue;
+      markWait(pacing, true);
+      try {
+        await orderedAppender.drained(file);
+      } finally {
+        markWait(pacing, false);
+      }
+    }
   }
+}
+
+function markWait(pacing: AppendPacing | undefined, waiting: boolean): void {
+  if (!pacing) return;
+  pacing.waiting = waiting;
+  pacing.version += 1;
 }

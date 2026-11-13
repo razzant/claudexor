@@ -958,4 +958,114 @@ describe("runDeepScanReducer flow control (#688)", () => {
       else global[APPLIED_POOL] = savedPool;
     }
   });
+  it.each([true, false])(
+    "does not charge its wait for a full journal to the reducer's window (productive: %s)",
+    async (productive) => {
+      const WINDOW_MS = 1_000;
+      const HOLD_MS = 2_500; // longer than the window, as a slow disk would hold it
+      const APPLIED_POOL = Symbol.for("claudexor.libuvPoolSize");
+      const global = globalThis as Record<symbol, unknown>;
+      const savedPool = global[APPLIED_POOL];
+      global[APPLIED_POOL] = 8;
+      const fixture = makeFiniteFixture();
+      fixture.log.dispose();
+      const log = new EventLog(
+        fixture.paths.eventsPath,
+        "run-reducer",
+        "task-reducer",
+        undefined,
+        undefined,
+        undefined,
+        { queued: true },
+      );
+      const half = getDefaultHighWaterMark(false) / 2;
+      let holding = false;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const realOpen = promises.open;
+      const spy = vi.spyOn(promises, "open").mockImplementation((async (
+        ...args: Parameters<typeof promises.open>
+      ) => {
+        const handle = await realOpen(...args);
+        if (!String(args[0]).startsWith(fixture.paths.root)) return handle;
+        const write = handle.write.bind(handle) as (...writeArgs: unknown[]) => Promise<unknown>;
+        handle.write = (async (...writeArgs: unknown[]) => {
+          if (holding) await gate;
+          return write(...writeArgs);
+        }) as unknown as typeof handle.write;
+        return handle;
+      }) as typeof promises.open);
+      let abortedAt: number | null = null;
+      let releasedAt = 0;
+      const adapter: HarnessAdapter = {
+        ...reducerAdapter("unused"),
+        async *run(spec) {
+          const s = spec.session_id;
+          const abort = spec.extra["abortSignal"] as AbortSignal;
+          // Heard when the watchdog fires, not when this generator next resumes.
+          const stopped = new Promise<void>((resolve) => {
+            if (abort.aborted) return resolve();
+            abort.addEventListener(
+              "abort",
+              () => {
+                abortedAt = Date.now();
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          holding = true;
+          // A productive reducer streams on; a silent one stops after filling the journal.
+          for (let index = 0; index < (productive ? 6 : 2); index += 1)
+            yield {
+              type: "message",
+              session_id: s,
+              ts: nowIso(),
+              text: String(index).repeat(half),
+            };
+          if (!productive) return await stopped;
+          yield {
+            type: "message",
+            session_id: s,
+            ts: nowIso(),
+            text: "Merged synthesis.",
+            final: true,
+            payload: { final_source: "test" },
+          };
+          yield { type: "completed", session_id: s, ts: nowIso() };
+        },
+      };
+      try {
+        const reducing = runFiniteReducer({ ...fixture, log }, adapter, {
+          deps: { inactivityTimeoutMs: WINDOW_MS, hardTimeoutMs: 60_000 },
+        });
+        try {
+          await vi.waitFor(() => expect(orderedAppender.full(fixture.paths.eventsPath)).toBe(true));
+          await new Promise((resolve) => setTimeout(resolve, HOLD_MS));
+        } finally {
+          holding = false;
+          releasedAt = Date.now();
+          release();
+        }
+        const result = await reducing;
+        if (productive) {
+          // Direction 1: the reducer behind the slow journal is read to its end.
+          expect(result.status).toBe("success");
+        } else {
+          // Direction 2: a silent reducer is still cut off, one window after the drain.
+          expect(abortedAt).not.toBeNull();
+          expect(abortedAt!).toBeGreaterThan(releasedAt);
+          expect(result.status).toBe("failed");
+          if (result.status === "failed") expect(result.error).toMatch(/inactivity watchdog/i);
+        }
+      } finally {
+        spy.mockRestore();
+        log.dispose();
+        if (savedPool === undefined) delete global[APPLIED_POOL];
+        else global[APPLIED_POOL] = savedPool;
+      }
+    },
+  );
 });

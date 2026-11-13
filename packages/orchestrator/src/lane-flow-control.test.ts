@@ -202,3 +202,151 @@ describe("lane loops read the next harness event only once their full files drai
     },
   );
 });
+
+/** A harness of two messages that fill the run journal, then silence until the
+ * watchdog aborts it; `aborted` gets the time of the abort itself. */
+function silentAfterTwo(
+  lane: Lane,
+  start: () => void,
+  aborted: (at: number) => void,
+): HarnessAdapter {
+  const base = streamingAdapter(lane, start, { pulled: 0, finished: false });
+  return {
+    ...base,
+    async *run(spec) {
+      const ts = new Date().toISOString();
+      const abort = spec.extra?.["abortSignal"] as AbortSignal | undefined;
+      // Heard when the watchdog fires, not when this generator next resumes.
+      const stopped = new Promise<void>((resolve) => {
+        if (abort?.aborted) return resolve();
+        abort?.addEventListener(
+          "abort",
+          () => {
+            aborted(Date.now());
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      start();
+      for (let index = 0; index < 2; index += 1)
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: String(index).repeat(half),
+        };
+      await stopped;
+    },
+  };
+}
+
+/** Runs `body` with the inactivity window set to `ms` milliseconds. */
+async function withInactivityWindow<T>(ms: number, body: () => Promise<T>): Promise<T> {
+  const saved = process.env["CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS"];
+  process.env["CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS"] = String(ms);
+  try {
+    return await body();
+  } finally {
+    if (saved === undefined) delete process.env["CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS"];
+    else process.env["CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS"] = saved;
+  }
+}
+
+const WINDOW_MS = 1_000;
+/** Held well past the window, as a slow disk would hold the journal. */
+const HOLD_MS = 2_500;
+
+describe("a lane's wait for its full journal is not the harness's silence (#704)", () => {
+  it.each(["agent", "ask", "plan"] as const)(
+    "%s: a productive harness behind a journal slower than the window reads every event",
+    async (lane) => {
+      const repo = await initRepo();
+      const runId = `run-window-${lane}`;
+      const runDir = new ArtifactStore(repo).runPaths(runId).root;
+      const eventsPath = join(runDir, "events.jsonl");
+      const progress = { pulled: 0, finished: false };
+      let holding = false;
+      const hold = holdWritesUnder(
+        () => runDir,
+        () => holding,
+      );
+      const adapter = streamingAdapter(lane, () => (holding = true), progress);
+      const result = await withInactivityWindow(WINDOW_MS, async () => {
+        const running = new Orchestrator({
+          registry: new Map([["stub", adapter]]),
+          reviewers: [],
+        }).run({
+          repoRoot: repo,
+          prompt: lane === "ask" ? "explain the fixture" : "do it",
+          mode: lane,
+          harnesses: ["stub"],
+          runId,
+        });
+        try {
+          await until("the run journal is full", () => orderedAppender.full(eventsPath));
+          await new Promise((resolve) => setTimeout(resolve, HOLD_MS));
+        } finally {
+          holding = false;
+          hold.release();
+        }
+        return running;
+      });
+      // The loop waited on the journal for longer than the window, and the
+      // harness was never cut off: it was read to its end.
+      expect(progress.pulled).toBe(MESSAGES);
+      expect(progress.finished).toBe(true);
+      expect(result.summary).not.toContain("inactivity watchdog");
+    },
+  );
+
+  it.each(["agent", "ask", "plan"] as const)(
+    "%s: a harness silent after the journal drains still times out, one window later",
+    async (lane) => {
+      const repo = await initRepo();
+      const runId = `run-silent-${lane}`;
+      const runDir = new ArtifactStore(repo).runPaths(runId).root;
+      const eventsPath = join(runDir, "events.jsonl");
+      let holding = false;
+      let abortedAt: number | null = null;
+      let releasedAt = 0;
+      const hold = holdWritesUnder(
+        () => runDir,
+        () => holding,
+      );
+      const adapter = silentAfterTwo(
+        lane,
+        () => (holding = true),
+        (at) => (abortedAt = at),
+      );
+      const result = await withInactivityWindow(WINDOW_MS, async () => {
+        const running = new Orchestrator({
+          registry: new Map([["stub", adapter]]),
+          reviewers: [],
+        }).run({
+          repoRoot: repo,
+          prompt: lane === "ask" ? "explain the fixture" : "do it",
+          mode: lane,
+          harnesses: ["stub"],
+          runId,
+        });
+        try {
+          await until("the run journal is full", () => orderedAppender.full(eventsPath));
+          await new Promise((resolve) => setTimeout(resolve, HOLD_MS));
+        } finally {
+          holding = false;
+          releasedAt = Date.now();
+          hold.release();
+        }
+        return running;
+      });
+      // Direction 1: the wait was not charged to the harness: it was cut off
+      // only after the journal drained.
+      expect(abortedAt).not.toBeNull();
+      expect(abortedAt!).toBeGreaterThan(releasedAt);
+      // Direction 2: its silence after that still ended the run.
+      expect(result.lifecycle).not.toBe("succeeded");
+      expect(readFileSync(eventsPath, "utf8")).toContain("inactivity watchdog");
+    },
+  );
+});
