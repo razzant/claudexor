@@ -41,9 +41,11 @@ export class RequestDelivery {
    * starts with the request, restarts whenever the socket pushes back and when
    * the last body byte is handed off; while the body is being written it ends
    * the request only if the socket is still backpressured. The body clock
-   * restarts on every chunk of the response. On HTTP/2 the body value is the
-   * stream's idle timeout on the runtime's ordinary timer and the head value is
-   * unused. */
+   * restarts on every chunk of the response. On HTTP/2 they are the stream's
+   * idle timeout on the runtime's ordinary timer, phased by the sending
+   * dispatcher's undici (Node's own for native fetch, not this pin): from
+   * 7.29.1 the head value until the response head, then the body value;
+   * before it the body value throughout and the head value unused. */
   request(bounds?: ResponseBounds): {
     body: ReadableStream<Uint8Array>;
     duplex: "half";

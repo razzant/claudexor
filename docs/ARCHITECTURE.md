@@ -3357,15 +3357,19 @@ and restarts whenever the socket pushes back and when the last body byte is
 handed off; while the body is still being written it ends the request only if
 the socket is still backpressured. Such a call reads as an incomplete upload
 when body bytes remained to hand off and stays unknown otherwise. The body clock
-restarts on every chunk of the response. On HTTP/2 the body value is the
-stream's idle timeout in both directions, on the runtime's ordinary timer, which
-keeps counting while the event loop is blocked; the head value is unused and an
-expiry carries another code. An unknown dispatcher keeps its own limits. A call
-that the head timeout ends after the whole body was handed off, or that the body
-timeout ends, stays `transport_unknown`: `errorCode` in the problem's context
-carries the library's code and, for the two HTTP/1.1 codes, the message names
-the library's timeout and the engine's setting in words that clients must not
-parse.
+restarts on every chunk of the response. On HTTP/2 the values are the stream's
+idle timeout in both directions, on the runtime's ordinary timer, which keeps
+counting while the event loop is blocked. Their phases follow the undici of the
+dispatcher that sends, and native fetch's own dispatcher is Node's, not this
+package's pin: from undici 7.29.1 the head value runs
+until the response head and the body value after it, with the HTTP/1.1 codes;
+before it the body value runs throughout, the head
+value is unused and an expiry carries another code. An unknown dispatcher keeps
+its own limits. A call that the head timeout ends after the whole body was
+handed off, or that the body timeout ends, stays `transport_unknown`:
+`errorCode` in the problem's context carries the library's code and, for those
+two codes, the message names the library's timeout and the engine's setting in
+words that clients must not parse.
 Proof of non-delivery yields `transport_not_delivered` with one of three bases:
 `connect_failure` (the dispatcher reported an error before it began writing the
 request, whatever the error's code; a dispatcher that wrote before its
