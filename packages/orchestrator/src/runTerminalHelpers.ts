@@ -227,9 +227,9 @@ export function isTerminalRecoveryRequired(error: unknown): boolean {
 
 /**
  * The failure net's flush: settle custody, then commit its held terminal. A
- * landing failure that interrupts the commit is consumed by the commit's own
- * barrier and leaves the terminal held, so the flush that follows commits it
- * (#704); a failure of that one is the run's to throw, as before.
+ * landing failure that interrupts the flush (its barrier before custody, or the
+ * commit's own) is consumed there and leaves the terminal held, so the flush that
+ * follows commits it (#704); a failure of that one is the run's to throw, as before.
  */
 export async function commitNetTerminal(
   a: AnnouncedRunContext,
