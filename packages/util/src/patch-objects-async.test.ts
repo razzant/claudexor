@@ -53,7 +53,8 @@ vi.mock("node:fs/promises", async (original) => {
   const patched = { link, lstat, rename };
   return { ...actual, ...patched, default: { ...actual, ...patched } };
 });
-const { writePatchObject, writePatchObjectAsync } = await import("./patch-objects.js");
+const { prunePatchObjects, writePatchObject, writePatchObjectAsync } =
+  await import("./patch-objects.js");
 const { sha256 } = await import("./index.js");
 
 const roots: string[] = [];
@@ -163,6 +164,42 @@ describe("awaited run-patch publication (#688)", () => {
     io.touched = [];
     await writePatchObjectAsync(dir, join(dir, "c", "patch.diff"), "other bytes\n");
     expect(io.touched.length).toBeGreaterThan(0);
+  });
+
+  it("keeps an object from a retention pass while its publication is in flight, and collects a finished one (#704)", async () => {
+    const dir = root();
+    // An object no run path holds any more: the pass collects it.
+    const stale = "stale bytes\n";
+    const staleTarget = join(dir, "runs", "old", "final", "patch.diff");
+    await writePatchObjectAsync(dir, staleTarget, stale);
+    fs.rmSync(staleTarget);
+    const patch = "new patch bytes\n";
+    const object = join(dir, "patches", `${sha256(patch).slice(7)}.patch`);
+    const target = join(dir, "runs", "r", "final", "patch.diff");
+    let reached!: () => void;
+    const atLink = new Promise<void>((resolve) => (reached = resolve));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    // The publication stops after the object's rename, before the target's link.
+    vi.mocked(fsp.link).mockImplementationOnce(async (from, to) => {
+      reached();
+      await released;
+      return fs.promises.link(from, to);
+    });
+    const publication = writePatchObjectAsync(dir, target, patch);
+    await atLink;
+    expect(fs.statSync(object).nlink).toBe(1);
+    // Direction 1: the pass leaves the object in flight, and the publication
+    // completes with the exact bytes.
+    await expect(prunePatchObjects(dir, false)).resolves.toBe(Buffer.byteLength(stale));
+    release();
+    await publication;
+    expect(fs.readFileSync(target, "utf8")).toBe(patch);
+    expect(fs.statSync(target).ino).toBe(fs.statSync(object).ino);
+    // Direction 2: once no run path holds it, a later pass collects it too.
+    fs.rmSync(target);
+    await expect(prunePatchObjects(dir, false)).resolves.toBe(Buffer.byteLength(patch));
+    expect(fs.readdirSync(join(dir, "patches"))).toEqual([]);
   });
 
   it("refuses a linked cache namespace and touches nothing outside it", async () => {
