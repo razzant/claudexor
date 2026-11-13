@@ -7,6 +7,7 @@ import {
   ModelCallResult,
 } from "@claudexor/schema";
 import { createCodexModelAdapter, parseCodexModelCatalog } from "./model.js";
+import { requestBodyText } from "./test-support/request-body.js";
 
 const FULL_SIBLING = ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
 
@@ -95,7 +96,7 @@ it.each([
     expect(JSON.stringify(request)).toBe(frozen);
     expect(result.outcome).toBe("completed");
     expect(f.fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
-    const body = JSON.parse(await new Response(f.fetch.mock.calls[1]![1]!.body).text());
+    const body = JSON.parse(await requestBodyText(f.fetch.mock.calls[1]![1]));
     expect(body.reasoning?.effort ?? null).toBe(submitted);
     expect(ModelCallResult.parse(result)).toMatchObject({
       effortResolution: { requested, submitted, resolution, source: "account_catalog" },
@@ -119,7 +120,7 @@ it.each([
       f.context,
     );
     expect(result.outcome).toBe("completed");
-    const body = JSON.parse(await new Response(f.fetch.mock.calls[1]![1]!.body).text());
+    const body = JSON.parse(await requestBodyText(f.fetch.mock.calls[1]![1]));
     expect(body.reasoning.effort).toBe(submitted);
     expect(result.effortResolution).toMatchObject({ requested, submitted, resolution });
     expect(result.effortResolution?.reason).toContain("shared preference order");
@@ -201,7 +202,7 @@ it.each([
     const original = JSON.stringify(request);
     const result = await f.adapter.invoke(request, { ...f.context, catalog });
     expect(f.fetch.mock.calls.map(([, init]) => init?.method ?? "GET")).toEqual(["GET", "POST"]);
-    const body = JSON.parse(await new Response(f.fetch.mock.calls[1]![1]!.body).text());
+    const body = JSON.parse(await requestBodyText(f.fetch.mock.calls[1]![1]));
     expect(body.reasoning.effort).toBe(submitted);
     expect(JSON.stringify(request)).toBe(original);
     expect(result.outcome).toBe("completed");
@@ -276,7 +277,7 @@ it.each([undefined, "max", "future-native"])(
       { ...f.request, model: "unlisted", options: { reasoningEffort: effort } },
       f.context,
     );
-    const body = JSON.parse(await new Response(f.fetch.mock.calls[1]![1]!.body).text());
+    const body = JSON.parse(await requestBodyText(f.fetch.mock.calls[1]![1]));
     expect(body.model).toBe("unlisted");
     expect(body.reasoning?.effort).toBe(effort);
     expect(result.effortResolution).toMatchObject({

@@ -1,32 +1,27 @@
 import type { Dispatcher } from "undici";
 import { existingDispatcher } from "./dispatcher-accessor.cjs";
 
-// Typed connector failures are evidence only on the target dispatcher's error
-// callback, before its onConnect. A thrown fetch error alone proves nothing.
-const CONNECT_FAILURES = new Set([
-  "UND_ERR_CONNECT_TIMEOUT",
-  "ECONNREFUSED",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "CERT_HAS_EXPIRED",
-  "DEPTH_ZERO_SELF_SIGNED_CERT",
-  "SELF_SIGNED_CERT_IN_CHAIN",
-  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
-  "ERR_TLS_CERT_ALTNAME_INVALID",
-  "ERR_TLS_HANDSHAKE_TIMEOUT",
-]);
+/** The bounds one inference dispatch sets on its own request (see `request`). */
+export interface ResponseBounds {
+  /** The library's response-head timeout. */
+  headMs: number;
+  /** The library's response-body timeout. */
+  silenceMs: number;
+}
 
 interface SendObservation {
+  /** The dispatcher began writing this request (its onConnect ran). */
   connected: boolean;
   chunks: number;
   handed: number;
   response: boolean;
+  /** The dispatcher reported an error for this send; its code may be absent. */
+  errored: boolean;
   errorCode: string | null;
   supported: boolean;
 }
 
-/** One exact JSON body's transport observations, never a retry or a socket owner.
+/** One exact request body's transport observations, never a retry or a socket owner.
  * Handoff is an UPPER bound on peer receipt. Full handoff is still unknown.
  * A custom fetch/dispatcher which emits no callbacks supplies no evidence.
  */
@@ -34,11 +29,22 @@ export class RequestDelivery {
   readonly bytes: Buffer;
   private readonly sends: SendObservation[] = [];
 
-  constructor(body: string) {
-    this.bytes = Buffer.from(body, "utf8");
+  /** `bytes` are the body exactly as sent, after any content encoding. */
+  constructor(bytes: Uint8Array) {
+    this.bytes = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   }
 
-  request(): {
+  /** `bounds` replace the dispatcher's own head and body timeouts for this
+   * request only. They are the HTTP library's clocks, not wall-clock deadlines.
+   * On HTTP/1.1 both are counted in the library's ticks, and a stretch in which
+   * this process's event loop is blocked counts as one tick. The head clock
+   * starts with the request, restarts whenever the socket pushes back and when
+   * the last body byte is handed off; while the body is being written it ends
+   * the request only if the socket is still backpressured. The body clock
+   * restarts on every chunk of the response. On HTTP/2 the body value is the
+   * stream's idle timeout on the runtime's ordinary timer and the head value is
+   * unused. */
+  request(bounds?: ResponseBounds): {
     body: ReadableStream<Uint8Array>;
     duplex: "half";
     dispatcher: NonNullable<RequestInit["dispatcher"]>;
@@ -67,12 +73,15 @@ export class RequestDelivery {
               chunks: 0,
               handed: 0,
               response: false,
+              errored: false,
               errorCode: null,
               supported: true,
             };
             this.sends.push(observation);
             return target.dispatch(
-              options,
+              bounds
+                ? { ...options, headersTimeout: bounds.headMs, bodyTimeout: bounds.silenceMs }
+                : options,
               new Proxy(handler, {
                 get: (original, method) => {
                   const fn = Reflect.get(original, method, original);
@@ -90,11 +99,21 @@ export class RequestDelivery {
                     };
                   if (typeof fn !== "function") return fn;
                   return (...args: unknown[]) => {
-                    if (method === "onConnect") observation.connected = true;
-                    if (method === "onHeaders" || method === "onResponseStarted")
+                    // Both handler generations: the library calls one of each pair.
+                    if (method === "onConnect" || method === "onRequestStart")
+                      observation.connected = true;
+                    if (
+                      method === "onHeaders" ||
+                      method === "onResponseStarted" ||
+                      method === "onResponseStart"
+                    )
                       observation.response = true;
-                    if (method === "onError") {
-                      const error = args[0] as { code?: unknown } | undefined;
+                    if (method === "onError" || method === "onResponseError") {
+                      // The older callback takes the error alone, the newer one
+                      // after its controller.
+                      const error = args[method === "onError" ? 0 : args.length - 1] as
+                        { code?: unknown } | undefined;
+                      observation.errored = true;
                       observation.errorCode = typeof error?.code === "string" ? error.code : null;
                     }
                     return fn.apply(original, args);
@@ -132,16 +151,20 @@ export class RequestDelivery {
 
   notDelivered() {
     const facts = this.facts();
+    // The send failed before request writing began: the dispatcher reported an
+    // error and had not called onConnect, which it calls when it starts to write
+    // a request. Any error qualifies; its place in the callback order is the
+    // proof, not its code. A thrown fetch error alone proves nothing. A
+    // dispatcher that wrote before onConnect, or an interceptor that withheld
+    // onConnect from this handler, would make this claim false.
     const connectFailure = (send: SendObservation) =>
-      send.supported &&
-      !send.connected &&
-      send.chunks === 0 &&
-      send.errorCode !== null &&
-      CONNECT_FAILURES.has(send.errorCode);
+      send.supported && send.errored && !send.connected && send.chunks === 0;
     if (!this.sends.length || facts.responseReceived) return null;
     const allConnect = this.sends.every(connectFailure);
-    // Include EVERY send, including any dispatcher-internal retry. A prior
-    // full/unknown handoff cannot be erased by a later connect failure.
+    // Every dispatch this wrapper observed counts: a prior full or unknown
+    // handoff cannot be erased by a later connect failure. A retry inside the
+    // dispatcher, below this wrapper, shares one observation, whose callbacks
+    // accumulate.
     const partial = this.sends.every(
       (send) =>
         connectFailure(send) ||

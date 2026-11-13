@@ -593,8 +593,8 @@ as unready. Admission deliberately does not probe readiness to resolve that edge
 Account readiness, quota and model admission belong to the run (owner decision),
 so a named profile admits its harness even when the default store is logged out.
 An accepted run whose selected account is not ready fails after run preparation
-(artifacts, Git boundary, `CLAUDE.md` bridge, in-place snapshot) and before any
-provider starts; run-level Exact Retry replays the same request. A direct
+(artifacts, Git boundary and any in-place snapshot) and before any provider
+starts; run-level Exact Retry replays the same request. A direct
 `POST /v2/runs` carrying `threadId` is refused before admission reads that thread.
 
 Read-only routing additionally re-derives the env-sensitive readiness
@@ -3190,6 +3190,72 @@ refresh, and each caller rereads current authorization. Selection hands its
 exact-profile catalog to the invocation, which rechecks the account fingerprint; no catalog or credentials are cached across operations, and an
 unknown fingerprint keeps fresh discovery and cannot authorize native
 continuation reuse.
+Raw model selection owns a separate admission-grade positive login observation
+(`model-login-readiness.ts`), keyed by the whole profile and locator, the stat
+versions of its owned `auth.json` and `config.toml` (including missing settings),
+known credential generation, and `observeHarnessProgram` identity/version.
+Unknown identity never authorizes reuse. Positive, dated, non-stale probes
+expire from their physical start/date under the shared doctor positive policy
+(`CLAUDEXOR_DOCTOR_TTL_MS`, default 90 seconds); hits never extend that date.
+Display projections, negative/unknown results, eligible sets and winners are
+never reused for admission. Live quota and unusable-credential evidence can
+exclude a locally ready account without launching another probe. A hit runs no
+CLI: a program replaced behind an unchanged wrapper, or a `config.toml` the CLI
+can no longer load while its file identity is unchanged, is seen only when the
+positive expires. A probe whose file or program identity changed while it ran
+still answers its callers, but that answer is not retained.
+
+Only identical in-flight raw I/O is shared. Catalog keys additionally include
+account/capability fingerprints, an opaque digest of current authorization,
+and the declared client version. Keys contain no tokens. Unknown or different
+identities never join and never cancel each other; completion/error removes
+entries. Each waiter has its own lifetime: one leaving preserves others, the
+last leaving aborts, and shutdown or a change of that read's own credential
+generation or harness program ends it (a default-subject change moves no
+registered row's generation). A login probe or catalog read ended by a
+credential change (a login probe also by a program change; nothing is repeated
+at shutdown) runs once more under the new identity (any login lifecycle moves
+every row's generation), so its caller still gets an answer; nothing from the
+ended read is used, a read that ended with its own answer keeps that answer,
+and a second change during the repeated read still fails its operation
+`auth_changed`. After each wait a consumer judges again only the
+account it waited for (`liveAccountRefusal`: enablement, a revoked or unusable
+credential, and live usage against the headroom threshold read at admission, as
+a strict pin of that account is judged; refusals, substitutions and capability
+marks are re-read by the catalog stage). It keeps its fresh catalogs and
+exclusions: a change about another
+account neither restarts the selection nor re-reads a catalog, and an account
+whose read failed is not tried again. A pool refusal reports the causes of its
+own decision, so an account blocked now reports that block rather than an
+earlier refusal of the same selection. Each consumer then performs its own
+bind/reserve/changed and release.
+The selected-account catalog GET has an HTTP-disconnect lifetime; the account
+display view also cancels abandoned acquisition while retaining its existing
+display observation policy. Accepted durable model operations retain their own
+lifetime, independent of the connection that created them. The Codex `/models`
+request and response body share a 60-second transport limit; expiry yields
+`catalog_unavailable`, never an empty successful inventory, and Auto continues
+its normal candidate search. Catalog admission remains NEVER cached: completed
+catalogs are not retained across selections.
+
+Operation receipts carry optional `preparation`; HTTP GET exposes it only with
+`includePreparation=true`, so strict earlier clients keep their DTO. It contains `totalMs`, `steps`
+and `process`, frozen at dispatch or a pre-dispatch failure. Each step records
+`count`, `totalMs`, `maxMs`: `payloadRead`, `payloadParse`, `admission`,
+`loginProbe`, `loginReady`, `catalogRead`, `catalogTransport`, `selection`,
+`reserve`, `adapterAuth`, `adapterBody`. A step's `totalMs` is the summed waits
+of this operation: concurrent probes can sum above the elapsed `totalMs`, and a
+wait that joined a shared read measures only its remaining part. `catalogRead`
+covers the adapter read; its nested `catalogTransport` measures the vendor
+fetch/body wait, including a shared read. `loginProbe` counts physical login
+probes this operation launched or joined; `loginReady` counts readiness reused
+without a probe. Steps overlap and must not be summed.
+Process `eventLoopActiveMs`/`eventLoopIdleMs` use the same utilization source as
+loop-facts; `childLaunches`/`childLaunchMs` measure launches including synchronous
+leader identity capture. These process deltas include other concurrent work
+and are not per-operation CPU attribution. No body, token or account path is
+recorded. Older receipts omit the optional timing object.
+
 Auto model operations now examine fresh per-account catalogs in selection order:
 listed accounts precede advisory misses; a soft observation (a live pre-progress
 refusal, or a served-model substitution of a non-preferred account) moves that
@@ -3272,13 +3338,47 @@ Its single inference POST follows a committed dispatch receipt and a completed
 `flushed()` barrier. A barrier failure or cancellation while the adapter still
 waits inside that callback sends nothing and keeps `not_started` with the attempt
 stamp and route; once the callback returns, an uncertain outcome stays unknown.
-Exact JSON bytes stream with Content-Length. `request-delivery.ts` observes public
-callbacks on the existing dispatcher; its lazy `dispatcher-accessor.cts` preserves
-native cold initialization, proxy, TLS and pool ownership. Positive connector or
-incomplete-upload proof yields `transport_not_delivered`, and `ModelOperations`
-refines the terminal to `not_started` only after publishing that proof, keeping
-the attempted-send stamp and route; full handoff, unobserved transport, crash and
-publication failure stay unknown, and no adapter retry is added.
+The JSON body is compressed before that receipt (zstd level 3,
+`Content-Encoding: zstd`), as the vendor's own client does on this endpoint,
+unless `CLAUDEXOR_CODEX_REQUEST_COMPRESSION` is `off` (or `0`, `false`, `no`);
+catalog and image requests are not compressed. The bytes as sent stream with their Content-Length and are what
+the delivery facts count, so a smaller body is fully handed off sooner and more
+of the remaining upload failures read as unknown. `request-delivery.ts` observes
+public callbacks on the existing dispatcher; its lazy `dispatcher-accessor.cts`
+preserves native cold initialization, proxy, TLS and pool ownership. It asks the
+dispatcher for two timeouts on this request only, whatever the dispatcher's own
+values: 300 s for the response head and 300 s for the response body. They are
+the HTTP library's clocks, not wall-clock deadlines, and an expiry is the
+library's report, not a measurement of what the provider sent. On HTTP/1.1 both
+are counted in the library's own ticks, and a stretch in which the daemon's
+event loop is blocked counts as one tick, so a blocked daemon postpones an
+expiry by about the length of the block. The head clock starts with the request
+and restarts whenever the socket pushes back and when the last body byte is
+handed off; while the body is still being written it ends the request only if
+the socket is still backpressured. Such a call reads as an incomplete upload
+when body bytes remained to hand off and stays unknown otherwise. The body clock
+restarts on every chunk of the response. On HTTP/2 the body value is the
+stream's idle timeout in both directions, on the runtime's ordinary timer, which
+keeps counting while the event loop is blocked; the head value is unused and an
+expiry carries another code. An unknown dispatcher keeps its own limits. A call
+that the head timeout ends after the whole body was handed off, or that the body
+timeout ends, stays `transport_unknown`: `errorCode` in the problem's context
+carries the library's code and, for the two HTTP/1.1 codes, the message names
+the library's timeout and the engine's setting in words that clients must not
+parse.
+Proof of non-delivery yields `transport_not_delivered` with one of three bases:
+`connect_failure` (the dispatcher reported an error before it began writing the
+request, whatever the error's code; a dispatcher that wrote before its
+`onConnect`, or an interceptor that withheld that callback, would make this
+false), `incomplete_upload` (the upload broke before
+the whole body was handed off) and `http_408` (the peer's statement that it did
+not receive a complete request, with the refusal's own request id, vendor code
+and retry hint kept; an intermediary answering 408 after the origin accepted the
+whole body would make this false). `ModelOperations` refines the
+terminal to `not_started` only after publishing that proof, keeping the
+attempted-send stamp and route; an error after writing began with no chunk
+observed, full handoff, unobserved transport, crash and publication failure stay
+unknown, and no adapter retry is added.
 Canonical instruction messages keep their roles and ordered text parts in
 Ouroboros history. Because this subscription backend rejects `system` messages in
 `input`, Codex's wire projection maps each canonical `system` message to the
@@ -3339,7 +3439,10 @@ accepts custody before ACK and recovers a lost local reply through the same
 operation identity. Request bytes are released at terminal state, response bytes
 after ACK and unacknowledged responses 30 days after readiness; existing
 maintenance reclaims crash residue, then calls the daemon's `pruneHistory`
-owner (including cancellation-set cleanup) through both runtime compositions. A recorded response expiry stays the release
+owner (including cancellation-set cleanup) through both runtime compositions.
+That reclaim and the response-expiry timer list the payloads still in custody
+through the resource state index, so the listing reads the ready resources only,
+not the released and expired rows the table keeps. A recorded response expiry stays the release
 timestamp through delayed cleanup and restart, while an ordinary ACK uses its
 actual release time. Redundant uploads on an idempotent create are released
 without touching another live command's input. Outside the Agent history cap, a
@@ -5957,7 +6060,13 @@ kept only for cold import and an independent frozen copy kept for tests.
   can keep the total above that cap. Each pass selects at most 100 oldest
   eligible victims through keyset pages over a partial
   index, with needs-decision rows outside the candidate index and continuation/
-  retained-envelope exemptions checked once per candidate. Remaining excess is
+  retained-envelope exemptions checked once per candidate. The prune runs after
+  every terminal, so a page is bounded on that index at both ends: below by its
+  keyset position, above by the age cutoff on the creation time the index is
+  ordered by. The engine stamps a finish after its creation, in one timestamp
+  shape, so the bound removes no expired row; a row that breaks this waits until
+  both times have aged. A page with nothing expired reads no command created
+  after the cutoff. Remaining excess is
   handled on later passes; model and account-reset receipts are exempt. No
   separate 256 MiB prompt budget shortens this lifetime. Journal
   cursors keep their encoding and map onto the current partition generation;
@@ -6975,35 +7084,23 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    conflicting user edit is refused and left untouched, and an anchor that is
    missing or unreadable is the typed 409 `revert_refused` (reason
    `reverse_apply_failed`, the detail naming the anchor), with nothing changed.
-7. **Thin `CLAUDE.md` bridge** — under its own write-envelope preparation rule
-   (INV-113), a project root that has `AGENTS.md`
-   and no `CLAUDE.md` gets a thin `CLAUDE.md` whose body is the official Anthropic
-   import form (`@AGENTS.md`) plus a Claudexor ownership marker, so a Claude Code
-   route reads the same instruction file Codex/Cursor/OpenCode read natively
-   (Codex additionally gets `CLAUDE.md` as a project-doc fallback via config, and
-   a CLAUDE.md-only project needs no write at all). The bridge is written in TWO
-   places, because an isolated envelope checkout materializes only the COMMITTED
-   tree and so never sees an untracked project-root bridge: (a) the PROJECT root
-   (the durable, in-place/thread-visible write, announced via a typed
-   `project.claude_bridge.created` run event — never silent); and (b) each
-   git-mode ENVELOPE checkout at workspace prep, so a Claude Code candidate racing
-   inside an envelope reads the same instructions. The envelope write emits NO run
-   event — the envelope is disposable and Claudexor-owned — and capture
-   EXCLUDES the generated bridge from the captured result by exact path, gated on
-   BOTH the created-this-run fact AND BYTE-EQUALITY with the generated bridge
-   content (A-3: byte-equality alone is necessary but not sufficient — it cannot
-   tell our fresh bridge from a candidate that rewrote a pre-existing committed
-   `CLAUDE.md` to the exact bytes, so `WorkspaceManager.diff` AND-gates it with
-   "Claudexor created the bridge this run"). Only a pristine, untouched bridge is
-   excluded; a candidate-authored `CLAUDE.md`, or any candidate EDIT of the bridge
-   — even one that keeps the ownership marker comment — differs from the exact
-   bytes and is captured in the result like any other real change, the same
-   positive-ownership doctrine as the marker-bound artifact-child exclusion.
-   Fences on both writes: the create is EXCLUSIVE (`O_CREAT|O_EXCL`)
-   and NO-FOLLOW, so a hand-written `CLAUDE.md`, a symlink (even dangling), or a
-   directory at that path is never overwritten or written through; it is
-   idempotent, so a second or concurrent prep is a no-op; the project-root write
-   is skipped for read-only modes and `--in-place` stateful targets. Git
+7. **Envelope-local `CLAUDE.md` compatibility bridge** — under its own write-envelope preparation rule
+   (INV-113), a disposable Git envelope that contains `AGENTS.md` may get a
+   thin `CLAUDE.md` whose body is the official Anthropic import form
+   (`@AGENTS.md`) plus a Claudexor ownership marker. Run preparation never
+   writes this bridge into the durable project root, and file creation is not
+   proof that a model read the instructions.
+   An envelope-only bridge emits no run event because the envelope is disposable
+   and Claudexor-owned. Capture excludes it by exact path only when both the
+   created-this-run fact and byte equality with the bytes its recorded writer
+   generation emitted hold (A-3);
+   a candidate-authored or candidate-edited `CLAUDE.md` is captured as real work.
+   Codex additionally gets `CLAUDE.md` as a project-doc fallback via config, and
+   a CLAUDE.md-only project needs no write at all.
+   The envelope create is EXCLUSIVE (`O_CREAT|O_EXCL`) and NO-FOLLOW, so a
+   hand-written `CLAUDE.md`, a symlink (even dangling), or a directory at that
+   path is never overwritten or written through; it is idempotent. A pre-existing
+   project-root `CLAUDE.md` is user-owned and is never removed or rewritten. Git
    admission is determined independently by the semantic run-shape predicate
    above. A bridge failure never fails the run (it is a convenience, not a
    precondition).

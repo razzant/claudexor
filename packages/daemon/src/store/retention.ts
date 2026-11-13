@@ -176,11 +176,20 @@ export const COMMAND_TERMINAL_COUNT_SQL = `SELECT count(*) AS n FROM (
   WHERE live = 1 AND kind IN ('product','delivery','maintenance') AND finished_at IS NOT NULL
   LIMIT ?1)`;
 
-/** One keyset page of prune candidates, oldest first (B1 query 2 as amended by C1). */
+/** One keyset page of prune candidates, oldest first (B1 query 2 as amended by C1).
+ * The index is ordered by creation and does not hold `finished_at`, so the age
+ * test alone would visit every younger terminal command, with a table read
+ * each, whenever a page has fewer expired rows than it asks for. The engine
+ * stamps both times as UTC ISO strings of one shape, the finish after the
+ * creation, so for its rows the age test implies `created_at <= ?1`: the bound
+ * ends the walk at the cutoff and removes no expired row. A row that breaks
+ * this (a clock stepped back, or a creation stamped while the clock ran ahead)
+ * is selected once both times have aged: later, never earlier. An imported
+ * creation that is not such a timestamp may never age. */
 export const COMMAND_PRUNABLE_PAGE_SQL = `SELECT id, run_id, run_dir, continue_from, created_at
   FROM command INDEXED BY command_prunable
   WHERE live = 1 AND kind IN ('product','delivery','maintenance') AND finished_at IS NOT NULL AND needs_decision = 0
-    AND finished_at <= ?1
+    AND finished_at <= ?1 AND created_at <= ?1
     AND (created_at, id) > (?2, ?3)
   ORDER BY created_at, id LIMIT ?4`;
 

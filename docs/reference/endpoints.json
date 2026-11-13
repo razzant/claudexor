@@ -576,7 +576,20 @@
       "summary": "Inspect dispatch, outcome and response custody for the same operation.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "includePreparation",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "Include recorded pre-dispatch step and process timings. Omitted or false preserves the earlier strict operation shape."
+        }
+      ],
       "response_schema": "ControlModelOperationDetail",
       "error_schema": "ControlProblem"
     },

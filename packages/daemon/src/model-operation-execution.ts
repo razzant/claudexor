@@ -11,7 +11,13 @@ import {
   type ModelDispatch,
   type ModelPayloadRef,
 } from "@claudexor/schema";
-import { errorCode, redactSecrets } from "@claudexor/util";
+import {
+  errorCode,
+  redactSecrets,
+  ModelPreparationTiming,
+  measureModelPreparation,
+  measureModelPreparationSync,
+} from "@claudexor/util";
 import { commandStoreForId } from "./command-authority.js";
 import type { ModelOperationDependencies, ModelPayloadStore } from "./model-operations.js";
 import type { RunContext } from "./server.js";
@@ -79,6 +85,7 @@ export async function executeModelOperation(
 ): Promise<ModelOperationReceipt> {
   const now = () => (deps.now ?? (() => new Date()))();
   let evidence = emptyEvidence();
+  const preparation = new ModelPreparationTiming();
   let dispatchAttempted = false;
   let barrierProblem: ControlProblem | null = null;
   // The params declaration (create's parsed bytes, or a raw enqueue's unverified
@@ -95,6 +102,7 @@ export async function executeModelOperation(
         );
       }
       dispatchAttempted = true;
+      evidence.preparation = preparation.finish();
       const dispatch: ModelDispatch = {
         state: "started",
         startedAt: now().toISOString(),
@@ -130,14 +138,17 @@ export async function executeModelOperation(
         ctx.signal.throwIfAborted();
       }
     };
-    const result = await invokeModelOperation(
-      params,
-      deps,
-      ctx.signal,
-      onDispatch,
-      ctx.jobId,
-      (model) => (requestedModel = model),
+    const result = await preparation.run(() =>
+      invokeModelOperation(
+        params,
+        deps,
+        ctx.signal,
+        onDispatch,
+        ctx.jobId,
+        (model) => (requestedModel = model),
+      ),
     );
+    evidence.preparation ??= preparation.finish();
     // An adapter may translate the callback rejection into its normal failed
     // response. The durable no-dispatch proof still owns this failure.
     if (barrierProblem)
@@ -206,6 +217,7 @@ export async function executeModelOperation(
     // compact receipt. Bodies never enter JobRecord.params/result.
     return ModelOperationReceipt.parse({ lifecycle, ...evidence });
   } catch (error) {
+    evidence.preparation ??= preparation.finish();
     const sent = evidence.dispatch.state !== "not_started";
     evidence.problem = withRequestedModel(barrierProblem ?? problemFrom(error), requestedModel);
     if (sent && evidence.dispatch.state !== "response_received") {
@@ -271,9 +283,13 @@ async function readOwnRequest<T extends { model: string }>(
   name: string,
   named: (model: string | null) => void,
 ): Promise<T> {
-  const bytes = await deps.resources().readModelAsync(ref);
+  const bytes = await measureModelPreparation("payloadRead", () =>
+    deps.resources().readModelAsync(ref),
+  );
   named(null);
-  const request = parseModelPayload(bytes, schema, name);
+  const request = measureModelPreparationSync("payloadParse", () =>
+    parseModelPayload(bytes, schema, name),
+  );
   named(request.model);
   return request;
 }

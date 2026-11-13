@@ -1,3 +1,4 @@
+import { measureModelPreparation, recordChildLaunch } from "@claudexor/util";
 import { sqlFixture } from "./store/test-support/sql-fixture.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,6 +24,7 @@ import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
 import { createCodexModelAdapter } from "../../harness-codex/src/model.js";
 import effortFixture from "../../schema/fixtures/effort-resolution.json" with { type: "json" };
 import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
+import { requestBodyText } from "../../harness-codex/src/test-support/request-body.js";
 
 const cleanup: Array<() => Promise<void>> = [];
 const removals: Array<() => void> = [];
@@ -219,6 +221,52 @@ describe("model operations over the existing daemon command substrate", () => {
     expect(posts).toHaveBeenCalledTimes(1);
   });
 
+  it("refines a journaled send to not started when the provider answers 408", async () => {
+    const posts = vi.fn();
+    const adapter = createCodexModelAdapter({
+      now: () => 1900000000000,
+      clientVersion: async () => ({ version: "0.156.1", source: "verified_transport" }),
+      readAuthFile: async () =>
+        JSON.stringify({
+          auth_mode: "chatgpt",
+          tokens: {
+            account_id: "fixture",
+            access_token: `fixture.${Buffer.from('{"exp":2100000000}').toString("base64url")}.signature`,
+          },
+        }),
+      fetch: async (_url, init) => {
+        if (init?.method !== "POST") return Response.json({ models: [{ slug: "test-model" }] });
+        posts();
+        return Response.json({ error: { message: "request timeout" } }, { status: 408 });
+      },
+    });
+    const f = await fixture((input, context) =>
+      adapter.invoke(input, {
+        ...context,
+        profile: {
+          ...context.profile,
+          isolation_locator: join(process.env.CLAUDEXOR_CONFIG_DIR!, "profiles", "fixture"),
+        },
+      }),
+    );
+    const created = await f.operations.create(f.upload(), "request-timeout");
+    const done = await f.terminal(created.id);
+    expect(done).toMatchObject({
+      state: "failed",
+      dispatch: { state: "not_started", startedAt: expect.any(String) },
+      problem: {
+        code: "transport_not_delivered",
+        retryable: true,
+        context: {
+          httpStatus: 408,
+          generationStarted: false,
+          requestDelivery: { state: "not_delivered", basis: "http_408" },
+        },
+      },
+    });
+    expect(posts).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a publication failure after a no-generation proof unresolved", async () => {
     const f = await fixture(async (_request, context) => {
       await context.onDispatch(route);
@@ -270,7 +318,7 @@ describe("model operations over the existing daemon command substrate", () => {
           }),
         fetch: async (_url, init) => {
           if (init?.method === "POST") {
-            posts(JSON.parse(await new Response(init.body).text()).reasoning.effort);
+            posts(JSON.parse(await requestBodyText(init)).reasoning.effort);
             return new Response(
               `data: ${JSON.stringify({ type: "response.completed", response: { model: "test-model", output: [] } })}\n\n`,
             );
@@ -647,7 +695,7 @@ describe("model operations over the existing daemon command substrate", () => {
     const posts = vi.fn();
     const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
       if (init?.method === "POST") {
-        posts(JSON.parse(await new Response(init.body).text()).service_tier);
+        posts(JSON.parse(await requestBodyText(init)).service_tier);
         return Response.json(
           { error: { code: "resource_unavailable", param: "service_tier" } },
           { status: 429, headers: { "x-request-id": "custody-refusal" } },
@@ -1802,4 +1850,42 @@ describe("the requested model on failed operations (#649)", () => {
     // Reads write nothing back.
     expect(rows()).toEqual(before);
   });
+});
+
+it("publishes optional preparation timings at dispatch and freezes them before inference", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const dispatched = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const f = await fixture(async (_request, context) => {
+    await measureModelPreparation("adapterAuth", async () => {
+      recordChildLaunch(7);
+    });
+    await context.onDispatch(route);
+    entered();
+    await gate;
+    await measureModelPreparation("adapterBody", async () => {});
+    return result();
+  });
+  const started = await f.operations.create(f.upload(), "timing");
+  await dispatched;
+  const during = f.operations.inspect(started.id, true).preparation!;
+  expect(during.steps).toMatchObject({
+    payloadRead: { count: 1 },
+    payloadParse: { count: 1 },
+    adapterAuth: { count: 1 },
+  });
+  expect(during.process).toMatchObject({ childLaunches: 1, childLaunchMs: 7 });
+  expect(during.totalMs).toBeGreaterThanOrEqual(during.steps.payloadRead!.totalMs);
+  release();
+  await f.terminal(started.id);
+  const done = f.operations.inspect(started.id, true);
+  expect(f.operations.inspect(started.id)).not.toHaveProperty("preparation");
+  expect(f.store.get(started.id)!.result).toMatchObject({ preparation: during });
+  expect(done.preparation).toEqual(during);
+  expect(done.preparation!.steps.adapterBody).toBeUndefined();
+  expect(f.operations.inspect(started.id, true).preparation).toEqual(during);
 });

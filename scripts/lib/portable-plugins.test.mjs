@@ -40,6 +40,12 @@ test("portable packages share the existing preinstalled CLI bridge and exact Ski
   for (const path of PORTABLE_MANIFESTS) {
     expect(read(join(repo, path)).version).toBe(read(join(repo, "package.json")).version);
   }
+  const nodeFloor = read(join(repo, "package.json"))
+    .engines.node.replace(/^>=/, "")
+    .replace(/\.0$/, "");
+  expect(readFileSync(join(repo, "plugins/copilot/skills/claudexor/SKILL.md"), "utf8")).toContain(
+    `Require Node.js ${nodeFloor} or newer`,
+  );
 });
 
 test("both self-hosted indexes resolve the corresponding contained plugin", () => {

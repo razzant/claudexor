@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/daemon",
-  "version": "6.0.0",
+  "version": "6.1.1",
   "license": "MIT",
   "description": "Managed local daemon: Unix-socket JSON-RPC, token auth, task queue. Runner injected (no second scheduler).",
   "type": "module",
@@ -42,6 +42,6 @@
     "access": "public"
   },
   "devDependencies": {
-    "zod": "4.6.5"
+    "zod": "4.6.7"
   }
 }

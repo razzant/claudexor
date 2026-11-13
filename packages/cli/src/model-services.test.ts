@@ -1,10 +1,11 @@
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CredentialGeneration,
   CredentialUnusableLedger,
   DaemonClient,
   DaemonServer,
@@ -31,15 +32,26 @@ import {
   type ModelCatalogEntry,
   type ModelInventoryAbsence,
 } from "@claudexor/schema";
-import { bindCredentialMutationWindow, type ModelAdapter } from "@claudexor/core";
+import {
+  SharedRead,
+  DOCTOR_TTL_MS,
+  observeHarnessProgram,
+  programObservationPublisher,
+  invalidateProgramObservations,
+  bindCredentialMutationWindow,
+  type HarnessAdapter,
+  type ModelAdapter,
+} from "@claudexor/core";
 import { createCredentialProfilesService } from "./accounts-services.js";
 import { updateGlobalConfig } from "@claudexor/config";
 import { accountObservations } from "./account-observations.js";
 
 beforeEach(() => accountObservations.invalidate());
 
+import { ModelLoginReadiness } from "./model-login-readiness.js";
 import { createModelServices } from "./model-services.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
+import { requestBodyText } from "../../harness-codex/src/test-support/request-body.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 const removals: Array<() => void> = [];
@@ -72,6 +84,7 @@ async function fixture(
     lazy?: boolean;
     adapter?: ModelAdapter;
     inventoryAbsence?: ModelInventoryAbsence;
+    nativeAdapter?: HarnessAdapter;
   } = {},
 ) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-ms-")));
@@ -191,7 +204,14 @@ async function fixture(
     migrationGate: () => null,
     // These provider/readiness stubs read no native program; program-observation tests own that boundary.
     registry: new Map([
-      ["codex", { ...createCodexAdapter(), program: undefined, probeCredentialProfile: probe }],
+      [
+        "codex",
+        options.nativeAdapter ?? {
+          ...createCodexAdapter(),
+          program: undefined,
+          probeCredentialProfile: probe,
+        },
+      ],
     ]),
     sources: [
       {
@@ -506,7 +526,7 @@ describe("production model service composition", () => {
             },
           ],
         });
-      const body = JSON.parse(await new Response(init.body).text());
+      const body = JSON.parse(await requestBodyText(init));
       expect(body.reasoning.effort).toBe("max");
       return new Response(
         `data: ${JSON.stringify({
@@ -2583,7 +2603,7 @@ describe("account/model capability routing", () => {
       fetch: async (_url, init) => {
         if (init?.method !== "POST") return Response.json({ models: [{ slug: "gpt-6.1-sol" }] });
         const account = new Headers(init.headers).get("chatgpt-account-id")!;
-        posts.push({ account, body: JSON.parse(await new Response(init.body).text()) });
+        posts.push({ account, body: JSON.parse(await requestBodyText(init)) });
         if (account === "a")
           return Response.json(
             {
@@ -2718,4 +2738,643 @@ describe("account/model capability routing", () => {
     expect(f.unusable.live()).toEqual([]);
     expect(f.profiles.every((p) => p.enabled)).toBe(true);
   });
+});
+
+async function readinessFixture() {
+  const root = mkdtempSync(join(process.env.CLAUDEXOR_CONFIG_DIR!, "readiness-"));
+  const home = join(root, "profile");
+  mkdirSync(home);
+  writeFileSync(join(home, "auth.json"), "fixture login identity");
+  writeFileSync(join(home, "config.toml"), "fixture settings");
+  const bin = join(root, "codex");
+  writeFileSync(bin, "#!/bin/sh\necho codex 0.156.1\n", { mode: 0o755 });
+  const previous = process.env.CLAUDEXOR_CODEX_BIN;
+  process.env.CLAUDEXOR_CODEX_BIN = bin;
+  const clock = { now: Date.now(), mutating: false };
+  const profile = CredentialProfile.parse({
+    profile_id: "ready",
+    harness_id: "codex",
+    display_name: "Ready",
+    credential_kind: "config_dir_login",
+    isolation_locator: home,
+  });
+  const probe = vi.fn(
+    async (
+      candidate: CredentialProfile,
+      _signal?: AbortSignal,
+    ): Promise<CredentialProfileStatus> => ({
+      profile_id: candidate.profile_id,
+      harness_id: candidate.harness_id,
+      availability: "available",
+      verification: "passed",
+      verification_source: "local_store",
+      last_verified_at: new Date(clock.now).toISOString(),
+    }),
+  );
+  const adapter = { ...createCodexAdapter(), probeCredentialProfile: probe };
+  const publishProgram = async () => {
+    const observed = await observeHarnessProgram(adapter.program, undefined, undefined, {
+      probe: false,
+    });
+    programObservationPublisher(adapter.program!)({ ...observed.selection!, version: "0.156.1" });
+  };
+  await publishProgram();
+  const credentials = new CredentialGeneration(() => clock.mutating);
+  const owner = new ModelLoginReadiness(credentials);
+  const call = (signal = new AbortController().signal) => owner.probe(profile, adapter, signal);
+  cleanups.push(async () => {
+    owner.close();
+  });
+  removals.push(() => {
+    if (previous === undefined) delete process.env.CLAUDEXOR_CODEX_BIN;
+    else process.env.CLAUDEXOR_CODEX_BIN = previous;
+    invalidateProgramObservations("codex");
+    rmSync(root, { recursive: true, force: true });
+  });
+  return {
+    root,
+    home,
+    bin,
+    profile,
+    probe,
+    adapter,
+    clock,
+    credentials,
+    owner,
+    call,
+    publishProgram,
+  };
+}
+
+describe("admission-grade login readiness", () => {
+  it.each(["auth.json", "config.toml", "program", "profile", "generation", "login_window"])(
+    "reuses unchanged positive probes, but probes once after %s changes",
+    async (change) => {
+      const f = await readinessFixture();
+      const first = await f.call();
+      expect(await f.call()).toEqual(first);
+      expect(f.probe).toHaveBeenCalledTimes(1);
+      if (change === "auth.json" || change === "config.toml")
+        writeFileSync(join(f.home, change), "changed fixture identity");
+      if (change === "program") {
+        writeFileSync(f.bin, "#!/bin/sh\necho codex 0.156.1 # replaced\n");
+        await f.publishProgram();
+      }
+      if (change === "profile") f.profile.display_name = "Renamed";
+      if (change === "generation") f.credentials.clearSubject("codex", "ready");
+      if (change === "login_window") f.clock.mutating = true;
+      await f.call();
+      expect(f.probe).toHaveBeenCalledTimes(2);
+    },
+  );
+  it.each([
+    "negative",
+    "unknown",
+    "failed",
+    "undated",
+    "stale",
+    "unknown_program",
+    "unknown_files",
+    "unknown_generation",
+  ])("never reuses %s readiness", async (basis) => {
+    const f = await readinessFixture();
+    const raw = f.probe.getMockImplementation()!;
+    f.probe.mockImplementation(async (profile, signal) => ({
+      ...(await raw(profile, signal)),
+      ...(basis === "negative" ? { availability: "unavailable" as const } : {}),
+      ...(basis === "unknown" ? { availability: "unknown" as const } : {}),
+      ...(basis === "failed" ? { verification: "failed" as const } : {}),
+      ...(basis === "undated" ? { last_verified_at: null } : {}),
+      ...(basis === "stale" ? { stale: true } : {}),
+    }));
+    if (basis === "unknown_program") f.adapter.program = undefined;
+    if (basis === "unknown_generation") f.clock.mutating = true;
+    if (basis === "unknown_files") rmSync(join(f.home, "auth.json"));
+    await f.call();
+    await f.call();
+    expect(f.probe).toHaveBeenCalledTimes(2);
+  });
+  it("expires from the physical probe date; hits never extend it", async () => {
+    const f = await readinessFixture();
+    const date = vi.spyOn(Date, "now").mockImplementation(() => f.clock.now);
+    try {
+      const first = await f.call();
+      f.clock.now += DOCTOR_TTL_MS - 1;
+      expect((await f.call()).last_verified_at).toBe(first.last_verified_at);
+      expect(f.probe).toHaveBeenCalledTimes(1);
+      f.clock.now += 2;
+      expect((await f.call()).last_verified_at).not.toBe(first.last_verified_at);
+      expect(f.probe).toHaveBeenCalledTimes(2);
+    } finally {
+      date.mockRestore();
+    }
+  });
+  it("shares a raw probe, keeps the remaining reader, and cancels when all leave", async () => {
+    const f = await readinessFixture();
+    const raw = f.probe.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.probe.mockImplementationOnce(async (profile, signal) => {
+      await gate;
+      return raw(profile, signal);
+    });
+    const one = new AbortController(),
+      two = new AbortController();
+    const a = f.call(one.signal).catch((e) => e),
+      b = f.call(two.signal).catch((e) => e);
+    await vi.waitFor(() => expect(f.probe).toHaveBeenCalledTimes(1));
+    // Both readers have completed their asynchronous file identity reads.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    one.abort();
+    await a;
+    expect(f.probe.mock.calls[0]![1]!.aborted).toBe(false);
+    two.abort();
+    await b;
+    expect(f.probe.mock.calls[0]![1]!.aborted).toBe(true);
+    release();
+    await f.call();
+    expect(f.probe).toHaveBeenCalledTimes(2);
+    await f.call();
+    expect(f.probe).toHaveBeenCalledTimes(2);
+  });
+  it("a generation change ends a pending probe, asks once more under the new identity, and never retains the late answer", async () => {
+    const f = await readinessFixture();
+    const raw = f.probe.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.probe.mockImplementationOnce(async (profile, signal) => {
+      await gate;
+      return { ...(await raw(profile, signal)), detail: "late answer" };
+    });
+    const pending = f.call().catch((e) => e);
+    await vi.waitFor(() => expect(f.probe).toHaveBeenCalledTimes(1));
+    f.credentials.clearSubject("codex", "ready");
+    expect(await pending).toMatchObject({ availability: "available", verification: "passed" });
+    expect(f.probe.mock.calls[0]![1]!.aborted).toBe(true);
+    expect(f.probe).toHaveBeenCalledTimes(2);
+    release();
+    expect((await f.call()).detail).not.toBe("late answer");
+    await f.call();
+    expect(f.probe).toHaveBeenCalledTimes(2);
+  });
+  it("uses readiness on repeated selection, reads the catalog each time, and overlays vendor revocation without probing", async () => {
+    const ready = await readinessFixture();
+    const f = await fixture({ lazy: true, nativeAdapter: ready.adapter });
+    f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
+    await f.services.routes.modelCatalog("codex", "a");
+    await f.services.routes.modelCatalog("codex", "a");
+    expect(ready.probe).toHaveBeenCalledTimes(1);
+    expect(f.catalog).toHaveBeenCalledTimes(2);
+    const beforeRevocation = f.quota.read();
+    vi.spyOn(f.quota, "read").mockReturnValue({
+      ...beforeRevocation,
+      absences: [
+        QuotaAbsence.parse({
+          subject: { harness: "codex", credential_route: "vendor_native", subject_id: "a" },
+          reason: "auth_revoked",
+          observed_at: new Date().toISOString(),
+          detail: "fixture revocation",
+        }),
+      ],
+    });
+    await expect(f.services.routes.modelCatalog("codex", "a")).rejects.toMatchObject({
+      code: "auth_required",
+    });
+    expect(ready.probe).toHaveBeenCalledTimes(1);
+    expect(f.catalog).toHaveBeenCalledTimes(2);
+  });
+  it.each(["unchanged", "changed"])(
+    "a pin admits a probe answer whose login identity was %s during the probe",
+    async (identity) => {
+      const ready = await readinessFixture();
+      const f = await fixture({ lazy: true, nativeAdapter: ready.adapter });
+      f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
+      const raw = ready.probe.getMockImplementation()!;
+      ready.probe.mockImplementationOnce(async (profile, signal) => {
+        if (identity === "changed") writeFileSync(join(ready.home, "auth.json"), "refreshed");
+        return raw(profile, signal);
+      });
+      expect((await f.services.routes.modelCatalog("codex", "a")).credentialProfileId).toBe("a");
+      await f.services.routes.modelCatalog("codex", "a");
+      // Only an answer under one unchanged identity is reused.
+      expect(ready.probe).toHaveBeenCalledTimes(identity === "changed" ? 2 : 1);
+    },
+  );
+  it.each(["claude", "codex"])(
+    "a %s program change ends only that harness's in-flight probes and positives",
+    async (harness) => {
+      const f = await readinessFixture();
+      const raw = f.probe.getMockImplementation()!;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let abortedWhileRunning: boolean | undefined;
+      f.probe.mockImplementationOnce(async (profile, signal) => {
+        await gate;
+        abortedWhileRunning = signal!.aborted;
+        return raw(profile, signal);
+      });
+      const pending = f.call().catch((e) => e);
+      await vi.waitFor(() => expect(f.probe).toHaveBeenCalledTimes(1));
+      invalidateProgramObservations(harness);
+      await f.publishProgram();
+      release();
+      // Ended or not, the caller is answered: a Codex change by one probe under the new identity.
+      expect(await pending).toMatchObject({ availability: "available" });
+      await vi.waitFor(() => expect(abortedWhileRunning).toBe(harness === "codex"));
+      await f.call();
+      expect(f.probe).toHaveBeenCalledTimes(harness === "codex" ? 2 : 1);
+      invalidateProgramObservations(harness);
+      await f.publishProgram();
+      await f.call();
+      expect(f.probe).toHaveBeenCalledTimes(harness === "codex" ? 3 : 1);
+    },
+  );
+  it.each(["its login window closes", "its caller leaves"])(
+    "a pinned probe in flight when %s",
+    async (event) => {
+      const ready = await readinessFixture();
+      const f = await fixture({ lazy: true, nativeAdapter: ready.adapter });
+      f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
+      const raw = ready.probe.getMockImplementation()!;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let abortedWhileRunning: boolean | undefined;
+      ready.probe.mockImplementationOnce(async (profile, signal) => {
+        await gate;
+        abortedWhileRunning = signal!.aborted;
+        return raw(profile, signal);
+      });
+      let loginWindow = true;
+      bindCredentialMutationWindow(() => loginWindow);
+      try {
+        const caller = new AbortController();
+        const pending = f.services.routes
+          .modelCatalog("codex", "a", undefined, false, caller.signal)
+          .catch((e) => e);
+        await vi.waitFor(() => expect(ready.probe).toHaveBeenCalledTimes(1));
+        if (event === "its caller leaves") caller.abort(new Error("caller left"));
+        else {
+          loginWindow = false;
+          f.unusable.noteCredentialChange();
+        }
+        release();
+        const result = await pending;
+        await vi.waitFor(() => expect(abortedWhileRunning).toBe(true));
+        // A lifecycle is answered by one more probe under the new identity; a
+        // departed caller ends its probe as before, with no second one.
+        expect(result).toMatchObject(
+          event === "its caller leaves" ? { message: "caller left" } : { credentialProfileId: "a" },
+        );
+        expect(ready.probe).toHaveBeenCalledTimes(event === "its caller leaves" ? 1 : 2);
+      } finally {
+        bindCredentialMutationWindow(null);
+      }
+    },
+  );
+});
+
+describe("fresh decisions after catalog waits", () => {
+  it.each(["unchanged", "quota", "refusal", "disabled"])(
+    "rechecks %s evidence after waiting",
+    async (change) => {
+      const f = await fixture({ lazy: true });
+      const raw = f.catalog.getMockImplementation()!;
+      let release!: () => void, started!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const active = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const reads = new SharedRead<Awaited<ReturnType<ModelAdapter["catalog"]>>>();
+      const physical = vi.fn(async (context: Parameters<ModelAdapter["catalog"]>[0]) => {
+        if (context.profile.profile_id === "a") {
+          started();
+          await gate;
+        }
+        return raw(context);
+      });
+      f.catalog.mockImplementation((context) =>
+        reads.read(
+          context.profile.profile_id,
+          JSON.stringify([context.profile, context.credentialGeneration]),
+          context.signal,
+          (signal) => physical({ ...context, signal }),
+        ),
+      );
+      const pending = Promise.all([
+        f.services.routes.modelCatalog("codex", undefined, "test-model"),
+        f.services.routes.modelCatalog("codex", undefined, "test-model"),
+      ]);
+      await active;
+      await vi.waitFor(() => expect(f.catalog).toHaveBeenCalledTimes(2));
+      expect(physical).toHaveBeenCalledTimes(1);
+      if (change === "refusal")
+        f.refusals.record({ harness_id: "codex", profile_id: "a", requested_model: "test-model" });
+      if (change === "disabled") f.cfg.credential_profiles[0]!.enabled = false;
+      if (change === "quota")
+        f.quota.upsert(
+          QuotaSnapshot.parse({
+            subject: { harness: "codex", credential_route: "vendor_native", subject_id: "a" },
+            constraints: [
+              {
+                id: "session",
+                label: "Session",
+                window_seconds: null,
+                used_ratio: 1,
+                resets_at: new Date(Date.now() + 60000).toISOString(),
+              },
+            ],
+            source: "codex_app_server",
+            observed_at: new Date().toISOString(),
+            freshness: "fresh",
+          }),
+        );
+      release();
+      expect((await pending).map((result) => result.credentialProfileId)).toEqual(
+        change === "unchanged" ? ["a", "a"] : ["b", "b"],
+      );
+    },
+  );
+  const unavailable = () =>
+    Object.assign(new Error("transport limit"), {
+      problem: ControlProblem.parse({
+        code: "catalog_unavailable",
+        message: "catalog transport limit",
+        retryable: true,
+      }),
+    });
+  const spent = (harness: string, subject: string, resetsAt = Date.now() + 60_000) =>
+    QuotaSnapshot.parse({
+      subject: { harness, credential_route: "vendor_native", subject_id: subject },
+      constraints: [
+        {
+          id: "session",
+          label: "Session",
+          window_seconds: null,
+          used_ratio: 1,
+          resets_at: new Date(resetsAt).toISOString(),
+        },
+      ],
+      source: harness === "codex" ? "codex_app_server" : "claude_oauth_usage",
+      observed_at: new Date().toISOString(),
+      freshness: "fresh",
+    });
+  const reads = (f: Awaited<ReturnType<typeof fixture>>) =>
+    f.catalog.mock.calls.map(([context]) => context.profile.profile_id);
+  it.each(["unchanged", "changed"])(
+    "typed catalog transport failure moves Auto to its next candidate while facts are %s",
+    async (facts) => {
+      const f = await fixture({ lazy: true });
+      f.catalog.mockImplementationOnce(async () => {
+        if (facts === "changed") f.quota.upsert(spent("claude", "work"));
+        throw unavailable();
+      });
+      expect((await f.services.routes.modelCatalog("codex")).credentialProfileId).toBe("b");
+      expect(reads(f)).toEqual(["a", "b"]);
+      expect((await f.services.routes.modelCatalog("codex")).credentialProfileId).toBe("a");
+    },
+  );
+  it.each(["claude quota", "account b quota", "account b refusal", "account b disabled"])(
+    "keeps a read account and reads it once when %s changes during its read",
+    async (change) => {
+      const f = await fixture({ lazy: true });
+      const raw = f.catalog.getMockImplementation()!;
+      f.catalog.mockImplementationOnce(async (context) => {
+        if (change === "claude quota") f.quota.upsert(spent("claude", "work"));
+        if (change === "account b quota") f.quota.upsert(spent("codex", "b"));
+        if (change === "account b refusal")
+          f.refusals.record({
+            harness_id: "codex",
+            profile_id: "b",
+            requested_model: "test-model",
+          });
+        if (change === "account b disabled") f.cfg.credential_profiles[1]!.enabled = false;
+        return raw(context);
+      });
+      const selected = await f.services.routes.modelCatalog("codex", undefined, "test-model");
+      expect(selected.credentialProfileId).toBe("a");
+      expect(reads(f)).toEqual(["a"]);
+    },
+  );
+  it.each(["nothing", "its quota exhausted", "its harness disabled"])(
+    "a pin with %s during its read gets the typed outcome of an immediate repeat",
+    async (change) => {
+      const f = await fixture({ lazy: true });
+      const raw = f.catalog.getMockImplementation()!;
+      f.catalog.mockImplementationOnce(async (context) => {
+        if (change === "its quota exhausted") f.quota.upsert(spent("codex", "a"));
+        if (change === "its harness disabled")
+          f.cfg.harnesses.codex = GlobalConfig.parse({
+            harnesses: { codex: { enabled: false } },
+          }).harnesses.codex!;
+        return raw(context);
+      });
+      const outcome = async () => {
+        const result = await f.services.routes.modelCatalog("codex", "a").catch((e) => e);
+        const { code, message, problem, credentialProfileId } = result;
+        return { code, message, problem, credentialProfileId };
+      };
+      const first = await outcome();
+      expect(first).toEqual(await outcome());
+      expect(first).toMatchObject(
+        change === "nothing"
+          ? { credentialProfileId: "a" }
+          : change === "its harness disabled"
+            ? { code: "model_source_unavailable" }
+            : {
+                code: "subscription_window_exhausted",
+                problem: { context: { resetsAt: expect.any(String) } },
+              },
+      );
+    },
+  );
+  it.each(["a and b", "b"])(
+    "after a catalog refusal, final quota facts blocking %s give the outcome of an immediate repeat",
+    async (blocked) => {
+      const f = await fixture({ lazy: true });
+      const raw = f.catalog.getMockImplementation()!;
+      const resetsAt = Date.now() + 3_600_000;
+      f.catalog.mockImplementation(async (context) => {
+        if (context.profile.profile_id === "a") throw unavailable();
+        for (const id of blocked === "b" ? ["b"] : ["a", "b"])
+          f.quota.upsert(spent("codex", id, resetsAt));
+        return raw(context);
+      });
+      const first = await f.services.routes.modelCatalog("codex").catch((e) => e);
+      const repeat = await f.services.routes.modelCatalog("codex").catch((e) => e);
+      expect(first.problem).toEqual(repeat.problem);
+      expect(first.problem).toMatchObject(
+        blocked === "b"
+          ? { code: "credential_pool_exhausted", context: { poolCause: "unavailable" } }
+          : {
+              code: "subscription_window_exhausted",
+              context: { poolCause: "quota", resetsAt: new Date(resetsAt).toISOString() },
+            },
+      );
+    },
+  );
+  it.each(["bare managed secret", "default subject", "row"])(
+    "a %s change during a named row's catalog read ends it only for that row",
+    async (change) => {
+      const f = await fixture({ lazy: true });
+      const raw = f.catalog.getMockImplementation()!;
+      let physical!: AbortSignal;
+      f.catalog.mockImplementationOnce(async (context) => {
+        physical = context.signal;
+        if (change === "bare managed secret") f.unusable.clearDefaultSubjects();
+        if (change === "default subject") f.unusable.clearSubject("codex", null);
+        if (change === "row") f.unusable.clearSubject("codex", "a");
+        return raw(context);
+      });
+      const result = await f.services.routes.modelCatalog("codex", "a").catch((e) => e);
+      expect(physical.aborted).toBe(change === "row");
+      // The row's own change ends its read, which runs once more under the new generation.
+      expect(result).toMatchObject({ credentialProfileId: "a" });
+      expect(f.catalog).toHaveBeenCalledTimes(change === "row" ? 2 : 1);
+    },
+  );
+  it.each(["its login window closes", "its caller leaves", "its account changes"])(
+    "a pinned catalog read in flight when %s",
+    async (event) => {
+      const f = await fixture({ lazy: true });
+      const raw = f.catalog.getMockImplementation()!;
+      const generations: number[] = [];
+      let loginWindow = event === "its login window closes";
+      const caller = new AbortController();
+      let first!: AbortSignal;
+      f.catalog.mockImplementation(async (context) => {
+        generations.push(context.credentialGeneration ?? Number.NaN);
+        return raw(context);
+      });
+      f.catalog.mockImplementationOnce(async (context) => {
+        first = context.signal;
+        generations.push(context.credentialGeneration ?? Number.NaN);
+        if (event === "its caller leaves") caller.abort(new Error("caller left"));
+        if (event === "its login window closes") {
+          loginWindow = false;
+          f.unusable.noteCredentialChange();
+        }
+        if (event === "its account changes") f.unusable.clearSubject("codex", "a");
+        // The ended read still answers, as a vendor may, for the old account.
+        return { ...(await raw(context)), accountFingerprint: "old account" };
+      });
+      bindCredentialMutationWindow(() => loginWindow);
+      try {
+        const result = await f.services.routes
+          .modelCatalog("codex", "a", undefined, false, caller.signal)
+          .catch((e) => e);
+        expect(first.aborted).toBe(true);
+        if (event === "its caller leaves") {
+          expect(result).toMatchObject({ message: "caller left" });
+          expect(generations).toHaveLength(1);
+        } else {
+          // One more read under the new generation; the ended read is never served.
+          expect(result).toMatchObject({ credentialProfileId: "a", accountFingerprint: "a" });
+          expect(generations).toHaveLength(2);
+          expect(Number.isFinite(generations[1])).toBe(true);
+          expect(generations[1]).not.toBe(generations[0]);
+        }
+      } finally {
+        bindCredentialMutationWindow(null);
+      }
+    },
+  );
+  it("passes catalog cancellation and shutdown to raw work", async () => {
+    const f = await fixture({ lazy: true });
+    let received!: AbortSignal;
+    f.catalog.mockImplementationOnce(async ({ signal }) => {
+      received = signal;
+      return new Promise((_, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+      );
+    });
+    const controller = new AbortController();
+    const pending = f.services.routes
+      .modelCatalog("codex", "a", undefined, false, controller.signal)
+      .catch((e) => e);
+    await vi.waitFor(() => expect(received).toBeDefined());
+    controller.abort();
+    await pending;
+    expect(received.aborted).toBe(true);
+    await expect(f.services.routes.modelCatalog("codex", "a")).resolves.toMatchObject({
+      credentialProfileId: "a",
+    });
+    f.catalog.mockImplementationOnce(async ({ signal }) => {
+      received = signal;
+      return new Promise((_, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+      );
+    });
+    const stopped = f.services.routes.modelCatalog("codex", "a").catch((e) => e);
+    await vi.waitFor(() => expect(received.aborted).toBe(false));
+    f.services.close();
+    await stopped;
+    expect(received.aborted).toBe(true);
+  });
+});
+
+it("shutdown ends a durable operation's pending catalog independently of its creating connection", async () => {
+  const f = await fixture();
+  let entered!: () => void, physical!: AbortSignal;
+  const active = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  f.catalog.mockImplementationOnce(async ({ signal }) => {
+    physical = signal;
+    entered();
+    return new Promise((_, reject) =>
+      signal.addEventListener("abort", () => reject(new Error("catalog stopped")), { once: true }),
+    );
+  });
+  const operation = f.run({ mode: "pin", profileId: "a" });
+  await active;
+  expect(physical.aborted).toBe(false);
+  f.services.close();
+  expect(physical.aborted).toBe(true);
+  expect((await operation).dispatch.state).toBe("not_started");
+  expect(f.invoke).not.toHaveBeenCalled();
+});
+
+it("keeps preparation timing inspection opt-in and exposes measured selection phases", async () => {
+  const f = await fixture();
+  const done = await f.run();
+  expect(done).not.toHaveProperty("preparation");
+  const timed = await f.services.routes.getModelOperation(done.id, true);
+  expect(timed.preparation!.steps).toMatchObject({
+    payloadRead: { count: 1 },
+    payloadParse: { count: 1 },
+    admission: { count: 1 },
+    loginProbe: { count: 2 },
+    catalogRead: { count: 1 },
+    selection: { count: 1 },
+    reserve: { count: 1 },
+  });
+  expect(timed.preparation!.totalMs).toBeGreaterThanOrEqual(
+    timed.preparation!.steps.catalogRead!.totalMs,
+  );
+});
+
+it("counts reused login readiness apart from physical probes", async () => {
+  const ready = await readinessFixture();
+  const f = await fixture({ nativeAdapter: ready.adapter });
+  f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
+  const steps = async () => {
+    const done = await f.run({ mode: "pin", profileId: "a" });
+    return (await f.services.routes.getModelOperation(done.id, true)).preparation!.steps;
+  };
+  const probed = await steps();
+  expect(probed.loginProbe).toMatchObject({ count: 1 });
+  expect(probed).not.toHaveProperty("loginReady");
+  const reused = await steps();
+  expect(reused.loginReady).toMatchObject({ count: 1 });
+  expect(reused).not.toHaveProperty("loginProbe");
 });
