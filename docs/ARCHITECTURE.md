@@ -4963,9 +4963,11 @@ its global/project partition generation before live bus publication. Per-token
 LIFECYCLE after restart, never token-level progress. Failure to commit a retained
 lifecycle event fails its producer or run instead of being swallowed as a live-only
 gap: the caller awaiting that line hears it, or the run's next emit or barrier
-throws it and the failure net states it in the run's terminal
-([Main thread and disk waits](#main-thread-and-disk-waits) names the one line whose
-own failure is dropped: a best-effort control audit); progress outside that set
+throws it, and the run's terminal names it when the line was held or in flight as
+the strategy returned, threw or was cancelled
+([Main thread and disk waits](#main-thread-and-disk-waits) names the lines whose own
+failure is dropped, a control audit and the run's best-effort lines, and the lines a
+terminal does not restate); progress outside that set
 does not enter the SQL sink.
 `GET /v2/runs/:id` returns `lastSeq`, a conservative event fence captured
 BEFORE pending interactions and projection reads. It does not claim an atomic
@@ -5256,12 +5258,16 @@ Three callers await a landing, its sink included, before they go on:
 Such a refusal reaches that caller alone, and the log stays usable for recovery and
 terminalization. Any other landing failure of the run's own lines is held, and the
 run's next `emit` or barrier (the terminal's drain included) throws it once to its
-caller; the failure net states it in the run's terminal (below). Out-of-band appends
+caller; the run's terminal names it (below). Out-of-band appends
 through a live writer (`appendRunEvent` for a control audit, `appendRunEventLanded`
 for a live-message row) are made aside: they neither consume nor throw a failure held
 for the run, which the run still hears. A live message hears its own rows' failures
 through their awaited landings; a control audit's own landing failure is dropped, as
-its catch-all drops a thrown one, so an audit never changes control behavior.
+its catch-all drops a thrown one, so an audit never changes control behavior. A run's
+own best-effort lines are made aside the same way (`emitBestEffort`): the auth-switch
+marker, the retained output's `output.ready` and its status line, and custody's
+`workspace.settlement_failed`. Each leaves a failure held for the run's other lines
+to them, and its own landing failure is dropped, as its catch-all drops a thrown one.
 `interaction.answered`, `interaction.timeout`, `interaction.withdrawn` and
 `output.ready` reach the SQL ledger when they land; the terminal's drain covers
 `output.ready`.
@@ -5269,20 +5275,28 @@ its catch-all drops a thrown one, so an audit never changes control behavior.
 **The terminal.** Every orchestrated run defers its terminal: a terminal `emit` is
 held until `commitTerminal` commits one, and only `emitTerminal` (through
 `flushContinuationTerminal` and `commitDeferredTerminal`) commits it. A held terminal
-stays pending until it commits; a commit that throws leaves it pending. A verdict
-whose commit throws, after the strategy returned or after it threw, is replaced by
-the failure net's terminal. The failure net (`guardAnnouncedRun`) first awaits the
-barrier of everything under the run directory, the run's journal and its side
-journals: a landing failure held or in flight when the strategy threw or was
-cancelled is stated in the terminal the net builds ("Run events did not reach the
-journal: ..."), never thrown out of the net. `failTerminally` and `cancelledResult`
+stays pending until it commits; a commit that throws leaves it pending. A verdict's
+flush (`flushContinuationTerminal`) first awaits the barrier of everything under the
+run directory, before custody settles or the terminal commits: a landing failure of a
+line held or in flight when the strategy returned, or held its verdict, rejects the
+flush there (`RunEventsLost`), custody untouched. A verdict whose flush or commit
+throws, after the strategy returned or after it threw, is replaced by the failure
+net's terminal, and the net settles custody under its own facts. The failure net
+(`guardAnnouncedRun`) first awaits the barrier of everything under the run directory,
+the run's journal and its side journals. A line held or in flight when the strategy
+returns, throws or is cancelled is named in the terminal the net builds ("Run events
+did not reach the journal: ..."), never thrown out of the net; a line that fails
+after the net's own barrier is not. `failTerminally` and `cancelledResult`
 likewise take a failure the run's journal holds before they append their own lines,
 for every caller, and state it beside their own cause. The net's flush commits its
 terminal; when a landing failure of a line appended after its barrier (the net's own
 output, a settlement event) interrupts that commit, the flush that follows commits
 the pending terminal, so the run still gets exactly one terminal on disk and in the
-store, and that later failure is not restated. A writer whose terminal never
-committed is disposed when the run settles, except a poisoned one. `emitTerminal` on
+store, and that later failure is not restated. A strategy that returns without a
+terminal gets the guard's fallback terminal, and a throw from that fallback goes into
+the net as well. A writer whose terminal never committed is disposed when the run
+settles, except a poisoned one, and once unregistered it refuses every emit, so no
+in-memory counter competes with the file tail's. `emitTerminal` on
 a queued log raises its fence before its first await, so no callback during an await
 takes the synchronous terminal path. It then:
 
@@ -5350,8 +5364,9 @@ disposal (orphans included), the discard of an envelope whose clone failed, the
 delivery verifier's clone, transient capture scratch, Codex's temporary homes and a
 read-only lane's scoped home use it. Disposal prunes its task directory with a
 non-recursive `rmdir`, which removes it only while it is empty, so a sibling
-envelope another `create` makes meanwhile stays. `registerChildProcess` returns its
-synchronous identity capture and the spawn
+envelope another `create` makes meanwhile stays; a `create` whose recursive `mkdir`
+finds its task directory pruned under it makes its base again.
+`registerChildProcess` returns its synchronous identity capture and the spawn
 sites reuse it, so the identity helper runs once per spawned child; the signal path
 still reads the leader's identity fresh. The Git watchdog's progress probe
 (object-directory growth and free disk space) is one awaited probe with at most one
@@ -5834,7 +5849,10 @@ disclosed once as `workspace.settlement_failed` (attempt, envelope, root, stage
 `custody` / `dispose` / `retain` / `resumable`, redacted cause), a warning on
 the run timeline and a CLI follow line, while the run outcome stands, nothing is
 retried and the tree may remain. A diagnostic that cannot be written changes
-nothing. MCP run detail carries no timeline, so it does not show this event.
+nothing, and a journal failure after the envelope was kept is the run's own, never a
+failed settlement. Settlement starts once the run directory's lines have settled; a
+line lost before it leaves custody to the failure net. MCP run detail carries no
+timeline, so it does not show this event.
 Route-scoped auth that Claudexor
 itself seeds in that home (the Codex API-key `auth.json`, the Claude Keychain
 bridge link) is removed when it is kept; the adapters re-create it on the next

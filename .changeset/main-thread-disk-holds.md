@@ -34,9 +34,12 @@ never seen half written.
 A run's progress lines reach `events.jsonl` and live streams a moment after the
 harness produced them, never out of order. The lines a run waits for (its
 creation, a question to you, a live message) and its final event are on disk
-before the run goes on. If a progress line cannot be written, the run's final
-event still lands and says so ("Run events did not reach the journal"), and a
-control audit or a live message is never refused for another line's failure. If
+before the run goes on. If a line the run wrote cannot be written by the time it
+finishes, fails or is cancelled, the run's final event still lands and names the
+failure ("Run events did not reach the journal"); a line that fails while that
+final event is already being prepared is missing and not named. A control audit,
+a live message or a run's own diagnostic line is never refused for another line's
+failure, and never hides it. If
 the daemon process crashes, the last progress lines of a run can be missing from
 its event file. The daemon status's `worstSync` list can now name six more
 sections, the work that still runs on the main thread:
