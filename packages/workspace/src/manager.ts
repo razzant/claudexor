@@ -173,7 +173,11 @@ export class WorkspaceManager {
     const workspaceMode = opts.inPlace ? "in_place" : "isolated";
     // Lane start awaits the disk (#688); only an envelope this call made is removed on refusal.
     const madeHere = (await stat(base).catch(() => null)) === null;
-    await ensureDirAsync(base);
+    // A sibling's dispose prunes the task folder only while it is empty, also
+    // while this makes it: a parent gone under the mkdir is made again (#704).
+    await ensureDirAsync(base).catch((error: { code?: string }) =>
+      error?.code === "ENOENT" ? ensureDirAsync(base) : Promise.reject(error),
+    );
     // Liveness marker for crash GC, written whole once the base exists: the
     // sweeper must never dispose an envelope whose creating process (daemon,
     // CLI, MCP/ACP serve) is still alive —

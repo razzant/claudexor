@@ -23,6 +23,9 @@ const lifecycle = vi.hoisted(() => ({
   atPrune: null as (() => Promise<void>) | null,
   homeOf: null as string | null,
   ownerAtHome: [] as boolean[],
+  /** Runs in place of the next mkdir of `makeOf`. */
+  makeOf: null as string | null,
+  atMake: null as (() => Promise<unknown>) | null,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -49,6 +52,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       const home = lifecycle.homeOf;
       if (home && String(args[0]).startsWith(joinPath(home, "home")))
         lifecycle.ownerAtHome.push(exists(joinPath(home, "owner.json")));
+      const make = lifecycle.atMake;
+      if (make && String(args[0]) === lifecycle.makeOf) {
+        lifecycle.atMake = null;
+        return make();
+      }
       return actual.mkdir(...args);
     }) as typeof actual.mkdir,
   };
@@ -177,6 +185,44 @@ describe(
       await manager.dispose(b!);
       expect(existsSync(taskDir)).toBe(false);
     });
+
+    it.each([true, false])(
+      "makes an envelope's base again when a sibling's prune removed its task folder under the mkdir (pruned: %s)",
+      async (pruned) => {
+        const { repo, runtimeRoot } = project();
+        const manager = new WorkspaceManager(repo, { runtimeRoot });
+        const taskDir = join(runtimeRoot, "workspaces", "overlap");
+        const a = await manager.create({ taskId: "overlap", attemptId: "a01" });
+        const baseB = join(taskDir, "a02");
+        lifecycle.makeOf = baseB;
+        lifecycle.atMake = async () => {
+          if (!pruned) throw Object.assign(new Error("EACCES: refused"), { code: "EACCES" });
+          // dispose(A) prunes the empty task folder between the recursive mkdir's
+          // parent and its leaf: the leaf's own mkdir finds no parent.
+          await manager.dispose(a);
+          return fs.promises.mkdir(baseB);
+        };
+        try {
+          const b = manager.create({ taskId: "overlap", attemptId: "a02" });
+          if (pruned) {
+            // Direction 1: B is made whole after the prune.
+            const envelope = await b;
+            expect(existsSync(join(baseB, "owner.json"))).toBe(true);
+            expect(readFileSync(join(envelope.worktree_path, "a.txt"), "utf8")).toBe("a\n");
+            await manager.dispose(envelope);
+            expect(existsSync(taskDir)).toBe(false);
+          }
+          // Direction 2: any other failure to make the base still fails the create.
+          else {
+            await expect(b).rejects.toMatchObject({ code: "EACCES" });
+            await manager.dispose(a);
+          }
+        } finally {
+          lifecycle.atMake = null;
+          lifecycle.makeOf = null;
+        }
+      },
+    );
 
     it("writes owner.json before it makes the envelope's scoped home (#704)", async () => {
       const { repo, runtimeRoot } = project();
