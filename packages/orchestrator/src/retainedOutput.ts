@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { writeRetainedOutput } from "@claudexor/event-log";
+import { emitBestEffort, writeRetainedOutput } from "@claudexor/event-log";
 import { redactSecrets } from "@claudexor/util";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
 
@@ -20,7 +20,8 @@ export function publishRetainedOutput(
     path = writeRetainedOutput(context.paths.root, source, succeeded);
     if (!path) return null;
     const lastOutput = source.events.findLast((event) => event.type === "output.ready");
-    context.log.emit("output.ready", {
+    // Aside, as `status` below: best-effort, never another line's failure (#704).
+    emitBestEffort(context.log, "output.ready", {
       kind: "report",
       path,
       state: succeeded && lastOutput?.payload["state"] !== "diagnostic" ? "ready" : "diagnostic",
@@ -109,7 +110,7 @@ function status(
   payload?: Record<string, unknown>,
 ): void {
   try {
-    context.log.emit("harness.event", {
+    emitBestEffort(context.log, "harness.event", {
       type: "status",
       title,
       text: redactSecrets(text),

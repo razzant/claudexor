@@ -17,6 +17,7 @@ export { lastSeqInFile } from "./event-file.js";
 export {
   appendRunEvent,
   appendRunEventLanded,
+  emitBestEffort,
   lastRunEventSeq,
   liveRunEventSeq,
   readRunEvents,
@@ -203,9 +204,9 @@ export class EventLog {
     });
   }
 
-  /** @internal An out-of-band emit (`appendRunEvent`, `appendRunEventLanded`):
-   * it leaves a failure held for the run's own lines to them, and its own
-   * failure goes to `landing` alone, never held for the run (#704). */
+  /** @internal An emit made aside (`appendRunEvent`, `appendRunEventLanded`,
+   * `emitBestEffort`): it leaves a failure held for the run's own lines to them,
+   * and its own failure goes to `landing` alone, never held for the run (#704). */
   emitAside(
     type: Exclude<RunEventType, TerminalRunEventType>,
     payload: Record<string, unknown>,

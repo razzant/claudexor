@@ -12,7 +12,7 @@
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { EventLog } from "@claudexor/event-log";
+import { emitBestEffort, type EventLog } from "@claudexor/event-log";
 import {
   RunResumable,
   type EnvelopeCustody,
@@ -174,6 +174,7 @@ type SettlementStage = "custody" | "dispose" | "retain" | "resumable";
  * One typed diagnostic for a settlement failure, emitted before the deferred
  * terminal is published (MCP run detail carries no timeline). It never changes
  * the outcome: its own failure is ignored, and the original error keeps its path.
+ * Made aside, it never takes another line's held failure from the run (#704).
  */
 function settlementFailed(
   log: EventLog | undefined,
@@ -182,13 +183,14 @@ function settlementFailed(
   error: unknown,
 ): void {
   try {
-    log?.emit("workspace.settlement_failed", {
-      attempt_id: env.attempt_id,
-      envelope_id: env.id,
-      root: env.worktree_path,
-      stage,
-      cause: safeErrorMessage(error),
-    });
+    if (log)
+      emitBestEffort(log, "workspace.settlement_failed", {
+        attempt_id: env.attempt_id,
+        envelope_id: env.id,
+        root: env.worktree_path,
+        stage,
+        cause: safeErrorMessage(error),
+      });
   } catch {
     // Best effort: the terminal is still flushed and nothing is retried.
   }

@@ -16,6 +16,7 @@ import {
   EventLog,
   appendRunEvent,
   appendRunEventLanded,
+  emitBestEffort,
   lastRunEventSeq,
   liveRunEventSeq,
   readRunEvents,
@@ -587,6 +588,31 @@ describe("a queued EventLog", () => {
     expect(log.emit("harness.event", { text: "next" }).seq).toBe(7);
     await expect(orderedAppender.settled(path)).resolves.toBeUndefined();
     await expect(log.emitTerminal("run.completed", {})).resolves.toMatchObject({ seq: 8 });
+    expect(unhandled).toEqual([]);
+  });
+
+  it("makes a best-effort line of the run's own aside: it leaves the run's failure held and drops its own", async () => {
+    const { path } = runDir();
+    const lost = new Error("journal refused the run's line");
+    const log = queuedLog(path, {
+      onPersist: (event) => {
+        if (event.payload["text"] === "lost") throw lost;
+        if (event.type === "workspace.settlement_failed") throw new Error("diagnostic refused");
+      },
+    });
+    log.emit("run.created", {});
+    log.emit("harness.event", { text: "lost" });
+    await orderedAppender.drained(path);
+    // Direction 1: a best-effort line does not take the held failure from the run.
+    expect(emitBestEffort(log, "harness.event", { text: "evidence" }).seq).toBe(3);
+    await expect(log.emitLanded("interaction.requested", {})).rejects.toBe(lost);
+    // Direction 2: its own failure at landing is dropped, never held for the run.
+    emitBestEffort(log, "workspace.settlement_failed", { stage: "dispose" });
+    await orderedAppender.drained(path);
+    await expect(orderedAppender.settled(path)).resolves.toBeUndefined();
+    await expect(log.emitTerminal("run.completed", {})).resolves.toMatchObject({
+      type: "run.completed",
+    });
     expect(unhandled).toEqual([]);
   });
 

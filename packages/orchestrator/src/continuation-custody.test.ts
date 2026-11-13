@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { EventLog, readRunEvents } from "@claudexor/event-log";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { makeOutcomeFacts, type WorkspaceEnvelope } from "@claudexor/schema";
+import { orderedAppender } from "@claudexor/util";
 import {
   WorkspaceManager,
   envelopeBaseOf,
@@ -189,10 +190,11 @@ describe("candidate envelope custody (A9)", () => {
     });
     await kept.settle(wsm, env, [candidate(env, { errored: true })]);
     const settle = vi.spyOn(wsm, "dispose").mockRejectedValue(new Error("injected settle failure"));
-    const emit = log.emit.bind(log);
-    const diagnostic = vi.spyOn(log, "emit").mockImplementation((type, payload, publish) => {
+    // The diagnostic is a best-effort line, made aside (#704).
+    const emitAside = log.emitAside.bind(log);
+    const diagnostic = vi.spyOn(log, "emitAside").mockImplementation((type, payload, landing) => {
       if (type === "workspace.settlement_failed") throw new Error("diagnostic write failed");
-      return emit(type, payload, publish);
+      return emitAside(type, payload, landing);
     });
     const facts = makeOutcomeFacts("failed");
     try {
@@ -209,6 +211,7 @@ describe("candidate envelope custody (A9)", () => {
       expect(diagnostic).toHaveBeenCalledWith(
         "workspace.settlement_failed",
         expect.objectContaining({ stage: "dispose" }),
+        expect.anything(),
       );
       await expect(flushContinuationTerminal(context, facts)).resolves.toBeUndefined();
       expect(settle).toHaveBeenCalledTimes(1);
@@ -302,6 +305,76 @@ describe("candidate envelope custody (A9)", () => {
     expect(readEnvelopeCustody(envelopeBaseOf(env))?.state).toBe("retained");
     expect(retainedEnvelopeOfRun(runDir, "run-1")?.envelope.id).toBe(env.id);
   });
+
+  it.each([true, false])(
+    "a settlement diagnostic leaves another line's failure to the run and drops its own (another line lost: %s)",
+    async (otherLost) => {
+      const repo = initRepo();
+      const store = new ArtifactStore(repo);
+      const runId = `run-settle-aside-${otherLost}`;
+      const paths = store.createRun(runId);
+      const log = new EventLog(
+        paths.eventsPath,
+        runId,
+        "task-settle",
+        (event) => {
+          const refused = otherLost
+            ? event.payload["text"] === "lost"
+            : event.type === "workspace.settlement_failed";
+          if (refused) throw new Error(`journal refused ${event.type}`);
+        },
+        undefined,
+        undefined,
+        { queued: true },
+      );
+      const context: AnnouncedRunContext = {
+        store,
+        paths,
+        log,
+        runId,
+        taskId: "task-settle",
+        mode: "agent",
+        phase: "settle",
+      };
+      const kept = forRun({ continuation: { retain: true } }, true, runId, paths, log);
+      const wsm = new WorkspaceManager(repo);
+      const env = await kept.envelope(wsm, {
+        taskId: "task-settle",
+        attemptId: "a01",
+        baseRef: "HEAD",
+      });
+      await kept.settle(wsm, env, [candidate(env, { errored: true })]);
+      // The dispose fails, after a line of the run's own failed at landing.
+      const settle = vi.spyOn(wsm, "dispose").mockImplementation(async () => {
+        if (otherLost) {
+          log.emit("harness.event", { text: "lost" });
+          await orderedAppender.drained(paths.eventsPath);
+        }
+        throw new Error("injected settle failure");
+      });
+      const facts = makeOutcomeFacts("failed");
+      await log.emitLanded("run.created", { prompt: "Test terminal settlement" });
+      log.emit("run.failed", { facts });
+      try {
+        if (otherLost) {
+          // Direction 1: the run's lost line still stops its terminal, held for the net.
+          await expect(flushContinuationTerminal(context, facts)).rejects.toThrow(
+            "journal refused harness.event",
+          );
+          expect(log.terminalCommitted()).toBe(false);
+        } else {
+          // Direction 2: the diagnostic's own loss changes neither the error nor the terminal.
+          await expect(flushContinuationTerminal(context, facts)).rejects.toThrow(
+            "injected settle failure",
+          );
+          expect(log.terminalCommitted()).toBe(true);
+        }
+      } finally {
+        settle.mockRestore();
+        log.dispose();
+      }
+    },
+  );
 
   it("keeps the envelope of an errored candidate that changed files and discloses it", async () => {
     const { kept, wsm, create, events, runDir } = setup(true);

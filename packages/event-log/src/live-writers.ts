@@ -74,6 +74,21 @@ export function appendRunEvent(
     : live.emitAside(type as Exclude<RunEventType, TerminalRunEventType>, payload, unheard);
 }
 
+/**
+ * `emit` for a best-effort line of a run's own (evidence or a diagnostic the run
+ * must not fail over), made aside: it leaves a failure held for the run's other
+ * lines to them, and a failure of its own line at landing is dropped, as the
+ * caller's catch-all drops a thrown one (#704). A refusal at the call (a payload
+ * the schema rejects, a committed terminal) still throws, for that catch-all.
+ */
+export function emitBestEffort(
+  log: EventLog,
+  type: Exclude<RunEventType, TerminalRunEventType>,
+  payload: Record<string, unknown>,
+): RunEvent {
+  return log.emitAside(type, payload, unheard);
+}
+
 /** `appendRunEvent`, settled once the line has landed and the live writer's
  * `onPersist` accepted it (its failure rejects this await alone). It neither
  * consumes nor leaves a failure for the run's own lines (#704). */

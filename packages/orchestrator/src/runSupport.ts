@@ -21,7 +21,7 @@ import {
   runOutcomeLabel,
 } from "@claudexor/schema";
 import type { BudgetObservation, RouteDropStage } from "@claudexor/schema";
-import type { EventLog } from "@claudexor/event-log";
+import { emitBestEffort, type EventLog } from "@claudexor/event-log";
 import { isBlocking, quotaConstraintAppliesToRequestKind } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
 import { displayPreview, redactSecrets } from "@claudexor/util";
@@ -405,7 +405,10 @@ export function observeAuthSwitch(
   // smoke-proven route for reliability/cost transparency.
   const overrideReason = FallbackReasonSchema.safeParse(ev.payload?.["reason"]);
   try {
-    log.emit(
+    // Aside: the marker's own loss is best-effort, and it never takes another
+    // line's held failure from the run (#704).
+    emitBestEffort(
+      log,
       "route.fallback.auth_switched",
       RouteFallbackPayloadSchema.parse({
         from_harness: harnessId,
