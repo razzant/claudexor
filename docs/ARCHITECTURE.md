@@ -5183,7 +5183,11 @@ is the engine's pace, not the harness's silence: in the four loops with an inact
 watchdog (agent, read-only report, planner, deep-scan reducer) it suspends the window
 as a pending question does (`laneSuspension` over the loop's `AppendPacing`), so a
 fresh window starts after the drain, and a harness that stays silent after it still
-times out. The reviewer's deadline is a whole-review limit and keeps running.
+times out. Every such wait renews the window, however brief: a harness whose
+non-progress events (status, retries) are large enough to fill a journal on each
+read is not cut off by the watchdog, even when the disk keeps up; Stop and the run's
+own deadlines still end it. The reviewer's deadline is a whole-review limit and keeps
+running.
 
 Failures are reported per line. When a batch write fails, each append whose bytes
 all reached the file has landed; the others fail, together with every append queued
@@ -5270,8 +5274,9 @@ for the run, which the run still hears. A live message hears its own rows' failu
 through their awaited landings; a control audit's own landing failure is dropped, as
 its catch-all drops a thrown one, so an audit never changes control behavior. A run's
 own best-effort lines are made aside the same way (`emitBestEffort`): the auth-switch
-marker, the retained output's `output.ready` and its status line, and custody's
-`workspace.settlement_failed`. Each leaves a failure held for the run's other lines
+marker, the retained output's `output.ready` and its status line, custody's
+`workspace.settlement_failed` and the disclosure of a discarded answer
+(`interaction.answer_discarded`). Each leaves a failure held for the run's other lines
 to them, and its own landing failure is dropped, as its catch-all drops a thrown one.
 `interaction.answered`, `interaction.timeout`, `interaction.withdrawn` and
 `output.ready` reach the SQL ledger when they land; the terminal's drain covers
@@ -5286,18 +5291,23 @@ run directory, before custody settles or the terminal commits: a landing failure
 line held or in flight when the strategy returned, or held its verdict, rejects the
 flush there (`RunEventsLost`), custody untouched. A verdict whose flush or commit
 throws, after the strategy returned or after it threw, is replaced by the failure
-net's terminal, and the net settles custody under its own facts. The failure net
+net's terminal. When the flush failed at that barrier, the net settles custody under
+its own facts; when its commit failed after custody ran, custody stays as that flush
+settled it, under the verdict's facts. The failure net
 (`guardAnnouncedRun`) first awaits the barrier of everything under the run directory,
 the run's journal and its side journals. A line held or in flight when the strategy
 returns, throws or is cancelled is named in the terminal the net builds ("Run events
 did not reach the journal: ..."), never thrown out of the net; a line that fails
 after the net's own barrier is not. `failTerminally` and `cancelledResult`
 likewise take a failure the run's journal holds before they append their own lines,
-for every caller, and state it beside their own cause. The net's flush commits its
-terminal; when a landing failure of a line appended after its barrier (the net's own
-output, a settlement event) interrupts that commit, the flush that follows commits
+for every caller, and state it beside their own cause. The net's own flush awaits
+the same barrier before custody but does not reject there: what it meets is either
+named by the net already or one of the net's own lines (its output), which its
+terminal does not restate. When a landing failure of a line appended after that
+barrier (a settlement event) interrupts the commit, the flush that follows commits
 the pending terminal, so the run still gets exactly one terminal on disk and in the
-store, and that later failure is not restated. A strategy that returns without a
+store, also when both of the net's own lines fail, and that later failure is not
+restated. A strategy that returns without a
 terminal gets the guard's fallback terminal, and a throw from that fallback goes into
 the net as well. A writer whose terminal never committed is disposed when the run
 settles, except a poisoned one, and once unregistered it refuses every emit, so no
