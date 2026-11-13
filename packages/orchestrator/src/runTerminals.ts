@@ -36,7 +36,7 @@ import { reconcileDecisionTerminal } from "./decisionTerminalReconciliation.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import { prepareRunFactsFailureReceipt, prepareRunFactsReceipt } from "./runFacts.js";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
-import { flushContinuationTerminal } from "./continuation-custody.js";
+import { flushContinuationTerminal, RunEventsLost } from "./continuation-custody.js";
 import { namingRetainedOutput, publishRetainedOutput } from "./retainedOutput.js";
 import {
   cancellationStatement,
@@ -137,10 +137,12 @@ export async function guardAnnouncedRun(
   ): Promise<OrchestratorResult> => {
     a.log.clearDeferredTerminal();
     // What the run directory holds, or still has in flight, is consumed first:
-    // a landing failure is stated by this terminal, never thrown out of the net.
+    // a landing failure is stated by this terminal, never thrown out of the net,
+    // as are the lines a verdict's flush met lost (`RunEventsLost`).
+    const consumed = cause instanceof RunEventsLost ? [cause.lost] : [];
     const lostEvents = await orderedAppender.settledUnder(a.paths.root).then(
-      () => [],
-      (error: unknown) => [error],
+      () => consumed,
+      (error: unknown) => [...consumed, error],
     );
     let terminalError = heldBarrierError ?? cause;
     try {

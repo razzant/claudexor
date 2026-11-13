@@ -255,15 +255,26 @@ async function settleCandidateEnvelope(
 
 const pendingRuns = new WeakMap<EventLog, (facts: RunOutcomeFacts) => Promise<void>>();
 
+/** Lines the run had held or in flight when its verdict's flush began, lost at
+ * landing (`lost`): the failure net names them in the terminal it builds (#704). */
+export class RunEventsLost extends Error {
+  constructor(readonly lost: unknown) {
+    super("the run lost events before its verdict was committed");
+  }
+}
+
 /** Settle custody after the strategy and Delegate budget verdict, before terminal
  * publication. What the run directory holds or still has in flight settles first:
- * a landing failure rejects here, before custody changes or the terminal commits,
- * so it reaches the failure net, which settles custody under its own facts (#704). */
+ * a landing failure rejects here (`RunEventsLost`), before custody changes or the
+ * terminal commits, so it reaches the failure net, which settles custody under its
+ * own facts (#704). */
 export async function flushContinuationTerminal(
   context: AnnouncedRunContext,
   facts: RunOutcomeFacts,
 ): Promise<void> {
-  await orderedAppender.settledUnder(context.paths.root);
+  await orderedAppender.settledUnder(context.paths.root).catch((error: unknown) => {
+    throw new RunEventsLost(error);
+  });
   const finish = pendingRuns.get(context.log);
   try {
     if (finish) {

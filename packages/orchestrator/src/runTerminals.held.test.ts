@@ -336,6 +336,53 @@ describe("a landing failure meets the failure net (#704)", () => {
     expect(String(f.terminals()[0]?.payload["error"])).toContain("journal refused harness.event");
   });
 
+  it.each([
+    { aborted: false, lost: true },
+    { aborted: false, lost: false },
+    { aborted: true, lost: true },
+    { aborted: true, lost: false },
+  ])(
+    "names every line a returned run had lost in its one terminal, cancelled at its end or not (cancelled: $aborted, lost: $lost)",
+    async ({ aborted, lost }) => {
+      // The run's first output line and a progress line are refused at landing.
+      let outputs = 0;
+      const f = queuedFixture(
+        `run-net-returned-${aborted}-${lost}`,
+        (event) =>
+          lost &&
+          (event.payload["text"] === "lost" || (event.type === "output.ready" && outputs++ === 0)),
+      );
+      const controller = new AbortController();
+      const result = await guardAnnouncedRun(controller.signal, async (announce) => {
+        await f.start(announce);
+        f.store.writeText(join(f.paths.finalDir, "summary.md"), "done\n");
+        f.log.emit("harness.event", { text: "lost" });
+        f.log.emit("output.ready", { path: "final/summary.md", kind: "summary" });
+        f.log.emit("run.completed", { lifecycle: "succeeded" });
+        if (aborted) controller.abort("host_cancelled");
+        return {
+          lifecycle: "succeeded",
+          facts: makeOutcomeFacts("succeeded"),
+          summary: "done",
+          candidates: [],
+        } as unknown as OrchestratorResult;
+      });
+      expect(f.terminals()).toHaveLength(1);
+      expect(result.lifecycle).toBe(aborted ? "cancelled" : lost ? "failed" : "succeeded");
+      const named = "Run events did not reach the journal:";
+      if (lost) {
+        // Direction 1: both lost lines are named, whatever the verdict became.
+        for (const text of [f.summary(), result.summary])
+          for (const type of ["harness.event", "output.ready"])
+            expect(text).toContain(`journal refused ${type}`);
+        expect(f.summary()).toContain(named);
+      }
+      // Direction 2: with nothing lost, nothing is named.
+      else expect(f.summary()).not.toContain(named);
+      expect(liveRunEventSeq(f.paths.eventsPath)).toBeNull();
+    },
+  );
+
   it.each([true, false])(
     "sends a throw from the fallback of a run that returned without a terminal into the net (its output lost: %s)",
     async (lost) => {

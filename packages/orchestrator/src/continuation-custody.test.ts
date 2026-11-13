@@ -14,7 +14,12 @@ import {
 } from "@claudexor/workspace";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import type { CandidateRun } from "./candidateEvidence.js";
-import { flushContinuationTerminal, forRun, sessionCapsuleFile } from "./continuation-custody.js";
+import {
+  flushContinuationTerminal,
+  forRun,
+  RunEventsLost,
+  sessionCapsuleFile,
+} from "./continuation-custody.js";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
 
 /** Synchronous `node:fs` calls made by any module of this test while counting. */
@@ -268,8 +273,11 @@ describe("candidate envelope custody (A9)", () => {
       const types = () => readRunEvents(paths.eventsPath).events.map((event) => event.type);
       try {
         if (lost) {
-          // Direction 1: the flush rejects before custody or the terminal moved.
-          await expect(flushContinuationTerminal(context, facts)).rejects.toThrow(
+          // Direction 1: the flush rejects before custody or the terminal moved,
+          // with the lost line for the net to name.
+          const rejected = await flushContinuationTerminal(context, facts).catch((e) => e);
+          expect(rejected).toBeInstanceOf(RunEventsLost);
+          expect(String((rejected as RunEventsLost).lost)).toContain(
             "journal refused harness.event",
           );
           expect(readEnvelopeCustody(envelopeBaseOf(env))?.state).toBe("live");
