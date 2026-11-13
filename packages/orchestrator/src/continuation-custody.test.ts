@@ -16,6 +16,20 @@ import type { CandidateRun } from "./candidateEvidence.js";
 import { flushContinuationTerminal, forRun, sessionCapsuleFile } from "./continuation-custody.js";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
 
+/** Synchronous `node:fs` calls made by any module of this test while counting. */
+const sync = vi.hoisted(() => ({ counting: false, calls: [] as string[] }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const patched: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(actual))
+    if (name.endsWith("Sync") && typeof value === "function")
+      patched[name] = (...args: unknown[]) => {
+        if (sync.counting) sync.calls.push(name);
+        return (value as (...callArgs: unknown[]) => unknown)(...args);
+      };
+  return { ...actual, ...patched, default: { ...actual, ...patched } };
+});
+
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -218,6 +232,29 @@ describe("candidate envelope custody (A9)", () => {
         payload: expect.objectContaining({ root: env.worktree_path, cause: null }),
       }),
     ]);
+  });
+
+  it("keeps unfinished work at the run end without walking its tree on the main thread (#704)", async () => {
+    const { kept, wsm, create, runDir } = setup(true);
+    const env = await create();
+    // A kept tree with many entries: a synchronous disk-use walk reads each one.
+    for (let i = 0; i < 120; i += 1) writeFileSync(join(env.worktree_path, `f${i}.txt`), "x\n");
+    await kept.settle(wsm, env, [candidate(env, { diff: "diff --git a/a b/a\n", errored: true })]);
+    sync.calls.length = 0;
+    sync.counting = true;
+    try {
+      await kept.finish(makeOutcomeFacts("failed"));
+    } finally {
+      sync.counting = false;
+    }
+    // Direction 1: the run end listed and measured none of the tree synchronously.
+    const walked = sync.calls.filter((name) => name === "readdirSync" || name === "lstatSync");
+    expect(walked.length).toBeLessThan(10);
+    // Direction 2: the envelope is kept, its custody and size recorded.
+    const custody = readEnvelopeCustody(envelopeBaseOf(env));
+    expect(custody).toMatchObject({ state: "retained" });
+    expect(custody?.bytes).toBeGreaterThan(120 * 2);
+    expect(retainedEnvelopeOfRun(runDir, "run-1")?.envelope.id).toBe(env.id);
   });
 
   it("keeps needs_input work and a cancelled session, and names the cause", async () => {

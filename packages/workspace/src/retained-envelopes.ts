@@ -24,7 +24,7 @@ import {
   type ResumableCause,
   type WorkspaceEnvelope,
 } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
+import { nowIso, writeTextAsync } from "@claudexor/util";
 import {
   absentPath,
   envelopeBaseOf,
@@ -34,6 +34,7 @@ import {
   readEnvelopeCustodyStrict,
   releaseEnvelopeCustody,
   retainEnvelopeCustody,
+  retainEnvelopeCustodyAsync,
   stripRouteScopedAuth,
   writeEnvelopeCustody,
 } from "./envelope-custody.js";
@@ -116,6 +117,19 @@ export function retainForContinuation(
 ): EnvelopeCustody {
   const custody = retainEnvelopeCustody(env, holder, cause);
   writePointer(holder.runDir, envelopeBaseOf(env));
+  return custody;
+}
+
+/** `retainForContinuation` at a run end, which is async: the disk-use walk and
+ * every write are awaited, never held on the main thread (#704). */
+export async function retainForContinuationAsync(
+  env: WorkspaceEnvelope,
+  holder: { runId: string; runDir: string },
+  cause: ResumableCause | null,
+): Promise<EnvelopeCustody> {
+  const custody = await retainEnvelopeCustodyAsync(env, holder, cause);
+  const pointer = JSON.stringify({ envelope_base: envelopeBaseOf(env) }) + "\n";
+  await writeTextAsync(pointerPath(holder.runDir), pointer);
   return custody;
 }
 

@@ -25,7 +25,7 @@ import {
   envelopeBaseOf,
   envelopeTreeChanged,
   readEnvelopeCustody,
-  retainForContinuation,
+  retainForContinuationAsync,
   retainedEnvelopeOfRun,
   type CreateEnvelopeOptions,
   type WorkspaceManager,
@@ -226,7 +226,8 @@ async function settleCandidateEnvelope(
       return await wsm.dispose(env);
     }
     const holder = { runId: custody.holder_run_id, runDir: custody.holder_run_dir };
-    const retained = retainForContinuation(env, holder, cause);
+    // Awaited: the disk-use walk of the kept tree never holds the main thread (#704).
+    const retained = await retainForContinuationAsync(env, holder, cause);
     // The terminal `resumable` block (written after this settle) names the kept tree.
     // Deferred terminal payloads share these workspace objects, including a
     // resumableOnFailure promoted by the final budget verdict.

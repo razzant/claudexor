@@ -8,13 +8,19 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
-import { envelopeBaseOf, readEnvelopeCustody } from "./envelope-custody.js";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import {
+  envelopeBaseOf,
+  envelopeDiskBytes,
+  envelopeDiskBytesAsync,
+  readEnvelopeCustody,
+} from "./envelope-custody.js";
 import { WorkspaceManager } from "./manager.js";
 import {
   RETAINED_ENVELOPE_POINTER,
@@ -23,11 +29,49 @@ import {
   recoverOrphanCustody,
   releaseRetainedEnvelope,
   retainForContinuation,
+  retainForContinuationAsync,
   retainForInspection,
   retainedEnvelopeBase,
   retainedEnvelopeOfRun,
   retainedSourcesOfRun,
 } from "./retained-envelopes.js";
+
+/** Synchronous `node:fs` calls made by any module of this test while counting. */
+const sync = vi.hoisted(() => ({ counting: false, calls: [] as string[] }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const patched: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(actual))
+    if (name.endsWith("Sync") && typeof value === "function")
+      patched[name] = (...args: unknown[]) => {
+        if (sync.counting) sync.calls.push(name);
+        return (value as (...callArgs: unknown[]) => unknown)(...args);
+      };
+  return { ...actual, ...patched, default: { ...actual, ...patched } };
+});
+
+/** `body`'s synchronous `node:fs` calls, and how many event-loop turns ran before it settled. */
+async function measured<T>(
+  body: () => Promise<T>,
+): Promise<{ value: T; calls: string[]; turns: number }> {
+  let turns = 0;
+  let settled = false;
+  const tick = (): void => {
+    if (settled) return;
+    turns += 1;
+    setImmediate(tick);
+  };
+  setImmediate(tick);
+  sync.calls.length = 0;
+  sync.counting = true;
+  try {
+    const value = await body();
+    return { value, calls: [...sync.calls], turns };
+  } finally {
+    sync.counting = false;
+    settled = true;
+  }
+}
 
 /** chmod 0o000 denies reads only where the platform honors the mode bits for
  * the current user (not root, not Windows where Node changes only the write
@@ -237,6 +281,49 @@ describe("retained envelopes (A9 custody)", () => {
     });
     writeFileSync(join(plain.worktree_path, "a.txt"), "edited\n");
     expect(await recoverOrphanCustody(envelopeBaseOf(plain))).toBeNull();
+  });
+});
+
+describe("retention at a run end, off the main thread (#704)", () => {
+  it("walks a kept tree's disk use without a synchronous call, yielding to the event loop", async () => {
+    const repo = initRepo();
+    const { env } = await createKept(repo, temp("walk-run"), "task-walk");
+    for (let i = 0; i < 40; i += 1)
+      writeFileSync(join(env.worktree_path, `file-${i}.txt`), "x".repeat(i + 1));
+    const base = envelopeBaseOf(env);
+    const walked = await measured(() => envelopeDiskBytesAsync(base));
+    // Direction 1: no synchronous filesystem call, and the loop turned meanwhile.
+    expect(walked.calls).toEqual([]);
+    expect(walked.turns).toBeGreaterThan(0);
+    // Direction 2: the synchronous walk's answer, its bound included.
+    expect(walked.value).toBe(envelopeDiskBytes(base));
+    expect(walked.value).toBeGreaterThan(0);
+    await expect(envelopeDiskBytesAsync(base, 3)).resolves.toBeNull();
+    expect(envelopeDiskBytes(base, 3)).toBeNull();
+  });
+
+  it("retains for continuation without a synchronous call, recording what the synchronous path records", async () => {
+    const repo = initRepo();
+    const runDir = temp("async-run");
+    const { env } = await createKept(repo, runDir, "task-async");
+    const auth = seedAuth(env.home_dir);
+    const custodyFile = join(envelopeBaseOf(env), "continuation-custody.json");
+    const liveRecord = statSync(custodyFile).size;
+    const retained = await measured(() =>
+      retainForContinuationAsync(env, { runId: "run-p", runDir }, "cancelled"),
+    );
+    // Direction 1: nothing waited on the disk synchronously.
+    expect(retained.calls).toEqual([]);
+    // Direction 2: auth stripped, custody retained with the tree's size (walked,
+    // as the synchronous path walks it, before the retained record replaced the
+    // live one), the run's pointer written.
+    expect(retained.value).toMatchObject({ state: "retained", cause: "cancelled" });
+    const growth = statSync(custodyFile).size - liveRecord;
+    expect(retained.value.bytes).toBe(envelopeDiskBytes(envelopeBaseOf(env))! - growth);
+    expect(existsSync(auth.codexAuth)).toBe(false);
+    expect(linkExists(auth.bridge)).toBe(false);
+    expect(readEnvelopeCustody(envelopeBaseOf(env))).toMatchObject({ state: "retained" });
+    expect(retainedEnvelopeOfRun(runDir, "run-p")?.envelope.id).toBe(env.id);
   });
 });
 
