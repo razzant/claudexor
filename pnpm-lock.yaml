@@ -244,8 +244,8 @@ importers:
         specifier: workspace:*
         version: link:../util
       '@playwright/mcp':
-        specifier: 0.0.84
-        version: 0.0.84
+        specifier: 0.0.85
+        version: 0.0.85
 
   packages/daemon:
     dependencies:
@@ -1141,8 +1141,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@playwright/mcp@0.0.84':
-    resolution: {integrity: sha512-weqLrA7/D8MJzNV9/t3Hnjp100tS2sxFXKeb2gH6Nhktqmdfvx5qRA9AZ5Mhjnre1jY0wltsrRK5VZS5NBgcvw==}
+  '@playwright/mcp@0.0.85':
+    resolution: {integrity: sha512-bSfECMbLXhJdWkGhLzNMxTZuazG+9IDJ679gflji3yyD94e7ARnGdqmJmG6lTPB+gYX+OiFLmX5myBl62+wZEw==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -1867,13 +1867,13 @@ packages:
     resolution: {integrity: sha512-uB80kBFb/tfd68bVleG9T5GGsGPjJrLAUpR5PZIrhBnIaRTQRjqdJSsIKkOP6OAIFbj7GOrcudc5pNjZ+geV2g==}
     engines: {node: '>=6'}
 
-  playwright-core@1.65.0-alpha-2026-10-30:
-    resolution: {integrity: sha512-LPMw8B/HRQKMcJeXTqWSrkB/AfCKKmbDQMbu0p7zg8MgibOWaKMjZWR/StAtrQkOxvOmZEju1o1TnPgdoOCwrg==}
+  playwright-core@1.66.0-alpha-2026-11-09:
+    resolution: {integrity: sha512-HZVc/E3nqrasH7PPvJNwc7aCNsKXKjvtViZBpeFfopGOeB0zr3r5q4TKfqzkrdIcCKWCulyLVVGtla/LYbmxUQ==}
     engines: {node: '>=20'}
     hasBin: true
 
-  playwright@1.65.0-alpha-2026-10-30:
-    resolution: {integrity: sha512-dmAJMVHKzHvMQjn+XDcaq/pxaZ0W6n8i78rwTM+VGRtQ3WBF5ZiSdB1yL/cyoYUGUMwg3jxN65KqC9cERaCbIg==}
+  playwright@1.66.0-alpha-2026-11-09:
+    resolution: {integrity: sha512-raaHhtTYsm9ydMdGa11MEIwI8KM9RP4CuyvAb/lbd6e3bYhsBHXPMVGvyYJWldQxwUgMYnngY2VY5vCpimB2Dg==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -2600,10 +2600,10 @@ snapshots:
   '@oxc-resolver/binding-win32-x64-msvc@11.24.2':
     optional: true
 
-  '@playwright/mcp@0.0.84':
+  '@playwright/mcp@0.0.85':
     dependencies:
-      playwright: 1.65.0-alpha-2026-10-30
-      playwright-core: 1.65.0-alpha-2026-10-30
+      playwright: 1.66.0-alpha-2026-11-09
+      playwright-core: 1.66.0-alpha-2026-11-09
 
   '@rolldown/binding-android-arm64@1.1.5':
     optional: true
@@ -3212,11 +3212,11 @@ snapshots:
 
   pify@4.0.1: {}
 
-  playwright-core@1.65.0-alpha-2026-10-30: {}
+  playwright-core@1.66.0-alpha-2026-11-09: {}
 
-  playwright@1.65.0-alpha-2026-10-30:
+  playwright@1.66.0-alpha-2026-11-09:
     dependencies:
-      playwright-core: 1.65.0-alpha-2026-10-30
+      playwright-core: 1.66.0-alpha-2026-11-09
 
   postcss@8.5.32:
     dependencies:

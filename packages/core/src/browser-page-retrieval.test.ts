@@ -8,8 +8,8 @@ import { BROWSER_MCP_SERVER, browserPageRetrieval } from "./browser-mcp.js";
  * without that proof, and no retrieval at all when it read no web page. The
  * recording holds real replies of the pinned Browser MCP against loopback pages
  * (`.review-evidence/scripts/capture-browser-producer.mjs`; ports and temp
- * paths neutralized). The previous pin's recording of the same scenarios stays
- * as history and must classify the same way.
+ * paths neutralized). Earlier pins' recordings of the same scenarios stay as
+ * history and must classify the same way.
  */
 interface Reply {
   label: string;
@@ -25,8 +25,8 @@ const readRecording = (version: string): Recording =>
       "utf8",
     ),
   ) as Recording;
-const recording = readRecording("0.0.84");
-const previous = readRecording("0.0.83");
+const recording = readRecording("0.0.85");
+const history = [readRecording("0.0.84"), readRecording("0.0.83")];
 const corePackage = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ) as { dependencies: Record<string, string> };
@@ -71,7 +71,7 @@ describe("Browser page retrieval against the real pinned producer (#118)", () =>
     expect(corePackage.dependencies["@playwright/mcp"]).toBe(recording.producer.version);
   });
 
-  it.each([recording, previous])(
+  it.each([recording, ...history])(
     "classifies every recorded successful reply of $producer.version",
     ({ replies }) => {
       const successes = replies.filter((candidate) => !candidate.isError);
