@@ -80,6 +80,7 @@ import {
   insufficientEvidenceFinding,
   pacedReviewerStream,
   safeFilePart,
+  settleReviewerFiles,
   sleep,
   transientRetryDelayMs,
   uninspectedManifestFindings,
@@ -651,6 +652,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     findingsByReviewer[index]?.push(...parsed.findings);
   };
 
+  let failure: { error: unknown } | null = null;
   try {
     const reviewerRuns = await Promise.allSettled(
       input.reviewers.map((reviewer, index) => runReviewer(reviewer, index)),
@@ -706,10 +708,12 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       ...reviewerSpend.summary(),
       ...uninspectableFacts(uninspectable),
     };
+  } catch (error) {
+    failure = { error };
+    throw error;
   } finally {
     await cleanupTemporaryReviewerWorkspaceBaseDir(reviewerWorkspaceBaseDir, artifactsBaseDir);
-    // A review never resolves with its reviewers' files still in flight.
-    await orderedAppender.settledUnder(artifactsBaseDir);
+    await settleReviewerFiles(artifactsBaseDir, failure);
   }
 }
 

@@ -4888,6 +4888,51 @@ describe("reviewer files on the ordered appender (#688)", () => {
     await review(true);
   });
 
+  it("keeps a failing review's own error, with a reviewer file's failure as its cause (#704)", async () => {
+    const review = async (fileFailure: boolean): Promise<Error> => {
+      const { cwd, evidenceDir } = makeReviewWorkspace("claudexor-review-cause-");
+      const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-cause-artifacts-"));
+      // The reviewer's own directory cannot be made: the review fails for that reason.
+      writeFileSync(join(artifactsDir, "01-cause-reviewer"), "not a directory\n");
+      if (fileFailure) {
+        // A file under the reviewer artifacts holds a failure nobody awaited.
+        const journal = join(artifactsDir, "side.jsonl");
+        const realOpen = promises.open;
+        const spy = vi.spyOn(promises, "open").mockImplementation((async (
+          ...args: Parameters<typeof promises.open>
+        ) => {
+          if (String(args[0]) === journal)
+            throw Object.assign(new Error("EIO: transient"), { code: "EIO" });
+          return realOpen(...args);
+        }) as typeof promises.open);
+        orderedAppender.append(journal, "{}\n");
+        await orderedAppender.drained(journal);
+        spy.mockRestore();
+      }
+      const progress = { pulled: 0, finished: false };
+      return reviewCandidate({
+        candidateLabel: "Failing candidate",
+        diff: DIFF,
+        evidenceDir,
+        artifactsDir,
+        cwd,
+        reviewers: [messageReviewer("cause-reviewer", ["a finding"], progress)],
+      }).then(
+        () => new Error("the review resolved"),
+        (error: unknown) => error as Error,
+      );
+    };
+    // Direction 1: a reviewer file's failure does not replace the review's own
+    // error; it travels as its cause.
+    const held = await review(true);
+    expect(held.message).toMatch(/EEXIST/);
+    expect(held.cause).toMatchObject({ message: "EIO: transient" });
+    // Direction 2: with nothing held, the same error and no cause added.
+    const plain = await review(false);
+    expect(plain.message).toMatch(/EEXIST/);
+    expect(plain.cause).toBeUndefined();
+  });
+
   it("settles a sealed reviewer's transcript before the sealed text replaces its progress bytes", async () => {
     const { cwd, evidenceDir } = makeReviewWorkspace("claudexor-sealed-landing-");
     const artifactsDir = reapMk(join(tmpdir(), "claudexor-sealed-landing-artifacts-"));

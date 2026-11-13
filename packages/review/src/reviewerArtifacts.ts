@@ -77,6 +77,25 @@ export function createReviewerArtifactContext(
   return ctx;
 }
 
+/**
+ * A review never resolves with its reviewers' files still in flight. When the
+ * review already failed (`failure`), that failure stays the one it reports, and
+ * a reviewer file's own failure travels as its cause instead of replacing it
+ * (#704); a failure that already has a cause keeps it.
+ */
+export async function settleReviewerFiles(
+  dir: string,
+  failure: { error: unknown } | null,
+): Promise<void> {
+  try {
+    await orderedAppender.settledUnder(dir);
+  } catch (error) {
+    if (!failure) throw error;
+    if (failure.error instanceof Error && failure.error.cause === undefined)
+      failure.error.cause = error;
+  }
+}
+
 /** Append transcript bytes exactly as projected (`ReviewerTextProjection`):
  * nothing is added here, so a stream fragment never gains a line break. The
  * bytes are queued on the ordered appender, in call order. */
