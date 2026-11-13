@@ -1,5 +1,18 @@
 # @claudexor/secrets
 
+## 6.1.1
+
+### Patch Changes
+
+- @claudexor/util@6.1.1
+
+## 6.1.0
+
+### Patch Changes
+
+- Updated dependencies [577e275]
+  - @claudexor/util@6.1.0
+
 ## 6.0.0
 
 ### Patch Changes

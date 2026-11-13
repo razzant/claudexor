@@ -5,6 +5,11 @@ export function modelError(code: string, message: string, status = 409): Error {
   return Object.assign(new Error(message), { code, status, retryable: false });
 }
 
+/** A refusal's own typed problem, or one stating its code and message. */
+export const refusalProblem = (error: Error & { code?: string; problem?: unknown }) =>
+  ControlProblem.safeParse(error.problem).data ??
+  ControlProblem.parse({ code: error.code, message: error.message, retryable: false });
+
 export const poolExhausted = (
   sourceId: string,
   error: unknown,
@@ -23,6 +28,8 @@ export const poolExhausted = (
       ]
     : [];
   for (const refusal of catalogRefusals.values()) {
+    // A disabled or removed account cannot become usable by quota or login.
+    if (refusal.code === "model_account_unavailable") continue;
     causes.add(
       refusal.code === "auth_required"
         ? "auth"

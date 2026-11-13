@@ -34,6 +34,15 @@ import {
   type ResourceUseHolder,
 } from "./resource-uses.js";
 
+/** The model payloads still in custody, in id order. The state index is named
+ * because the rows of the other states are the table's history: a released or
+ * expired resource keeps its row, so they outnumber the ready ones without
+ * bound. Left to choose, the planner reads the whole table in primary-key order
+ * to save the sort when its statistics say that the rows share one state, and
+ * nothing refreshes those statistics as the history grows. */
+export const MODEL_READY_RESOURCES_SQL = `SELECT body FROM resource INDEXED BY resource_expiry
+  WHERE state = 'ready' AND purpose = 'model' ORDER BY id`;
+
 /** Resource metadata and replay live in the one engine DB; only immutable bytes are files. */
 export class SqlResourceStore implements ResourceStorePort {
   private readonly uploads: SqlUploads;
@@ -136,14 +145,12 @@ export class SqlResourceStore implements ResourceStorePort {
   }
 
   listModelResources(): Array<ModelPayloadRef & { createdAt: string }> {
-    return (
-      this.store
-        .prepare("SELECT body FROM resource WHERE purpose='model' AND state='ready' ORDER BY id")
-        .all() as Array<{ body: Uint8Array }>
-    ).map((row) => {
-      const resource = ControlResource.parse(JSON.parse(Buffer.from(row.body).toString("utf8")));
-      return { ...payloadRef(resource), createdAt: resource.createdAt };
-    });
+    return (this.store.prepare(MODEL_READY_RESOURCES_SQL).all() as Array<{ body: Uint8Array }>).map(
+      (row) => {
+        const resource = ControlResource.parse(JSON.parse(Buffer.from(row.body).toString("utf8")));
+        return { ...payloadRef(resource), createdAt: resource.createdAt };
+      },
+    );
   }
   /** One scan of expired upload bindings in bounded steps; `signal` ends it between steps. */
   pruneUploadBindings(signal?: AbortSignal): Promise<UploadBindingScan> {

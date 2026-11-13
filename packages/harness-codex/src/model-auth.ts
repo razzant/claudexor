@@ -15,6 +15,8 @@ import { CodexModelError, record, text } from "./responses.js";
 
 /** Runtime-only access material; never serialized into an operation or resource. */
 export interface CodexModelAuth {
+  /** Opaque version of the exact authorization, never the token in a sharing key. */
+  credentialFingerprint: string;
   accessToken: string;
   accountId: string;
   accountFingerprint: string | null;
@@ -116,6 +118,9 @@ async function readAuth(
   }
   const exp = access?.exp;
   return {
+    credentialFingerprint: createHash("sha256")
+      .update(JSON.stringify([accessToken, tokens?.id_token]))
+      .digest("hex"),
     accessToken,
     accountId,
     accountFingerprint: principal
