@@ -32,7 +32,7 @@ import type {
   InteractionRequest,
 } from "@claudexor/schema";
 import { INTERACTION_TIMEOUT_MAX_MS } from "@claudexor/schema";
-import type { EventLog } from "@claudexor/event-log";
+import { emitBestEffort, type EventLog } from "@claudexor/event-log";
 import { nowIso } from "@claudexor/util";
 import type { PendingInteractionContext } from "./orchestrator.js";
 
@@ -179,7 +179,8 @@ export function interactionChannelFor(
             .then((outcome) => {
               const late = outcome.kind === "handler" ? outcome.result : null;
               if (late && !isInteractionHandlerRelease(late) && late.answers.length > 0) {
-                log.emit("interaction.answer_discarded", {
+                // Aside: best-effort, never another line's failure (#704).
+                emitBestEffort(log, "interaction.answer_discarded", {
                   interaction_id: request.interaction_id,
                   attempt_id: attemptId,
                   harness_id: harnessId,

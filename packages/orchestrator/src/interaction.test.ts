@@ -15,13 +15,15 @@ import { interactionChannelFor } from "./interaction.js";
 
 type CapturedEvent = { type: string; payload: Record<string, unknown> };
 
-/** An inline log: a line is captured when emitted, and `emitLanded` settles at once. */
+/** An inline log: a line is captured when emitted (aside too), and `emitLanded`
+ * settles at once. */
 function eventLog(events: CapturedEvent[]) {
   const emit = (type: string, payload: Record<string, unknown>) => {
     events.push({ type, payload });
   };
   return {
     emit,
+    emitAside: emit,
     emitLanded: async (type: string, payload: Record<string, unknown>) => emit(type, payload),
   };
 }
@@ -915,4 +917,67 @@ describe("interactionChannelFor on a run's queued log", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+  it.each([true, false])(
+    "discloses a discarded answer aside: another line's failure stays the run's, its own is dropped (another line lost: %s)",
+    async (otherLost) => {
+      const root = mkdtempSync(join(tmpdir(), "claudexor-interaction-discarded-"));
+      const path = join(root, "events.jsonl");
+      try {
+        const log = new EventLog(
+          path,
+          "run-d",
+          "task-d",
+          (event: RunEvent) => {
+            const refused = otherLost
+              ? event.payload["text"] === "lost"
+              : event.type === "interaction.answer_discarded";
+            if (refused) throw new Error(`journal refused ${event.type}`);
+          },
+          undefined,
+          undefined,
+          { queued: true },
+        );
+        const cancel = new AbortController();
+        let answer!: (value: InteractionHandlerResult) => void;
+        const channel = interactionChannelFor(
+          {
+            interactionTimeoutMs: null,
+            signal: cancel.signal,
+            onInteraction: () => new Promise((resolve) => (answer = resolve)),
+          },
+          log,
+          "run-d",
+          "task-d",
+          "a01",
+          "claude",
+          true,
+        )!;
+        const pending = channel.request(request() as never);
+        // The question is announced and waiting.
+        await vi.waitFor(() => expect(readFileSync(path, "utf8")).toContain("requested"));
+        if (otherLost) {
+          log.emit("harness.event", { text: "lost" });
+          await orderedAppender.drained(path);
+        }
+        // The run is cancelled; an answer the registry accepted meanwhile is discarded.
+        cancel.abort();
+        await expect(pending).resolves.toBeNull();
+        answer(ANSWERS);
+        await vi.waitFor(() =>
+          expect(
+            log.readAll().events.some((event) => event.type === "interaction.answer_discarded"),
+          ).toBe(true),
+        );
+        await orderedAppender.drained(path);
+        const next = () => log.emit("output.ready", { kind: "summary" });
+        // Direction 1: the other line's failure is still the run's, at its next emit.
+        if (otherLost) expect(next).toThrow("journal refused harness.event");
+        // Direction 2: the disclosure's own failure was dropped, never held for the run.
+        else expect(next).not.toThrow();
+      } finally {
+        await orderedAppender.settledUnder(root).catch(() => undefined);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
