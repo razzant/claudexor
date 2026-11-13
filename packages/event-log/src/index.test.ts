@@ -10,6 +10,7 @@ import {
   liveRunEventSeq,
   readRunEvents,
 } from "./index.js";
+import { orderedAppender } from "@claudexor/util";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -520,6 +521,32 @@ describe("appendRunEvent single-counter invariant", () => {
     log.dispose();
     expect(liveRunEventSeq(other)).toBeNull();
     expect(new EventLog(relativeSpelling, "run-1", "task-1").emit("run.completed", {}).seq).toBe(3);
+  });
+
+  it("refuses an emit from a writer released without its terminal, once it is unregistered (#704)", async () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-eventlog-"));
+    const path = join(dir, "events.jsonl");
+    const log = new EventLog(path, "run-1", "task-1", undefined, undefined, undefined, {
+      queued: true,
+    });
+    log.deferTerminal();
+    log.emit("run.created", {});
+    // Direction 1: while a line is in flight a released writer stays registered,
+    // and its emits still take the counter's seqs.
+    log.dispose();
+    expect(log.emit("harness.event", { text: "while in flight" }).seq).toBe(2);
+    await orderedAppender.settled(path);
+    // Direction 2: once unregistered, it refuses, and the file tail stamps the
+    // next seq for an out-of-band append, never a seq the writer also took.
+    expect(liveRunEventSeq(path)).toBeNull();
+    expect(() => log.emit("harness.event", { text: "late" })).toThrow(/released/);
+    await expect(log.emitTerminal("run.failed", {})).rejects.toThrow(/released/);
+    expect(appendRunEvent(path, "run-1", "task-1", "control.applied", {}).seq).toBe(3);
+    const seqs = readFileSync(path, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => (JSON.parse(line) as { seq: number }).seq);
+    expect(seqs).toEqual([1, 2, 3]);
   });
 
   it("keeps a poisoned writer registered as the path's fence when disposed (#704)", () => {

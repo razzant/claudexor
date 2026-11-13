@@ -113,8 +113,8 @@ export class EventLog {
 
   /**
    * Unregister this log as the live writer for its path. Out-of-band
-   * appenders fall back to file-tail stamping afterwards, which is safe once
-   * the owning run is terminal (nobody else holds an in-memory counter). With
+   * appenders fall back to file-tail stamping afterwards, and this log no
+   * longer emits, so no in-memory counter competes with the file's (#704). With
    * lines still in flight, the log stays registered until the last one lands
    * or is lost, so nobody stamps from a file that is still short. A poisoned
    * writer stays registered as the path's fence until recovery releases it.
@@ -405,15 +405,15 @@ export class EventLog {
   }
 
   private assertEmittable(): void {
-    if (this.terminalCommittedFlag) {
-      throw new Error("run terminal event is already committed");
-    }
+    if (this.terminalCommittedFlag) throw new Error("run terminal event is already committed");
     if (this.terminalWriterPoisoned) {
       throw new Error("run terminal writer is poisoned after an incomplete rollback");
     }
     if (this.terminalCommitInProgress) {
       throw new Error("run terminal event commit is already in progress");
     }
+    // Released by `dispose` with no terminal: the file tail stamps the run's seqs now (#704).
+    if (activeEventLogs.get(this.path) !== this) throw new Error("run event writer was released");
   }
 
   private stamp(type: RunEventType, payload: Record<string, unknown>): RunEvent {
