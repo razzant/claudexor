@@ -110,6 +110,59 @@ describe("harness install/update CLI", () => {
     ).toBe(0);
     expect(mutations).toBe(1);
   });
+  it.each([false, true])(
+    "shows why npm conversion failed beside a failed installer (json: %s)",
+    async (json) => {
+      const w = vendorFixture();
+      roots.push(w.home);
+      const prefix = join(w.home, ".claudexor/node");
+      const pkg = join(prefix, "lib/node_modules/@fixture/harness");
+      executable(join(pkg, "bin/fixture-harness"));
+      writeFileSync(
+        join(pkg, "package.json"),
+        JSON.stringify({
+          name: "@fixture/harness",
+          bin: { "fixture-harness": "bin/fixture-harness" },
+        }),
+      );
+      mkdirSync(join(prefix, "bin"), { recursive: true });
+      symlinkSync(join(pkg, "bin/fixture-harness"), join(prefix, "bin/fixture-harness"));
+      let errors = "";
+      const output = capture();
+      vi.mocked(process.stderr.write).mockImplementation((chunk) => {
+        errors += chunk;
+        return true;
+      });
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) =>
+        args[0] === "--version"
+          ? spawnSync(bin, args, opts)
+          : result("No available upgrade found", 7)) as typeof spawnSync;
+      const args = ["harness", "update", "fixture", "--yes", ...(json ? ["--json"] : [])];
+      expect(await harnessMutationCommand(parseArgs(args), json, w.options)).toBe(7);
+      const reason =
+        "After the installer exited 7, npm copy conversion failed (conversion_verification_failed): Vendor installation did not produce a selected program with a version while the old npm launcher was masked; conversion removed nothing";
+      if (json) {
+        expect(JSON.parse(output())).toMatchObject({
+          ok: false,
+          exitCode: 7,
+          problem: { code: "vendor_command_failed", message: "No available upgrade found" },
+          limitations: expect.arrayContaining([reason]),
+        });
+        expect(errors).toBe("No available upgrade found\n");
+      } else {
+        const lines = output().trimEnd().split("\n");
+        expect(lines.slice(-3)).toEqual([
+          "No available upgrade found",
+          reason,
+          "No available upgrade found",
+        ]);
+      }
+    },
+  );
 });
 
 it("the real CLI child acknowledges both conversion commands and closes its protocol input", async () => {

@@ -3,6 +3,7 @@ import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import {
   existsSync,
   lstatSync,
+  lutimesSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -475,7 +476,7 @@ echo ${commands === 1 ? "2.0.0" : "3.0.0"}
           ? /Download failed/
           : failure === "explicit-old-override"
             ? /override pins/
-            : /old copy is unchanged/,
+            : /conversion removed nothing/,
       );
       expect(existsSync(old.pkg)).toBe(true);
       expect((await inspectHarness("fixture", w.options)).selection).toMatchObject({
@@ -528,6 +529,12 @@ echo ${commands === 1 ? "2.0.0" : "3.0.0"}
       });
       if (failExact)
         expect(receipt.progress).toEqual(["Native installed", "Exact release unavailable"]);
+      // A failed installer stays the problem, and the exact step's failure stays visible.
+      expect(
+        receipt.limitations.includes(
+          `After the installer exited ${installerExit}, npm copy conversion failed (vendor_command_failed): Exact release unavailable`,
+        ),
+      ).toBe(failExact && installerExit !== 0);
     },
   );
   it.each(["0.153.3", "0.162.1", "0.167.1", "unorderable-build"])(
@@ -630,7 +637,7 @@ echo 1.18.0
     const refused = await runHarnessUpdate("fixture", undefined, w.options);
     expect(refused.problem).toMatchObject({
       code: "conversion_older_program",
-      message: `After the installer, ${shadow} version 1.18.0 is found first and is older than the selected 1.18.9; the installer's copy may be hidden behind it. Nothing was removed.`,
+      message: `After the installer, ${shadow} version 1.18.0 is found first and is older than the selected 1.18.9; the installer's copy may be hidden behind it. Conversion removed nothing.`,
     });
     expect(existsSync(w.installed)).toBe(true);
     expect(existsSync(old.pkg)).toBe(true);
@@ -666,13 +673,183 @@ echo 1.18.0
         progress: ["No available upgrade found"],
       });
       expect(existsSync(old.pkg)).toBe(!healthy);
-      if (healthy) expect(receipt.limitations.join(" ")).toContain("installer exited 2316632107");
-      else expect(receipt.problem?.message).toBe("No available upgrade found");
+      if (healthy) {
+        expect(receipt.limitations.join(" ")).toContain("installer exited 2316632107");
+        expect(receipt.limitations.join(" ")).not.toContain("npm copy conversion failed");
+      } else {
+        // The installer's exit remains the problem; the conversion's own
+        // reason is retained beside it instead of disappearing (#672).
+        expect(receipt.problem).toMatchObject({
+          code: "vendor_command_failed",
+          message: "No available upgrade found",
+        });
+        expect(receipt.limitations).toContain(
+          `After the installer exited 2316632107, npm copy conversion failed (conversion_older_program): After the installer, ${w.installed} version 0.9.0 is found first and is older than the selected 1.0.0; the installer's copy may be hidden behind it. Conversion removed nothing.`,
+        );
+      }
     },
   );
-  it.each([false, true])(
-    "recognizes vendor removal of the npm copy only when ordinary resolution proves the replacement (%s)",
-    async (healthy) => {
+  it("retains why conversion failed after a nonzero installer left no versioned replacement", async () => {
+    const w = world(),
+      old = oldCopy(w);
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) =>
+      args[0] === "--version"
+        ? spawnSync(bin, args, opts)
+        : result("No available upgrade found", 2316632107)) as typeof spawnSync;
+    const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(receipt).toMatchObject({
+      ok: false,
+      exitCode: 2316632107,
+      problem: { code: "vendor_command_failed", message: "No available upgrade found" },
+      after: { path: old.launcher, version: "1.0.0" },
+    });
+    expect(receipt.limitations).toContain(
+      "After the installer exited 2316632107, npm copy conversion failed (conversion_verification_failed): Vendor installation did not produce a selected program with a version while the old npm launcher was masked; conversion removed nothing",
+    );
+    expect(existsSync(old.pkg)).toBe(true);
+    expect(existsSync(old.launcher)).toBe(true);
+  });
+  it("keeps the commit-point failure and the hidden package when the old npm copy cannot be restored", async () => {
+    const w = world(),
+      old = oldCopy(w);
+    w.program.versionScheme = "semver";
+    executable(w.installed, "2.0.0");
+    const hidden = `${old.pkg}.claudexor-converted`;
+    const manifest = readFileSync(join(old.pkg, "package.json"), "utf8");
+    let planted = false;
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] !== "--version") return result("Installed");
+      if (!planted && existsSync(hidden)) {
+        // While the package is hidden, something occupies its path and the
+        // selection moves, so the commit check fails and restore must refuse.
+        planted = true;
+        mkdirSync(old.pkg);
+        executable(w.installed, "2.0.1");
+      }
+      return spawnSync(bin, args, opts);
+    }) as typeof spawnSync;
+    const failed = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(failed).toMatchObject({ ok: false, exitCode: 0 });
+    const selected = (version: string) =>
+      JSON.stringify({ path: w.installed, realPath: w.installed, version });
+    expect(failed.problem?.message).toBe(
+      `Selection changed before conversion committed: expected ${selected("2.0.0")}, observed ${selected("2.0.1")}; the old npm package could not be restored (Cannot restore hidden program over a replacement: ${old.pkg}) and remains hidden at ${hidden}; the next explicit maintenance attempts to recover it without overwriting anything at ${old.pkg}`,
+    );
+    expect(failed.problem?.message).not.toMatch(/\brestored the\b|is runnable/);
+    expect(readFileSync(join(hidden, "package.json"), "utf8")).toBe(manifest);
+    expect(lstatSync(old.launcher).isSymbolicLink()).toBe(true);
+
+    // While the path stays occupied, the next maintenance only attempts recovery.
+    writeFileSync(join(old.pkg, "occupant"), "kept");
+    const attempted = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(attempted.limitations).toContain(`Recovering interrupted npm conversion at ${hidden}.`);
+    expect(attempted.limitations).toContain(
+      `Npm conversion recovery at ${old.pkg}: Both program and hidden copy exist: ${old.pkg}`,
+    );
+    expect(readFileSync(join(hidden, "package.json"), "utf8")).toBe(manifest);
+    expect(readFileSync(join(old.pkg, "occupant"), "utf8")).toBe("kept");
+
+    // The retained bytes keep the existing recovery contract.
+    rmSync(old.pkg, { recursive: true });
+    const recovered = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(recovered.limitations).toContain(`Recovering interrupted npm conversion at ${hidden}.`);
+    expect(recovered.limitations).toContain(`Retired interrupted npm conversion at ${old.pkg}.`);
+    expect(recovered).toMatchObject({ ok: true, after: { path: w.installed, version: "2.0.1" } });
+    expect(existsSync(hidden)).toBe(false);
+    expect(existsSync(old.pkg)).toBe(false);
+  });
+  it.each(["relation", "added launcher", "selection", "launcher"] as const)(
+    "names the values a refused commit boundary compared and keeps the npm copy (%s)",
+    async (boundary) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.program.versionScheme = "semver";
+      executable(w.installed, "2.0.0");
+      const hidden = `${old.pkg}.claudexor-converted`;
+      const extra = join(dirname(old.launcher), "fixture-extra");
+      const linkTime = lstatSync(old.launcher).mtimeMs;
+      const touched = new Date("2000-01-01T00:00:00Z");
+      let changed = false;
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] !== "--version") {
+          // The vendor installer changes the old package's bin relation.
+          const manifest = JSON.parse(readFileSync(join(old.pkg, "package.json"), "utf8"));
+          if (boundary === "relation") manifest.name = "@fixture/other";
+          if (boundary === "added launcher") {
+            manifest.bin["fixture-extra"] = "bin/fixture-harness";
+            symlinkSync(old.entry, extra);
+          }
+          writeFileSync(join(old.pkg, "package.json"), JSON.stringify(manifest));
+          return result("Installed");
+        }
+        if (!changed && existsSync(hidden)) {
+          // The commit check observes while the package is hidden.
+          changed = true;
+          if (boundary === "selection") executable(w.installed, "2.0.1");
+          if (boundary === "launcher") lutimesSync(old.launcher, touched, touched);
+        }
+        return spawnSync(bin, args, opts);
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      const selection = (path: string, version: string) =>
+        JSON.stringify({ path, realPath: path === old.launcher ? old.entry : path, version });
+      const relation = (launchers: string[]) =>
+        JSON.stringify({
+          packageRoot: old.pkg,
+          launchers,
+          entrypoints: launchers.map(() => old.entry),
+        });
+      const changedRelation = (now: string) =>
+        `The old package/launcher relation changed during conversion: before ${relation([old.launcher])}, now ${now} for the ordinary selection ${selection(old.launcher, "1.0.0")}; conversion removed nothing`;
+      const problem = {
+        relation: {
+          code: "conversion_source_changed",
+          message: changedRelation("no proven relation"),
+        },
+        "added launcher": {
+          code: "conversion_source_changed",
+          message: changedRelation(relation([old.launcher, extra])),
+        },
+        selection: {
+          code: "maintenance_failed",
+          message: `Selection changed before conversion committed: expected ${selection(w.installed, "2.0.0")}, observed ${selection(w.installed, "2.0.1")}`,
+        },
+        launcher: {
+          code: "maintenance_failed",
+          message: `An npm launcher changed before conversion committed: ${old.launcher} (mtimeMs ${linkTime} → ${touched.getTime()})`,
+        },
+      }[boundary];
+      expect(receipt).toMatchObject({ ok: false, exitCode: 0, problem });
+      expect(existsSync(old.pkg)).toBe(true);
+      expect(existsSync(hidden)).toBe(false);
+      expect(lstatSync(old.launcher).isSymbolicLink()).toBe(true);
+    },
+  );
+  it("masks credential-shaped text in npm conversion recovery limitations", async () => {
+    const w = world();
+    const token = `ghp_${"a".repeat(36)}`;
+    w.home = join(w.home, token);
+    mkdirSync(w.home);
+    w.installed = join(w.home, ".vendor/bin/fixture-harness");
+    w.options.home = w.home;
+    w.options.sourceEnv!.HOME = w.home;
+    const old = oldCopy(w);
+    renameSync(old.pkg, `${old.pkg}.claudexor-converted`);
+    mkdirSync(old.pkg);
+    executable(w.installed, "2.0.0");
+    const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+    const masked = old.pkg.replace(token, "[redacted]");
+    expect(receipt.limitations).toContain(
+      `Npm conversion recovery at ${masked}: Both program and hidden copy exist: ${masked}`,
+    );
+  });
+  it.each([false, true].flatMap((healthy) => [0, 2316632107].map((exit) => ({ healthy, exit }))))(
+    "recognizes vendor removal of the npm copy only when ordinary resolution proves the replacement: %j",
+    async ({ healthy, exit }) => {
       const w = world(),
         old = oldCopy(w);
       w.options.spawn = ((
@@ -684,17 +861,35 @@ echo 1.18.0
         rmSync(old.pkg, { recursive: true });
         rmSync(old.launcher);
         if (healthy) executable(w.installed, "2.1.322");
-        return result("Cleaning up npm installations");
+        return result("Cleaning up npm installations", exit);
       }) as typeof spawnSync;
       const receipt = await runHarnessUpdate("fixture", undefined, w.options);
       expect(receipt).toMatchObject({
         ok: healthy,
-        exitCode: 0,
+        exitCode: exit,
         progress: ["Cleaning up npm installations"],
       });
       expect(existsSync(old.pkg)).toBe(false);
       expect(receipt.after?.version).toBe(healthy ? "2.1.322" : null);
-      if (!healthy) expect(receipt.problem?.code).toBe("conversion_verification_failed");
+      if (healthy) return;
+      // The vendor removed the old copy itself; the failure speaks only for
+      // conversion and never claims that copy is unchanged.
+      const reason =
+        "Vendor installation did not produce a selected program with a version while the old npm launcher was masked; conversion removed nothing";
+      if (exit) {
+        expect(receipt.problem).toMatchObject({
+          code: "vendor_command_failed",
+          message: "Cleaning up npm installations",
+        });
+        expect(receipt.limitations).toContain(
+          `After the installer exited ${exit}, npm copy conversion failed (conversion_verification_failed): ${reason}`,
+        );
+      } else
+        expect(receipt.problem).toMatchObject({
+          code: "conversion_verification_failed",
+          message: reason,
+        });
+      expect(JSON.stringify(receipt)).not.toContain("unchanged");
     },
   );
   it("offers conversion only when an override does not pin the old product copy", async () => {

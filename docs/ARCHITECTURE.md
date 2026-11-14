@@ -8543,7 +8543,9 @@ and arguments carried to execution. Custom batch files are not npm launchers.
 
 `claudexor harness install <id> --yes --json` installs a missing program at the
 vendor's current version. `harness update <id> --yes --json` runs the selected
-program's updater, or installs when missing. `--vendor-version <exact>` uses
+program's updater, or installs when missing. Without `--json`, text output
+lists the commands, vendor lines and limitations, then the problem or outcome.
+`--vendor-version <exact>` uses
 only an adapter-declared exact-version command. `harness inspect --latest --json`
 reads published versions on demand. A failed newest read does not block Update.
 Package-manager copies can answer with advice instead of
@@ -8595,17 +8597,24 @@ with a declared major requires that line, including before an exact-version
 command; OpenCode 2.x cannot replace its product-made 1.x copy. An unorderable
 version is acceptable only when no declared major excludes it. The installer's status and lines remain in the receipt;
 a nonzero exit can complete conversion with a limitation when the resulting
-program passes the same proof. A vendor that already removed npm completes
+program passes the same proof; otherwise that exit stays the problem and the
+conversion's own code and message become a limitation. A vendor that already removed npm completes
 conversion when ordinary and masked resolution agree.
 An exact-version conversion verifies its second command before retirement too.
 An older-copy refusal names the path and version found first, the selected
-version, the possibility that it shadows the installer's copy, and that nothing
-was removed. A failed engine verification preserves any old copy the vendor
-left in place. Only Claude, Codex, Copilot and OpenCode declare old product npm
+version, the possibility that it shadows the installer's copy, and that
+conversion removed nothing. A failed engine verification preserves any old copy
+the vendor left in place; its messages describe conversion, never what the
+vendor installer did. Only Claude, Codex, Copilot and OpenCode declare old product npm
 packages; a person's Grok npm copy is not eligible for conversion. Folder
 containment or stale sibling metadata never authorizes removal of a hand-placed
 wrapper or symlink. Retirement hides the package at the fixed sibling
 `<package>.claudexor-converted`, keeping the launchers in place until removal.
+If a failed commit check cannot restore it, the failure names the restore error
+and the hidden sibling instead of claiming the old copy is back. Each commit
+refusal names what it compared: the previous and current package/launcher
+relation with the ordinary selection it was read from, the expected and observed
+path/real path/version, or a launcher's differing stat fields.
 The next explicit maintenance restores a leftover and applies the same
 version/major/ordering proof to retire it or leave it restored. A linked HOME is
 accepted when the real package parent stays inside the real product prefix. Colliding or

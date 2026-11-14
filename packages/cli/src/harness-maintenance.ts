@@ -303,7 +303,7 @@ export async function runHarnessUpdate(
         receipt.limitations.push(`Recovering interrupted npm conversion at ${path}.`);
         await options.beforeMutation?.(receipt);
       });
-      receipt.limitations.push(...recovered.limitations);
+      receipt.limitations.push(...recovered.limitations.map(redactSecrets));
       cleaned ||= recovered.changed;
       if (recovered.changed) before = observe();
     }
@@ -392,7 +392,7 @@ export async function runHarnessUpdate(
         if (!native.path || !native.version)
           throw Object.assign(
             new Error(
-              "The vendor installer did not produce a versioned replacement; the old npm copy is unchanged.",
+              "The vendor installer did not produce a versioned replacement; conversion removed nothing.",
             ),
             { code: "conversion_verification_failed" },
           );
@@ -412,7 +412,7 @@ export async function runHarnessUpdate(
         if (replacementProgram(program, copy, runtime, receipt.limitations).version !== version)
           throw Object.assign(
             new Error(
-              "The new vendor program did not report the requested exact version; the old npm copy is unchanged.",
+              "The new vendor program did not report the requested exact version; conversion removed nothing.",
             ),
             { code: "conversion_verification_failed" },
           );
@@ -425,7 +425,14 @@ export async function runHarnessUpdate(
           );
       }
     } catch (error) {
-      throw installerFailure ?? error;
+      if (!installerFailure) throw error;
+      // The installer's own exit stays the problem; the conversion's reason
+      // must not disappear behind it.
+      const code = (error as { code?: unknown } | null)?.code;
+      receipt.limitations.push(
+        `After the installer exited ${installerExit}, npm copy conversion failed${typeof code === "string" ? ` (${code})` : ""}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+      );
+      throw installerFailure;
     }
     receipt.ok = true;
     if (cleanup) {
