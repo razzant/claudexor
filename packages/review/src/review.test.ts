@@ -4869,6 +4869,7 @@ describe("reviewer files on the ordered appender (#688)", () => {
         await until("the review records its route proofs", () =>
           readFileSync(join(dir, "metadata.json"), "utf8").includes('"route_proof":'),
         );
+        await until("a reviewer's write is held", () => held.held.length > 0);
         await quiet();
         expect(held.held.length).toBeGreaterThan(0);
         expect(resolved).toBe(false);
@@ -4982,6 +4983,10 @@ describe("reviewer files on the ordered appender (#688)", () => {
       // The transcript's progress append reaches its held write on the disk's
       // pace, not after a fixed number of turns.
       await until("the transcript's append is held", () => held.held.includes(transcript));
+      // A sealed overwrite that skipped the settle runs on the libuv pool (stat,
+      // temporary write, rename): give it wall-clock time to land, so the
+      // assertions below catch it rather than racing it.
+      await new Promise((resolve) => setTimeout(resolve, 200));
       await quiet();
       // The sealed overwrite waits for the progress bytes still in flight.
       expect(held.held).toContain(transcript);
