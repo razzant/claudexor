@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CATALOG_HOLD_MS,
   STATUS_PROJECTION_TTL_MS,
@@ -150,7 +150,9 @@ describe("a held window answers past the TTL while one recompute refreshes (2026
     sweep.rearm();
     clock.at += STATUS_PROJECTION_TTL_MS;
     // Three readers after a quiet spell: none waits, one recompute runs.
-    expect(await Promise.all([1, 2, 3].map(() => cache.read(sweep.compute)))).toEqual([1, 1, 1]);
+    const readers = Promise.all([1, 2, 3].map(() => cache.read(sweep.compute)));
+    const tick = new Promise((resolve) => setTimeout(() => resolve("waited for the sweep"), 0));
+    expect(await Promise.race([readers, tick])).toEqual([1, 1, 1]);
     expect(sweep.computes()).toBe(2);
     sweep.release();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -159,15 +161,22 @@ describe("a held window answers past the TTL while one recompute refreshes (2026
   });
 
   it("past TTL + hold the reader waits for the recompute, as without a hold", async () => {
-    const clock = { at: 0 };
-    const cache = held(clock);
-    let computes = 0;
-    expect(await cache.read(async () => ++computes)).toBe(1);
-    clock.at += STATUS_PROJECTION_TTL_MS + CATALOG_HOLD_MS;
-    expect(await cache.read(async () => ++computes)).toBe(2);
-    // No read, no sweep: time alone starts nothing.
-    clock.at += 10 * CATALOG_HOLD_MS;
-    expect(computes).toBe(2);
+    vi.useFakeTimers();
+    try {
+      const clock = { at: 0 };
+      const cache = held(clock);
+      let computes = 0;
+      expect(await cache.read(async () => ++computes)).toBe(1);
+      clock.at += STATUS_PROJECTION_TTL_MS + CATALOG_HOLD_MS;
+      expect(await cache.read(async () => ++computes)).toBe(2);
+      // No read, no sweep: no timer is armed, and time alone starts nothing.
+      expect(vi.getTimerCount()).toBe(0);
+      clock.at += 10 * CATALOG_HOLD_MS;
+      vi.advanceTimersByTime(10 * CATALOG_HOLD_MS);
+      expect(computes).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a failed held recompute keeps the value and its time, rejects nowhere, and the next read retries", async () => {

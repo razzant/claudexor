@@ -364,11 +364,6 @@ describe("durable vendor operation", () => {
   });
   it("commits exact command and before evidence before acknowledging mutation; active runs are a fact", async () => {
     const w = await harnessWorld();
-    // A readiness projection held from before the update, and every harness's account observations.
-    // It never expires on its own, so only the maintenance invalidation can refresh it.
-    const projection = new StatusProjectionCache<string>({ ttlMs: Infinity });
-    expect(await projection.read(async () => "before")).toBe("before");
-    const dropAllAccounts = vi.spyOn(accountObservations, "invalidate");
     nativeEvent(w.bus, "harness.started");
     nativeEvent(w.bus, "harness.started", "run-a", "a2");
     nativeEvent(w.bus, "harness.started", "run-b");
@@ -395,10 +390,21 @@ describe("durable vendor operation", () => {
       ["update", "mutated"],
     ]);
     expect(w.readiness.invalidate).toHaveBeenCalledWith("codex");
-    // The update drops the cached status projections, never every harness's account observations.
-    expect(await projection.read(async () => "after")).toBe("after");
-    expect(dropAllAccounts).not.toHaveBeenCalled();
-    dropAllAccounts.mockRestore();
+  });
+  it("an update drops the cached status projections, never every harness's account observations", async () => {
+    const w = await harnessWorld();
+    // It never expires on its own, so only the maintenance invalidation can refresh it.
+    const projection = new StatusProjectionCache<string>({ ttlMs: Infinity });
+    expect(await projection.read(async () => "before")).toBe("before");
+    const dropAllAccounts = vi.spyOn(accountObservations, "invalidate");
+    try {
+      const op = await w.maintenance.routes.createMaintenanceOperation(latest, "projections");
+      expect(await w.run(op.id)).toMatchObject({ state: "succeeded" });
+      expect(await projection.read(async () => "after")).toBe("after");
+      expect(dropAllAccounts).not.toHaveBeenCalled();
+    } finally {
+      dropAllAccounts.mockRestore();
+    }
   });
   it("cancel after mutation stops the child, re-observes effects and retains the command", async () => {
     const w = await harnessWorld({ holdCompletion: true });

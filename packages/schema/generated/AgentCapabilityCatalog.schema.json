@@ -525,9 +525,9 @@
               "delegation"
             ],
             "additionalProperties": false,
-            "description": "Per-harness live capability row (manifest + doctor + model truth)."
+            "description": "Per-harness capability row (manifest + doctor + model truth), as of `generatedAt`."
           },
-          "description": "Live per-harness capabilities (doctor-backed)."
+          "description": "Per-harness capabilities (doctor-backed), as of `generatedAt`."
         },
         "availableHarnesses": {
           "type": "array",

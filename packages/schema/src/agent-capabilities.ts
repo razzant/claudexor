@@ -22,10 +22,11 @@ import { RunDecisionAction } from "./control.js";
 
 /**
  * AgentCapabilityCatalog — the machine-readable answer to "what can this
- * Claudexor install do RIGHT NOW", for external agents (MCP hosts, scripts,
- * other CLIs). It is a DERIVED projection over existing truth sources —
- * harness manifests + doctor status (gateway.statusAll), the model-truth
- * service, the CLI command registry, and the schema's own closed vocabularies.
+ * Claudexor install do" (as of its `generatedAt`), for external agents (MCP
+ * hosts, scripts, other CLIs). It is a DERIVED projection over existing
+ * truth sources — harness manifests + doctor status (gateway.statusAll), the
+ * model-truth service, the CLI command registry, and the schema's own closed
+ * vocabularies.
  * Nothing in it is hand-maintained; a catalog field without a live producer
  * must not exist (staged-field rule).
  */
@@ -182,7 +183,7 @@ export const CatalogHarness = z
         "Effective setup-login flow for this harness on the current host; current producers emit null or an object, while omission identifies a legacy catalog row.",
       ),
   })
-  .describe("Per-harness live capability row (manifest + doctor + model truth).");
+  .describe("Per-harness capability row (manifest + doctor + model truth), as of `generatedAt`.");
 export type CatalogHarness = z.infer<typeof CatalogHarness>;
 
 export const CatalogCliCommand = z
@@ -255,7 +256,9 @@ export const AgentCapabilityCatalog = z
     git: GitCapability.describe(
       "Execution-location Git readiness. Read-only and valid non-Git in-place flows do not require it.",
     ),
-    harnesses: z.array(CatalogHarness).describe("Live per-harness capabilities (doctor-backed)."),
+    harnesses: z
+      .array(CatalogHarness)
+      .describe("Per-harness capabilities (doctor-backed), as of `generatedAt`."),
     availableHarnesses: z.array(z.string()).describe("Convenience: ids with doctor status ok."),
     modes: z
       .array(ModeKind)

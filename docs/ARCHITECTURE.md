@@ -1730,8 +1730,10 @@ Ordinary profile and account-catalog reads share one process-local observation o
 failed attempt. TTL expiry and repeated views never repeat it. The profile's current
 registry fields and quota evidence are composed at each read; the last observed
 verification remains visible with its check time, never renewed by viewing it. Credential-state
-invalidation and an explicit atomic Refresh request new evidence. Catalog payloads
-retain original timestamps, including null when the adapter supplies none. This
+invalidation, a harness install or update through the daemon (that harness's
+observations and the Accounts harness statuses) and an explicit atomic Refresh
+request new evidence. Catalog payloads retain original timestamps, including null
+when the adapter supplies none. This
 cache is display-only: real run and model admission retain their fresh route checks.
 The ordinary response does not claim fenced `next_up` authority. Display-only
 `GET /v2/quota` owns shown quota values. Explicit Refresh/Retry and exact post-login
@@ -2471,18 +2473,18 @@ carry login evidence and no observation time. The catalog's sweep runs every
 harness's doctor and model truth (11-19 seconds on a large install, 2026-11-14),
 so the catalog holds its last composition for five more minutes: a reader in that
 span gets it at once, dated by its `generatedAt`, and its read starts the one
-recompute that replaces it. No timer sweeps; with no reader nothing runs. A
-failed recompute leaves the held composition under its own `generatedAt`, and the
-next read starts another. The first read after start, after an invalidation or a
-config change, and any read past the held span wait as before. The window stacks
-on its inputs' own caches: by default a doctor report is reused for 90 seconds
-when OK and 15 seconds otherwise (`core/src/doctor.ts`), and model inventories
-keep their own windows, so an out-of-band change such as a vendor CLI login or
-install outside the daemon reaches `/v2/harnesses` within about 30 seconds from
-non-OK to OK and 105 seconds from OK to broken, plus sweep time; a held catalog
-answer can be up to five minutes older than that and says so in `generatedAt`.
-Auth-readiness refresh clears that harness's doctor evidence, not these
-projections, so its result reaches the next sweep. A `fresh` harness read
+recompute that replaces it. No timer sweeps; with no reader nothing runs. A failed
+recompute leaves the held composition under its own `generatedAt`, and the next
+read starts another. The first read after start, after an invalidation or a config
+change, and any read past the held span wait for a new composition. The window
+stacks on its inputs' own caches: by default a doctor report is reused for 90
+seconds when OK and 15 seconds otherwise (`core/src/doctor.ts`), and model
+inventories keep their own windows, so an out-of-band change such as a vendor CLI
+login or install outside the daemon reaches `/v2/harnesses` within about 30
+seconds from non-OK to OK and 105 seconds from OK to broken, plus sweep time; a
+held catalog answer can be up to five minutes older than that and says so in
+`generatedAt`. Auth-readiness refresh clears that harness's doctor evidence, not
+these projections, so its result reaches the next sweep. A `fresh` harness read
 bypasses the window; the catalog has no fresh form, and `claudexor capabilities`
 composes it in-process.
 `claudexor trust` and `secrets` likewise project `/v2/trust` and `/v2/secrets`;
