@@ -37,6 +37,7 @@ import { emptyMaintenanceEvidence, type HarnessInspection } from "./harness-main
 import { harnessProgram, harnessPrograms } from "./harness-programs.js";
 import { MAINTENANCE_EVIDENCE_PREFIX } from "./harness-installer.js";
 import { trackHarnessRuns } from "./harness-maintenance-runs.js";
+import { invalidateStatusProjectionCaches } from "./status-projection-cache.js";
 
 export const HARNESS_MAINTENANCE_OPERATION_ID = "harness.maintenance.create";
 const CLIENT_ID = "control-api";
@@ -225,6 +226,11 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
     accountObservations.invalidateHarness(harness);
     deps.readiness?.().invalidate(harness);
     clearCodexEffortCache();
+    // An install or update changes what the readiness projections answer: the
+    // catalog's held window would otherwise show the old program for minutes,
+    // and the Accounts harness statuses, which have no expiry, until some other
+    // invalidation.
+    invalidateStatusProjectionCaches();
   }
   async function execute(raw: unknown, ctx: RunContext) {
     const params = HarnessMaintenanceParams.parse(raw);

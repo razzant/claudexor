@@ -115,12 +115,12 @@ export const CatalogHarness = z
       ),
     displayName: z.string().describe("Human display name from the manifest."),
     status: AdapterStatus.describe(
-      "Doctor verdict: ok | degraded | unavailable (doctor-backed, cached ~90s).",
+      "Doctor verdict: ok | degraded | unavailable, as of `generatedAt` (doctor-backed).",
     ),
     providerFamily: ProviderFamily.describe("Vendor family the harness routes to."),
     enabledIntents: z
       .array(z.string())
-      .describe("Intents the gateway will route to this harness right now."),
+      .describe("Intents the gateway would route to this harness, as of `generatedAt`."),
     disabledIntents: z
       .array(z.string())
       .describe("Intents the doctor disabled (with reasons in `reasons`)."),

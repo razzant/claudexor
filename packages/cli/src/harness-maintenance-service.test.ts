@@ -18,9 +18,11 @@ import {
 import { RunEventBus } from "@claudexor/daemon";
 import type { RunEvent } from "@claudexor/schema";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
+import { accountObservations } from "./account-observations.js";
 import { createHarnessMaintenance } from "./harness-maintenance-service.js";
 import { emptyMaintenanceEvidence } from "./harness-maintenance.js";
 import { harnessProgram } from "./harness-programs.js";
+import { StatusProjectionCache } from "./status-projection-cache.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const selection = (version = "1.0.0") => ({
@@ -362,6 +364,11 @@ describe("durable vendor operation", () => {
   });
   it("commits exact command and before evidence before acknowledging mutation; active runs are a fact", async () => {
     const w = await harnessWorld();
+    // A readiness projection held from before the update, and every harness's account observations.
+    // It never expires on its own, so only the maintenance invalidation can refresh it.
+    const projection = new StatusProjectionCache<string>({ ttlMs: Infinity });
+    expect(await projection.read(async () => "before")).toBe("before");
+    const dropAllAccounts = vi.spyOn(accountObservations, "invalidate");
     nativeEvent(w.bus, "harness.started");
     nativeEvent(w.bus, "harness.started", "run-a", "a2");
     nativeEvent(w.bus, "harness.started", "run-b");
@@ -388,6 +395,10 @@ describe("durable vendor operation", () => {
       ["update", "mutated"],
     ]);
     expect(w.readiness.invalidate).toHaveBeenCalledWith("codex");
+    // The update drops the cached status projections, never every harness's account observations.
+    expect(await projection.read(async () => "after")).toBe("after");
+    expect(dropAllAccounts).not.toHaveBeenCalled();
+    dropAllAccounts.mockRestore();
   });
   it("cancel after mutation stops the child, re-observes effects and retains the command", async () => {
     const w = await harnessWorld({ holdCompletion: true });
