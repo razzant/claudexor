@@ -2,14 +2,13 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, ftruncateSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { ControlUploadCreateRequest, ControlUploadStatus } from "@claudexor/schema";
-import { hashJson, newId } from "@claudexor/util";
+import { hashJson, newId, wakePoolWriteSlots } from "@claudexor/util";
 import {
   ensureDirectory,
   externalWriteFlags,
   unlinkExternalFile,
   writeExternalIncremental,
 } from "./external-files.js";
-import { wakeUploadWriteSlots } from "./libuv-pool.js";
 import { mapStoreError } from "./errors.js";
 import { deleteUnownedInlineInTx } from "./blob-files.js";
 import { bindIdempotencyInTx } from "./idempotency.js";
@@ -356,7 +355,7 @@ export class SqlUploads {
   }
   private markCancelled(row: UploadRow): void {
     this.cancelled.add(row.status.uploadId);
-    wakeUploadWriteSlots();
+    wakePoolWriteSlots();
     this.digests.delete(row.status.uploadId);
     row.status = { ...row.status, state: "cancelled" };
     row.state = "discarded";

@@ -1,12 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { appendRunEvent } from "@claudexor/event-log";
+import { appendRunEventLanded } from "@claudexor/event-log";
 import {
   ControlRunMessageRequest,
   ControlRunMessageResponse,
   type LiveMessageDelivery,
   type LiveMessageInput,
-  type RunEventType,
 } from "@claudexor/schema";
 import { safeProblemMessage, sha256 } from "@claudexor/util";
 import type { DaemonRunRecord } from "./run-record.js";
@@ -87,13 +86,16 @@ export async function handleRunMessageRoute(
 
 /**
  * Journal-first admission (CONTRACT A23): the `message.accepted` row is
- * appended through the failure-PROPAGATING `appendRunEvent` (never the
- * swallowing audit helper) BEFORE the daemon service is called. If that append
- * throws, nothing is dispatched and the receipt is `rejected` /
+ * appended through the failure-PROPAGATING `appendRunEventLanded` (never the
+ * swallowing audit helper) and its landing awaited, the live run's durable
+ * sink included, BEFORE the daemon service is called. If that landing fails,
+ * nothing is dispatched and the receipt is `rejected` /
  * `admission_persist_failed` (a new key is needed to try again). After the
  * adapter answers, `message.delivered` or `message.refused` closes the message
- * the same way; a row landing after the run's terminal commit is file-tail
- * stamped (durable, on the next timeline read; the live SSE push is missed).
+ * the same way, before the receipt returns; a refused row is this request's
+ * failure alone and never held for the live run's log. A row landing after the
+ * run's terminal commit is file-tail stamped (durable, on the next timeline
+ * read; the live SSE push is missed).
  */
 async function deliverLiveMessage(
   record: DaemonRunRecord,
@@ -121,7 +123,7 @@ async function deliverLiveMessage(
     });
   }
   try {
-    appendMessageRow(record, runId, "message.accepted", {
+    await appendMessageRow(record, runId, "message.accepted", {
       ...digest,
       text: body.text,
       title: `Live message admitted (${textBytes} bytes)`,
@@ -139,7 +141,7 @@ async function deliverLiveMessage(
     ...(body.expectedAttemptId ? { expectedAttemptId: body.expectedAttemptId } : {}),
     messageId,
   });
-  const closing: RunEventType | null =
+  const closing: MessageRowType | null =
     delivery.outcome === "delivered"
       ? "message.delivered"
       : delivery.outcome === "accepted"
@@ -147,7 +149,7 @@ async function deliverLiveMessage(
         : "message.refused";
   if (closing) {
     try {
-      appendMessageRow(record, runId, closing, {
+      await appendMessageRow(record, runId, closing, {
         ...digest,
         ...(delivery.attemptId ? { attempt_id: delivery.attemptId } : {}),
         ...(delivery.harnessId ? { harness_id: delivery.harnessId } : {}),
@@ -175,13 +177,15 @@ async function deliverLiveMessage(
   return receiptFor(runId, messageId, delivery);
 }
 
-function appendMessageRow(
+type MessageRowType = "message.accepted" | "message.delivered" | "message.refused";
+
+async function appendMessageRow(
   record: DaemonRunRecord,
   runId: string,
-  type: RunEventType,
+  type: MessageRowType,
   payload: Record<string, unknown>,
-): void {
-  appendRunEvent(
+): Promise<void> {
+  await appendRunEventLanded(
     join(record.runDir as string, "events.jsonl"),
     runId,
     record.taskId ?? "unknown",

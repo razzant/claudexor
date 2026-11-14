@@ -230,18 +230,19 @@ describe("candidate produced-output persistence", () => {
     rmSync(outside, { force: true });
   });
 
-  it("preserves a linked gitignored screenshot even when absent from the diff", () => {
+  it("preserves a linked gitignored screenshot even when absent from the diff", async () => {
     const worktree = root("claudexor-linked-output-tree-");
     const runRoot = root("claudexor-linked-output-run-");
     const attemptDir = join(runRoot, "attempts", "a01");
     mkdirSync(join(worktree, "screenshots"), { recursive: true });
     writeFileSync(join(worktree, "screenshots", "ignored.png"), Buffer.from([0x89, 0x50]));
     const writes: Record<string, unknown>[] = [];
-    const { produced } = writeCandidateAttemptArtifacts({
+    const { produced } = await writeCandidateAttemptArtifacts({
       store: {
-        writeText: () => undefined,
-        writePatch: () => undefined,
-        writeYaml: (_path: string, value: unknown) => writes.push(value as Record<string, unknown>),
+        writeTextAsync: () => undefined,
+        writePatchAsync: () => undefined,
+        writeYamlAsync: (_path: string, value: unknown) =>
+          writes.push(value as Record<string, unknown>),
       } as never,
       attemptDir,
       worktreePath: worktree,
@@ -255,18 +256,18 @@ describe("candidate produced-output persistence", () => {
     expect(writes[0]?.["produced_files"]).toEqual(["screenshots/ignored.png"]);
   });
 
-  it("copies an owned raster linked from markdown exactly once", () => {
+  it("copies an owned raster linked from markdown exactly once", async () => {
     const worktree = root("claudexor-linked-owned-tree-");
     const attemptDir = root("claudexor-linked-owned-attempt-");
     const relative = `${artifactRelativeDir}/browser/shot.png`;
     mkdirSync(join(worktree, artifactRelativeDir, "browser"), { recursive: true });
     writeFileSync(join(worktree, relative), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const { produced } = writeCandidateAttemptArtifacts({
+    const { produced } = await writeCandidateAttemptArtifacts({
       store: {
-        writeText: () => undefined,
-        writePatch: () => undefined,
-        writeYaml: () => undefined,
+        writeTextAsync: () => undefined,
+        writePatchAsync: () => undefined,
+        writeYamlAsync: () => undefined,
       } as never,
       attemptDir,
       worktreePath: worktree,
@@ -282,7 +283,7 @@ describe("candidate produced-output persistence", () => {
     );
   });
 
-  it("deduplicates a markdown case alias before writing on case-insensitive filesystems", () => {
+  it("deduplicates a markdown case alias before writing on case-insensitive filesystems", async () => {
     const worktree = root("claudexor-case-alias-tree-");
     const attemptDir = root("claudexor-case-alias-attempt-");
     const relative = `${artifactRelativeDir}/browser/shot.png`;
@@ -294,11 +295,11 @@ describe("candidate produced-output persistence", () => {
     // regression is macOS/APFS-specific and is exercised wherever the alias
     // resolves to the owned file.
     if (!existsSync(join(worktree, alias))) return;
-    const { produced } = writeCandidateAttemptArtifacts({
+    const { produced } = await writeCandidateAttemptArtifacts({
       store: {
-        writeText: () => undefined,
-        writePatch: () => undefined,
-        writeYaml: () => undefined,
+        writeTextAsync: () => undefined,
+        writePatchAsync: () => undefined,
+        writeYamlAsync: () => undefined,
       } as never,
       attemptDir,
       worktreePath: worktree,
@@ -314,7 +315,7 @@ describe("candidate produced-output persistence", () => {
     );
   });
 
-  it("enforces one combined byte ceiling across linked and owned rasters", () => {
+  it("enforces one combined byte ceiling across linked and owned rasters", async () => {
     const worktree = root("claudexor-combined-cap-tree-");
     const attemptDir = root("claudexor-combined-cap-attempt-");
     mkdirSync(join(worktree, "linked"), { recursive: true });
@@ -324,11 +325,11 @@ describe("candidate produced-output persistence", () => {
     writeFileSync(join(worktree, artifactRelativeDir, "second.png"), bytes);
     writeFileSync(join(worktree, artifactRelativeDir, "third.png"), bytes);
 
-    const { produced } = writeCandidateAttemptArtifacts({
+    const { produced } = await writeCandidateAttemptArtifacts({
       store: {
-        writeText: () => undefined,
-        writePatch: () => undefined,
-        writeYaml: () => undefined,
+        writeTextAsync: () => undefined,
+        writePatchAsync: () => undefined,
+        writeYamlAsync: () => undefined,
       } as never,
       attemptDir,
       worktreePath: worktree,
@@ -342,7 +343,7 @@ describe("candidate produced-output persistence", () => {
     expect(existsSync(join(attemptDir, "produced", artifactRelativeDir, "third.png"))).toBe(false);
   });
 
-  it("persists no produced media for an uncaptured candidate", () => {
+  it("persists no produced media for an uncaptured candidate", async () => {
     const worktree = root("claudexor-refused-output-tree-");
     const attemptDir = root("claudexor-refused-output-attempt-");
     mkdirSync(join(worktree, artifactRelativeDir), { recursive: true });
@@ -352,11 +353,12 @@ describe("candidate produced-output persistence", () => {
       Buffer.from([0x89, 0x50, 0x4e, 0x47]),
     );
     const writes: Record<string, unknown>[] = [];
-    const { produced } = writeCandidateAttemptArtifacts({
+    const { produced } = await writeCandidateAttemptArtifacts({
       store: {
-        writeText: () => undefined,
-        writePatch: () => undefined,
-        writeYaml: (_path: string, value: unknown) => writes.push(value as Record<string, unknown>),
+        writeTextAsync: () => undefined,
+        writePatchAsync: () => undefined,
+        writeYamlAsync: (_path: string, value: unknown) =>
+          writes.push(value as Record<string, unknown>),
       } as never,
       attemptDir,
       worktreePath: worktree,
@@ -373,7 +375,7 @@ describe("candidate produced-output persistence", () => {
     expect(writes[0]).not.toHaveProperty("diffstat");
   });
 
-  it("writes the exact diff to patch.diff, credential-shaped lines included (#555)", () => {
+  it("writes the exact diff to patch.diff, credential-shaped lines included (#555)", async () => {
     const worktree = root("claudexor-copy-output-tree-");
     const attemptDir = root("claudexor-copy-output-attempt-");
     // Assembled at runtime so no secret-shaped literal lives in this file.
@@ -384,11 +386,12 @@ describe("candidate produced-output persistence", () => {
     const texts: Record<string, string> = {};
     const yamls: Record<string, unknown>[] = [];
     const store = {
-      writeText: (path: string, value: string) => void (texts[path] = value),
-      writePatch: (path: string, value: string) => void (texts[path] = value),
-      writeYaml: (_path: string, value: unknown) => yamls.push(value as Record<string, unknown>),
+      writeTextAsync: (path: string, value: string) => void (texts[path] = value),
+      writePatchAsync: (path: string, value: string) => void (texts[path] = value),
+      writeYamlAsync: (_path: string, value: unknown) =>
+        yamls.push(value as Record<string, unknown>),
     } as never;
-    writeCandidateAttemptArtifacts({
+    await writeCandidateAttemptArtifacts({
       store,
       attemptDir,
       worktreePath: worktree,
@@ -402,18 +405,18 @@ describe("candidate produced-output persistence", () => {
     expect(yamls[0]?.["diffstat"]).toEqual({ files: 1, additions: 2, deletions: 0 });
   });
 
-  it("saves a raster whose bytes look credential-shaped like any other image (#555)", () => {
+  it("saves a raster whose bytes look credential-shaped like any other image (#555)", async () => {
     const worktree = root("claudexor-mixed-output-tree-");
     const attemptDir = root("claudexor-mixed-output-attempt-");
     const token = ["sk", "m".repeat(24)].join("-");
     writeFileSync(join(worktree, "clean.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     const fixture = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0]), Buffer.from(token)]);
     writeFileSync(join(worktree, "leak.png"), fixture);
-    const { produced } = writeCandidateAttemptArtifacts({
+    const { produced } = await writeCandidateAttemptArtifacts({
       store: {
-        writeText: () => undefined,
-        writePatch: () => undefined,
-        writeYaml: () => undefined,
+        writeTextAsync: () => undefined,
+        writePatchAsync: () => undefined,
+        writeYamlAsync: () => undefined,
       } as never,
       attemptDir,
       worktreePath: worktree,
@@ -426,17 +429,18 @@ describe("candidate produced-output persistence", () => {
     expect(readFileSync(join(attemptDir, "produced", "leak.png")).equals(fixture)).toBe(true);
   });
 
-  it("records an image it did not save with its size and reason, and names it in the summary line", () => {
+  it("records an image it did not save with its size and reason, and names it in the summary line", async () => {
     const worktree = root("claudexor-oversized-output-tree-");
     const attemptDir = root("claudexor-oversized-output-attempt-");
     writeFileSync(join(worktree, "big.png"), Buffer.alloc(16 * 1024 * 1024 + 1));
     writeFileSync(join(worktree, "small.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     const writes: Record<string, unknown>[] = [];
-    const result = writeCandidateAttemptArtifacts({
+    const result = await writeCandidateAttemptArtifacts({
       store: {
-        writeText: () => undefined,
-        writePatch: () => undefined,
-        writeYaml: (_path: string, value: unknown) => writes.push(value as Record<string, unknown>),
+        writeTextAsync: () => undefined,
+        writePatchAsync: () => undefined,
+        writeYamlAsync: (_path: string, value: unknown) =>
+          writes.push(value as Record<string, unknown>),
       } as never,
       attemptDir,
       worktreePath: worktree,

@@ -8,6 +8,7 @@
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { measureSync } from "@claudexor/util";
 
 export interface HarnessMetric {
   avg_cost_usd: number | null;
@@ -83,6 +84,8 @@ export function loadHarnessMetrics(configDir: string): HarnessMetrics {
  * they burned without earning a flattering latency average.
  * An explicit null cost means the settled attempt was unpriced and invalidates
  * the prior cost average; an omitted cost leaves compatible history unchanged.
+ * The read-modify-write of this one shared file stays synchronous, so two
+ * attempts settling at once never interleave it; it is labeled in `worstSync`.
  */
 export function recordHarnessMetric(
   configDir: string,
@@ -92,6 +95,14 @@ export function recordHarnessMetric(
     durationMs?: number | null;
     authMode?: "local_session" | "api_key" | null;
   },
+): void {
+  measureSync("metrics.harness_write", () => recordHarnessSample(configDir, harnessId, sample));
+}
+
+function recordHarnessSample(
+  configDir: string,
+  harnessId: string,
+  sample: Parameters<typeof recordHarnessMetric>[2],
 ): void {
   const all = loadHarnessMetrics(configDir);
   const prev = all[harnessId] ?? {

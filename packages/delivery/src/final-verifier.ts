@@ -1,5 +1,5 @@
 /** Delivery-owned FinalVerifier (INV-115). */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FinalVerifyRecord, type RunOutcomeFacts } from "@claudexor/schema";
@@ -13,7 +13,7 @@ import {
   worktreeAdd,
   worktreeRemove,
 } from "@claudexor/workspace";
-import { newId, redactSecrets } from "@claudexor/util";
+import { newId, redactSecrets, removeTree } from "@claudexor/util";
 
 export interface VerifiablePatch {
   baseSha?: string;
@@ -166,6 +166,7 @@ export async function finalVerifyPatch(
         // Best-effort cleanup; startup GC owns crash debris.
       }
     }
-    rmSync(verifyBase, { recursive: true, force: true });
+    // The verify clone is removed off the main thread, one entry at a time (#688).
+    await removeTree(verifyBase);
   }
 }

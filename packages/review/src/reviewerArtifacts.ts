@@ -1,9 +1,16 @@
-import { appendFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { ReviewFinding } from "@claudexor/schema";
+import type { HarnessEvent, ReviewFinding } from "@claudexor/schema";
 import { ReviewFinding as ReviewFindingSchema } from "@claudexor/schema";
-import { appendLine, ensureDir, newId, redactSecrets, writeJson, writeText } from "@claudexor/util";
+import {
+  ensureDir,
+  newId,
+  orderedAppender,
+  pacedByAppends,
+  redactSecrets,
+  writeJson,
+  writeText,
+} from "@claudexor/util";
 import type { ReviewerSpec, ReviewCandidateInput, TransientRetryPolicy } from "./reviewEngine.js";
 import type {
   ReviewerArtifactContext,
@@ -70,10 +77,43 @@ export function createReviewerArtifactContext(
   return ctx;
 }
 
+/**
+ * A review never resolves with its reviewers' files still in flight. When the
+ * review already failed (`failure`), that failure stays the one it reports, and
+ * a reviewer file's own failure travels as its cause instead of replacing it
+ * (#704); a failure that already has a cause keeps it.
+ */
+export async function settleReviewerFiles(
+  dir: string,
+  failure: { error: unknown } | null,
+): Promise<void> {
+  try {
+    await orderedAppender.settledUnder(dir);
+  } catch (error) {
+    if (!failure) throw error;
+    if (failure.error instanceof Error && failure.error.cause === undefined)
+      failure.error.cause = error;
+  }
+}
+
 /** Append transcript bytes exactly as projected (`ReviewerTextProjection`):
- * nothing is added here, so a stream fragment never gains a line break. */
+ * nothing is added here, so a stream fragment never gains a line break. The
+ * bytes are queued on the ordered appender, in call order. */
 export function appendTranscript(path: string, text: string): void {
-  appendFileSync(path, text, { encoding: "utf8", mode: 0o600 });
+  orderedAppender.append(path, text);
+}
+
+/** The reviewer's harness stream, read no faster than its own files land: the
+ * normalized stream, the transcript and the panel's progress journal. */
+export function pacedReviewerStream(
+  events: AsyncIterable<HarnessEvent>,
+  artifact: ReviewerArtifactContext,
+): AsyncIterable<HarnessEvent> {
+  return pacedByAppends(events, [
+    artifact.eventsPath,
+    artifact.transcriptPath,
+    artifact.progressPath,
+  ]);
 }
 
 export function safeFilePart(value: string): string {
@@ -107,7 +147,7 @@ export function emitReviewerProgress(
     ...patch,
   };
   const redacted = redactValue(event);
-  appendLine(artifact.progressPath, JSON.stringify(redacted));
+  orderedAppender.append(artifact.progressPath, `${JSON.stringify(redacted)}\n`);
   try {
     onReviewerEvent?.(redacted);
   } catch {
@@ -124,11 +164,20 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Merge `patch` into the reviewer's metadata and rewrite `metadata.json` only
+ * when a value changes: adapters stamp their route facts (credential route,
+ * profile, observed model) on every event, so the synchronous rewrite follows
+ * a change, never each event (#688). */
 export function updateReviewerMetadata(
   artifact: ReviewerArtifactContext,
   patch: Record<string, unknown>,
 ): void {
-  artifact.metadata = { ...artifact.metadata, ...redactValue(patch) };
+  const redacted = redactValue(patch);
+  const changed = Object.entries(redacted).some(
+    ([key, value]) => JSON.stringify(artifact.metadata[key]) !== JSON.stringify(value),
+  );
+  if (!changed) return;
+  artifact.metadata = { ...artifact.metadata, ...redacted };
   writeJson(artifact.metadataPath, artifact.metadata);
 }
 

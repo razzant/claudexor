@@ -99,6 +99,12 @@ export const DaemonTimingFacts = z.object({
           "control.run_detail",
           "control.run_summary",
           "scope.persist",
+          "process.identity_capture",
+          "run.telemetry_write",
+          "metrics.harness_write",
+          "file.write_text",
+          "file.capture_write",
+          "daemon.log_line",
         ]),
         durationMs: ms,
         at: IsoTimestamp,
@@ -106,7 +112,7 @@ export const DaemonTimingFacts = z.object({
     )
     .max(32)
     .describe(
-      "The 32 longest instrumented synchronous sections since process start, descending by duration, retaining later samples on ties. Labels contain no SQL, paths, IDs or payloads. Scope persistence measures synchronous serialization only; its file writes are asynchronous. Sections can overlap; these facts do not attribute a stall to disk or another cause.",
+      "The 32 longest instrumented synchronous sections since process start, descending by duration, retaining later samples on ties. Labels contain no SQL, paths, IDs or payloads. Scope persistence measures synchronous serialization only; its file writes are asynchronous. The process, run, metrics, file and daemon labels name the synchronous work that deliberately stays on the main thread: a spawned child's identity capture, the run telemetry artifact, the shared harness metrics file, a remaining synchronous text-file write, a chunk of a Git child's output streamed to its capture file and a daemon log line. Sections can overlap; these facts do not attribute a stall to disk or another cause.",
     ),
   bulk: z
     .array(

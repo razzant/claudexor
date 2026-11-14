@@ -25,13 +25,14 @@ export function libuvPoolSize(): number {
   return libuvPoolSizeFrom(process.env.UV_THREADPOOL_SIZE);
 }
 
-/** Upload writes leave two threads for DNS and other filesystem work.
- * A pool of one cannot spare them; that is the size the operator set. */
-export function uploadWriteSlots(): number {
+/** Pool writes (upload transfers, ordered appends) leave two threads for DNS
+ * and other filesystem work. A pool of one cannot spare them; that is the size
+ * the operator set. */
+export function poolWriteSlots(): number {
   return Math.max(1, libuvPoolSize() - 2);
 }
 
-export interface UploadWriteGate {
+export interface PoolWriteGate {
   acquire(cancelled?: () => void): Promise<() => void>;
   wake(): void;
 }
@@ -40,7 +41,7 @@ export interface UploadWriteGate {
  * the gate full waits on that promise (the event loop), not a spin. `wake`
  * rechecks every waiter, so a cancellation rejects without waiting for a slot.
  * Release is idempotent and hands the slot to the oldest waiter. */
-export function createUploadWriteGate(slots: () => number): UploadWriteGate {
+export function createPoolWriteGate(slots: () => number): PoolWriteGate {
   let active = 0;
   const queue: Array<() => void> = [];
   const attemptOf = (
@@ -87,15 +88,17 @@ export function createUploadWriteGate(slots: () => number): UploadWriteGate {
   };
 }
 
-const uploadWrites = createUploadWriteGate(uploadWriteSlots);
+/** The one gate of this process's pool: upload transfers and ordered appends share it. */
+const poolWrites = createPoolWriteGate(poolWriteSlots);
 
-/** One pool operation under one upload slot, released when the operation settles.
- * Callers do not hold a slot while they wait for network bytes. */
-export async function withUploadWriteSlot<T>(
+/** One pool operation under one slot, released when the operation settles.
+ * Callers do not hold a slot while they wait for network bytes or for any
+ * other await, so slots never nest. */
+export async function withPoolWriteSlot<T>(
   cancelled: (() => void) | undefined,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const release = await uploadWrites.acquire(cancelled);
+  const release = await poolWrites.acquire(cancelled);
   try {
     return await operation();
   } finally {
@@ -103,6 +106,6 @@ export async function withUploadWriteSlot<T>(
   }
 }
 
-export function wakeUploadWriteSlots(): void {
-  uploadWrites.wake();
+export function wakePoolWriteSlots(): void {
+  poolWrites.wake();
 }
