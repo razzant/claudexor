@@ -4,6 +4,30 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v6.1.2** (2026-11-14): **The daemon keeps answering while lanes write to a
+  slow disk, and the capability catalog answers without waiting for a full
+  sweep.** Harness events, run artifacts and lane workspace work no longer hold
+  the daemon's main thread while a slow or busy disk answers (#704): a run's
+  progress lines reach `events.jsonl` and live streams a moment after the harness
+  produced them, never out of order, and the daemon status's `worstSync` list can
+  name six more sections. `GET /v2/agent-capabilities` and the MCP
+  `claudexor_capabilities` tool answer their last composition, dated by
+  `generatedAt`, for up to five minutes past the 15-second window while that read
+  starts the one recompute that replaces it; a harness install or update through
+  the daemon now refreshes the cached status projections, the Accounts harness
+  statuses included (#718). Harness Update keeps the reason a product-made npm
+  copy was not replaced and names what its commit checks compared (#696); this
+  diagnoses the intermittent Windows Copilot conversion failure (#672) and does
+  not fix it. Also: Browser MCP 0.0.85 with its pinned Playwright runtime (#699),
+  undici 7.30.2 in the Codex transport (#701), and tests that no longer depend
+  on the machine's speed: two macOS app tests (#711), the upload pool tests (#710)
+  and four daemon tests (#713, #714).
+  Older engines, 6.1.1 included, refuse a data root 6.1.2 has served
+  (`root_authority_floor_regression`). The SSH-runtime manifest of this release
+  requires Claudexor.app 6.1.2; the local-engine manifest still requires
+  Claudexor.app 6.0.0, and control protocol major 3 and store schema 8 are
+  unchanged.
+
 - **v6.1.1** (2026-11-13): The first published release of the 6.1 line. It ships
   everything listed under v6.1.0: read-only lookup of an accepted run start or
   thread turn (#675), less repeated work before a model call (#698), fewer engine

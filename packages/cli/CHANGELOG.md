@@ -1,5 +1,114 @@
 # @claudexor/cli
 
+## 6.1.2
+
+### Patch Changes
+
+- c3a2d33: The capability catalog (`GET /v2/agent-capabilities` and the MCP
+  `claudexor_capabilities` tool) no longer makes a reader wait for a full sweep of
+  every harness once its 15-second window has passed. For five more minutes the
+  daemon answers with its last composition, dated by `generatedAt`, and that read
+  starts the one recompute that replaces it. On a large install the sweep took 11
+  to 19 seconds, and a host that read the catalog after a quiet spell waited that
+  long for its Accounts page. Nothing sweeps when nobody reads. The first read after
+  start, after a credential change, a setup-login transition, a harness install or
+  update or a changed global config, and any read more than five minutes past the
+  window still wait for a new composition. A recompute that fails leaves the
+  previous composition under its own `generatedAt`, and the next read tries again.
+  `/v2/harnesses`, `claudexor doctor` and the MCP status tool still wait for a new
+  sweep once the window has passed.
+
+  A harness install or update through the daemon now also drops the cached status
+  projections, so `/v2/harnesses` and the catalog show the new program at the next
+  read instead of up to 15 seconds later, and the Accounts harness statuses, which
+  had no expiry, show it too; the first Accounts read after an install or update
+  waits for one harness sweep. The catalog schema's `status` and
+  `enabledIntents` descriptions no longer claim a cache time or "right now": both
+  hold as of `generatedAt`.
+
+- a20bc45: The daemon no longer stops answering while running lanes write their event
+  files. Every harness event used to be written to the run's `events.jsonl`, and
+  to the attempt and reviewer journals, on the daemon's main thread, so on a slow
+  or busy disk each write held every control request, event stream and other lane
+  until the disk answered. These writes now go to the disk in the background, in
+  order and one write at a time per file, and a lane whose harness produces events
+  faster than the disk takes them slows down to the disk's pace while the rest of
+  the daemon keeps serving; that wait does not count as the harness being silent
+  for `runtime.harness_inactivity_timeout_ms`, and each one starts the window
+  again, so a harness whose status output alone keeps filling the journal is not
+  cut off by it. Creating and removing a lane's workspace, removing a read-only
+  lane's scratch home, keeping an unfinished run's workspace for a later
+  continuation, writing a run's final answer, patch, facts and summary (the run
+  telemetry file is still written on the main thread, under its own label) and the
+  Git watchdog's progress check no longer wait on the disk either, and a spawned
+  process's identity is read once instead of twice. A final file being replaced is
+  never seen half written.
+
+  A run's progress lines reach `events.jsonl` and live streams a moment after the
+  harness produced them, never out of order. The lines a run waits for (its
+  creation, a question to you, a live message) and its final event are on disk
+  before the run goes on. If a line the run wrote cannot be written by the time it
+  finishes, fails or is cancelled, the run's final event still lands and names the
+  failure ("Run events did not reach the journal"); a line that fails while that
+  final event is already being prepared is missing and not named. A control audit,
+  a live message or a run's own diagnostic line is never refused for another line's
+  failure, and never hides it. If
+  the daemon process crashes, the last progress lines of a run can be missing from
+  its event file. The daemon status's `worstSync` list can now name six more
+  sections, the work that still runs on the main thread:
+  `process.identity_capture`, `run.telemetry_write`, `metrics.harness_write`,
+  `file.write_text`, `file.capture_write` and `daemon.log_line`.
+
+- 9fbdaf3: Harness Update keeps the reason a product-made npm copy was not replaced. When
+  the vendor installer exits nonzero and the conversion then fails, the installer's
+  exit still decides the problem, and the conversion's own code and message are now
+  added to the receipt's `limitations` instead of disappearing. Text output of
+  `claudexor harness install|update` (without `--json`) now prints the receipt's
+  limitations before the problem or outcome line; JSON output and exit codes are
+  unchanged. When a failed commit check also cannot restore the hidden old package,
+  the error keeps the original failure and names the restore error and the
+  `<package>.claudexor-converted` location instead of reporting only the restore
+  error. The next explicit maintenance attempts to recover it and never overwrites
+  anything that occupies the original package path. Conversion failure messages
+  now say that conversion removed nothing instead of claiming the old copy is
+  unchanged, which was false when the vendor installer had removed it itself.
+  The three commit-boundary refusals now name what they compared: a changed
+  package/launcher relation shows the previous and current relation and the
+  ordinary selection it was read from, a changed selection shows the expected and
+  observed path, real path and version, and a changed launcher shows its path and
+  the differing stat fields with both values. Recovery limitation messages now use
+  the existing secret masker; structured paths and the recovery acknowledgement
+  are unchanged. These messages diagnose the intermittent Windows Copilot
+  conversion failure (#672); they do not fix it.
+- Updated dependencies [e4cd2e5]
+- Updated dependencies [c3a2d33]
+- Updated dependencies
+- Updated dependencies [a20bc45]
+  - @claudexor/core@6.1.2
+  - @claudexor/schema@6.1.2
+  - @claudexor/harness-codex@6.1.2
+  - @claudexor/util@6.1.2
+  - @claudexor/orchestrator@6.1.2
+  - @claudexor/review@6.1.2
+  - @claudexor/workspace@6.1.2
+  - @claudexor/artifact-store@6.1.2
+  - @claudexor/control-api@6.1.2
+  - @claudexor/daemon@6.1.2
+  - @claudexor/delivery@6.1.2
+  - @claudexor/gateway@6.1.2
+  - @claudexor/harness-acp@6.1.2
+  - @claudexor/harness-agy@6.1.2
+  - @claudexor/harness-claude@6.1.2
+  - @claudexor/harness-cursor@6.1.2
+  - @claudexor/harness-fake@6.1.2
+  - @claudexor/harness-grok@6.1.2
+  - @claudexor/harness-opencode@6.1.2
+  - @claudexor/harness-raw-api@6.1.2
+  - @claudexor/acp-server@6.1.2
+  - @claudexor/config@6.1.2
+  - @claudexor/mcp-server@6.1.2
+  - @claudexor/secrets@6.1.2
+
 ## 6.1.1
 
 ### Patch Changes
