@@ -3190,6 +3190,72 @@ refresh, and each caller rereads current authorization. Selection hands its
 exact-profile catalog to the invocation, which rechecks the account fingerprint; no catalog or credentials are cached across operations, and an
 unknown fingerprint keeps fresh discovery and cannot authorize native
 continuation reuse.
+Raw model selection owns a separate admission-grade positive login observation
+(`model-login-readiness.ts`), keyed by the whole profile and locator, the stat
+versions of its owned `auth.json` and `config.toml` (including missing settings),
+known credential generation, and `observeHarnessProgram` identity/version.
+Unknown identity never authorizes reuse. Positive, dated, non-stale probes
+expire from their physical start/date under the shared doctor positive policy
+(`CLAUDEXOR_DOCTOR_TTL_MS`, default 90 seconds); hits never extend that date.
+Display projections, negative/unknown results, eligible sets and winners are
+never reused for admission. Live quota and unusable-credential evidence can
+exclude a locally ready account without launching another probe. A hit runs no
+CLI: a program replaced behind an unchanged wrapper, or a `config.toml` the CLI
+can no longer load while its file identity is unchanged, is seen only when the
+positive expires. A probe whose file or program identity changed while it ran
+still answers its callers, but that answer is not retained.
+
+Only identical in-flight raw I/O is shared. Catalog keys additionally include
+account/capability fingerprints, an opaque digest of current authorization,
+and the declared client version. Keys contain no tokens. Unknown or different
+identities never join and never cancel each other; completion/error removes
+entries. Each waiter has its own lifetime: one leaving preserves others, the
+last leaving aborts, and shutdown or a change of that read's own credential
+generation or harness program ends it (a default-subject change moves no
+registered row's generation). A login probe or catalog read ended by a
+credential change (a login probe also by a program change; nothing is repeated
+at shutdown) runs once more under the new identity (any login lifecycle moves
+every row's generation), so its caller still gets an answer; nothing from the
+ended read is used, a read that ended with its own answer keeps that answer,
+and a second change during the repeated read still fails its operation
+`auth_changed`. After each wait a consumer judges again only the
+account it waited for (`liveAccountRefusal`: enablement, a revoked or unusable
+credential, and live usage against the headroom threshold read at admission, as
+a strict pin of that account is judged; refusals, substitutions and capability
+marks are re-read by the catalog stage). It keeps its fresh catalogs and
+exclusions: a change about another
+account neither restarts the selection nor re-reads a catalog, and an account
+whose read failed is not tried again. A pool refusal reports the causes of its
+own decision, so an account blocked now reports that block rather than an
+earlier refusal of the same selection. Each consumer then performs its own
+bind/reserve/changed and release.
+The selected-account catalog GET has an HTTP-disconnect lifetime; the account
+display view also cancels abandoned acquisition while retaining its existing
+display observation policy. Accepted durable model operations retain their own
+lifetime, independent of the connection that created them. The Codex `/models`
+request and response body share a 60-second transport limit; expiry yields
+`catalog_unavailable`, never an empty successful inventory, and Auto continues
+its normal candidate search. Catalog admission remains NEVER cached: completed
+catalogs are not retained across selections.
+
+Operation receipts carry optional `preparation`; HTTP GET exposes it only with
+`includePreparation=true`, so strict earlier clients keep their DTO. It contains `totalMs`, `steps`
+and `process`, frozen at dispatch or a pre-dispatch failure. Each step records
+`count`, `totalMs`, `maxMs`: `payloadRead`, `payloadParse`, `admission`,
+`loginProbe`, `loginReady`, `catalogRead`, `catalogTransport`, `selection`,
+`reserve`, `adapterAuth`, `adapterBody`. A step's `totalMs` is the summed waits
+of this operation: concurrent probes can sum above the elapsed `totalMs`, and a
+wait that joined a shared read measures only its remaining part. `catalogRead`
+covers the adapter read; its nested `catalogTransport` measures the vendor
+fetch/body wait, including a shared read. `loginProbe` counts physical login
+probes this operation launched or joined; `loginReady` counts readiness reused
+without a probe. Steps overlap and must not be summed.
+Process `eventLoopActiveMs`/`eventLoopIdleMs` use the same utilization source as
+loop-facts; `childLaunches`/`childLaunchMs` measure launches including synchronous
+leader identity capture. These process deltas include other concurrent work
+and are not per-operation CPU attribution. No body, token or account path is
+recorded. Older receipts omit the optional timing object.
+
 Auto model operations now examine fresh per-account catalogs in selection order:
 listed accounts precede advisory misses; a soft observation (a live pre-progress
 refusal, or a served-model substitution of a non-preferred account) moves that
@@ -3373,7 +3439,10 @@ accepts custody before ACK and recovers a lost local reply through the same
 operation identity. Request bytes are released at terminal state, response bytes
 after ACK and unacknowledged responses 30 days after readiness; existing
 maintenance reclaims crash residue, then calls the daemon's `pruneHistory`
-owner (including cancellation-set cleanup) through both runtime compositions. A recorded response expiry stays the release
+owner (including cancellation-set cleanup) through both runtime compositions.
+That reclaim and the response-expiry timer list the payloads still in custody
+through the resource state index, so the listing reads the ready resources only,
+not the released and expired rows the table keeps. A recorded response expiry stays the release
 timestamp through delayed cleanup and restart, while an ordinary ACK uses its
 actual release time. Redundant uploads on an idempotent create are released
 without touching another live command's input. Outside the Agent history cap, a
@@ -5991,7 +6060,13 @@ kept only for cold import and an independent frozen copy kept for tests.
   can keep the total above that cap. Each pass selects at most 100 oldest
   eligible victims through keyset pages over a partial
   index, with needs-decision rows outside the candidate index and continuation/
-  retained-envelope exemptions checked once per candidate. Remaining excess is
+  retained-envelope exemptions checked once per candidate. The prune runs after
+  every terminal, so a page is bounded on that index at both ends: below by its
+  keyset position, above by the age cutoff on the creation time the index is
+  ordered by. The engine stamps a finish after its creation, in one timestamp
+  shape, so the bound removes no expired row; a row that breaks this waits until
+  both times have aged. A page with nothing expired reads no command created
+  after the cutoff. Remaining excess is
   handled on later passes; model and account-reset receipts are exempt. No
   separate 256 MiB prompt budget shortens this lifetime. Journal
   cursors keep their encoding and map onto the current partition generation;

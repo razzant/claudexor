@@ -289,6 +289,9 @@ export interface HarnessAdapter {
    * Adapters that support no profile transport simply omit it — the service
    * layer reports `unknown` availability for their profiles.
    */
+  /** Admission reuse requires an adapter-owned version of its login/settings files.
+   * Null means unknown: callers must perform a physical probe. Never returns secrets. */
+  credentialProfileIdentity?(profile: CredentialProfile): Promise<string | null>;
   probeCredentialProfile?(
     profile: CredentialProfile,
     abortSignal?: AbortSignal,

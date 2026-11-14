@@ -1,3 +1,4 @@
+import { measureModelPreparation, recordChildLaunch } from "@claudexor/util";
 import { sqlFixture } from "./store/test-support/sql-fixture.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1849,4 +1850,42 @@ describe("the requested model on failed operations (#649)", () => {
     // Reads write nothing back.
     expect(rows()).toEqual(before);
   });
+});
+
+it("publishes optional preparation timings at dispatch and freezes them before inference", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const dispatched = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const f = await fixture(async (_request, context) => {
+    await measureModelPreparation("adapterAuth", async () => {
+      recordChildLaunch(7);
+    });
+    await context.onDispatch(route);
+    entered();
+    await gate;
+    await measureModelPreparation("adapterBody", async () => {});
+    return result();
+  });
+  const started = await f.operations.create(f.upload(), "timing");
+  await dispatched;
+  const during = f.operations.inspect(started.id, true).preparation!;
+  expect(during.steps).toMatchObject({
+    payloadRead: { count: 1 },
+    payloadParse: { count: 1 },
+    adapterAuth: { count: 1 },
+  });
+  expect(during.process).toMatchObject({ childLaunches: 1, childLaunchMs: 7 });
+  expect(during.totalMs).toBeGreaterThanOrEqual(during.steps.payloadRead!.totalMs);
+  release();
+  await f.terminal(started.id);
+  const done = f.operations.inspect(started.id, true);
+  expect(f.operations.inspect(started.id)).not.toHaveProperty("preparation");
+  expect(f.store.get(started.id)!.result).toMatchObject({ preparation: during });
+  expect(done.preparation).toEqual(during);
+  expect(done.preparation!.steps.adapterBody).toBeUndefined();
+  expect(f.operations.inspect(started.id, true).preparation).toEqual(during);
 });

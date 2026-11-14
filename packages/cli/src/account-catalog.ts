@@ -59,6 +59,7 @@ async function accountAvailability(
   context: AccountCatalogContext,
   adapter: HarnessAdapter | undefined,
   profile: CredentialProfile,
+  signal?: AbortSignal,
 ): Promise<AccountCatalogAvailability & { canReadCatalog: boolean }> {
   const row = { credentialProfileId: profile.profile_id };
   const unavailable = (problem: ControlProblem) => ({
@@ -92,7 +93,7 @@ async function accountAvailability(
         : ("vendor_native" as const),
   };
   const status = composeCredentialProfileEvidence(
-    (await displayAccountObservation(profile, adapter)).status,
+    (await displayAccountObservation(profile, adapter, false, signal)).status,
     evidence,
   );
   if (!profileStatusAdmits(profile, status)) {
@@ -148,7 +149,8 @@ export async function enumerateAccountCatalogs<T>(input: {
   context: AccountCatalogContext;
   adapter: HarnessAdapter | undefined;
   profiles: readonly CredentialProfile[];
-  read(profile: CredentialProfile, canReadCatalog: boolean): Promise<T | null>;
+  read(profile: CredentialProfile, canReadCatalog: boolean, signal: AbortSignal): Promise<T | null>;
+  signal?: AbortSignal;
   observationKey: string;
 }): Promise<Array<AccountCatalogAvailability & { catalog: T | null }>> {
   return Promise.all(
@@ -157,14 +159,16 @@ export async function enumerateAccountCatalogs<T>(input: {
         input.context,
         input.adapter,
         profile,
+        input.signal,
       );
       try {
         const { value: catalog } = await accountObservations.read(
           input.observationKey,
           profile,
-          () => input.read(profile, canReadCatalog),
+          (signal) => input.read(profile, canReadCatalog, signal),
           false,
           input.adapter?.program,
+          input.signal,
         );
         return catalog === null && facts.problem === null
           ? {
@@ -178,6 +182,7 @@ export async function enumerateAccountCatalogs<T>(input: {
             }
           : { ...facts, catalog };
       } catch (error) {
+        input.signal?.throwIfAborted();
         const provided = ControlProblem.safeParse(
           error && typeof error === "object" && "problem" in error ? error.problem : null,
         );

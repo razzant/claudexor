@@ -1,3 +1,4 @@
+import { modelCredentialRead } from "./model-credential-read.js";
 import type { ModelAdapter } from "@claudexor/core";
 import type {
   ModelCapabilityLedger,
@@ -15,7 +16,7 @@ import {
 import { describeCodexClientVersion } from "@claudexor/harness-codex";
 import { redactSecrets } from "@claudexor/util";
 import { bindModelAccountEvidence } from "./model-account-evidence.js";
-import { modelError } from "./model-service-refusals.js";
+import { modelError, refusalProblem } from "./model-service-refusals.js";
 
 type SoftObservation = Pick<
   PreProgressRefusalObservation,
@@ -49,9 +50,11 @@ export async function selectModelCatalog(args: {
   /** Whether the request's historical native continuation belongs to this account. */
   boundHistory?: (profileId: string, fingerprint: string | null) => boolean;
   /** Live pre-generation refusals: a recently refusing account ranks like a marked one. */
-  refusals?: readonly PreProgressRefusalObservation[];
+  refusals?: () => readonly PreProgressRefusalObservation[] | undefined;
   /** Live served-model substitutions: that account answered this model with another one. */
-  substitutions?: readonly SoftObservation[];
+  substitutions?: () => readonly SoftObservation[];
+  /** The picked account's own live facts after a wait: a pin's refusal, or null. */
+  recheck: (profile: CredentialProfile) => Promise<Error | null>;
   /** Set when the clean-alternative scan passes an account with no capability row:
    * a soft observation may belong to one request, so that account may still serve. */
   seen?: { capable: boolean };
@@ -63,6 +66,14 @@ export async function selectModelCatalog(args: {
   const excluded = new Set(args.excluded);
   const refusals = new Map<string, ControlProblem>();
   const fallback: Array<{ selection: ModelCatalogSelection; priority: number }> = [];
+  // This selection's reads and exclusions stand. After a wait only the account
+  // it was for is judged again; unrelated facts never restart or re-read.
+  const refusedNow = async (profile: CredentialProfile) => {
+    const refusal = await args.recheck(profile);
+    if (refusal && args.account.mode === "pin") throw refusal;
+    if (refusal) refusals.set(profile.profile_id, refusalProblem(refusal));
+    return refusal !== null;
+  };
   for (;;) {
     args.signal.throwIfAborted();
     let profile: CredentialProfile;
@@ -73,13 +84,14 @@ export async function selectModelCatalog(args: {
         error && typeof error === "object" && "problem" in error ? error.problem : null,
       );
       if (!pool.success || !pool.data.context.poolCause) throw error;
-      const candidate = fallback.sort((a, b) => a.priority - b.priority)[0];
-      if (candidate) return candidate.selection;
-      throw error;
+      const candidate = fallback.sort((a, b) => a.priority - b.priority).shift();
+      if (!candidate) throw error;
+      if (!(await refusedNow(candidate.selection.profile))) return candidate.selection;
+      continue;
     }
     excluded.add(profile.profile_id);
     const catalog = await readCatalog(args, profile, refusals);
-    if (!catalog) continue;
+    if (!catalog || (await refusedNow(profile))) continue;
     if (args.excludedFingerprint && catalog.accountFingerprint === args.excludedFingerprint)
       continue;
     const listed = args.model === null || catalog.models.some((m) => m.id === args.model);
@@ -110,10 +122,10 @@ export async function selectModelCatalog(args: {
           row.profile_id === profile.profile_id &&
           row.requested_model === args.model,
       ) ?? false;
-    const refused = observed(args.refusals);
+    const refused = observed(args.refusals?.());
     // A usable preferred account is resolved before the substitution ordering (INV-135).
     const substituted =
-      observed(args.substitutions) && args.account.preferredProfileId !== profile.profile_id;
+      observed(args.substitutions?.()) && args.account.preferredProfileId !== profile.profile_id;
     // A conversation whose native history was produced on its preferred account
     // replays only there: while that account carries no capability row and has
     // not just refused it stays first even when its catalog omits the model
@@ -164,26 +176,31 @@ async function readCatalog(
   refusals: Map<string, ControlProblem>,
 ): Promise<ControlModelCatalogResponse | null> {
   args.signal.throwIfAborted();
-  const generation = args.capabilities.credentials.generation(args.harnessId, profile.profile_id);
-  const evidence = bindModelAccountEvidence({
-    harnessId: args.harnessId,
-    profileId: profile.profile_id,
-    model: args.model,
-    unusable: args.unusable,
-    quota: args.quota,
-  });
+  const bind = () =>
+    bindModelAccountEvidence({
+      harnessId: args.harnessId,
+      profileId: profile.profile_id,
+      model: args.model,
+      unusable: args.unusable,
+      quota: args.quota,
+    });
+  let evidence = bind();
   try {
-    const catalog = ControlModelCatalogResponse.parse(
-      await args.adapter.catalog({ profile, signal: args.signal }),
+    const { value, generation } = await modelCredentialRead(
+      args.capabilities.credentials,
+      args.harnessId,
+      profile,
+      args.signal,
+      (signal, credentialGeneration) => {
+        // A repeated read records its evidence under its own generation.
+        if (!evidence.current()) {
+          evidence.finish();
+          evidence = bind();
+        }
+        return args.adapter.catalog({ profile, signal, credentialGeneration });
+      },
     );
-    const after = args.capabilities.credentials.generation(args.harnessId, profile.profile_id);
-    // A login window makes either reading unknown (NaN); only two known,
-    // different generations prove that the account changed.
-    if (Number.isFinite(generation) && Number.isFinite(after) && after !== generation)
-      throw modelError(
-        "auth_changed",
-        "The selected account changed during catalog discovery; try a new operation.",
-      );
+    const catalog = ControlModelCatalogResponse.parse(value);
     if (catalog.source !== args.adapter.id || catalog.credentialProfileId !== profile.profile_id)
       throw modelError(
         "model_catalog_identity_mismatch",

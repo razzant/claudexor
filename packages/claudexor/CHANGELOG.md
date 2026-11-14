@@ -1,5 +1,25 @@
 # claudexor
 
+## 6.1.1
+
+### Patch Changes
+
+- 3e0f64a: Four macOS app tests no longer depend on the speed of the machine that runs
+  them: the generation-fence tests hold the old connection's response until the
+  test has moved to the next generation, and the SSH cancellation and early-exit
+  tests bound only a slow return. Their timing failures stopped the 6.1.0 publish run on
+  a loaded release runner (#705).
+  - @claudexor/cli@6.1.1
+
+## 6.1.0
+
+### Patch Changes
+
+- Updated dependencies [577e275]
+- Updated dependencies
+- Updated dependencies [4eec413]
+  - @claudexor/cli@6.1.0
+
 ## 6.0.0
 
 ### Major Changes
@@ -1062,6 +1082,7 @@ process_crash` within seconds. The profile now carries a literal, metadata-only
   diff touched. Markdown is hard-bounded before layout on every path
   (collapsed, expanded, Run Detail, prompt) — closing the reopened W23 hang
   class. The daemon gains a disclosed SIGTERM escalation ladder (stop deadline
+
   - post-stop drain sweep, exit code read at fire time, timers cancelled on
     finalize) so a hung or leaked-handle shutdown can no longer leave immortal
     claudexords behind. DESIGN_SYSTEM §5 rewritten to the Chat-V2 vocabulary.

@@ -276,6 +276,109 @@
           ],
           "additionalProperties": false
         },
+        "preparation": {
+          "type": "object",
+          "properties": {
+            "totalMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "steps": {
+              "type": "object",
+              "properties": {
+                "payloadRead": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "totalMs": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "maxMs": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "count",
+                    "totalMs",
+                    "maxMs"
+                  ],
+                  "additionalProperties": false
+                },
+                "payloadParse": {
+                  "$ref": "#/definitions/ControlModelOperationDetail/properties/preparation/properties/steps/properties/payloadRead"
+                },
+                "admission": {
+                  "$ref": "#/definitions/ControlModelOperationDetail/properties/preparation/properties/steps/properties/payloadRead"
+                },
+                "loginProbe": {
+                  "$ref": "#/definitions/ControlModelOperationDetail/properties/preparation/properties/steps/properties/payloadRead"
+                },
+                "loginReady": {
+                  "$ref": "#/definitions/ControlModelOperationDetail/properties/preparation/properties/steps/properties/payloadRead"
+                },
+                "catalogRead": {
+                  "$ref": "#/definitions/ControlModelOperationDetail/properties/preparation/properties/steps/properties/payloadRead"
+                },
+                "catalogTransport": {
+                  "$ref": "#/definitions/ControlModelOperationDetail/properties/preparation/properties/steps/properties/payloadRead"
+                },
+                "selection": {
+                  "$ref": "#/definitions/ControlModelOperationDetail/properties/preparation/properties/steps/properties/payloadRead"
+                },
+                "reserve": {
+                  "$ref": "#/definitions/ControlModelOperationDetail/properties/preparation/properties/steps/properties/payloadRead"
+                },
+                "adapterAuth": {
+                  "$ref": "#/definitions/ControlModelOperationDetail/properties/preparation/properties/steps/properties/payloadRead"
+                },
+                "adapterBody": {
+                  "$ref": "#/definitions/ControlModelOperationDetail/properties/preparation/properties/steps/properties/payloadRead"
+                }
+              },
+              "additionalProperties": false
+            },
+            "process": {
+              "type": "object",
+              "properties": {
+                "eventLoopActiveMs": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "eventLoopIdleMs": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "childLaunches": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "childLaunchMs": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "eventLoopActiveMs",
+                "eventLoopIdleMs",
+                "childLaunches",
+                "childLaunchMs"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "totalMs",
+            "steps",
+            "process"
+          ],
+          "additionalProperties": false,
+          "description": "Preparation timings in milliseconds, frozen at dispatch or pre-dispatch failure. totalMs is elapsed time; each step's totalMs is the summed waits of this operation, so concurrent waits can sum above elapsed time and a wait that joined a shared read counts only its remaining part. Steps overlap. loginProbe counts physical login probes this operation launched or joined; loginReady counts reused readiness. Process deltas include concurrent operations, not attributed CPU cost."
+        },
         "response": {
           "anyOf": [
             {
