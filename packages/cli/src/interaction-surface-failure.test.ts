@@ -256,7 +256,8 @@ it("withdraws a registered question whose announcement the journal refused, so n
       onInteraction: (ctx) => registry.register(ctx, {}),
     },
     {
-      emit: (type: string) => {
+      // The journal refuses the announcement when its line lands.
+      emitLanded: async (type: string) => {
         appended.push(type);
         if (type === "interaction.requested") throw appendFailure;
       },
@@ -314,7 +315,10 @@ it("retires an ended run's waiter when the store cannot record the run's end, so
       onInteraction: (ctx) => registry.register(ctx, {}),
       signal: run.signal,
     },
-    { emit: (type: string) => events.push(type) } as never,
+    {
+      emit: (type: string) => events.push(type),
+      emitLanded: async (type: string) => events.push(type),
+    } as never,
     runId,
     "task",
     "a01",

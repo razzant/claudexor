@@ -468,7 +468,7 @@ describe("WorkspaceManager", () => {
     }
 
     await mgr.dispose(envelope);
-    readOnly.dispose();
+    await readOnly.dispose();
     rmSync(runnerDir, { recursive: true, force: true });
   });
 

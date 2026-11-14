@@ -6,8 +6,8 @@ export const LIBUV_POOL_MAX = 1024;
 
 /**
  * The size this process applied itself. The variable is removed again, so the
- * store's upload gate reads this instead. Same key as
- * `packages/cli/src/host-libuv-pool.ts` and the daemon's `store/libuv-pool.ts`.
+ * pool write gate reads this instead. Same key as
+ * `packages/cli/src/host-libuv-pool.ts` and `packages/util/src/libuv-pool.ts`.
  */
 const APPLIED_POOL = Symbol.for("claudexor.libuvPoolSize");
 

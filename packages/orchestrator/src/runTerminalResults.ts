@@ -17,7 +17,7 @@ import {
   QuotaRefusal,
   RawContextShortfall,
 } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
+import { orderedAppender, redactSecrets } from "@claudexor/util";
 import { poolFailure, redactVendorFailure, lastVendorSentence } from "./pool-attempt-evidence.js";
 import { vendorFailureAction } from "./harnessFailure.js";
 import type { OrchestratorResult } from "./orchestrator.js";
@@ -213,6 +213,28 @@ export function declaredFailure(err: unknown): DeclaredFailure {
 }
 
 /**
+ * A run event that did not land is part of the run's failure, never a second
+ * throw out of its terminal (#704). A terminal takes the failure its journal
+ * holds for a line nobody awaited before it appends its own lines, so they
+ * still append, and states it with any failure the failure net consumed under
+ * the run directory (`consumed`). Returns the statement, or "" when there is none.
+ */
+function lostEventsStatement(eventsPath: string, consumed: readonly unknown[] = []): string {
+  const failures = [...consumed];
+  try {
+    orderedAppender.throwHeld(eventsPath);
+  } catch (error) {
+    failures.push(error);
+  }
+  const messages = failures
+    .flatMap((failure) => (failure instanceof AggregateError ? failure.errors : [failure]))
+    .map((cause) => redactSecrets(cause instanceof Error ? cause.message : String(cause)));
+  return messages.length > 0
+    ? `Run events did not reach the journal: ${[...new Set(messages)].join("; ")}`
+    : "";
+}
+
+/**
  * The one statement of a cancellation, shared by every cancelled terminal: the
  * cancel first (a STRING abort reason, e.g. the maxSeconds deadline, is named),
  * then the run's earlier failed tries; `markdown` is its summary.md.
@@ -276,6 +298,8 @@ export function cancelledResult(
   /** The run's attempts: their earlier failed tries stay diagnostic history
    * beside the cancellation (a cancelled try has no row; no failure record). */
   attempts?: readonly ContinuityTerminalFacts[],
+  /** Landing failures the failure net consumed under the run directory (#704). */
+  lostEvents?: readonly unknown[],
 ): OrchestratorResult {
   if (writeTelemetry) {
     try {
@@ -284,12 +308,12 @@ export function cancelledResult(
       /* partial telemetry is best-effort on the cancel path */
     }
   }
-  const {
-    cancelReason,
-    summary: summaryText,
-    markdown,
-    poolAttempts,
-  } = cancellationStatement(runId, mode, cancelSignal, attempts ?? []);
+  const statement = cancellationStatement(runId, mode, cancelSignal, attempts ?? []);
+  const { cancelReason, poolAttempts } = statement;
+  // A lost run event is stated beside the cancellation, which it does not change.
+  const lost = lostEventsStatement(join(runDir, "events.jsonl"), lostEvents);
+  const summaryText = lost ? `${statement.summary}\n\n${lost}` : statement.summary;
+  const markdown = lost ? `${statement.markdown}\n${lost}\n` : statement.markdown;
   // Materialize the diagnostic summary BEFORE announcing it — output.ready must
   // point at a file that exists (partial-output honesty), and it must precede
   // the terminal in every mode (INV-116).
@@ -367,6 +391,8 @@ export function failTerminally(
     continuity?: readonly ContinuityTerminalFacts[];
     /** Every attempt whose failed tries this terminal names (default: `continuity`). */
     attempts?: readonly ContinuityTerminalFacts[];
+    /** Landing failures the failure net consumed under the run directory (#704). */
+    lostEvents?: readonly unknown[];
   } = {},
 ): OrchestratorResult {
   const budget =
@@ -374,8 +400,13 @@ export function failTerminally(
       ? classifyBudgetFailure({ denial: err.denial, terminal: null })
       : null;
   if (budget) phase = budget.phase;
+  // A failure held for the run's earlier lines is stated here and taken first,
+  // so this terminal's own output and run.failed still append.
+  const lost = lostEventsStatement(paths.eventsPath, failureMeta.lostEvents);
+  const cause =
+    budget?.safeMessage ?? redactSecrets(err instanceof Error ? err.message : String(err));
   const { message, poolAttempts } = poolFailure(
-    budget?.safeMessage ?? redactSecrets(err instanceof Error ? err.message : String(err)),
+    lost ? `${cause}\n\n${lost}` : cause,
     failureMeta.attempts ?? failureMeta.continuity ?? [],
   );
   const declared = declaredFailure(err);

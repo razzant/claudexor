@@ -10,7 +10,10 @@ export * from "./problem-safety.js";
 export * from "./patch-objects.js";
 export * from "./stream-echo.js";
 export * from "./text-preview.js";
+export * from "./libuv-pool.js";
+export * from "./ordered-append.js";
 import { sensitiveResourcePolicy } from "./sensitive-resource.js";
+import { measureSync } from "./process-timing.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -211,9 +214,23 @@ function fchmodPrivateDirectoryHandle(
   }
 }
 
+/**
+ * Write a whole text file synchronously; a caller that is already async uses
+ * `writeTextAsync`. As in `appendLine`, the parent directory is created only
+ * when the write proves it missing, so a steady-state write makes no mkdir.
+ * Labeled in `worstSync`: it is main-thread work that deliberately stays (#688).
+ */
 export function writeText(path: string, text: string): void {
-  ensureDir(dirname(path));
-  writeFileSync(path, text, { encoding: "utf8", mode: 0o600 });
+  measureSync("file.write_text", () => {
+    const options = { encoding: "utf8", mode: 0o600 } as const;
+    try {
+      writeFileSync(path, text, options);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+      ensureDir(dirname(path));
+      writeFileSync(path, text, options);
+    }
+  });
 }
 
 export function writeJson(path: string, value: unknown): void {
@@ -527,5 +544,6 @@ export * from "./node-heap-args.js";
 export * from "./daemon-heap.js";
 export { readFileUtf8BoundedSync } from "./bounded-file-read.js";
 export * from "./run-stores.js";
-
+export * from "./remove-tree.js";
+export * from "./write-async.js";
 export * from "./model-preparation-timing.js";

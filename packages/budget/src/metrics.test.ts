@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { processTiming } from "@claudexor/util";
 import { BudgetLedger } from "./ledger.js";
 import { loadHarnessMetrics, metricsPath, recordHarnessMetric } from "./metrics.js";
 import { explainRanking, type RouterCandidate } from "./router.js";
@@ -16,6 +17,25 @@ function temporaryConfig(): string {
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
+
+describe("harness metrics write (#688)", () => {
+  it("stays one synchronous read-modify-write and names itself in worstSync", () => {
+    const root = temporaryConfig();
+    const recorded = vi.spyOn(processTiming, "recordSync");
+    try {
+      recordHarnessMetric(root, "codex", { costUsd: 0.5, durationMs: 1_000 });
+      recordHarnessMetric(root, "claude", { durationMs: 2_000, authMode: "local_session" });
+      // The second write kept the first harness's sample: one shared file.
+      expect(loadHarnessMetrics(root)).toMatchObject({
+        codex: { avg_cost_usd: 0.5, avg_duration_ms: 1_000, samples: 1 },
+        claude: { avg_duration_ms: 2_000, samples: 1, last_auth_mode: "local_session" },
+      });
+      expect(recorded.mock.calls.filter(([op]) => op === "metrics.harness_write")).toHaveLength(2);
+    } finally {
+      recorded.mockRestore();
+    }
+  });
+});
 
 describe("routing cost evidence", () => {
   it("drops incompatible legacy cost before API ranking while retaining other telemetry", () => {

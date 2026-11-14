@@ -42,18 +42,28 @@ export function readEnvelopeRecoveryRecord(base: string): EnvelopeRecoveryRecord
   }
 }
 
+/** This process's own start time, read once: constant for its lifetime. */
+let ownStartTime: string | null | undefined;
+
 /** `ps` start time for a pid, or null when unavailable. Pid+start-time
  * equality is the recycling-proof liveness identity for envelope owners
- * (command names/titles mutate; the kernel start time never does). */
+ * (command names/titles mutate; the kernel start time never does). The
+ * process's own start time is read once and remembered (null too, where `ps`
+ * cannot say), so a lane start does not run `ps` on the main thread; every
+ * other pid is read fresh. */
 export function processStartTime(pid: number): string | null {
+  if (pid === process.pid && ownStartTime !== undefined) return ownStartTime;
+  let out: string | null;
   try {
-    const out = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
+    out = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
       encoding: "utf8",
     }).trim();
-    return out.length > 0 ? out : null;
   } catch {
-    return null;
+    out = null;
   }
+  if (out === "") out = null;
+  if (pid === process.pid) ownStartTime = out;
+  return out;
 }
 
 /**

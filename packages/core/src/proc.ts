@@ -188,7 +188,10 @@ export async function* spawnProcess(
     // console the child's console programs inherit; the tree kill is taskkill /T.
     ...backgroundSpawnShape(process.platform, opts.windowsConsole),
   });
-  if (typeof child.pid === "number") registerChildProcess(child.pid, cmd, runScopeMarkerOf(env));
+  const registration =
+    typeof child.pid === "number"
+      ? registerChildProcess(child.pid, cmd, runScopeMarkerOf(env))
+      : undefined;
   // Bounded post-exit output drain (#449 item 2): see `process-drain.ts`.
   // The reader is told to stop (never to discard) before the pipes are ended.
   const drain = postExitDrain(child, {
@@ -219,7 +222,12 @@ export async function* spawnProcess(
   const groupService = opts.processGroups ?? defaultProcessGroupService;
   let directGroupHandle: ProcessGroupHandle | undefined;
   if (process.platform !== "win32" && typeof child.pid === "number") {
-    const capture = groupService.captureLeader(child.pid);
+    // The registration already read this child's identity through the default
+    // service: one identity-helper run per child. An injected service reads its own.
+    const capture =
+      registration && groupService === defaultProcessGroupService
+        ? registration
+        : groupService.captureLeader(child.pid);
     if (capture.status === "known") directGroupHandle = capture.handle;
   }
 

@@ -274,6 +274,7 @@ import {
   transientRetryPolicy,
   reviewerTimeoutMs,
   harnessInactivityTimeoutMs,
+  laneSuspension,
   observeAuthSwitch,
   emitPoolDegraded,
   deliveryRefusalFailure,
@@ -375,8 +376,10 @@ import {
 } from "@claudexor/budget";
 import {
   hashJson,
+  measureSync,
   newId,
   noProjectRepoRoot,
+  pacedByAppends,
   redactSecrets,
   safeInvoke,
   userConfigDir,
@@ -954,7 +957,7 @@ export class Orchestrator {
       };
     } catch (err) {
       const message = safeErrorMessage(err);
-      store.writeText(
+      await store.writeTextAsync(
         join(paths.contextDir, "context_error.md"),
         `# Reviewer Panel Error\n\n${message}\n`,
       );
@@ -964,7 +967,7 @@ export class Orchestrator {
         safeMessage: message,
         runDir: paths.root,
       });
-      store.writeText(
+      await store.writeTextAsync(
         join(paths.finalDir, "summary.md"),
         `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: review preflight\n\n${message}\n`,
       );
@@ -1902,7 +1905,7 @@ export class Orchestrator {
       include: projectCtx.include,
       exclude: projectCtx.exclude,
     });
-    store.writeYaml(join(paths.contextDir, "context_pack.yaml"), pack);
+    await store.writeYamlAsync(join(paths.contextDir, "context_pack.yaml"), pack);
     log.emit("context.pack.created", {
       hash: pack.hash,
       files: pack.atlas.length,
@@ -2223,7 +2226,7 @@ export class Orchestrator {
       runInput.onContinuityResolved?.(ctx.turnId, result.disclosure);
       if (!result.packetMarkdown) return { pointerLine: null };
       const briefPath = join(paths.contextDir, "THREAD.md");
-      store.writeText(briefPath, result.packetMarkdown);
+      await store.writeTextAsync(briefPath, result.packetMarkdown);
       return {
         pointerLine: threadContextPointer(briefPath),
       };
@@ -2559,6 +2562,7 @@ export class Orchestrator {
         const rateLimitStart = telemetry.rateLimits.length;
         rawLane.beginTry();
         try {
+          const pacing = { waiting: false, version: 0 };
           const watched = withInactivityWatchdog(runModelGovernedRoute(routed, runSpec, dispatch), {
             timeoutMs: inactivityMs,
             countsAsProgress: countsAsAgentProgress,
@@ -2568,12 +2572,11 @@ export class Orchestrator {
             },
             // Waiting on the USER is legitimate silence. The interaction policy
             // either enforces a finite deadline or waits until answer/cancel/
-            // terminal/restart when the timeout is disabled.
-            isSuspended: () => (interaction?.pendingCount?.() ?? 0) > 0,
-            suspensionVersion: () => interaction?.suspensionVersion?.() ?? 0,
+            // terminal/restart when the timeout is disabled. So is the journal wait.
+            ...laneSuspension(pacing, interaction),
             stopSignal: signal, // after Stop: drained events are recorded, never used
           });
-          for await (const ev of watched) {
+          for await (const ev of pacedByAppends(watched, [paths.eventsPath], pacing)) {
             // After Stop: stored evidence only, but file paths are still collected for the capture.
             const stopped = signal?.aborted === true;
             if (!stopped) rawLane.observe(ev);
@@ -2859,7 +2862,7 @@ export class Orchestrator {
       aborted: signal?.aborted === true,
       authMode: telemetry.authMode,
     });
-    const { produced: producedFiles, omitted: producedOmitted } = AC.withAttemptFailureCost(
+    const { produced: producedFiles, omitted: producedOmitted } = await AC.withAttemptFailureCost(
       () =>
         writeCandidateAttemptArtifacts({
           store,
@@ -3030,7 +3033,7 @@ export class Orchestrator {
     const mutatingRun = isMutatingAccess(contract.access.effective_profile);
     const planBrief = verifiedPlanBrief(input);
     const quotaSnapshots = this.quotaSnapshotPreflight();
-    const { store, paths, log, ledger, runContext } = beginAnnouncedRun(
+    const { store, paths, log, ledger, runContext } = await beginAnnouncedRun(
       {
         input,
         contract,
@@ -3056,7 +3059,7 @@ export class Orchestrator {
     const wsm = new WorkspaceManager(execRoot, { projectRoot, runtimeRoot: runRuntimeRoot(input) });
     const anchors = secretDiff.revertAnchors(execRoot, projectRoot);
 
-    store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
+    await store.writeYamlAsync(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
     // Write modes need a git boundary for worktree isolation and honest diffs.
@@ -3562,7 +3565,7 @@ export class Orchestrator {
           error: message,
           phase: infraPhase,
         });
-        store.writeYaml(
+        await store.writeYamlAsync(
           join(paths.attemptsDir, slot.attemptId, "attempt.yaml"),
           AC.attemptFailureRecord(
             slot.attemptId,
@@ -3824,7 +3827,7 @@ export class Orchestrator {
           sources: evidences.map((evidence) => evidence.attemptId),
         };
     try {
-      store.writeYaml(join(paths.arbitrationDir, "synthesis.yaml"), synth);
+      await store.writeYamlAsync(join(paths.arbitrationDir, "synthesis.yaml"), synth);
       log.emit("synthesis.started", { synthesize: synth.synthesize, reason: synth.reason });
       if (synth.synthesize && !budgetStopped) {
         const synthRouted = adapters[0] as RoutedAdapter;
@@ -4087,7 +4090,7 @@ export class Orchestrator {
       if (finalVerifyFailed) facts = { ...facts, checks: "failed", reason: "checks_failed" };
     }
     const needsDec = facts.review === "blocked" || facts.checks === "failed";
-    store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
+    await store.writeYamlAsync(join(paths.arbitrationDir, "decision.yaml"), {
       ...result.decision,
       ...(needsDec
         ? blockedDecisionOverride(result.decision.evidence_facts, facts, finalVerify)
@@ -4095,7 +4098,7 @@ export class Orchestrator {
       review_verified: actualReviewVerified,
       final_verify: finalVerify,
     });
-    store.writeYaml(join(paths.arbitrationDir, "pairwise.yaml"), result.pairwise);
+    await store.writeYamlAsync(join(paths.arbitrationDir, "pairwise.yaml"), result.pairwise);
     const decisionPath = join(paths.arbitrationDir, "decision.yaml");
     // Every attempt's failed tries by the FINAL outcome (delivery below can
     // still fail the checks); a review or check block is not an account failure.
@@ -4110,7 +4113,7 @@ export class Orchestrator {
       }
       const winnerAnswer = winnerRun.answerText ?? "";
       if (winnerAnswer.length > 0) {
-        store.writeText(join(paths.finalDir, "answer.md"), winnerAnswer + "\n");
+        await store.writeTextAsync(join(paths.finalDir, "answer.md"), winnerAnswer + "\n");
       }
       if (contract.output_schema) {
         finalizeStructuredOutput({
@@ -4142,7 +4145,7 @@ export class Orchestrator {
                 : null,
             log,
           );
-          store.writeYaml(join(paths.finalDir, "delivery_receipt.yaml"), delivered);
+          await store.writeYamlAsync(join(paths.finalDir, "delivery_receipt.yaml"), delivered);
           directoryDeliveryReceipt = true;
           directoryDelivery = delivered;
           finalVerify = delivered.finalVerify;
@@ -4172,7 +4175,7 @@ export class Orchestrator {
           delivery: directoryDelivery,
         });
       } else if (mutatingRun) {
-        const savedPatch = secretDiff.persistFinalPatch(store, paths.finalDir, winnerRun);
+        const savedPatch = await secretDiff.persistFinalPatch(store, paths.finalDir, winnerRun);
         const patchSha256 = savedPatch.patchSha256;
         const wstats = secretDiff.resultDiffStats(winnerRun);
         const hasDiff = secretDiff.hasCandidateChanges(winnerRun);
@@ -4215,7 +4218,7 @@ export class Orchestrator {
               log,
             );
             raceDeliveryReceipt = applied;
-            store.writeYaml(join(paths.finalDir, "delivery_receipt.yaml"), applied);
+            await store.writeYamlAsync(join(paths.finalDir, "delivery_receipt.yaml"), applied);
             finalVerify = applied.finalVerify;
             if (applied.applied) {
               adopted = true;
@@ -4259,7 +4262,7 @@ export class Orchestrator {
           revertAnchorId = await anchors.turn(preTurnSha, postTurnSha);
         }
         const capturedNoGitChange = capturedNoGitChangeValue(winnerRun);
-        store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
+        await store.writeYamlAsync(join(paths.finalDir, "work_product.yaml"), {
           id: newId("wp"),
           kind: input.create === true ? "new_repo" : "patch",
           source_task_id: taskId,
@@ -4294,7 +4297,7 @@ export class Orchestrator {
           },
         });
       }
-      store.writeText(
+      await store.writeTextAsync(
         join(paths.finalDir, "summary.md"),
         withPoolAttempts(
           renderSummary(
@@ -4436,7 +4439,7 @@ export class Orchestrator {
         ...(decisionBlock ? {} : erroredWinnerFailure(winnerRun, keptSources)),
       });
       if (!winnerRun) {
-        store.writeText(
+        await store.writeTextAsync(
           join(paths.finalDir, "summary.md"),
           `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: arbitration\n\n${withPoolAttempts(result.decision.why_winner, pool)}\n`,
         );
@@ -4517,22 +4520,25 @@ export class Orchestrator {
   ): void {
     // QA-034: attach the routing rationale recorded at pool ordering (if this
     // run computed one), then clear it — telemetry is written once at terminal.
+    // It stays synchronous (several callers are synchronous callbacks), labeled (#688).
     const routingRationale = this.routingRationaleByRun.get(runId) ?? null;
     this.routingRationaleByRun.delete(runId);
-    writeRunTelemetryArtifact({
-      store,
-      finalDir: paths.finalDir,
-      contract,
-      runId,
-      taskId,
-      mode,
-      attempts,
-      finalAttemptId,
-      routingRationale,
-      deepScanSynthesis: deepScanSynthesis ?? null,
-      resolveAuthPreference: (harnessId) =>
-        this.authPreferenceForHarness(contract.repo.root, harnessId, contract.auth_preference),
-    });
+    measureSync("run.telemetry_write", () =>
+      writeRunTelemetryArtifact({
+        store,
+        finalDir: paths.finalDir,
+        contract,
+        runId,
+        taskId,
+        mode,
+        attempts,
+        finalAttemptId,
+        routingRationale,
+        deepScanSynthesis: deepScanSynthesis ?? null,
+        resolveAuthPreference: (harnessId) =>
+          this.authPreferenceForHarness(contract.repo.root, harnessId, contract.auth_preference),
+      }),
+    );
   }
 
   /**
@@ -4617,7 +4623,7 @@ export class Orchestrator {
     const contract = this.buildContract(input, taskId, mode);
     const planBrief = verifiedPlanBrief(input);
     const quotaSnapshots = this.quotaSnapshotPreflight();
-    const { store, paths, log, ledger, runContext } = beginAnnouncedRun(
+    const { store, paths, log, ledger, runContext } = await beginAnnouncedRun(
       {
         input,
         contract,
@@ -4645,7 +4651,7 @@ export class Orchestrator {
     });
     const anchors = secretDiff.revertAnchors(execRoot, input.repoRoot);
     const readiness = new ReadinessLedger();
-    store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
+    await store.writeYamlAsync(join(paths.contextDir, "task.yaml"), contract);
 
     // Legacy Git envelopes need their boundary; explicit directory execution
     // keeps the requested strategy without initializing the selected folder.
@@ -4742,7 +4748,7 @@ export class Orchestrator {
       const message =
         `convergence requires a cross-family clean review (>=2 healthy reviewer provider families); found ${new Set(reviewers.map((r) => r.providerFamily)).size}. ` +
         "Configure reviewers from a second provider family and check `claudexor doctor` for reviewer readiness.";
-      store.writeText(
+      await store.writeTextAsync(
         join(paths.contextDir, "context_error.md"),
         `# Convergence Preflight Error\n\n${message}\n`,
       );
@@ -4756,7 +4762,7 @@ export class Orchestrator {
           "Check harness doctor for reviewer readiness",
         ],
       });
-      store.writeText(
+      await store.writeTextAsync(
         join(paths.finalDir, "summary.md"),
         `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: review preflight\n\n${message}\n`,
       );
@@ -4987,7 +4993,7 @@ export class Orchestrator {
             status: "failed",
             error: message,
           });
-          store.writeYaml(
+          await store.writeYamlAsync(
             join(paths.attemptsDir, attemptId, "attempt.yaml"),
             AC.attemptFailureRecord(
               attemptId,
@@ -5327,7 +5333,7 @@ export class Orchestrator {
         { ...arbitrationBudgetOptions(ledger), reviewRequested: contract.review_requested },
       );
       decision = arb.decision;
-      store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), decision);
+      await store.writeYamlAsync(join(paths.arbitrationDir, "decision.yaml"), decision);
       // A converged run adopts the arbitration axes (checks/review); an
       // otherwise not-converged loop that nonetheless produced an applyable
       // decision adopts it too.
@@ -5408,7 +5414,7 @@ export class Orchestrator {
           : { facts }),
         final_verify: convFinalVerify,
       };
-      store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), decision);
+      await store.writeYamlAsync(join(paths.arbitrationDir, "decision.yaml"), decision);
     }
     this.writeRunTelemetry(
       store,
@@ -5440,7 +5446,7 @@ export class Orchestrator {
           attempts: attempt,
         });
       } else {
-        const savedPatch = secretDiff.persistFinalPatch(store, paths.finalDir, lastRun);
+        const savedPatch = await secretDiff.persistFinalPatch(store, paths.finalDir, lastRun);
         const patchSha256 = savedPatch.patchSha256;
         // Honest apply-state (parity with runRace single-candidate in-place): a
         // convergence run with inPlace mutated the live tree directly across its
@@ -5456,7 +5462,7 @@ export class Orchestrator {
         const revertAnchorId =
           convAdopted === true ? await anchors.turn(preTurnSha, lastPostTurnSha) : null;
         const capturedNoGitChange = capturedNoGitChangeValue(lastRun);
-        store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
+        await store.writeYamlAsync(join(paths.finalDir, "work_product.yaml"), {
           id: newId("wp"),
           kind: "patch",
           source_task_id: taskId,
@@ -5482,10 +5488,10 @@ export class Orchestrator {
       }
       // The exact answer is kept for every convergence result, patch or files.
       if (lastRun.answerText) {
-        store.writeText(join(paths.finalDir, "answer.md"), lastRun.answerText);
+        await store.writeTextAsync(join(paths.finalDir, "answer.md"), lastRun.answerText);
         log.emit("output.ready", { kind: "answer", path: "final/answer.md" });
       }
-      store.writeText(
+      await store.writeTextAsync(
         join(paths.finalDir, "summary.md"),
         `${withPoolAttempts(`# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${actualReviewVerified}\n- Apply recommendation: ${decision?.apply_recommendation ?? "inspect"}${stuckNoProgressReason ? `\n- No-progress reason: ${stuckNoProgressReason}` : ""}${convCause ? `\n- Failure: ${convCause}` : ""}${secretDiff.resultSummaryDisclosure(lastRun)}`, convPool)}\n`,
       );
@@ -5581,7 +5587,7 @@ export class Orchestrator {
       // ARCHITECTURE event contract guarantees output.ready precedes the
       // terminal in every mode.
       if (!lastRun || (interrupted && input.inPlace !== true && !lastRun.files)) {
-        store.writeText(
+        await store.writeTextAsync(
           join(paths.finalDir, "summary.md"),
           `${withPoolAttempts(`# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Attempts: ${attempt}`, convPool)}\n`,
         );
@@ -5773,7 +5779,7 @@ export class Orchestrator {
     // contract validation runs BEFORE the run is announced (see runRace).
     const contract = this.buildContract(input, taskId, "plan");
     const quotaSnapshots = this.quotaSnapshotPreflight();
-    const { store, paths, log, ledger } = beginAnnouncedRun(
+    const { store, paths, log, ledger } = await beginAnnouncedRun(
       {
         input,
         contract,
@@ -5788,7 +5794,7 @@ export class Orchestrator {
       },
       announce,
     );
-    store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
+    await store.writeYamlAsync(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
     // W3.3: ONE resolved read-only context — the routing point-probe and every
@@ -5817,7 +5823,7 @@ export class Orchestrator {
         runId,
       );
     } catch (err) {
-      roHome.dispose();
+      await roHome.dispose();
       const message = safeErrorMessage(err);
       writeRoutingFailureTerminal(store, paths, log, {
         runId,
@@ -5843,9 +5849,9 @@ export class Orchestrator {
     try {
       contextSection = await this.lazyContextSection(input, contract, store, paths, log);
     } catch (err) {
-      roHome.dispose();
+      await roHome.dispose();
       const message = safeErrorMessage(err);
-      store.writeText(
+      await store.writeTextAsync(
         join(paths.contextDir, "context_error.md"),
         `# Context Error\n\n${message}\n`,
       );
@@ -5855,7 +5861,7 @@ export class Orchestrator {
         safeMessage: message,
         runDir: paths.root,
       });
-      store.writeText(
+      await store.writeTextAsync(
         join(paths.finalDir, "summary.md"),
         `# Run ${runId} (plan)\n\n- Lifecycle: failed\n- Phase: context\n\n${message}\n`,
       );
@@ -5973,7 +5979,10 @@ export class Orchestrator {
         const text = outcome.text ?? "(no output)";
         plans.push({ id: outcome.harnessId, text });
         // The planner's own saved copy keeps its exact text (INV-146).
-        store.writeText(join(paths.root, "plans", `${outcome.harnessId}.md`), text + "\n");
+        await store.writeTextAsync(
+          join(paths.root, "plans", `${outcome.harnessId}.md`),
+          text + "\n",
+        );
         // Solo planning (D31): the FIRST successful planner is the plan; later
         // pool members are a sequential fallback chain (ask parity), not
         // parallel co-authors. Council re-enables the multi-draft round.
@@ -5989,7 +5998,7 @@ export class Orchestrator {
       }
     } finally {
       // Planners done (or threw) — reclaim scoped scratch/API-route state.
-      roHome.dispose();
+      await roHome.dispose();
     }
 
     if (input.signal?.aborted) {
@@ -6289,7 +6298,7 @@ export class Orchestrator {
       opts.mode,
     );
     const quotaSnapshots = this.quotaSnapshotPreflight();
-    const { store, paths, log, ledger, runContext } = beginAnnouncedRun(
+    const { store, paths, log, ledger, runContext } = await beginAnnouncedRun(
       {
         input,
         contract,
@@ -6304,7 +6313,7 @@ export class Orchestrator {
       },
       announce,
     );
-    store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
+    await store.writeYamlAsync(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
     // The ask/deep-scan report stays bare (its scouts read the tree themselves);
@@ -6347,7 +6356,7 @@ export class Orchestrator {
           ),
       }));
     } catch (err) {
-      roHome.dispose();
+      await roHome.dispose();
       const message = safeErrorMessage(err);
       writeRoutingFailureTerminal(store, paths, log, {
         runId,
@@ -6666,7 +6675,7 @@ export class Orchestrator {
         });
         attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
         if (opts.deepScan) {
-          store.writeText(
+          await store.writeTextAsync(
             join(paths.findingsDir, `${attemptId}-error.md`),
             `# Explorer ${attemptId} failed\n\n${message}\n`,
           );
@@ -6755,6 +6764,7 @@ export class Orchestrator {
             ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
           });
           try {
+            const pacing = { waiting: false, version: 0 };
             const watchedReport = withInactivityWatchdog(runModelGovernedRoute(routed, runSpec), {
               timeoutMs: harnessInactivityTimeoutMs(this.config(input.repoRoot)),
               countsAsProgress: countsAsAgentProgress,
@@ -6762,11 +6772,12 @@ export class Orchestrator {
                 tryAbort.abort();
                 void adapter.cancel?.(activeSessionId)?.catch(() => {});
               },
-              isSuspended: () => (reportInteraction?.pendingCount?.() ?? 0) > 0,
-              suspensionVersion: () => reportInteraction?.suspensionVersion?.() ?? 0,
+              ...laneSuspension(pacing, reportInteraction),
               stopSignal: input.signal, // after Stop: drained events are recorded, never used
             });
-            for await (const ev of watchedReport) {
+            const files = [paths.eventsPath, attemptEventsPath];
+            const read = pacedByAppends(watchedReport, files, pacing);
+            for await (const ev of read) {
               // A read after Stop is stored evidence only; a callback may itself press Stop.
               const shown = !input.signal?.aborted && ev.payload?.["buffered"] !== true;
               if (shown) safeInvoke(input.onHarnessEvent, ev);
@@ -6969,7 +6980,7 @@ export class Orchestrator {
         });
         launched.delete(tried);
         if (opts.deepScan) {
-          store.writeText(
+          await store.writeTextAsync(
             join(paths.findingsDir, `${attemptId}-error.md`),
             `# Explorer ${attemptId} failed\n\n${harnessError}\n`,
           );
@@ -7004,7 +7015,7 @@ export class Orchestrator {
         const scoutTag = scoutInterrupted
           ? ` interrupted (${interruptionDetail(roFinalized.reason)})`
           : ` (${adapter.id})`;
-        store.writeText(
+        await store.writeTextAsync(
           join(paths.findingsDir, `${attemptId}${scoutInterrupted ? "-interrupted" : ""}.md`),
           `# Explorer ${attemptId}${scoutTag}\n\n${report || "(no output)"}${warningNote}\n`,
         );
@@ -7161,7 +7172,7 @@ export class Orchestrator {
     } finally {
       // All read-only attempts done (or threw) — reclaim scoped scratch and
       // injected API-route state. Vendor-owned native credentials were not copied.
-      roHome.dispose();
+      await roHome.dispose();
     }
 
     const candidateSummaries = attempts.map((a) => ({
@@ -7254,7 +7265,10 @@ export class Orchestrator {
       : reducedReport !== null
         ? reducedReport
         : rawScoutBundle({ succeeded, unsuccessful, status: deepScanSynthesis });
-    store.writeText(join(paths.finalDir, opts.artifactName), `# ${opts.title}\n\n${report}\n`);
+    await store.writeTextAsync(
+      join(paths.finalDir, opts.artifactName),
+      `# ${opts.title}\n\n${report}\n`,
+    );
     // ask is the only read-only strategy that can carry a structured-output
     // contract (the boundary refuses the rest); validate the FINAL aggregate
     // (the reduced synthesis, or the honest bundle for a degraded scan) — never
@@ -7285,7 +7299,7 @@ export class Orchestrator {
       path: `final/${opts.artifactName}`,
     });
     if (opts.deepScan) {
-      store.writeYaml(join(paths.finalDir, "explore-findings.yaml"), {
+      await store.writeYamlAsync(join(paths.finalDir, "explore-findings.yaml"), {
         mode: "explore",
         width,
         attempts: attempts.map((a) => ({
@@ -7304,7 +7318,7 @@ export class Orchestrator {
         })),
         read_only: true,
       });
-      store.writeText(
+      await store.writeTextAsync(
         join(paths.finalDir, "omissions.md"),
         `# Omissions\n\n${unsuccessful.map((a) => `- ${a.attemptId} / ${a.harnessId} (${a.status}): ${a.error}`).join("\n") || "- None recorded by the runner. Synthesis claims still require evidence checks."}\n`,
       );
@@ -7335,7 +7349,7 @@ export class Orchestrator {
       .join(", ");
     // A delivered report that still ends unsuccessfully or blocked keeps it and names every failed try.
     const reportPool = terminalPoolAttempts(terminalFacts, attempts);
-    store.writeText(
+    await store.writeTextAsync(
       join(paths.finalDir, "summary.md"),
       `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Lifecycle: ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason})` : ""}\n\n${withPoolAttempts(report, reportPool)}\n`,
     );
@@ -7345,7 +7359,7 @@ export class Orchestrator {
       deepScanSynthesis.reducer_attempt_id
         ? deepScanSynthesis.reducer_attempt_id
         : (succeeded[0]?.attemptId ?? "a01");
-    store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
+    await store.writeYamlAsync(join(paths.finalDir, "work_product.yaml"), {
       id: newId("wp"),
       kind: "report",
       source_task_id: taskId,

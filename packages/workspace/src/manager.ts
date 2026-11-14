@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
+import { rmdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type {
@@ -17,9 +18,17 @@ import { repositoryObjectFormat } from "./git-result.js";
 import { assertProjectObjectFormat } from "./object-store.js";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
 import { WorkspaceError } from "@claudexor/core";
-import { ensureDir, newId, nowIso, projectRuntimeDir } from "@claudexor/util";
+import {
+  ensureDirAsync,
+  newId,
+  nowIso,
+  projectRuntimeDir,
+  removeTree,
+  withPoolWriteSlot,
+  writeTextAsync,
+} from "@claudexor/util";
 import { ensureLaneHomeEnv, type LaneHomeEnv } from "./lanes.js";
-import { ensureHarnessHome, harnessHomeEnv } from "./harness-home.js";
+import { ensureHarnessHome, ensureHarnessHomeAsync, harnessHomeEnv } from "./harness-home.js";
 import { ArtifactOwnership } from "./artifact-ownership.js";
 import {
   captureDirectoryWorkspace,
@@ -35,7 +44,7 @@ import {
 import {
   isRetainedEnvelope,
   liveEnvelopeCustody,
-  writeEnvelopeCustody,
+  writeEnvelopeCustodyAsync,
 } from "./envelope-custody.js";
 import { snapshotLegacyDirectoryBaseline } from "./plain-diff.js";
 import { rawAcceptedPaths, rawAwareSnapshot } from "./raw-patch.js";
@@ -162,28 +171,32 @@ export class WorkspaceManager {
     const base = this.envelopeBase(opts.taskId, opts.attemptId);
     const envelopeId = newId("env");
     const workspaceMode = opts.inPlace ? "in_place" : "isolated";
-    const madeHere = !existsSync(base); // only an envelope this call made is removed on refusal
-    ensureDir(base);
-    const homeDir = join(base, "home");
-    const harnessConfigDirs = ensureHarnessHome(homeDir);
-    // Liveness marker for crash GC: the sweeper must never dispose an envelope
-    // whose creating process (daemon, CLI, MCP/ACP serve) is still alive —
+    // Lane start awaits the disk (#688); only an envelope this call made is removed on refusal.
+    const madeHere = (await stat(base).catch(() => null)) === null;
+    // A sibling's dispose prunes the task folder only while it is empty, also
+    // while this makes it: a parent gone under the mkdir is made again (#704).
+    await ensureDirAsync(base).catch((error: { code?: string }) =>
+      error?.code === "ENOENT" ? ensureDirAsync(base) : Promise.reject(error),
+    );
+    // Liveness marker for crash GC, written whole once the base exists: the
+    // sweeper must never dispose an envelope whose creating process (daemon,
+    // CLI, MCP/ACP serve) is still alive —
     // startup GC's "nothing can own an envelope" premise only holds for
     // daemon-tracked runs. Pid + ps START TIME form a recycling-proof identity
     // (command names/titles mutate — vitest, daemons and tools retitle
     // themselves; the kernel start time never does).
-    writeFileSync(
-      join(base, "owner.json"),
-      JSON.stringify({
-        pid: process.pid,
-        started: processStartTime(process.pid),
-        created_at: nowIso(),
-        envelope_id: envelopeId,
-        workspace_mode: workspaceMode,
-        workspace_kind: opts.workspaceKind,
-        execution_root: this.repoRoot,
-      }) + "\n",
-    );
+    const owner = JSON.stringify({
+      pid: process.pid,
+      started: processStartTime(process.pid),
+      created_at: nowIso(),
+      envelope_id: envelopeId,
+      workspace_mode: workspaceMode,
+      workspace_kind: opts.workspaceKind,
+      execution_root: this.repoRoot,
+    });
+    await writeTextAsync(join(base, "owner.json"), owner + "\n");
+    const homeDir = join(base, "home");
+    const harnessConfigDirs = await ensureHarnessHomeAsync(homeDir);
 
     if (opts.workspaceKind === "directory") {
       return createDirectoryEnvelope({
@@ -267,10 +280,10 @@ export class WorkspaceManager {
       baseSha,
       [base, ...(opts.custody ? [opts.custody.runDir] : [])],
     );
-    await isolatedCloneAdd(this.repoRoot, path, branch, baseSha, storeObjects).catch((error) => {
-      throw madeHere ? discardUnstartedEnvelope(base, error) : error;
+    await isolatedCloneAdd(this.repoRoot, path, branch, baseSha, storeObjects).catch(async (e) => {
+      throw madeHere ? await discardUnstartedEnvelope(base, e) : e;
     });
-    writeFileSync(join(base, "private-clone-v1"), "private Git authority\n");
+    await writeTextAsync(join(base, "private-clone-v1"), "private Git authority\n");
 
     // AGENTS.md compatibility bridge (INV-113): the checkout omits any
     // untracked project-root file, so a Claude Code candidate may need an
@@ -282,7 +295,7 @@ export class WorkspaceManager {
     // exclude it; a CLAUDE.md already present is never excluded (A-3 residual).
     let bridgeCreatedHere = false;
     try {
-      bridgeCreatedHere = ensureClaudeBridge(path).created;
+      bridgeCreatedHere = (await ensureClaudeBridge(path)).created;
     } catch {
       /* a missing bridge is harmless; never fail envelope creation over it */
     }
@@ -309,9 +322,10 @@ export class WorkspaceManager {
     // the fact CAPTURES a pristine generated bridge into patch.diff.
     if (bridgeCreatedHere) {
       this.bridgeCreatedEnvelopes.add(envelope.id);
-      writeBridgeCreatedMarker(base, envelope.id);
+      await writeBridgeCreatedMarker(base, envelope.id);
     }
-    if (opts.custody) writeEnvelopeCustody(base, liveEnvelopeCustody(envelope, opts.custody));
+    if (opts.custody)
+      await writeEnvelopeCustodyAsync(base, liveEnvelopeCustody(envelope, opts.custody));
     return envelope;
   }
 
@@ -331,22 +345,18 @@ export class WorkspaceManager {
    * home never bridges the OS Keychain; an adapter that declares
    * `scoped_home_keychain_bridge` may create a vendor-only disposable child
    * HOME without copying credentials (INV-067). Caller disposes all scoped
-   * state when the run ends.
+   * state when the run ends, off the main thread (#704); making the small fixed
+   * home stays synchronous for its synchronous callers.
    */
-  readOnlyHomeEnv(): { env: Record<string, string>; dispose: () => void } {
+  readOnlyHomeEnv(): { env: Record<string, string>; dispose: () => Promise<void> } {
     // A throwaway temp base — never under the project / synthetic repo root, so a
     // no-project Ask leaves nothing in its cwd (§7) and nothing in any worktree (§6).
     const base = mkdtempSync(join(tmpdir(), "claudexor-ro-"));
     const homeDir = join(base, "home");
     return {
       env: harnessHomeEnv(homeDir, ensureHarnessHome(homeDir)),
-      dispose: () => {
-        try {
-          rmSync(base, { recursive: true, force: true });
-        } catch {
-          /* best-effort: a leftover scoped home is harmless and gc-able */
-        }
-      },
+      // Best-effort: a leftover scoped home is harmless and gc-able.
+      dispose: () => removeTree(base).catch(() => undefined),
     };
   }
 
@@ -516,26 +526,19 @@ export class WorkspaceManager {
     // baseline, including any route-scoped API auth material), derived from task/attempt ids.
     // For git mode this equals dirname(worktree_path); for in-place it is a sibling
     // under the external runtime workspaces root, so deriving from ids prevents
-    // dispose() from ever deleting the live tree.
+    // dispose() from ever deleting the live tree. Off the main thread, owner.json last (#688).
     try {
-      rmSync(this.baseOf(env), { recursive: true, force: true });
+      await removeTree(this.baseOf(env), { lastEntry: "owner.json" });
     } catch {
       /* best-effort */
     }
     // Prune the now-empty per-task parent dir (envelopeBase = <task>/<attempt>),
-    // guarded to stay strictly inside the workspaces dir.
-    try {
-      const taskDir = join(this.workspacesDir(), env.task_id);
-      if (
-        taskDir.startsWith(this.workspacesDir() + sep) &&
-        existsSync(taskDir) &&
-        readdirSync(taskDir).length === 0
-      ) {
-        rmSync(taskDir, { recursive: true, force: true });
-      }
-    } catch {
-      /* best-effort */
-    }
+    // guarded to stay strictly inside the workspaces dir. The kernel removes it
+    // only while it is empty, so a sibling another `create` makes meanwhile
+    // stays (#704); best-effort: ENOTEMPTY and ENOENT leave nothing to prune.
+    const taskDir = join(this.workspacesDir(), env.task_id);
+    if (taskDir.startsWith(this.workspacesDir() + sep))
+      await withPoolWriteSlot(undefined, () => rmdir(taskDir)).catch(() => undefined);
     if (!inPlace && env.workspace_kind !== "directory") {
       try {
         await worktreePrune(this.repoRoot);

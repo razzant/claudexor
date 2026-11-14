@@ -16,7 +16,7 @@ vi.mock("@claudexor/secrets", async (importOriginal) => ({
 
 import { appendHarnessEvent } from "@claudexor/core";
 import { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
+import { orderedAppender, redactSecrets } from "@claudexor/util";
 import { createRawApiAdapter } from "./index.js";
 import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 import { rmSync as __rmSyncReap } from "node:fs";
@@ -1414,6 +1414,8 @@ describe("raw-api failed completion keeps the model's partial output exact", () 
     journalRoots.push(journalRoot);
     const journal = join(journalRoot, "events.jsonl");
     for (const event of events) appendHarnessEvent(journal, event);
+    // The journal's lines are queued on the ordered appender: read them once landed.
+    await orderedAppender.settled(journal);
     const stored = readFileSync(journal, "utf8")
       .trim()
       .split("\n")
@@ -1490,6 +1492,7 @@ describe("raw-api diagnostics are masked whole, then bounded without splitting a
     journalRoots.push(journalRoot);
     const journal = join(journalRoot, "events.jsonl");
     for (const event of live) appendHarnessEvent(journal, event);
+    await orderedAppender.settled(journal);
     const text = readFileSync(journal, "utf8");
     const stored = text
       .trim()
