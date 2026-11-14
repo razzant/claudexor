@@ -180,6 +180,9 @@ describe("lane loops read the next harness event only once their full files drai
       });
       try {
         await until("the run journal is full", () => orderedAppender.full(eventsPath));
+        // The journal's write reaches its hold on the disk's pace, not after a
+        // fixed number of turns; then the loop gets turns to (wrongly) read on.
+        await until("the journal's write is held", () => hold.held.length > 0);
         await quiet();
         // The second message filled the journal: the loop asks for no third one.
         expect(progress.pulled).toBe(2);
