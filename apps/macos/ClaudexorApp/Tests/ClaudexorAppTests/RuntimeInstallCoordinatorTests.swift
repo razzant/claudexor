@@ -1110,10 +1110,14 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
         let previous = RuntimeClosureIdentity(version: "3.2.0", buildSha: previousBuildSha)
         daemon.recoveryOnlyPolls[StubDaemon.key(previous)] = 2
         let recorder = PhaseRecorder()
+        // One timeout length serves both waits, each with its own deadline: the
+        // candidate's wait must run out, and the restored runtime's three answers
+        // must fit in the second. At 0.2 s a loaded macOS runner ran past the
+        // second (#671); 2 s costs this test 2 s and is still a speed bound.
         let coord = RuntimeInstallCoordinator(
             installer: installer, transport: LocalTransport(bytes), daemon: daemon,
             lifecycleOwner: testInstallLifecycleOwner,
-            handshakePollInterval: 0.002, handshakePollTimeout: 0.2,
+            handshakePollInterval: 0.002, handshakePollTimeout: 2,
             onPhase: { recorder.record($0) })
 
         let error = await captureError {
