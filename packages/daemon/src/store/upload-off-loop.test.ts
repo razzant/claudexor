@@ -389,6 +389,15 @@ async function holdPoolWrites(count: number): Promise<HeldWrites> {
   };
 }
 
+/**
+ * How long the FIFO holders may take to start and meet their pool writes. It
+ * bounds a broken setup, not a speed: on a loaded macOS release runner the
+ * python holders took more than 5 s (#708). It stays under the 30 s per-test
+ * hang detector, so a setup slower than this fails with the step's own message
+ * rather than a bare timeout.
+ */
+const HOLDERS_ENTER_MS = 20_000;
+
 async function until(label: string, predicate: () => boolean, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -408,7 +417,7 @@ describe("libuv pool under blocked upload writes", () => {
       await until(
         `fifo holders did not reach ${entered}`,
         () => held.readyCount() >= entered,
-        5_000,
+        HOLDERS_ENTER_MS,
       );
       await new Promise((resolve) => setTimeout(resolve, 80));
       expect(held.readyCount()).toBe(entered);
@@ -472,7 +481,7 @@ describe("libuv pool under blocked upload writes", () => {
         await until(
           "occupying writes did not enter the pool",
           () => held.readyCount() === slots,
-          5_000,
+          HOLDERS_ENTER_MS,
         );
         const f = await fixture();
         const body = Buffer.from("queued");
