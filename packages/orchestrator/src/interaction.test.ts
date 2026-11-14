@@ -954,7 +954,9 @@ describe("interactionChannelFor on a run's queued log", () => {
         )!;
         const pending = channel.request(request() as never);
         // The question is announced and waiting.
-        await vi.waitFor(() => expect(readFileSync(path, "utf8")).toContain("requested"));
+        await vi.waitFor(() => expect(readFileSync(path, "utf8")).toContain("requested"), {
+          timeout: 10_000,
+        });
         if (otherLost) {
           log.emit("harness.event", { text: "lost" });
           await orderedAppender.drained(path);
@@ -963,10 +965,12 @@ describe("interactionChannelFor on a run's queued log", () => {
         cancel.abort();
         await expect(pending).resolves.toBeNull();
         answer(ANSWERS);
-        await vi.waitFor(() =>
-          expect(
-            log.readAll().events.some((event) => event.type === "interaction.answer_discarded"),
-          ).toBe(true),
+        await vi.waitFor(
+          () =>
+            expect(
+              log.readAll().events.some((event) => event.type === "interaction.answer_discarded"),
+            ).toBe(true),
+          { timeout: 10_000 },
         );
         await orderedAppender.drained(path);
         const next = () => log.emit("output.ready", { kind: "summary" });

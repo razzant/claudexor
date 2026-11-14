@@ -4979,6 +4979,9 @@ describe("reviewer files on the ordered appender (#688)", () => {
     });
     try {
       await until("the reviewer's stream ends", () => progress.finished);
+      // The transcript's progress append reaches its held write on the disk's
+      // pace, not after a fixed number of turns.
+      await until("the transcript's append is held", () => held.held.includes(transcript));
       await quiet();
       // The sealed overwrite waits for the progress bytes still in flight.
       expect(held.held).toContain(transcript);
