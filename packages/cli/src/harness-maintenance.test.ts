@@ -3,6 +3,7 @@ import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import {
   existsSync,
   lstatSync,
+  lutimesSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -729,12 +730,24 @@ echo 1.18.0
     }) as typeof spawnSync;
     const failed = await runHarnessUpdate("fixture", undefined, w.options);
     expect(failed).toMatchObject({ ok: false, exitCode: 0 });
+    const selected = (version: string) =>
+      JSON.stringify({ path: w.installed, realPath: w.installed, version });
     expect(failed.problem?.message).toBe(
-      `Selection changed before conversion committed; the old npm package could not be restored (Cannot restore hidden program over a replacement: ${old.pkg}) and remains hidden at ${hidden} until the next explicit maintenance recovers it`,
+      `Selection changed before conversion committed: expected ${selected("2.0.0")}, observed ${selected("2.0.1")}; the old npm package could not be restored (Cannot restore hidden program over a replacement: ${old.pkg}) and remains hidden at ${hidden}; the next explicit maintenance attempts to recover it without overwriting anything at ${old.pkg}`,
     );
     expect(failed.problem?.message).not.toMatch(/\brestored the\b|is runnable/);
     expect(readFileSync(join(hidden, "package.json"), "utf8")).toBe(manifest);
     expect(lstatSync(old.launcher).isSymbolicLink()).toBe(true);
+
+    // While the path stays occupied, the next maintenance only attempts recovery.
+    writeFileSync(join(old.pkg, "occupant"), "kept");
+    const attempted = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(attempted.limitations).toContain(`Recovering interrupted npm conversion at ${hidden}.`);
+    expect(attempted.limitations).toContain(
+      `Npm conversion recovery at ${old.pkg}: Both program and hidden copy exist: ${old.pkg}`,
+    );
+    expect(readFileSync(join(hidden, "package.json"), "utf8")).toBe(manifest);
+    expect(readFileSync(join(old.pkg, "occupant"), "utf8")).toBe("kept");
 
     // The retained bytes keep the existing recovery contract.
     rmSync(old.pkg, { recursive: true });
@@ -744,6 +757,95 @@ echo 1.18.0
     expect(recovered).toMatchObject({ ok: true, after: { path: w.installed, version: "2.0.1" } });
     expect(existsSync(hidden)).toBe(false);
     expect(existsSync(old.pkg)).toBe(false);
+  });
+  it.each(["relation", "added launcher", "selection", "launcher"] as const)(
+    "names the values a refused commit boundary compared and keeps the npm copy (%s)",
+    async (boundary) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.program.versionScheme = "semver";
+      executable(w.installed, "2.0.0");
+      const hidden = `${old.pkg}.claudexor-converted`;
+      const extra = join(dirname(old.launcher), "fixture-extra");
+      const linkTime = lstatSync(old.launcher).mtimeMs;
+      const touched = new Date("2000-01-01T00:00:00Z");
+      let changed = false;
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] !== "--version") {
+          // The vendor installer changes the old package's bin relation.
+          const manifest = JSON.parse(readFileSync(join(old.pkg, "package.json"), "utf8"));
+          if (boundary === "relation") manifest.name = "@fixture/other";
+          if (boundary === "added launcher") {
+            manifest.bin["fixture-extra"] = "bin/fixture-harness";
+            symlinkSync(old.entry, extra);
+          }
+          writeFileSync(join(old.pkg, "package.json"), JSON.stringify(manifest));
+          return result("Installed");
+        }
+        if (!changed && existsSync(hidden)) {
+          // The commit check observes while the package is hidden.
+          changed = true;
+          if (boundary === "selection") executable(w.installed, "2.0.1");
+          if (boundary === "launcher") lutimesSync(old.launcher, touched, touched);
+        }
+        return spawnSync(bin, args, opts);
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      const selection = (path: string, version: string) =>
+        JSON.stringify({ path, realPath: path === old.launcher ? old.entry : path, version });
+      const relation = (launchers: string[]) =>
+        JSON.stringify({
+          packageRoot: old.pkg,
+          launchers,
+          entrypoints: launchers.map(() => old.entry),
+        });
+      const changedRelation = (now: string) =>
+        `The old package/launcher relation changed during conversion: before ${relation([old.launcher])}, now ${now} for the ordinary selection ${selection(old.launcher, "1.0.0")}; conversion removed nothing`;
+      const problem = {
+        relation: {
+          code: "conversion_source_changed",
+          message: changedRelation("no proven relation"),
+        },
+        "added launcher": {
+          code: "conversion_source_changed",
+          message: changedRelation(relation([old.launcher, extra])),
+        },
+        selection: {
+          code: "maintenance_failed",
+          message: `Selection changed before conversion committed: expected ${selection(w.installed, "2.0.0")}, observed ${selection(w.installed, "2.0.1")}`,
+        },
+        launcher: {
+          code: "maintenance_failed",
+          message: `An npm launcher changed before conversion committed: ${old.launcher} (mtimeMs ${linkTime} → ${touched.getTime()})`,
+        },
+      }[boundary];
+      expect(receipt).toMatchObject({ ok: false, exitCode: 0, problem });
+      expect(existsSync(old.pkg)).toBe(true);
+      expect(existsSync(hidden)).toBe(false);
+      expect(lstatSync(old.launcher).isSymbolicLink()).toBe(true);
+    },
+  );
+  it("masks credential-shaped text in npm conversion recovery limitations", async () => {
+    const w = world();
+    const token = `ghp_${"a".repeat(36)}`;
+    w.home = join(w.home, token);
+    mkdirSync(w.home);
+    w.installed = join(w.home, ".vendor/bin/fixture-harness");
+    w.options.home = w.home;
+    w.options.sourceEnv!.HOME = w.home;
+    const old = oldCopy(w);
+    renameSync(old.pkg, `${old.pkg}.claudexor-converted`);
+    mkdirSync(old.pkg);
+    executable(w.installed, "2.0.0");
+    const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+    const masked = old.pkg.replace(token, "[redacted]");
+    expect(receipt.limitations).toContain(
+      `Npm conversion recovery at ${masked}: Both program and hidden copy exist: ${masked}`,
+    );
   });
   it.each([false, true].flatMap((healthy) => [0, 2316632107].map((exit) => ({ healthy, exit }))))(
     "recognizes vendor removal of the npm copy only when ordinary resolution proves the replacement: %j",

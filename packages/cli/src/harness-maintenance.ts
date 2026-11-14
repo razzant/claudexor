@@ -303,7 +303,7 @@ export async function runHarnessUpdate(
         receipt.limitations.push(`Recovering interrupted npm conversion at ${path}.`);
         await options.beforeMutation?.(receipt);
       });
-      receipt.limitations.push(...recovered.limitations);
+      receipt.limitations.push(...recovered.limitations.map(redactSecrets));
       cleaned ||= recovered.changed;
       if (recovered.changed) before = observe();
     }

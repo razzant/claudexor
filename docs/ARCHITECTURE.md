@@ -8536,7 +8536,10 @@ containment or stale sibling metadata never authorizes removal of a hand-placed
 wrapper or symlink. Retirement hides the package at the fixed sibling
 `<package>.claudexor-converted`, keeping the launchers in place until removal.
 If a failed commit check cannot restore it, the failure names the restore error
-and the hidden sibling instead of claiming the old copy is back.
+and the hidden sibling instead of claiming the old copy is back. Each commit
+refusal names what it compared: the previous and current package/launcher
+relation with the ordinary selection it was read from, the expected and observed
+path/real path/version, or a launcher's differing stat fields.
 The next explicit maintenance restores a leftover and applies the same
 version/major/ordering proof to retire it or leave it restored. A linked HOME is
 accepted when the real package parent stays inside the real product prefix. Colliding or
