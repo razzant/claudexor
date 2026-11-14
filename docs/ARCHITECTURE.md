@@ -1730,8 +1730,10 @@ Ordinary profile and account-catalog reads share one process-local observation o
 failed attempt. TTL expiry and repeated views never repeat it. The profile's current
 registry fields and quota evidence are composed at each read; the last observed
 verification remains visible with its check time, never renewed by viewing it. Credential-state
-invalidation and an explicit atomic Refresh request new evidence. Catalog payloads
-retain original timestamps, including null when the adapter supplies none. This
+invalidation, a harness install or update through the daemon (that harness's
+observations and the Accounts harness statuses) and an explicit atomic Refresh
+request new evidence. Catalog payloads retain original timestamps, including null
+when the adapter supplies none. This
 cache is display-only: real run and model admission retain their fresh route checks.
 The ordinary response does not claim fenced `next_up` authority. Display-only
 `GET /v2/quota` owns shown quota values. Explicit Refresh/Retry and exact post-login
@@ -2465,16 +2467,26 @@ Default-shape `/v2/harnesses` reads and `GET /v2/agent-capabilities` share one
 status-projection cache policy (`cli/src/status-projection-cache.ts`): a computed
 sweep serves for 15 seconds, concurrent and in-window readers share one
 computation, a changed global config file recomputes at once, and the daemon's
-credential mutations and setup-login transitions invalidate it. The first read
-after the window still waits for a full sweep. The window stacks on its inputs'
-own caches: by default a doctor report is reused for 90 seconds when OK and 15
-seconds otherwise (`core/src/doctor.ts`), and model inventories keep their own
-windows, so an out-of-band change such as a vendor CLI login or install outside
-the daemon reaches the projection within about 30 seconds from non-OK to OK and
-105 seconds from OK to broken, plus sweep time. Harness maintenance and
-auth-readiness refresh clear the doctor evidence, not this window. A `fresh`
-harness read bypasses the window; the catalog has no fresh form and dates itself
-with `generatedAt`, and `claudexor capabilities` composes it in-process.
+credential mutations, setup-login transitions and harness maintenance invalidate
+it. Past the window a `/v2/harnesses` read still waits for a full sweep: its rows
+carry login evidence and no observation time. The catalog's sweep runs every
+harness's doctor and model truth (11-19 seconds on a large install, 2026-11-14),
+so the catalog holds its last composition for five more minutes: a reader in that
+span gets it at once, dated by its `generatedAt`, and its read starts the one
+recompute that replaces it. No timer sweeps; with no reader nothing runs. A failed
+recompute leaves the held composition under its own `generatedAt`, and the next
+read starts another. The first read after start, after an invalidation or a config
+change, and any read past the held span wait for a new composition. The window
+stacks on its inputs' own caches: by default a doctor report is reused for 90
+seconds when OK and 15 seconds otherwise (`core/src/doctor.ts`), and model
+inventories keep their own windows, so an out-of-band change such as a vendor CLI
+login or install outside the daemon reaches `/v2/harnesses` within about 30
+seconds from non-OK to OK and 105 seconds from OK to broken, plus sweep time; a
+held catalog answer can be up to five minutes older than that and says so in
+`generatedAt`. Auth-readiness refresh clears that harness's doctor evidence, not
+these projections, so its result reaches the next sweep. A `fresh` harness read
+bypasses the window; the catalog has no fresh form, and `claudexor capabilities`
+composes it in-process.
 `claudexor trust` and `secrets` likewise project `/v2/trust` and `/v2/secrets`;
 only the daemon owns user-level trust files and the selected managed-secret backend.
 
@@ -8836,7 +8848,9 @@ and arguments carried to execution. Custom batch files are not npm launchers.
 
 `claudexor harness install <id> --yes --json` installs a missing program at the
 vendor's current version. `harness update <id> --yes --json` runs the selected
-program's updater, or installs when missing. `--vendor-version <exact>` uses
+program's updater, or installs when missing. Without `--json`, text output
+lists the commands, vendor lines and limitations, then the problem or outcome.
+`--vendor-version <exact>` uses
 only an adapter-declared exact-version command. `harness inspect --latest --json`
 reads published versions on demand. A failed newest read does not block Update.
 Package-manager copies can answer with advice instead of
@@ -8888,17 +8902,24 @@ with a declared major requires that line, including before an exact-version
 command; OpenCode 2.x cannot replace its product-made 1.x copy. An unorderable
 version is acceptable only when no declared major excludes it. The installer's status and lines remain in the receipt;
 a nonzero exit can complete conversion with a limitation when the resulting
-program passes the same proof. A vendor that already removed npm completes
+program passes the same proof; otherwise that exit stays the problem and the
+conversion's own code and message become a limitation. A vendor that already removed npm completes
 conversion when ordinary and masked resolution agree.
 An exact-version conversion verifies its second command before retirement too.
 An older-copy refusal names the path and version found first, the selected
-version, the possibility that it shadows the installer's copy, and that nothing
-was removed. A failed engine verification preserves any old copy the vendor
-left in place. Only Claude, Codex, Copilot and OpenCode declare old product npm
+version, the possibility that it shadows the installer's copy, and that
+conversion removed nothing. A failed engine verification preserves any old copy
+the vendor left in place; its messages describe conversion, never what the
+vendor installer did. Only Claude, Codex, Copilot and OpenCode declare old product npm
 packages; a person's Grok npm copy is not eligible for conversion. Folder
 containment or stale sibling metadata never authorizes removal of a hand-placed
 wrapper or symlink. Retirement hides the package at the fixed sibling
 `<package>.claudexor-converted`, keeping the launchers in place until removal.
+If a failed commit check cannot restore it, the failure names the restore error
+and the hidden sibling instead of claiming the old copy is back. Each commit
+refusal names what it compared: the previous and current package/launcher
+relation with the ordinary selection it was read from, the expected and observed
+path/real path/version, or a launcher's differing stat fields.
 The next explicit maintenance restores a leftover and applies the same
 version/major/ordering proof to retire it or leave it restored. A linked HOME is
 accepted when the real package parent stays inside the real product prefix. Colliding or

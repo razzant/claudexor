@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { globalConfigPath } from "@claudexor/config";
 import {
+  CATALOG_HOLD_MS,
   STATUS_PROJECTION_TTL_MS,
   invalidateStatusProjections,
 } from "./status-projection-cache.js";
@@ -93,9 +94,19 @@ describe("GET /v2/agent-capabilities rides the status-projection cache", () => {
     expect(await generated(svc.agentCapabilities())).toBe("sweep-1");
     expect(catalog.build).toHaveBeenCalledTimes(1);
 
+    // Past the window the held composition answers at once (its generatedAt
+    // says when) while one recompute refreshes it; the next read has it.
     now += 1;
+    expect(await generated(svc.agentCapabilities())).toBe("sweep-1");
+    expect(catalog.build).toHaveBeenCalledTimes(2);
+    await new Promise((resolve) => setTimeout(resolve, 0)); // the recompute lands
     expect(await generated(svc.agentCapabilities())).toBe("sweep-2");
     expect(catalog.build).toHaveBeenCalledTimes(2);
+
+    // Past the held window a reader waits for the sweep, as before.
+    now += STATUS_PROJECTION_TTL_MS + CATALOG_HOLD_MS;
+    expect(await generated(svc.agentCapabilities())).toBe("sweep-3");
+    expect(catalog.build).toHaveBeenCalledTimes(3);
   });
 
   it("recomputes at once after a settings write or a credential mutation", async () => {
@@ -112,5 +123,14 @@ describe("GET /v2/agent-capabilities rides the status-projection cache", () => {
     invalidateStatusProjections();
     expect(await generated(svc.agentCapabilities())).toBe("sweep-3");
     expect(catalog.build).toHaveBeenCalledTimes(3);
+
+    // Inside the held window too: neither a settings write nor an invalidation
+    // is ever answered from the held composition.
+    now += STATUS_PROJECTION_TTL_MS;
+    writeFileSync(globalConfigPath(), "harnesses: {}\n# changed\n");
+    expect(await generated(svc.agentCapabilities())).toBe("sweep-4");
+    now += STATUS_PROJECTION_TTL_MS;
+    invalidateStatusProjections();
+    expect(await generated(svc.agentCapabilities())).toBe("sweep-5");
   });
 });

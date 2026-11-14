@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  CATALOG_HOLD_MS,
   STATUS_PROJECTION_TTL_MS,
   StatusProjectionCache,
   invalidateStatusProjections,
@@ -113,5 +114,118 @@ describe("status projection cache (daemon poll-surface load fix, 2026-08-04)", (
     expect(await first).toBe(1);
     // The stale in-flight result must not have primed the cache.
     expect(await cache.read(async () => ++computes)).toBe(2);
+  });
+});
+
+describe("a held window answers past the TTL while one recompute refreshes (2026-11-14)", () => {
+  const held = (nowMs: { at: number }, version = () => "v") =>
+    new StatusProjectionCache<number>({
+      now: () => nowMs.at,
+      versionOf: version,
+      holdMs: CATALOG_HOLD_MS,
+    });
+  const gated = () => {
+    let computes = 0;
+    let release!: () => void;
+    let gate = new Promise<void>((resolve) => (release = resolve));
+    return {
+      computes: () => computes,
+      release: () => release(),
+      rearm: () => (gate = new Promise<void>((resolve) => (release = resolve))),
+      compute: async () => {
+        computes += 1;
+        const mine = computes;
+        await gate;
+        return mine;
+      },
+    };
+  };
+
+  it("answers the held value at once and runs one recompute for every reader past the TTL", async () => {
+    const clock = { at: 0 };
+    const cache = held(clock);
+    const sweep = gated();
+    sweep.release();
+    expect(await cache.read(sweep.compute)).toBe(1);
+    sweep.rearm();
+    clock.at += STATUS_PROJECTION_TTL_MS;
+    // Three readers after a quiet spell: none waits, one recompute runs.
+    const readers = Promise.all([1, 2, 3].map(() => cache.read(sweep.compute)));
+    const tick = new Promise((resolve) => setTimeout(() => resolve("waited for the sweep"), 0));
+    expect(await Promise.race([readers, tick])).toEqual([1, 1, 1]);
+    expect(sweep.computes()).toBe(2);
+    sweep.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await cache.read(sweep.compute)).toBe(2);
+    expect(sweep.computes()).toBe(2);
+  });
+
+  it("past TTL + hold the reader waits for the recompute, as without a hold", async () => {
+    vi.useFakeTimers();
+    try {
+      const clock = { at: 0 };
+      const cache = held(clock);
+      let computes = 0;
+      expect(await cache.read(async () => ++computes)).toBe(1);
+      clock.at += STATUS_PROJECTION_TTL_MS + CATALOG_HOLD_MS;
+      expect(await cache.read(async () => ++computes)).toBe(2);
+      // No read, no sweep: no timer is armed, and time alone starts nothing.
+      expect(vi.getTimerCount()).toBe(0);
+      clock.at += 10 * CATALOG_HOLD_MS;
+      vi.advanceTimersByTime(10 * CATALOG_HOLD_MS);
+      expect(computes).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a failed held recompute keeps the value and its time, rejects nowhere, and the next read retries", async () => {
+    const clock = { at: 0 };
+    const cache = held(clock);
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      expect(await cache.read(async () => 1)).toBe(1);
+      clock.at += STATUS_PROJECTION_TTL_MS;
+      expect(await cache.read(async () => Promise.reject(new Error("sweep died")))).toBe(1);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+      // Inside the span the failure dropped nothing: the held value answers and
+      // this read starts the one retry.
+      let retries = 0;
+      expect(
+        await cache.read(async () => {
+          retries += 1;
+          return Promise.reject(new Error("sweep died again"));
+        }),
+      ).toBe(1);
+      expect(retries).toBe(1);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+      // The held value still counts from its own composition, so the window ends on time.
+      clock.at += CATALOG_HOLD_MS;
+      let computes = 0;
+      expect(await cache.read(async () => 10 + ++computes)).toBe(11);
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+  });
+
+  it("an invalidation, a version change and a fresh read are never answered from the held value", async () => {
+    const clock = { at: 0 };
+    let version = "v1";
+    const cache = held(clock, () => version);
+    let computes = 0;
+    const compute = async () => ++computes;
+    expect(await cache.read(compute)).toBe(1);
+    clock.at += STATUS_PROJECTION_TTL_MS;
+    invalidateStatusProjections();
+    expect(await cache.read(compute)).toBe(2);
+    clock.at += STATUS_PROJECTION_TTL_MS;
+    version = "v2";
+    expect(await cache.read(compute)).toBe(3);
+    clock.at += STATUS_PROJECTION_TTL_MS;
+    expect(await cache.read(compute, { fresh: true })).toBe(4);
   });
 });

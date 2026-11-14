@@ -119,6 +119,7 @@ export async function harnessMutationCommand(
           `${command.binary} ${command.args.join(" ")}${command.script ? ` (script ${command.script.url}, ${command.script.size} bytes, sha256 ${command.script.sha256})` : ""}`,
         );
       for (const line of receipt.progress) print(line);
+      for (const line of receipt.limitations) print(line);
       print(
         receipt.problem?.message ??
           `${harness}: ${receipt.outcome} (${receipt.before?.version ?? "missing"} → ${receipt.after?.version ?? "unknown"})`,
