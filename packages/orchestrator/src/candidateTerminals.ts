@@ -104,7 +104,7 @@ export async function cancelledCandidatesResult(
     }
   } else if (runs.some((run) => hasCandidateChanges(run) && !run.captureRefusal)) {
     const patches = runs.filter((run) => hasCandidateChanges(run) && !run.captureRefusal);
-    store.writeText(
+    await store.writeTextAsync(
       join(paths.finalDir, "retained-changes.md"),
       "# Unverified candidate changes\n\nNo candidate was selected or applied.\n\n" +
         patches
@@ -343,7 +343,7 @@ export async function failedCandidatesResult(
       log,
     });
   if (input.liveCapture) await persistFailedInPlaceWorkProduct({ ...input.liveCapture, facts });
-  store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
+  await store.writeYamlAsync(join(paths.arbitrationDir, "decision.yaml"), {
     winner: null,
     facts,
     why_winner: rootCause,
@@ -359,7 +359,7 @@ export async function failedCandidatesResult(
     budget_summary: decisionBudgetSummary(ledger),
   });
   writeTelemetry();
-  store.writeText(
+  await store.writeTextAsync(
     join(paths.finalDir, "summary.md"),
     `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: ${phase}\n\n${rootCause}\n${captureInventorySummary(refusals[0]?.failure)}`,
   );

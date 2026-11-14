@@ -19,7 +19,7 @@ export interface ResolvedRouteContext {
    * doctor, model inventory, and the eventual spawn share one HOME. */
   envForHarness?: (harnessId: string) => Record<string, string> | null;
   /** Release the scoped state after the run (or a failed routing) ends. */
-  dispose: () => void;
+  dispose: () => Promise<void>;
 }
 
 /**

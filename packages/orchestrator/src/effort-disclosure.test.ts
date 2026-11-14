@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { HarnessEvent, HarnessModel, HarnessRunSpec } from "@claudexor/schema";
+import { orderedAppender } from "@claudexor/util";
 import { createCursorAdapter } from "../../harness-cursor/src/index.js";
 import { createReviewerArtifactContext } from "../../review/src/reviewerArtifacts.js";
 import {
@@ -56,6 +57,8 @@ it.each(["grok-4.7-high", "grok-4.7-xhigh"])(
         providerFamily: "cursor",
       });
       recordPreparedEffort(artifact, spec.session_id, prepared.effort, new Set(), prepared.spec);
+      // The receipt line is queued on the ordered appender: read it once landed.
+      await orderedAppender.settled(artifact.eventsPath);
       const reviewerEvent = JSON.parse(readFileSync(artifact.eventsPath, "utf8"));
       for (const event of [receipts[0]!, reviewerEvent]) {
         expect(HarnessEvent.parse(event).effort_resolution).toMatchObject({

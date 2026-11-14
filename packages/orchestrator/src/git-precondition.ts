@@ -79,7 +79,7 @@ export async function ensureWriteModeGitBoundary(
               "Retry the run",
             ],
     });
-    store.writeText(
+    await store.writeTextAsync(
       join(paths.finalDir, "summary.md"),
       `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: workspace\n\n${message}\n`,
     );

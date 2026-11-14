@@ -37,7 +37,14 @@ export type SyncOperation =
   | "store.external_write"
   | "control.run_detail"
   | "control.run_summary"
-  | "scope.persist";
+  | "scope.persist"
+  // Synchronous work that deliberately stays on the main thread (#688):
+  | "process.identity_capture"
+  | "run.telemetry_write"
+  | "metrics.harness_write"
+  | "file.write_text"
+  | "file.capture_write"
+  | "daemon.log_line";
 type LatencyFacts = ReturnType<LatencyHistogram["facts"]>;
 type SyncSample = { operation: SyncOperation; durationMs: number; at: string };
 export type RequestOutcome =

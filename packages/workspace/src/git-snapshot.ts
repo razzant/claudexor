@@ -36,7 +36,7 @@ export async function addKeptPaths(
   env: GitEnv,
   keep: readonly string[],
   excludes: readonly string[],
-  progress: () => number,
+  progress: () => Promise<number>,
   scope: "tree" | "cwd",
 ): Promise<void> {
   if (keep.length === 0) return;

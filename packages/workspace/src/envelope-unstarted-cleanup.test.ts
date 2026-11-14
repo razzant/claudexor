@@ -6,30 +6,33 @@ import {
   mkdtempSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // #501: an envelope whose private clone is refused never starts, so its creator
-// removes it; a removal that fails keeps the refusal and says what was left.
+// removes it; a removal that fails keeps the refusal and says what was left. The
+// removal walks the envelope one entry at a time (#688): the fault refuses every
+// entry under it, so the first one stops the walk with `owner.json` still there.
 const fault = vi.hoisted(() => ({ path: "" }));
-vi.mock("node:fs", async (original) => {
-  const actual = await original<typeof import("node:fs")>();
-  return {
-    ...actual,
-    rmSync: (path: PathLike, options?: RmOptions) => {
-      if (fault.path && String(path) === fault.path)
-        throw Object.assign(new Error(`EACCES: permission denied, rmdir '${fault.path}'`), {
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  const rm = (path: PathLike, options?: RmOptions) => {
+    const target = String(path);
+    if (fault.path && (target === fault.path || target.startsWith(fault.path + sep)))
+      return Promise.reject(
+        Object.assign(new Error(`EACCES: permission denied, rmdir '${target}'`), {
           code: "EACCES",
-        });
-      return actual.rmSync(path, options);
-    },
+        }),
+      );
+    return actual.rm(path, options);
   };
+  return { ...actual, default: { ...actual, rm }, rm };
 });
 const { WorkspaceManager } = await import("./manager.js");
-const { rmSync } = await import("node:fs");
 
 const dirs: string[] = [];
 afterEach(() => {

@@ -3608,9 +3608,10 @@ would otherwise race the server's close), allows 66 s for request headers, and
 does not bound the receipt of a request body, so a large upload during a busy
 period is not cut. The PUT writes its bytes on the libuv pool, and the request
 thread can answer other control requests while that write is in flight.
-Concurrent PUTs share a gate that leaves pool threads for DNS and other
-filesystem work; a PUT holds a slot only while one of its writes is in the
-pool, not while it waits for the body. None of
+Concurrent PUTs share the process's pool write gate with the engine's other pool
+writes ([Main thread and disk waits](#main-thread-and-disk-waits)); it leaves
+pool threads for DNS and other filesystem work, and a PUT holds a slot only
+while one of its writes is in the pool, not while it waits for the body. None of
 these limits applies to responses or SSE streams.
 Once stopping, it closes each kept-alive socket as soon as its response finishes,
 so the longer keep-alive window never delays shutdown.
@@ -3662,6 +3663,9 @@ since start (descending, later samples win ties), with operation, duration and
 timestamp. Labels cover `store.begin_immediate`, `store.commit`, `store.external_write`,
 `scope.persist`; `control.run_detail` and `control.run_summary` remain accepted
 so clients can parse status from engines that report those synchronous spans.
+`process.identity_capture`, `run.telemetry_write`, `metrics.harness_write`,
+`file.write_text`, `file.capture_write` and `daemon.log_line` name the synchronous
+work that stays on the main thread by design ([Main thread and disk waits](#main-thread-and-disk-waits)).
 Detail and summary report worker queue/projection wall time in `bulk`.
 Scope persistence measures synchronous serialization, not its asynchronous file writes. These
 samples may overlap and do not identify the cause of a delay. A `store.external_write`
@@ -4957,16 +4961,22 @@ its global/project partition generation before live bus publication. Per-token
 `harness.event` deltas and every other progress event reach only the per-run
 `events.jsonl` and the in-process bus, so scoped event streams replay the run
 LIFECYCLE after restart, never token-level progress. Failure to commit a retained
-lifecycle event fails its producer/run instead of being swallowed as a live-only
-gap; progress outside that set does not enter the SQL sink.
+lifecycle event fails its producer or run instead of being swallowed as a live-only
+gap: the caller awaiting that line hears it, or the run's next emit or barrier
+throws it, and the run's terminal names it when the line was held or in flight as
+the strategy returned, threw or was cancelled
+([Main thread and disk waits](#main-thread-and-disk-waits) names the lines whose own
+failure is dropped, a control audit and the run's best-effort lines, and the lines a
+terminal does not restate); progress outside that set
+does not enter the SQL sink.
 `GET /v2/runs/:id` returns `lastSeq`, a conservative event fence captured
 BEFORE pending interactions and projection reads. It does not claim an atomic
 snapshot of files and live state: later events may already be reflected in the
 response. Subscribe to `GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>`;
 there is no gap across the fence, but replay is allowed. Consumers deduplicate
 by event identity and replace/acknowledge questions by their interaction identity.
-The live writer supplies its counter without I/O. When no live writer is
-registered, cursor lookup runs in the bulk executor, including the legacy or
+The live writer supplies its counter, the last landed `seq`, without I/O. When no
+live writer is registered, cursor lookup runs in the bulk executor, including the legacy or
 oversized last-line fallback. Never stamp a later cursor onto earlier projection bytes.
 The per-run stream replays from `events.jsonl`, the complete per-run event record;
 the SQL ledger holds only the lifecycle subset above and cannot rebuild full
@@ -5002,7 +5012,9 @@ event, scoped event copies and a `pending` terminal-files obligation. The file
 owner then materializes the canonical `final/run_facts.yaml` receipt and the
 per-run terminal line before best-effort live publication; it does not write or
 rebuild `final/telemetry.yaml`, whose per-attempt evidence remains owned by the
-orchestrator. Before that synchronous commit, a held
+orchestrator. A queued run log first lets every ordered append under its run
+directory land ([Main thread and disk waits](#main-thread-and-disk-waits)).
+Before that synchronous commit, a held
 or fallback terminal is prepared once (canonical type, receipt and outcome frozen)
 and its durable bytes are staged off the request thread: large command and
 journal bodies as content-addressed files, the receipts and any needed per-run
@@ -5134,6 +5146,282 @@ reader. Its scan yields to the daemon's event loop after every 64 KiB read, but
 each part rescans the history before its event, so an N-byte event costs about
 N/limit scans of that history.
 
+### Main thread and disk waits
+
+The daemon's main thread does not wait for the disk or for a child process on a path
+whose count grows with work: per harness event, per spawned child, per lane start,
+per run end, per timer tick. Startup, shutdown, recovery and the terminal commit's
+synchronous SQL section are outside this rule, and so is the one deliberate
+synchronous capture of a spawned child's identity (INV-144). Work that stays
+synchronous for a stated reason names itself in `worstSync`, and the synchronous
+sites the rule does not cover yet are listed by name (both at the end of this section).
+
+**Ordered appends.** `orderedAppender` (`@claudexor/util`) appends to files off the
+main thread, in call order per file, from one registry keyed by absolute path. An
+append queues its bytes, encoded when queued, and returns at once; a batch writes
+those encoded bytes, so the bytes it counts are the bytes it writes (two appends
+that split one character each write a replacement character, as two synchronous
+appends did). At most one batch write runs per file,
+and it carries every byte queued while the previous one ran, so batching comes only
+from the disk's own pace: there is no timer and no batch size. A batch is one open
+for appending (a new file gets mode 0600; a missing parent directory is made only
+when the open proves it missing), writes until every byte is written, and a close.
+No descriptor stays open between writes, so deleting, renaming or truncating a file
+in between needs no coordination with the appender.
+
+When a file's queued bytes exceed the runtime's own
+`stream.getDefaultHighWaterMark(false)` (65,536 bytes on Node 24), `append` reports
+the file full. The five lane loops (agent, read-only report, planner, deep-scan
+reducer, reviewer) read their harness streams through `pacedByAppends`: before the
+next harness event is read, the loop waits, for each file it writes that is full,
+until the lines queued there before the wait (its own included) have landed or been
+lost (`drained`). Lines appended after the wait, by the loop or by another producer
+of the same file, do not hold it; if the file is still full, the loop waits again on
+its next event. A harness that outruns the disk is therefore slowed through the
+stream limits it already has, and the engine adds no constant of its own. Such a wait
+is the engine's pace, not the harness's silence: in the four loops with an inactivity
+watchdog (agent, read-only report, planner, deep-scan reducer) it suspends the window
+as a pending question does (`laneSuspension` over the loop's `AppendPacing`), so a
+fresh window starts after the drain, and a harness that stays silent after it still
+times out. Every such wait renews the window, however brief: a harness whose
+non-progress events (status, retries) are large enough to fill a journal on each
+read is not cut off by the watchdog, even when the disk keeps up; Stop and the run's
+own deadlines still end it. The reviewer's deadline is a whole-review limit and keeps
+running.
+
+Failures are reported per line. When a batch write fails, each append whose bytes
+all reached the file has landed; the others fail, together with every append queued
+behind them, and nothing is retried, because later bytes would follow a hole or a
+torn line. A torn start of a line stays in the file and the next line follows it, so
+the two read as one malformed line, as after a torn synchronous append. A close that
+fails after every byte was written fails no landing; it goes to every barrier in
+flight that covers the batch, else the file holds it. A failure goes to the caller
+awaiting that landing alone; with no such caller, to every barrier in flight that
+covers it; with neither, the file holds it, and the next append or barrier for that
+file consumes it once. An append made aside (an out-of-band writer through a live
+writer, below) neither consumes nor throws a held failure. A failure never poisons
+later appends or barriers and never becomes an unhandled rejection. The barriers
+wait for the appends made before them:
+`settled(path)`, `settledUnder(dir)` (every file under a directory) and
+`settledAll()` (daemon stop), and each rejects with a failure nobody awaited.
+`drained` neither consumes nor reports a failure and never rejects.
+
+**Pool write gate.** Upload part writes, ordered appends and the lane lifecycle
+writes below share one gate per process, from `@claudexor/util`: the libuv pool size
+minus two threads, never below one, which leaves pool threads for DNS and other
+filesystem work. A slot is held around one leaf filesystem operation and released
+when it returns: an upload takes one for each of its pool operations (the open,
+every chunk write, the close), the ordered appender one for a batch's open, writes
+and close, and a lifecycle write one for each call (a write, a rename, a link, an
+unlink, a removal). No slot is held across an await of anything else, so slots never
+nest, and an upload waiting for its next bytes from the network holds none. A writer
+that finds the gate full waits on the event loop, and cancellation wakes an upload's
+wait. When the operator has not set `UV_THREADPOOL_SIZE`, the daemon entry sets it
+from the host's available parallelism (at least 8, at most libuv's 1024) before the
+rest of the daemon graph is imported, and submits one stat so that libuv creates the
+pool at that size at once (a later assignment would not resize it). The entry then
+keeps the size in a process global for the gate and removes the variable again, so
+harness children and what they start (MCP servers, test runners, a nested daemon)
+inherit the user's environment rather than the daemon's pool size. An operator-set
+value stays in the environment, and children inherit it. The bound is the size of
+that pool, not a policy. Windows caveat, not verified on a Windows host: libuv may
+read the C runtime's copy of the environment, which an in-process assignment does
+not update there, so the pool may stay at libuv's 4 while the gate assumes the host
+size and keeps no DNS reserve. A value the operator sets before the daemon starts
+applies on every platform.
+
+**Queued run logs.** Every `Orchestrator.run` writes its `events.jsonl` through a
+queued `EventLog` (`createRunEventLog`); an `EventLog` an embedder or a unit test
+constructs directly keeps writing inline. `emit` stays synchronous for its caller:
+it validates the event, stamps the next `seq` and queues the line. When the line
+lands, the log's durable sink (`onPersist`, which in the daemon commits the
+lifecycle subset to the SQL event ledger) takes it, then the live observer
+(`onPublish`) publishes it, in `seq` order. A sink throw is that landing's failure
+and skips publication. `lastSeq()`, `liveRunEventSeq` and `lastRunEventSeq` answer
+the last landed `seq`, so a stream fence or cursor never names a line that is not on
+disk yet. A line that did not reach the file whole consumes no `seq`, and a `seq` on
+disk is never reused. Readers of a live log never miss a stamped line and never wait
+for one: `readRunEvents(path)` and `readAll()` return the landed file followed by
+the live writer's events that have not landed yet; a line on disk is not repeated,
+and a torn last line is replaced by its copy in memory. A path with no live writer
+is read raw. The live-writer registry is keyed by the absolute path, as the appender
+keys the file, so every spelling of a path names one writer. `dispose` keeps the log
+registered as the live writer until its last line has landed or been lost, so no
+appender stamps a `seq` from a file that is still short; a poisoned writer (terminal
+recovery owed, or an incomplete rollback) stays registered as the path's fence until
+recovery releases it.
+
+Three callers await a landing, its sink included, before they go on:
+
+- Run startup awaits `run.created` before it announces the run; a refusal disposes
+  the log and fails startup unannounced. It awaits `project.git.initialized` after
+  `onRunStart`; a refusal rejects out of startup, and the run terminalizes once.
+- An interaction request registers its question with the answer surface, emits
+  `interaction.requested` and awaits its landing before it waits for an answer; a
+  refusal withdraws the question and fails the request.
+- A live message awaits `message.accepted` before any native dispatch (a refusal
+  answers `rejected`/`admission_persist_failed` and sends nothing) and its closing
+  `message.delivered|refused` row before it returns the receipt (a refusal answers
+  500 `message_receipt_unavailable` and keeps the command failed).
+
+Such a refusal reaches that caller alone, and the log stays usable for recovery and
+terminalization. Any other landing failure of the run's own lines is held, and the
+run's next `emit` or barrier (the terminal's drain included) throws it once to its
+caller; the run's terminal names it (below). Out-of-band appends
+through a live writer (`appendRunEvent` for a control audit, `appendRunEventLanded`
+for a live-message row) are made aside: they neither consume nor throw a failure held
+for the run, which the run still hears. A live message hears its own rows' failures
+through their awaited landings; a control audit's own landing failure is dropped, as
+its catch-all drops a thrown one, so an audit never changes control behavior. A run's
+own best-effort lines are made aside the same way (`emitBestEffort`): the auth-switch
+marker, the retained output's `output.ready` and its status line, custody's
+`workspace.settlement_failed` and the disclosure of a discarded answer
+(`interaction.answer_discarded`). Each leaves a failure held for the run's other lines
+to them, and its own landing failure is dropped, as its catch-all drops a thrown one.
+`interaction.answered`, `interaction.timeout`, `interaction.withdrawn` and
+`output.ready` reach the SQL ledger when they land; the terminal's drain covers
+`output.ready`.
+
+**The terminal.** Every orchestrated run defers its terminal: a terminal `emit` is
+held until `commitTerminal` commits one, and only `emitTerminal` (through
+`flushContinuationTerminal` and `commitDeferredTerminal`) commits it. A held terminal
+stays pending until it commits; a commit that throws leaves it pending. A verdict's
+flush (`flushContinuationTerminal`) first awaits the barrier of everything under the
+run directory, before custody settles or the terminal commits: a landing failure of a
+line held or in flight when the strategy returned, or held its verdict, rejects the
+flush there (`RunEventsLost`), custody untouched. A verdict whose flush or commit
+throws, after the strategy returned or after it threw, is replaced by the failure
+net's terminal. When the flush failed at that barrier, the net settles custody under
+its own facts; when its commit failed after custody ran, custody stays as that flush
+settled it, under the verdict's facts. The failure net
+(`guardAnnouncedRun`) first awaits the barrier of everything under the run directory,
+the run's journal and its side journals. A line held or in flight when the strategy
+returns, throws or is cancelled is named in the terminal the net builds ("Run events
+did not reach the journal: ..."), never thrown out of the net; a line that fails
+after the net's own barrier is not. `failTerminally` and `cancelledResult`
+likewise take a failure the run's journal holds before they append their own lines,
+for every caller, and state it beside their own cause. The net's own flush awaits
+the same barrier before custody but does not reject there: what it meets is either
+named by the net already or one of the net's own lines (its output), which its
+terminal does not restate. When a landing failure of a line appended after that
+barrier (a settlement event) interrupts the commit, the flush that follows commits
+the pending terminal, so the run still gets exactly one terminal on disk and in the
+store, also when both of the net's own lines fail, and that later failure is not
+restated. A strategy that returns without a
+terminal gets the guard's fallback terminal, and a throw from that fallback goes into
+the net as well. A writer whose terminal never committed is disposed when the run
+settles, except a poisoned one, and once unregistered it refuses every emit, so no
+in-memory counter competes with the file tail's. `emitTerminal` on
+a queued log raises its fence before its first await, so no callback during an await
+takes the synchronous terminal path. It then:
+
+1. waits until every ordered append under the run directory has settled
+   (`settledUnder(runDir)`, attempt and reviewer journals included);
+2. prepares the output (`output.ready` is queued);
+3. waits again;
+4. freezes the rollback boundary;
+5. runs `beforeTerminal`, which reads the complete file;
+6. stages the terminal's bytes, while ordinary events may still append, and waits
+   again until the log's own queue is empty;
+7. runs the unchanged synchronous commit, which appends the terminal line itself.
+
+Each wait loops on the barrier until the log's own queue is empty, and the step it
+guards (preparing the terminal, committing it) runs in the same synchronous segment
+as that last check, so no line of the log lands after its terminal and no `seq` is
+reused. Only the log's own queue is rechecked: a side journal appended after the
+last barrier may still be in flight at the commit, and no reader of it depends on
+the terminal.
+
+It drains even when no staging hook is set; an inline log without one still commits
+before its first yield. A terminal that fails is rolled back with nothing in flight,
+so the rollback only truncates landed bytes past the frozen boundary. A synchronous
+terminal `emit` on a queued log with a line in flight throws
+`terminal_writes_in_flight`; with the deferral no engine path reaches it.
+
+**Side journals.** The attempt journals of the read-only report, planner, deep-scan
+and reviewer lanes (`appendHarnessEvent`), a reviewer's normalized stream (its
+prepared-effort receipt in the same order), its `transcript.md` progress bytes and
+the panel's `reviewer-progress.jsonl` go through the ordered appender. Their lines
+carry no `seq` and no sink, so their readers await a barrier instead:
+
+- a sealed reviewer's progress bytes settle before the sealed text replaces
+  `transcript.md`;
+- `reviewCandidate` resolves only after its reviewers' files have settled; a
+  review that fails keeps its own error, and a file's failure travels as its cause;
+- after a try, the in-run continuation settles the run directory before its carrier
+  and input readers read the journals (`afterTry`), and a planned later attempt
+  settles it before its evidence index is built (`openContinuity`); those readers
+  read the files raw, not through `readRunEvents`;
+- daemon stop lets every queued line land before the journal closes; a failure
+  nobody awaited is logged there and never keeps the journal open.
+
+A reviewer's `metadata.json` is rewritten when a recorded value changes, not per
+harness event, although adapters stamp their route facts on every event.
+
+**Lane start, run end, deletes, identity, watchdog.** `WorkspaceManager.create()`
+awaits its directories, harness home, `owner.json`, clone marker, Claude bridge and
+custody record off the main thread; `owner.json` is written as soon as the base
+directory exists, and this process's own start time is read once. Run-end artifacts
+(an attempt's answer, patch and record, the scope facts, the final patch, work
+product and summary) are awaited writes that replace a file whole: the text goes to
+a temporary sibling, renamed over the file (an existing file keeps its mode), so the
+daemon's own readers see the old text or the new one. Patch publication keeps its
+reuse check, link and rename order, and publications of the same bytes in one
+process run one after another. Between the object's rename and the target's link an
+object has one link, as an unused one has, so a retention pass skips an object while a
+publication of it is in flight in this process. Keeping an unfinished run's envelope for
+continuation at the run end awaits its auth strip, its disk-use walk (one listing or
+entry at a time), its custody record and the run's pointer. Deletes go through
+`removeTree`: depth first, one entry at a time, each
+removed with `fs.promises.rm` (keeping the retries a caller had); the envelope
+root's own entries go last and `owner.json` last of all, so a crash mid-delete
+leaves an envelope the startup sweeper still recognizes. One entry at a time is the
+synchronous removal's order moved off the thread, not a tuning number. Envelope
+disposal (orphans included), the discard of an envelope whose clone failed, the
+delivery verifier's clone, transient capture scratch, Codex's temporary homes and a
+read-only lane's scoped home use it. Disposal prunes its task directory with a
+non-recursive `rmdir`, which removes it only while it is empty, so a sibling
+envelope another `create` makes meanwhile stays; a `create` whose recursive `mkdir`
+finds its task directory pruned under it makes its base again.
+`registerChildProcess` returns its synchronous identity capture and the spawn
+sites reuse it, so the identity helper runs once per spawned child; the signal path
+still reads the leader's identity fresh. The Git watchdog's progress probe
+(object-directory growth and free disk space) is one awaited probe with at most one
+in flight; the interval and stall bound are unchanged, and the stall rule reads the
+last completed probe.
+
+**Synchronous by design.** These stay on the main thread and name themselves in
+`worstSync`: `process.identity_capture` (a spawned child's identity),
+`run.telemetry_write` (`final/telemetry.yaml`), `metrics.harness_write` (the shared
+read-modify-write of `harness-metrics.json`), `file.write_text` (a remaining
+synchronous text or JSON write, which creates its directory only when the write
+proves it missing), `file.capture_write` (a chunk of a Git child's output streamed
+to its capture file: the capture projection is synchronous and the child's output
+has no other backpressure) and `daemon.log_line` (a daemon log line: the startup
+diagnostics writer rotates the same file with synchronous calls).
+
+**Not covered yet.** These synchronous sites run on paths whose count grows with
+work and are not converted or labeled: resolving and inspecting each spawned
+child's program on `PATH` (about 22 synchronous calls per child, in
+`core/src/runtime-env.ts`, `npm-launch.ts` and `executable-inspection.ts`; a cache is
+a follow-up); making a read-only lane's scoped home (`readOnlyHomeEnv`: a temporary
+directory and the harness home's directories; its callers include synchronous
+factories); `isolatedCloneAdd`'s alternates append and shallow-clone copy at lane
+start; the removal of an in-place envelope's artifact directory on dispose
+(`removeDirectory` of `ArtifactOwnership`); produced images copied at run end
+(`persistCandidateOutputs`); a reviewer's `metadata.json` rewritten per usage event,
+whose totals change each time (labeled `file.write_text`); the run's directory
+stubs (`createRun` of `ArtifactStore`) and a reviewer's artifact directory and empty
+files (`createReviewerArtifactContext`, its writes labeled `file.write_text`); and
+the retention of a capture-refused source (`preserveCaptureSource`), whose callers
+are synchronous.
+
+**Trade-offs.** On a saturated disk a lane slows to the disk's pace instead of the
+whole daemon stopping. A process crash can lose progress lines that had not landed
+yet; the lines a caller awaits (`run.created`, `interaction.requested`, the
+live-message rows) and the terminal land first. A torn partial line stays a
+malformed line, as before.
+
 ### Daemon lifecycle (signals, orphans, crash GC)
 
 The engine-store migration is forward-fix only. Before publishing imported SQL
@@ -5149,7 +5437,9 @@ pre-upgrade backup under [Upgrade backup and restore](#upgrade-backup-and-restor
 Every shutdown trigger — SIGTERM/SIGINT, the `claudexor.shutdown` socket RPC,
 a startup failure — enters ONE state machine (`DaemonRuntimeShutdown
 .beginShutdown(reason)`): abort in-flight runs, complete their committed
-terminal transitions, await storage/worker cleanup and close the SQL store under
+terminal transitions, await storage/worker cleanup, let every line still queued
+on the ordered appender land (a failure nobody awaited is logged and never keeps
+the store open) and close the SQL store under
 one shared bounded escalation ladder (hung-stop deadline, then a post-stop leaked-handle sweep, every rung
 disclosed in the log). Awaiting-user interactive login runners are the one
 exemption: the shutdown drain does NOT signal them (a detached Terminal login
@@ -5576,7 +5866,10 @@ disclosed once as `workspace.settlement_failed` (attempt, envelope, root, stage
 `custody` / `dispose` / `retain` / `resumable`, redacted cause), a warning on
 the run timeline and a CLI follow line, while the run outcome stands, nothing is
 retried and the tree may remain. A diagnostic that cannot be written changes
-nothing. MCP run detail carries no timeline, so it does not show this event.
+nothing, and a journal failure after the envelope was kept is the run's own, never a
+failed settlement. Settlement starts once the run directory's lines have settled; a
+line lost before it leaves custody to the failure net. MCP run detail carries no
+timeline, so it does not show this event.
 Route-scoped auth that Claudexor
 itself seeds in that home (the Codex API-key `auth.json`, the Claude Keychain
 bridge link) is removed when it is kept; the adapters re-create it on the next
@@ -5875,27 +6168,14 @@ kept only for cold import and an independent frozen copy kept for tests.
   until the orphan sweep of the next start reclaims it; this costs disk space
   only.
   An upload part is that same write-through file, written incrementally on the
-  libuv pool. Concurrent incremental uploads share one gate of that process's
-  pool minus two threads (never below one). Each pool operation of a transfer
-  (the open, every chunk write, the close) takes one slot and releases it when
-  the operation returns, so a PUT waiting for its next bytes from the network,
-  however long, holds no slot and cannot hold up other uploads. A writer that
-  finds the gate full waits on the event loop, and cancellation wakes the wait;
-  the close still runs after a cancel. When the operator has not set
-  `UV_THREADPOOL_SIZE`, the daemon entry sets it from the host's available
-  parallelism (at least 8, at most libuv's 1024) before the rest of the daemon
-  graph is imported, and submits one stat so that libuv creates the pool at that
-  size at once (a later assignment would not resize it). The entry then keeps
-  the size in a process global for the gate and removes the variable again, so
-  harness children and what they start (MCP servers, test runners, a nested
-  daemon) inherit the user's environment rather than the daemon's pool size. An
-  operator-set value stays in the environment, and children inherit it. The
-  bound is the size of that pool, not a policy. Windows caveat, not verified on
-  a Windows host: libuv may read the C runtime's copy of the environment, which
-  an in-process assignment does not update there, so the pool may stay at
-  libuv's 4 while the gate assumes the host size and keeps no DNS reserve. That
-  is no worse than before the gate existed, and a value the operator sets before
-  the daemon starts applies on every platform. The request thread commits once
+  libuv pool under the process's pool write gate
+  ([Main thread and disk waits](#main-thread-and-disk-waits)), which concurrent
+  uploads share with the engine's other pool writes. Each pool operation of a
+  transfer (the open, every chunk write, the close) takes one slot and releases
+  it when the operation returns, so a PUT waiting for its next bytes from the
+  network, however long, holds no slot and cannot hold up other uploads.
+  Cancellation wakes a transfer's wait for a slot, and the close still runs
+  after a cancel. The request thread commits once
   when the PUT begins and once when the bytes are durable; it does not commit
   each chunk, and it calls no Node storage-sync primitive. `receivedBytes` is
   the finished total, so a status read during the PUT reports `uploading` and
@@ -6225,7 +6505,10 @@ declares `interactive`. The
 engine emits `interaction.requested` (questions, options, nullable timeout deadline,
 `delivery`), parks ONLY that attempt when the question is blocking, and the daemon commits the pending interaction and its
 event in the run's global or `project:<id>` partition generation before exposing it via
-`GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). A failed
+`GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). The request
+registers its question with the answer surface first and waits for an answer only
+after the `interaction.requested` line has landed with its durable copy; a refused
+landing withdraws the question and fails the request. A failed
 read of those rows is unknown, never an empty list: a live run's own detail
 fails with the typed problem, a list row or child card degrades alone, and a
 finished run reports none, having no live question left. Answers
@@ -6674,9 +6957,10 @@ the route by its row in `GET /v2/operations`.
 Three boundaries are reported separately and never conflated:
 
 - **Daemon admission** — the run's `events.jsonl` gets a `message.accepted`
-  row through a failure-PROPAGATING append BEFORE any native dispatch. When
-  that append throws, nothing is sent and the receipt is `rejected` with
-  reason `admission_persist_failed` (a new key is needed to try again).
+  row, and the route awaits its landing, durable copy included, BEFORE any
+  native dispatch. When that landing fails, nothing is sent and the receipt is
+  `rejected` with reason `admission_persist_failed` (a new key is needed to try
+  again).
 - **Native acceptance** — outcome `accepted`: the harness's documented
   acceptance boundary was observed (Codex: `turn/steer` returned `{turnId}`,
   carried as `nativeTurnId`; Claude Code: the `command_lifecycle queued`
@@ -6707,7 +6991,9 @@ declares `none` or lacks `message`, `thread_bound` for a thread turn), and
 `delivery_unknown` (the message MAY have landed: `transport_lost`,
 `response_timeout`; a receipt-save failure is the ledger's 500).
 `accepted:false` on `delivery_unknown` never means "safe to resend under a new
-key" — reuse the key to read the recorded verdict. Reasons come from adapter
+key" — reuse the key to read the recorded verdict. A receipt with a closing row
+(`message.delivered` or `message.refused`) is returned only after that row has
+landed; one that cannot land answers 500 `message_receipt_unavailable`. Reasons come from adapter
 and registry state only, never from vendor prose (INV-049). The payload of
 every `message.*` row is `{message_id, attempt_id?, harness_id?, outcome?,
 reason?, live_input?, native_turn_id?, text_sha256, text_bytes, text, title}`;
@@ -8056,7 +8342,9 @@ changes, plan progress, and completed context compaction. Starts, status/retry/
 reconnect/keepalive chatter, usage-only updates, transient errors, terminal
 frames, and unknown future event kinds stay observable but do not extend the
 lease. Waiting on a typed user interaction suspends the watchdog under the
-separate finite-or-disabled interaction policy. Long active runs therefore stay
+separate finite-or-disabled interaction policy, and so does the lane's own wait for a
+full journal (flow control under [Main thread and disk waits](#main-thread-and-disk-waits)).
+Long active runs therefore stay
 alive while they make real progress; a tool call that streams nothing for the
 whole window remains indistinguishable from a hang and is killed. An explicit
 Stop reuses the timeout's bounded drain: from the attempt's next read after
@@ -8185,7 +8473,8 @@ shared inode before publishing its durable authoritative link. The cache path is
 advisory. A mismatching cache object is atomically replaced with fresh supplied bytes before linking a new publication; existing links to the old inode are never rewritten. Filesystems that cannot link receive independent byte-identical copies. Masked display copies
 and their different exact bytes remain separate objects. Existing plain-file
 run trees and anchors stay readable without migration. Retention removes cache
-entries only after their last run/anchor link is gone; anchors follow the
+entries only after their last run/anchor link is gone, and never one whose
+publication is in flight in the daemon; anchors follow the
 run-owned [retention contract](#7-control-api).
 
 `final/telemetry.yaml` (`RunTelemetry` in the schema) is the single engine-owned

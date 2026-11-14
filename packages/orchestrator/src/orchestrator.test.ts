@@ -13428,6 +13428,11 @@ describe("interaction late-answer honesty", () => {
     const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
     const log = {
       emit: (type: string, payload: Record<string, unknown>) => events.push({ type, payload }),
+      // The disclosure is a best-effort line, made aside (#704).
+      emitAside: (type: string, payload: Record<string, unknown>) => events.push({ type, payload }),
+      // An inline log: the announcement has landed when the emit returns.
+      emitLanded: async (type: string, payload: Record<string, unknown>) =>
+        events.push({ type, payload }),
     };
     let releaseAnswer: (v: { answers: { question_id: string; answer: string }[] }) => void = () =>
       undefined;
@@ -13470,6 +13475,9 @@ describe("interaction channel registration order", () => {
     const order: string[] = [];
     const log = {
       emit: (type: string) => {
+        order.push(type);
+      },
+      emitLanded: async (type: string) => {
         order.push(type);
       },
     } as never;

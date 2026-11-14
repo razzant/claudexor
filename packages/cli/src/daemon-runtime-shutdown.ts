@@ -1,3 +1,5 @@
+import { orderedAppender, redactSecrets } from "@claudexor/util";
+
 export interface RuntimeStopParticipant {
   stop(): Promise<void>;
 }
@@ -68,15 +70,16 @@ export function productionDaemonStop(options: ProductionDaemonStopOptions): Runt
  * socket-RPC stop, startup failure, test dispose — enters through
  * beginShutdown(reason) and gets the SAME escalation ladder (F2.5 W-C8:
  * hung-stop deadline, then post-stop leaked-handle sweep). It stops ingress
- * and setup work before closing the journal they write to; a hung
- * participant or a leaked handle can no longer immortalize the daemon,
- * whichever trigger asked it to die. Every rung is DISCLOSED in the log and
- * every timer is unref'd so the ladder itself never keeps a clean process
- * alive. Nothing outside the machine can disarm it: the clean-stop
- * continuation itself clears the hung-stop deadline (the exit-1 hazard), a
- * FAILED stop keeps that deadline armed to guarantee termination, and the
- * drain sweep is deliberately uncancellable — the F2.5 finalize() hook let
- * the composition root cancel the sweep and thereby disabled the
+ * and setup work, lets every line still queued on the ordered appender land
+ * (each landing's durable sink writes the store), and only then closes the
+ * journal they write to; a hung participant or a leaked handle can no longer
+ * immortalize the daemon, whichever trigger asked it to die. Every rung is
+ * DISCLOSED in the log and every timer is unref'd so the ladder itself never
+ * keeps a clean process alive. Nothing outside the machine can disarm it: the
+ * clean-stop continuation itself clears the hung-stop deadline (the exit-1
+ * hazard), a FAILED stop keeps that deadline armed to guarantee termination,
+ * and the drain sweep is deliberately uncancellable — the F2.5 finalize() hook
+ * let the composition root cancel the sweep and thereby disabled the
  * leaked-handle protection in every production shutdown (F3 final review).
  */
 export class DaemonRuntimeShutdown {
@@ -167,6 +170,15 @@ export class DaemonRuntimeShutdown {
       if (failures.length > 0) {
         this.settleFailure(new AggregateError(failures, "daemon runtime shutdown failed"));
         return;
+      }
+      // Work has stopped. A failed landing nobody awaited is disclosed here; it
+      // never keeps the journal open.
+      try {
+        await orderedAppender.settledAll();
+      } catch (error) {
+        this.log(
+          `queued appends failed before the journal closed: ${redactSecrets(String(error))}`,
+        );
       }
       try {
         await this.options.journal.close();

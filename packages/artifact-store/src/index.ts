@@ -7,7 +7,9 @@ import {
   readTextSafe,
   writeJson,
   writeText,
+  writeTextAsync,
   writePatchObject,
+  writePatchObjectAsync,
 } from "@claudexor/util";
 
 export interface RunPaths {
@@ -101,6 +103,21 @@ export class ArtifactStore {
 
   writePatch(path: string, text: string): void {
     writePatchObject(this.claudexorDir, path, text, { durable: false });
+  }
+
+  /* Awaited twins for callers that are already async (run end): the main
+   * thread does not wait on the disk while the file is written (#688). */
+
+  async writeYamlAsync(path: string, value: unknown): Promise<void> {
+    await writeTextAsync(path, yamlStringify(value));
+  }
+
+  async writeTextAsync(path: string, text: string): Promise<void> {
+    await writeTextAsync(path, text);
+  }
+
+  async writePatchAsync(path: string, text: string): Promise<void> {
+    await writePatchObjectAsync(this.claudexorDir, path, text);
   }
 
   readYaml<T = unknown>(path: string): T | null {

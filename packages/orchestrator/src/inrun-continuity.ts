@@ -21,6 +21,7 @@ import {
   type SessionCapsule,
   type WorkState,
 } from "@claudexor/schema";
+import { errorCode, orderedAppender } from "@claudexor/util";
 import type { AttemptOutputMarkers } from "./attemptOutputMarkers.js";
 import {
   carriedRunAttempts,
@@ -244,6 +245,8 @@ export class InRunContinuity {
     await this.relocate(facts.runSpec);
     this.settledCarrier = this.continued?.carrier ?? null;
     this.emitReceipt(facts.runSpec);
+    // The carrier and input readers below read the run's journals raw: they land first.
+    await orderedAppender.settledUnder(this.deps.runDir);
     // A mismatched handshake delivered nothing, exactly like a try that never started.
     if (this.tryStarted && !this.tryIdentity.startsWith("mismatch")) this.unstartedInputs = [];
     else if (this.tryIndex === 0) this.unstartedInputs = undeliveredInputs(this.deps);
@@ -345,7 +348,7 @@ export class InRunContinuity {
 
   private poolTerminal(error: Error): AfterTryVerdict {
     this.lastCause = "pool_exhausted";
-    this.terminalCode = codeOf(error);
+    this.terminalCode = errorCode(error) ?? null;
     const resetsAt = (error as { resetsAt?: unknown }).resetsAt;
     this.limit = {
       resetsAt: typeof resetsAt === "string" ? resetsAt : null,
@@ -419,7 +422,7 @@ export class InRunContinuity {
           constraintId: this.limit?.constraintId,
         },
       );
-      this.terminalCode = codeOf(error);
+      this.terminalCode = errorCode(error) ?? null;
       return { kind: "terminal", error };
     }
     if (effectiveLimitAction(this.deps.policy, route) !== "rotate")
@@ -590,9 +593,4 @@ export class InRunContinuity {
       }),
     });
   }
-}
-
-function codeOf(error: Error): string | null {
-  const code = (error as { code?: unknown }).code;
-  return typeof code === "string" ? code : null;
 }

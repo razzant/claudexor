@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeExternalIncremental } from "./external-files.js";
 import {
-  createUploadWriteGate,
+  createPoolWriteGate,
   libuvPoolSize,
   libuvPoolSizeFrom,
-  uploadWriteSlots,
-} from "./libuv-pool.js";
+  poolWriteSlots,
+} from "@claudexor/util";
 
 const roots: string[] = [];
 
@@ -35,11 +35,11 @@ describe("libuv pool size", () => {
       delete process.env.UV_THREADPOOL_SIZE;
       global[key] = 22;
       expect(libuvPoolSize()).toBe(22);
-      expect(uploadWriteSlots()).toBe(20);
+      expect(poolWriteSlots()).toBe(20);
       delete global[key];
       expect(libuvPoolSize()).toBe(4);
       process.env.UV_THREADPOOL_SIZE = "6";
-      expect(uploadWriteSlots()).toBe(4);
+      expect(poolWriteSlots()).toBe(4);
     } finally {
       if (savedEnv === undefined) delete process.env.UV_THREADPOOL_SIZE;
       else process.env.UV_THREADPOOL_SIZE = savedEnv;
@@ -51,7 +51,7 @@ describe("libuv pool size", () => {
 
 describe("upload write gate", () => {
   it("lets the next waiter through when a holder releases, in arrival order", async () => {
-    const gate = createUploadWriteGate(() => 1);
+    const gate = createPoolWriteGate(() => 1);
     const releaseA = await gate.acquire();
     const order: string[] = [];
     const pendingB = gate.acquire().then((release) => {
@@ -75,7 +75,7 @@ describe("upload write gate", () => {
   });
 
   it("rejects a waiter when cancellation wakes it, then accepts a later writer", async () => {
-    const gate = createUploadWriteGate(() => 1);
+    const gate = createPoolWriteGate(() => 1);
     const releaseA = await gate.acquire();
     let stop = false;
     const pending = gate.acquire(() => {
@@ -95,7 +95,7 @@ describe("incremental upload slot", () => {
   it("releases the slot when the open fails, so a later write still finishes", async () => {
     const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-upload-slot-")));
     roots.push(root);
-    const slots = uploadWriteSlots();
+    const slots = poolWriteSlots();
     for (let index = 0; index < slots; index += 1) {
       await expect(
         writeExternalIncremental(join(root, "missing", `part-${index}`), (async function* () {})()),
