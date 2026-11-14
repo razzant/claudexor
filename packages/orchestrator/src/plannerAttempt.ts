@@ -24,7 +24,7 @@ import type {
   HarnessRunSpec,
   Intent,
 } from "@claudexor/schema";
-import { redactSecrets, safeInvoke } from "@claudexor/util";
+import { pacedByAppends, redactSecrets, safeInvoke } from "@claudexor/util";
 import {
   attemptInterruption,
   finalizeAttempt,
@@ -58,6 +58,7 @@ import { runModelGovernedRoute } from "./modelGovernance.js";
 import type { RoutedAdapter, RunInput } from "./orchestrator.js";
 import {
   harnessEventPayload,
+  laneSuspension,
   observeAuthSwitch,
   observeBudgetSignals,
   safeErrorMessage,
@@ -284,6 +285,7 @@ export async function runPlannerAttempt(
       ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
     });
     if (!input.signal?.aborted) {
+      const pacing = { waiting: false, version: 0 };
       const watchedPlan = withInactivityWatchdog(runModelGovernedRoute(routed, spec), {
         timeoutMs: deps.inactivityTimeoutMs(input.repoRoot),
         countsAsProgress: countsAsAgentProgress,
@@ -291,11 +293,11 @@ export async function runPlannerAttempt(
           plannerAbort.abort();
           void adapter.cancel?.(spec.session_id)?.catch(() => {});
         },
-        isSuspended: () => (planInteraction?.pendingCount?.() ?? 0) > 0,
-        suspensionVersion: () => planInteraction?.suspensionVersion?.() ?? 0,
+        ...laneSuspension(pacing, planInteraction),
         stopSignal: input.signal,
       });
-      for await (const ev of watchedPlan) {
+      const files = [paths.eventsPath, attemptEventsPath];
+      for await (const ev of pacedByAppends(watchedPlan, files, pacing)) {
         // A read after Stop is evidence only: stored, never shown live.
         const stoppedBefore = input.signal?.aborted === true;
         const shown = !stoppedBefore && ev.payload?.["buffered"] !== true;

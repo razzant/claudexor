@@ -1,8 +1,16 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { EventLog, appendRunEvent, lastRunEventSeq, lastSeqInFile } from "./index.js";
+import {
+  EventLog,
+  appendRunEvent,
+  lastRunEventSeq,
+  lastSeqInFile,
+  liveRunEventSeq,
+  readRunEvents,
+} from "./index.js";
+import { orderedAppender } from "@claudexor/util";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -493,6 +501,79 @@ describe("appendRunEvent single-counter invariant", () => {
     const second = new EventLog(path, "run-1", "task-1");
     expect(appendRunEvent(path, "run-1", "task-1", "control.requested", {}).seq).toBe(2);
     expect(second.emit("run.completed", {}).seq).toBe(3);
+  });
+
+  it("names one live writer for every spelling of its path (#704)", () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-eventlog-"));
+    mkdirSync(join(dir, "run"));
+    const path = join(dir, "run", "events.jsonl");
+    const other = join(dir, "run", "..", "run", "events.jsonl");
+    const relativeSpelling = relative(process.cwd(), path);
+    const log = new EventLog(other, "run-1", "task-1");
+    log.emit("run.created", {});
+    // Direction 1: the other spellings find the live writer and its counter.
+    expect(() => new EventLog(path, "run-1", "task-1")).toThrow(/already owns/);
+    expect(liveRunEventSeq(path)).toBe(1);
+    expect(liveRunEventSeq(relativeSpelling)).toBe(1);
+    expect(appendRunEvent(path, "run-1", "task-1", "control.requested", {}).seq).toBe(2);
+    expect(readRunEvents(relativeSpelling).events.map((event) => event.seq)).toEqual([1, 2]);
+    // Direction 2: once it disposes, any spelling opens the path again.
+    log.dispose();
+    expect(liveRunEventSeq(other)).toBeNull();
+    expect(new EventLog(relativeSpelling, "run-1", "task-1").emit("run.completed", {}).seq).toBe(3);
+  });
+
+  it("refuses an emit from a writer released without its terminal, once it is unregistered (#704)", async () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-eventlog-"));
+    const path = join(dir, "events.jsonl");
+    const log = new EventLog(path, "run-1", "task-1", undefined, undefined, undefined, {
+      queued: true,
+    });
+    log.deferTerminal();
+    log.emit("run.created", {});
+    // Direction 1: while a line is in flight a released writer stays registered,
+    // and its emits still take the counter's seqs.
+    log.dispose();
+    expect(log.emit("harness.event", { text: "while in flight" }).seq).toBe(2);
+    await orderedAppender.settled(path);
+    // Direction 2: once unregistered, it refuses, and the file tail stamps the
+    // next seq for an out-of-band append, never a seq the writer also took.
+    expect(liveRunEventSeq(path)).toBeNull();
+    expect(() => log.emit("harness.event", { text: "late" })).toThrow(/released/);
+    await expect(log.emitTerminal("run.failed", {})).rejects.toThrow(/released/);
+    expect(appendRunEvent(path, "run-1", "task-1", "control.applied", {}).seq).toBe(3);
+    const seqs = readFileSync(path, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => (JSON.parse(line) as { seq: number }).seq);
+    expect(seqs).toEqual([1, 2, 3]);
+  });
+
+  it("keeps a poisoned writer registered as the path's fence when disposed (#704)", () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-eventlog-"));
+    const path = join(dir, "events.jsonl");
+    const poisoned = new EventLog(path, "run-1", "task-1", (event) => {
+      if (event.type === "run.completed") throw new Error("durable journal unavailable");
+    });
+    poisoned.setBeforeTerminal(() => ({
+      type: "run.completed",
+      payload: {},
+      rollback: () => {
+        throw new Error("receipt restore failed");
+      },
+    }));
+    poisoned.emit("run.created", {});
+    expect(() => poisoned.emit("run.completed", {})).toThrow(/rollback was incomplete/);
+    // Direction 1: dispose leaves the poison fence in place.
+    poisoned.dispose();
+    expect(liveRunEventSeq(path)).toBe(1);
+    expect(() => new EventLog(path, "run-1", "task-1")).toThrow(/already owns/);
+    // Direction 2: a writer that is not poisoned unregisters, terminal or not.
+    const clean = join(dir, "clean.jsonl");
+    const log = new EventLog(clean, "run-1", "task-1");
+    log.emit("run.created", {});
+    log.dispose();
+    expect(liveRunEventSeq(clean)).toBeNull();
   });
 });
 

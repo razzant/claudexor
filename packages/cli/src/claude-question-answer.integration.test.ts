@@ -176,13 +176,12 @@ function textAttachment(runDir: string): Attachment {
   };
 }
 
-/** A run journal whose append fails: the orchestrator's interaction channel
- * then rejects its request after invoking the answer surface. */
+/** A run journal that refuses the announcement when its line lands: the
+ * orchestrator's interaction channel then rejects its request after invoking
+ * the answer surface. */
 function failingJournal(): Parameters<typeof interactionChannelFor>[1] {
   return {
-    emit: () => {
-      throw new Error("journal append failed");
-    },
+    emitLanded: () => Promise.reject(new Error("journal append failed")),
   } as unknown as Parameters<typeof interactionChannelFor>[1];
 }
 

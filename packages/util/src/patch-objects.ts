@@ -11,10 +11,12 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
+import { copyFile, link, lstat, open, readFile, readdir, rename, unlink } from "node:fs/promises";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { ensureDir, fsyncDirectory, sha256 } from "./index.js";
+import { withPoolWriteSlot } from "./libuv-pool.js";
+import { ensureDirAsync } from "./write-async.js";
 
 const LINK_UNAVAILABLE = new Set(["EXDEV", "EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EMLINK"]);
 
@@ -93,7 +95,93 @@ export function writePatchObject(
   if (lstatSync(object).nlink === 1) unlinkSync(object);
 }
 
-/** Cache entries have no authority of their own. Anchors and run paths own their lifetime. */
+async function unlinkIfPresent(path: string): Promise<void> {
+  try {
+    await withPoolWriteSlot(undefined, () => unlink(path));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+/** Publications of one object (same bytes) in flight in this process, chained,
+ * by the object's absolute path. The cache's pruner leaves these objects alone. */
+const publishing = new Map<string, Promise<void>>();
+
+/**
+ * The awaited twin of `writePatchObject(..., { durable: false })` for the copies
+ * a run publishes at its end (attempt and final patches), in the same order:
+ * reuse check, object write and rename, link, rename into place. A durable
+ * anchor keeps the synchronous writer; it is written at apply time. Two
+ * publications of the same bytes run one after the other, as the synchronous
+ * writer's do: interleaved, one could unlink the cache entry the other is about
+ * to link. Each write call holds one pool write slot for itself; the chain waits
+ * outside any slot, so slots never nest. Between the object's rename and the
+ * target's link the object has one link, as an unused one has: the retention
+ * pruner skips an object while its publication is in flight (#704).
+ */
+export async function writePatchObjectAsync(
+  runtimeDir: string,
+  target: string,
+  patch: string,
+): Promise<void> {
+  const id = sha256(patch).slice(7);
+  const object = resolve(runtimeDir, "patches", `${id}.patch`);
+  const current = (publishing.get(object) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => publishObject(object, id, target, patch));
+  publishing.set(object, current);
+  try {
+    await current;
+  } finally {
+    if (publishing.get(object) === current) publishing.delete(object);
+  }
+}
+
+async function publishObject(
+  object: string,
+  id: string,
+  target: string,
+  patch: string,
+): Promise<void> {
+  await ensureDirAsync(dirname(object));
+  if (!(await lstat(dirname(object))).isDirectory())
+    throw new Error(`patch cache ${dirname(object)} is not a plain directory; publication refused`);
+  const cached = await lstat(object).catch(() => null);
+  const reusable =
+    cached !== null && cached.isFile() && sha256(await readFile(object, "utf8")) === `sha256:${id}`;
+  if (!reusable) {
+    const temp = `${object}.tmp-${crypto.randomUUID()}`;
+    try {
+      const handle = await withPoolWriteSlot(undefined, () => open(temp, "wx", 0o600));
+      try {
+        await withPoolWriteSlot(undefined, () => handle.writeFile(patch, "utf8"));
+      } finally {
+        await withPoolWriteSlot(undefined, () => handle.close());
+      }
+      await withPoolWriteSlot(undefined, () => rename(temp, object));
+    } finally {
+      await unlinkIfPresent(temp);
+    }
+  }
+  await ensureDirAsync(dirname(target));
+  const temp = `${target}.tmp-${crypto.randomUUID()}`;
+  try {
+    try {
+      await withPoolWriteSlot(undefined, () => link(object, temp));
+    } catch (error) {
+      if (!LINK_UNAVAILABLE.has((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      await withPoolWriteSlot(undefined, () => copyFile(object, temp));
+    }
+    await withPoolWriteSlot(undefined, () => rename(temp, target));
+  } finally {
+    await unlinkIfPresent(temp);
+  }
+  // A filesystem without hard links keeps the published copy, not an extra cache copy.
+  if ((await lstat(object)).nlink === 1) await withPoolWriteSlot(undefined, () => unlink(object));
+}
+
+/** Cache entries have no authority of their own. Anchors and run paths own their
+ * lifetime; an object whose publication this process has in flight is its own. */
 export async function prunePatchObjects(
   runtimeDir: string,
   dryRun: boolean,
@@ -121,6 +209,8 @@ export async function prunePatchObjects(
     )
       throw new Error(`patch cache ${directory} changed during inventory; objects kept`);
     const path = join(directory, entry.name);
+    // Checked after the last yield, in the same synchronous step as the unlink (#704).
+    if (publishing.has(resolve(path))) continue;
     const stat = lstatSync(path);
     if (!stat.isFile()) continue;
     if (stat.nlink !== 1 + (dryRun ? (plannedUnlinks.get(`${stat.dev}:${stat.ino}`) ?? 0) : 0))

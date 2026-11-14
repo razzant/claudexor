@@ -88,6 +88,9 @@ describe("orchestrator terminal persistence port", () => {
           mode: "agent",
           phase: "fixture",
         });
+        // A run's log queues its lines, and its terminal is held and committed
+        // after the drain, as the run's scope custody holds it (runScope.ts).
+        log.deferTerminal();
         log.emit("run.created", { mode: "agent", prompt: "fixture" });
         log.emit("run.failed", { lifecycle: "failed", facts: outcome, reason: outcome.reason });
         return {

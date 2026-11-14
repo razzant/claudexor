@@ -12,6 +12,7 @@ import {
   statfsSync,
   fstatSync,
 } from "node:fs";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileSink, gitObserved, GitOperationError } from "./git-observed.js";
@@ -320,9 +321,10 @@ async function transferObjectsUnchecked(
   return result;
 }
 
-function statSafe(path: string): number {
+/** The watchdog probe of a growing pack index: awaited, never run on the thread (#688). */
+async function statSafe(path: string): Promise<number> {
   try {
-    return statSync(path).size;
+    return (await stat(path)).size;
   } catch {
     return 0;
   }

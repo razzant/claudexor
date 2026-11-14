@@ -1,4 +1,4 @@
-import { processTiming } from "@claudexor/util";
+import { processTiming, withPoolWriteSlot } from "@claudexor/util";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -14,7 +14,6 @@ import {
 import { link, open, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { mapStoreError } from "./errors.js";
-import { withUploadWriteSlot } from "./libuv-pool.js";
 
 /** What an external write carries; a slow write names it in the daemon log. */
 export type ExternalWritePurpose = "blob_body" | "terminal_receipt" | "terminal_log" | "import";
@@ -230,7 +229,7 @@ export async function writeExternalIncremental(
     cancelled?: () => void;
   },
 ): Promise<number> {
-  const handle = await withUploadWriteSlot(hooks?.cancelled, async () => {
+  const handle = await withPoolWriteSlot(hooks?.cancelled, async () => {
     const opened = await open(path, externalWriteFlags(constants.O_RDWR));
     try {
       await opened.truncate(0);
@@ -245,14 +244,14 @@ export async function writeExternalIncremental(
   const close = async (): Promise<void> => {
     if (closed) return;
     closed = true;
-    await withUploadWriteSlot(undefined, () => handle.close());
+    await withPoolWriteSlot(undefined, () => handle.close());
   };
   try {
     for await (const chunk of chunks) {
       hooks?.accept?.(chunk, received);
       let offset = 0;
       while (offset < chunk.byteLength) {
-        const { bytesWritten } = await withUploadWriteSlot(hooks?.cancelled, () =>
+        const { bytesWritten } = await withPoolWriteSlot(hooks?.cancelled, () =>
           handle.write(chunk, offset, chunk.byteLength - offset, received + offset),
         );
         if (bytesWritten <= 0) throw new Error(`short write of ${path}`);

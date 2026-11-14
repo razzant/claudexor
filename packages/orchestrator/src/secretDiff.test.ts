@@ -235,7 +235,7 @@ describe("persistFinalPatch", () => {
     const diff = textPatch("SAFE.txt", "ordinary output");
     const attempt = join(paths.attemptsDir, "a01", "patch.diff");
     store.writePatch(attempt, diff);
-    const final = persistFinalPatch(store, paths.finalDir, { diff });
+    const final = await persistFinalPatch(store, paths.finalDir, { diff });
     const anchor = createRevertAnchorFromPatchOrNull(repo, diff)!;
     const anchorPath = join(store.claudexorDir, "anchors", "objects", `${anchor.slice(7)}.patch`);
     expect(
@@ -252,12 +252,12 @@ describe("persistFinalPatch", () => {
     expect(readRevertAnchor(repo, anchor)).toBe(diff);
   });
 
-  it("saves the exact patch and binds the digest to those same bytes", () => {
+  it("saves the exact patch and binds the digest to those same bytes", async () => {
     const { repo, store, paths } = storeFor("claudexor-v4c-final-");
     const secret = fakeKey("p");
     const diff = textPatch("LEAK.txt", secret);
 
-    const saved = persistFinalPatch(store, paths.finalDir, { diff });
+    const saved = await persistFinalPatch(store, paths.finalDir, { diff });
 
     expect(readFileSync(join(paths.finalDir, "patch.diff"), "utf8")).toBe(diff);
     expect(saved).toEqual({ patchSha256: sha256(diff), meta: {} });
@@ -265,11 +265,11 @@ describe("persistFinalPatch", () => {
     expect(() => readRevertAnchor(repo, saved.patchSha256!)).toThrow();
   });
 
-  it("records the nested repositories the patch left out", () => {
+  it("records the nested repositories the patch left out", async () => {
     const { store, paths } = storeFor("claudexor-v4c-final-nested-");
     const diff = textPatch("SAFE.txt", "safe");
 
-    const saved = persistFinalPatch(store, paths.finalDir, {
+    const saved = await persistFinalPatch(store, paths.finalDir, {
       diff,
       excludedNestedRepositories: [".review-evidence/copy", ".review-evidence/copy"],
     });

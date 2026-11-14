@@ -34,7 +34,7 @@ import {
   type RunContinuityReceipt,
   type SessionCapsule,
 } from "@claudexor/schema";
-import { readTextSafe } from "@claudexor/util";
+import { orderedAppender, readTextSafe } from "@claudexor/util";
 import {
   ownsContinuationSource,
   readContinuationEvidence,
@@ -218,8 +218,11 @@ export async function openContinuity(
 ): Promise<{ continuity: InRunContinuity; spec: HarnessRunSpec }> {
   const { spec, continuation, store } = first;
   const from = continuation?.from;
-  if (continuation?.planned && !from && deps.later)
+  if (continuation?.planned && !from && deps.later) {
+    // The plan's evidence index reads this run's journals raw: they land first.
+    await orderedAppender.settledUnder(deps.runDir);
     return openLaterAttempt(deps, { spec, later: deps.later }, continuation.planned);
+  }
   if (!continuation || !from) return { continuity: new InRunContinuity(deps), spec };
   continuation.from = null;
   const pred = readPredecessor(from);
@@ -248,7 +251,7 @@ export async function openContinuity(
       : spec.model_hint;
   const callerText = deps.workOrder;
   const workOrder = [pred.workOrder.trim(), callerText.trim()].filter(Boolean).join("\n\n");
-  store.writeText(join(deps.runDir, WORK_ORDER_FILE), `${workOrder}\n`);
+  await store.writeTextAsync(join(deps.runDir, WORK_ORDER_FILE), `${workOrder}\n`);
   // Another harness cannot resume this session: the evidence index carries it.
   const capsule = pred.capsule?.harness === deps.adapter.id ? pred.capsule : null;
   const targetId = spec.credential_profile?.profile_id ?? null;

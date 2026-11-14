@@ -1,13 +1,7 @@
-import {
-  closeSync,
-  existsSync,
-  lstatSync,
-  openSync,
-  readFileSync,
-  writeFileSync,
-  writeSync,
-} from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
+import { access, lstat, open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { withPoolWriteSlot } from "@claudexor/util";
 
 /**
  * D-14 layer 3 (AGENTS.md compatibility) — an envelope-local `CLAUDE.md` bridge.
@@ -69,20 +63,26 @@ export interface ClaudeBridgeResult {
  * true for exactly one caller across any number of concurrent invocations.
  * The caller restricts this to a disposable envelope or another explicitly
  * owned compatibility directory; it must never target a user's live project
- * root.
+ * root. It runs at lane start, so it awaits the disk instead of holding the
+ * main thread; each write call holds one pool write slot.
  */
-export function ensureClaudeBridge(projectRoot: string): ClaudeBridgeResult {
+export async function ensureClaudeBridge(projectRoot: string): Promise<ClaudeBridgeResult> {
   const agentsPath = join(projectRoot, "AGENTS.md");
   const claudePath = join(projectRoot, "CLAUDE.md");
 
-  // Only bridge when AGENTS.md is present as the source of truth.
-  if (!existsSync(agentsPath)) return { created: false, path: claudePath, reason: "no_agents" };
+  // Only bridge when AGENTS.md is present as the source of truth (the same
+  // existence check `existsSync` makes: any refusal reads as absent).
+  const agentsPresent = await access(agentsPath).then(
+    () => true,
+    () => false,
+  );
+  if (!agentsPresent) return { created: false, path: claudePath, reason: "no_agents" };
 
   // No-follow refusal: lstat does NOT dereference the final component, so a
   // symlink named CLAUDE.md (valid OR dangling), a regular file, or a directory
   // all surface here and are left untouched. ENOENT means the path is free.
   try {
-    lstatSync(claudePath);
+    await lstat(claudePath);
     return { created: false, path: claudePath, reason: "claude_exists" };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
@@ -92,18 +92,17 @@ export function ensureClaudeBridge(projectRoot: string): ClaudeBridgeResult {
   // if any path (including a symlink) appears between the lstat above and this
   // open, the open fails EEXIST and we DO NOT overwrite. Exactly one concurrent
   // prep wins; the losers report `race_lost`.
-  let fd: number;
+  const handle = await withPoolWriteSlot(undefined, () => open(claudePath, "wx", 0o644)).catch(
+    (err: NodeJS.ErrnoException) => {
+      if (err.code === "EEXIST") return null;
+      throw err;
+    },
+  );
+  if (handle === null) return { created: false, path: claudePath, reason: "race_lost" };
   try {
-    fd = openSync(claudePath, "wx", 0o644);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST")
-      return { created: false, path: claudePath, reason: "race_lost" };
-    throw err;
-  }
-  try {
-    writeSync(fd, CLAUDE_BRIDGE_CONTENT);
+    await withPoolWriteSlot(undefined, () => handle.writeFile(CLAUDE_BRIDGE_CONTENT));
   } finally {
-    closeSync(fd);
+    await withPoolWriteSlot(undefined, () => handle.close());
   }
   return { created: true, path: claudePath, reason: "created" };
 }
@@ -166,15 +165,18 @@ export function isGeneratedClaudeBridge(
  * candidate edit. The marker also names the generation whose bytes were
  * written. A missing/foreign/unknown marker stays fail-toward-CAPTURE.
  */
-export function writeBridgeCreatedMarker(envelopeBase: string, envelopeId: string): void {
+export async function writeBridgeCreatedMarker(
+  envelopeBase: string,
+  envelopeId: string,
+): Promise<void> {
+  const marker = JSON.stringify({
+    envelope_id: envelopeId,
+    created_at: new Date().toISOString(),
+    generation: CURRENT_CLAUDE_BRIDGE_GENERATION,
+  });
   try {
-    writeFileSync(
-      join(envelopeBase, "bridge-created.json"),
-      JSON.stringify({
-        envelope_id: envelopeId,
-        created_at: new Date().toISOString(),
-        generation: CURRENT_CLAUDE_BRIDGE_GENERATION,
-      }) + "\n",
+    await withPoolWriteSlot(undefined, () =>
+      writeFile(join(envelopeBase, "bridge-created.json"), marker + "\n"),
     );
   } catch {
     /* marker is an optimization over the in-memory set; never fail create */

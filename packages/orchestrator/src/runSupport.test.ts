@@ -2,11 +2,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { EventLog } from "@claudexor/event-log";
 import { runGates } from "@claudexor/review";
 import { ReviewFinding, type BudgetObservation, type HarnessEvent } from "@claudexor/schema";
+import { orderedAppender } from "@claudexor/util";
 import { codexRateLimitEvents } from "../../harness-codex/src/quota.js";
 import {
   harnessEventPayload,
+  observeAuthSwitch,
   observeBudgetSignals,
   promptWithEngineConstraints,
   promptWithGateArgvDisclosure,
@@ -433,4 +436,61 @@ describe("observeBudgetSignals (one-shot quota pressure describes the text run)"
       ["budget.quota_pressure", 0.7],
     ]);
   });
+});
+
+describe("observeAuthSwitch journals its marker aside (#704)", () => {
+  it.each([true, false])(
+    "leaves another line's failure to the run and drops its own (another line lost: %s)",
+    async (otherLost) => {
+      const dir = mkdtempSync(join(tmpdir(), "cx-auth-switch-"));
+      const path = join(dir, "events.jsonl");
+      const log = new EventLog(
+        path,
+        "run-1",
+        "task-1",
+        (event) => {
+          const refused = otherLost
+            ? event.payload["text"] === "lost"
+            : event.type === "route.fallback.auth_switched";
+          if (refused) throw new Error(`journal refused ${event.type}`);
+        },
+        undefined,
+        undefined,
+        { queued: true },
+      );
+      try {
+        log.deferTerminal();
+        await log.emitLanded("run.created", {});
+        if (otherLost) {
+          log.emit("harness.event", { text: "lost" });
+          await orderedAppender.drained(path);
+        }
+        observeAuthSwitch(log, "codex", "a01", {
+          session_id: "s1",
+          ts: new Date().toISOString(),
+          type: "message",
+          payload: {
+            auth_switched: true,
+            from_auth_mode: "local_session",
+            to_auth_mode: "api_key",
+          },
+        });
+        const verdict = () => log.emit("run.completed", { lifecycle: "succeeded" });
+        if (otherLost) {
+          // Direction 1: the lost line is still the run's: its verdict hears it.
+          expect(verdict).toThrow("journal refused harness.event");
+        } else {
+          // Direction 2: the marker's own loss is dropped, and the run commits.
+          verdict();
+          await expect(log.commitDeferredTerminal()).resolves.toMatchObject({
+            type: "run.completed",
+          });
+        }
+      } finally {
+        log.dispose();
+        await orderedAppender.settledUnder(dir).catch(() => undefined);
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });

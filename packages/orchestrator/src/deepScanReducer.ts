@@ -19,7 +19,7 @@ import {
   countsAsAgentProgress,
   withInactivityWatchdog,
 } from "@claudexor/core";
-import { redactSecrets, safeInvoke } from "@claudexor/util";
+import { pacedByAppends, redactSecrets, safeInvoke } from "@claudexor/util";
 import type { RunPaths } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
 import { buildDeepScanReducerPrompt } from "@claudexor/synthesis";
@@ -27,7 +27,12 @@ import { type BudgetDenial, classifyBudgetFailure } from "./budgetFailure.js";
 import type { RoutedAdapter } from "./orchestrator.js";
 import { attemptInterruption, finalizeAttempt } from "./attemptFinalize.js";
 import { unwrapAttemptAnswer, type WorkReportEnvelopeMode } from "./workReportEnvelope.js";
-import { harnessEventPayload, observeBudgetSignals, safeErrorMessage } from "./runSupport.js";
+import {
+  harnessEventPayload,
+  laneSuspension,
+  observeBudgetSignals,
+  safeErrorMessage,
+} from "./runSupport.js";
 import {
   type AttemptTelemetry,
   createAttemptTelemetry,
@@ -67,7 +72,7 @@ async function waitForCleanup(work: Promise<unknown>, graceMs: number): Promise<
 /** A disposable read-only route context (env + reclaim). */
 export interface ReducerHome {
   env: Record<string, string>;
-  dispose: () => void;
+  dispose: () => Promise<void>;
 }
 
 /** Engine-owned dependencies; private route/session machinery stays with the caller. */
@@ -204,7 +209,7 @@ export async function runDeepScanReducer(
     clearTimeout(hardTimer);
     args.signal?.removeEventListener("abort", onOuterAbort);
     try {
-      reducerHome?.dispose();
+      void reducerHome?.dispose();
     } finally {
       settleGrantedAttemptLease({
         ledger,
@@ -371,6 +376,7 @@ export async function runDeepScanReducer(
       external_context_policy: built.webPolicy,
       ...(built.ignored?.length ? { ignored_settings: built.ignored } : {}),
     });
+    const pacing = { waiting: false, version: 0 };
     const watched = withInactivityWatchdog(runModelGovernedRoute(args.routed, spec), {
       timeoutMs: deps.inactivityTimeoutMs,
       countsAsProgress: countsAsAgentProgress,
@@ -378,10 +384,11 @@ export async function runDeepScanReducer(
         reducerAbort.abort();
         cancelActiveSession();
       },
-      isSuspended: () => false,
+      ...laneSuspension(pacing),
       cleanupDeadlineMs: cleanupGraceMs,
     });
-    const iterator = watched[Symbol.asyncIterator]();
+    const read = pacedByAppends(watched, [paths.eventsPath, attemptEventsPath], pacing);
+    const iterator = read[Symbol.asyncIterator]();
     for (;;) {
       const pending = iterator.next();
       const next = await Promise.race([

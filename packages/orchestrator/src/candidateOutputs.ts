@@ -420,7 +420,8 @@ export function rasterLinksInMarkdown(markdown: string): string[] {
   return [...new Set(paths)];
 }
 
-export function writeCandidateAttemptArtifacts(input: {
+/** The attempt's run-end files, awaited off the main thread (#688). */
+export async function writeCandidateAttemptArtifacts(input: {
   store: ArtifactStore;
   attemptDir: string;
   worktreePath: string;
@@ -438,17 +439,17 @@ export function writeCandidateAttemptArtifacts(input: {
   persistProducedMedia?: boolean;
   answerText?: string;
   record: Record<string, unknown>;
-}): { produced: string[]; omitted: ProducedOmission[] } {
+}): Promise<{ produced: string[]; omitted: ProducedOmission[] }> {
   // A capture refusal must not strand the completed answer only in memory or
   // the stream transcript. Persist the exact selected answer per attempt.
   if (input.answerText) {
-    input.store.writeText(join(input.attemptDir, "answer.md"), input.answerText);
+    await input.store.writeTextAsync(join(input.attemptDir, "answer.md"), input.answerText);
   }
   // An unrendered object result has no patch view: no patch.diff, never an empty one (F).
   const unrendered = input.patchViewUnavailable !== undefined;
   const persistPatch = input.persistPatch !== false && !unrendered;
   if (persistPatch) {
-    input.store.writePatch(join(input.attemptDir, "patch.diff"), input.diff);
+    await input.store.writePatchAsync(join(input.attemptDir, "patch.diff"), input.diff);
   }
   const stats = unrendered
     ? { paths: input.changedPaths ?? [], additions: null, deletions: null }
@@ -469,7 +470,7 @@ export function writeCandidateAttemptArtifacts(input: {
             ...artifactMediaPaths(resolve(input.worktreePath), input.artifactRelativeDir).paths,
           ],
         });
-  input.store.writeYaml(join(input.attemptDir, "attempt.yaml"), {
+  await input.store.writeYamlAsync(join(input.attemptDir, "attempt.yaml"), {
     ...input.record,
     ...(persistPatch || unrendered
       ? {

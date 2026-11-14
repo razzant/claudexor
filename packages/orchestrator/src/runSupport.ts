@@ -3,7 +3,7 @@
  * prompt constraints, harness-event payload projection, and the
  * run summary/findings renderers. Pure functions — no orchestrator state.
  */
-import { maskHarnessEventDiagnostics } from "@claudexor/core";
+import { maskHarnessEventDiagnostics, type InteractionChannel } from "@claudexor/core";
 import type {
   HarnessEvent,
   ModeKind,
@@ -21,10 +21,10 @@ import {
   runOutcomeLabel,
 } from "@claudexor/schema";
 import type { BudgetObservation, RouteDropStage } from "@claudexor/schema";
-import type { EventLog } from "@claudexor/event-log";
+import { emitBestEffort, type EventLog } from "@claudexor/event-log";
 import { isBlocking, quotaConstraintAppliesToRequestKind } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
-import { displayPreview, redactSecrets } from "@claudexor/util";
+import { displayPreview, redactSecrets, type AppendPacing } from "@claudexor/util";
 import { observationsFromEvent, recordHarnessMetric } from "@claudexor/budget";
 import { attemptRoutingCostSample, type AttemptUsageCost } from "./attemptUsageCost.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
@@ -390,6 +390,22 @@ export function harnessInactivityTimeoutMs(cfg: ResolvedConfigLike): number | nu
   return cfg.global.runtime.harness_inactivity_timeout_ms;
 }
 
+/**
+ * A lane watchdog's legitimate silence: a question awaiting its answer, or the
+ * loop's own wait for a full journal (`pacedByAppends` marks it on `pacing`),
+ * which is the engine's pace, not the harness's (#704). Either ends with a
+ * fresh window; a harness that stays silent after it still times out.
+ */
+export function laneSuspension(
+  pacing: AppendPacing,
+  interaction?: Pick<InteractionChannel, "pendingCount" | "suspensionVersion">,
+): { isSuspended: () => boolean; suspensionVersion: () => number } {
+  return {
+    isSuspended: () => pacing.waiting || (interaction?.pendingCount?.() ?? 0) > 0,
+    suspensionVersion: () => pacing.version + (interaction?.suspensionVersion?.() ?? 0),
+  };
+}
+
 /** Typed auth-switch disclosure: adapters mark auth_switched on a message;
  * the run event log gets the typed route.fallback payload. */
 export function observeAuthSwitch(
@@ -405,7 +421,10 @@ export function observeAuthSwitch(
   // smoke-proven route for reliability/cost transparency.
   const overrideReason = FallbackReasonSchema.safeParse(ev.payload?.["reason"]);
   try {
-    log.emit(
+    // Aside: the marker's own loss is best-effort, and it never takes another
+    // line's held failure from the run (#704).
+    emitBestEffort(
+      log,
       "route.fallback.auth_switched",
       RouteFallbackPayloadSchema.parse({
         from_harness: harnessId,

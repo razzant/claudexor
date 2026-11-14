@@ -15,13 +15,14 @@ import {
 } from "@claudexor/schema";
 import type { BudgetTerminal } from "@claudexor/budget";
 import type { TerminalRunEventType } from "@claudexor/event-log";
-import { readTextSafe } from "@claudexor/util";
+import { readTextSafe, redactSecrets } from "@claudexor/util";
 import { budgetFailureRecord, classifyBudgetFailure } from "./budgetFailure.js";
 import type { ContinuityTerminalFacts } from "./continuity-terminal.js";
 import { poolFailure } from "./pool-attempt-evidence.js";
 import { reconcileDecisionBudget, type SettledBudgetSnapshot } from "./decisionBudget.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
+import { flushContinuationTerminal } from "./continuation-custody.js";
 import { cancellationStatement, writeFailure } from "./runTerminalResults.js";
 import {
   clearFailureArtifact,
@@ -222,6 +223,69 @@ export function isTerminalRecoveryRequired(error: unknown): boolean {
     "code" in error &&
     (error as { code?: unknown }).code === "terminal_recovery_required"
   );
+}
+
+/**
+ * The failure net's flush: settle custody, then commit its held terminal. Its
+ * barrier before custody consumes a failure of the net's own lines without
+ * rejecting; a landing failure that interrupts the commit is consumed by the
+ * commit's own barrier and leaves the terminal held, so the flush that follows
+ * commits it (#704); a failure of that one is the run's to throw, as before.
+ */
+export async function commitNetTerminal(
+  a: AnnouncedRunContext,
+  facts: RunOutcomeFactsType,
+): Promise<void> {
+  try {
+    await flushContinuationTerminal(a, facts, true);
+  } catch (error) {
+    if (
+      isTerminalRecoveryRequired(error) ||
+      a.log.terminalCommitted() ||
+      !a.log.deferredTerminalPending()
+    )
+      throw error;
+    await flushContinuationTerminal(a, facts, true);
+  }
+}
+
+/**
+ * Defensive fallback for a strategy that returned without a terminal emit:
+ * materialize/announce a summary when needed, then pass through the same
+ * pre-terminal receipt transaction as every normal strategy.
+ */
+export async function commitFallbackTerminal(
+  a: AnnouncedRunContext,
+  result: OrchestratorResult,
+): Promise<void> {
+  const events = a.log.readAll().events;
+  if (!events.some((event) => event.type === "output.ready")) {
+    const summaryPath = join(a.paths.finalDir, "summary.md");
+    let summaryPresent = readTextSafe(summaryPath) !== null;
+    if (!summaryPresent) {
+      try {
+        await a.store.writeTextAsync(
+          summaryPath,
+          `# Run ${a.runId} (${a.mode})\n\n${redactSecrets(result.summary)}\n`,
+        );
+        summaryPresent = true;
+      } catch {
+        /* never point output.ready at a file that did not materialize */
+      }
+    }
+    if (summaryPresent) {
+      a.log.emit("output.ready", {
+        kind: "summary",
+        path: "final/summary.md",
+        state: "diagnostic",
+      });
+    }
+  }
+  await a.log.emitTerminal(terminalEventTypeFor("run.completed", result.facts), {
+    lifecycle: result.facts.lifecycle,
+    facts: result.facts,
+    reason: result.facts.reason,
+  });
 }
 
 export function committedOutcome(a: AnnouncedRunContext): RunOutcomeFactsType | null {

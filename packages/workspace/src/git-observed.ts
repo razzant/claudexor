@@ -1,10 +1,12 @@
-import { closeSync, openSync, statfsSync, writeSync } from "node:fs";
+import { closeSync, openSync, writeSync } from "node:fs";
+import { statfs } from "node:fs/promises";
 import {
   assertCaptureComplete,
   runCaptureRaw,
   WorkspaceError,
   type CaptureProjection,
 } from "@claudexor/core";
+import { measureSync } from "@claudexor/util";
 
 /** Typed classes of a Git child failure on an object path (capture, store, delivery). */
 export type GitOperationFailureCode =
@@ -99,8 +101,9 @@ export interface ObservedGitOptions {
   /** Receives stdout instead of the bounded in-memory capture (patch and pack bytes). */
   stdout?: CaptureProjection;
   stallMs?: number;
-  /** Extra progress evidence polled by the stall watchdog (for example bytes written). */
-  progress?: () => number;
+  /** Extra progress evidence polled by the stall watchdog (for example bytes written).
+   * Awaited off the main thread; at most one probe is in flight. */
+  progress?: () => Promise<number>;
   /** Short operation name for typed failure messages. */
   label: string;
 }
@@ -148,15 +151,31 @@ export async function gitObserved(
 ): Promise<ObservedGitResult> {
   const stallMs = options.stallMs ?? GIT_STALL_MS;
   const watchdog = new AbortController();
+  const probe = options.progress;
+  // The probe is awaited, never run on the thread, and at most one is in flight:
+  // a tick that finds one pending starts no other. The stall rule reads the last
+  // COMPLETED probe, so a pending one never counts as progress. The baseline is
+  // completed before the child starts.
+  let lastProgress = probe ? await probe() : 0;
   let lastActivity = Date.now();
-  let lastProgress = options.progress?.() ?? 0;
+  let probing = false;
   let stalled = false;
   const timer = setInterval(
     () => {
-      const progress = options.progress?.() ?? 0;
-      if (progress !== lastProgress) {
-        lastProgress = progress;
-        lastActivity = Date.now();
+      if (probe && !probing) {
+        probing = true;
+        probe().then(
+          (progress) => {
+            probing = false;
+            if (progress !== lastProgress) {
+              lastProgress = progress;
+              lastActivity = Date.now();
+            }
+          },
+          () => {
+            probing = false;
+          },
+        );
       }
       if (Date.now() - lastActivity >= stallMs) {
         stalled = true;
@@ -211,26 +230,32 @@ export async function gitObserved(
  * Progress evidence for a Git child that writes files without stdout (checkout,
  * `add`, clone): free blocks on the filesystem it writes move as it writes. A
  * busy filesystem can only make a stall look like progress, never the reverse.
+ * Awaited by the watchdog, so a tick never holds the main thread (#688).
  */
-export function diskProgress(path: string): () => number {
-  return () => {
+export function diskProgress(path: string): () => Promise<number> {
+  return async () => {
     try {
-      return Number(statfsSync(path).bavail);
+      return Number((await statfs(path)).bavail);
     } catch {
       return 0;
     }
   };
 }
 
-/** Stream stdout straight to a file (patch and pack bytes never become a JS string). */
+/** Stream stdout straight to a file (patch and pack bytes never become a JS string).
+ * Each chunk is written synchronously, labeled in `worstSync`: the capture
+ * projection's `write` and `end` are synchronous and the child's stdout has no
+ * other backpressure, so this write deliberately stays on the main thread (#704). */
 export function fileSink(path: string): CaptureProjection & { bytes: () => number } {
   const fd = openSync(path, "w", 0o600);
   let bytes = 0;
   let closed = false;
   return {
     write(chunk) {
-      let done = 0;
-      while (done < chunk.length) done += writeSync(fd, chunk, done, chunk.length - done);
+      measureSync("file.capture_write", () => {
+        let done = 0;
+        while (done < chunk.length) done += writeSync(fd, chunk, done, chunk.length - done);
+      });
       bytes += chunk.length;
     },
     end() {

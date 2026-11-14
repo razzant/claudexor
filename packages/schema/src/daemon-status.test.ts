@@ -26,6 +26,29 @@ describe("daemon timing contract", () => {
     ).toBe(false);
   });
 
+  it("accepts the labels of synchronous work that deliberately stays, and no unknown label (#688)", () => {
+    const sample = (operation: string) => ({
+      operation,
+      durationMs: 1,
+      at: "2026-11-12T00:00:00.000Z",
+    });
+    const facts = {
+      ...timing,
+      worstSync: [
+        "process.identity_capture",
+        "run.telemetry_write",
+        "metrics.harness_write",
+        "file.write_text",
+        "file.capture_write",
+        "daemon.log_line",
+      ].map(sample),
+    };
+    expect(DaemonTimingFacts.parse(facts)).toEqual(facts);
+    expect(
+      DaemonTimingFacts.safeParse({ ...timing, worstSync: [sample("file.write_json")] }).success,
+    ).toBe(false);
+  });
+
   it("accepts control.run_* synchronous labels from older engines", () => {
     const facts = {
       ...timing,

@@ -20,9 +20,10 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { lstat, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { EnvelopeCustody, type ResumableCause, type WorkspaceEnvelope } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
+import { nowIso, withPoolWriteSlot } from "@claudexor/util";
 import { reachableFile } from "./fs-presence.js";
 import { git } from "./git.js";
 import { rawIgnoredAcceptedPaths } from "./raw-patch.js";
@@ -76,14 +77,31 @@ export function readEnvelopeCustody(base: string): EnvelopeCustody | null {
   }
 }
 
+function custodyWrite(base: string, custody: EnvelopeCustody) {
+  const path = join(base, ENVELOPE_CUSTODY_FILE);
+  return {
+    path,
+    tmp: `${path}.${process.pid}.tmp`,
+    text: JSON.stringify(EnvelopeCustody.parse(custody), null, 2) + "\n",
+  };
+}
+
 /** Atomic write: a reader sees the previous record or the new one, never a torn file. */
 export function writeEnvelopeCustody(base: string, custody: EnvelopeCustody): void {
-  const path = join(base, ENVELOPE_CUSTODY_FILE);
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(EnvelopeCustody.parse(custody), null, 2) + "\n", {
-    mode: 0o600,
-  });
+  const { path, tmp, text } = custodyWrite(base, custody);
+  writeFileSync(tmp, text, { mode: 0o600 });
   renameSync(tmp, path);
+}
+
+/** The same atomic write at lane start (`live` custody), without waiting on the main
+ * thread; each call holds one pool write slot. */
+export async function writeEnvelopeCustodyAsync(
+  base: string,
+  custody: EnvelopeCustody,
+): Promise<void> {
+  const { path, tmp, text } = custodyWrite(base, custody);
+  await withPoolWriteSlot(undefined, () => writeFile(tmp, text, { mode: 0o600 }));
+  await withPoolWriteSlot(undefined, () => rename(tmp, path));
 }
 
 /** End custody (adoption hand-over or disposition); the envelope becomes ordinary. */
@@ -124,13 +142,11 @@ export function liveEnvelopeCustody(
  */
 export function stripRouteScopedAuth(env: WorkspaceEnvelope): string[] {
   const removed: string[] = [];
-  const codexHome = env.harness_config_dirs["codex_home"] ?? join(env.home_dir, ".codex");
-  const codexAuth = join(codexHome, "auth.json");
+  const { codexAuth, bridge } = routeScopedAuth(env);
   if (existsSync(codexAuth)) {
     rmSync(codexAuth, { force: true });
     removed.push(codexAuth);
   }
-  const bridge = join(env.home_dir, ".claudexor-claude-native", "Library", "Keychains");
   try {
     if (lstatSync(bridge).isSymbolicLink()) {
       rmSync(bridge, { force: true });
@@ -142,6 +158,41 @@ export function stripRouteScopedAuth(env: WorkspaceEnvelope): string[] {
   return removed;
 }
 
+/** Where Claudexor places route-scoped auth in an envelope's scoped home. */
+function routeScopedAuth(env: WorkspaceEnvelope): { codexAuth: string; bridge: string } {
+  const codexHome = env.harness_config_dirs["codex_home"] ?? join(env.home_dir, ".codex");
+  return {
+    codexAuth: join(codexHome, "auth.json"),
+    bridge: join(env.home_dir, ".claudexor-claude-native", "Library", "Keychains"),
+  };
+}
+
+/** `stripRouteScopedAuth` without waiting on the main thread (#704); each
+ * removal holds one pool write slot. */
+async function stripRouteScopedAuthAsync(env: WorkspaceEnvelope): Promise<void> {
+  const { codexAuth, bridge } = routeScopedAuth(env);
+  await withPoolWriteSlot(undefined, () => rm(codexAuth, { force: true }));
+  if ((await lstat(bridge).catch(() => null))?.isSymbolicLink())
+    await withPoolWriteSlot(undefined, () => rm(bridge, { force: true }));
+}
+
+function retainedCustody(
+  env: WorkspaceEnvelope,
+  holder: { runId: string; runDir: string },
+  cause: ResumableCause | null,
+  continuationEligible: boolean,
+  bytes: number | null,
+): EnvelopeCustody {
+  return {
+    ...liveEnvelopeCustody(env, holder),
+    state: "retained",
+    ...(continuationEligible ? {} : { continuation_eligible: false }),
+    cause,
+    retained_at: nowIso(),
+    bytes,
+  };
+}
+
 /** Retain `env` for continuation: auth stripped, custody `retained` (durable
  * before the run's terminal is reported). Returns the record written. */
 export function retainEnvelopeCustody(
@@ -151,15 +202,29 @@ export function retainEnvelopeCustody(
   continuationEligible = true,
 ): EnvelopeCustody {
   stripRouteScopedAuth(env);
-  const custody: EnvelopeCustody = {
-    ...liveEnvelopeCustody(env, holder),
-    state: "retained",
-    ...(continuationEligible ? {} : { continuation_eligible: false }),
+  const base = envelopeBaseOf(env);
+  const custody = retainedCustody(
+    env,
+    holder,
     cause,
-    retained_at: nowIso(),
-    bytes: envelopeDiskBytes(envelopeBaseOf(env)),
-  };
-  writeEnvelopeCustody(envelopeBaseOf(env), custody);
+    continuationEligible,
+    envelopeDiskBytes(base),
+  );
+  writeEnvelopeCustody(base, custody);
+  return custody;
+}
+
+/** `retainEnvelopeCustody` for a run end, which is async: the disk-use walk
+ * and every write are awaited, never held on the main thread (#704). */
+export async function retainEnvelopeCustodyAsync(
+  env: WorkspaceEnvelope,
+  holder: { runId: string; runDir: string },
+  cause: ResumableCause | null,
+): Promise<EnvelopeCustody> {
+  await stripRouteScopedAuthAsync(env);
+  const base = envelopeBaseOf(env);
+  const custody = retainedCustody(env, holder, cause, true, await envelopeDiskBytesAsync(base));
+  await writeEnvelopeCustodyAsync(base, custody);
   return custody;
 }
 
@@ -185,6 +250,32 @@ export async function envelopeTreeChanged(env: WorkspaceEnvelope): Promise<boole
   if (!env.base_sha) return false;
   const head = await git(env.worktree_path, ["rev-parse", "HEAD"]);
   return head.code === 0 ? head.stdout.trim() !== env.base_sha : null;
+}
+
+/** `envelopeDiskBytes` awaited one directory listing or entry at a time, so the
+ * walk never holds the main thread (#704). */
+export async function envelopeDiskBytesAsync(
+  base: string,
+  maxEntries = 200_000,
+): Promise<number | null> {
+  let bytes = 0;
+  let visited = 0;
+  const stack = [base];
+  try {
+    while (stack.length > 0) {
+      const dir = stack.pop()!;
+      for (const name of await readdir(dir)) {
+        if ((visited += 1) > maxEntries) return null;
+        const path = join(dir, name);
+        const stat = await lstat(path);
+        if (stat.isDirectory()) stack.push(path);
+        else bytes += stat.size;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return bytes;
 }
 
 /** Disk use of an envelope base by a bounded walk; null when the bound was

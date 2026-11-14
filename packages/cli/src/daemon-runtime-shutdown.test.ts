@@ -1,8 +1,9 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, promises, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DaemonClient, DaemonLocalClient, DaemonServer, type RunContext } from "@claudexor/daemon";
 import type { ControlGcReceipt } from "@claudexor/schema";
+import { orderedAppender } from "@claudexor/util";
 import { describe, expect, it, vi } from "vitest";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import {
@@ -272,6 +273,71 @@ describe("DaemonRuntimeShutdown", () => {
     expect(second).toBe(first);
     await first;
     expect(log.join("\n")).toContain("shutdown already in progress (socket-rpc stop coalesced)");
+  });
+});
+
+describe("DaemonRuntimeShutdown and the ordered appender (#688)", () => {
+  it("lands every queued append before the journal closes, and discloses a failure nobody awaited without keeping it open", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "cx688-journal-close-")));
+    const realOpen = promises.open;
+    let releaseHeld!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseHeld = resolve;
+    });
+    const writes: string[] = [];
+    const failing = new Error("EIO: the disk refused the line");
+    // The appender opens each batch through fs.promises.open: hold one file's
+    // write until released, and fail every write of another.
+    const spy = vi.spyOn(promises, "open").mockImplementation((async (
+      ...args: Parameters<typeof promises.open>
+    ) => {
+      const handle = await realOpen(...args);
+      const path = String(args[0]);
+      if (!path.startsWith(root)) return handle;
+      const write = handle.write.bind(handle) as (...writeArgs: unknown[]) => Promise<unknown>;
+      handle.write = (async (...writeArgs: unknown[]) => {
+        writes.push(path);
+        if (path.endsWith("failed.jsonl")) throw failing;
+        await held;
+        return write(...writeArgs);
+      }) as unknown as typeof handle.write;
+      return handle;
+    }) as typeof promises.open);
+    try {
+      const path = join(root, "events.jsonl");
+      orderedAppender.append(path, "line\n");
+      await vi.waitFor(() => expect(writes).toEqual([path]));
+      const journal: string[] = [];
+      const clean = machine({
+        journal: { close: () => void journal.push(`closed on ${readFileSync(path, "utf8")}`) },
+      });
+      const stopping = clean.runtime.beginShutdown("held append");
+      for (let turn = 0; turn < 20; turn += 1)
+        await new Promise((resolve) => setImmediate(resolve));
+      // Every participant stopped, but the line is in flight: the journal stays open.
+      expect(journal).toEqual([]);
+      releaseHeld();
+      await stopping;
+      expect(journal).toEqual(["closed on line\n"]);
+      expect(clean.log.join("\n")).not.toContain("queued appends failed");
+
+      // A line that could not be written, with nobody awaiting it, is disclosed
+      // once and still lets the journal close.
+      const failed = join(root, "failed.jsonl");
+      orderedAppender.append(failed, "lost\n");
+      await orderedAppender.drained(failed);
+      const refused = machine({ journal: { close: () => void journal.push("closed") } });
+      await refused.runtime.beginShutdown("failed append");
+      expect(journal).toEqual(["closed on line\n", "closed"]);
+      expect(refused.log).toContain(
+        "queued appends failed before the journal closed: Error: EIO: the disk refused the line",
+      );
+      await expect(orderedAppender.settled(failed)).resolves.toBeUndefined();
+    } finally {
+      spy.mockRestore();
+      releaseHeld();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

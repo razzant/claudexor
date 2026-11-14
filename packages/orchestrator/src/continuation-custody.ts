@@ -12,7 +12,7 @@
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { EventLog } from "@claudexor/event-log";
+import { emitBestEffort, type EventLog } from "@claudexor/event-log";
 import {
   RunResumable,
   type EnvelopeCustody,
@@ -25,11 +25,12 @@ import {
   envelopeBaseOf,
   envelopeTreeChanged,
   readEnvelopeCustody,
-  retainForContinuation,
+  retainForContinuationAsync,
   retainedEnvelopeOfRun,
   type CreateEnvelopeOptions,
   type WorkspaceManager,
 } from "@claudexor/workspace";
+import { orderedAppender } from "@claudexor/util";
 import { hasCandidateChanges, type CandidateRun } from "./candidateEvidence.js";
 import type { ContinueFromSource } from "./continue-from.js";
 import type { ContinuationPlan } from "./continuation-later.js";
@@ -173,6 +174,7 @@ type SettlementStage = "custody" | "dispose" | "retain" | "resumable";
  * One typed diagnostic for a settlement failure, emitted before the deferred
  * terminal is published (MCP run detail carries no timeline). It never changes
  * the outcome: its own failure is ignored, and the original error keeps its path.
+ * Made aside, it never takes another line's held failure from the run (#704).
  */
 function settlementFailed(
   log: EventLog | undefined,
@@ -181,13 +183,14 @@ function settlementFailed(
   error: unknown,
 ): void {
   try {
-    log?.emit("workspace.settlement_failed", {
-      attempt_id: env.attempt_id,
-      envelope_id: env.id,
-      root: env.worktree_path,
-      stage,
-      cause: safeErrorMessage(error),
-    });
+    if (log)
+      emitBestEffort(log, "workspace.settlement_failed", {
+        attempt_id: env.attempt_id,
+        envelope_id: env.id,
+        root: env.worktree_path,
+        stage,
+        cause: safeErrorMessage(error),
+      });
   } catch {
     // Best effort: the terminal is still flushed and nothing is retried.
   }
@@ -212,6 +215,7 @@ async function settleCandidateEnvelope(
   },
 ): Promise<void> {
   let stage: SettlementStage = "custody";
+  let kept: Record<string, unknown>;
   try {
     const custody = readEnvelopeCustody(envelopeBaseOf(env));
     if (custody?.state !== "live" || custody.envelope.id !== env.id) {
@@ -226,32 +230,54 @@ async function settleCandidateEnvelope(
       return await wsm.dispose(env);
     }
     const holder = { runId: custody.holder_run_id, runDir: custody.holder_run_dir };
-    const retained = retainForContinuation(env, holder, cause);
+    // Awaited: the disk-use walk of the kept tree never holds the main thread (#704).
+    const retained = await retainForContinuationAsync(env, holder, cause);
     // The terminal `resumable` block (written after this settle) names the kept tree.
     // Deferred terminal payloads share these workspace objects, including a
     // resumableOnFailure promoted by the final budget verdict.
     for (const resumable of [run?.resumable, run?.resumableOnFailure])
       if (resumable)
         Object.assign(resumable.workspace, { kind: "retained_envelope", root: env.worktree_path });
-    ctx.log?.emit("workspace.retained", {
+    kept = {
       attempt_id: run?.attemptId ?? env.attempt_id,
       root: env.worktree_path,
       cause,
       bytes: retained.bytes,
-    });
+    };
   } catch (error) {
     settlementFailed(ctx.log, env, stage, error);
     throw error;
   }
+  // The envelope is kept on disk: a journal failure from here on is the run's
+  // own, never a failure of this settlement (#704).
+  ctx.log?.emit("workspace.retained", kept);
 }
 
 const pendingRuns = new WeakMap<EventLog, (facts: RunOutcomeFacts) => Promise<void>>();
 
-/** Settle custody after the strategy and Delegate budget verdict, before terminal publication. */
+/** Lines the run had held or in flight when its verdict's flush began, lost at
+ * landing (`lost`): the failure net names them in the terminal it builds (#704). */
+export class RunEventsLost extends Error {
+  constructor(readonly lost: unknown) {
+    super("the run lost events before its verdict was committed");
+  }
+}
+
+/** Settle custody after the strategy and Delegate budget verdict, before terminal
+ * publication. What the run directory holds or still has in flight settles first.
+ * On a verdict's flush a landing failure rejects there (`RunEventsLost`), before
+ * custody changes or the terminal commits, so it reaches the failure net, which
+ * settles custody under its own facts. The net's own flush (`net`) does not reject
+ * there: what it meets is either named by the net already or one of the net's own
+ * lines, which its terminal does not restate (#704). */
 export async function flushContinuationTerminal(
   context: AnnouncedRunContext,
   facts: RunOutcomeFacts,
+  net = false,
 ): Promise<void> {
+  await orderedAppender.settledUnder(context.paths.root).catch((error: unknown) => {
+    if (!net) throw new RunEventsLost(error);
+  });
   const finish = pendingRuns.get(context.log);
   try {
     if (finish) {
@@ -261,7 +287,7 @@ export async function flushContinuationTerminal(
       const resumable = RunResumable.safeParse(context.store.readYaml(path)).data;
       try {
         if (kept && resumable)
-          context.store.writeYaml(path, {
+          await context.store.writeYamlAsync(path, {
             ...resumable,
             workspace: { kind: "retained_envelope", root: kept.envelope.worktree_path },
           });

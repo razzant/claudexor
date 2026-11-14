@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import type { HarnessAdapter } from "@claudexor/core";
+import { readRunEvents } from "@claudexor/event-log";
 import { createFakeHarness } from "@claudexor/harness-fake";
 import {
   ConformanceReport,
@@ -70,15 +71,13 @@ function author(id: string, runsDir: string, seen: Seen[]): HarnessAdapter {
       const [runDir] = readdirSync(runsDir).map((name) => join(runsDir, name));
       seen.push({
         prompt: spec.prompt,
-        before: readFileSync(join(runDir!, "events.jsonl"), "utf8")
-          .trim()
-          .split("\n")
-          .map((line) => {
-            const event = JSON.parse(line) as { type: string; payload?: { type?: string } };
-            return event.type === "harness.event"
-              ? `harness.event:${event.payload?.type ?? "?"}`
-              : event.type;
-          }),
+        // The live run's journal through the event log's reader: what the run
+        // has emitted, landed or still queued.
+        before: readRunEvents(join(runDir!, "events.jsonl")).events.map((event) =>
+          event.type === "harness.event"
+            ? `harness.event:${String(event.payload["type"] ?? "?")}`
+            : event.type,
+        ),
       });
       const ts = new Date().toISOString();
       yield { type: "started", ts, session_id: spec.session_id };

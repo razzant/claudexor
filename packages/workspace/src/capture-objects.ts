@@ -1,4 +1,5 @@
-import { existsSync, lstatSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
+import { readdir, stat as fileStat } from "node:fs/promises";
 import { join } from "node:path";
 import { gitObserved } from "./git-observed.js";
 import { repositoryObjectFormat, storeBoundaryCommit, treeOf } from "./git-result.js";
@@ -73,16 +74,21 @@ export async function estimatePatchViewBytes(
   };
 }
 
-/** Cheap object-growth evidence for the stall watchdog of a writing Git child. */
-export function objectDirectoryProgress(objectsDir: string): () => number {
-  return () => {
+/** Cheap object-growth evidence for the stall watchdog of a writing Git child.
+ * The probe is awaited and reads one entry at a time, so a watchdog tick never
+ * holds the main thread on the disk (#688). */
+export function objectDirectoryProgress(objectsDir: string): () => Promise<number> {
+  return async () => {
     let total = 0;
     try {
       const pack = join(objectsDir, "pack");
-      if (existsSync(pack))
-        for (const name of readdirSync(pack)) total += statSync(join(pack, name)).size;
-      for (const fan of readdirSync(objectsDir))
-        if (fan.length === 2) total += readdirSync(join(objectsDir, fan)).length;
+      const packs = await readdir(pack).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      for (const name of packs) total += (await fileStat(join(pack, name))).size;
+      for (const fan of await readdir(objectsDir))
+        if (fan.length === 2) total += (await readdir(join(objectsDir, fan))).length;
     } catch {
       // A directory being created or removed is not a stall.
     }
