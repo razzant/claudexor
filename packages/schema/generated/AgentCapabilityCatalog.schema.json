@@ -169,7 +169,7 @@
                   "degraded",
                   "unavailable"
                 ],
-                "description": "Doctor verdict: ok | degraded | unavailable (doctor-backed, cached ~90s)."
+                "description": "Doctor verdict: ok | degraded | unavailable, as of `generatedAt` (doctor-backed)."
               },
               "providerFamily": {
                 "type": "string",
@@ -190,7 +190,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Intents the gateway will route to this harness right now."
+                "description": "Intents the gateway would route to this harness, as of `generatedAt`."
               },
               "disabledIntents": {
                 "type": "array",
@@ -525,9 +525,9 @@
               "delegation"
             ],
             "additionalProperties": false,
-            "description": "Per-harness live capability row (manifest + doctor + model truth)."
+            "description": "Per-harness capability row (manifest + doctor + model truth), as of `generatedAt`."
           },
-          "description": "Live per-harness capabilities (doctor-backed)."
+          "description": "Per-harness capabilities (doctor-backed), as of `generatedAt`."
         },
         "availableHarnesses": {
           "type": "array",
