@@ -82,10 +82,13 @@ export class AttemptPostStreamError extends Error {
   }
 }
 
-/** Preserve already-observed route-specific spend across fallible persistence. */
-export function withAttemptFailureCost<T>(work: () => T, attemptCost: AttemptFailureCost): T {
+/** Preserve already-observed route-specific spend across fallible (awaited) persistence. */
+export async function withAttemptFailureCost<T>(
+  work: () => Promise<T>,
+  attemptCost: AttemptFailureCost,
+): Promise<T> {
   try {
-    return work();
+    return await work();
   } catch (error) {
     throw new AttemptPostStreamError(error, attemptCost);
   }

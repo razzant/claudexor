@@ -181,15 +181,16 @@ describe("a thread Ask whose rotation cannot provision the next account's lane h
 
 describe("controls", () => {
   it("an explorer whose record joined before its findings write failed is named once", async () => {
-    const writeText = ArtifactStore.prototype.writeText;
-    vi.spyOn(ArtifactStore.prototype, "writeText").mockImplementation(function (
+    // The findings file is written by the awaited run-end writer (#688).
+    const writeTextAsync = ArtifactStore.prototype.writeTextAsync;
+    vi.spyOn(ArtifactStore.prototype, "writeTextAsync").mockImplementation(async function (
       this: ArtifactStore,
       path: string,
       text: string,
     ) {
       if (path.endsWith("a01-error.md"))
         throw Object.assign(new Error("fixture: findings write failed"), { code: "EIO" });
-      return writeText.call(this, path, text);
+      return writeTextAsync.call(this, path, text);
     });
     const o = await run({
       mode: "ask",

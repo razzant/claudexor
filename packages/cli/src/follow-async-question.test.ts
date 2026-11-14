@@ -114,6 +114,10 @@ it("keeps an async question as attention while work continues, asks a blocking o
         new TextEncoder().encode(`event: ${type}\ndata: ${JSON.stringify(event)}\n\n`),
       );
     },
+    // An inline journal: the line has landed when the emit returns.
+    async emitLanded(type: string, payload: Record<string, unknown>) {
+      this.emit(type, payload);
+    },
   };
   vi.stubGlobal(
     "fetch",

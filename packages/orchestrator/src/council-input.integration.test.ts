@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import type { HarnessAdapter } from "@claudexor/core";
+import { EventLog } from "@claudexor/event-log";
 import {
   ConformanceReport,
   CouncilProjection,
@@ -440,11 +441,18 @@ describe("Council retains contradictory input through real planner attempts (#21
 
   it("cancellation before merge preserves staged inputs and starts no synthesis", async () => {
     const abort = new AbortController();
+    // Stop as the run announces the member's failure. Its publication follows
+    // the line's landing, by which time the merge would already have begun.
+    const emit = EventLog.prototype.emit;
+    vi.spyOn(EventLog.prototype, "emit").mockImplementation(function (
+      this: EventLog,
+      ...args: Parameters<EventLog["emit"]>
+    ) {
+      if (args[0] === "council.member.failed") abort.abort();
+      return emit.apply(this, args);
+    });
     const run = await runCouncil([{ draft: { report: contradiction } }, {}], {
       signal: abort.signal,
-      onEvent(event) {
-        if (event.type === "council.member.failed") abort.abort();
-      },
     });
     expect(run.result.lifecycle).toBe("cancelled");
     expect(run.calls).toHaveLength(2);

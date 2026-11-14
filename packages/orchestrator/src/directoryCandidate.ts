@@ -247,8 +247,8 @@ export async function publishDirectoryCandidate(input: {
   const text = await readFile(join(files.artifactRoot, files.manifestPath), "utf8");
   if (sha256(text) !== files.manifestSha256)
     throw new Error("Captured directory manifest changed before publication");
-  store.writeText(join(paths.root, files.manifestPath), text);
-  store.writeText(join(paths.finalDir, "files/preview.txt"), directoryPreview(files));
+  await store.writeTextAsync(join(paths.root, files.manifestPath), text);
+  await store.writeTextAsync(join(paths.finalDir, "files/preview.txt"), directoryPreview(files));
   const direct = files.manifest.isolation === "live";
   const listing = directoryChangedEntries(files.manifest).map((entry) => {
     const label = entry.path.replace(/[\\\[\]]/g, "\\$&");
@@ -256,7 +256,7 @@ export async function publishDirectoryCandidate(input: {
       ? `- [${label}](${entry.after.artifactPath}) (${entry.after.sizeBytes} bytes)`
       : `- ${label}${entry.after === null ? " (removed)" : ""}`;
   });
-  store.writeText(
+  await store.writeTextAsync(
     join(paths.finalDir, "files/result.md"),
     `${direct ? (files.changedPaths.length > 0 ? `${files.noChanges === false ? "Files updated" : "Files observed"} in ${files.manifest.executionRoot}.` : files.noChanges === null ? `Operation finished in ${files.manifest.executionRoot}. A complete file comparison was not recorded.` : "No file changes were found in the selected scope.") : "Files captured from a separate copy. Inspect the captured files; application is subject to the run's outcome and a delivery check."}\n\n${listing.join("\n")}\n`,
   );
@@ -295,6 +295,6 @@ export async function publishDirectoryCandidate(input: {
           : "not_applied",
     },
   });
-  store.writeYaml(join(paths.finalDir, "work_product.yaml"), product);
+  await store.writeYamlAsync(join(paths.finalDir, "work_product.yaml"), product);
   input.log.emit("output.ready", { kind: "artifact", path: files.manifestPath });
 }

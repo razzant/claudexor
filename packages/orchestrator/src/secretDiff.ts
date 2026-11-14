@@ -220,9 +220,10 @@ export async function captureCandidateWorkspace(input: {
  * disclosure fields for `work_product.yaml` meta (excluded nested
  * repositories, produced images that were not saved, the Git result and a
  * typed view absence). `patchSha256` is the digest of the saved bytes; a
- * result without a rendered view writes no patch file and has none.
+ * result without a rendered view writes no patch file and has none. The
+ * publication is awaited off the main thread (#688).
  */
-export function persistFinalPatch(
+export async function persistFinalPatch(
   store: ArtifactStore,
   finalDir: string,
   run: Pick<
@@ -231,7 +232,7 @@ export function persistFinalPatch(
   > & {
     producedOmitted?: ProducedOmission[];
   },
-): { patchSha256: string | null; meta: Record<string, unknown> } {
+): Promise<{ patchSha256: string | null; meta: Record<string, unknown> }> {
   const meta: Record<string, unknown> = {
     ...nestedRepositoryDisclosure(run),
     ...(run.producedOmitted?.length ? { produced_omitted: run.producedOmitted } : {}),
@@ -250,7 +251,7 @@ export function persistFinalPatch(
       },
     };
   }
-  store.writePatch(join(finalDir, "patch.diff"), run.diff);
+  await store.writePatchAsync(join(finalDir, "patch.diff"), run.diff);
   return { patchSha256: sha256(run.diff), meta };
 }
 

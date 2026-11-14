@@ -2,20 +2,24 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "no
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HarnessAdapter } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
 import { ArtifactStore } from "@claudexor/artifact-store";
-import { RETAINED_OUTPUT_PATH, readRunEvents } from "@claudexor/event-log";
+import { EventLog, RETAINED_OUTPUT_PATH, readRunEvents } from "@claudexor/event-log";
 import {
   OutputReadyPayload,
   RunFacts,
   WorkProduct,
   type ModeKind,
   type HarnessEvent,
+  type RunEvent,
 } from "@claudexor/schema";
 import { revertInPlaceFromAnchor } from "@claudexor/delivery";
+import { orderedAppender } from "@claudexor/util";
 import { Orchestrator } from "./orchestrator.js";
+import { publishRetainedOutput } from "./retainedOutput.js";
+import type { AnnouncedRunContext } from "./runTerminalContext.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -342,6 +346,85 @@ describe("retained output through real mode and terminal owners", () => {
         ).toMatchObject({ reverted: true });
         expect(readFileSync(join(root, "original.txt"), "utf8")).toBe("before\n");
       } else expect(wp.meta["revert_anchor_id"]).toBeNull();
+    },
+  );
+});
+
+describe("the retained output's own lines are best-effort, made aside (#704)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A queued run log whose durable sink refuses the lines `refuse` picks. */
+  async function queuedRun(refuse: (event: RunEvent) => boolean) {
+    const root = mkdtempSync(join(tmpdir(), "cx-retained-aside-"));
+    roots.push(root);
+    const store = new ArtifactStore(root);
+    const paths = store.createRun("run-aside");
+    const log = new EventLog(
+      paths.eventsPath,
+      "run-aside",
+      "task-aside",
+      (event) => {
+        if (refuse(event)) throw new Error(`journal refused ${event.type}`);
+      },
+      undefined,
+      undefined,
+      { queued: true },
+    );
+    const context: AnnouncedRunContext = {
+      log,
+      store,
+      paths,
+      runId: "run-aside",
+      taskId: "task-aside",
+      mode: "agent",
+      phase: "race",
+    };
+    await log.emitLanded("harness.event", {
+      attempt_id: "a01",
+      harness_id: "fake",
+      session_id: "s1",
+      type: "message",
+      text: "Retained words",
+    });
+    return { log, paths, context };
+  }
+
+  it.each([
+    { saved: true, otherLost: true },
+    { saved: true, otherLost: false },
+    { saved: false, otherLost: true },
+    { saved: false, otherLost: false },
+  ])(
+    "leaves another line's failure to the run and drops its own (saved: $saved, another line lost: $otherLost)",
+    async ({ saved, otherLost }) => {
+      // Its own line: the announcement when the output is saved, else the status saying it was not.
+      const own = (event: RunEvent) =>
+        saved
+          ? event.type === "output.ready"
+          : event.payload["title"] === "Retained output could not be saved";
+      const { log, paths, context } = await queuedRun((event) =>
+        otherLost ? event.payload["text"] === "lost" : own(event),
+      );
+      if (otherLost) {
+        log.emit("harness.event", { text: "lost" });
+        await orderedAppender.drained(paths.eventsPath);
+      }
+      if (!saved)
+        vi.spyOn(log, "readAll").mockImplementation(() => {
+          throw new Error("read failed");
+        });
+      expect(publishRetainedOutput(context, true)).toBe(saved ? RETAINED_OUTPUT_PATH : null);
+      vi.restoreAllMocks();
+      // The line was made, after the other one.
+      expect(log.readAll().events.some(own)).toBe(true);
+      const barrier = orderedAppender.settled(paths.eventsPath);
+      // Direction 1: the run's own lost line is still the run's to hear.
+      if (otherLost) await expect(barrier).rejects.toThrow("journal refused harness.event");
+      // Direction 2: the line's own failure at landing is dropped, never held.
+      else await expect(barrier).resolves.toBeUndefined();
+      log.dispose();
     },
   );
 });

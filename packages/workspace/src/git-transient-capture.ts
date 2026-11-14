@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import {
@@ -6,6 +6,7 @@ import {
   CaptureOutputExceeded,
   WorkspaceError,
 } from "@claudexor/core";
+import { removeTree } from "@claudexor/util";
 import type {
   CaptureChangeInventory,
   GitObjectResult,
@@ -261,9 +262,10 @@ export async function captureWorkingTreeTransient(
     const leaseFault = endPendingRoots(lease);
     // Unlike ordinary best-effort scratch cleanup, this directory may contain
     // a candidate token blob. A cleanup failure is therefore terminal and must
-    // never be hidden behind the original capture result.
+    // never be hidden behind the original capture result. The removal walks the
+    // scratch off the main thread, one entry at a time (#688).
     try {
-      rmSync(scratchDir, { recursive: true, force: true });
+      await removeTree(scratchDir);
     } catch (cleanupError) {
       // A cleanup failure is terminal on its own, but must not erase the typed
       // capture error that explains the primary failure.

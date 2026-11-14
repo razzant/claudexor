@@ -16,7 +16,7 @@ interface Reply {
 }
 const recording = JSON.parse(
   readFileSync(
-    new URL("../../core/fixtures/browser-mcp-0.0.84-replies.json", import.meta.url),
+    new URL("../../core/fixtures/browser-mcp-0.0.85-replies.json", import.meta.url),
     "utf8",
   ),
 ) as { replies: Reply[] };
