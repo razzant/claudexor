@@ -391,10 +391,11 @@ async function holdPoolWrites(count: number): Promise<HeldWrites> {
 
 /**
  * How long the FIFO holders may take to start and meet their pool writes. It
- * bounds a broken setup, not a speed: on a loaded macOS release runner the
- * python holders took more than 5 s (#708). It stays under the 30 s per-test
- * hang detector, so a setup slower than this fails with the step's own message
- * rather than a bare timeout.
+ * bounds a broken setup, not a speed: on loaded macOS release runners the first
+ * test with holders took 4.4 to 5.8 s, close to or past the old 5 s (#708).
+ * Holders later than this but within the 30 s per-test timeout fail with the
+ * step's own message; holders that never start leave their writes blocked in
+ * the FIFO open, and the test ends at that timeout.
  */
 const HOLDERS_ENTER_MS = 20_000;
 
