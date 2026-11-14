@@ -66,13 +66,14 @@ import Testing
             baseURL: URL(string: "http://127.0.0.1:42002")!, token: "b", session: session)
         let firstArrived = RemoteActionCounter()
         let releaseFirst = DispatchSemaphore(value: 0)
+        defer { releaseFirst.signal() }  // an early throw never leaves the loader thread waiting
         RemoteActionURLProtocol.handler = { request in
             let body = try #require(remoteActionRequestBody(request))
             let root = try #require(
                 (JSONSerialization.jsonObject(with: body) as? [String: String])?["root"])
             if root == "/project-a" {
                 firstArrived.increment()
-                _ = releaseFirst.wait(timeout: .now() + 5)
+                _ = releaseFirst.wait(timeout: .now() + 20)
             }
             let id = root == "/project-a" ? "project-a" : "project-b"
             let data = Data("""
@@ -85,7 +86,9 @@ import Testing
 
         let firstTask = try #require(model.selectRemoteProject(
             connectionID: first.id, path: "/project-a"))
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        // Bounds a hang, not a speed: on a loaded macOS runner the first request
+        // had not reached the protocol handler 5.7 s in (#671).
+        let deadline = ContinuousClock.now.advanced(by: .seconds(20))
         while firstArrived.value == 0 {
             try #require(ContinuousClock.now <= deadline, "first registration never arrived")
             await Task.yield()
