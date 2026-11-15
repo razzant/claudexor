@@ -592,6 +592,8 @@ describe("Windows step boundaries (r10 E)", () => {
     dirs.push(root);
     const repo = join(root, "project");
     execFileSync("git", ["init", "-q", "-b", "main", repo], { env: ENV });
+    // Pin this synthetic file's checkout bytes, including under core.autocrlf.
+    writeFileSync(join(repo, ".gitattributes"), "a.txt text eol=lf\n");
     writeFileSync(join(repo, "a.txt"), "a\n");
     sh(repo, ["add", "-A"]);
     sh(repo, [...USER, "commit", "-qm", "base"]);

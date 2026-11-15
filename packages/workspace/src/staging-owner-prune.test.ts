@@ -9,7 +9,11 @@ import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultProcessIdentityService, type KnownProcessIdentity } from "@claudexor/core";
+import {
+  defaultProcessIdentityService,
+  isKnownProcessIdentity,
+  type KnownProcessIdentity,
+} from "@claudexor/core";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { ensureObjectStore, objectStorePath, pruneObjectStore } from "./object-store.js";
 import { writeStagingOwner, type StagingOwnerRecord } from "./staging-owner.js";
@@ -134,6 +138,21 @@ describe.runIf(posix)("staging owner record in the store's prune (#694 r11)", ()
     const writer = await live();
     const gone = await exited();
     const deadCreator = await exited();
+    expect(self.identity?.status).toBe("known");
+    const identity = self.identity!;
+    const replacedIdentity = {
+      ...identity,
+      // Linux ticks have no leading zeros; Darwin microseconds have six digits.
+      startToken:
+        identity.platform === "linux"
+          ? `linux:${identity.startToken === "linux:1" ? "2" : "1"}`
+          : identity.startToken.replace(
+              /:(\d+)$/,
+              (_m: string, d: string) => `:${d === "000001" ? "000002" : "000001"}`,
+            ),
+    };
+    expect(isKnownProcessIdentity(replacedIdentity)).toBe(true);
+    expect(replacedIdentity.startToken).not.toBe(identity.startToken);
     const kept = {
       alive: staging(s, "alive", record(self, writer.owner)),
       unlinked: staging(s, "unlinked", record(self, null)),
@@ -147,17 +166,7 @@ describe.runIf(posix)("staging owner record in the store's prune (#694 r11)", ()
         ...record(self, null),
         writer: {
           pid: process.pid,
-          ...(self.identity
-            ? {
-                identity: {
-                  ...self.identity,
-                  startToken: self.identity.startToken.replace(
-                    /:(\d+)$/,
-                    (_m: string, d: string) => `:${d === "000001" ? "000002" : "000001"}`,
-                  ),
-                },
-              }
-            : {}),
+          identity: replacedIdentity,
         },
       }),
       legacy: staging(s, "legacy", null),

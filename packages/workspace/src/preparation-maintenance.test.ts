@@ -110,7 +110,9 @@ process.send('ready');`,
         [
           "-e",
           `const {spawn}=require('node:child_process');
-const c=spawn(process.execPath,[${JSON.stringify(program)}],{stdio:['ignore','ignore',2,'ipc'],windowsHide:true});
+// On Windows a non-detached child dies with its parent's libuv Job.
+// This holder must outlive the direct Node process while keeping its stderr pipe.
+const c=spawn(process.execPath,[${JSON.stringify(program)}],{detached:true,stdio:['ignore','ignore',2,'ipc'],windowsHide:true});
 c.on('message',()=>{c.disconnect();c.unref();process.exit(0);});`,
         ],
         {
