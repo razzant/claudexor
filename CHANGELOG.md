@@ -4,7 +4,58 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
-- **v6.1.0** (2026-11-13): **Recover accepted work without repeating it.** Hosts
+- **v6.1.2** (2026-11-15): **The daemon keeps answering while lanes write to a
+  slow disk, and the capability catalog answers without waiting for a full
+  sweep.** Harness event journals, a run's final answer, patch, facts and
+  summary, and lane workspace work no longer hold the daemon's main thread while
+  a slow or busy disk answers; the run telemetry file is still written on that
+  thread, under its own label (#704). A run's progress lines reach
+  `events.jsonl` and live streams a moment after the harness produced them,
+  never out of order; if the daemon process crashes, a run's last progress lines
+  can be missing from its event file, and if a line cannot be written by the
+  time the run finishes, fails or is cancelled, its final event names the
+  failure ("Run events did not reach the journal"), unless the line fails while
+  that event is being prepared. The daemon status's `worstSync` list can name
+  six more sections, the work that still runs on the main thread.
+  `GET /v2/agent-capabilities` and the MCP `claudexor_capabilities` tool answer
+  their last composition, dated by `generatedAt`, for up to five minutes past
+  the 15-second window while that read starts the one recompute that replaces
+  it; a harness install or update through the daemon now drops the cached status
+  projections, so the next read, the Accounts harness statuses included, shows
+  the new program (#718). Harness Update keeps the reason a product-made npm
+  copy was not replaced and names what its commit checks compared (#696); these
+  messages are there to diagnose the intermittent Windows Copilot conversion
+  failure (#672), whose cause is still unknown; this does not fix it, and #672
+  stays open. Also: Browser MCP 0.0.85 with its pinned Playwright runtime
+  (#699), undici 7.30.2 in the Codex transport (#701), and test waits that
+  tolerate loaded runners: longer bounds in two macOS app tests (#711) and the
+  upload pool tests (#710), and four orchestrator and review tests that wait for
+  the write they check (#713, #714). Older engines, 6.1.1 included, refuse a
+  data root 6.1.2 has served (`root_authority_floor_regression`); returning
+  needs the complete stopped backup described under v6.1.0. The SSH-runtime
+  manifest of this release requires Claudexor.app 6.1.2; the local-engine
+  manifest still requires Claudexor.app 6.0.0, and control protocol major 3 and
+  store schema 8 are unchanged.
+
+- **v6.1.1** (2026-11-13): The first published release of the 6.1 line. It ships
+  everything listed under v6.1.0: read-only lookup of an accepted run start or
+  thread turn (#675), less repeated work before a model call (#698), fewer engine
+  stalls after finished jobs (#693), smaller Codex requests and clearer transport
+  failures (#686), instruction files left under the project's control (#646), MCP
+  approval handback for Codex workspace-write runs (#669), bounded upload-binding
+  cleanup (#684) and Node 24.22.3 in the application and the SSH runtimes (#681).
+  v6.1.0 was tagged, but its publish run stopped at timing-dependent tests in the
+  macOS release gates, so it was never published. Older engines, 6.0.0 and the
+  unpublished 6.1.0 included, refuse a data root 6.1.1 has served
+  (`root_authority_floor_regression`); returning needs the complete stopped backup
+  described under v6.1.0. The SSH-runtime manifest of this release requires
+  Claudexor.app 6.1.1; the local-engine manifest still requires Claudexor.app
+  6.0.0, and control protocol major 3 and store schema 8 are unchanged. Also new:
+  four macOS app tests no longer depend on the speed of the machine that runs them
+  (#705).
+
+- **v6.1.0** (2026-11-13, tagged but not published; shipped as v6.1.1): **Recover
+  accepted work without repeating it.** Hosts
   can look up a run start or thread turn by its original request and idempotency
   key. The new read-only lookup operations return the retained job or turn,
   including a job that failed before a run existed. They do not enqueue work or

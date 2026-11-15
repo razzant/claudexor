@@ -134,7 +134,8 @@
                     "economy"
                   ],
                   "description": "Advisory service preference. Fast, Ultrafast or Economy may use ordinary Standard service; fallback never introduces Fast or Ultrafast, and Fast never selects Ultrafast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
-                }
+                },
+                "description": "The manifest's processing_preferences: accepted and answered with a receipt, not service support of a model or route."
               },
               "promptCacheTtls": {
                 "type": "array",
@@ -170,7 +171,7 @@
                   "degraded",
                   "unavailable"
                 ],
-                "description": "Doctor verdict: ok | degraded | unavailable (doctor-backed, cached ~90s)."
+                "description": "Doctor verdict: ok | degraded | unavailable, as of `generatedAt` (doctor-backed)."
               },
               "providerFamily": {
                 "type": "string",
@@ -191,7 +192,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Intents the gateway will route to this harness right now."
+                "description": "Intents the gateway would route to this harness, as of `generatedAt`."
               },
               "disabledIntents": {
                 "type": "array",
@@ -526,9 +527,9 @@
               "delegation"
             ],
             "additionalProperties": false,
-            "description": "Per-harness live capability row (manifest + doctor + model truth)."
+            "description": "Per-harness capability row (manifest + doctor + model truth), as of `generatedAt`."
           },
-          "description": "Live per-harness capabilities (doctor-backed)."
+          "description": "Per-harness capabilities (doctor-backed), as of `generatedAt`."
         },
         "availableHarnesses": {
           "type": "array",

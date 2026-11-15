@@ -34,8 +34,8 @@ export async function publishUnverifiedGitCandidate(input: {
       )
     : null;
   const applyState = input.live ? "applied_review_blocked" : "not_applied";
-  const saved = persistFinalPatch(input.store, input.paths.finalDir, input.run);
-  input.store.writeYaml(join(input.paths.finalDir, "work_product.yaml"), {
+  const saved = await persistFinalPatch(input.store, input.paths.finalDir, input.run);
+  await input.store.writeYamlAsync(join(input.paths.finalDir, "work_product.yaml"), {
     id: newId("wp"),
     kind: input.kind,
     source_task_id: input.taskId,

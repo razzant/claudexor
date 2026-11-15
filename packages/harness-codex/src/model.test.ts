@@ -306,7 +306,7 @@ describe("processing on the physical Codex model request", () => {
 
   it("does not infer a Flex refusal from advisory intent when the actual request fell back to default", async () => {
     const fixture = setup((init) => {
-      expect(JSON.parse(String(init?.body)).service_tier).toBe("default");
+      expect(JSON.parse(String(init?.body))).not.toHaveProperty("service_tier");
       return Response.json({ error: { code: "resource_unavailable" } }, { status: 429 });
     });
     fixture.request.options.processingPreference = "economy";
@@ -314,7 +314,7 @@ describe("processing on the physical Codex model request", () => {
     expect(result.processing).toMatchObject({
       requested: "economy",
       submitted: "standard",
-      submittedNative: "default",
+      submittedNative: null,
     });
     expect(result.problem?.context).not.toHaveProperty("generationStarted");
     expect(fixture.fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(
@@ -542,7 +542,7 @@ describe("Ultrafast on a live Codex model turn", () => {
       expect(fixture.onDispatch).toHaveBeenCalledTimes(1);
       expect(sends).toHaveLength(2);
       const sent = sends[1];
-      expect(JSON.parse(String(sent.body)).service_tier).toBe("default");
+      expect(JSON.parse(String(sent.body))).not.toHaveProperty("service_tier");
       expect(String(sent.body)).not.toContain("ultrafast");
       // The opaque turn state and the cache identity ride through unchanged.
       const headers = new Headers(sent.headers);
@@ -553,7 +553,7 @@ describe("Ultrafast on a live Codex model turn", () => {
       expect(ModelCallResult.parse(result).processing).toEqual({
         requested: "ultrafast",
         submitted: "standard",
-        submittedNative: "default",
+        submittedNative: null,
         observed: "standard",
         observedNative: ["default"],
         reason: "requested_mode_not_advertised; ordinary_service_requested",
@@ -579,10 +579,10 @@ describe("Ultrafast on a live Codex model turn", () => {
       },
       fixture.context,
     );
-    expect(JSON.parse(String(sends[0].body)).service_tier).toBe("default");
+    expect(JSON.parse(String(sends[0].body))).not.toHaveProperty("service_tier");
     expect(unlisted.processing).toMatchObject({
       requested: "ultrafast",
-      submittedNative: "default",
+      submittedNative: null,
       reason: "requested_mode_not_advertised; ordinary_service_requested",
     });
     // The existing exact native override is the caller's own choice.

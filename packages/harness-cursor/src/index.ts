@@ -277,7 +277,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
         adapter_version: CLAUDEXOR_VERSION,
         provider_family: "cursor",
         capabilities: {
-          processing_preferences: ["standard", "fast", "economy"],
+          processing_preferences: ["standard", "fast", "ultrafast", "economy"],
           plan: true,
           implement: true,
           create_from_scratch: true,

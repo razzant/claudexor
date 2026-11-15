@@ -703,7 +703,7 @@ precedence and is disclosed. Keep the captured preference and canonical request
 unchanged on exact replay. A confirmed no-generation processing refusal may
 produce a new Standard request and reservation; an unknown outcome may not.
 
-Choosing Fast permits its premium service within existing monetary limits. It
+Choosing Fast or Ultrafast permits that service within existing monetary limits. It
 does not enable paid account settings, change credentials, buy credits, or raise
 limits. An explicit no-paid policy selects ordinary fallback before dispatch
 unless the exact native mode has a documented subscription allowance. On a

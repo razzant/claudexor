@@ -59,6 +59,10 @@ function ordinaryIncluded(
   billing?: ProcessingCostBasis,
 ): boolean {
   if (route !== "local_session") return false;
+  // Preparation is prospective; an observed premium tier cannot inherit an
+  // ordinary allowance, including old receipts that labelled Ultrafast as Fast.
+  if (processing?.observed === "ultrafast" || processing?.observedNative.includes("ultrafast"))
+    return false;
   if (billing?.kind === "included") return true;
   if (
     processing?.reason === "processing_control_unavailable" &&
@@ -68,7 +72,6 @@ function ordinaryIncluded(
   if (
     ((processing?.submitted === "standard" &&
       processing.observed !== "fast" &&
-      processing.observed !== "ultrafast" &&
       processing.observed !== "mixed") ||
       (processing?.requested === null &&
         processing.submitted === null &&

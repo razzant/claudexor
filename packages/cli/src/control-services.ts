@@ -28,7 +28,11 @@ import { credentialProfileMutations } from "./credential-profile-mutations.js";
 import { quotaControlServices } from "./quota-services.js";
 import { uploadServices } from "./upload-services.js";
 import { registerConfigDirProfile } from "./profile-registration.js";
-import { StatusProjectionCache, globalConfigVersion } from "./status-projection-cache.js";
+import {
+  CATALOG_HOLD_MS,
+  StatusProjectionCache,
+  globalConfigVersion,
+} from "./status-projection-cache.js";
 import { vendorVerifiedProfileStatus } from "@claudexor/orchestrator";
 import { profileDoctorStatus } from "./accounts-projection.js";
 import { createNativeHomeRetention } from "./native-home-retention.js";
@@ -103,9 +107,12 @@ export function controlServices(
   });
   // The capability catalog is the same sweep plus model truth per harness. Read
   // per run entry, it kept doctors running after 3 s callers left (2026-11-01).
+  // Past the window it answers its held composition (dated by generatedAt) for
+  // five more minutes while one recompute refreshes it: a host reading it after
+  // a quiet spell waited 11-19 s for that sweep (2026-11-14).
   const catalogCache = new StatusProjectionCache<
     Awaited<ReturnType<typeof buildAgentCapabilityCatalog>>
-  >({ versionOf: globalConfigVersion });
+  >({ versionOf: globalConfigVersion, holdMs: CATALOG_HOLD_MS });
   const bustStatusCaches = (subject?: CredentialMutationSubject) =>
     bustCredentialStatusCaches(quotaRegistry, accounts, subject);
   const journalPartition = (partition: string): PartitionControlPort =>

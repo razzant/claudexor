@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
-import { claudeArgsForSpec } from "./index.js";
+import { HarnessRunSpec, ProcessingPreference, type HarnessEvent } from "@claudexor/schema";
+import { claudeArgsForSpec, createClaudeAdapter } from "./index.js";
 import {
   claudeProcessingCost,
   claudeProcessingObserver,
@@ -79,6 +79,27 @@ describe("Claude processing", () => {
         reason: "ultrafast_not_supported; ordinary_service_requested",
       });
     }
+  });
+  it("declares every preference it answers with a receipt, not the service it provides", async () => {
+    const manifest = await createClaudeAdapter({
+      detectVersion: async () => "2.1.165 (Claude Code)",
+      probeReadonlyProfile: async () => ({ supported: true, missingFlags: [], detail: "ok" }),
+      probeAuthStatus: async () => ({
+        loggedIn: false,
+        authed: false,
+        authMethod: null,
+        probeError: null,
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+      probeEffortLevels: async () => ({ levels: ["high"], live: true }),
+    }).discover();
+    const declared = manifest.capabilities.processing_preferences ?? [];
+    expect([...declared].sort()).toEqual([...ProcessingPreference.options].sort());
+    for (const preference of declared)
+      expect(prepareClaudeProcessing(preference).requested).toBe(preference);
+    // Listing Ultrafast does not make it a submitted mode.
+    expect(prepareClaudeProcessing("ultrafast").submitted).toBe("standard");
   });
   it("no-paid policy supplies ordinary settings without changing the model", () => {
     expect(prepareClaudeProcessing("fast", true, false)).toMatchObject({

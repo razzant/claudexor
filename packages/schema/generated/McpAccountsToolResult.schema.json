@@ -1102,7 +1102,7 @@
                                   ],
                                   "description": "Advisory service preference. Fast, Ultrafast or Economy may use ordinary Standard service; fallback never introduces Fast or Ultrafast, and Fast never selects Ultrafast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
                                 },
-                                "description": "Service preferences translated by this adapter; model/account support is separate."
+                                "description": "Processing preferences this adapter accepts and answers with a receipt, including ordinary service with a reason; not proof that a model, account or route provides that service."
                               },
                               "plan": {
                                 "type": "boolean",

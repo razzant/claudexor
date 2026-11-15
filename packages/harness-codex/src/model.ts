@@ -206,6 +206,10 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
           model?.processing,
           request.options.serviceTier,
         );
+        // HTTP has no inherited CLI setting to clear. An unsupported preference
+        // leaves the wire parameter absent; the receipt still names ordinary service.
+        if (processing?.reason === "requested_mode_not_advertised; ordinary_service_requested")
+          processing = { ...processing, submittedNative: null };
         const { reasoningEffort: _requestedEffort, ...otherOptions } = request.options;
         const physicalRequest = {
           ...request,

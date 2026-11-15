@@ -55,7 +55,7 @@ import {
   selectedAuthReady,
   shouldVerifyApiKey,
 } from "@claudexor/core";
-import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, nowIso, redactSecrets, removeTree } from "@claudexor/util";
 import { parseCodexEvent, parseCodexStderrFailure, type CodexParseState } from "./parse.js";
 // prettier-ignore
 import { CODEX_ACCESS_PROFILES, probeCodexCredentialProfile, resolveCodexProfileRoute } from "./profile.js";
@@ -835,14 +835,14 @@ async function* runCodex(
   } finally {
     if (tempCodexHome) {
       try {
-        rmSync(tempCodexHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        await removeTree(tempCodexHome, { maxRetries: 5, retryDelay: 100 });
       } catch {
         /* best-effort: OS tmp reaper owns the leftovers */
       }
     }
     if (tempSchemaDir) {
       try {
-        rmSync(tempSchemaDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        await removeTree(tempSchemaDir, { maxRetries: 5, retryDelay: 100 });
       } catch {
         /* best-effort: OS tmp reaper owns the leftovers */
       }

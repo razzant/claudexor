@@ -101,7 +101,7 @@ export function replacementProgram(
   )
     throw Object.assign(
       new Error(
-        `The replacement found first at ${selected.path} reports ${selected.version}; ${program.id} requires ${program.majorVersion}.x (#668). Nothing was removed.`,
+        `The replacement found first at ${selected.path} reports ${selected.version}; ${program.id} requires ${program.majorVersion}.x (#668). Conversion removed nothing.`,
       ),
       { code: "conversion_unsupported_major" },
     );
@@ -123,14 +123,14 @@ export function retireProductNpmCopy(
   if (!expected.path || !expected.version)
     throw Object.assign(
       new Error(
-        "Vendor installation did not produce a selected program with a version while the old npm launcher was masked; the old copy is unchanged",
+        "Vendor installation did not produce a selected program with a version while the old npm launcher was masked; conversion removed nothing",
       ),
       { code: "conversion_verification_failed" },
     );
   if (programUpdateAvailable(program.versionScheme, expected.version, previous.version) === "yes")
     throw Object.assign(
       new Error(
-        `After the installer, ${expected.path} version ${expected.version} is found first and is older than the selected ${previous.version}; the installer's copy may be hidden behind it. Nothing was removed.`,
+        `After the installer, ${expected.path} version ${expected.version} is found first and is older than the selected ${previous.version}; the installer's copy may be hidden behind it. Conversion removed nothing.`,
       ),
       { code: "conversion_older_program" },
     );
@@ -139,6 +139,9 @@ export function retireProductNpmCopy(
     value.path === expected.path &&
     value.realPath === expected.realPath &&
     value.version === expected.version;
+  // A boundary failure names exactly the values it compared.
+  const shown = ({ path, realPath, version }: SelectedHarnessProgram) =>
+    JSON.stringify({ path, realPath, version });
   const absent = (path: string) => {
     try {
       lstatSync(path);
@@ -155,32 +158,55 @@ export function retireProductNpmCopy(
   const current = productNpmCopy(program, ordinary, runtime);
   if (!current || JSON.stringify(current) !== JSON.stringify(copy))
     throw Object.assign(
-      new Error("The old package/launcher relation changed during conversion; nothing was removed"),
+      new Error(
+        `The old package/launcher relation changed during conversion: before ${JSON.stringify(copy)}, now ${current ? JSON.stringify(current) : "no proven relation"} for the ordinary selection ${shown(ordinary)}; conversion removed nothing`,
+      ),
       { code: "conversion_source_changed" },
     );
   // Leave the proven launchers in place while their package is hidden. Their
   // targets become unresolvable; one fixed package sibling is enough to recover.
   const launchers = copy.launchers.map((path) => ({ path, before: lstatSync(path) }));
-  const unchanged = ({ path, before }: (typeof launchers)[number]) => {
+  const changes = ({ path, before }: (typeof launchers)[number]) => {
     const after = lstatSync(path);
-    return (
-      before.dev === after.dev &&
-      before.ino === after.ino &&
-      before.mtimeMs === after.mtimeMs &&
-      before.size === after.size
-    );
+    return (["dev", "ino", "mtimeMs", "size"] as const)
+      .filter((field) => before[field] !== after[field])
+      .map((field) => `${field} ${before[field]} → ${after[field]}`);
   };
+  const unchanged = (launcher: (typeof launchers)[number]) => changes(launcher).length === 0;
   const hidden = hideProgramPaths([
     { path: copy.packageRoot, hidden: hiddenPackage(copy.packageRoot) },
   ]);
   let selection: SelectedHarnessProgram;
   try {
     selection = observe();
-    if (!matches(selection)) throw new Error("Selection changed before conversion committed");
-    if (!launchers.every(unchanged))
-      throw new Error("An npm launcher changed before conversion committed");
+    if (!matches(selection))
+      throw new Error(
+        `Selection changed before conversion committed: expected ${shown(expected)}, observed ${shown(selection)}`,
+      );
+    for (const launcher of launchers) {
+      const fields = changes(launcher);
+      if (fields.length)
+        throw new Error(
+          `An npm launcher changed before conversion committed: ${launcher.path} (${fields.join(", ")})`,
+        );
+    }
   } catch (error) {
-    hidden.restore();
+    try {
+      hidden.restore();
+    } catch (restoreError) {
+      // Keep the commit-point failure. The package stays at its fixed hidden
+      // sibling. The next explicit maintenance tries to restore or retire it,
+      // and restoring never overwrites a path that something occupies again.
+      const text = (value: unknown) => (value instanceof Error ? value.message : String(value));
+      const code = (error as { code?: unknown } | null)?.code;
+      throw Object.assign(
+        new Error(
+          `${text(error)}; the old npm package could not be restored (${text(restoreError)}) and remains hidden at ${hiddenPackage(copy.packageRoot)}; the next explicit maintenance attempts to recover it without overwriting anything at ${copy.packageRoot}`,
+          { cause: error },
+        ),
+        typeof code === "string" ? { code } : {},
+      );
+    }
     throw error;
   }
   const retired = hidden.retire();

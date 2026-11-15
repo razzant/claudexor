@@ -13,7 +13,12 @@
  * tick can walk the child's descendants and attribute them to the run that
  * must end them (DIRECTIVE 1, the second membership source).
  */
-import { defaultProcessGroupService, type ProcessGroupHandle } from "./process-group.js";
+import { measureSync } from "@claudexor/util";
+import {
+  defaultProcessGroupService,
+  type ProcessGroupCapture,
+  type ProcessGroupHandle,
+} from "./process-group.js";
 
 export interface LiveChildProcess {
   pid: number;
@@ -38,8 +43,20 @@ export function onChildProcessRegistered(listener: (child: LiveChildProcess) => 
   };
 }
 
-export function registerChildProcess(pid: number, cmd: string, scopeMarker?: string): void {
-  const captured = defaultProcessGroupService.captureLeader(pid);
+/**
+ * Register a just-spawned child and return the identity capture it made, so a
+ * spawn site that also needs the child's group handle reuses this one read
+ * instead of running the identity helper a second time. The capture stays
+ * synchronous at spawn (INV-144) and is labeled in `worstSync`.
+ */
+export function registerChildProcess(
+  pid: number,
+  cmd: string,
+  scopeMarker?: string,
+): ProcessGroupCapture {
+  const captured = measureSync("process.identity_capture", () =>
+    defaultProcessGroupService.captureLeader(pid),
+  );
   if (captured.status === "known") {
     const child: LiveChildProcess = {
       pid,
@@ -56,6 +73,7 @@ export function registerChildProcess(pid: number, cmd: string, scopeMarker?: str
       }
     }
   } else live.delete(pid);
+  return captured;
 }
 
 export function unregisterChildProcess(pid: number): void {

@@ -144,16 +144,17 @@ export function failedScopeOutcome(reason: string): ScopeReapOutcome {
  * Write the scope outcome to its OWN terminal artifact (`final/process_scope.yaml`)
  * so it survives the record rewrites and projections the immutable RunFacts
  * receipt goes through. Best-effort: a write failure never fails an
- * already-terminal run (the reap itself already happened).
+ * already-terminal run (the reap itself already happened). Awaited off the
+ * main thread (#688).
  */
-export function writeRunScopeFacts(
+export async function writeRunScopeFacts(
   ctx: AnnouncedRunContext,
   marker: string,
   outcome: ScopeReapOutcome,
-): RunProcessScopeOutcomeType | null {
+): Promise<RunProcessScopeOutcomeType | null> {
   try {
     const facts = runScopeFacts(marker, outcome);
-    ctx.store.writeYaml(join(ctx.paths.finalDir, "process_scope.yaml"), facts);
+    await ctx.store.writeYamlAsync(join(ctx.paths.finalDir, "process_scope.yaml"), facts);
     return facts;
   } catch {
     return null;
@@ -232,7 +233,7 @@ export async function openRunScopeCustody(
     const outcome = await settle();
     if (!announcedContext || recorded) return;
     recorded = true;
-    writeRunScopeFacts(announcedContext, marker, outcome);
+    await writeRunScopeFacts(announcedContext, marker, outcome);
   };
   return {
     marker,

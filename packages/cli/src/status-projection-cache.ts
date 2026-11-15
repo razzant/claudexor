@@ -13,6 +13,13 @@
  * fresh/snapshot request still bypasses the TTL, and a credential-state
  * change (login/logout) invalidates every registered cache so a fresh login
  * is visible on the next poll rather than a TTL later.
+ *
+ * A cache constructed with `holdMs` (only the capability catalog: its answer
+ * dates itself and no admission reads it) also answers a held value past the
+ * TTL, while it is younger than TTL + holdMs, and lets one recompute refresh it
+ * in the background: the reader who arrives after a quiet spell no longer pays
+ * the sweep (11-19 s on a loaded host, 2026-11-14). Only a read starts that
+ * recompute; nothing runs while nobody reads.
  */
 
 import { statSync } from "node:fs";
@@ -37,6 +44,8 @@ export function globalConfigVersion(): string {
 }
 
 export const STATUS_PROJECTION_TTL_MS = 15_000;
+/** The capability catalog's held window past the TTL: the engine's horizon for a recent observation. */
+export const CATALOG_HOLD_MS = 5 * 60_000;
 
 export interface StatusProjectionCacheOptions {
   ttlMs?: number;
@@ -50,6 +59,11 @@ export interface StatusProjectionCacheOptions {
    * mismatch recomputes exactly like an invalidation.
    */
   versionOf?: () => string;
+  /**
+   * How long past the TTL a same-version value is still answered at once while
+   * one recompute refreshes it. 0 (the default): every read past the TTL waits.
+   */
+  holdMs?: number;
 }
 
 export class StatusProjectionCache<T> {
@@ -59,30 +73,41 @@ export class StatusProjectionCache<T> {
   private readonly ttlMs: number;
   private readonly now: () => number;
   private readonly versionOf: () => string;
+  private readonly holdMs: number;
 
   constructor(opts: StatusProjectionCacheOptions = {}) {
     this.ttlMs = opts.ttlMs ?? STATUS_PROJECTION_TTL_MS;
     this.now = opts.now ?? Date.now;
     this.versionOf = opts.versionOf ?? (() => "");
+    this.holdMs = opts.holdMs ?? 0;
     registerStatusProjection(this);
   }
 
   /** Serve the cached value inside the TTL (same version); otherwise compute
-   * once, shared by every concurrent reader. `fresh` bypasses the TTL but
+   * once, shared by every concurrent reader. With `holdMs`, a same-version
+   * value younger than TTL + holdMs is still served at once while that shared
+   * compute refreshes it in the background. `fresh` bypasses the TTL but
    * still coalesces with a current in-flight compute and re-primes the cache
    * on completion. An invalidation or version change during an in-flight
    * compute keeps that compute's result OUT of the cache (its data predates
    * the change) and later readers start a new one. */
   async read(compute: () => Promise<T>, opts?: { fresh?: boolean }): Promise<T> {
     const version = this.versionOf();
-    if (
-      !opts?.fresh &&
-      this.value &&
-      this.value.version === version &&
-      this.now() - this.value.at < this.ttlMs
-    ) {
-      return this.value.data;
+    const held = !opts?.fresh && this.value && this.value.version === version ? this.value : null;
+    const age = held ? this.now() - held.at : Infinity;
+    if (held && age < this.ttlMs) return held.data;
+    const flight = this.flight(compute, version);
+    if (held && age < this.ttlMs + this.holdMs) {
+      // Nobody awaits this recompute: consume its failure (an unhandled
+      // rejection ends the daemon); the held value keeps its own time.
+      flight.catch(() => undefined);
+      return held.data;
     }
+    return flight;
+  }
+
+  /** The in-flight recompute of this generation and version, or a new one. */
+  private flight(compute: () => Promise<T>, version: string): Promise<T> {
     if (
       this.inFlight &&
       this.inFlight.generation === this.generation &&
@@ -130,4 +155,12 @@ export class StatusProjectionCache<T> {
  * harness/profile status is stale at once. */
 export function invalidateStatusProjections(): void {
   for (const cache of registry) cache.invalidate();
+}
+
+/** A harness program changed (install, update): the cached status projections
+ * (the `/v2/harnesses` poll, the capability catalog and the Accounts harness
+ * statuses) are stale, while account observations keep their own per-harness
+ * invalidation (dropping them all would abort every harness's acquisition). */
+export function invalidateStatusProjectionCaches(): void {
+  for (const cache of registry) if (cache instanceof StatusProjectionCache) cache.invalidate();
 }

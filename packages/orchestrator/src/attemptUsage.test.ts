@@ -204,7 +204,7 @@ describe("processAttemptUsage", () => {
       expect(settlement.cashKnowledge).toBe(kind === "included" ? "exact" : "unknown");
     },
   );
-  it("carries route-specific settlement when post-stream persistence throws", () => {
+  it("carries route-specific settlement when post-stream persistence throws", async () => {
     const settlement = attemptUsageCostSettlement(1, false, "a01", "claude", "local_session", {
       cashUsd: 0.25,
       valuationUsd: 0.75,
@@ -213,18 +213,15 @@ describe("processAttemptUsage", () => {
       valuationKnowledge: "estimated",
     });
 
-    const error = (() => {
-      try {
-        withAttemptFailureCost(
-          () => {
-            throw new Error("artifact persistence failed");
-          },
-          { totalUsd: 1, estimated: true, settlement },
-        );
-      } catch (caught) {
-        return caught;
-      }
-    })();
+    const error = await withAttemptFailureCost(
+      async () => {
+        throw new Error("artifact persistence failed");
+      },
+      { totalUsd: 1, estimated: true, settlement },
+    ).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
 
     expect(error).toBeInstanceOf(AttemptPostStreamError);
     expect((error as AttemptPostStreamError).attemptCost).toMatchObject({

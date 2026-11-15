@@ -1,5 +1,5 @@
 import type { HarnessEvent } from "@claudexor/schema";
-import { appendLine, redactSecrets } from "@claudexor/util";
+import { orderedAppender, redactSecrets } from "@claudexor/util";
 
 /**
  * Payload keys adapters use for diagnostics on any event type: a vendor
@@ -98,10 +98,13 @@ export function maskHarnessEventDiagnostics(ev: HarnessEvent): HarnessEvent {
 /**
  * Append one harness event to an attempt or reviewer journal, diagnostics
  * masked, and return the stored view so a caller that derives more records
- * from the event (a reviewer transcript) uses the journal's exact bytes.
+ * from the event (a reviewer transcript) uses the journal's exact bytes. The
+ * line is queued on the ordered appender and lands in call order off the
+ * request thread; a write failure nobody awaited is thrown by the journal's
+ * next append, or rejects its next barrier.
  */
 export function appendHarnessEvent(path: string, ev: HarnessEvent): HarnessEvent {
   const stored = maskHarnessEventDiagnostics(ev);
-  appendLine(path, JSON.stringify(stored));
+  orderedAppender.append(path, `${JSON.stringify(stored)}\n`);
   return stored;
 }
