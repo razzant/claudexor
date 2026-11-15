@@ -6,12 +6,16 @@
  *
  *   node qa/c672-9208/selftest.mjs [--mutate]
  *
- * --mutate replaces the hooks and the evidence reducers with deliberately
+ * --mutate replaces the hooks, the evidence reducers and the observers'
+ * PowerShell child environment, facts and handle64 gate with deliberately
  * broken variants and requires each to be caught (the checks must be able to
- * fail). A check that is not run on this OS (the relative-symlink copy on
- * Windows) is reported SKIP, and so is the mutant it guards.
+ * fail). A check that is not run on this OS (on Windows the relative-symlink
+ * copy and the fake powershell.exe) is reported SKIP, and so are the mutants
+ * it guards.
  */
+import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -20,14 +24,16 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import * as hooks from "./lib/hooks.mjs";
 import { manifest, manifestDiff, sha256File } from "./lib/evidence.mjs";
 import * as evidence from "./lib/evidence.mjs";
 import { sinceArg } from "./lib/observers.mjs";
+import * as observers from "./lib/observers.mjs";
 
 const repo = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..");
+const libDir = join(fileURLToPath(new URL(".", import.meta.url)), "lib");
 if (!process.env.C672_SCRATCH) throw new Error("C672_SCRATCH must name an owned scratch directory");
 const scratch = mkdtempSync(join(process.env.C672_SCRATCH, "c672-9208-selftest-"));
 const W = "C:\\Users\\u";
@@ -945,6 +951,326 @@ function inputChecks() {
   return rows;
 }
 
+// Windows PowerShell child environment and its self-reported facts.
+function observerChecks(o) {
+  const rows = [];
+  const check = (name, ok) => rows.push({ name, ok: !!ok });
+  const isModulePath = (k) => k.toUpperCase() === "PSMODULEPATH";
+  const source = {
+    PSModulePath: "C:\\ps7\\Modules",
+    PSMODULEPATH: "upper",
+    psModulePath: "mixed",
+    Path: "C:\\bin",
+    SystemRoot: "C:\\Windows",
+    EMPTY: "",
+  };
+  const copy = JSON.stringify(source);
+  const { env, removed } = o.windowsPowerShellEnv(source);
+  check(
+    "PowerShell child: PSModulePath is removed in every letter case",
+    !Object.keys(env).some(isModulePath) &&
+      Object.keys(removed).sort().join() === "PSMODULEPATH,PSModulePath,psModulePath" &&
+      removed.PSModulePath === "C:\\ps7\\Modules",
+  );
+  check(
+    "PowerShell child: every other variable is kept unchanged",
+    JSON.stringify(env) ===
+      JSON.stringify({ Path: "C:\\bin", SystemRoot: "C:\\Windows", EMPTY: "" }),
+  );
+  check(
+    "PowerShell child: the source environment is not modified",
+    JSON.stringify(source) === copy,
+  );
+  check(
+    "PowerShell child: nothing is removed without PSModulePath",
+    JSON.stringify(o.windowsPowerShellEnv({ Path: "p" })) ===
+      JSON.stringify({ env: { Path: "p" }, removed: {} }),
+  );
+  // The real environment: on the Windows runner this step runs under PowerShell 7.
+  const before = JSON.stringify(process.env);
+  const real = o.windowsPowerShellEnv();
+  check(
+    "PowerShell child from process.env: only PSModulePath is dropped and process.env is unchanged",
+    JSON.stringify(process.env) === before &&
+      !Object.keys(real.env).some(isModulePath) &&
+      Object.keys(real.env).length + Object.keys(real.removed).length ===
+        Object.keys(process.env).length &&
+      Object.entries(real.env).every(([k, v]) => process.env[k] === v),
+  );
+  const long = "C:\\m;".repeat(500);
+  const facts = o.powershellFacts(
+    [
+      "c672-ps version=5.1.26100.1",
+      "c672-ps edition=Desktop",
+      `c672-ps PSModulePath=${long}`,
+      "c672-ps securityModule=3.0.0.0 C:\\x.psd1",
+      "c672-ps note=x",
+      "c672-ps version=7.5.4",
+      " c672-ps edition=Core",
+      "",
+    ].join("\r\n"),
+  );
+  check(
+    "PowerShell facts: known keys only, first value kept, values bounded",
+    JSON.stringify(facts) ===
+      JSON.stringify({
+        version: "5.1.26100.1",
+        edition: "Desktop",
+        PSModulePath: `${long.slice(0, 2000)}…[+${long.length - 2000} chars]`,
+        securityModule: "3.0.0.0 C:\\x.psd1",
+      }),
+  );
+  check(
+    "PowerShell facts: no stderr gives no facts",
+    JSON.stringify(o.powershellFacts(null)) === "{}" &&
+      JSON.stringify(o.powershellFacts("")) === "{}",
+  );
+  return rows;
+}
+
+const observerMutants = {
+  "the PowerShell child keeps PSModulePath": (o) => ({
+    ...o,
+    windowsPowerShellEnv: (s = process.env) => ({ env: { ...s }, removed: {} }),
+  }),
+  "only the exact PSModulePath spelling is removed": (o) => ({
+    ...o,
+    windowsPowerShellEnv: (s = process.env) => {
+      const { PSModulePath, ...env } = s;
+      return { env, removed: PSModulePath === undefined ? {} : { PSModulePath } };
+    },
+  }),
+  "PowerShell facts keep unknown keys and unbounded values": (o) => ({
+    ...o,
+    powershellFacts: (t) =>
+      Object.fromEntries(
+        [...String(t ?? "").matchAll(/^c672-ps (\w+)=(.*?)\r?$/gm)].map(([, k, v]) => [k, v]),
+      ),
+  }),
+};
+
+// prepareObservers end to end against a fake powershell.exe on PATH: the
+// environment the child receives and the unchanged handle64 admission. Not
+// run on Windows, where the fake would have to be a real executable; there
+// calibrate.mjs records the real child's facts before any vendor program.
+const FAKE_PS = "prepareObservers against a fake powershell.exe";
+const MS = "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US";
+// scenario: [exit code, write handle64.exe, stdout answer or null, admitted]
+const FAKE_PS_CASES = {
+  valid: [0, true, { status: "Valid", subject: MS }, true],
+  "nonzero exit": [1, true, { status: "Valid", subject: MS }, false],
+  "no handle64.exe": [0, false, { status: "Valid", subject: MS }, false],
+  "not signed": [0, true, { status: "NotSigned", subject: MS }, false],
+  "other signer": [0, true, { status: "Valid", subject: "CN=Other, O=Other Corporation" }, false],
+  "unparsed answer": [0, true, "Valid", false],
+  "first-run autoload failure": [1, false, null, false],
+};
+const FAKE_PS_PROGRAM = `const fs = require("node:fs");
+const cmd = process.argv[process.argv.indexOf("-Command") + 1] ?? "";
+const exe = /Get-AuthenticodeSignature -LiteralPath '([^']+)'/.exec(cmd)?.[1];
+fs.writeFileSync(process.env.C672_FAKE_PS_DUMP, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));
+const [code, writeExe, answer] = ${JSON.stringify(FAKE_PS_CASES)}[process.env.C672_FAKE_PS];
+const err = (s) => process.stderr.write(s + "\\r\\n");
+err("c672-ps version=5.1.fake");
+err("c672-ps edition=Desktop");
+err("c672-ps securityCandidates=" + "x".repeat(3000));
+err("c672-ps note=ignored");
+if (writeExe && exe) fs.writeFileSync(exe, "fake handle64");
+if (answer !== null) process.stdout.write((typeof answer === "string" ? answer : JSON.stringify(answer)) + "\\r\\n");
+if (answer === null) err("Get-AuthenticodeSignature : The 'Get-AuthenticodeSignature' command was found in the module 'Microsoft.PowerShell.Security', but the module could not be loaded.");
+process.exit(code);
+`;
+const FAKE_PS_DRIVER = `import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const [lib, work, out] = process.argv.slice(2);
+const { prepareObservers } = await import(new URL("observers.mjs", lib));
+const { evidenceWriter } = await import(new URL("evidence.mjs", lib));
+const before = JSON.stringify(process.env);
+const evidence = evidenceWriter(join(work, "ev"));
+const prep = prepareObservers({ source: join(work, "absent.cs"), workDir: join(work, "tools"), evidence });
+const records = readFileSync(join(work, "ev", "records.jsonl"), "utf8").trim().split("\\n").map((l) => JSON.parse(l));
+writeFileSync(out, JSON.stringify({ prep, records, env: process.env, envUnchanged: JSON.stringify(process.env) === before }));
+`;
+
+function observerProcessChecks(work, libPath) {
+  const rows = [];
+  const check = (name, ok, detail) => rows.push({ name: `${FAKE_PS}: ${name}`, ok: !!ok, detail });
+  if (process.platform === "win32") {
+    rows.push({
+      name: FAKE_PS,
+      ok: true,
+      skipped: "Windows: calibrate.mjs records the real child",
+    });
+    return rows;
+  }
+  const dir = mkdtempSync(join(work, "fake-ps-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "package.json"), '{"type":"commonjs"}\n');
+  writeFileSync(join(bin, "powershell.exe"), `#!${process.execPath}\n${FAKE_PS_PROGRAM}`);
+  chmodSync(join(bin, "powershell.exe"), 0o755);
+  const driver = join(dir, "driver.mjs");
+  writeFileSync(driver, FAKE_PS_DRIVER);
+  const inherited = "C:\\ps7;".repeat(400);
+  const variants = { PSModulePath: inherited, PSMODULEPATH: "upper", psmodulepath: "lower" };
+  const runs = Object.entries(FAKE_PS_CASES).map(([name, [, writeExe, , admitted]], i) => {
+    const caseDir = join(dir, `case-${i}`);
+    mkdirSync(caseDir);
+    const out = join(caseDir, "out.json");
+    const dump = join(caseDir, "dump.json");
+    const libUrl = pathToFileURL(libPath + sep).href;
+    const r = spawnSync(process.execPath, [driver, libUrl, caseDir, out], {
+      encoding: "utf8",
+      timeout: 60_000,
+      env: {
+        ...process.env,
+        ...variants,
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+        C672_FAKE_PS: name,
+        C672_FAKE_PS_DUMP: dump,
+        C672_CANARY: "kept",
+      },
+    });
+    const read = (f) => {
+      try {
+        return JSON.parse(readFileSync(f, "utf8"));
+      } catch {
+        return null;
+      }
+    };
+    const result = read(out);
+    return {
+      name,
+      writeExe,
+      admitted,
+      exe: join(caseDir, "tools", "handle64.exe"),
+      driver: { status: r.status, error: r.error ? String(r.error) : null, stderr: r.stderr },
+      result,
+      record: result?.records?.find((x) => x.phase === "observer-handle-fetch") ?? null,
+      dump: read(dump),
+    };
+  });
+  const gap = "handle64 unavailable or not Microsoft-signed: directory handles cannot be named";
+  for (const x of runs)
+    check(
+      x.admitted ? `${x.name}: handle64 is admitted` : `${x.name}: handle64 is refused`,
+      x.driver.status === 0 &&
+        (x.admitted
+          ? x.result?.prep.handle?.path === x.exe &&
+            x.result.prep.handle.signer === MS &&
+            x.result.prep.handle.sha256 === sha256File(x.exe) &&
+            !x.result.prep.gaps.includes(gap)
+          : x.result?.prep.handle === null && x.result.prep.gaps.includes(gap)),
+      x.driver,
+    );
+  const expectedKeys = (env) =>
+    Object.keys(env)
+      .filter((k) => !(k in variants))
+      .sort()
+      .join("\n");
+  check(
+    "the child gets no PSModulePath in any letter case and every other variable unchanged",
+    runs.every(
+      (x) =>
+        x.dump &&
+        x.result &&
+        !Object.keys(x.dump.env).some((k) => k.toUpperCase() === "PSMODULEPATH") &&
+        Object.keys(x.dump.env).sort().join("\n") === expectedKeys(x.result.env) &&
+        Object.entries(x.dump.env).every(([k, v]) => x.result.env[k] === v) &&
+        x.dump.env.C672_CANARY === "kept",
+    ),
+  );
+  check(
+    "the parent's process.env keeps every PSModulePath spelling",
+    runs.every(
+      (x) =>
+        x.result?.envUnchanged === true &&
+        Object.entries(variants).every(([k, v]) => x.result.env[k] === v),
+    ),
+  );
+  const byName = (o) => JSON.stringify(Object.entries(o ?? {}).sort());
+  check(
+    "the record keeps the removed names with bounded inherited values",
+    runs.every(
+      (x) =>
+        byName(x.record?.childEnvRemoved) ===
+        byName({
+          PSModulePath: `${inherited.slice(0, 2000)}…[+${inherited.length - 2000} chars]`,
+          PSMODULEPATH: "upper",
+          psmodulepath: "lower",
+        }),
+    ),
+  );
+  check(
+    "the record keeps the child's known facts, bounded",
+    runs.every(
+      (x) =>
+        x.record?.powershell?.version === "5.1.fake" &&
+        x.record.powershell.edition === "Desktop" &&
+        x.record.powershell.securityCandidates === `${"x".repeat(2000)}…[+1000 chars]` &&
+        !("note" in x.record.powershell),
+    ),
+  );
+  check(
+    "the record keeps spawn error fields and whether handle64.exe exists, with its digest",
+    runs.every(
+      (x) =>
+        x.record?.handle64File?.exists === x.writeExe &&
+        (x.writeExe ? x.record.handle64File.sha256 === sha256File(x.exe) : true) &&
+        "signal" in x.record &&
+        "error" in x.record,
+    ),
+  );
+  // The answer stays the last statement, so it alone decides the exit code;
+  // a fact after the stopping preference runs inside try.
+  const cmd = runs[0].dump?.argv?.at(-1) ?? "";
+  const statements = cmd.split("; ");
+  const stop = statements.indexOf("$ErrorActionPreference='Stop'");
+  check(
+    "facts never decide the exit code or stop the fetch",
+    runs[0].dump?.argv?.slice(0, 3).join(" ") === "-NoProfile -NonInteractive -Command" &&
+      stop > 0 &&
+      statements[stop + 1]?.startsWith("Invoke-WebRequest ") &&
+      cmd.endsWith(
+        "; [pscustomobject]@{ status = [string]$s.Status; subject = $s.SignerCertificate.Subject } | ConvertTo-Json -Compress",
+      ) &&
+      statements.slice(stop).every((s) => !s.includes("c672-ps") || s.startsWith("try { ")),
+    cmd,
+  );
+  return rows;
+}
+
+// Source mutants of lib/observers.mjs, each run end to end against the fake.
+const observerSourceMutants = {
+  "the PowerShell child inherits PSModulePath": [
+    'run("powershell.exe", ps, { env: child.env })',
+    'run("powershell.exe", ps)',
+  ],
+  "only the exact PSModulePath spelling leaves the child": [
+    'name.toUpperCase() === "PSMODULEPATH"',
+    'name === "PSModulePath"',
+  ],
+  "removing PSModulePath edits the parent's process.env": [
+    'if (name.toUpperCase() === "PSMODULEPATH") removed[name] = value;',
+    'if (name.toUpperCase() === "PSMODULEPATH") (removed[name] = value), delete source[name];',
+  ],
+  "the gate ignores the exit status": ["    h.status === 0 &&\n", ""],
+  "the gate ignores a missing handle64.exe": ["    existsSync(exe) &&\n", ""],
+  "the gate accepts any signature status": ['    signature?.status === "Valid" &&\n', ""],
+  "the gate accepts any signer": [
+    '/O=Microsoft Corporation/.test(signature?.subject ?? "")',
+    "true",
+  ],
+  "a fact runs under the stopping preference outside try": [
+    '`try { ${psFact("securityModule", securityModules(false))} } catch { }`',
+    'psFact("securityModule", securityModules(false))',
+  ],
+  "a fact follows the answer": [
+    '      `try { ${psFact("securityModule", securityModules(false))} } catch { }`,\n      "[pscustomobject]@{ status = [string]$s.Status; subject = $s.SignerCertificate.Subject } | ConvertTo-Json -Compress",\n',
+    '      "[pscustomobject]@{ status = [string]$s.Status; subject = $s.SignerCertificate.Subject } | ConvertTo-Json -Compress",\n      `try { ${psFact("securityModule", securityModules(false))} } catch { }`,\n',
+  ],
+};
+
 const evidenceMutants = {
   "unrelated OS image gap blocks every batch": (e) => ({
     ...e,
@@ -1073,6 +1399,8 @@ const main = [
   ...(await checks(hooks)),
   ...(await evidenceChecks(evidence, scratch)),
   ...inputChecks(),
+  ...observerChecks(observers),
+  ...observerProcessChecks(scratch, libDir),
 ];
 let failed = main.filter((r) => !r.ok);
 const skipped = new Set(main.filter((r) => r.skipped).map((r) => r.name));
@@ -1094,6 +1422,30 @@ if (process.argv.includes("--mutate"))
       continue;
     }
     const caught = (await evidenceChecks(mutate(evidence), scratch)).some((r) => !r.ok);
+    console.log(`${caught ? "CAUGHT" : "MISSED"} mutant: ${name}`);
+    if (!caught) failed = [...failed, { name: `mutant ${name}` }];
+  }
+if (process.argv.includes("--mutate"))
+  for (const [name, mutate] of Object.entries(observerMutants)) {
+    const caught = observerChecks(mutate(observers)).some((r) => !r.ok);
+    console.log(`${caught ? "CAUGHT" : "MISSED"} mutant: ${name}`);
+    if (!caught) failed = [...failed, { name: `mutant ${name}` }];
+  }
+if (process.argv.includes("--mutate"))
+  for (const [name, [find, replacement]] of Object.entries(observerSourceMutants)) {
+    if (skipped.has(FAKE_PS)) {
+      console.log(`SKIPPED mutant: ${name} (its check was skipped)`);
+      continue;
+    }
+    const original = readFileSync(join(libDir, "observers.mjs"), "utf8");
+    if (original.split(find).length !== 2) throw new Error(`mutant does not apply once: ${name}`);
+    const lib = mkdtempSync(join(scratch, "observers-mutant-"));
+    for (const f of ["hooks.mjs", "evidence.mjs"]) cpSync(join(libDir, f), join(lib, f));
+    writeFileSync(
+      join(lib, "observers.mjs"),
+      original.replace(find, () => replacement),
+    );
+    const caught = observerProcessChecks(scratch, lib).some((r) => !r.ok);
     console.log(`${caught ? "CAUGHT" : "MISSED"} mutant: ${name}`);
     if (!caught) failed = [...failed, { name: `mutant ${name}` }];
   }

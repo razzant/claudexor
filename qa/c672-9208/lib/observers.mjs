@@ -6,15 +6,17 @@ import { existsSync, mkdirSync, readdirSync, lstatSync, writeFileSync } from "no
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { sha256File } from "./evidence.mjs";
+import { preview } from "./hooks.mjs";
 
 const FRAMEWORK_CSC = [
   "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe",
   "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe",
 ];
 
-function run(binary, args, timeout = 120_000) {
+function run(binary, args, { env, timeout = 120_000 } = {}) {
   const start = performance.now();
   const r = spawnSync(binary, args, {
+    env,
     encoding: "utf8",
     timeout,
     windowsHide: true,
@@ -30,6 +32,41 @@ function run(binary, args, timeout = 120_000) {
     stdout: r.stdout ?? "",
     stderr: r.stderr ?? "",
   };
+}
+
+/** The environment for a Windows PowerShell 5.1 child: every inherited
+ * variable except PSModulePath, matched without letter case as Windows does.
+ * A PowerShell 7 step hands its module paths to Node; Windows PowerShell
+ * started through such an intermediate process keeps them ahead of its own and
+ * can fail to autoload shared modules such as Microsoft.PowerShell.Security
+ * (Microsoft, about_PSModulePath, "Starting Windows PowerShell from
+ * PowerShell 7"). Without the variable it builds its own module path.
+ * `source` is never modified. */
+export function windowsPowerShellEnv(source = process.env) {
+  const env = {};
+  const removed = {};
+  for (const [name, value] of Object.entries(source))
+    if (name.toUpperCase() === "PSMODULEPATH") removed[name] = value;
+    else env[name] = value;
+  return { env, removed };
+}
+
+// Facts the PowerShell child prints about itself as `c672-ps <key>=<value>`
+// lines on stderr. They use .NET and core cmdlets only, run before the
+// stopping preference or inside try, and never decide the exit code.
+const PS_FACTS = ["version", "edition", "PSModulePath", "securityCandidates", "securityModule"];
+const psFact = (key, expr) => `[Console]::Error.WriteLine('c672-ps ${key}=' + (${expr}))`;
+const securityModules = (listAvailable) =>
+  `@(Get-Module ${listAvailable ? "-ListAvailable " : ""}-Name Microsoft.PowerShell.Security -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Version + ' ' + $_.Path }) -join ' | '`;
+
+/** The known facts from a PowerShell child's stderr, each value bounded. */
+export function powershellFacts(stderr) {
+  const facts = {};
+  for (const line of String(stderr ?? "").split(/\r?\n/)) {
+    const m = /^c672-ps ([A-Za-z]+)=(.*)$/.exec(line);
+    if (m && PS_FACTS.includes(m[1]) && !(m[1] in facts)) facts[m[1]] = preview(m[2], 2000);
+  }
+  return facts;
 }
 
 /** Compile the read-only observer and fetch Sysinternals handle64 (the only
@@ -55,25 +92,49 @@ export function prepareObservers({ source, workDir, evidence }) {
     else prep.gaps.push("observer compile failed");
   }
   const zip = join(workDir, "Handle.zip");
+  const exe = join(workDir, "handle64.exe");
   const ps = [
     "-NoProfile",
     "-NonInteractive",
     "-Command",
-    `$ErrorActionPreference='Stop'; Invoke-WebRequest -UseBasicParsing -Uri 'https://download.sysinternals.com/files/Handle.zip' -OutFile '${zip}'; Expand-Archive -LiteralPath '${zip}' -DestinationPath '${workDir}' -Force; $s = Get-AuthenticodeSignature -LiteralPath '${join(workDir, "handle64.exe")}'; [pscustomobject]@{ status = [string]$s.Status; subject = $s.SignerCertificate.Subject } | ConvertTo-Json -Compress`,
+    [
+      psFact("version", "[string]$PSVersionTable.PSVersion"),
+      psFact("edition", "[string]$PSVersionTable.PSEdition"),
+      psFact("PSModulePath", "[string]$env:PSModulePath"),
+      psFact("securityCandidates", securityModules(true)),
+      `$ErrorActionPreference='Stop'; Invoke-WebRequest -UseBasicParsing -Uri 'https://download.sysinternals.com/files/Handle.zip' -OutFile '${zip}'; Expand-Archive -LiteralPath '${zip}' -DestinationPath '${workDir}' -Force; $s = Get-AuthenticodeSignature -LiteralPath '${exe}'`,
+      `try { ${psFact("securityModule", securityModules(false))} } catch { }`,
+      "[pscustomobject]@{ status = [string]$s.Status; subject = $s.SignerCertificate.Subject } | ConvertTo-Json -Compress",
+    ].join("; "),
   ];
-  const h = run("powershell.exe", ps);
+  const child = windowsPowerShellEnv();
+  const h = run("powershell.exe", ps, { env: child.env });
   let signature = null;
   try {
     signature = JSON.parse(h.stdout.trim());
   } catch {
     /* recorded raw below */
   }
-  const exe = join(workDir, "handle64.exe");
+  const handle64File = { exists: existsSync(exe) };
+  if (handle64File.exists)
+    try {
+      handle64File.sha256 = sha256File(exe);
+    } catch (error) {
+      handle64File.error = error.code ?? String(error);
+    }
   evidence.record({
     phase: "observer-handle-fetch",
     status: h.status,
+    signal: h.signal,
+    error: h.error,
     ms: h.ms,
     signature,
+    // Removed from this child only, with the value it would have inherited.
+    childEnvRemoved: Object.fromEntries(
+      Object.entries(child.removed).map(([name, value]) => [name, preview(value, 2000)]),
+    ),
+    powershell: powershellFacts(h.stderr),
+    handle64File,
     stdout: evidence.raw("handle-fetch-stdout", h.stdout),
     stderr: evidence.raw("handle-fetch-stderr", h.stderr),
   });

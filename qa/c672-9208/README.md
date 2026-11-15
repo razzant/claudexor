@@ -4,7 +4,8 @@ Diagnostic QA only. No product file changes; nothing here is a repair or a
 product gate. The workflow `.github/workflows/qa-copilot-672-9208.yml` runs on
 a push to `qa/copilot-lock-672-9208` that changes a script, the observer,
 `freeze.json` or the workflow. A push that changes only Markdown, `.gitignore`
-or files under `evidence/` starts nothing.
+or files under `evidence/` starts nothing. Since the first Windows run the
+workflow runs only the conversion batch; native-update is not repeated.
 
 ## What is known
 
@@ -28,11 +29,54 @@ this branch.
   the conversion error. They cannot yet be classified as the same `EPERM`
   mechanism.
 
+## First Windows run
+
+[Run 43685487641](https://github.com/razzant/claudexor/actions/runs/43685487641)
+(attempt 1, commit `b31b052a`, image windows-2025-vs2026 20261103.298.1, as in
+the failed run) ran both jobs once.
+
+- native-update completed (exit 0); result below.
+- The conversion batch built the product, passed `selftest.mjs --mutate` and
+  stopped at calibration with exit 3. The batch step was skipped: no vendor
+  program was installed or run in that job, and none of the eight hiding
+  renames happened. The run gives no evidence about the historical holder.
+- Calibration on that runner, one trial per class: the product rename failed
+  with `EPERM` (errno -4048) for a file opened without delete sharing, the same
+  with delete sharing, a process whose current directory was inside, and the
+  probe-shaped parent's detached child. It succeeded with an executable running
+  from inside. After each release the rename succeeded at once. Restart Manager
+  named the holder in all three file classes, including the detached child.
+- The blocker was in the instrument. Windows PowerShell (`powershell.exe`),
+  started by Node from the `pwsh` step, could not autoload
+  `Microsoft.PowerShell.Security` for `Get-AuthenticodeSignature`
+  (`CouldNotAutoloadMatchingModule`). The signature was never checked, so
+  `handle64` was not admitted, the current-directory holder stayed unnamed and
+  the qualification rule stopped the job as intended.
+- Change for the next push: `lib/observers.mjs` starts `powershell.exe` with
+  the inherited environment minus `PSModulePath` (any letter case), as
+  Microsoft's about_PSModulePath prescribes for Windows PowerShell started
+  through an intermediate process from PowerShell 7. The inherited value was
+  not recorded in the first run, so this mechanism is documented and matches
+  the error but was not observed there. The handle-fetch record now also keeps
+  the removed value, the child's version, edition and module path, the
+  `Microsoft.PowerShell.Security` copies it lists and loads, and whether
+  `handle64.exe` was extracted, with its digest. The signature gate and the
+  qualification rule are unchanged.
+- If calibration or setup refuses again, that run counts as incomplete and
+  does not become a new baseline.
+
 ## The batch
 
-One push runs two jobs on fresh `windows-latest` runners.
+One push runs one job, the conversion batch, on a fresh `windows-latest`
+runner.
 
-**native-update** (`native-update.mjs`): vendor copy installed at 1.0.111;
+**native-update** (`native-update.mjs`, kept, no longer in the workflow) ran
+once in the first Windows run and is not repeated. Its result: winget installed
+1.0.111, which answered 1.0.111 to all three questions; its own `update` exited
+0 and replaced `copilot.exe` in place, leaving the old bytes beside it as
+`copilot.exe.old-<pid>-<ms>`; `~/.copilot` gained only `logs/`; afterwards all
+three questions answered 1.0.112, while `winget list` still showed 1.0.111.
+The design it ran: vendor copy installed at 1.0.111;
 `--no-auto-update --version`, `--version`, `--no-auto-update --version`; its own
 `update`; the same three questions. The start qualifies only if winget exits 0,
 the installed `copilot.exe` is hashed and its first answer without auto-update
@@ -178,16 +222,20 @@ possibly another region and Defender state (recorded). If `latest` is no longer
 
 ## Not checked on the author's Mac
 
-`selftest.mjs --mutate` ran here (macOS, Node 24.16). Everything Windows-only is
-unexecuted: the C# observer (`win/c672obs.cs`, compiled on the runner by the
-.NET Framework `csc.exe`; no C# compiler was available to the author, so even
-its compilation is unverified), PowerShell steps, `handle64` download and
-signature check, calibration, batch and native-update, and GitHub's path
-filter for this workflow. Calibration exists to catch the observer failures
-before any vendor iteration.
+`selftest.mjs --mutate` ran here (macOS, Node 24.16), including its checks of
+`prepareObservers` against a fake `powershell.exe`, which do not run on
+Windows. The first Windows run executed the C# observer (`win/c672obs.cs`,
+compiled by the .NET Framework `csc.exe`; its `hold`, `rm` and `ps` modes),
+calibration up to its verdict, native-update, and the path filter for a script
+push. Still unexecuted on Windows: the `handle64` signature check and
+`handle64` itself (the error came at the signature command, after the download
+and extraction statements; their result was not recorded), the `PSModulePath`
+change, `batch.mjs`, `iteration.mjs`, and the filter's no-run case for a
+Markdown-only push. Calibration exists to catch the observer failures before
+any vendor iteration.
 
 ## Files
 
 `freeze.json`, `lib/hooks.mjs`, `lib/evidence.mjs`, `lib/observers.mjs`,
 `win/c672obs.cs`, `selftest.mjs`, `calibrate.mjs`, `iteration.mjs`,
-`batch.mjs`, `native-update.mjs`.
+`batch.mjs`, `native-update.mjs` (ran once; no longer in the workflow).
