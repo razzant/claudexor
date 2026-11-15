@@ -96,11 +96,16 @@ describe("claudexor acp serve: tool activity reaches a receiving ACP client", ()
           Writable.toWeb(clientToAgent) as globalThis.WritableStream<Uint8Array>,
           Readable.toWeb(agentToClient) as globalThis.ReadableStream<Uint8Array>,
         ),
-        (agent) =>
-          agent.request(acp.methods.agent.session.prompt, {
+        async (agent) => {
+          await agent.request(acp.methods.agent.initialize, {
+            protocolVersion: acp.PROTOCOL_VERSION,
+            clientCapabilities: {},
+          });
+          return agent.request(acp.methods.agent.session.prompt, {
             sessionId: "thread-seam",
             prompt: [{ type: "text", text: "Run both sleeps." }],
-          }),
+          });
+        },
       );
       expect(response.stopReason).toBe("end_turn");
     } finally {

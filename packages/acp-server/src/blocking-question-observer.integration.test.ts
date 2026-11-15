@@ -189,15 +189,20 @@ function acpEditor(
       op: (prompt: Promise<acp.PromptResponse>, agent: acp.ClientContext) => Promise<T>,
     ) {
       try {
-        return await client.connectWith(stream, (agent) =>
-          op(
+        return await client.connectWith(stream, async (agent) => {
+          // An editor opens with the handshake; the SDK rejects anything earlier.
+          await agent.request(acp.methods.agent.initialize, {
+            protocolVersion: acp.PROTOCOL_VERSION,
+            clientCapabilities: {},
+          });
+          return op(
             agent.request(acp.methods.agent.session.prompt, {
               sessionId: THREAD,
               prompt: [{ type: "text", text: "work" }],
             }),
             agent,
-          ),
-        );
+          );
+        });
       } finally {
         clientToAgent.end();
         await within(serving);
