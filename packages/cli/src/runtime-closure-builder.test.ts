@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  copyFileSync,
+  existsSync,
   lstatSync,
   mkdtempSync,
   mkdirSync,
@@ -15,13 +17,59 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BETTERLEAKS_RELEASES } from "@claudexor/delivery";
 import { assertLinkFreeExtractedTree } from "../../../scripts/lib/remote-runtime-archive.mjs";
 
-const script = resolve(import.meta.dirname, "../../../scripts/build-runtime-closure.mjs");
-const version = readFileSync(
-  resolve(import.meta.dirname, "../../util/src/version.ts"),
-  "utf8",
-).match(/CLAUDEXOR_VERSION = "([^"]+)"/)![1];
+const sourceRoot = resolve(import.meta.dirname, "../../..");
+const sourceScript = join(sourceRoot, "scripts", "build-runtime-closure.mjs");
+const sourceVersion = readFileSync(join(sourceRoot, "packages/util/src/version.ts"), "utf8").match(
+  /CLAUDEXOR_VERSION = "([^"]+)"/,
+)![1];
+const minAppVersion: string = JSON.parse(
+  readFileSync(join(sourceRoot, "release/runtime-min-app-version.json"), "utf8"),
+).minAppVersion;
+const semverParts = (value: string) => value.split(".").map(Number);
+const semverCompare = (a: string, b: string) => {
+  const [pa, pb] = [semverParts(a), semverParts(b)];
+  for (let i = 0; i < 3; i += 1) if (pa[i] !== pb[i]) return pa[i]! - pb[i]!;
+  return 0;
+};
+// The release this source prepares. A pending changeset may already need a
+// newer app than the generated version names (the floor is then ahead of it);
+// that release is at least the floor, so packaging cases build it, and the
+// floor itself stays enforced by the negative controls below.
+const version = semverCompare(sourceVersion, minAppVersion) >= 0 ? sourceVersion : minAppVersion;
 
 let work: string;
+let script: string;
+
+/**
+ * A release checkout for `releaseVersion`: the real builder and its real
+ * `scripts/lib`, the tracked app floor byte-for-byte, a generated version
+ * carrier naming `releaseVersion`, and the tracked CHANGELOG whose entry for the
+ * source version is relabelled to it. Nothing tracked is rewritten.
+ */
+function releaseRoot(root: string, releaseVersion: string): string {
+  const repo = join(root, "repo");
+  mkdirSync(join(repo, "scripts"), { recursive: true });
+  mkdirSync(join(repo, "packages", "util", "src"), { recursive: true });
+  mkdirSync(join(repo, "release"), { recursive: true });
+  copyFileSync(sourceScript, join(repo, "scripts", "build-runtime-closure.mjs"));
+  symlinkSync(join(sourceRoot, "scripts", "lib"), join(repo, "scripts", "lib"), "junction");
+  copyFileSync(
+    join(sourceRoot, "release", "runtime-min-app-version.json"),
+    join(repo, "release", "runtime-min-app-version.json"),
+  );
+  writeFileSync(
+    join(repo, "packages", "util", "src", "version.ts"),
+    `export const CLAUDEXOR_VERSION = "${releaseVersion}";\n`,
+  );
+  writeFileSync(
+    join(repo, "CHANGELOG.md"),
+    readFileSync(join(sourceRoot, "CHANGELOG.md"), "utf8").replace(
+      `\n- **v${sourceVersion}**`,
+      `\n- **v${releaseVersion}**`,
+    ),
+  );
+  return join(repo, "scripts", "build-runtime-closure.mjs");
+}
 
 // A fixed, deterministic 40-hex "build sha" the fake bundle is stamped with, so
 // the builder's stamp-consistency guard (QA-002) passes without a real esbuild.
@@ -113,6 +161,7 @@ function run(
 
 beforeEach(() => {
   work = mkdtempSync(join(tmpdir(), "runtime-closure-"));
+  script = releaseRoot(work, version);
 });
 afterEach(() => {
   rmSync(work, { recursive: true, force: true });
@@ -168,7 +217,7 @@ describe("build-runtime-closure", () => {
       `https://github.com/razzant/claudexor/releases/download/v${version}/claudexor-runtime-${version}.tar.gz`,
     );
     expect(manifest.buildSha).toBe(FAKE_BUILD_SHA);
-    expect(manifest.minAppVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(manifest.minAppVersion).toBe(minAppVersion);
     const tarball = readFileSync(join(out, `claudexor-runtime-${version}.tar.gz`));
     expect(createHash("sha256").update(tarball).digest("hex")).toBe(manifest.sha256);
   });
@@ -313,10 +362,7 @@ describe("build-runtime-closure", () => {
     run(app, out);
     const manifest = JSON.parse(readFileSync(join(out, "runtime-manifest.json"), "utf8"));
     // The real CHANGELOG entry the script read wraps across physical lines.
-    const changelog = readFileSync(
-      resolve(import.meta.dirname, "../../../CHANGELOG.md"),
-      "utf8",
-    ).split(/\r?\n/);
+    const changelog = readFileSync(join(work, "repo", "CHANGELOG.md"), "utf8").split(/\r?\n/);
     const headerIdx = changelog.findIndex((l) => l.startsWith(`- **v${version}**`));
     expect(headerIdx).toBeGreaterThanOrEqual(0);
     // A token from the HEADER line and from the FIRST continuation line must BOTH
@@ -354,6 +400,52 @@ describe("build-runtime-closure", () => {
       );
     },
   );
+
+  it("refuses a release older than the tracked app floor before writing anything", () => {
+    const [major, minor, patch] = semverParts(minAppVersion) as [number, number, number];
+    const below =
+      patch > 0
+        ? `${major}.${minor}.${patch - 1}`
+        : minor > 0
+          ? `${major}.${minor - 1}.0`
+          : `${major - 1}.0.0`;
+    const belowScript = releaseRoot(join(work, "below"), below);
+    const app = fakeAppBundle(work);
+    const out = join(work, "out");
+    expect(() =>
+      execFileSync(
+        process.execPath,
+        [belowScript, "--app-bundle", app, "--version", below, "--out", out],
+        {
+          stdio: "pipe",
+          env: { ...process.env, CLAUDEXOR_BUILD_SHA: FAKE_BUILD_SHA },
+        },
+      ),
+    ).toThrow(`minAppVersion ${minAppVersion} is newer than the release version ${below}`);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("applies the tracked app floor to the source tree's own version", () => {
+    const app = fakeAppBundle(work);
+    const out = join(work, "out");
+    const build = () =>
+      execFileSync(
+        process.execPath,
+        [sourceScript, "--app-bundle", app, "--version", sourceVersion, "--out", out],
+        { stdio: "pipe", env: { ...process.env, CLAUDEXOR_BUILD_SHA: FAKE_BUILD_SHA } },
+      );
+    if (semverCompare(sourceVersion, minAppVersion) < 0) {
+      expect(build).toThrow(
+        `minAppVersion ${minAppVersion} is newer than the release version ${sourceVersion}`,
+      );
+      expect(existsSync(out)).toBe(false);
+    } else {
+      build();
+      const manifest = JSON.parse(readFileSync(join(out, "runtime-manifest.json"), "utf8"));
+      expect(manifest.version).toBe(sourceVersion);
+      expect(manifest.minAppVersion).toBe(minAppVersion);
+    }
+  });
 
   it("refuses a --version that does not match the generated CLAUDEXOR_VERSION", () => {
     const app = fakeAppBundle(work);
