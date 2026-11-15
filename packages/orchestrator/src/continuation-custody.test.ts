@@ -7,6 +7,7 @@ import { ArtifactStore } from "@claudexor/artifact-store";
 import { makeOutcomeFacts, type WorkspaceEnvelope } from "@claudexor/schema";
 import { orderedAppender } from "@claudexor/util";
 import {
+  PreparationCancelled,
   WorkspaceManager,
   envelopeBaseOf,
   readEnvelopeCustody,
@@ -505,5 +506,58 @@ describe("candidate envelope custody (A9)", () => {
     await next.finish(makeOutcomeFacts("failed"));
     expect(retainedEnvelopeOfRun(succRunDir, "run-2")?.envelope.id).toBe(env.id);
     expect(retainedEnvelopeOfRun(first.runDir, "run-1")).toBeNull();
+  });
+
+  it("#694: a successor stopped before or right after adoption never discards the predecessor's kept work", async () => {
+    // Kept for its native session capsule alone: the tree equals its base.
+    const first = setup(true);
+    const env = await first.create();
+    const capsule = sessionCapsuleFile(join(first.paths.attemptsDir, "a01"));
+    mkdirSync(join(first.paths.attemptsDir, "a01"), { recursive: true });
+    writeFileSync(capsule, "{}\n");
+    await first.kept.settle(first.wsm, env, [candidate(env, { errored: true })]);
+    await first.kept.finish(makeOutcomeFacts("failed"));
+    const custody = retainedEnvelopeOfRun(first.runDir, "run-1")!;
+    expect(custody.envelope.id).toBe(env.id);
+
+    const successor = (runId: string, signal: AbortSignal) => {
+      const runDir = temp(runId);
+      const paths = { root: runDir, attemptsDir: join(runDir, "attempts") };
+      const kept = forRun(
+        { continuation: { retain: true, adopt: custody }, signal },
+        true,
+        runId,
+        paths,
+        fakeLog().log,
+      );
+      return { runDir, kept };
+    };
+    const stopped = new AbortController();
+    stopped.abort("user_cancelled");
+    const before = successor("run-2", stopped.signal);
+    await expect(
+      before.kept.envelope(first.wsm, {
+        taskId: "task-2",
+        attemptId: "a01",
+        baseRef: "HEAD",
+        signal: stopped.signal,
+      }),
+    ).rejects.toBeInstanceOf(PreparationCancelled);
+    // Untouched: still the predecessor's.
+    expect(retainedEnvelopeOfRun(first.runDir, "run-1")?.envelope.id).toBe(env.id);
+
+    const live = new AbortController();
+    const after = successor("run-3", live.signal);
+    const adopted = await after.kept.envelope(first.wsm, {
+      taskId: "task-3",
+      attemptId: "a01",
+      baseRef: "HEAD",
+      signal: live.signal,
+    });
+    live.abort("user_cancelled"); // stopped before its harness: no candidate record of its own
+    await after.kept.settle(first.wsm, adopted, []);
+    await after.kept.finish(makeOutcomeFacts("cancelled"));
+    expect(existsSync(envelopeBaseOf(adopted))).toBe(true);
+    expect(retainedEnvelopeOfRun(after.runDir, "run-3")?.envelope.id).toBe(env.id);
   });
 });

@@ -1,0 +1,186 @@
+{
+  "$ref": "#/definitions/ControlPreparationReleaseReceipt",
+  "definitions": {
+    "ControlPreparationReleaseReceipt": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "thread",
+            "envelope",
+            "staging"
+          ],
+          "description": "thread: an isolated thread's preparation record (its worktree, registration and branch); envelope: an isolated envelope base; staging: an object-store staging directory."
+        },
+        "path": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "released",
+            "completed",
+            "cleanup_failed",
+            "refused",
+            "stale",
+            "not_held",
+            "basis_not_recorded"
+          ],
+          "description": "released/completed: its release ran (completed: a finished checkout kept as made); cleanup_failed: it ran and a step failed, the confirmation stays recorded for the next release; refused: nothing was released; stale: inspect again; not_held: nothing held there (not a proof of an earlier release); basis_not_recorded: the confirmation could not be saved, nothing was released."
+        },
+        "operation_id": {
+          "type": "string",
+          "description": "The durable delivery command (`delivery.preparation_release`) recorded before any effect, holding this receipt; a repeat with the same Idempotency-Key answers from it."
+        },
+        "replayed": {
+          "type": "boolean",
+          "description": "This is the recorded receipt of an earlier request with the same key."
+        },
+        "generation": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The record's generation the request acted on (null when none was read)."
+        },
+        "stop": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                },
+                "groups": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                "at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason",
+                "groups",
+                "at"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The stop the record named (history, not a measurement); null after a crash."
+        },
+        "confirmed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The operator confirmation the record carried after this request (new or continued); null when none was needed or recorded."
+        },
+        "basis": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "machine_proven",
+                "operator_confirmed"
+              ],
+              "description": "machine_proven: a read proved that what the preparation started has ended; operator_confirmed: no read could prove it and the operator's recorded confirmation released it (not a proof)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "machine_proven: a read proved that what the preparation started has ended; operator_confirmed: no read could prove it and the operator's recorded confirmation released it (not a proof)."
+        },
+        "continued": {
+          "type": "boolean",
+          "description": "An earlier confirmation of the same record was continued."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cleanup_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "writer": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "pid": {
+                  "type": "integer"
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "plausible_original",
+                    "born_after_hold",
+                    "missing",
+                    "unknown"
+                  ],
+                  "description": "One read of the recorded writer's pid (no birth was recorded for it): plausible_original refuses; born_after_hold and missing take that pid off as an authority; unknown proves nothing."
+                },
+                "birth": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pid",
+                "outcome"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remains": {
+          "type": "string",
+          "description": "What stays after this operation."
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "selector",
+        "kind",
+        "path",
+        "outcome",
+        "operation_id",
+        "replayed",
+        "generation",
+        "stop",
+        "confirmed_at",
+        "basis",
+        "continued",
+        "reasons",
+        "cleanup_error",
+        "writer",
+        "remains",
+        "note"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

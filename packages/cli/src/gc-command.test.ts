@@ -258,3 +258,138 @@ describe("gcCommand data_root_report capability negotiation", () => {
     expect(mocks.connectDaemonIfRunning).not.toHaveBeenCalled();
   });
 });
+
+describe("gc preparations and gc release-preparation (#694 r17)", () => {
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  const addr = { baseUrl: "http://127.0.0.1:1234", token: "t" };
+  const digest = "b".repeat(64);
+  const respond = (body: unknown) =>
+    mocks.controlApiFetch.mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  const printed = () => stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("");
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    mocks.connectDaemonIfRunning.mockResolvedValue({ addr, engine: engine(CLAUDEXOR_VERSION) });
+  });
+  afterEach(() => stdoutSpy.mockRestore());
+
+  it("lists through the read route only, and says what confirming means", async () => {
+    respond({
+      preparations: [
+        {
+          selector: "prep1.abc",
+          digest,
+          kind: "thread",
+          path: "/p/threads/t1/tree",
+          record: "/p/threads/t1/preparation.json",
+          root: "/p",
+          thread_id: "t1",
+          since: "2026-11-15T10:00:00.000Z",
+          stop: { reason: "output_held", groups: [] },
+          read: { status: "quiet", reasons: [], unproven: "no census" },
+          release: "operator_confirmation",
+          refusal: null,
+          operator_release: null,
+          cleanup_error: null,
+          on_release: "removes only this record",
+        },
+      ],
+      roots: 2,
+      confirmation: "Confirming states that you checked",
+      errors: [],
+    });
+    expect(await gcCommand(parseArgs(["gc", "preparations"]), false)).toBe(0);
+    expect(mocks.controlApiFetch).toHaveBeenCalledTimes(1);
+    expect(mocks.controlApiFetch.mock.calls[0]?.[1]).toBe("/maintenance/preparations");
+    expect(mocks.controlApiFetch.mock.calls[0]?.[2]).toBeUndefined(); // a GET
+    const out = printed();
+    expect(out).toContain("selector: prep1.abc");
+    expect(out).toContain(`digest:   ${digest}`);
+    expect(out).toContain("release needs: operator_confirmation");
+    expect(out).toContain("Confirming states that you checked");
+    expect(mocks.ensureDaemon).not.toHaveBeenCalled(); // never starts a daemon to read
+  });
+
+  it("releases only with the digest and the explicit confirmation; any outcome but a release exits non-zero", async () => {
+    for (const argv of [
+      ["gc", "release-preparation", "prep1.abc", "--confirm-ended"],
+      ["gc", "release-preparation", "prep1.abc", "--digest", digest],
+      ["gc", "preparations", "--confirm-ended"],
+      ["gc", "--digest", digest],
+      [
+        "gc",
+        "release-preparation",
+        "prep1.abc",
+        "--digest",
+        digest,
+        "--confirm-ended",
+        "--dry-run",
+      ],
+    ])
+      await expect(gcCommand(parseArgs(argv), false)).rejects.toThrow();
+    expect(mocks.controlApiFetch).not.toHaveBeenCalled();
+    const receipt = (outcome: string, basis: string | null) => ({
+      selector: "prep1.abc",
+      kind: "thread",
+      path: "/p/threads/t1/tree",
+      outcome,
+      basis,
+      continued: false,
+      reasons: outcome === "stale" ? ["inspect it again"] : [],
+      cleanup_error: null,
+      writer: null,
+      remains: "nothing of this resource",
+      note: "The run's recorded stop is unchanged.",
+      operation_id: "delivery-7",
+      replayed: outcome === "completed",
+      generation: "thread:t1:a:b",
+      stop: null,
+      confirmed_at: null,
+    });
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      respond(receipt("released", "operator_confirmed"));
+      const argv = [
+        "gc",
+        "release-preparation",
+        "prep1.abc",
+        "--digest",
+        digest,
+        "--confirm-ended",
+      ];
+      expect(await gcCommand(parseArgs(argv), false)).toBe(0);
+      expect(mocks.controlApiFetch.mock.calls[0]?.[1]).toBe("/maintenance/preparations/release");
+      expect(sentBody()).toEqual({ selector: "prep1.abc", digest, confirm_processes_ended: true });
+      // A fresh key, announced before the request so a lost answer can be read back.
+      const sent = mocks.controlApiFetch.mock.calls[0]?.[2] as { headers: Record<string, string> };
+      const key = sent.headers["Idempotency-Key"]!;
+      expect(key).toMatch(/^preparation-release-/);
+      expect(stderr.mock.calls.map((call: unknown[]) => String(call[0])).join("")).toContain(
+        `operation key: ${key}`,
+      );
+      expect(printed()).toContain("released: thread /p/threads/t1/tree (operator_confirmed)");
+      expect(printed()).toContain("operation delivery-7");
+      respond(receipt("stale", null));
+      expect(await gcCommand(parseArgs(argv), false)).toBe(1);
+      expect(printed()).toContain("reason: inspect it again");
+      // An explicit key is sent as given; a replayed receipt says it is one.
+      respond(receipt("completed", "operator_confirmed"));
+      expect(await gcCommand(parseArgs([...argv, "--idempotency-key", "my-key"]), false)).toBe(0);
+      const explicit = mocks.controlApiFetch.mock.calls.at(-1)?.[2] as {
+        headers: Record<string, string>;
+      };
+      expect(explicit.headers["Idempotency-Key"]).toBe("my-key");
+      expect(printed()).toContain("the recorded receipt of an earlier request with this key");
+      await expect(
+        gcCommand(parseArgs(["gc", "preparations", "--idempotency-key", "x"]), false),
+      ).rejects.toThrow();
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+});

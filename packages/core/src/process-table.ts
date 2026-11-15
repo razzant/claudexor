@@ -28,9 +28,20 @@ export interface ProcessTableRow {
 /** One descendant recorded while its run was live (persisted in the scope index). */
 export interface CapturedProcess {
   pid: number;
+  /** The process group it was seen in: a membership basis only above 1.
+   * {@link NO_GROUP_BASIS} once that group was proven empty. */
   pgid: number;
   birth: string;
 }
+
+/**
+ * The `pgid` of a captured row whose group was proven empty (its leader closed
+ * by itself and signal 0 answered ESRCH): the row is no group basis any more
+ * and still counts by its own pid and birth. It is not an observed group: no
+ * process is in group -1, and every reader of these rows, a host's included,
+ * takes group ids only above 1 (0 can name kernel threads on Linux).
+ */
+export const NO_GROUP_BASIS = -1;
 
 export interface ProcessTableReader {
   /** The whole table, or null when it could not be read completely. */
@@ -95,7 +106,10 @@ export function scopeFloorSeconds(
  * does not reuse a pid as a group id while that group has members, so G is
  * still ours when (i) every live member of G was born at or after the scope
  * and (ii) a live process with pid == G has the birth we recorded for G's
- * leader; a later reap also requires a member born by the first settlement.
+ * leader — the root group's own record first, else a captured row that IS that
+ * leader (pid == pgid == G; a row without a group basis is an earlier
+ * generation and vouches for nothing); a later reap also requires a member born
+ * by the first settlement.
  * Otherwise G is skipped entirely. A live process with pid == G of
  * ANOTHER birth proves the recorded group gone. Any other skip (no floor, a
  * birth that cannot be read, a member older than the scope, a leader that cannot
@@ -130,13 +144,19 @@ export function capturedCandidates(
     return at < floor ? "older" : "in_scope";
   };
   const rootByPgid = new Map((options.rootGroups ?? []).map((g) => [g.pgid, g] as const));
-  const groups = new Set([...captured.map((item) => item.pgid), ...rootByPgid.keys()]);
+  const groups = new Set(
+    [...captured.map((item) => item.pgid), ...rootByPgid.keys()].filter((pgid) => pgid > 1),
+  );
   for (const group of groups) {
     const members = rows.filter((row) => row.pgid === group);
     if (members.length === 0) continue; // emptied: simply gone
     const root = rootByPgid.get(group);
-    const recordedLeaderBirth =
-      captured.find((item) => item.pid === group)?.birth ?? root?.leaderBirth ?? undefined;
+    const leaderBirths =
+      typeof root?.leaderBirth === "string"
+        ? [root.leaderBirth]
+        : captured
+            .filter((item) => item.pid === group && item.pgid === group)
+            .map((item) => item.birth);
     const liveLeader = byPid.get(group);
     const verdict = options.leaderVerdict?.get(group);
     // Rule (ii): a live process with pid == G must be the recorded leader —
@@ -144,15 +164,15 @@ export function capturedCandidates(
     // verdict against the spawn-time handle.
     const recycled =
       liveLeader !== undefined &&
-      (recordedLeaderBirth !== undefined
-        ? liveLeader.birth !== recordedLeaderBirth
+      (leaderBirths.length > 0
+        ? !leaderBirths.includes(liveLeader.birth)
         : verdict === "different");
     if (recycled) {
       reusedGroups.push(group);
       continue;
     }
     const leaderUntold =
-      liveLeader !== undefined && recordedLeaderBirth === undefined && verdict !== "same";
+      liveLeader !== undefined && leaderBirths.length === 0 && verdict !== "same";
     const onlyNewMembers =
       settlement !== null &&
       members.every((row) => {

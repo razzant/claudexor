@@ -6,12 +6,16 @@ import {
   ControlHarnessMaintenanceCreateRequest,
   ControlHarnessMaintenanceInventory,
   ControlHarnessMaintenanceOperation,
+  ControlHeldPreparations,
+  ControlPreparationReleaseReceipt,
+  ControlPreparationReleaseRequest,
   Id,
 } from "@claudexor/schema";
 import type { OperationDraft } from "./operation-draft.js";
 import { queryParam } from "./operation-parameters.js";
 import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
 import { requiredIdempotencyKey } from "./run-start.js";
+import { runIdempotentDelivery, type DeliveryCommandServices } from "./run-apply-routes.js";
 import { routeValue, serviceResponse } from "./route-stages.js";
 
 export interface MaintenanceRouteServices {
@@ -30,10 +34,20 @@ export interface MaintenanceRouteServices {
   ): Promise<unknown>;
   getMaintenanceOperation(id: string): Promise<unknown>;
   cancelMaintenanceOperation(id: string): Promise<unknown>;
+  /** Held preparation resources (#694): an explicit read, and one confirmed release. */
+  heldPreparations(): Promise<ControlHeldPreparations>;
+  releasePreparation(
+    request: ControlPreparationReleaseRequest,
+    serializeThread: <T>(threadId: string, work: () => Promise<T>) => Promise<T>,
+  ): Promise<Omit<ControlPreparationReleaseReceipt, "operation_id" | "replayed">>;
 }
 
 export interface MaintenanceRouteContext {
-  services?: Partial<MaintenanceRouteServices>;
+  /** A preparation release is recorded by the durable delivery-command owner. */
+  services?: Partial<MaintenanceRouteServices> & DeliveryCommandServices;
+  /** The thread's own mutation chain (a thread's held preparation is released in it);
+   * without it the release route is not served. */
+  serializeThreadMutation?<T>(threadId: string, work: () => Promise<T>): Promise<T>;
   readBody(req: IncomingMessage): Promise<unknown>;
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown, fallbackStatus?: 400 | 500): void;
@@ -77,6 +91,27 @@ export const MAINTENANCE_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlGcReceipt",
     responseKind: "json",
     idempotency: "natural",
+  },
+  {
+    method: "GET",
+    path: "/v2/maintenance/preparations",
+    mutability: "read_only",
+    requestSchema: null,
+    responseSchema: "ControlHeldPreparations",
+    responseKind: "json",
+    summary:
+      "List the preparation resources held after a stop whose end was not proven or a crash (thread records, envelope bases, staging directories, purged threads included), each with a fresh read and what its release needs; releases nothing.",
+  },
+  {
+    method: "POST",
+    path: "/v2/maintenance/preparations/release",
+    mutability: "mutating",
+    requestSchema: "ControlPreparationReleaseRequest",
+    responseSchema: "ControlPreparationReleaseReceipt",
+    responseKind: "json",
+    summary:
+      "Release one held preparation resource on the operator's confirmation that its processes ended, against the inspected digest; a measured live process, an active turn or creator refuses. A durable delivery command records the request before any effect and its receipt after; a repeat with the same Idempotency-Key answers that receipt (or that its outcome is unknown after a restart). Not a proof: the run's stop, costs and dispatch facts stay as recorded.",
+    idempotency: "key_required",
   },
   {
     method: "GET",
@@ -195,6 +230,52 @@ export async function handleMaintenanceRoute(
         ctx.json(res, 200, legacy);
       }
     });
+  }
+  if (method === "GET" && path === "/maintenance/preparations") {
+    if (!services?.heldPreparations) return false;
+    const value = await routeValue(ctx, res, 500, () => services.heldPreparations!());
+    if (!value.ok) return true;
+    return serviceResponse(ctx, res, "heldPreparations", () =>
+      ctx.json(res, 200, ControlHeldPreparations.parse(value.value)),
+    );
+  }
+  if (method === "POST" && path === "/maintenance/preparations/release") {
+    const serialize = ctx.serializeThreadMutation?.bind(ctx);
+    if (!services?.releasePreparation || !serialize) return false;
+    const input = await routeValue(ctx, res, 400, async () => ({
+      key: requiredIdempotencyKey(req),
+      body: ControlPreparationReleaseRequest.parse(await ctx.readBody(req)),
+    }));
+    if (!input.ok) return true;
+    const { key, body } = input.value;
+    let ran = false;
+    // The existing durable delivery-command owner records the request before any
+    // effect and the receipt after it; a repeat with this key answers that receipt,
+    // or that its outcome is unknown when a restart came between.
+    const value = await routeValue(ctx, res, 500, async () => {
+      const recorded = await runIdempotentDelivery(services, {
+        params: { kind: "preparation_release", selector: body.selector, digest: body.digest },
+        key,
+        operation: "preparation_release",
+        request: body,
+        work: async (command) => {
+          ran = true;
+          const answer = await services.releasePreparation!(body, (threadId, work) =>
+            serialize(threadId, work),
+          );
+          return ControlPreparationReleaseReceipt.parse({
+            ...answer,
+            operation_id: command.id,
+            replayed: false,
+          });
+        },
+      });
+      return ran ? recorded : { ...recorded, replayed: true };
+    });
+    if (!value.ok) return true;
+    return serviceResponse(ctx, res, "releasePreparation", () =>
+      ctx.json(res, 200, ControlPreparationReleaseReceipt.parse(value.value)),
+    );
   }
   if (method === "GET" && path === "/maintenance/harnesses") {
     if (!services?.maintenanceInventory) return false;

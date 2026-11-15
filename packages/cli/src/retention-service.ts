@@ -20,7 +20,7 @@ import {
   globalRunStores,
   userConfigDir,
 } from "@claudexor/util";
-import { sweepOrphanLanes } from "@claudexor/workspace";
+import { sweepOrphanLanes, type PreparationQuietRead } from "@claudexor/workspace";
 import type { NativeRetentionRequest, NativeRetentionResult } from "./native-home-retention.js";
 import { retentionProjects } from "./retention-projects.js";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
@@ -47,6 +47,8 @@ export interface RetentionRunnerDeps {
   purgeThread: (id: string, signal?: AbortSignal) => Promise<unknown>;
   /** Whether a directory that owner deletes is still on disk for the thread. */
   hasPurgeLeftovers: (thread: Thread) => boolean;
+  /** The store prune's held-staging criterion, with the scope index (#694). */
+  preparationQuiet?: PreparationQuietRead;
 }
 
 /** Trashed threads whose restore window (`purge_after`) has ended. */
@@ -240,6 +242,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
               ? { deferredRuntimes: references.deferredRuntimes }
               : {}),
             maxDeletionsPerPass: deps.maxDeletionsPerPass,
+            ...(deps.preparationQuiet ? { preparationQuiet: deps.preparationQuiet } : {}),
             onTruncated: () => {
               morePending = true;
             },

@@ -4,7 +4,8 @@
  * left running, and the live-capture store the directive's second membership
  * source writes to.
  *
- * One entry per run: the marker, the run id, the daemon identity that opened
+ * One entry per run, and per thread turn's worktree preparation (which has no
+ * run: `thread-preparation:<jobId>`): the marker, the id, the daemon identity that opened
  * it (measured birth — a stale "running" row of a dead generation is never a
  * live owner), the run's recorded descendants `(pid, pgid, birth)` and the
  * birth floor of its scope. Written BEFORE the first launch; an entry is
@@ -33,6 +34,8 @@ import {
   descendantProcessRows,
   liveChildProcesses,
   mintRunScopeMarker,
+  NO_GROUP_BASIS,
+  onChildGroupRetired,
   onChildProcessRegistered,
   reapScopeMembers,
   scopeReapDeadlineMs,
@@ -47,9 +50,11 @@ import type { RunScopeCustodian } from "@claudexor/orchestrator";
 import {
   describe,
   earlierBirth,
+  orderCaptured,
   reapSources,
   summarize,
   type RunScopeEntry,
+  type RunScopeRootGroup,
 } from "./run-scope-index-rows.js";
 import {
   loadRunScopeIndex,
@@ -69,7 +74,6 @@ export interface DaemonRunScopeIndexOptions {
   identity?: AsyncProcessIdentityReader;
   table?: ProcessTableReader;
   reap?: (opts: ScopeReapOptions) => Promise<ScopeReapOutcome>;
-  /** Live harness roots with their markers (default: the process registry). */
   /** Live harness roots with their markers (default: the process registry,
    * whose registrations also seed each root's group at spawn). */
   roots?: () => ReadonlyArray<LiveChildProcess>;
@@ -99,6 +103,10 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   private readonly seeding = new Map<string, Set<Promise<void>>>();
   /** Markers whose settlement stopped waiting while refinements were still pending. */
   private readonly expiredSeeds = new Set<string>();
+  /** Registrations whose own group was proven empty (in memory): a late seed adds nothing. */
+  private readonly emptied = new WeakSet<LiveChildProcess>();
+  /** Per capture pass in flight: the groups proven empty since its snapshot began. */
+  private readonly capturePasses = new Set<Set<number>>();
   private unsubscribe: (() => void) | null = null;
   /** Set when the index file had to be preserved aside; surfaced as a startup action. */
   private unreadableNotice: string | null = null;
@@ -144,9 +152,16 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     // Production: every harness root the engine spawns seeds its own group the
     // moment it is registered; tests inject `roots` and call `seedRoot` directly.
     if (!options.roots) {
-      this.unsubscribe = onChildProcessRegistered((child) => {
+      const registered = onChildProcessRegistered((child) => {
         if (child.scopeMarker) void this.seedRoot(child);
       });
+      const retired = onChildGroupRetired((child) => {
+        if (child.scopeMarker) void this.retireRootGroup(child);
+      });
+      this.unsubscribe = () => {
+        registered();
+        retired();
+      };
     }
   }
 
@@ -162,6 +177,37 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   }
 
   /**
+   * A root that closed by itself left its own group proven empty (the registry's
+   * ESRCH probe): that group stops being a membership basis for this engine and
+   * for a host of any age reading the file, so the basis is REMOVED, not flagged.
+   * Only THIS registration's row (pid, group, spawn-time leader identity) goes; a
+   * later one under the same numbers, or a row with no measured identity, stays.
+   * Captured rows naming the group keep pid and birth and lose the group
+   * (`NO_GROUP_BASIS`); an older snapshot's pass may add such rows, never the
+   * group. The index holds the bases in force, not a history. Changed in memory
+   * at once (before anything is awaited); resolves once persisted.
+   */
+  retireRootGroup(child: LiveChildProcess): Promise<void> {
+    this.emptied.add(child);
+    const entry = this.load().find((item) => item.marker === child.scopeMarker);
+    const pgid = child.processGroup.pgid;
+    const at =
+      entry?.root_groups.findIndex(
+        (g) =>
+          g.leader_pid === child.pid &&
+          g.pgid === pgid &&
+          g.leader_identity !== undefined &&
+          compareProcessIdentity(g.leader_identity, child.processGroup.leader) === "same",
+      ) ?? -1;
+    if (!entry || at < 0) return Promise.resolve();
+    entry.root_groups.splice(at, 1);
+    for (const row of entry.captured) if (row.pgid === pgid) row.pgid = NO_GROUP_BASIS;
+    orderCaptured(entry.captured);
+    for (const pass of this.capturePasses) pass.add(pgid);
+    return this.persistQuietly(`emptied group of ${child.pid}`);
+  }
+
+  /**
    * Record a freshly spawned harness root's own process group (pgid, leader
    * pid, leader birth) and the scope floor BEFORE any capture tick, so a root
    * that exits within milliseconds still leaves its group on record and a
@@ -173,7 +219,7 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   seedRoot(child: LiveChildProcess): Promise<void> {
     const job = (async () => {
       try {
-        if (!child.scopeMarker) return;
+        if (!child.scopeMarker || this.emptied.has(child)) return;
         const entry = this.load().find((item) => item.marker === child.scopeMarker);
         if (!entry || entry.state !== "open") return;
         // SYNCHRONOUS seed from the registry handle (fix round 2 item 10): the
@@ -181,14 +227,20 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
         // the root is registered, so a root that exits within milliseconds
         // still leaves its group on record; the floor is `opened_at` until a
         // birth is known.
-        let group = entry.root_groups.find((g) => g.leader_pid === child.pid);
-        if (!group) {
-          group = {
-            pgid: child.processGroup.pgid,
-            leader_pid: child.pid,
-            leader_birth: null,
-            leader_identity: child.processGroup.leader,
-          };
+        // This registration's row: the same pid AND leader identity (a row from an
+        // older engine has none). A later root under a reused pid gets its own row.
+        const group: RunScopeRootGroup = entry.root_groups.find(
+          (g) =>
+            g.leader_pid === child.pid &&
+            (g.leader_identity === undefined ||
+              compareProcessIdentity(g.leader_identity, child.processGroup.leader) === "same"),
+        ) ?? {
+          pgid: child.processGroup.pgid,
+          leader_pid: child.pid,
+          leader_birth: null,
+          leader_identity: child.processGroup.leader,
+        };
+        if (!entry.root_groups.includes(group)) {
           entry.root_groups.push(group);
           await this.persistQuietly(`root group of ${child.pid}`);
         }
@@ -197,8 +249,13 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
         // spawn-time leader BEFORE and AFTER the table read (item 8), and only
         // while this run's settlement still waits for it: past that point no
         // read starts and nothing more is recorded (the group above stands).
+        // After every wait it must still be THIS registration's row: one whose
+        // group was proven empty is gone, and a late read never brings it back.
         const marker = child.scopeMarker;
-        const waited = (): boolean => !this.expiredSeeds.has(marker);
+        const waited = (): boolean =>
+          !this.expiredSeeds.has(marker) &&
+          !this.emptied.has(child) &&
+          entry.root_groups.includes(group);
         if (!waited() || !(await this.rootStillSame(child)) || !waited()) return;
         const row = await this.table.row(child.pid);
         if (row === null || row === "unreadable") return; // exited already, or unreadable
@@ -282,7 +339,10 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     return [...this.load()];
   }
 
-  async open(runId: string): Promise<{ marker: string }> {
+  async open(
+    runId: string,
+    options: { requireDurable?: boolean } = {},
+  ): Promise<{ marker: string }> {
     const marker = mintRunScopeMarker();
     const owner = await this.owner();
     this.load().push({
@@ -301,6 +361,12 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     try {
       await this.persist();
     } catch (error) {
+      // A preparation scope promises its record before its first spawn: without
+      // it, nothing is spawned (the entry is withdrawn and the refusal thrown).
+      if (options.requireDurable) {
+        this.entries = this.load().filter((item) => item.marker !== marker);
+        throw error;
+      }
       this.log(
         `run-scope index: could not record scope for ${runId} before launch (${
           error instanceof Error ? error.message : String(error)
@@ -350,13 +416,18 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     if (this.options.laterAttempts) void this.late.tick();
     this.publisher.repeat();
     if (this.capturing) return this.capturing;
-    this.capturing = this.captureOnce().finally(() => {
+    // A group proven empty after this pass's snapshot began is no basis for what
+    // that snapshot still shows in it: such rows are recorded by pid and birth only.
+    const emptiedSince = new Set<number>();
+    this.capturePasses.add(emptiedSince);
+    this.capturing = this.captureOnce(emptiedSince).finally(() => {
+      this.capturePasses.delete(emptiedSince);
       this.capturing = null;
     });
     return this.capturing;
   }
 
-  private async captureOnce(): Promise<void> {
+  private async captureOnce(emptiedSince: ReadonlySet<number>): Promise<void> {
     if (!this.table) return;
     const roots = this.roots().filter((root) => root.scopeMarker);
     if (roots.length === 0) return;
@@ -383,7 +454,12 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
             entry.scope_start = floor;
             changed = true;
           }
-          const group = entry.root_groups.find((g) => g.leader_pid === root.pid);
+          const group = entry.root_groups.find(
+            (g) =>
+              g.leader_pid === root.pid &&
+              (g.leader_identity === undefined ||
+                compareProcessIdentity(g.leader_identity, root.processGroup.leader) === "same"),
+          );
           if (group && group.leader_birth === null) {
             group.leader_birth = row.birth;
             changed = true;
@@ -392,11 +468,16 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
         const key = `${row.pid}:${row.birth}`;
         if (known.has(key)) continue;
         known.add(key);
-        entry.captured.push({ pid: row.pid, pgid: row.pgid, birth: row.birth });
+        entry.captured.push({
+          pid: row.pid,
+          pgid: emptiedSince.has(row.pgid) ? NO_GROUP_BASIS : row.pgid,
+          birth: row.birth,
+        });
         changed = true;
       }
     }
     if (!changed) return;
+    for (const entry of entries) orderCaptured(entry.captured); // a stale row never follows a live one
     try {
       await this.persist();
     } catch (error) {

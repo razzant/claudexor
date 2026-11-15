@@ -144,19 +144,21 @@ export async function isolatedBaseCustody(
   projectRoot: string,
   baseSha: string,
   owners: [string, ...string[]],
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
+  const format = () => repositoryObjectFormat(repo, undefined, signal);
   // One project keeps one object format: its store never becomes a foreign clone's alternate.
-  if (projectRoot !== repo)
-    await assertProjectObjectFormat(projectRoot, await repositoryObjectFormat(repo));
-  const boundary = await storeBoundaryCommit(repo, baseSha);
+  if (projectRoot !== repo) await assertProjectObjectFormat(projectRoot, await format(), signal);
+  const boundary = await storeBoundaryCommit(repo, baseSha, undefined, signal);
   if (boundary && boundary !== baseSha) {
     const retained = await retainInObjectStore({
       projectRoot,
-      source: await repositoryEndpoint(repo),
+      source: await repositoryEndpoint(repo, signal),
       roots: [baseSha],
-      boundary: { commit: boundary, tree: await treeOf(repo, boundary) },
-      objectFormat: await repositoryObjectFormat(repo),
+      boundary: { commit: boundary, tree: await treeOf(repo, boundary, undefined, signal) },
+      objectFormat: await format(),
       owner: owners[0],
+      signal,
     });
     // Live while ANY owner exists: the holder run, or the envelope itself.
     for (const owner of owners.slice(1)) writeRootRecord(retained.store, owner, [baseSha]);

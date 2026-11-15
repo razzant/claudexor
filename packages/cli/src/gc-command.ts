@@ -5,9 +5,15 @@ import { controlApiFetch } from "./live.js";
 import { flagBool, type ParsedArgs } from "./args.js";
 import { print, printJson } from "./cli-io.js";
 import { GC_LOCKSTEP_REPORTS, gcReceiptNotes } from "./gc-receipt-notes.js";
+import { gcPreparationsCommand } from "./gc-preparations-command.js";
 
 /** Thin client of the daemon-owned retention service (W3.6). */
 export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const preparations = await gcPreparationsCommand(args, json);
+  if (preparations !== null) return preparations;
+  for (const flag of ["digest", "confirm-ended", "idempotency-key"])
+    if (args.flags[flag] !== undefined)
+      throw new Error(`--${flag} belongs to gc release-preparation`);
   const dryRun = flagBool(args, "dry-run") === true;
   if (dryRun && flagBool(args, "last"))
     throw new Error("gc --last cannot be combined with --dry-run");

@@ -3,7 +3,10 @@ import {
   ProcessIdentityService,
   compareProcessBirth,
   compareProcessIdentity,
+  createAsyncProcessIdentityReader,
   createProcessObservationReader,
+  executeWin32ProcessTimes,
+  executeWin32ProcessTimesAsync,
   observeProcess,
   isKnownProcessIdentity,
   parseDarwinHelperOutput,
@@ -468,6 +471,45 @@ describe("win32 process identity (opt-in kernel birth token)", () => {
     expect(isKnownProcessIdentity({ ...honest, source: "win32_process" })).toBe(false);
     expect(isKnownProcessIdentity({ ...honest, processGroupId: 7 })).toBe(false);
   });
+});
+
+describe("win32 asynchronous opt-in reader (#694 r17, operator boundary)", () => {
+  it("maps the same reader exits as the synchronous service, and stays unsupported without an opt-in", async () => {
+    const reader = (execution: Awaited<ReturnType<typeof executeWin32ProcessTimesAsync>>) =>
+      createAsyncProcessIdentityReader({
+        platform: "win32",
+        runWin32Reader: async () => execution,
+      });
+    expect(await reader({ status: 0, stdout: WIN32_READING, stderr: "" }).read(4242)).toEqual(
+      win32Service(win32Reader).read(4242),
+    );
+    for (const status of [3, 4, 5])
+      expect(await reader({ status, stdout: "", stderr: "" }).read(4242)).toEqual(
+        win32Service(() => ({ status, stdout: "", stderr: "" })).read(4242),
+      );
+    expect(
+      await reader({ status: null, stdout: "", stderr: "", errorCode: "ETIMEDOUT" }).read(4242),
+    ).toMatchObject({ status: "unknown", reason: "helper_unavailable" });
+    expect(await createAsyncProcessIdentityReader({ platform: "win32" }).read(4242)).toMatchObject({
+      status: "unknown",
+      reason: "unsupported_platform",
+    });
+  });
+
+  it.runIf(process.platform === "win32")(
+    "native: the real asynchronous reader reads this process's birth as the synchronous one does",
+    async () => {
+      const sync = new ProcessIdentityService({ runWin32Reader: executeWin32ProcessTimes }).read(
+        process.pid,
+      );
+      const async = await createAsyncProcessIdentityReader({
+        runWin32Reader: executeWin32ProcessTimesAsync,
+      }).read(process.pid);
+      expect(async).toEqual(sync);
+      expect(async.status).toBe("known");
+    },
+    60_000,
+  );
 });
 
 describe("win32 process-group semantics (leader-death proof, tree kill)", () => {

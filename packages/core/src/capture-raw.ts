@@ -1,12 +1,57 @@
 import { spawn } from "node:child_process";
-import { registerChildProcess, unregisterChildProcess } from "./process-registry.js";
+import {
+  registerChildProcess,
+  retireChildProcess,
+  unregisterChildProcess,
+} from "./process-registry.js";
 import { composeSpawnEnv } from "./env-scope.js";
 import { backgroundSpawnShape, prepareHarnessCommand } from "./runtime-env.js";
 import { runScopeMarkerOf } from "./process-scope.js";
-import { killWindowsProcessTree, resolveKillTreeStrategy } from "./process-tree.js";
+import {
+  defaultProbeGroupAlive,
+  killWindowsProcessTree,
+  resolveKillTreeStrategy,
+} from "./process-tree.js";
 import { defaultProcessGroupService, type ProcessGroupHandle } from "./process-group.js";
+import type { KnownProcessIdentity } from "./process-identity.js";
 import type { CaptureResult, SpawnOptions } from "./proc.js";
 import { CaptureBuffers } from "./capture-buffer.js";
+import { postExitDrain } from "./process-drain.js";
+
+/**
+ * What became of a capture child after WE asked it to stop (abort, timeout,
+ * watchdog or a failed capture). Absent when nobody asked: an ordinary run is
+ * read to its natural close exactly as before.
+ *
+ * `confirmed` on POSIX needs both facts: the pipes closed by themselves (no
+ * drain cut, no bound) AND the direct child's process group answered ESRCH to a
+ * signal-0 probe. On win32 there is no group to probe: a natural close is
+ * `not_provable`, disclosed as such.
+ *
+ * `unconfirmed` keeps two cases apart: the direct child already exited but a
+ * descendant may survive (`directExited`), or the direct child itself never
+ * exited within the bound. `directExit` settles when the direct child's exit is
+ * observed, so a private resource only it writes can be removed after it.
+ */
+export type CaptureTermination =
+  | { status: "confirmed"; proof: "group_empty" | "not_provable" }
+  | {
+      status: "unconfirmed";
+      reason: "output_held" | "group_alive" | "group_probe_unavailable" | "direct_child_alive";
+      rootPid: number | null;
+      /** Process groups the survivors may sit in (the direct child's own group). */
+      groups: number[];
+      directExited: boolean;
+      /** When the direct child's exit was observed (ms since epoch). */
+      directExitObservedAt?: number;
+      directExit: Promise<void>;
+    };
+
+/** The stop outcome a thrown capture failure carried, when one was recorded. */
+export function captureTerminationOf(error: unknown): CaptureTermination | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  return (error as { captureTermination?: CaptureTermination }).captureTermination;
+}
 
 /** A caller-owned bounded projection, used only for non-exact previews. */
 export interface CaptureProjection {
@@ -17,6 +62,11 @@ interface RawCaptureOptions extends SpawnOptions {
   stdoutProjection?: CaptureProjection;
   /** Called for every chunk of output, buffered or projected: the child is working. */
   onOutput?: () => void;
+  /** The spawned child's pid and the measured identity its capture read (undefined
+   * when that read was unknown), reported once, before any output is read. */
+  onCaptured?: (pid: number, identity: KnownProcessIdentity | undefined) => void;
+  /** Test seam: the signal-0 group probe (`defaultProbeGroupAlive` in production). */
+  probeGroupAlive?: (pgid: number) => boolean;
 }
 
 /**
@@ -49,7 +99,7 @@ export async function runCaptureRaw(
   const registration =
     typeof child.pid === "number"
       ? registerChildProcess(child.pid, cmd, runScopeMarkerOf(env))
-      : undefined;
+      : null;
   child.once("exit", (code, signal) => opts.onExit?.(code, signal));
   let captureChildClosed = false;
   child.once("close", () => {
@@ -64,28 +114,59 @@ export async function runCaptureRaw(
   // the identity-verified handle captured at spawn; without a proven handle we
   // fall back to `child.kill` — the ChildProcess OBJECT is pinned to this exact
   // process by Node, so a direct-child signal can never target a recycled PID.
-  // On win32 no handle ever captures; the viable tree kill is taskkill, gated
-  // on the child not yet having closed (Node holds the process handle until
-  // then, so the PID cannot have been recycled).
+  // On win32 no handle ever captures; the viable tree kill is taskkill by the
+  // numeric PID, sent only while the direct child's exit is not yet observed:
+  // after it, that PID may name another process (descendants holding our pipes
+  // are then left to the drain and disclosed as unconfirmed).
   const captureGroupService = opts.processGroups ?? defaultProcessGroupService;
   let captureGroupHandle: ProcessGroupHandle | undefined;
   if (process.platform !== "win32" && typeof child.pid === "number") {
     // Reuse the registration's identity read (one helper run per child), unless
     // an injected service reads its own.
-    const capture =
-      registration && captureGroupService === defaultProcessGroupService
-        ? registration
-        : captureGroupService.captureLeader(child.pid);
-    if (capture.status === "known") captureGroupHandle = capture.handle;
+    if (captureGroupService === defaultProcessGroupService)
+      captureGroupHandle = registration?.processGroup;
+    else {
+      const capture = captureGroupService.captureLeader(child.pid);
+      if (capture.status === "known") captureGroupHandle = capture.handle;
+    }
   }
+  if (typeof child.pid === "number") opts.onCaptured?.(child.pid, captureGroupHandle?.leader);
+  let directExited = false;
+  let directExitObservedAt: number | undefined;
+  let resolveDirectExit: () => void = () => {};
+  const directExit = new Promise<void>((resolve) => {
+    resolveDirectExit = resolve;
+  });
+  child.once("exit", () => {
+    directExited = true;
+    directExitObservedAt = Date.now();
+    resolveDirectExit();
+  });
+  child.once("error", () => resolveDirectExit());
   const killTree = (signal: NodeJS.Signals): void => {
     if (captureGroupHandle) {
-      captureGroupService.signal(captureGroupHandle, signal);
+      const sent = captureGroupService.signal(captureGroupHandle, signal);
+      // The leader's identity could not be READ (not stale, not missing): the
+      // direct child is still reached through its pinned ChildProcess while its
+      // exit has not been observed. A stale or missing leader gets no signal.
+      if (
+        sent.status === "unknown" &&
+        sent.reason === "identity_unknown" &&
+        !directExited &&
+        !captureChildClosed
+      ) {
+        try {
+          child.kill(signal);
+        } catch {
+          /* already gone */
+        }
+      }
       return;
     }
     if (
       (opts.killTreeStrategy ?? resolveKillTreeStrategy()) === "windows_taskkill" &&
       typeof child.pid === "number" &&
+      !directExited &&
       !captureChildClosed
     ) {
       // A FAILED taskkill (typed result) must not strand the capture awaiting
@@ -99,6 +180,32 @@ export async function runCaptureRaw(
     } catch {
       /* already gone */
     }
+  };
+  // Only a stop WE asked for arms the bounded post-exit drain and the bound on
+  // a direct child that never exits: ordinary output is never cut.
+  let stopRequested = false;
+  let boundTimer: NodeJS.Timeout | undefined;
+  let directChildBound: (() => void) | undefined;
+  const exitDrainMs = opts.exitDrainMs ?? 2_000;
+  const drain = postExitDrain(child, {
+    exitDrainMs,
+    exitDrainMaxMs: opts.exitDrainMaxMs ?? Math.max(10 * exitDrainMs, 30_000),
+    readerBlocked: () => false,
+    stopReader: () => {},
+  });
+  const stopKillDelay = opts.cancelKillDelayMs ?? 1_000;
+  const stop = (signal: NodeJS.Signals): void => {
+    if (!stopRequested) {
+      stopRequested = true;
+      child.once("exit", () => drain.arm());
+      if (directExited) drain.arm();
+      boundTimer = setTimeout(
+        () => directChildBound?.(),
+        opts.cancelDeadlineMs ?? Math.max(stopKillDelay, 0) + 10_000,
+      );
+      boundTimer.unref?.();
+    }
+    killTree(signal);
   };
   child.stdin.on("error", () => {});
   if (opts.input !== undefined) child.stdin.write(opts.input);
@@ -115,7 +222,7 @@ export async function runCaptureRaw(
     child.stdout.destroy();
     child.stderr.destroy();
     child.stdin.destroy();
-    killTree("SIGKILL");
+    stop("SIGKILL");
   };
   const collect = (stream: "stdout" | "stderr", chunk: Buffer): void => {
     if (captureFailed) return;
@@ -134,46 +241,103 @@ export async function runCaptureRaw(
 
   let killTimer: NodeJS.Timeout | undefined;
   const requestCancel = (): void => {
-    killTree(opts.cancelSignal ?? "SIGINT");
-    const killDelay = opts.cancelKillDelayMs ?? 1_000;
-    if (killDelay >= 0 && !killTimer) {
-      killTimer = setTimeout(() => killTree("SIGKILL"), killDelay);
+    stop(opts.cancelSignal ?? "SIGINT");
+    if (stopKillDelay >= 0 && !killTimer) {
+      killTimer = setTimeout(() => killTree("SIGKILL"), stopKillDelay);
       killTimer.unref?.();
     }
   };
   let timer: NodeJS.Timeout | undefined;
   if (opts.timeoutMs && opts.timeoutMs > 0) {
-    timer = setTimeout(() => killTree("SIGKILL"), opts.timeoutMs);
+    timer = setTimeout(() => stop("SIGKILL"), opts.timeoutMs);
   }
   const abortSignal = opts.abortSignal;
   if (abortSignal) {
     if (abortSignal.aborted) requestCancel();
     else abortSignal.addEventListener("abort", requestCancel, { once: true });
   }
+  let boundHit = false;
   try {
     const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>(
       (resolve, reject) => {
         child.on("error", (err) => {
-          if (typeof child.pid === "number") unregisterChildProcess(child.pid);
+          unregisterChildProcess(registration);
           reject(err);
         });
         child.on("close", (c, s) => {
-          if (typeof child.pid === "number") unregisterChildProcess(child.pid);
+          // A natural close may prove its group empty (its basis then retires);
+          // after a stop we asked for (its drain and bound included), nothing is
+          // concluded from it. Either way only THIS registration is removed.
+          if (registration && !stopRequested) retireChildProcess(registration);
+          else unregisterChildProcess(registration);
           resolve([c, s]);
         });
+        // The direct child did not exit within the bound after our stop: stop
+        // observing it (our pipe ends close) and report it unconfirmed instead
+        // of waiting on `close` forever. Its exit is still watched.
+        directChildBound = () => {
+          if (directExited || captureChildClosed) return;
+          boundHit = true;
+          child.stdout.destroy();
+          child.stderr.destroy();
+          child.stdin.destroy();
+          resolve([null, null]);
+        };
       },
     );
-    if (captureFailed) throw captureError;
+    const termination = stopRequested ? await classifyStop() : undefined;
+    if (captureFailed) {
+      if (termination && captureError && typeof captureError === "object") {
+        Object.assign(captureError, { captureTermination: termination });
+      }
+      throw captureError;
+    }
     return {
-      code,
+      // A capture cut after our stop (drain bound or a direct child that never
+      // exited) is never a success, whatever the exit status said: no caller,
+      // checked or not, reads cut bytes as a complete result.
+      code: drain.truncated || boundHit ? null : code,
       signal,
       stdout: opts.stdoutProjection?.end() ?? buffers.text("stdout"),
       stderr: buffers.text("stderr"),
+      ...(drain.truncated ? { drain: "truncated" as const } : {}),
+      ...(termination ? { termination } : {}),
     };
   } finally {
     buffers.clear();
+    drain.clear();
     if (timer) clearTimeout(timer);
     if (killTimer) clearTimeout(killTimer);
+    if (boundTimer) clearTimeout(boundTimer);
     abortSignal?.removeEventListener("abort", requestCancel);
+  }
+
+  async function classifyStop(): Promise<CaptureTermination> {
+    const pgid =
+      captureGroupHandle?.pgid ??
+      (process.platform !== "win32" && typeof child.pid === "number" ? child.pid : undefined);
+    const unconfirmed = (
+      reason: Extract<CaptureTermination, { status: "unconfirmed" }>["reason"],
+    ): CaptureTermination => ({
+      status: "unconfirmed",
+      reason,
+      rootPid: typeof child.pid === "number" ? child.pid : null,
+      groups: pgid === undefined ? [] : [pgid],
+      directExited,
+      ...(directExitObservedAt !== undefined ? { directExitObservedAt } : {}),
+      directExit,
+    });
+    if (boundHit) return unconfirmed("direct_child_alive");
+    if (drain.truncated) return unconfirmed("output_held");
+    if (process.platform === "win32") return { status: "confirmed", proof: "not_provable" };
+    if (pgid === undefined) return unconfirmed("group_probe_unavailable");
+    // Members killed with the group may answer signal 0 for a moment as zombies
+    // their parent (or init) has not reaped yet: a short, bounded re-probe.
+    const probe = opts.probeGroupAlive ?? defaultProbeGroupAlive;
+    for (let attempt = 0; probe(pgid); attempt += 1) {
+      if (attempt >= 20) return unconfirmed("group_alive");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return { status: "confirmed", proof: "group_empty" };
   }
 }

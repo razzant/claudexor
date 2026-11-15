@@ -8,6 +8,8 @@ import {
   GitBoundaryRootRefusedError,
   GitCapabilityError,
   GitInitializationError,
+  PreparationStopped,
+  rawAwareSnapshot,
   type EnsureGitRepositoryResult,
 } from "@claudexor/workspace";
 import { writeFailure } from "./runTerminalResults.js";
@@ -20,6 +22,15 @@ export interface GitPreconditionFailure {
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
+/** The in-place revert fence before a turn: a snapshot failure only makes revert
+ * unavailable (null), but a stop is the run's stop and is never read as "no fence". */
+export function preTurnSnapshot(root: string, signal?: AbortSignal): Promise<string | null> {
+  return rawAwareSnapshot(root, signal).catch((error: unknown) => {
+    if (error instanceof PreparationStopped) throw error;
+    return null;
+  });
+}
+
 /** Establish the write-mode Git boundary and own its typed terminal failure. */
 export async function ensureWriteModeGitBoundary(
   repoRoot: string,
@@ -28,11 +39,15 @@ export async function ensureWriteModeGitBoundary(
   paths: ReturnType<ArtifactStore["runPaths"]>,
   runId: string,
   mode: ModeKind,
-  ensureRepository: (repoRoot: string) => Promise<EnsureGitRepositoryResult> = ensureGitRepository,
+  signal?: AbortSignal,
+  ensureRepository: (
+    repoRoot: string,
+    options: { signal?: AbortSignal },
+  ) => Promise<EnsureGitRepositoryResult> = ensureGitRepository,
 ): Promise<GitPreconditionFailure | null> {
   if (repoRoot === NO_PROJECT_ROOT) return null;
   try {
-    const result = await ensureRepository(repoRoot);
+    const result = await ensureRepository(repoRoot, { signal });
     if (result.initialized || result.baselineCommitted) {
       log.emit("project.git.initialized", {
         repo_root: repoRoot,

@@ -14,6 +14,12 @@ import {
   type BudgetSettlement,
   type ObservedUsageAmounts,
 } from "@claudexor/budget";
+import type { EventLog } from "@claudexor/event-log";
+import {
+  PreparationStopped,
+  terminationDisclosure,
+  unconfirmedTerminationOf,
+} from "@claudexor/workspace";
 import type { AppliedAttemptFacts } from "./delegatedHome.js";
 
 export interface AttemptUsageCost {
@@ -70,6 +76,67 @@ export function settleGrantedAttemptLease(args: {
         )
       : unknownCostSettlement(args.preStreamFailureSource),
   );
+}
+
+/** `harness.started`: the attempt enters its execution path once its preparation is
+ * done (not proof of a native spawn); `extra` adds that site's own facts. */
+export function emitHarnessStarted(
+  log: Pick<EventLog, "emit">,
+  harnessId: string,
+  attemptId: string,
+  knobs: { webPolicy: string; ignored: readonly string[] },
+  extra: Record<string, unknown> = {},
+): void {
+  log.emit("harness.started", {
+    harness_id: harnessId,
+    attempt_id: attemptId,
+    external_context_policy: knobs.webPolicy,
+    ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
+    ...extra,
+  });
+}
+
+/** True for a preparation step's stop: a strategy that owns its cancelled
+ * terminal (with its own remedies) ends through it instead of rethrowing. */
+export function preparationStopped(error: unknown): boolean {
+  return error instanceof PreparationStopped;
+}
+
+/**
+ * A preparation stop ends an attempt before its execution path began, so no
+ * dispatch can have happened: its lease is released uncharged (never settled as
+ * unknown cost) and its completion says `cancelled`, not a workspace failure.
+ * False, with nothing done, for any other error.
+ */
+export function releaseStoppedPreparation(
+  err: unknown,
+  args: {
+    ledger: Pick<BudgetLedger, "cancel">;
+    leaseId: string;
+    log: Pick<EventLog, "emit">;
+    harnessId: string;
+    attemptId: string;
+  },
+): boolean {
+  if (!preparationStopped(err)) return false;
+  args.ledger.cancel(args.leaseId);
+  // Cancelled either way (the user's stop); an end that was not proven is a
+  // separate disclosure with what stays held until a read proves it.
+  const unconfirmed = unconfirmedTerminationOf(err);
+  const heldBase = (err as { heldBase?: unknown }).heldBase;
+  args.log.emit("harness.completed", {
+    harness_id: args.harnessId,
+    attempt_id: args.attemptId,
+    status: "cancelled",
+    phase: "workspace",
+    ...(unconfirmed
+      ? {
+          termination_unconfirmed: terminationDisclosure(unconfirmed),
+          held: typeof heldBase === "string" ? [heldBase] : [],
+        }
+      : {}),
+  });
+  return true;
 }
 
 export class AttemptPostStreamError extends Error {

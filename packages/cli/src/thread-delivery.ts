@@ -2,6 +2,7 @@ import type { ProjectThreadPort } from "@claudexor/daemon";
 import { verifyAndDeliver } from "@claudexor/delivery";
 import {
   advanceThreadWorktree,
+  assertThreadTreeReady,
   captureWorkingTreeTransient,
   captureFailureEvidence,
   git,
@@ -43,6 +44,9 @@ export async function applyThreadDiff(
       { status: 400 },
     );
   }
+  // A tree whose preparation did not complete is never delivered (its missing
+  // files would arrive as deletions).
+  assertThreadTreeReady(ws.worktree_path);
   const projectRoot = thread.repo.root;
   const base = ws.base_sha ?? "HEAD";
   // Raw API writes may be ignored by the project's rules, but their exact accepted

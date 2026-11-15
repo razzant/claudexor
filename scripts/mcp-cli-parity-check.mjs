@@ -196,6 +196,11 @@ const BOOLEAN_FLAG_MAP = {
     mcp: null,
     reason: "gc summary read through GET /v2/maintenance/gc; not a run-tool argument",
   },
+  "confirm-ended": {
+    mcp: null,
+    reason:
+      "gc release-preparation operator confirmation (POST /v2/maintenance/preparations/release); not a run control",
+  },
   "release-tested": {
     mcp: null,
     reason: "retired harness install spelling, parsed only to return its explicit refusal",
@@ -279,6 +284,8 @@ const CLI_ONLY_EXEMPT = {
   "from-archive":
     "scanner prepare subcommand flag for local machine setup, not a run control; MCP exposes no scanner preparation tool",
   "display-name": "profiles add subcommand flag (credential-profile label), not a run control",
+  digest:
+    "gc release-preparation record digest (POST /v2/maintenance/preparations/release), not a run control",
   "apply-mode": "decision subcommand flag, not a run control",
   feedback: "decision subcommand flag, not a run control",
   diff: "review verb flag, not a run control",

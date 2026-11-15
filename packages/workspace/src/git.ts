@@ -11,14 +11,29 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { assertCaptureComplete, runCaptureRaw, WorkspaceError } from "@claudexor/core";
+import {
+  assertCaptureComplete,
+  captureTerminationOf,
+  runCaptureRaw,
+  WorkspaceError,
+} from "@claudexor/core";
 import { isClaudexorOwnedRuntimePath } from "@claudexor/util";
 import {
   initializeGitRepository,
   type EnsureGitRepositoryDependencies,
   type EnsureGitRepositoryResult,
 } from "./git-initialization.js";
-import { assertNoBinaryStubs, git, gitEnv, SCRATCH_INDEX_CONFIG } from "./git-run.js";
+import {
+  assertNoBinaryStubs,
+  git,
+  gitEnv,
+  SCRATCH_INDEX_CONFIG,
+  scopeEnvOf,
+  scopedGitArgs,
+  stoppedAfter,
+  throwIfCancelled,
+  userLockStep,
+} from "./git-run.js";
 import { diskProgress, gitObserved } from "./git-observed.js";
 import {
   absentAfterCheckout,
@@ -26,7 +41,15 @@ import {
   incompleteCloneMessage,
 } from "./isolated-clone-content.js";
 import { repositoryEndpoint } from "./object-store.js";
-export { git, revParse } from "./git-run.js";
+export {
+  git,
+  PreparationCancelled,
+  PreparationStopped,
+  PreparationTerminationUnconfirmed,
+  revParse,
+  throwIfCancelled,
+  unconfirmedTerminationOf,
+} from "./git-run.js";
 export { captureWorkingTreeTransient, diffWorkingTreeTransient } from "./git-transient-capture.js";
 export {
   GitBoundaryRootRefusedError,
@@ -35,8 +58,8 @@ export {
   type EnsureGitRepositoryResult,
 } from "./git-initialization.js";
 
-export async function isGitRepo(repo: string): Promise<boolean> {
-  const r = await git(repo, ["rev-parse", "--is-inside-work-tree"]);
+export async function isGitRepo(repo: string, signal?: AbortSignal): Promise<boolean> {
+  const r = await git(repo, ["rev-parse", "--is-inside-work-tree"], undefined, signal);
   return r.code === 0 && r.stdout.trim() === "true";
 }
 
@@ -62,11 +85,18 @@ export async function ensureGitRepository(
     dependencies.runGit ?? git,
     dependencies.probeCapability,
     dependencies.rootPolicy,
+    dependencies.signal,
+    dependencies.beforeMutation,
+    dependencies.platform,
   );
 }
 
-export async function statusPorcelain(repo: string): Promise<string> {
-  return (await git(repo, ["status", "--porcelain"])).stdout;
+export async function statusPorcelain(repo: string, signal?: AbortSignal): Promise<string> {
+  // A read that takes no optional lock (no index refresh written back): it can
+  // be interrupted on every platform without leaving the user's index.lock.
+  return (
+    await gitEnv(repo, ["status", "--porcelain"], { GIT_OPTIONAL_LOCKS: "0" }, undefined, signal)
+  ).stdout;
 }
 
 export { snapshotTree, stashCreate } from "./git-snapshot.js";
@@ -131,17 +161,25 @@ export async function materializePatchTree(
   }
 }
 
+/** `signal` stops this `git worktree add` gently (SIGINT first, its stall too): on
+ * SIGINT Git removes the worktree it was creating and its registration itself, while
+ * a SIGKILL leaves the registration locked "initializing" (releaseThreadPreparation removes it). */
 export async function worktreeAdd(
   repo: string,
   path: string,
   branch: string,
   baseSha: string,
+  signal?: AbortSignal,
+  platform?: NodeJS.Platform,
 ): Promise<void> {
   const r = await gitObserved(repo, ["worktree", "add", "-b", branch, path, baseSha], {
     label: "worktree add",
     progress: diskProgress(repo),
     allowFailure: true,
+    signal: userLockStep(signal, platform),
+    gentleStop: true,
   });
+  throwIfCancelled(signal); // the step's boundary (Windows: the step was not interrupted)
   if (r.code !== 0) throw new WorkspaceError(`git worktree add failed: ${r.stderr.trim()}`);
 }
 
@@ -163,25 +201,41 @@ export async function isolatedCloneAdd(
   branch: string,
   baseSha: string,
   storeObjects?: string,
+  signal?: AbortSignal,
 ): Promise<void> {
+  throwIfCancelled(signal);
   const cloned = await runCaptureRaw(
     "git",
-    ["clone", "--shared", "--no-checkout", "--", repo, path],
-    { timeoutMs: 120_000, windowsConsole: "none" },
-  );
+    scopedGitArgs(signal, ["clone", "--shared", "--no-checkout", "--", repo, path]),
+    {
+      timeoutMs: 120_000,
+      windowsConsole: "none",
+      env: scopeEnvOf(signal),
+      ...(signal ? { abortSignal: signal } : {}),
+    },
+  ).catch((error: unknown) => {
+    stoppedAfter(signal, captureTerminationOf(error));
+    throw error;
+  });
+  stoppedAfter(signal, cloned.termination);
+  if (cloned.termination?.status === "unconfirmed")
+    throw Object.assign(new WorkspaceError("isolated clone was stopped at its time bound"), {
+      termination: cloned.termination,
+    });
   assertCaptureComplete(cloned);
   if (cloned.code !== 0)
     throw new WorkspaceError(await cloneFailureMessage(repo, baseSha, cloned.stderr));
   const alternates = join(path, ".git", "objects", "info", "alternates");
   if (!existsSync(alternates))
-    appendFileSync(alternates, `${(await repositoryEndpoint(repo)).objectsDir}\n`);
-  else await keepShallowBoundary(repo, path);
+    appendFileSync(alternates, `${(await repositoryEndpoint(repo, signal)).objectsDir}\n`);
+  else await keepShallowBoundary(repo, path, signal);
   if (storeObjects && existsSync(storeObjects)) appendFileSync(alternates, `${storeObjects}\n`);
   // A large checkout may take long: only a stall (no disk progress) stops it.
   const checkout = await gitObserved(path, ["checkout", "-q", "-b", branch, baseSha], {
     label: "checkout (isolated clone)",
     progress: diskProgress(path),
     allowFailure: true,
+    signal,
   });
   if (checkout.code !== 0) {
     throw new WorkspaceError(`isolated clone checkout failed: ${checkout.stderr.trim()}`);
@@ -189,10 +243,10 @@ export async function isolatedCloneAdd(
   // Git checks out a commit whose content no object directory here holds (what a
   // partial clone never fetched or a sparse checkout left out) by reporting each
   // such file and succeeding (#501). That tree is refused, and nothing is fetched.
-  const absent = await absentAfterCheckout(path);
+  const absent = await absentAfterCheckout(path, signal);
   if (absent.length > 0)
     throw new WorkspaceError(incompleteCloneMessage(repo, baseSha, absent, checkout.stderr));
-  const detachedRemote = await git(path, ["remote", "remove", "origin"]);
+  const detachedRemote = await git(path, ["remote", "remove", "origin"], undefined, signal);
   if (detachedRemote.code !== 0) {
     throw new WorkspaceError(
       `isolated clone remote removal failed: ${detachedRemote.stderr.trim()}`,
@@ -205,22 +259,27 @@ export async function isolatedCloneAdd(
  * history ends at parents it does not hold instead of at the boundary, and a log, a
  * blame or `fsck` there fails (#501). The source's own boundary, wherever Git keeps it,
  * goes into the clone; a full source has none. */
-async function keepShallowBoundary(repo: string, clone: string): Promise<void> {
+async function keepShallowBoundary(repo: string, clone: string, signal?: AbortSignal) {
   const located = await gitObserved(
     repo,
     ["rev-parse", "--path-format=absolute", "--git-path", "shallow"],
-    { label: "rev-parse --git-path shallow" },
+    { label: "rev-parse --git-path shallow", signal },
   );
   const boundary = located.stdout.trim();
   const own = join(clone, ".git", "shallow");
   if (boundary && existsSync(boundary) && !existsSync(own)) copyFileSync(boundary, own);
 }
 
-/** Recreate a worktree for an EXISTING branch (recovery: dir lost, branch survived). */
+/** Recreate a worktree for an EXISTING branch (recovery: dir lost, branch survived).
+ * `beforeAdd` runs once the lost directory's stale registration is gone, right
+ * before the add: what is registered at `path` then is not this add's. */
 export async function worktreeAddExisting(
   repo: string,
   path: string,
   branch: string,
+  signal?: AbortSignal,
+  beforeAdd: () => Promise<void> = async () => {},
+  platform?: NodeJS.Platform,
 ): Promise<void> {
   // A stale registration for the lost directory would fail the add, so it has
   // to go — but ONLY it. `git worktree prune` is repo-wide (see worktreePrune)
@@ -228,8 +287,13 @@ export async function worktreeAddExisting(
   // with it; this recovery runs against the USER'S project root, so that is
   // exactly the shared git dir. Deregistering the one path we are about to
   // recreate is the whole need.
+  throwIfCancelled(signal);
   await worktreeRemove(repo, path);
-  const r = await git(repo, ["worktree", "add", path, branch]);
+  await beforeAdd();
+  throwIfCancelled(signal); // a Stop during those waits starts no add (Windows would not take it)
+  const stop = userLockStep(signal, platform);
+  const r = await git(repo, ["worktree", "add", path, branch], undefined, stop);
+  throwIfCancelled(signal); // the step's boundary (Windows: the step was not interrupted)
   if (r.code !== 0)
     throw new WorkspaceError(`git worktree add (existing branch) failed: ${r.stderr.trim()}`);
 }
@@ -238,6 +302,15 @@ export async function worktreeAddExisting(
  * refused removal as done uses `worktreeRemoveRegistered`. */
 export async function worktreeRemove(repo: string, path: string): Promise<void> {
   await git(repo, ["worktree", "remove", "--force", path]);
+}
+
+/** Whether `repo` holds a worktree registration for exactly `path`; a list Git
+ * cannot give is thrown, never read as "not registered". */
+export async function worktreeRegistered(repo: string, path: string): Promise<boolean> {
+  const listed = await git(repo, ["worktree", "list", "--porcelain"]);
+  if (listed.code !== 0)
+    throw new WorkspaceError(`git worktree list failed: ${listed.stderr.trim()}`);
+  return worktreePaths(listed.stdout).some((entry) => samePlace(entry, path));
 }
 
 /**

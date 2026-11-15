@@ -436,8 +436,11 @@ console.log(JSON.stringify({characterDevice, interactive, eof}));
         spawnProcess: (() => child) as never,
         reap: (() => new Promise(() => {})) as never,
         processRegistry: {
-          register: (pid) => registered.push(pid),
-          unregister: (pid) => unregistered.push(pid),
+          register: (pid) => {
+            registered.push(pid);
+            return pid; // what `unregister` is handed back
+          },
+          unregister: (registration) => unregistered.push(registration as number),
         },
       },
     );

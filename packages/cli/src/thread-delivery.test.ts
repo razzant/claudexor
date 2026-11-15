@@ -13,9 +13,11 @@ import { describe, expect, it } from "vitest";
 import { type ProjectThreadPort } from "@claudexor/daemon";
 import { locateScanner } from "@claudexor/delivery";
 import { projectRuntimeDir } from "@claudexor/util";
-import { ensureThreadWorktree } from "@claudexor/workspace";
+import { mintRunScopeMarker, type ScopeReapOutcome } from "@claudexor/core";
+import { ensureThreadWorktree, threadTreeState } from "@claudexor/workspace";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { applyThreadDiff } from "./thread-delivery.js";
+import { resolveThreadExecutionWorkspace } from "./thread-execution-workspace.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const dirs: string[] = [];
@@ -125,6 +127,160 @@ describe("thread delivery keeps credential-shaped bytes exact and gates only pub
       expect(threads.getThread(thread.id)!.workspace.base_sha).toBe(sha);
     },
   );
+
+  it.runIf(process.platform !== "win32")(
+    "a Stop inside a held tree's hand-over leaves the ready tree unrecorded; the next turn records it, and Apply and read-only turns use it (#694)",
+    async () => {
+      const { repo } = projectWithOrigin();
+      const storeRoot = realpathSync(mkdtempSync(join(tmpdir(), "cx-thread-store-")));
+      dirs.push(storeRoot);
+      const sql = await sqlFixture(storeRoot);
+      stores.push(sql);
+      const threads = sql.graph.threads;
+      const thread = threads.createThread({ repoRoot: repo, workspace: "isolated" });
+      const tree = join(projectRuntimeDir(repo), "threads", thread.id, "tree");
+      const turn = (over: {
+        access?: "readonly";
+        signal?: AbortSignal;
+        preparation?: Parameters<typeof resolveThreadExecutionWorkspace>[0]["preparation"];
+      }) =>
+        resolveThreadExecutionWorkspace({
+          threadId: thread.id,
+          repoRoot: repo,
+          mode: "agent",
+          requestedInPlace: false,
+          protectedPaths: [],
+          threads,
+          ...over,
+        });
+      const workspace = () => threads.getThread(thread.id)!.workspace;
+      // Turn 1: the real checkout completes, but its scope's settlement still sees a
+      // member alive: the complete tree is held and nothing is recorded at the thread.
+      const marker = mintRunScopeMarker();
+      const unsettled = {
+        coverage: "marker",
+        census: "ok",
+        censusFailure: null,
+        ended: [],
+        survivors: [{ pid: 4242, startToken: "fixture" }],
+        unreadable: [],
+        reusedGroups: [],
+        settled: false,
+        incomplete: false,
+        completeness: "not_provable",
+        completenessReason: null,
+        restricted: false,
+        durationMs: 1,
+      } as unknown as ScopeReapOutcome;
+      await expect(
+        turn({
+          preparation: {
+            openScope: async () => ({ marker }),
+            settleScope: async () => unsettled,
+            quiet: async () => ({ status: "held", reasons: ["scope member 4242 is alive"] }),
+          },
+        }),
+      ).rejects.toMatchObject({ code: "termination_unconfirmed", context: { held: [tree] } });
+      expect(threadTreeState(tree)).toBe("held");
+      expect(workspace().worktree_path).toBeNull();
+      // Turn 2: the release's read proves the end and frees the record; the Stop
+      // arrives inside that hand-over, before the tree reaches the thread's record.
+      const stop = new AbortController();
+      const stopped = await turn({
+        signal: stop.signal,
+        preparation: {
+          openScope: async () => ({ marker: mintRunScopeMarker() }),
+          settleScope: async () => null,
+          quiet: async () => {
+            stop.abort("stop");
+            return { status: "quiet" };
+          },
+        },
+      }).catch((error: unknown) => error);
+      expect((stopped as Error).name).toBe("PreparationCancelled");
+      expect(threadTreeState(tree)).toBe("ready");
+      expect(workspace().worktree_path).toBeNull();
+      // Turn 3 finds the ready tree (nothing is made) and records it.
+      const made = await turn({});
+      expect(made).toMatchObject({ executionRoot: tree, inPlace: true, promoted: false });
+      const base = git(tree, "rev-parse", "HEAD");
+      expect(workspace()).toMatchObject({ mode: "isolated", worktree_path: tree, base_sha: base });
+      // The readers of that record now use the tree: a read-only turn runs in it…
+      expect(await turn({ access: "readonly" })).toMatchObject({ executionRoot: tree });
+      // …and Apply delivers what the turn wrote there.
+      threads.bindTurnRun(threads.createTurn(thread.id, "write the file").id, "run-head");
+      writeFileSync(join(tree, "NEW.txt"), "new\n");
+      await expect(applyThreadDiff(threads, thread.id, { mode: "apply" })).resolves.toMatchObject({
+        applied: true,
+        status: "applied",
+      });
+      expect(readFileSync(join(repo, "NEW.txt"), "utf8")).toBe("new\n");
+      // A later turn on the recorded tree writes nothing more to the thread.
+      const recorded = threads.getThread(thread.id)!;
+      await turn({});
+      expect(threads.getThread(thread.id)).toEqual(recorded);
+    },
+  );
+
+  it("refuses Apply of a tree whose preparation did not complete, changing nothing, then delivers once it is complete (#694)", async () => {
+    const { repo } = projectWithOrigin();
+    const storeRoot = realpathSync(mkdtempSync(join(tmpdir(), "cx-thread-store-")));
+    dirs.push(storeRoot);
+    const sql = await sqlFixture(storeRoot);
+    stores.push(sql);
+    const threads = sql.graph.threads;
+    const thread = threads.createThread({ repoRoot: repo, workspace: "isolated" });
+    const worktree = await ensureThreadWorktree(repo, thread.id);
+    threads.setThreadWorktree(thread.id, worktree.path, worktree.baseSha);
+    threads.bindTurnRun(threads.createTurn(thread.id, "write the file").id, "run-head");
+    writeFileSync(join(worktree.path, "NEW.txt"), "new\n");
+    // A half-made tree would deliver its missing files as deletions: the record refuses.
+    const record = join(worktree.path, "..", "preparation.json");
+    writeFileSync(record, JSON.stringify({ schema: 1, tree: worktree.path }));
+    const headBefore = git(repo, "rev-parse", "HEAD");
+    await expect(applyThreadDiff(threads, thread.id, { mode: "apply" })).rejects.toMatchObject({
+      code: "termination_unconfirmed",
+      context: {
+        held: [worktree.path],
+        termination_unconfirmed: { reason: "preparation_unfinished" },
+      },
+    });
+    expect(existsSync(join(repo, "NEW.txt"))).toBe(false);
+    expect(git(repo, "rev-parse", "HEAD")).toBe(headBefore);
+    expect(threads.getThread(thread.id)!.workspace.base_sha).toBe(worktree.baseSha);
+    // A release that proved the end and then could not finish: Apply refuses with
+    // that cleanup fault and its remedy, not with processes to wait for.
+    writeFileSync(
+      record,
+      JSON.stringify({
+        schema: 1,
+        tree: worktree.path,
+        held: { reason: "output_held", groups: [7] },
+        cleanup_error: "EIO: unlink preparation record",
+      }),
+    );
+    const cleanup = await applyThreadDiff(threads, thread.id, { mode: "apply" }).catch(
+      (error: unknown) => error,
+    );
+    expect(cleanup).toMatchObject({
+      code: "preparation_cleanup_failed",
+      retryable: true,
+      requiredActions: [expect.stringContaining("Clear what prevents the cleanup")],
+      context: {
+        held: [worktree.path],
+        preparation: { cleanup_error: "EIO: unlink preparation record" },
+      },
+    });
+    expect((cleanup as { context: object }).context).not.toHaveProperty("termination_unconfirmed");
+    expect(existsSync(join(repo, "NEW.txt"))).toBe(false);
+    expect(git(repo, "rev-parse", "HEAD")).toBe(headBefore);
+    rmSync(record);
+    await expect(applyThreadDiff(threads, thread.id, { mode: "apply" })).resolves.toMatchObject({
+      applied: true,
+      status: "applied",
+    });
+    expect(readFileSync(join(repo, "NEW.txt"), "utf8")).toBe("new\n");
+  });
 
   it("refuses 'pr' typed and creates nothing when the publication scanner is unavailable", async () => {
     const { repo, remote, threads } = await threadWithLeak("text");

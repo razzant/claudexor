@@ -6,6 +6,7 @@ import { readProcessLines, type ProcessStreamLimits } from "./process-lines.js";
 import { composeSpawnEnv } from "./env-scope.js";
 import { postExitDrain } from "./process-drain.js";
 import { runScopeMarkerOf } from "./process-scope.js";
+import type { CaptureTermination } from "./capture-raw.js";
 import {
   backgroundSpawnShape,
   prepareHarnessCommand,
@@ -191,7 +192,7 @@ export async function* spawnProcess(
   const registration =
     typeof child.pid === "number"
       ? registerChildProcess(child.pid, cmd, runScopeMarkerOf(env))
-      : undefined;
+      : null;
   // Bounded post-exit output drain (#449 item 2): see `process-drain.ts`.
   // The reader is told to stop (never to discard) before the pipes are ended.
   const drain = postExitDrain(child, {
@@ -224,11 +225,11 @@ export async function* spawnProcess(
   if (process.platform !== "win32" && typeof child.pid === "number") {
     // The registration already read this child's identity through the default
     // service: one identity-helper run per child. An injected service reads its own.
-    const capture =
-      registration && groupService === defaultProcessGroupService
-        ? registration
-        : groupService.captureLeader(child.pid);
-    if (capture.status === "known") directGroupHandle = capture.handle;
+    if (groupService === defaultProcessGroupService) directGroupHandle = registration?.processGroup;
+    else {
+      const capture = groupService.captureLeader(child.pid);
+      if (capture.status === "known") directGroupHandle = capture.handle;
+    }
   }
 
   recordChildLaunch(performance.now() - launchStarted);
@@ -333,7 +334,7 @@ export async function* spawnProcess(
   );
 
   child.on("error", (err) => {
-    if (typeof child.pid === "number") unregisterChildProcess(child.pid);
+    unregisterChildProcess(registration);
     drain.clear();
     spawnError = err;
     finished = true;
@@ -343,7 +344,7 @@ export async function* spawnProcess(
     }
   });
   child.on("close", async (code, signal) => {
-    if (typeof child.pid === "number") unregisterChildProcess(child.pid);
+    unregisterChildProcess(registration);
     drain.clear();
     await lines.drained;
     push({
@@ -506,8 +507,10 @@ export interface CaptureResult {
   signal: NodeJS.Signals | null;
   stdout: string;
   stderr: string;
-  /** The exit event's forced post-exit drain (`runCapture` only): later output was not read. */
+  /** The forced post-exit drain: later output was not read (`runCapture`; `runCaptureRaw` only after a stop it asked for). */
   drain?: "truncated";
+  /** `runCaptureRaw` only, present iff a stop was requested: what became of the child. */
+  termination?: CaptureTermination;
 }
 
 export { labelStreams } from "./process-output.js";
@@ -532,7 +535,12 @@ export async function runCapture(
   return { code, signal, stdout, stderr, ...(drain ? { drain } : {}) };
 }
 
-export { runCaptureRaw, type CaptureProjection } from "./capture-raw.js";
+export {
+  captureTerminationOf,
+  runCaptureRaw,
+  type CaptureProjection,
+  type CaptureTermination,
+} from "./capture-raw.js";
 export {
   CaptureOutputExceeded,
   CAPTURE_BUFFER_BUDGET_BYTES,

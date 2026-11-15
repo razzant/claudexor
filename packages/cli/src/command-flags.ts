@@ -331,6 +331,15 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   booleanFlag("json", "Machine-readable JSON output"),
   booleanFlag("all", null),
   booleanFlag("last", "GC: read the durable last pass without starting cleanup"),
+  valueFlag(
+    "digest",
+    "<sha256>",
+    "gc release-preparation: the record digest `gc preparations` showed",
+  ),
+  booleanFlag(
+    "confirm-ended",
+    "gc release-preparation: you checked that the held preparation's processes ended",
+  ),
   booleanFlag(
     "browser-redirect",
     "Codex login: opt into the localhost-callback flow instead of the device-auth default",

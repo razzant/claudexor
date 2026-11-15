@@ -25,6 +25,9 @@ import { bindLaterScopeSettlements } from "./run-scope-later-record.js";
 import { daemonRunScopeIndex } from "./run-scope-index.js";
 import { afterRetention, type RetentionRunner } from "./retention-lifetime.js";
 import { readLastRetention, recordLastRetention } from "./retention-last-pass.js";
+import { heldPreparationServices } from "./held-preparations.js";
+import { sqlActivityRecords, sqlStartupRoots } from "./sql-daemon-queries.js";
+import { daemonPreparationQuiet } from "./thread-preparation-scope.js";
 
 type SqlServices = ReturnType<typeof createSqlDaemonServices>;
 type ModelOptions = Pick<
@@ -197,6 +200,12 @@ export function createSqlDaemonExecutors(
     },
     controlRoutes: {
       ...models.routes,
+      // The crash sweep's reach, read only on an explicit request (#694 r17).
+      ...heldPreparationServices({
+        roots: () => sqlStartupRoots(graph.store),
+        jobs: () => sqlActivityRecords(graph.store),
+        quiet: daemonPreparationQuiet(daemonRunScopeIndex()),
+      }),
       lastRetention: async () => {
         let diagnostic: string | undefined;
         const last = readLastRetention(graph.store, (message) => {

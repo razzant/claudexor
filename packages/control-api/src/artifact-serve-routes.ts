@@ -13,6 +13,7 @@ export { expiredRunBody, listArtifacts } from "./artifact-read.js";
 import type { DaemonRunRecord } from "./daemon-server.js";
 import { streamFilesArtifact } from "./files-artifact-stream.js";
 import { runExecutionWorkspaceRoot } from "./run-execution-root.js";
+import { PreparationCleanupFailed, PreparationHeld } from "@claudexor/workspace";
 
 /** Server-owned workspace facts for a thread, taken from its journal record:
  *  the mode and, for an isolated thread, the persistent worktree path (pinned by
@@ -249,10 +250,13 @@ export type ProducedRootResolution =
       reason: WorktreeUnavailableReason;
       /** The missing tree is a caller-owned delegated workspace, not a managed worktree. */
       callerOwned?: boolean;
+      /** `worktree_held`: the unfinished preparation's typed refusal (a hold whose
+       * end is not proven, or a cleanup that failed after it was). */
+      held?: PreparationHeld | PreparationCleanupFailed;
     };
 
 type WorktreeUnavailableReason =
-  "worktree_not_retained" | "worktree_missing" | "authority_unavailable";
+  "worktree_not_retained" | "worktree_missing" | "authority_unavailable" | "worktree_held";
 
 export async function resolveProducedRoot(
   rec: DaemonRunRecord,
@@ -273,7 +277,18 @@ export async function resolveProducedRoot(
     let workspace: ResolvedThreadWorkspace | null;
     try {
       workspace = await resolveThreadWorkspace(threadId);
-    } catch {
+    } catch (error) {
+      // The tree's preparation did not complete (a stop without a proven end, a
+      // preparation that died midway, or a release that could not finish): never
+      // served, and answered with that refusal's own code and remedy — a retry
+      // does not help until a later turn or purge releases it.
+      if (error instanceof PreparationHeld || error instanceof PreparationCleanupFailed)
+        return {
+          kind: "worktree_unavailable",
+          threadId,
+          reason: "worktree_held",
+          held: error,
+        };
       // The thread store could not answer for a run BOUND to a thread. We cannot
       // prove this run executed in the live project, so serving the live root
       // would re-open the QA-038 fail-open leak. Answer typed authority-
@@ -309,7 +324,36 @@ function isolatedWorktreeUnavailableBody(resolved: {
   threadId: string | null;
   reason: WorktreeUnavailableReason;
   callerOwned?: boolean;
-}): { error: string; code: string; reason: string; thread_id: string | null } {
+  held?: PreparationHeld | PreparationCleanupFailed;
+}): {
+  error: string;
+  code: string;
+  reason: string;
+  thread_id: string | null;
+  retryable?: boolean;
+  requiredActions?: string[];
+  context?: (PreparationHeld | PreparationCleanupFailed)["context"];
+} {
+  if (resolved.reason === "worktree_held") {
+    const cleanup = resolved.held instanceof PreparationCleanupFailed;
+    return {
+      error: `thread ${resolved.threadId} worktree is held: ${
+        cleanup
+          ? "the cleanup of its unfinished preparation failed"
+          : "its preparation did not complete"
+      }, so it is not served as produced outputs`,
+      code: resolved.held?.code ?? "termination_unconfirmed",
+      reason: resolved.reason,
+      thread_id: resolved.threadId,
+      ...(resolved.held
+        ? {
+            retryable: resolved.held.retryable,
+            requiredActions: [...resolved.held.requiredActions],
+            context: resolved.held.context,
+          }
+        : {}),
+    };
+  }
   if (resolved.reason === "authority_unavailable") {
     return {
       error: `thread ${resolved.threadId} workspace could not be resolved to serve produced outputs (thread authority unavailable)`,
@@ -333,7 +377,9 @@ function isolatedWorktreeUnavailableBody(resolved: {
 }
 
 /** A gone worktree is permanent (410); an unavailable thread authority is a
- *  transient store failure (503). Both fail CLOSED — never the live root. */
-function worktreeUnavailableStatus(reason: WorktreeUnavailableReason): 410 | 503 {
+ *  transient store failure (503); a held tree waits for its release (409). All
+ *  fail CLOSED — never the live root. */
+function worktreeUnavailableStatus(reason: WorktreeUnavailableReason): 409 | 410 | 503 {
+  if (reason === "worktree_held") return 409;
   return reason === "authority_unavailable" ? 503 : 410;
 }

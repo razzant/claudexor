@@ -3,6 +3,15 @@ import { parse, resolve } from "node:path";
 import { WorkspaceError } from "@claudexor/core";
 import { userHomeDir } from "@claudexor/util";
 import { probeGitCapability, requireGitCapability } from "./git-capability.js";
+import {
+  PreparationStopped,
+  terminationDisclosure,
+  throwIfCancelled,
+  userLockStep,
+  unconfirmedTerminationOf,
+  type TerminationDisclosure,
+  type UnconfirmedTermination,
+} from "./git-run.js";
 
 export interface GitCommandResult {
   code: number | null;
@@ -10,7 +19,12 @@ export interface GitCommandResult {
   stderr: string;
 }
 
-export type GitRunner = (repo: string, args: string[], input?: string) => Promise<GitCommandResult>;
+export type GitRunner = (
+  repo: string,
+  args: string[],
+  input?: string,
+  signal?: AbortSignal,
+) => Promise<GitCommandResult>;
 
 export interface EnsureGitRepositoryResult {
   /** True when `git init` ran (the folder was not a repository). */
@@ -34,12 +48,43 @@ export interface GitInitializationProgress {
 /** A Git-boundary setup failed after it may already have changed repository
  * metadata. Callers must disclose this progress before terminal failure. */
 export class GitInitializationError extends WorkspaceError {
+  /** The same progress as typed problem context: a refusal recorded before any
+   * run exists (a thread turn's `enqueue_error`) keeps it, not only a message. */
+  readonly context: {
+    project_git_initialization: Record<string, unknown>;
+    termination_unconfirmed?: TerminationDisclosure;
+  };
+
   constructor(
     message: string,
     readonly progress: GitInitializationProgress,
+    /** A stop or time bound inside the step whose end was not proven: it survives this wrapper. */
+    readonly termination?: UnconfirmedTermination,
   ) {
     super(message);
     this.name = "GitInitializationError";
+    this.context = {
+      ...(termination ? { termination_unconfirmed: terminationDisclosure(termination) } : {}),
+      project_git_initialization: {
+        partial: true,
+        initialized: progress.initialized,
+        baseline_committed: progress.baselineCommitted,
+        gitignore_seeded: progress.gitignoreSeeded,
+        head_sha: progress.headSha,
+        failed_stage: progress.failedStage,
+      },
+    };
+  }
+
+  /** The same partial progress once what the stopped step left was proven ended
+   * (its scope settled): no unconfirmed termination is disclosed any more. */
+  withEndProven(): GitInitializationError {
+    return this.termination
+      ? new GitInitializationError(
+          `${this.message}; what the stopped step started has since ended`,
+          this.progress,
+        )
+      : this;
   }
 }
 
@@ -92,6 +137,16 @@ export interface EnsureGitRepositoryDependencies {
   probeCapability?: typeof probeGitCapability;
   runGit?: GitRunner;
   rootPolicy?: GitBoundaryRootPolicy;
+  /** The run's stop: the running Git child gets the ordinary escalation (never a
+   * removal of the user's lock files); a stop after a mutation began keeps the
+   * partial-progress receipt. */
+  signal?: AbortSignal;
+  /** Called once, before the first step that changes the repository: the stop it
+   * returns (carrying that preparation's process scope) is the one those steps get.
+   * Reads of a healthy repository never call it. */
+  beforeMutation?: () => Promise<AbortSignal | undefined>;
+  /** Test seam: the platform whose step-boundary rule applies (`userLockStep`). */
+  platform?: NodeJS.Platform;
 }
 
 const SUBFOLDER_REMEDIATION = "Choose a project subfolder as the project root instead.";
@@ -187,13 +242,19 @@ export async function initializeGitRepository(
   runGit: GitRunner,
   probeCapability: typeof probeGitCapability = probeGitCapability,
   rootPolicy: GitBoundaryRootPolicy = {},
+  signal?: AbortSignal,
+  beforeMutation?: () => Promise<AbortSignal | undefined>,
+  platform?: NodeJS.Platform,
 ): Promise<EnsureGitRepositoryResult> {
   requireGitCapability(await probeCapability());
-  const inside = await runGit(repo, ["rev-parse", "--is-inside-work-tree"]);
+  // Reads change nothing and a filter cannot hold them: a stop is honoured from the
+  // first mutation on, and a healthy repository leaves it to the run's next step.
+  const read = (args: string[]) => runGit(repo, args);
+  const inside = await read(["rev-parse", "--is-inside-work-tree"]);
   const isRepo = inside.code === 0 && inside.stdout.trim() === "true";
-  const hasHead = isRepo && (await runGit(repo, ["rev-parse", "--verify", "HEAD"])).code === 0;
+  const hasHead = isRepo && (await read(["rev-parse", "--verify", "HEAD"])).code === 0;
   if (isRepo && hasHead) {
-    const head = await runGit(repo, ["rev-parse", "HEAD"]);
+    const head = await read(["rev-parse", "HEAD"]);
     if (head.code !== 0)
       throw new WorkspaceError(`git rev-parse HEAD failed: ${head.stderr.trim()}`);
     return {
@@ -223,8 +284,45 @@ export async function initializeGitRepository(
     headSha,
     failedStage,
   });
+  // A stop before the first mutation leaves nothing to disclose; once a step
+  // has started, it is reported like any other partial initialization.
+  let touched = false;
+  let stop = signal;
+  const step = async (
+    stage: GitInitializationProgress["failedStage"],
+    args: string[],
+    baselineCommitted = false,
+  ): Promise<GitCommandResult> => {
+    try {
+      throwIfCancelled(stop);
+      if (!touched && beforeMutation) {
+        stop = await beforeMutation();
+        // A Stop during that wait starts no step: nothing was changed yet.
+        throwIfCancelled(stop);
+      }
+      touched = true;
+      // The user's own repository and index: on Windows the step is not
+      // interrupted; the stop is taken at the next step's boundary.
+      return await runGit(repo, args, undefined, userLockStep(stop, platform));
+    } catch (error) {
+      // A stop, or the time bound that cut the step with its end unproven (no
+      // aborted caller: `gitEnv` keeps that fact on a plain error). Once a step
+      // began, either leaves partial metadata; the termination rides along.
+      const termination = unconfirmedTerminationOf(error);
+      const stopped = error instanceof PreparationStopped;
+      if (!touched || !(stopped || termination)) throw error;
+      const why = error instanceof Error ? error.message : String(error);
+      throw new GitInitializationError(
+        stopped
+          ? `Git repository initialization was stopped during ${stage}; partial Git metadata may remain (${why})`
+          : `Git repository initialization was cut at its time bound during ${stage}; partial Git metadata may remain (${why})`,
+        partial(stage, baselineCommitted),
+        termination,
+      );
+    }
+  };
   if (!isRepo) {
-    const init = await runGit(repo, ["init"]);
+    const init = await step("init", ["init"]);
     if (init.code !== 0) {
       // `git init` is not transactional: it can leave config/hooks/refs before
       // rejecting a later step. Disclose possible partial metadata even though
@@ -234,13 +332,13 @@ export async function initializeGitRepository(
     initialized = true;
   }
 
-  const add = await runGit(repo, ["add", "-A"]);
+  const add = await step("add", ["add", "-A"]);
   if (add.code !== 0)
     throw new GitInitializationError(
       `git add failed during repository initialization: ${add.stderr.trim()}`,
       partial("add"),
     );
-  const commit = await runGit(repo, [
+  const commit = await step("commit", [
     "-c",
     "user.name=Claudexor",
     "-c",
@@ -256,7 +354,7 @@ export async function initializeGitRepository(
       `baseline commit failed during repository initialization: ${commit.stderr.trim()}`,
       partial("commit"),
     );
-  const head = await runGit(repo, ["rev-parse", "HEAD"]);
+  const head = await step("head", ["rev-parse", "HEAD"], true);
   if (head.code !== 0) {
     throw new GitInitializationError(
       `git rev-parse HEAD failed after repository initialization: ${head.stderr.trim()}`,

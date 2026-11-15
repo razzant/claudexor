@@ -10,6 +10,7 @@ import {
 } from "@claudexor/schema";
 import { nowIso, sha256 } from "@claudexor/util";
 import { envelopeBaseOf } from "./envelope-custody.js";
+import { throwIfCancelled } from "./git-run.js";
 import {
   directoryInventory,
   materializeWorkspaceFile,
@@ -36,6 +37,7 @@ export async function createDirectoryEnvelope(input: {
   scopePaths?: string[];
   inPlace?: boolean;
   accessProfile?: AccessProfile;
+  signal?: AbortSignal;
 }): Promise<WorkspaceEnvelope> {
   const executionRoot = input.inPlace ? input.sourceRoot : join(input.envelopeRoot, "tree");
   const scopePaths = input.scopePaths ?? [];
@@ -75,26 +77,37 @@ export async function prepareDirectoryWorkspace(input: {
   envelopeRoot: string;
   scopePaths: string[];
   inPlace: boolean;
+  /** Preparation's stop, checked before and inside both scans and between copied entries. */
+  signal?: AbortSignal;
 }): Promise<void> {
-  const { sourceRoot, executionRoot, envelopeRoot, scopePaths, inPlace } = input;
+  const { sourceRoot, executionRoot, envelopeRoot, scopePaths, inPlace, signal } = input;
   const content = join(envelopeRoot, "baseline", "content");
-  const entries = await directoryInventory(sourceRoot, scopePaths, inPlace ? undefined : content);
+  throwIfCancelled(signal);
+  const entries = await directoryInventory(
+    sourceRoot,
+    scopePaths,
+    inPlace ? undefined : content,
+    [],
+    signal,
+  );
   if (!inPlace) {
     await mkdir(executionRoot, { recursive: true });
     for (const [path, state] of entries) {
+      throwIfCancelled(signal);
       await materializeWorkspaceFile(
         await workspaceFilePath(executionRoot, path),
         state,
         state.kind === "file" ? join(content, state.sha256.slice(7)) : undefined,
       );
     }
-    const current = await directoryInventory(sourceRoot, scopePaths);
+    const current = await directoryInventory(sourceRoot, scopePaths, undefined, [], signal);
     if (
       current.size !== entries.size ||
       [...entries].some(([path, state]) => !sameWorkspaceFile(state, current.get(path) ?? null))
     )
       throw new Error("Selected source footprint changed while the directory copy was prepared");
   }
+  throwIfCancelled(signal);
   const baseline: DirectoryBaseline = {
     sourceRoot,
     scopePaths,

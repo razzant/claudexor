@@ -17,7 +17,7 @@ import {
   untrackedNestedRepositories,
 } from "./git-nested-repositories.js";
 import { diskProgress, gitObserved, proofStallMs, treeBlobBytes } from "./git-observed.js";
-import { git, gitEnv, revParse, SCRATCH_INDEX_CONFIG } from "./git-run.js";
+import { git, gitEnv, removeAfterDirectGit, revParse, SCRATCH_INDEX_CONFIG } from "./git-run.js";
 import { pathspecBatches } from "./object-compose.js";
 import { outsideSparseCheckout } from "./object-sparse.js";
 
@@ -38,25 +38,28 @@ export async function addKeptPaths(
   excludes: readonly string[],
   progress: () => Promise<number>,
   scope: "tree" | "cwd",
+  signal?: AbortSignal,
 ): Promise<void> {
   if (keep.length === 0) return;
   // `--show-cdup` is only `../` steps, so no worktree path, whatever its spelling, is parsed.
   const { stdout } = await gitObserved(cwd, ["rev-parse", "--show-cdup", "--show-prefix"], {
     env,
     label: "rev-parse (kept paths)",
+    signal,
   });
   const lineEnd = stdout.indexOf("\n");
   const top = join(realpathSync(cwd), stdout.slice(0, lineEnd));
   const prefix = scope === "cwd" ? stdout.slice(lineEnd + 1, -1) : "";
   const reachable = keep.filter((path) => path.startsWith(prefix) && reachableFile(top, path));
   // `git add` refuses out-of-pattern paths; delivery names that refusal before writing.
-  const outside = new Set((await outsideSparseCheckout(top, reachable, env)) ?? []);
+  const outside = new Set((await outsideSparseCheckout(top, reachable, env, signal)) ?? []);
   const present = reachable.filter((path) => !outside.has(path));
   for (const batch of pathspecBatches(present))
     await gitObserved(cwd, [...SCRATCH_INDEX_CONFIG, "add", "-f", "--", ...batch, ...excludes], {
       env,
       label: "add -f (accepted paths)",
       progress,
+      signal,
     });
 }
 
@@ -79,6 +82,7 @@ export async function markedEntries(
   top: string,
   env: GitEnv,
   wanted: ReadonlySet<string> = new Set(),
+  signal?: AbortSignal,
 ): Promise<MarkedEntries> {
   const marked: MarkedEntries = { assumed: [], skipped: [], unnamed: 0, held: [] };
   const staged = wanted.size > 0; // `-s`: "<tag> <mode> <oid> <stage>\t<path>"
@@ -109,6 +113,7 @@ export async function markedEntries(
     {
       env,
       label: "ls-files -v (snapshot)",
+      signal,
       stdout: {
         write(chunk) {
           const data = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
@@ -151,12 +156,13 @@ async function snapshotStatus(
   objects: GitEnv,
   scratchDir: string,
   exact: readonly string[],
+  signal?: AbortSignal,
 ): Promise<{ code: number | null; stdout: string; stderr: string } | null> {
   const env: GitEnv = { ...objects, GIT_OPTIONAL_LOCKS: "0" };
-  const top = await gitEnv(repo, ["rev-parse", "--show-toplevel"], env);
+  const top = await gitEnv(repo, ["rev-parse", "--show-toplevel"], env, undefined, signal);
   if (top.code !== 0) throw new WorkspaceError(`snapshot top level failed: ${top.stderr.trim()}`);
   const root = top.stdout.trim();
-  const marked = await markedEntries(root, env, new Set(exact));
+  const marked = await markedEntries(root, env, new Set(exact), signal);
   // A parent that became a file (ENOTDIR) means the marked file is not there.
   const compared: string[] = [];
   const absent: string[] = [];
@@ -164,7 +170,7 @@ async function snapshotStatus(
     (lstatPresent(join(root, path)) === undefined ? absent : compared).push(path);
   let kept = new Set<string>();
   if (absent.length > 0) {
-    const excluded = await outsideSparseCheckout(root, absent, env);
+    const excluded = await outsideSparseCheckout(root, absent, env, signal);
     if (excluded === null) return null;
     kept = new Set(excluded);
     compared.push(...absent.filter((path) => !kept.has(path)));
@@ -176,6 +182,8 @@ async function snapshotStatus(
       root,
       ["rev-parse", "--path-format=absolute", "--git-path", "index"],
       env,
+      undefined,
+      signal,
     );
     const userIndex = located.code === 0 ? located.stdout.trim() : "";
     if (!userIndex || !existsSync(userIndex)) return null;
@@ -196,6 +204,7 @@ async function snapshotStatus(
         [...SCRATCH_INDEX_CONFIG, "update-index", flag, "-z", "--stdin"],
         env,
         `${paths.join("\0")}\0`,
+        signal,
       );
       if (cleared.code !== 0) return null;
     }
@@ -205,6 +214,7 @@ async function snapshotStatus(
         [...SCRATCH_INDEX_CONFIG, "update-index", "-z", "--index-info"],
         env,
         reread.map(({ info }) => `${info}\0`).join(""),
+        signal,
       );
       if (unstated.code !== 0) return null;
     }
@@ -213,6 +223,8 @@ async function snapshotStatus(
     repo,
     [...SCRATCH_INDEX_CONFIG, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
     env,
+    undefined,
+    signal,
   );
 }
 
@@ -233,6 +245,7 @@ export async function stashCreate(
   objects: GitEnv = {},
   exact: readonly string[] = [],
   keep: readonly string[] = [],
+  signal?: AbortSignal,
 ): Promise<string | null> {
   // Unique per call: concurrent envelope creates (a best_of_n wave) must never
   // collide on the scratch index (same pid + same millisecond is real). It lives
@@ -248,18 +261,25 @@ export async function stashCreate(
     GIT_COMMITTER_NAME: "Claudexor",
     GIT_COMMITTER_EMAIL: "noreply@claudexor.local",
   };
+  let failure: unknown;
   try {
     // NUL form is filename-faithful (newlines, quotes and whitespace are legal
     // path bytes). Runtime is external, so every reported path is user state.
-    const status = await snapshotStatus(repo, objects, scratchDir, exact);
+    const status = await snapshotStatus(repo, objects, scratchDir, exact, signal);
     if (status && status.code !== 0)
       throw new WorkspaceError(`snapshot status failed: ${status.stderr.trim()}`);
     if (status && status.stdout.length === 0 && keep.length === 0) return null;
-    const head = await git(repo, ["rev-parse", "HEAD"]);
+    const head = await git(repo, ["rev-parse", "HEAD"], undefined, signal);
     if (head.code !== 0)
       throw new WorkspaceError(`snapshot rev-parse HEAD failed: ${head.stderr.trim()}`);
     const headSha = head.stdout.trim();
-    const read = await gitEnv(repo, [...SCRATCH_INDEX_CONFIG, "read-tree", "HEAD"], env);
+    const read = await gitEnv(
+      repo,
+      [...SCRATCH_INDEX_CONFIG, "read-tree", "HEAD"],
+      env,
+      undefined,
+      signal,
+    );
     if (read.code !== 0)
       throw new WorkspaceError(`snapshot read-tree failed: ${read.stderr.trim()}`);
     // Bare add runs only against the scratch index. It respects the project's
@@ -268,7 +288,7 @@ export async function stashCreate(
     // An undeclared nested repository stays out, as in the candidate capture:
     // `add` refuses one without a commit and would freeze one with a commit as
     // a commit link (`:/` keeps the whole-tree scope of the bare add).
-    const nested = await untrackedNestedRepositories(repo, env, [":/"], "snapshot");
+    const nested = await untrackedNestedRepositories(repo, env, [":/"], "snapshot", signal);
     const add = await gitObserved(
       repo,
       [
@@ -282,19 +302,27 @@ export async function stashCreate(
         label: "add -A (snapshot)",
         progress: diskProgress(repo),
         allowFailure: true,
+        signal,
         // Re-hashing HEAD's files reads silently: bounded by their bytes, not a flat ten minutes.
-        stallMs: proofStallMs(await treeBlobBytes(repo, headSha, env)),
+        stallMs: proofStallMs(await treeBlobBytes(repo, headSha, env, signal)),
       },
     );
     if (add.code !== 0) throw new WorkspaceError(`snapshot add -A failed: ${add.stderr.trim()}`);
     const excludes = nestedRepositoryExcludes(nested);
-    await addKeptPaths(repo, env, keep, excludes, diskProgress(repo), "tree");
-    const writeTree = await gitEnv(repo, [...SCRATCH_INDEX_CONFIG, "write-tree"], env);
+    await addKeptPaths(repo, env, keep, excludes, diskProgress(repo), "tree", signal);
+    const writeTree = await gitEnv(
+      repo,
+      [...SCRATCH_INDEX_CONFIG, "write-tree"],
+      env,
+      undefined,
+      signal,
+    );
     if (writeTree.code !== 0)
       throw new WorkspaceError(`snapshot write-tree failed: ${writeTree.stderr.trim()}`);
     const tree = writeTree.stdout.trim();
     // Read without the clean check: a tree equal to HEAD's is no change either.
-    if ((!status || keep.length > 0) && tree === (await revParse(repo, "HEAD^{tree}"))) return null;
+    if ((!status || keep.length > 0) && tree === (await revParse(repo, "HEAD^{tree}", signal)))
+      return null;
     const commit = await gitEnv(
       repo,
       [
@@ -306,17 +334,25 @@ export async function stashCreate(
         "claudexor: dirty worktree snapshot (incl. untracked)",
       ],
       env,
+      undefined,
+      signal,
     );
     if (commit.code !== 0)
       throw new WorkspaceError(`snapshot commit-tree failed: ${commit.stderr.trim()}`);
     const sha = commit.stdout.trim();
     return sha.length > 0 ? sha : null;
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    try {
-      rmSync(scratchDir, { recursive: true, force: true });
-    } catch {
-      /* scratch index cleanup is best-effort */
-    }
+    // A stopped Git that is itself still running may still write its index.
+    removeAfterDirectGit(failure, () => {
+      try {
+        rmSync(scratchDir, { recursive: true, force: true });
+      } catch {
+        /* scratch index cleanup is best-effort */
+      }
+    });
   }
 }
 
@@ -333,7 +369,8 @@ export async function snapshotTree(
   repo: string,
   exact: readonly string[] = [],
   keep: readonly string[] = [],
+  signal?: AbortSignal,
 ): Promise<string> {
-  const snap = await stashCreate(repo, {}, exact, keep);
-  return snap ?? (await revParse(repo, "HEAD"));
+  const snap = await stashCreate(repo, {}, exact, keep, signal);
+  return snap ?? (await revParse(repo, "HEAD", signal));
 }

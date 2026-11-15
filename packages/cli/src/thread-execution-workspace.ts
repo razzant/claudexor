@@ -1,11 +1,17 @@
 import { statSync } from "node:fs";
+import type { ScopeReapOutcome } from "@claudexor/core";
 import type { AccessProfile, ModeKind, Thread } from "@claudexor/schema";
 import {
   resolveRunAccess,
   runStartRequiresGit,
   type ControlRunStartRequest,
 } from "@claudexor/schema";
-import { ensureThreadWorktree, type ThreadWorktreeResult } from "@claudexor/workspace";
+import {
+  assertThreadTreeReady,
+  ensureThreadWorktree,
+  type PreparationQuietRead,
+  type ThreadWorktreeResult,
+} from "@claudexor/workspace";
 
 export interface ThreadWorkspaceAuthority {
   getThread(id: string): Thread | undefined;
@@ -177,7 +183,24 @@ export async function resolveThreadExecutionWorkspace(input: {
   workspaceKind?: "git" | "directory";
   protectedPaths: readonly string[];
   threads: ThreadWorkspaceAuthority;
-  ensureWorktree?: (repoRoot: string, threadId: string) => Promise<ThreadWorktreeResult>;
+  ensureWorktree?: (
+    repoRoot: string,
+    threadId: string,
+    options: {
+      signal?: AbortSignal;
+      openScope?: () => Promise<{ marker: string }>;
+      settleScope?: () => Promise<ScopeReapOutcome | null>;
+      quiet?: PreparationQuietRead;
+    },
+  ) => Promise<ThreadWorktreeResult>;
+  /** The accepted job's stop: its thread worktree preparation honours it. */
+  signal?: AbortSignal;
+  /** The preparation's own process scope and release criterion (the runner's). */
+  preparation?: {
+    openScope: () => Promise<{ marker: string }>;
+    settleScope: () => Promise<ScopeReapOutcome | null>;
+    quiet: PreparationQuietRead;
+  };
 }): Promise<ThreadExecutionWorkspace> {
   const thread = input.threadId ? input.threads.getThread(input.threadId) : undefined;
   // The caller-owned binding wins before every managed-workspace rule: no
@@ -206,6 +229,8 @@ export async function resolveThreadExecutionWorkspace(input: {
       thread.workspace.mode === "isolated" ? thread.workspace.worktree_path : null;
     if (existingPath) {
       assertExistingIsolatedWorktree(existingPath);
+      // Read-only work never runs in a tree whose preparation is not complete.
+      assertThreadTreeReady(existingPath);
       return { executionRoot: existingPath, inPlace: true, promoted: false };
     }
     return { executionRoot: input.repoRoot, inPlace: true, promoted: false };
@@ -223,8 +248,15 @@ export async function resolveThreadExecutionWorkspace(input: {
   }
 
   const ensure = input.ensureWorktree ?? ensureThreadWorktree;
-  const worktree = await ensure(input.repoRoot, input.threadId);
-  if (promote || worktree.created) {
+  const worktree = await ensure(input.repoRoot, input.threadId, {
+    signal: input.signal,
+    ...(input.preparation ?? {}),
+  });
+  // The thread records the tree it runs in: a new one, and a ready one its record
+  // does not name. A stop (or a crash) between a tree's hand-over and this write
+  // leaves it unrecorded, and Apply, the produced files and read-only turns go by
+  // the record: the next turn that gets the tree records it.
+  if (promote || worktree.created || thread.workspace.worktree_path !== worktree.path) {
     input.threads.setThreadWorktree(input.threadId, worktree.path, worktree.baseSha);
   }
   return {

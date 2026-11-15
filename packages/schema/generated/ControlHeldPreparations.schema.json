@@ -1,0 +1,205 @@
+{
+  "$ref": "#/definitions/ControlHeldPreparations",
+  "definitions": {
+    "ControlHeldPreparations": {
+      "type": "object",
+      "properties": {
+        "preparations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "selector": {
+                "type": "string",
+                "description": "Opaque server-issued address of this resource."
+              },
+              "digest": {
+                "type": "string",
+                "description": "SHA-256 of the record's exact bytes at this inspection."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "thread",
+                  "envelope",
+                  "staging"
+                ],
+                "description": "thread: an isolated thread's preparation record (its worktree, registration and branch); envelope: an isolated envelope base; staging: an object-store staging directory."
+              },
+              "path": {
+                "type": "string",
+                "description": "The held resource (tree, base or staging directory)."
+              },
+              "record": {
+                "type": "string",
+                "description": "The record file that holds it."
+              },
+              "root": {
+                "type": "string",
+                "description": "The known root it was found under."
+              },
+              "thread_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "since": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "When its stop was recorded, else when the preparation began."
+              },
+              "stop": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": "string"
+                      },
+                      "groups": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "required": [
+                      "reason",
+                      "groups"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The stop's facts as recorded (history, not a measurement); null after a crash."
+              },
+              "read": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "quiet",
+                      "held"
+                    ]
+                  },
+                  "reasons": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "unproven": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "reasons",
+                  "unproven"
+                ],
+                "additionalProperties": false,
+                "description": "This inspection's own read of what the preparation started (a read releases nothing)."
+              },
+              "release": {
+                "type": "string",
+                "enum": [
+                  "machine",
+                  "operator_confirmation",
+                  "refused"
+                ],
+                "description": "What a release needs now: machine (the read proves the end), operator_confirmation (no read can), refused (a read measures it alive, its record is unreadable, a turn or creator is active)."
+              },
+              "refusal": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "operator_release": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "confirmed_at": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "confirmed_at"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "An earlier confirmation of this same record, whose cleanup is to be continued."
+              },
+              "cleanup_error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "on_release": {
+                "type": "string",
+                "description": "What a release removes and what it keeps."
+              }
+            },
+            "required": [
+              "selector",
+              "digest",
+              "kind",
+              "path",
+              "record",
+              "root",
+              "thread_id",
+              "since",
+              "stop",
+              "read",
+              "release",
+              "refusal",
+              "operator_release",
+              "cleanup_error",
+              "on_release"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "roots": {
+          "type": "integer",
+          "description": "Known roots searched (thread, envelope and store namespaces)."
+        },
+        "confirmation": {
+          "type": "string",
+          "description": "What confirming a release states."
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Directories that could not be read."
+        }
+      },
+      "required": [
+        "preparations",
+        "roots",
+        "confirmation",
+        "errors"
+      ],
+      "additionalProperties": false,
+      "description": "Held preparation resources under the daemon's known roots, purged threads included."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

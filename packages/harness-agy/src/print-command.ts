@@ -9,6 +9,7 @@ import {
   registerChildProcess,
   resolveHarnessBinary,
   unregisterChildProcess,
+  type LiveChildProcess,
   type ProcessGroupHandle,
   type ProcessTreeTerminationOutcome,
 } from "@claudexor/core";
@@ -55,10 +56,11 @@ export interface AgyPrintCommandOptions {
   /** Deterministic lifecycle seams. */
   spawnProcess?: typeof spawn;
   reap?: typeof reapProcessTree;
-  /** Deterministic passive-registry seam; production uses the shared registry. */
+  /** Deterministic passive-registry seam; production uses the shared registry.
+   * `unregister` gets what `register` returned: exactly that registration. */
   processRegistry?: {
-    register(pid: number, command: string): void;
-    unregister(pid: number): void;
+    register(pid: number, command: string): unknown;
+    unregister(registration: unknown): void;
   };
 }
 
@@ -203,17 +205,19 @@ export async function runAgyPrintCommand(
   const pid = child.pid;
   const processRegistry = options.processRegistry ?? {
     register: registerChildProcess,
-    unregister: unregisterChildProcess,
+    unregister: (registration: unknown) =>
+      unregisterChildProcess(registration as LiveChildProcess | null),
   };
   let registered = false;
+  let registration: unknown;
   if (typeof pid === "number") {
-    processRegistry.register(pid, resolved);
+    registration = processRegistry.register(pid, resolved);
     registered = true;
   }
   const unregisterExitedChild = (): void => {
     if (!registered || typeof pid !== "number") return;
     registered = false;
-    processRegistry.unregister(pid);
+    processRegistry.unregister(registration);
   };
 
   let group: ProcessGroupHandle | undefined;

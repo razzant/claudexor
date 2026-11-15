@@ -2677,10 +2677,51 @@ content of some of its files (what a partial clone never fetched, or a sparse
 checkout of one left out), or Git cannot copy a shallow source because its branches
 reach such content, the run fails in its workspace phase naming what is missing and
 the two ways forward, a complete copy of that content or an in-place run, and
-Claudexor fetches nothing. Such an envelope never started, so the call that made its
-directory removes it before refusing; a removal that fails keeps the refusal, adds what
-was left to its message and notes the fault beside it, and a directory that already
-existed is never removed. Proven work product is the git diff in that worktree, a
+Claudexor fetches nothing. An envelope whose preparation fails or is stopped never
+started, so the call that made its directory removes it (an isolated base prepared in a
+process scope: by the release below, once that scope settled); a removal that fails keeps
+the refusal, adds what was left to its message and notes the fault beside it, and a directory
+that already existed is never removed. The run's Stop reaches every preparation step
+(#694), thread worktrees and directory scans included; one waiter's stop never ends a
+shared store initialization, and `harness.started` marks entry into the execution path.
+Preparation Git, snapshots and copies get a private per-run carrier of the stop, so their
+children (hooks, filters; never the user's fsmonitor: `core.fsmonitor=false`) join the
+run's scope, or the short `thread-preparation:<job>` scope a thread turn opens before its
+first Git step when its tree must be made; they end with it, on success too. A stopped
+step is `cancelled`, its lease released uncharged. When its end was not proven (pipes
+closed by themselves, group empty) the attempt's completion and the run's terminal
+disclose `termination_unconfirmed` and `held`, and what it made (thread tree, registration
+and new branch; isolated base; scoped staging) stays held by its owner record written
+before the first spawn (`threads/<id>/preparation.json`, `early` until the thread itself
+changes; `owner.json`; unreadable holds too). A thread checkout is `complete` and handed
+over only after its scope settled with no member alive or unreadable; a failed preparation
+settles, then releases. One release (creator, Retry, next turn, purge, run barrier, store
+prune, startup sweep; a base held past its barrier waits for that sweep) frees it only when
+a signal-free read proves its known members ended: a complete tree or an early record then
+loses only the record, and an own branch that moved is kept; a proven end whose cleanup fails
+is `preparation_cleanup_failed` (retryable), not unconfirmed. Readers refuse a tree with a
+record (HTTP 409). Windows user-lock steps finish before Stop (a hung step waits
+for the watchdog). Direct exit with naturally closed pipes is `confirmed/not_provable`
+(`tree_only`); unconfirmed stops and crashes stay held until operator confirmation.
+Confirmed stops and ordinary failures release under that limit.
+`gc preparations` (`GET /v2/maintenance/preparations`) lists known roots, purged threads
+included, with missing coverage disclosed on read failure, never through a link, `.` or `..`.
+It reads a thread record by the releases' parser: one naming another tree (another thread's,
+or the config root as an earlier daemon spelled it) is unreadable, never confirmable; restarting
+with that spelling recovers it.
+`gc release-preparation` (Idempotency-Key) is a durable `delivery.preparation_release`
+command: before effects it records confirmation bound to the inspected digest and generation.
+Release runs in the owner's turn (thread chain without queued/running turns, base turn, prune
+lock) and retains its receipt (generation, stop, basis, outcome); the same key replays it.
+`interrupted` after Restart means unknown.
+A current child until actual exit, a measured member, a live creator, an unreadable recorded
+identity or a writer born inside the record's window refuse. Old PID-only recovery after
+Restart remains allowed; a new request or owner release continues confirmed cleanup.
+The historical stop stays `termination_unconfirmed`.
+Residual (INV-144): a process that closed our pipes, left the group and hides its
+environment, never captured, cannot be seen.
+
+Proven work product is the git diff in that worktree, a
 declared run artifact, or the text answer. Capture reads only the physical execution root, whatever
 its spelling: a project under `/tmp` is captured normally, while a write outside
 the root, such as an absolute `/tmp/...` host path, does not enter the project
@@ -3812,6 +3853,8 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `POST /v2/maintenance/operations`
 - `GET /v2/maintenance/operations/:id`
 - `POST /v2/maintenance/operations/:id/cancel`
+- `GET /v2/maintenance/preparations`
+- `POST /v2/maintenance/preparations/release`
 - `POST /v2/model-operations`
 - `GET /v2/model-operations/:id`
 - `POST /v2/model-operations/:id/ack`
@@ -5918,10 +5961,13 @@ terminalized as `interrupted` (`resumable.cause: host_restart`, with its
 that workspace keeps it and reconciles quiescence itself before refreshing or
 reusing it. An in-run cancel reaps its own process tree and discloses any
 unconfirmed death as `termination_unconfirmed` on the harness's completion
-event. Independently of that cancel ladder, every run owns a process SCOPE
+event: `{survivors, unresolved}` (groups proven alive; `{pgid, reason}` it could
+not read); a stopped preparation uses the same shape plus its own `reason`.
+Independently of that cancel ladder, every run owns a process SCOPE
 (INV-144): `run()` mints a `CLAUDEXOR_RUN_SCOPE_<id>=1` marker and records it in
 `daemon/run-scopes.json` before the first launch; every harness spec env of the
-run carries it, as does every deterministic gate the run launches — candidate
+run carries it, as do its preparation Git children and every deterministic gate
+the run launches — candidate
 gates, its final verification and adoption (`gateSpecsFromContract` binds it;
 nothing is ended per command); a `clean` env also forwards an enclosing host's
 grammar-shaped markers; the same pids tick takes one asynchronous process-table snapshot and
@@ -6042,7 +6088,9 @@ uses while no `lstart` birth exists), `scope_start` (`lstart` text or null),
 `root_groups[{pgid, leader_pid, leader_birth | null, leader_identity?}]`
 (`leader_identity` is the daemon's opaque kernel birth token, comparable only
 by the daemon's own identity helper; `leader_birth` is filled once a table
-read confirmed the same leader) and `captured[{pid, pgid, birth}]`; every
+read confirmed the same leader; a group proven empty at its leader's own close
+leaves the rows) and `captured[{pid, pgid, birth}]` (`pgid: -1`: that group was
+proven empty, the row counts by pid and birth; a basis is a group id above 1); every
 birth is `ps -o lstart=` text under the C locale in local time
 (`Mon Oct 12 14:08:47 2026`, 1 s resolution) and is only ever compared with
 another `lstart` reading, never with the identity token. A host without the
@@ -6752,8 +6800,10 @@ unproven identity is never signalled or called cancelled.
 On **win32** the same contract holds through platform-shaped mechanisms.
 Kernel-start comes from the process creation time (`GetProcessTimes`, read
 through the absolute System32 PowerShell), so a recycled PID compares DIFFERENT
-exactly as it does on POSIX. This lane and the daemon writer lease are the two
-consumers that enable that birth reader. With a recorded daemon birth,
+exactly as it does on POSIX. This lane, the daemon writer lease and,
+asynchronously, `gc release-preparation` for a held PID-only writer (there a birth
+only refuses or drops that PID as a basis) enable that reader.
+With a recorded daemon birth,
 `claudexor daemon stop` and an admitted runtime-replacement `claudexord --stop`
 may, after the grace window, force-terminate that one daemon process (not its
 tree) while its birth still matches; a birth that cannot be read withholds the
@@ -7344,8 +7394,11 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    supported non-Git in-place shapes do
    not initialize.
    Fence: the mutation is announced via a typed `project.git.initialized` run
-   event — never silent. A partial non-transactional failure emits the same
-   event with its failed stage and proven progress before terminalizing.
+   event — never silent. A partial non-transactional failure (a Stop, or Git's
+   60 s bound with the step's end unproven) emits the same event with its failed
+   stage and proven progress before terminalizing; a thread turn's refusal keeps
+   both the progress and any unproven termination in its bounded `enqueue_error`
+   (nested groups: `[bounded]`; full in the record and `gc preparations`).
    Second fence: a user-home, filesystem-root, or unclassifiable root is
    refused with the typed `git_boundary_root_refused` error before any
    mutation (INV-075 exception); a healthy home repository is untouched.

@@ -24,6 +24,7 @@ import {
   RunProcessScopeOutcome,
   type RunProcessScopeOutcome as RunProcessScopeOutcomeType,
 } from "@claudexor/schema";
+import { withScopeMarker } from "@claudexor/workspace";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
 import type { ResolvedRouteContext } from "./routeContext.js";
 
@@ -208,6 +209,15 @@ export interface RunScopeCustody {
   record(): Promise<void>;
   /** A run that never announced launched nothing, but its marker was recorded: settle it. */
   settleUnannounced(): Promise<void>;
+  /** The run input carrying this scope: its marker, and the run's private
+   * preparation carrier — a stop derived from the run's own (one per run, also
+   * when the run has none) that only preparation Git, snapshots and copies are
+   * given: their children join the scope, the unconfirmed stops they leave and
+   * the resources held after them are recorded on it (a held base is released
+   * once the scope settled). The run's own `signal` stays the same object. */
+  scope<T extends { signal?: AbortSignal }>(
+    input: T,
+  ): T & { runScopeMarker: string; preparationSignal: AbortSignal };
 }
 
 export async function openRunScopeCustody(
@@ -228,9 +238,17 @@ export async function openRunScopeCustody(
       );
     return settlement;
   };
+  // Preparation resources held after an unproven stop: released (each by its own
+  // read-only check) once the scope settled; otherwise the startup sweep reads them.
+  const held: Array<() => Promise<void>> = [];
+  const releaseHeld = async (outcome: ScopeReapOutcome): Promise<void> => {
+    if (!outcome.settled) return;
+    for (const release of held.splice(0)) await release().catch(() => {});
+  };
   let recorded = false;
   const record = async (): Promise<void> => {
     const outcome = await settle();
+    await releaseHeld(outcome);
     if (!announcedContext || recorded) return;
     recorded = true;
     await writeRunScopeFacts(announcedContext, marker, outcome);
@@ -251,7 +269,21 @@ export async function openRunScopeCustody(
     },
     record,
     settleUnannounced: async () => {
-      if (!announcedContext) await settle();
+      if (!announcedContext) await releaseHeld(await settle());
     },
+    scope: (input) => ({
+      ...input,
+      runScopeMarker: marker,
+      preparationSignal: withScopeMarker(input.signal, marker, (release) => held.push(release)),
+    }),
   };
+}
+
+/** The stop preparation Git, snapshots and copies of a run are given: its private
+ * carrier (`RunScopeCustody.scope`), else (outside `run()`) the run's own stop. */
+export function prepSignal(input: {
+  signal?: AbortSignal;
+  preparationSignal?: AbortSignal;
+}): AbortSignal | undefined {
+  return input.preparationSignal ?? input.signal;
 }

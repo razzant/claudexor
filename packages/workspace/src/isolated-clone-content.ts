@@ -28,10 +28,14 @@ function fileList(paths: string[]): string {
 
 /** Files a fresh checkout left absent. Their content is looked up without fetching:
  * the clone has no promisor remote. */
-export async function absentAfterCheckout(clone: string): Promise<AbsentFile[]> {
+export async function absentAfterCheckout(
+  clone: string,
+  signal?: AbortSignal,
+): Promise<AbsentFile[]> {
   const list = (flag: string) =>
     gitObserved(clone, [...STAT_TRUST_OFF, "ls-files", flag, "-z"], {
       label: `ls-files ${flag} (isolated clone)`,
+      signal,
     }).then((listed) => listed.stdout.split("\0").filter(Boolean));
   const deleted = new Set(await list("--deleted"));
   if (deleted.size === 0) return [];
@@ -43,6 +47,7 @@ export async function absentAfterCheckout(clone: string): Promise<AbsentFile[]> 
   const checked = await gitObserved(clone, ["cat-file", "--batch-check=%(objectname)"], {
     input: `${[...new Set(absent.values())].join("\n")}\n`,
     label: "cat-file --batch-check (isolated clone)",
+    signal,
   });
   const lacking = new Set(
     checked.stdout

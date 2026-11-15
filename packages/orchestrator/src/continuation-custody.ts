@@ -27,6 +27,7 @@ import {
   readEnvelopeCustody,
   retainForContinuationAsync,
   retainedEnvelopeOfRun,
+  throwIfCancelled,
   type CreateEnvelopeOptions,
   type WorkspaceManager,
 } from "@claudexor/workspace";
@@ -82,6 +83,8 @@ export function forRun(
     string,
     { wsm: WorkspaceManager; env: WorkspaceEnvelope; runs: readonly (CandidateRun | undefined)[] }
   >();
+  /** Envelopes this run adopted from its predecessor (`continueFrom`). */
+  const adopted = new Set<string>();
   const finish = async (facts: RunOutcomeFacts) => {
     for (const { wsm, env, runs } of pending.values()) {
       await settleCandidateEnvelope(wsm, env, {
@@ -90,6 +93,7 @@ export function forRun(
         attemptsDir: paths.attemptsDir,
         log,
         facts,
+        adopted: adopted.has(env.id),
       });
       pending.delete(env.id);
     }
@@ -100,12 +104,9 @@ export function forRun(
   }
   return {
     envelope: async (wsm: WorkspaceManager, opts: CreateEnvelopeOptions) => {
-      const env = await candidateEnvelope(
-        wsm,
-        holder,
-        holder ? (input.continuation?.adopt ?? null) : null,
-        opts,
-      );
+      const adopt = holder ? (input.continuation?.adopt ?? null) : null;
+      const env = await candidateEnvelope(wsm, holder, adopt, opts);
+      if (adopt && env.id === adopt.envelope.id) adopted.add(env.id);
       if (holder && readEnvelopeCustody(envelopeBaseOf(env))?.holder_run_id === holder.runId)
         pending.set(env.id, { wsm, env, runs: [] });
       return env;
@@ -134,7 +135,11 @@ async function candidateEnvelope(
   opts: CreateEnvelopeOptions,
 ): Promise<WorkspaceEnvelope> {
   if (!holder || opts.inPlace || opts.workspaceKind === "directory") return wsm.create(opts);
-  if (adopt) return adoptRetainedEnvelope(adopt, holder);
+  if (adopt) {
+    // A stop before adoption leaves the predecessor's custody exactly as it was.
+    throwIfCancelled(opts.signal);
+    return adoptRetainedEnvelope(adopt, holder);
+  }
   return wsm.create({ ...opts, custody: holder });
 }
 
@@ -159,8 +164,12 @@ async function worthKeeping(
   env: WorkspaceEnvelope,
   run: CandidateRun | undefined,
   attemptsDir: string,
+  adopted: boolean,
 ): Promise<boolean> {
-  if (run && hasCandidateChanges(run)) return true;
+  // An adopted envelope holds the predecessor's continuable work, whose session
+  // capsule lives in the predecessor's run: a successor that stopped unfinished
+  // (even before its harness ran) keeps it, with or without a change of its own.
+  if (adopted || (run && hasCandidateChanges(run))) return true;
   const attempts = new Set([env.attempt_id, ...(run ? [run.attemptId] : [])]);
   if ([...attempts].some((id) => existsSync(sessionCapsuleFile(join(attemptsDir, id))))) {
     return true;
@@ -212,6 +221,7 @@ async function settleCandidateEnvelope(
     attemptsDir: string;
     log?: EventLog;
     facts: RunOutcomeFacts;
+    adopted: boolean;
   },
 ): Promise<void> {
   let stage: SettlementStage = "custody";
@@ -225,7 +235,7 @@ async function settleCandidateEnvelope(
     const run = ctx.runs.find((candidate) => candidate?.reviewCwd === env.worktree_path);
     const cause = unfinishedCause(run, ctx.signal, ctx.facts);
     stage = "retain";
-    if (cause === undefined || !(await worthKeeping(env, run, ctx.attemptsDir))) {
+    if (cause === undefined || !(await worthKeeping(env, run, ctx.attemptsDir, ctx.adopted))) {
       stage = "dispose";
       return await wsm.dispose(env);
     }

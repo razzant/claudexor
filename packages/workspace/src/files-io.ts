@@ -14,6 +14,7 @@ import {
 import { dirname, join, resolve, sep } from "node:path";
 import { WorkspaceScopePath, type WorkspaceFileState } from "@claudexor/schema";
 import { newId } from "@claudexor/util";
+import { throwIfCancelled } from "./git-run.js";
 
 /** Resolve relative entries without following an ancestor link into another tree. */
 export async function workspaceFilePath(
@@ -100,11 +101,14 @@ export function sameWorkspaceFile(
   return a.kind === "symlink" && b.kind === "symlink" && a.target === b.target;
 }
 
+/** `signal`: a preparation's stop, checked before every entry and listing; an entry
+ * already being read finishes first (no IO is abandoned). Capture passes none. */
 export async function directoryInventory(
   root: string,
   paths: readonly string[],
   contentDir?: string,
   excluded: readonly string[] = [],
+  signal?: AbortSignal,
 ): Promise<Map<string, WorkspaceFileState>> {
   const entries = new Map<string, WorkspaceFileState>();
   const visited = new Set<string>();
@@ -115,11 +119,13 @@ export async function directoryInventory(
     )
       return;
     visited.add(relative);
+    throwIfCancelled(signal);
     const path = await workspaceFilePath(root, relative);
     const state = await readWorkspaceFile(path, contentDir);
     if (!state) return;
     if (relative !== ".") entries.set(relative, state);
     if (state.kind === "directory") {
+      throwIfCancelled(signal);
       for (const name of (await readdir(path)).sort())
         await walk(relative === "." ? name : `${relative}/${name}`);
     }
@@ -129,6 +135,7 @@ export async function directoryInventory(
     const parts = relative.split("/");
     for (let count = 1; count < parts.length; count += 1) {
       const parent = parts.slice(0, count).join("/");
+      throwIfCancelled(signal);
       const state = await readWorkspaceFile(await workspaceFilePath(root, parent));
       if (state?.kind === "directory") entries.set(parent, state);
     }

@@ -16,6 +16,10 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileSink, gitObserved, GitOperationError } from "./git-observed.js";
+import { removeAfterDirectGit, scopeMarkerOf, unconfirmedTerminationOf } from "./git-run.js";
+import { selfOwner } from "./object-store-leases.js";
+import { writeStagingOwner, type StagingOwnerRecord } from "./staging-owner.js";
+import { holdPreparationChild, preparationUnderWay } from "./preparation-release.js";
 
 /** One object database end of a transfer: where its objects live and how Git reads them. */
 export interface ObjectEndpoint {
@@ -143,13 +147,14 @@ function typedSpaceFailure(error: unknown, label: string): unknown {
 export async function objectDiskSizes(
   endpoint: ObjectEndpoint,
   oids: readonly string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, number>> {
   const sizes = new Map<string, number>();
   if (oids.length === 0) return sizes;
   const result = await gitObserved(
     endpoint.cwd,
     ["cat-file", "--batch-check=%(objectname) %(objectsize:disk)"],
-    { env: endpoint.env, input: `${oids.join("\n")}\n`, label: "cat-file --batch-check" },
+    { env: endpoint.env, input: `${oids.join("\n")}\n`, label: "cat-file --batch-check", signal },
   );
   for (const line of result.stdout.split("\n")) {
     const [oid, size] = line.split(" ");
@@ -162,12 +167,14 @@ export async function objectDiskSizes(
 export async function missingObjects(
   endpoint: ObjectEndpoint,
   oids: readonly string[],
+  signal?: AbortSignal,
 ): Promise<string[]> {
   if (oids.length === 0) return [];
   const result = await gitObserved(endpoint.cwd, ["cat-file", "--batch-check=%(objectname)"], {
     env: endpoint.env,
     input: `${oids.join("\n")}\n`,
     label: "cat-file --batch-check",
+    signal,
   });
   return result.stdout
     .split("\n")
@@ -212,9 +219,10 @@ export async function transferObjects(
   to: ObjectEndpoint,
   oids: readonly string[],
   hashLength: 20 | 32,
+  signal?: AbortSignal,
 ): Promise<TransferResult> {
   try {
-    return await transferObjectsUnchecked(from, to, oids, hashLength);
+    return await transferObjectsUnchecked(from, to, oids, hashLength, signal);
   } catch (error) {
     throw typedSpaceFailure(error, "object copy");
   }
@@ -225,6 +233,7 @@ async function transferObjectsUnchecked(
   to: ObjectEndpoint,
   oids: readonly string[],
   hashLength: 20 | 32,
+  signal?: AbortSignal,
 ): Promise<TransferResult> {
   const result: TransferResult = {
     linkedPacks: 0,
@@ -232,9 +241,9 @@ async function transferObjectsUnchecked(
     streamedObjects: 0,
     copiedBytes: 0,
   };
-  let wanted = new Set(await missingObjects(to, [...new Set(oids)]));
+  let wanted = new Set(await missingObjects(to, [...new Set(oids)], signal));
   if (wanted.size === 0) return result;
-  const sizes = await objectDiskSizes(from, [...wanted]);
+  const sizes = await objectDiskSizes(from, [...wanted], signal);
   let linkable = sameDevice(from.objectsDir, to.objectsDir);
   // Adopt whole packs only on one filesystem: a cross-device copy of a pack
   // with foreign objects would cost more than streaming just the wanted ones.
@@ -281,6 +290,19 @@ async function transferObjectsUnchecked(
     assertSpaceFor(to.objectsDir, required, "object copy");
     const staging = join(to.objectsDir, `tmp_claudexor-${randomUUID()}`);
     mkdirSync(staging, { recursive: true, mode: 0o700 });
+    // A scoped preparation's staging names its owner before any writer runs: the
+    // store's prune keeps it while its writer is alive or unknown, across a
+    // restart too (r11). A transfer outside a preparation scope writes no record
+    // and keeps the store's age policy, as before.
+    const marker = scopeMarkerOf(signal);
+    const owner: StagingOwnerRecord | null = marker
+      ? { schema: 1, intent: "index-pack", creator: selfOwner(), scope: { marker }, writer: null }
+      : null;
+    if (owner) writeStagingOwner(staging, owner);
+    // Under way until this call returns: an operator's confirmation never takes it.
+    const done = preparationUnderWay(staging);
+    let failure: unknown;
+    let writerRecordFault: unknown;
     try {
       const base = join(staging, "transfer");
       const sink = fileSink(`${base}.pack`);
@@ -293,6 +315,7 @@ async function transferObjectsUnchecked(
             input: `${[...wanted].join("\n")}\n`,
             stdout: sink,
             label: "pack-objects",
+            signal,
           },
         );
       } finally {
@@ -302,8 +325,27 @@ async function transferObjectsUnchecked(
       const indexed = await gitObserved(
         to.cwd,
         [...STREAMING_THRESHOLD, "index-pack", `${base}.pack`],
-        { env: to.env, label: "index-pack", progress: () => statSafe(`${base}.idx`) },
+        {
+          env: to.env,
+          label: "index-pack",
+          progress: () => statSafe(`${base}.idx`),
+          signal,
+          // index-pack writes the .idx here (the daemon itself writes the .pack).
+          onCaptured: (pid, identity) => {
+            if (!owner) return;
+            try {
+              writeStagingOwner(staging, {
+                ...owner,
+                writer: { pid, ...(identity ? { identity } : {}) },
+              });
+            } catch (fault) {
+              writerRecordFault = fault;
+            }
+          },
+        },
       );
+      // The intent stays (an unlinked writer reads as unknown); the fault is not hidden.
+      if (writerRecordFault !== undefined) throw writerRecordFault;
       const name = indexed.stdout.trim().split(/\s+/).pop() ?? "";
       if (!/^[0-9a-f]{40,64}$/.test(name)) {
         throw new GitOperationError("capture_failed", "index-pack returned no pack name");
@@ -314,8 +356,18 @@ async function transferObjectsUnchecked(
       renameSync(`${base}.idx`, join(to.objectsDir, "pack", `pack-${name}.idx`));
       result.streamedObjects += wanted.size;
       wanted = new Set();
+    } catch (error) {
+      failure = error;
+      throw error;
     } finally {
-      rmSync(staging, { recursive: true, force: true });
+      // A stopped pack-objects or index-pack still running may still write here.
+      const stop = unconfirmedTerminationOf(failure);
+      if (stop && !stop.directExited) holdPreparationChild(staging, stop.directExit);
+      try {
+        removeAfterDirectGit(failure, () => rmSync(staging, { recursive: true, force: true }));
+      } finally {
+        done();
+      }
     }
   }
   return result;

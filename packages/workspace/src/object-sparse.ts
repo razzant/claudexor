@@ -21,18 +21,19 @@ export async function outsideSparseCheckout(
   worktree: string,
   paths: readonly string[],
   env: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<string[] | null> {
   if (paths.length === 0) return [];
   const sparse = await gitObserved(
     worktree,
     ["config", "--type=bool", "--get", "core.sparseCheckout"],
-    { env, label: "config core.sparseCheckout", allowFailure: true },
+    { env, label: "config core.sparseCheckout", allowFailure: true, signal },
   );
   if (sparse.stdout.trim() !== "true") return [];
   const patterns = await gitObserved(
     worktree,
     ["rev-parse", "--path-format=absolute", "--git-path", "info/sparse-checkout"],
-    { env, label: "rev-parse --git-path info/sparse-checkout" },
+    { env, label: "rev-parse --git-path info/sparse-checkout", signal },
   );
   if (!lstatPresent(patterns.stdout.trim())) return [];
   const kept = await gitObserved(worktree, ["sparse-checkout", "check-rules", "-z"], {
@@ -40,6 +41,7 @@ export async function outsideSparseCheckout(
     label: "sparse-checkout check-rules",
     input: paths.map((path) => `${path}\0`).join(""),
     allowFailure: true,
+    signal,
   });
   if (kept.code === CHECK_RULES_UNKNOWN) return null;
   if (kept.code !== 0)

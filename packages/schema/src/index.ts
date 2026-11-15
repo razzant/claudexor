@@ -89,6 +89,7 @@ export * from "./setup.js";
 export * from "./setup-login-input.js";
 export * from "./control-trust.js";
 export * from "./control-gc.js";
+export * from "./control-preparations.js";
 export * from "./harness-maintenance.js";
 export * from "./control-secret.js";
 export * from "./agent-capabilities.js";

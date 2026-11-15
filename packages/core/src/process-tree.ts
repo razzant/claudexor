@@ -334,7 +334,7 @@ export interface ReapProcessTreeOptions {
   probePidAlive?: (pid: number) => boolean;
 }
 
-function defaultProbeGroupAlive(pgid: number): boolean {
+export function defaultProbeGroupAlive(pgid: number): boolean {
   try {
     process.kill(-pgid, 0);
     return true;
@@ -343,7 +343,9 @@ function defaultProbeGroupAlive(pgid: number): boolean {
   }
 }
 
-function defaultProbePidAlive(pid: number): boolean {
+/** Whether `pid` names a live process (signal 0 delivers nothing): anything but
+ * ESRCH is not gone. The one process fact Windows lets us read without native code. */
+export function defaultProbePidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

@@ -14,11 +14,8 @@
  * must end them (DIRECTIVE 1, the second membership source).
  */
 import { measureSync } from "@claudexor/util";
-import {
-  defaultProcessGroupService,
-  type ProcessGroupCapture,
-  type ProcessGroupHandle,
-} from "./process-group.js";
+import { defaultProcessGroupService, type ProcessGroupHandle } from "./process-group.js";
+import { defaultProbeGroupAlive } from "./process-tree.js";
 
 export interface LiveChildProcess {
   pid: number;
@@ -30,6 +27,7 @@ export interface LiveChildProcess {
 
 const live = new Map<number, LiveChildProcess>();
 const listeners = new Set<(child: LiveChildProcess) => void>();
+const retiredListeners = new Set<(child: LiveChildProcess) => void>();
 
 /**
  * Observe every registration (the run custodian seeds a root's own process
@@ -44,40 +42,82 @@ export function onChildProcessRegistered(listener: (child: LiveChildProcess) => 
 }
 
 /**
- * Register a just-spawned child and return the identity capture it made, so a
- * spawn site that also needs the child's group handle reuses this one read
- * instead of running the identity helper a second time. The capture stays
- * synchronous at spawn (INV-144) and is labeled in `worstSync`.
+ * Register a just-spawned child and return its registration (null when its
+ * group was not captured). A spawn site of the default service reuses the
+ * registration's `processGroup` instead of running the identity helper a second
+ * time; the returned object is also the exact key `unregisterChildProcess`
+ * compares. The capture stays synchronous at spawn (INV-144) and is labeled in
+ * `worstSync`.
  */
 export function registerChildProcess(
   pid: number,
   cmd: string,
   scopeMarker?: string,
-): ProcessGroupCapture {
+): LiveChildProcess | null {
   const captured = measureSync("process.identity_capture", () =>
     defaultProcessGroupService.captureLeader(pid),
   );
-  if (captured.status === "known") {
-    const child: LiveChildProcess = {
-      pid,
-      cmd,
-      processGroup: captured.handle,
-      ...(scopeMarker ? { scopeMarker } : {}),
-    };
-    live.set(pid, child);
-    for (const listener of listeners) {
-      try {
-        listener(child);
-      } catch {
-        /* observation never fails a spawn */
-      }
+  if (captured.status !== "known") {
+    live.delete(pid);
+    return null;
+  }
+  const child: LiveChildProcess = {
+    pid,
+    cmd,
+    processGroup: captured.handle,
+    ...(scopeMarker ? { scopeMarker } : {}),
+  };
+  live.set(pid, child);
+  for (const listener of listeners) {
+    try {
+      listener(child);
+    } catch {
+      /* observation never fails a spawn */
     }
-  } else live.delete(pid);
-  return captured;
+  }
+  return child;
 }
 
-export function unregisterChildProcess(pid: number): void {
-  live.delete(pid);
+/** Unregister exactly this registration (the object `registerChildProcess`
+ * returned): a close, an error or a stop of an earlier child never removes a
+ * later child registered under the same, reused pid. */
+export function unregisterChildProcess(child: LiveChildProcess | null | undefined): void {
+  if (child && live.get(child.pid) === child) live.delete(child.pid);
+}
+
+/**
+ * Observe a registration whose own process group was proven EMPTY when its
+ * child closed by itself (`retireChildProcess`): the same registration object
+ * (pid, group and the leader's spawn-time identity), so an owner drops that
+ * group's basis and nothing registered later under the same numbers.
+ */
+export function onChildGroupRetired(listener: (child: LiveChildProcess) => void): () => void {
+  retiredListeners.add(listener);
+  return () => {
+    retiredListeners.delete(listener);
+  };
+}
+
+/**
+ * Unregister a child that closed by itself (no stop asked for it), and when its
+ * own group is then proven empty — a signal-0 probe answering ESRCH, never an
+ * assumption from the close — tell the observers. A live or unknown group (a
+ * member left behind, a probe that failed otherwise) retires nothing; Windows has
+ * no group to probe.
+ */
+export function retireChildProcess(
+  child: LiveChildProcess,
+  probeGroupAlive: (pgid: number) => boolean = defaultProbeGroupAlive,
+): void {
+  unregisterChildProcess(child);
+  if (process.platform === "win32" || probeGroupAlive(child.processGroup.pgid)) return;
+  for (const listener of retiredListeners) {
+    try {
+      listener(child);
+    } catch {
+      /* observation never fails a capture */
+    }
+  }
 }
 
 /** Snapshot of children whose exact kernel process-group identity was captured. */

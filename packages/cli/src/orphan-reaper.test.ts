@@ -41,8 +41,9 @@ function processGroups(startToken: string, signalProcessGroup = vi.fn()): Proces
 
 describe("orphan reaper", () => {
   let dir: string;
+  let registered: ReturnType<typeof registerChildProcess> = null;
   afterEach(() => {
-    unregisterChildProcess(43);
+    unregisterChildProcess(registered);
     if (dir) rmSync(dir, { recursive: true, force: true });
     vi.restoreAllMocks();
   }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
@@ -131,13 +132,13 @@ describe("orphan reaper", () => {
     vi.spyOn(defaultProcessGroupService, "captureLeader")
       .mockReturnValueOnce({ status: "known", handle: exact })
       .mockReturnValueOnce({ status: "unknown", pid: 44, reason: "helper_unavailable" });
-    registerChildProcess(43, "exact-child");
+    registered = registerChildProcess(43, "exact-child");
     registerChildProcess(44, "unknown-child");
     writePidsSnapshot(pidsPath);
     expect(JSON.parse(readFileSync(pidsPath, "utf8"))).toEqual({
       pids: [{ pid: 43, cmd: "exact-child", processGroup: exact }],
     });
-    unregisterChildProcess(43);
+    unregisterChildProcess(registered);
     writePidsSnapshot(pidsPath);
     expect(existsSync(pidsPath)).toBe(false);
   });

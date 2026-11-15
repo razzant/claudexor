@@ -2,11 +2,20 @@ import { closeSync, openSync, writeSync } from "node:fs";
 import { statfs } from "node:fs/promises";
 import {
   assertCaptureComplete,
+  captureTerminationOf,
   runCaptureRaw,
   WorkspaceError,
   type CaptureProjection,
+  type KnownProcessIdentity,
 } from "@claudexor/core";
 import { measureSync } from "@claudexor/util";
+import {
+  scopeEnvOf,
+  scopedGitArgs,
+  stoppedAfter,
+  throwIfCancelled,
+  type UnconfirmedTermination,
+} from "./git-run.js";
 
 /** Typed classes of a Git child failure on an object path (capture, store, delivery). */
 export type GitOperationFailureCode =
@@ -24,6 +33,8 @@ export class GitOperationError extends WorkspaceError {
   readonly stallMs?: number;
   readonly requiredBytes?: number;
   readonly availableBytes?: number;
+  /** The watchdog stopped the child and its end was not proven (#694). */
+  readonly termination?: UnconfirmedTermination;
   constructor(
     code: GitOperationFailureCode,
     message: string,
@@ -32,6 +43,7 @@ export class GitOperationError extends WorkspaceError {
       stallMs?: number;
       requiredBytes?: number;
       availableBytes?: number;
+      termination?: UnconfirmedTermination;
     } = {},
   ) {
     super(message);
@@ -39,6 +51,7 @@ export class GitOperationError extends WorkspaceError {
     this.code = code;
     if (facts.signal !== undefined) this.signal = facts.signal;
     if (facts.stallMs !== undefined) this.stallMs = facts.stallMs;
+    if (facts.termination !== undefined) this.termination = facts.termination;
     if (facts.requiredBytes !== undefined) this.requiredBytes = facts.requiredBytes;
     if (facts.availableBytes !== undefined) this.availableBytes = facts.availableBytes;
   }
@@ -71,6 +84,7 @@ export async function treeBlobBytes(
   repo: string,
   tree: string,
   env: Record<string, string | null> = {},
+  signal?: AbortSignal,
 ): Promise<number> {
   let bytes = 0;
   let carry = "";
@@ -81,6 +95,7 @@ export async function treeBlobBytes(
     env,
     label: "ls-tree --format=%(objectsize)",
     allowFailure: true,
+    signal,
     stdout: {
       write(chunk) {
         const lines = (carry + chunk.toString("latin1")).split("\n");
@@ -106,6 +121,15 @@ export interface ObservedGitOptions {
   progress?: () => Promise<number>;
   /** Short operation name for typed failure messages. */
   label: string;
+  /** The caller's stop: the child is ended and the stop is thrown, typed by whether
+   * its end was proven, before any Git failure or allowed failure is read. */
+  signal?: AbortSignal;
+  /** The child's pid and its capture-time measured identity, once spawned. */
+  onCaptured?: (pid: number, identity: KnownProcessIdentity | undefined) => void;
+  /** End this child the process owner's ordinary way (SIGINT, then SIGKILL a
+   * second later) instead of at once, its stall included: for a child that
+   * changes the user's repository and cleans up after itself on SIGINT. */
+  gentleStop?: boolean;
 }
 
 export interface ObservedGitResult {
@@ -143,12 +167,15 @@ export function classifyGitFailure(stderr: string): GitOperationFailureCode {
  * progress for `stallMs`) kills it. A stall, an external signal and a
  * non-zero exit become typed {@link GitOperationError}s; callers that accept
  * a non-zero exit (for example a refused `git apply`) pass `allowFailure`.
+ * An aborted `signal` outranks all of them (`PreparationStopped`); a stall whose
+ * end was not proven carries that fact on its error.
  */
 export async function gitObserved(
   repo: string,
   args: string[],
   options: ObservedGitOptions & { allowFailure?: boolean },
 ): Promise<ObservedGitResult> {
+  throwIfCancelled(options.signal);
   const stallMs = options.stallMs ?? GIT_STALL_MS;
   const watchdog = new AbortController();
   const probe = options.progress;
@@ -157,6 +184,8 @@ export async function gitObserved(
   // COMPLETED probe, so a pending one never counts as progress. The baseline is
   // completed before the child starts.
   let lastProgress = probe ? await probe() : 0;
+  // A stop that arrived while the baseline probe was awaited starts no child.
+  if (probe) throwIfCancelled(options.signal);
   let lastActivity = Date.now();
   let probing = false;
   let stalled = false;
@@ -186,27 +215,39 @@ export async function gitObserved(
   );
   timer.unref?.();
   try {
-    const result = await runCaptureRaw("git", ["-C", repo, ...args], {
-      env: { ...C_LOCALE, ...options.env },
-      input: options.input,
-      windowsConsole: "none",
-      abortSignal: watchdog.signal,
-      cancelSignal: "SIGKILL",
-      cancelKillDelayMs: 0,
-      // Output is activity whether it is buffered or goes to a sink.
-      onOutput: () => {
-        lastActivity = Date.now();
-      },
-      ...(options.stdout ? { stdoutProjection: options.stdout } : {}),
-    });
-    assertCaptureComplete(result);
+    let result: Awaited<ReturnType<typeof runCaptureRaw>>;
+    try {
+      result = await runCaptureRaw("git", ["-C", repo, ...scopedGitArgs(options.signal, args)], {
+        env: { ...C_LOCALE, ...scopeEnvOf(options.signal), ...options.env },
+        input: options.input,
+        windowsConsole: "none",
+        abortSignal: options.signal
+          ? AbortSignal.any([watchdog.signal, options.signal])
+          : watchdog.signal,
+        ...(options.gentleStop ? {} : { cancelSignal: "SIGKILL" as const, cancelKillDelayMs: 0 }),
+        // Output is activity whether it is buffered or goes to a sink.
+        onOutput: () => {
+          lastActivity = Date.now();
+        },
+        ...(options.stdout ? { stdoutProjection: options.stdout } : {}),
+        ...(options.onCaptured ? { onCaptured: options.onCaptured } : {}),
+      });
+    } catch (error) {
+      stoppedAfter(options.signal, captureTerminationOf(error));
+      throw error;
+    }
+    // The stop and the stall outrank a cut capture: their outcome is kept.
+    stoppedAfter(options.signal, result.termination);
+    const unconfirmed =
+      result.termination?.status === "unconfirmed" ? result.termination : undefined;
     if (stalled) {
       throw new GitOperationError(
         "capture_git_stalled",
         `git ${options.label} made no progress for ${stallMs} ms and was stopped`,
-        { stallMs },
+        { stallMs, ...(unconfirmed ? { termination: unconfirmed } : {}) },
       );
     }
+    assertCaptureComplete(result);
     if (result.signal) {
       throw new GitOperationError(
         "capture_git_signal",

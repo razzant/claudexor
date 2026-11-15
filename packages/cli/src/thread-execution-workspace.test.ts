@@ -141,7 +141,7 @@ describe("resolveThreadExecutionWorkspace", () => {
   });
 
   it("reuses the existing isolated-thread path without re-promoting", async () => {
-    const threads = authority(thread("isolated"));
+    const threads = authority(thread("isolated", "/runtime/thread/tree"));
     const ensureWorktree = vi.fn(async () => ({
       path: "/runtime/thread/tree",
       baseSha: "base-1",
@@ -163,6 +163,31 @@ describe("resolveThreadExecutionWorkspace", () => {
       promoted: false,
     });
     expect(threads.setThreadWorktree).not.toHaveBeenCalled();
+  });
+
+  it("records a ready tree the thread does not name yet (its hand-over was cut before the record)", async () => {
+    const threads = authority(thread("isolated"));
+    const ensureWorktree = vi.fn(async () => ({
+      path: "/runtime/thread/tree",
+      baseSha: "base-1",
+      created: false,
+    }));
+    await expect(
+      resolveThreadExecutionWorkspace({
+        threadId: "th-test",
+        repoRoot: "/repo",
+        mode: "agent",
+        requestedInPlace: false,
+        protectedPaths: [],
+        threads,
+        ensureWorktree,
+      }),
+    ).resolves.toEqual({ executionRoot: "/runtime/thread/tree", inPlace: true, promoted: false });
+    expect(threads.setThreadWorktree).toHaveBeenCalledExactlyOnceWith(
+      "th-test",
+      "/runtime/thread/tree",
+      "base-1",
+    );
   });
 
   it.each(["ask", "plan"] as const)(
@@ -211,6 +236,73 @@ describe("resolveThreadExecutionWorkspace", () => {
     ).resolves.toEqual({ executionRoot: existing, inPlace: true, promoted: false });
     expect(ensureWorktree).not.toHaveBeenCalled();
     expect(threads.setThreadWorktree).not.toHaveBeenCalled();
+  });
+
+  it("refuses a readonly run in a tree whose preparation did not complete, and uses it once that is gone (#694)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-held-thread-"));
+    roots.push(root);
+    // The thread's recorded path, ready as Git sees it, beside its preparation record.
+    const tree = join(root, "threads", "th-test", "tree");
+    mkdirSync(tree, { recursive: true });
+    writeFileSync(join(tree, ".git"), "gitdir: /elsewhere\n");
+    const record = join(root, "threads", "th-test", "preparation.json");
+    writeFileSync(
+      record,
+      JSON.stringify({ schema: 1, tree, held: { reason: "output_held", groups: [7] } }),
+    );
+    const threads = authority(thread("isolated", tree));
+    const ensureWorktree = vi.fn();
+    const input = {
+      threadId: "th-test",
+      repoRoot: "/repo",
+      mode: "agent" as const,
+      access: "readonly" as const,
+      requestedInPlace: false,
+      protectedPaths: [],
+      threads,
+      ensureWorktree,
+    };
+    await expect(resolveThreadExecutionWorkspace(input)).rejects.toMatchObject({
+      code: "termination_unconfirmed",
+      retryable: true,
+      requiredActions: [
+        expect.stringContaining("Wait for the stopped preparation's processes"),
+        expect.stringContaining("gc release-preparation"),
+      ],
+      context: { held: [tree], termination_unconfirmed: { survivors: [], reason: "output_held" } },
+    });
+    // A release that proved the end and then could not finish: the refusal is that
+    // cleanup fault with its own remedy, never an unconfirmed termination.
+    writeFileSync(
+      record,
+      JSON.stringify({
+        schema: 1,
+        tree,
+        held: { reason: "output_held", groups: [7] },
+        cleanup_error: "EIO: unlink preparation record",
+      }),
+    );
+    const cleanup = await resolveThreadExecutionWorkspace(input).catch((error: unknown) => error);
+    expect(cleanup).toMatchObject({
+      code: "preparation_cleanup_failed",
+      retryable: true,
+      requiredActions: [expect.stringContaining("Clear what prevents the cleanup")],
+      context: { held: [tree], preparation: { cleanup_error: "EIO: unlink preparation record" } },
+    });
+    expect((cleanup as { context: object }).context).not.toHaveProperty("termination_unconfirmed");
+    // A record that cannot be read is a hold, whatever it once said.
+    writeFileSync(record, '{"schema":1,"cleanup_error":"EIO: unl');
+    await expect(resolveThreadExecutionWorkspace(input)).rejects.toMatchObject({
+      code: "termination_unconfirmed",
+      context: { termination_unconfirmed: { reason: "record_unreadable" } },
+    });
+    rmSync(record);
+    await expect(resolveThreadExecutionWorkspace(input)).resolves.toEqual({
+      executionRoot: tree,
+      inPlace: true,
+      promoted: false,
+    });
+    expect(ensureWorktree).not.toHaveBeenCalled();
   });
 
   it.each(["missing", "file"] as const)(

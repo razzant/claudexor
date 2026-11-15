@@ -381,6 +381,48 @@ jobs:
           packages/control-api/src/model-routes.test.ts
           scripts/lib/release-windows-stop.test.mjs
 
+      # Preparation ownership: home tests collect without a PATH sh. Native
+      # cases exercise healthy checkout, scratch-index cancellation, a real
+      # inherited-pipe hold and explicit recovery. Injected cases stay labelled.
+      - name: Preparation cancellation and maintenance (native Windows, no credentials)
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP "preparation-694"
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $testArgs = @(
+            "node_modules/vitest/vitest.mjs", "run",
+            "packages/workspace/src/prepare-envelope-cancel.test.ts",
+            "packages/workspace/src/preparation-maintenance.test.ts",
+            "packages/workspace/src/preparation-stop-outcome.test.ts",
+            "packages/workspace/src/preparation-hold-base-turns.test.ts",
+            "packages/workspace/src/staging-owner-prune.test.ts",
+            "packages/workspace/src/preparation-barrier-stop.test.ts",
+            "packages/core/src/capture-raw-windows-exit.test.ts",
+            "packages/cli/src/held-preparations.test.ts",
+            "packages/cli/src/gc-command.test.ts",
+            "--maxWorkers=2", "--reporter=default", "--reporter=junit",
+            "--outputFile.junit=$evidence/junit.xml"
+          )
+          $testArgs | ConvertTo-Json | Set-Content (Join-Path $evidence "argv.json")
+          node -p 'JSON.stringify({node:process.version,platform:process.platform,arch:process.arch})' > (Join-Path $evidence "runtime.json")
+          git rev-parse HEAD > (Join-Path $evidence "head.txt")
+          $env:LANG = "C"
+          & node @testArgs 1> (Join-Path $evidence "stdout.txt") 2> (Join-Path $evidence "stderr.txt")
+          $code = $LASTEXITCODE
+          $code | Set-Content (Join-Path $evidence "exit.txt")
+          Get-Content (Join-Path $evidence "stdout.txt")
+          Get-Content (Join-Path $evidence "stderr.txt")
+          if ($code -ne 0) { throw "Preparation qualification exited $code" }
+
+      - name: Preserve preparation qualification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: preparation-694-${{ matrix.runner }}-node-${{ matrix.node-version }}
+          path: ${{ runner.temp }}/preparation-694
+          if-no-files-found: error
+          retention-days: 30
+
       # Default-path writer birth: real FILETIME reads, an owned witness process
       # and the built daemon on its default named pipe. The mismatched record is
       # seeded and labelled synthetic; nothing forces real PID recycling. Kept

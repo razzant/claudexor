@@ -509,6 +509,30 @@
       "error_schema": "ControlProblem"
     },
     {
+      "method": "GET",
+      "path": "/v2/maintenance/preparations",
+      "mutating": false,
+      "applicability": "global",
+      "summary": "List the preparation resources held after a stop whose end was not proven or a crash (thread records, envelope bases, staging directories, purged threads included), each with a fresh read and what its release needs; releases nothing.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [],
+      "response_schema": "ControlHeldPreparations",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/maintenance/preparations/release",
+      "mutating": true,
+      "applicability": "global",
+      "summary": "Release one held preparation resource on the operator's confirmation that its processes ended, against the inspected digest; a measured live process, an active turn or creator refuses. A durable delivery command records the request before any effect and its receipt after; a repeat with the same Idempotency-Key answers that receipt (or that its outcome is unknown after a restart). Not a proof: the run's stop, costs and dispatch facts stay as recorded.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlPreparationReleaseRequest",
+      "parameters": [],
+      "response_schema": "ControlPreparationReleaseReceipt",
+      "error_schema": "ControlProblem"
+    },
+    {
       "method": "POST",
       "path": "/v2/model-operations",
       "mutating": true,

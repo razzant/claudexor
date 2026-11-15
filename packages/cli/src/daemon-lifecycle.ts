@@ -11,6 +11,8 @@ import { startLoopFacts } from "@claudexor/daemon";
 import { logLine } from "./log-line.js";
 import { PidsSnapshotWriter, reapRecordedOrphans, writePidsSnapshot } from "./orphan-reaper.js";
 import { sweepOrphanWorkspaces } from "./orphan-sweeper.js";
+import { preparationQuietFor } from "./thread-preparation-scope.js";
+import type { RunScopeEntry } from "./run-scope-index-rows.js";
 import type {
   DaemonStartupDiagnosticRecord,
   DaemonStartupDiagnostics,
@@ -65,7 +67,7 @@ export async function runStartupCrashGc(
     knownExecutionRoots?: () => readonly string[];
     /** The run-scope index: unresolved scopes of dead daemon generations are
      * settled or disclosed here, BEFORE the workspace sweep. */
-    runScopes?: { settleDeadOwners(): Promise<string[]> };
+    runScopes?: { settleDeadOwners(): Promise<string[]>; list?(): RunScopeEntry[] };
   },
 ): Promise<void> {
   const pidsPath = join(deps.daemonDir, "pids.json");
@@ -88,6 +90,9 @@ export async function runStartupCrashGc(
   try {
     const sweepActions = await sweepOrphanWorkspaces({
       knownProjectRoots: deps.knownProjectRoots,
+      ...(deps.runScopes?.list
+        ? { quiet: preparationQuietFor({ list: () => deps.runScopes?.list?.() ?? [] }) }
+        : {}),
       ...(deps.knownExecutionRoots ? { knownExecutionRoots: deps.knownExecutionRoots } : {}),
     });
     for (const action of sweepActions) {

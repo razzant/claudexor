@@ -114,13 +114,19 @@ describe("process registry scope marker", () => {
         stdio: "ignore",
       });
       const pid = child.pid!;
+      let latest: ReturnType<typeof registerChildProcess> = null;
       try {
-        registerChildProcess(pid, "leader", marker);
+        const first = registerChildProcess(pid, "leader", marker);
         expect(liveChildProcesses().find((c) => c.pid === pid)?.scopeMarker).toBe(marker);
-        registerChildProcess(pid, "leader");
+        latest = registerChildProcess(pid, "leader");
         expect(liveChildProcesses().find((c) => c.pid === pid)?.scopeMarker).toBeUndefined();
+        // Only the exact registration is removed: the earlier one's removal (its
+        // close, error or stop) leaves the later one under the same pid.
+        unregisterChildProcess(first);
+        expect(liveChildProcesses().find((c) => c.pid === pid)).toBe(latest);
       } finally {
-        unregisterChildProcess(pid);
+        unregisterChildProcess(latest);
+        expect(liveChildProcesses().some((c) => c.pid === pid)).toBe(false);
         child.kill("SIGKILL");
       }
     },
