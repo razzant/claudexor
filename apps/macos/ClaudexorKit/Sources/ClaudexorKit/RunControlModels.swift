@@ -38,7 +38,7 @@ public struct ApplyResultInfo: Codable, Sendable, Equatable, Hashable {
 /// Advisory service preference for the selected model (schema `ProcessingPreference`).
 /// A value outside this set fails decoding instead of being dropped.
 public enum ProcessingPreference: String, Codable, Sendable, Equatable, Hashable, CaseIterable {
-    case standard, fast, economy
+    case standard, fast, ultrafast, economy
 }
 
 public struct ReviewerPanelEntry: Codable, Sendable, Equatable, Hashable {

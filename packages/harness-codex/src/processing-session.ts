@@ -11,6 +11,8 @@ import {
   prepareCodexProcessing,
   codexProcessingCost,
   codexConfiguredTier,
+  codexNonstandardMode,
+  codexTierMode,
   legacyCodexProcessing,
   codexProcessingForPaidPolicy,
   retainCodexProcessing,
@@ -111,8 +113,7 @@ export function codexProcessingMethods(
           ? input.chosen
           : undefined;
       const catalog =
-        native &&
-        (input.preference || retained?.submitted === "fast" || retained?.submitted === "economy")
+        native && (input.preference || codexNonstandardMode(retained?.submittedNative))
           ? (await codexEffortsForEnv(runtime, env)).catalog
           : undefined;
       const capability = catalog?.processing?.[input.model ?? catalog.defaultModel ?? ""];
@@ -127,10 +128,15 @@ export function codexProcessingMethods(
         : retained
           ? retainCodexProcessing(retained, capability)
           : // A tier the engine already chose keeps its own reason when this
-            // account's setting resolves to the same tier.
+            // account's setting resolves to the same tier; its id names the mode.
             input.chosen?.source === "codex.service_tier" &&
               sameCodexTierIntent(input.chosen.submittedNative, configured!.submittedNative)
-            ? { ...input.chosen, observed: "unknown" as const, observedNative: [] }
+            ? {
+                ...input.chosen,
+                submitted: codexTierMode(input.chosen.submittedNative),
+                observed: "unknown" as const,
+                observedNative: [],
+              }
             : configured!;
       const receipt = codexProcessingForPaidPolicy(selected, input.allowPaid, subscription);
       return {

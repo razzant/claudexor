@@ -4,7 +4,7 @@
  * line — the single source the arg parser, help, and MCP/CLI parity gate
  * read.
  */
-import { AccessProfile, EFFORT_HINT_HELP } from "@claudexor/schema";
+import { AccessProfile, EFFORT_HINT_HELP, ProcessingPreference } from "@claudexor/schema";
 
 export type CliFlagKind = "boolean" | "value";
 
@@ -262,8 +262,8 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag("effort", "<level>", `Reasoning effort hint: ${EFFORT_HINT_HELP}`),
   valueFlag(
     "processing",
-    "<standard|fast|economy>",
-    "Advisory processing preference; fallback never introduces Fast.",
+    `<${ProcessingPreference.options.join("|")}>`,
+    "Advisory processing preference; fallback never introduces Fast or Ultrafast.",
   ),
   valueFlag(
     "prompt-cache-ttl",

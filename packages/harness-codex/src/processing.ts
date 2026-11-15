@@ -9,10 +9,19 @@ import type {
 } from "@claudexor/schema";
 
 export function codexTierMode(tier: unknown): ProcessingPreference | null {
-  if (tier === "priority" || tier === "fast" || tier === "ultrafast") return "fast";
+  if (tier === "priority" || tier === "fast") return "fast";
+  if (tier === "ultrafast") return "ultrafast";
   if (tier === "flex") return "economy";
   if (tier === "default" || tier === "standard") return "standard";
   return null;
+}
+
+/** The nonstandard mode a native tier names, read from the tier itself: a
+ * receipt or capability recorded while Ultrafast still read as Fast keeps
+ * its Ultrafast intent, and ordinary Fast is only `fast`/`priority`. */
+export function codexNonstandardMode(tier: unknown) {
+  const mode = codexTierMode(tier);
+  return mode === "standard" ? null : mode;
 }
 
 /** Project only understood tiers from this account; never infer unlisted modes. */
@@ -55,11 +64,9 @@ export function prepareCodexProcessing(
   if (preference === undefined && nativeOverride === undefined && allowPaid) return undefined;
   const requestedTier =
     preference === "fast" ? "priority" : preference === "economy" ? "flex" : "default";
-  const ordinaryFastOnly = allowPaid === false && subscription === true && preference === "fast";
+  // The listed id decides its mode, whatever order the account lists tiers in.
   const listed = capability?.nativeModes.find(
-    (entry) =>
-      entry.mode === preference &&
-      (!ordinaryFastOnly || entry.id === "fast" || entry.id === "priority"),
+    (entry) => codexTierMode(entry.id) === preference,
   )?.id;
   const fallback = preference !== "standard" && !listed;
   const selectedNative = nativeOverride ?? (listed || (fallback ? "default" : requestedTier));
@@ -136,28 +143,24 @@ export function codexProcessingCost(
 
 /** Whether two native tiers are the same speed intent. `fast` and `priority` are
  * one ordinary Fast; Ultrafast and every other native tier match only themselves
- * (not by `codexTierMode`, which maps Ultrafast to the Fast mode too). */
+ * (not by `codexTierMode`, which also equates `default` and `standard`). */
 export function sameCodexTierIntent(a: string | null, b: string | null): boolean {
   const ordinaryFast = (tier: string | null) => tier === "fast" || tier === "priority";
   return a === b || (ordinaryFast(a) && ordinaryFast(b));
 }
 
 /** Keep the intent this work unit chose without a preference. Another account's
- * native setting never replaces it; an unadvertised Fast/Economy intent falls
- * back to ordinary service with its reason. The paid policy still applies. */
+ * native setting never replaces it; an unadvertised Fast, Ultrafast or Economy
+ * intent falls back to ordinary service with its reason. The paid policy still applies. */
 export function retainCodexProcessing(
   chosen: ProcessingReceipt,
   capability?: ProcessingCapability,
 ): ProcessingReceipt {
-  const mode =
-    chosen.submitted === "fast" || chosen.submitted === "economy" ? chosen.submitted : null;
-  const ordinary = mode === "fast" ? ["fast", "priority"] : ["flex"];
+  const mode = codexNonstandardMode(chosen.submittedNative);
   const listed = mode
     ? (
-        capability?.nativeModes.find(
-          (entry) => entry.mode === mode && entry.id === chosen.submittedNative,
-        ) ??
-        capability?.nativeModes.find((entry) => entry.mode === mode && ordinary.includes(entry.id))
+        capability?.nativeModes.find((entry) => entry.id === chosen.submittedNative) ??
+        capability?.nativeModes.find((entry) => codexTierMode(entry.id) === mode)
       )?.id
     : undefined;
   const native = listed ?? "default";

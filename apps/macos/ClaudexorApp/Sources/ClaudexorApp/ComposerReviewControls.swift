@@ -139,11 +139,11 @@ struct AdvancedReviewControls: View {
                 TextField("claude=opus:max, cursor (or pinned JSON)", text: $draft.reviewerText)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.caption, design: .monospaced))
-                    .help("Comma or newline entries: harness[=model[:effort]] or harness[:effort]. For a strict account pin or a processing preference, paste a JSON array with credentialProfileId or processingPreference (standard, fast or economy).")
+                    .help("Comma or newline entries: harness[=model[:effort]] or harness[:effort]. For a strict account pin or a processing preference, paste a JSON array with credentialProfileId or processingPreference (standard, fast, ultrafast or economy).")
                 if reviewerRawInvalid {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange).font(.caption)
-                        .help("Reviewer entries need harness[=model[:effort]] or harness[:effort]; supported effort values come from each harness manifest. Pinned entries and processing preferences use a JSON array with credentialProfileId or processingPreference (standard, fast or economy).")
+                        .help("Reviewer entries need harness[=model[:effort]] or harness[:effort]; supported effort values come from each harness manifest. Pinned entries and processing preferences use a JSON array with credentialProfileId or processingPreference (standard, fast, ultrafast or economy).")
                 }
             }
             Text("An explicit panel enables review. Leave empty to use automatic reviewers when Review changes is on.")

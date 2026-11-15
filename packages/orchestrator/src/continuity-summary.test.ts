@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import type { HarnessAdapter } from "@claudexor/core";
-import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
+import { ConformanceReport, HarnessManifest, type ProcessingReceipt } from "@claudexor/schema";
 import { readThreadSummary } from "@claudexor/workspace";
 import { summarizeThreadPrefix } from "./continuity-summary.js";
 import { resolveContinuitySummary } from "./continuity-facts.js";
@@ -137,6 +137,39 @@ describe("summarizeThreadPrefix (INV-137, V9c)", () => {
       params(summarizingLane("lane-a", "SUMMARY OK"), { turns: noMarker }),
     );
     expect(text).toBe("SUMMARY OK");
+  });
+
+  it("still runs the summary pass for an Ultrafast lane whose route has no control for it", async () => {
+    let runs = 0;
+    const lane = summarizingLane("lane-a", "SUMMARY OK");
+    const counted: HarnessAdapter = {
+      ...lane,
+      async *run(spec) {
+        runs += 1;
+        yield* lane.run(spec);
+      },
+    };
+    const unavailable: ProcessingReceipt = {
+      requested: "ultrafast",
+      submitted: null,
+      submittedNative: null,
+      observed: "unknown",
+      observedNative: [],
+      reason: "processing_control_unavailable",
+      source: "fixture",
+    };
+    for (const preference of ["ultrafast", "fast"] as const) {
+      const text = await summarizeThreadPrefix(
+        params(counted, {
+          processing: {
+            processing_preference: preference,
+            processing: { ...unavailable, requested: preference },
+          },
+        }),
+      );
+      expect(text).toBe("SUMMARY OK (saw marker)");
+    }
+    expect(runs).toBe(2);
   });
 
   it("returns null (mechanical fallback) when the harness errors", async () => {

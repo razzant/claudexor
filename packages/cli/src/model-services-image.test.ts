@@ -555,7 +555,12 @@ describe("image account resolution through the composed model service", () => {
   it("projects adapter capability only in the negotiated account view", async () => {
     const f = await fixture();
     expect(await f.services.routes.modelSources("accounts")).toMatchObject({
-      sources: [{ imageGeneration: f.adapter.image!.capability }],
+      sources: [
+        {
+          imageGeneration: f.adapter.image!.capability,
+          processingPreferences: ["standard", "fast", "ultrafast", "economy"],
+        },
+      ],
     });
     expect(await f.services.routes.modelSources()).toEqual({
       sources: [{ id: "codex", label: "Codex", credentialHarness: "codex" }],

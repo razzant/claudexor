@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HarnessModel } from "@claudexor/schema";
+import { HarnessModel, ProcessingPreference } from "@claudexor/schema";
 import { cursorProcessingModels, prepareCursorProcessing } from "./processing.js";
 import { createCursorAdapter } from "./index.js";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
@@ -103,6 +103,47 @@ describe("Cursor processing uses listed same-effort variants", () => {
     expect(prepareCursorProcessing("economy", "cursor-grok-4.6-xhigh", models).model).toBe(
       "cursor-grok-4.6-xhigh",
     );
+  });
+  it("answers Ultrafast with the ordinary variant and its reason, never the Fast one", () => {
+    for (const allowPaid of [true, false])
+      expect(
+        prepareCursorProcessing("ultrafast", "cursor-grok-4.6-xhigh", models, allowPaid),
+      ).toMatchObject({
+        model: "cursor-grok-4.6-xhigh",
+        receipt: {
+          requested: "ultrafast",
+          submitted: "standard",
+          submittedNative: "cursor-grok-4.6-xhigh",
+          reason: "ultrafast_not_supported; ordinary_variant_selected",
+        },
+      });
+    // A deliberately selected native Fast model stays the existing exact choice.
+    expect(
+      prepareCursorProcessing("ultrafast", "cursor-grok-4.6-xhigh-fast", models).receipt,
+    ).toMatchObject({ submitted: "fast", reason: "native_explicit" });
+    expect(prepareCursorProcessing("ultrafast", "claude-fable-5-1-high", models)).toMatchObject({
+      model: "claude-fable-5-1-high",
+      receipt: {
+        submitted: null,
+        reason: "processing_variant_unconfirmed; selected_model_preserved",
+      },
+    });
+  });
+  it("declares every preference it answers with a receipt, not the service it provides", async () => {
+    const manifest = await createCursorAdapter({
+      detectVersion: async () => "2026.09.12-fixture",
+      cursorApiKey: () => null,
+    }).discover();
+    const declared = manifest.capabilities.processing_preferences ?? [];
+    expect([...declared].sort()).toEqual([...ProcessingPreference.options].sort());
+    for (const preference of declared)
+      expect(
+        prepareCursorProcessing(preference, "cursor-grok-4.6-xhigh", models).receipt.requested,
+      ).toBe(preference);
+    // Listing Ultrafast does not make it a submitted mode.
+    expect(
+      prepareCursorProcessing("ultrafast", "cursor-grok-4.6-xhigh", models).receipt.submitted,
+    ).toBe("standard");
   });
   it("does not turn catalog failure into a missing model or an invented capability", () => {
     expect(prepareCursorProcessing("fast", "cursor-grok-4.6-xhigh", []).model).toBe(

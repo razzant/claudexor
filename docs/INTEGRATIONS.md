@@ -328,7 +328,7 @@ gate's explicit exemptions):
   different fact and does not restrict timers. Timers are process-local, not
   resumable across daemon restart; the existing interrupted-run recovery still
   applies. There is no dedicated timer editor in the macOS UI.
-- `--processing standard|fast|economy`: advisory service preference, carried as
+- `--processing standard|fast|ultrafast|economy`: advisory service preference, carried as
   `processingPreference` on Agent requests and as `options.processingPreference`
   on raw model requests. Structured reviewer entries accept their own optional
   `processingPreference`; raw `serviceTier` remains the exact native override.

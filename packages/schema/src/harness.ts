@@ -83,7 +83,7 @@ export const HarnessCapabilities = z
       .array(ProcessingPreference)
       .optional()
       .describe(
-        "Service preferences translated by this adapter; model/account support is separate.",
+        "Processing preferences this adapter accepts and answers with a receipt, including ordinary service with a reason; not proof that a model, account or route provides that service.",
       ),
     plan: z.boolean().default(false).describe("The harness can produce plans (plan intent)."),
     implement: z

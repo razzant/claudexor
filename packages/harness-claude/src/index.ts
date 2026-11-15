@@ -298,7 +298,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
         provider_family: "anthropic",
         capabilities: {
           ...CLAUDE_MODEL_INVENTORY,
-          processing_preferences: ["standard", "fast", "economy"],
+          processing_preferences: ["standard", "fast", "ultrafast", "economy"],
           plan: true,
           implement: true,
           create_from_scratch: true,

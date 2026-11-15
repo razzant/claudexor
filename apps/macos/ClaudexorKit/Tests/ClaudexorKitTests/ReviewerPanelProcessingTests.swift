@@ -5,11 +5,11 @@ import Testing
 /// #571: an explicit reviewer-panel entry may carry the engine's optional
 /// `processingPreference` (packages/schema/src/control.ts
 /// `ControlReviewerPanelEntry`, values from packages/schema/src/processing.ts
-/// `ProcessingPreference`: standard | fast | economy). Decoding stays strict:
+/// `ProcessingPreference`: standard | fast | ultrafast | economy). Decoding stays strict:
 /// unknown keys and values outside that enum still fail, and the failure names
 /// the field instead of being swallowed.
 @Suite struct ReviewerPanelProcessingTests {
-    static let allowed = ["standard", "fast", "economy"]
+    static let allowed = ["standard", "fast", "ultrafast", "economy"]
 
     @Test(arguments: allowed)
     func composerPanelRoundTripsEachProcessingPreference(_ value: String) throws {

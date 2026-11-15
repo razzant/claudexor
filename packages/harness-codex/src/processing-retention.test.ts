@@ -294,6 +294,53 @@ describe("Codex keeps the first account's speed intent on a later try", () => {
     expect(spawned.costBasis.kind).toBe("included");
   });
 
+  it("keeps the Ultrafast intent of a receipt recorded while Ultrafast read as Fast", async () => {
+    const native = adapter({ second: ["priority", "ultrafast"] });
+    // How 6.1 and earlier wrote an inherited Ultrafast intent.
+    const recorded: ProcessingReceipt = {
+      ...legacyCodexProcessing("ultrafast"),
+      submitted: "fast",
+    };
+    for (const chosen of [recorded, legacyCodexProcessing("ultrafast")]) {
+      const second = await native.prepareProcessing!({
+        ...base,
+        credentialProfile: account("second"),
+        allowPaid: true,
+        chosen,
+      });
+      expect(second.receipt).toMatchObject({
+        submitted: "ultrafast",
+        submittedNative: "ultrafast",
+        reason: "initial_processing_retained",
+      });
+      // The new label never widens the paid policy: no-paid keeps ordinary service.
+      const noPaid = await native.prepareProcessing!({
+        ...base,
+        credentialProfile: account("second"),
+        allowPaid: false,
+        chosen,
+      });
+      expect(noPaid.receipt).toMatchObject({
+        submitted: "standard",
+        submittedNative: "default",
+        reason: "paid_processing_disallowed; ordinary_service_requested",
+      });
+    }
+    // The engine's own earlier choice, on an account set to the same tier.
+    const spawned = await native.prepareProcessing!({
+      ...base,
+      credentialProfile: account("second", "ultrafast"),
+      allowPaid: true,
+      chosen: { ...recorded, reason: "initial_processing_retained", source: "codex.service_tier" },
+    });
+    expect(spawned.receipt).toMatchObject({
+      submitted: "ultrafast",
+      submittedNative: "ultrafast",
+      reason: "initial_processing_retained",
+      source: "codex.service_tier",
+    });
+  });
+
   it("never reads Ultrafast or Economy as the next account's ordinary Fast alias", async () => {
     const native = adapter({ second: [] });
     for (const chosen of [legacyCodexProcessing("ultrafast"), legacyCodexProcessing("flex")]) {

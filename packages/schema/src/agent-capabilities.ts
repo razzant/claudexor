@@ -98,7 +98,12 @@ export type CatalogModelSummary = z.infer<typeof CatalogModelSummary>;
 export const CatalogHarness = z
   .object({
     inputLimits: z.array(CatalogInputLimit).optional(),
-    processingPreferences: z.array(ProcessingPreference).optional(),
+    processingPreferences: z
+      .array(ProcessingPreference)
+      .optional()
+      .describe(
+        "The manifest's processing_preferences: accepted and answered with a receipt, not service support of a model or route.",
+      ),
     promptCacheTtls: z
       .array(PromptCacheTtl)
       .optional()
