@@ -1,0 +1,157 @@
+name: qa copilot 672 conversion lock
+
+# Diagnostic QA for #672 only; not a product gate. Runs on a push to its own
+# QA branch, never on main or pull requests. Real vendor installers run, so
+# only disposable GitHub-hosted Windows runners are used. One push = one
+# fixed batch: no matrix of repeats, no retry, no continue-on-error. A push
+# that changes only documentation, saved evidence or ignore rules under the
+# QA folder starts nothing; a change to any script, the observer, freeze.json
+# or this workflow starts the batch.
+on:
+  push:
+    branches: [qa/copilot-lock-672-9208]
+    paths:
+      - "qa/c672-9208/**"
+      - "!qa/c672-9208/**/*.md"
+      - "!qa/c672-9208/evidence/**"
+      - "!qa/c672-9208/.gitignore"
+      - ".github/workflows/qa-copilot-672-9208.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-copilot-672-9208
+  cancel-in-progress: false
+
+jobs:
+  # Copilot's own update on a separate runner, so its cache and installed
+  # version cannot leak into the conversion batch.
+  native-update:
+    name: Copilot own update, embedded bytes vs cache (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Scripts write evidence to $env:RUNNER_TEMP\c672-9208-evidence (the runner
+    # context is not available in job-level env).
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+
+      - name: Offline self-test of the QA hooks
+        run: |
+          $env:C672_SCRATCH = Join-Path $env:RUNNER_TEMP ("c672-selftest-" + [guid]::NewGuid())
+          New-Item -ItemType Directory -Path $env:C672_SCRATCH | Out-Null
+          node qa/c672-9208/selftest.mjs --mutate
+          if ($LASTEXITCODE -ne 0) { throw "selftest exited $LASTEXITCODE" }
+
+      - name: Native update probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node qa/c672-9208/native-update.mjs
+          if ($LASTEXITCODE -ne 0) { throw "native-update exited $LASTEXITCODE" }
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: c672-9208-native-update
+          path: ${{ runner.temp }}\c672-9208-evidence
+          if-no-files-found: warn
+          retention-days: 30
+
+  conversion-batch:
+    name: Conversion batch A/B x4 (windows-latest, Node 24.22.3)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # Scripts write evidence to $env:RUNNER_TEMP\c672-9208-evidence (the runner
+    # context is not available in job-level env).
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+          cache: pnpm
+
+      # Same as ci.yml windows-test: the product build needs the x64 MSVC environment.
+      - name: Initialize pinned x64 MSVC environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe is unavailable on the hosted Windows image"
+          }
+          $installation = (& $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath | Select-Object -First 1).Trim()
+          if (-not $installation) { throw "x64 MSVC build tools are unavailable" }
+          $devCmd = Join-Path $installation "Common7\Tools\VsDevCmd.bat"
+          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) {
+            throw "VsDevCmd.bat is unavailable at $devCmd"
+          }
+          $setup = Join-Path $env:RUNNER_TEMP "claudexor-msvc-env.cmd"
+          "@call `"$devCmd`" -no_logo -arch=x64 -host_arch=x64`r`n@set`r`n" |
+            Set-Content -LiteralPath $setup -Encoding ascii
+          $developer = @{}
+          & $env:ComSpec /d /s /c "`"$setup`"" | ForEach-Object {
+            $separator = $_.IndexOf("=")
+            if ($separator -gt 0) {
+              $developer[$_.Substring(0, $separator)] = $_.Substring($separator + 1)
+            }
+          }
+          foreach ($name in @("Path", "INCLUDE", "LIB", "LIBPATH", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion", "UCRTVersion")) {
+            if ($developer.ContainsKey($name)) {
+              Add-Content -LiteralPath $env:GITHUB_ENV -Value "$name=$($developer[$name])" -Encoding utf8
+            }
+          }
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Offline self-test of the QA hooks
+        run: |
+          $env:C672_SCRATCH = Join-Path $env:RUNNER_TEMP ("c672-selftest-" + [guid]::NewGuid())
+          New-Item -ItemType Directory -Path $env:C672_SCRATCH | Out-Null
+          node qa/c672-9208/selftest.mjs --mutate
+          if ($LASTEXITCODE -ne 0) { throw "selftest exited $LASTEXITCODE" }
+
+      # Own processes only; proves the rename observer reaches the built product.
+      - name: Calibrate holders and observers (no vendor program)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node qa/c672-9208/calibrate.mjs
+          if ($LASTEXITCODE -ne 0) { throw "calibration exited $LASTEXITCODE" }
+
+      - name: Conversion batch (A,B,B,A,A,B,B,A)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node qa/c672-9208/batch.mjs
+          if ($LASTEXITCODE -ne 0) { throw "batch exited $LASTEXITCODE" }
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: c672-9208-conversion-batch
+          path: ${{ runner.temp }}\c672-9208-evidence
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,37 @@
+{
+  "purpose": "#672 QA inputs selected for a matched experiment prompted by the failed main CI conversion of 14 Nov 2026 (run 43645465508 attempt 1). The historical npm manifest and executable bytes were not retained; these fixed versions do not establish a byte-identical reproduction of that installation. npm values come from the public registry entries of @github/copilot and @github/copilot-win32-x64, winget values from the public winget-pkgs installer manifests of GitHub.Copilot 1.0.111 and 1.0.112. A registry mismatch on the runner stops the batch before any vendor iteration.",
+  "baseCommit": "7a87c337b5b54f28f6038a4a7c5138da7cc87c4a",
+  "runner": {
+    "label": "windows-latest",
+    "node": "24.22.3",
+    "historicalImage": "windows-2025-vs2026 20261103.298.1"
+  },
+  "npm": {
+    "package": "@github/copilot",
+    "version": "1.0.111",
+    "integrity": "sha512-85IcSX2n5Tkh8q5i8Q0sfeBJzTdO6xnqWa6e1DLgmmFXbAiHLuniN9uCrJkkTUCpJO7iTWvX1Lun7rblJIrccg==",
+    "files": {
+      "npm-loader.js": "d83678c00d0560eb715628b49318f6fc77e634696743aee025496956015f88e0",
+      "package.json": "12f5020d859bc85643705b3b4a0f22880a8ceeacef7a6333e65f0d16f1735646"
+    },
+    "platformPackage": "@github/copilot-win32-x64",
+    "platformVersion": "1.0.111",
+    "platformIntegrity": "sha512-jSLYbk5Ts3tgWcd89pMEJ9LQHMCS+qQ00GpXeZqR9ov6odCkXulaCXTSQ7rnX7aiYEF9H7t2NWBWnWicV8/j9g=="
+  },
+  "winget": {
+    "id": "GitHub.Copilot",
+    "batchVersion": "1.0.112",
+    "nativeUpdateStartVersion": "1.0.111",
+    "provenance": {
+      "note": "InstallerSha256 of the x64 MSI in those manifests. winget checks its download against its own source manifest; QA does not hash the MSI, and an MSI hash is not the installed copilot.exe hash. The installed copy is qualified on the runner by winget's exit, the copilot.exe SHA-256 measured there and its --no-auto-update --version answer.",
+      "batchMsiSha256": "D823FA45E4123C3B7D577965C8D4751BFD64C50989CA8826DA4D5E64FACB0487",
+      "nativeUpdateStartMsiSha256": "DF348DF6AB3C200EE171349C409EE6A0DF5B589CE0F140B575B16729B914274B"
+    }
+  },
+  "expectedLatest": "1.0.112",
+  "arms": {
+    "A": "ordinary product probe: argv exactly as built (`--version`)",
+    "B": "same product flow; the Copilot version probe receives the program's declared childUpdateArgs (`--no-auto-update`) before `--version`"
+  },
+  "order": ["A", "B", "B", "A", "A", "B", "B", "A"]
+}

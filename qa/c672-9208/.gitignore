@@ -1,0 +1,4 @@
+# Local scratch of the QA author; not part of the QA source.
+.private-transient/
+# Private QA evidence of the author stays outside the published branch.
+evidence/
