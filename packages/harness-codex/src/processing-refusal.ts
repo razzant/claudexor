@@ -20,7 +20,9 @@ export function processingAdmissionProblem(
       : httpStatus === 400 &&
           vendorCode === "unsupported_parameter" &&
           parameter === "service_tier" &&
-          (submitted.submitted === "fast" || submitted.submittedNative === "flex")
+          (submitted.submitted === "fast" ||
+            submitted.submitted === "ultrafast" ||
+            submitted.submittedNative === "flex")
         ? "unsupported"
         : null;
   if (refusal === null) return problem;

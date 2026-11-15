@@ -62,15 +62,16 @@
                         "enum": [
                           "standard",
                           "fast",
+                          "ultrafast",
                           "economy"
                         ],
-                        "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+                        "description": "Advisory service preference. Fast, Ultrafast or Economy may use ordinary Standard service; fallback never introduces Fast or Ultrafast, and Fast never selects Ultrafast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
                       },
                       {
                         "type": "null"
                       }
                     ],
-                    "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+                    "description": "Advisory service preference. Fast, Ultrafast or Economy may use ordinary Standard service; fallback never introduces Fast or Ultrafast, and Fast never selects Ultrafast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
                   },
                   "submitted": {
                     "anyOf": [
@@ -81,7 +82,7 @@
                         "type": "null"
                       }
                     ],
-                    "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+                    "description": "Advisory service preference. Fast, Ultrafast or Economy may use ordinary Standard service; fallback never introduces Fast or Ultrafast, and Fast never selects Ultrafast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
                   },
                   "submittedNative": {
                     "anyOf": [
@@ -102,6 +103,7 @@
                     "enum": [
                       "standard",
                       "fast",
+                      "ultrafast",
                       "economy",
                       "mixed",
                       "unknown"
@@ -1638,7 +1640,7 @@
                   },
                   "processingPreference": {
                     "$ref": "#/definitions/ControlRunDetail/properties/attemptExecution/items/properties/processing/properties/requested/anyOf/0",
-                    "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+                    "description": "Advisory service preference. Fast, Ultrafast or Economy may use ordinary Standard service; fallback never introduces Fast or Ultrafast, and Fast never selects Ultrafast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
                   }
                 },
                 "required": [

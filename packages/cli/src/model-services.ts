@@ -497,7 +497,7 @@ export function createModelServices(deps: Dependencies) {
           credentialHarness,
           ...(view === "accounts"
             ? {
-                processingPreferences: ["standard", "fast", "economy"],
+                processingPreferences: ["standard", "fast", "ultrafast", "economy"],
                 accountCatalog: true,
                 // Structural declaration from the adapter; absent means no image operations.
                 ...(adapter.image ? { imageGeneration: adapter.image.capability } : {}),

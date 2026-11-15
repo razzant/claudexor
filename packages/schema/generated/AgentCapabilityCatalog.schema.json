@@ -130,10 +130,12 @@
                   "enum": [
                     "standard",
                     "fast",
+                    "ultrafast",
                     "economy"
                   ],
-                  "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
-                }
+                  "description": "Advisory service preference. Fast, Ultrafast or Economy may use ordinary Standard service; fallback never introduces Fast or Ultrafast, and Fast never selects Ultrafast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+                },
+                "description": "The manifest's processing_preferences: accepted and answered with a receipt, not service support of a model or route."
               },
               "promptCacheTtls": {
                 "type": "array",

@@ -368,7 +368,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
         adapter_version: CLAUDEXOR_VERSION,
         provider_family: "openai",
         capabilities: {
-          processing_preferences: ["standard", "fast", "economy"],
+          processing_preferences: ["standard", "fast", "ultrafast", "economy"],
           ...CODEX_MODEL_INVENTORY,
           plan: true,
           implement: true,

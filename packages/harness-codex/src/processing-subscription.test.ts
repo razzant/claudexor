@@ -5,7 +5,7 @@ import { CredentialProfile, HarnessRunSpec } from "@claudexor/schema";
 import { usageAmountKind } from "../../budget/src/usage-evidence.js";
 import { clearCodexEffortCache, createCodexAdapter } from "./index.js";
 import { readModelListEfforts } from "./effort-probe.js";
-import { applyCodexRunProcessing } from "./processing-session.js";
+import { applyCodexRunProcessing, codexProcessingArgs } from "./processing-session.js";
 import { codexProcessingCost, legacyCodexProcessing } from "./processing.js";
 import { codexAppServerThreadParams } from "./app-server-run.js";
 
@@ -51,6 +51,82 @@ describe("Codex subscription allowance is native-mode qualified", () => {
         credentialProfile: profile(),
       });
       expect(prepared.receipt.submittedNative).toBe(tier);
+    },
+  );
+  it.each(["fast", "priority"])(
+    "keeps ordinary %s and a first-listed Ultrafast apart when paid service is allowed",
+    async (tier) => {
+      const native = adapter(["ultrafast", tier]);
+      const input = {
+        model: "model",
+        effort: "high",
+        cwd: "/fixture",
+        allowPaid: true,
+        credentialProfile: profile(),
+      };
+      const fast = await native.prepareProcessing!({ ...input, preference: "fast" });
+      expect(fast.receipt).toMatchObject({ submitted: "fast", submittedNative: tier });
+      expect(fast.costBasis.kind).toBe("included");
+      const ultra = await native.prepareProcessing!({ ...input, preference: "ultrafast" });
+      expect(ultra.receipt).toMatchObject({
+        requested: "ultrafast",
+        submitted: "ultrafast",
+        submittedNative: "ultrafast",
+      });
+      expect(ultra.costBasis.kind).toBe("unknown");
+      const noPaid = await native.prepareProcessing!({
+        ...input,
+        allowPaid: false,
+        preference: "ultrafast",
+      });
+      expect(noPaid.receipt).toMatchObject({
+        submittedNative: "default",
+        reason: "paid_processing_disallowed; ordinary_service_requested",
+      });
+      // Both native transports send the prepared tier unchanged.
+      for (const resume_session_id of [null, "native-thread"]) {
+        const spec = HarnessRunSpec.parse({
+          session_id: "s",
+          intent: "explain",
+          prompt: "test",
+          cwd: "/fixture",
+          model_hint: "model",
+          processing_preference: "ultrafast",
+          processing: ultra.receipt,
+          resume_session_id,
+        });
+        expect(codexProcessingArgs(spec)).toEqual(["-c", 'service_tier="ultrafast"']);
+        expect(codexAppServerThreadParams(spec, "high").config).toMatchObject({
+          service_tier: "ultrafast",
+        });
+      }
+    },
+  );
+  it.each([true, false])(
+    "falls back to ordinary service for Ultrafast the account does not advertise (allowPaid=%s)",
+    async (allowPaid) => {
+      const native = adapter(["priority"]);
+      const input = { model: "model", effort: "high", cwd: "/fixture", allowPaid };
+      for (const credentialProfile of [profile(), profile("api", true), undefined]) {
+        const prepared = await native.prepareProcessing!({
+          ...input,
+          preference: "ultrafast",
+          ...(credentialProfile ? { credentialProfile } : {}),
+        });
+        expect(prepared.receipt).toMatchObject({
+          requested: "ultrafast",
+          submitted: "standard",
+          submittedNative: "default",
+          reason: "requested_mode_not_advertised; ordinary_service_requested",
+        });
+      }
+      // The same account still serves an ordinary Fast request.
+      const fast = await native.prepareProcessing!({
+        ...input,
+        preference: "fast",
+        credentialProfile: profile(),
+      });
+      expect(fast.receipt.submittedNative).toBe("priority");
     },
   );
   it.each(["fast", "priority"])(

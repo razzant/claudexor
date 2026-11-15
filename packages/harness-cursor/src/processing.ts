@@ -79,8 +79,8 @@ export function prepareCursorProcessing(
           ? "native_explicit"
           : !variant
             ? "processing_variant_unconfirmed; selected_model_preserved"
-            : preference === "economy"
-              ? "economy_not_supported; ordinary_variant_selected"
+            : preference === "economy" || preference === "ultrafast"
+              ? `${preference}_not_supported; ordinary_variant_selected`
               : null,
     source: "cursor_account_model_inventory",
   };

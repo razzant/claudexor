@@ -46,6 +46,20 @@ describe("frozen routing-time processing intent", () => {
     });
   });
 
+  it("keeps a frozen Ultrafast intent for Exact Retry", () => {
+    const { store, runDir, contextDir } = run();
+    const ultrafast: ProcessingReceipt = {
+      ...receipt("ultrafast"),
+      submitted: "ultrafast",
+      observed: "ultrafast",
+      observedNative: ["ultrafast"],
+    };
+    // An intent recorded before Ultrafast had its own mode still reads.
+    const recorded = { ...receipt("ultrafast"), submitted: "fast" as const };
+    recordProcessingIntent(store, contextDir, { codex: ultrafast, other: recorded });
+    expect(retryProcessingIntent(store, runDir)).toEqual({ codex: ultrafast, other: recorded });
+  });
+
   it("yields nothing without a valid record", () => {
     const { store, runDir, contextDir } = run();
     expect(retryProcessingIntent(store, runDir)).toBeUndefined();

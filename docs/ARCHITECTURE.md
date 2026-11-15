@@ -3515,7 +3515,7 @@ An opted-in advisory request may return `processing_unavailable` with context
 `generationStarted: false`, `processingFallback: "standard"` and
 `processingRefusal: "capacity" | "unsupported"`, only for a non-success HTTP
 response: HTTP 429 `resource_unavailable` on submitted Flex, or HTTP 400
-`unsupported_parameter` for `service_tier` on submitted Fast/Flex. An explicit
+`unsupported_parameter` for `service_tier` on submitted Fast/Ultrafast/Flex. An explicit
 native `serviceTier` override never becomes an advisory fallback. The operation
 still records the physical send and `response_received`: the proof concerns
 generation, not dispatch, and a Standard follow-up is the caller's separate
@@ -9098,12 +9098,11 @@ resources the release gates smoke-tested while the archive itself needs no
 POSIX symlink semantics.
 `release/runtime-min-app-version.json` is the tracked `minAppVersion` floor
 (validated `<=` the release version by `scripts/verify-version-parity.mjs`), the
-app-vs-engine skew guard. The application must understand the vendor-program
-inventory and maintenance receipts used by remote harness setup. An older app
+app-vs-engine skew guard. The application must decode the engine's wire values;
+apps before 6.2.0 cannot read a reviewer panel that names `ultrafast`. An older app
 reports `appUpdateRequired` and keeps its current working engine until the
 application is updated. The SSH runtime manifest uses the release version as
-its application floor; both manifests require application 6.0.0 for engine
-6.0.0. This floor does not establish compatibility for embedding hosts.
+its application floor. This floor does not establish compatibility for embedding hosts.
 
 **Host-owned embedding.** A non-app host reuses this SAME release archive; the
 existing signed manifest remains its upstream publication authority. There is

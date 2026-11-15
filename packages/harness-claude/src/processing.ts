@@ -37,8 +37,8 @@ export function prepareClaudeProcessing(
     reason:
       !allowPaid && (preference === "fast" || inheritedFast)
         ? "paid_processing_disallowed; ordinary_service_requested"
-        : preference === "economy"
-          ? "economy_not_supported; ordinary_service_requested"
+        : preference === "economy" || preference === "ultrafast"
+          ? `${preference}_not_supported; ordinary_service_requested`
           : fast
             ? "native_model_and_account_eligibility_unconfirmed"
             : null,

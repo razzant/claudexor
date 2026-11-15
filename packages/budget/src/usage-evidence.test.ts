@@ -69,7 +69,45 @@ describe("processing-aware usage evidence", () => {
       "valuation",
     );
   });
-  it.each(["fast", "mixed"] as const)(
+  it("keeps an attempt whose Standard submission observed Ultrafast out of included work", () => {
+    for (const observed of ["standard", "ultrafast"] as const) {
+      const tracker = new UsageCostTracker();
+      tracker.startAttempt();
+      observe(
+        tracker,
+        event({ ...receipt("standard"), observed, observedNative: [observed] }, "unknown"),
+      );
+      tracker.finishAttempt();
+      expect(tracker.snapshot().cashKnowledge).toBe(observed === "standard" ? "exact" : "unknown");
+      expect(tracker.unknownPaidUsd).toBe(observed === "standard" ? 0 : 2);
+    }
+  });
+  it.each(["included", "unknown"] as const)(
+    "does not infer an allowance for observed Ultrafast from %s preparation or omitted controls",
+    (kind) => {
+      for (const observed of ["ultrafast", "fast", "mixed"] as const) {
+        for (const submitted of ["standard", null] as const) {
+          const processing: ProcessingReceipt = {
+            ...receipt("standard"),
+            requested: null,
+            submitted,
+            observed,
+            observedNative: ["ultrafast"],
+            reason: "native_default_unconfirmed",
+          };
+          expect(usageAmountKind("local_session", undefined, processing, basis(kind))).toBe(
+            "unknown",
+          );
+          const tracker = new UsageCostTracker();
+          tracker.startAttempt();
+          observe(tracker, event(processing, kind));
+          tracker.finishAttempt();
+          expect(tracker.snapshot().cashKnowledge).toBe("unknown");
+        }
+      }
+    },
+  );
+  it.each(["fast", "ultrafast", "mixed"] as const)(
     "does not relabel submitted standard when observed mode is %s",
     (observed) => {
       expect(

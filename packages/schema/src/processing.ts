@@ -3,9 +3,9 @@ import { IsoTimestamp, NonBlankString } from "./primitives.js";
 
 /** Service of the selected cognitive model, independent of routing and effort. */
 export const ProcessingPreference = z
-  .enum(["standard", "fast", "economy"])
+  .enum(["standard", "fast", "ultrafast", "economy"])
   .describe(
-    "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence.",
+    "Advisory service preference. Fast, Ultrafast or Economy may use ordinary Standard service; fallback never introduces Fast or Ultrafast, and Fast never selects Ultrafast. Omission preserves native defaults. Explicit native serviceTier takes precedence.",
   );
 export type ProcessingPreference = z.infer<typeof ProcessingPreference>;
 
@@ -29,7 +29,7 @@ export const ProcessingReceipt = z
     requested: ProcessingPreference.nullable(),
     submitted: ProcessingPreference.nullable(),
     submittedNative: NonBlankString.nullable(),
-    observed: z.enum(["standard", "fast", "economy", "mixed", "unknown"]),
+    observed: z.enum(["standard", "fast", "ultrafast", "economy", "mixed", "unknown"]),
     observedNative: z.array(NonBlankString),
     reason: NonBlankString.nullable(),
     source: NonBlankString,
