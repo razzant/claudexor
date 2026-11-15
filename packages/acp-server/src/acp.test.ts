@@ -29,7 +29,11 @@ function project(): string {
 async function withClient<T>(
   runner: RunnerFn,
   op: (agent: acp.ClientContext, updates: acp.SessionNotification[]) => Promise<T>,
-  options: Pick<ConstructorParameters<typeof AcpServer>[0], "terminalAuthMethods"> = {},
+  /** `initialize: false` leaves the handshake to `op`: the SDK rejects every
+   * other request until the first successful `initialize`. */
+  options: Pick<ConstructorParameters<typeof AcpServer>[0], "terminalAuthMethods"> & {
+    initialize?: boolean;
+  } = {},
   /** Which permission option the editor picks (the first one by default);
    * `null` dismisses the prompt. Sees the whole permission request. */
   choose: (
@@ -39,11 +43,12 @@ async function withClient<T>(
 ): Promise<T> {
   const clientToAgent = new PassThrough();
   const agentToClient = new PassThrough();
+  const { initialize = true, ...serverOptions } = options;
   const server = new AcpServer({
     runner,
     transport: { read: clientToAgent, write: agentToClient },
     version: "2.0.0-test",
-    ...options,
+    ...serverOptions,
   });
   const serving = server.serve();
   const updates: acp.SessionNotification[] = [];
@@ -66,7 +71,15 @@ async function withClient<T>(
     Readable.toWeb(agentToClient) as globalThis.ReadableStream<Uint8Array>,
   );
   try {
-    return await client.connectWith(stream, (agent) => op(agent, updates));
+    return await client.connectWith(stream, async (agent) => {
+      if (initialize) {
+        await agent.request(acp.methods.agent.initialize, {
+          protocolVersion: ACP_PROTOCOL_VERSION,
+          clientCapabilities: {},
+        });
+      }
+      return op(agent, updates);
+    });
   } finally {
     clientToAgent.end();
     await serving;
@@ -114,7 +127,7 @@ describe("AcpServer official SDK projection", () => {
         });
         expect(unsupported.authMethods).toEqual([]);
       },
-      { terminalAuthMethods: [method] },
+      { terminalAuthMethods: [method], initialize: false },
     );
     await withClient(
       async () => ({}),
@@ -125,7 +138,7 @@ describe("AcpServer official SDK projection", () => {
         });
         expect(supported.authMethods).toEqual([method]);
       },
-      { terminalAuthMethods: [method] },
+      { terminalAuthMethods: [method], initialize: false },
     );
     await withClient(
       async () => ({}),
@@ -136,7 +149,7 @@ describe("AcpServer official SDK projection", () => {
         });
         expect(registryCompatible.authMethods).toEqual([method]);
       },
-      { terminalAuthMethods: [method] },
+      { terminalAuthMethods: [method], initialize: false },
     );
   });
 
@@ -174,42 +187,46 @@ describe("AcpServer official SDK projection", () => {
           throw new Error(`unexpected ${params.mode}`);
       }
     };
-    await withClient(runner, async (agent, updates) => {
-      // The stable ACP protocol version this server negotiates is pinned to the
-      // literal 1 (docs/INTEGRATIONS.md). An SDK bump that moves the stable wire
-      // version must fail here rather than silently renegotiate.
-      expect(ACP_PROTOCOL_VERSION).toBe(1);
-      const initialized = await agent.request(acp.methods.agent.initialize, {
-        protocolVersion: ACP_PROTOCOL_VERSION,
-        clientCapabilities: {},
-      });
-      expect(initialized.protocolVersion).toBe(1);
-      expect(initialized.agentCapabilities).toMatchObject({
-        loadSession: true,
-        sessionCapabilities: { list: {}, resume: {}, close: {} },
-      });
-      const created = await agent.request(acp.methods.agent.session.new, {
-        cwd,
-        mcpServers: [],
-      });
-      expect(created.sessionId).toBe("thread-1");
-      const listed = await agent.request(acp.methods.agent.session.list, { cwd });
-      expect(listed.sessions).toEqual([
-        expect.objectContaining({ sessionId: "thread-1", cwd, title: "ACP session" }),
-      ]);
-      await agent.request(acp.methods.agent.session.load, {
-        sessionId: "thread-1",
-        cwd,
-        mcpServers: [],
-      });
-      expect(updates.some((item) => JSON.stringify(item).includes("restored answer"))).toBe(true);
-      await agent.request(acp.methods.agent.session.resume, {
-        sessionId: "thread-1",
-        cwd,
-        mcpServers: [],
-      });
-      await agent.request(acp.methods.agent.session.close, { sessionId: "thread-1" });
-    });
+    await withClient(
+      runner,
+      async (agent, updates) => {
+        // The stable ACP protocol version this server negotiates is pinned to the
+        // literal 1 (docs/INTEGRATIONS.md). An SDK bump that moves the stable wire
+        // version must fail here rather than silently renegotiate.
+        expect(ACP_PROTOCOL_VERSION).toBe(1);
+        const initialized = await agent.request(acp.methods.agent.initialize, {
+          protocolVersion: ACP_PROTOCOL_VERSION,
+          clientCapabilities: {},
+        });
+        expect(initialized.protocolVersion).toBe(1);
+        expect(initialized.agentCapabilities).toMatchObject({
+          loadSession: true,
+          sessionCapabilities: { list: {}, resume: {}, close: {} },
+        });
+        const created = await agent.request(acp.methods.agent.session.new, {
+          cwd,
+          mcpServers: [],
+        });
+        expect(created.sessionId).toBe("thread-1");
+        const listed = await agent.request(acp.methods.agent.session.list, { cwd });
+        expect(listed.sessions).toEqual([
+          expect.objectContaining({ sessionId: "thread-1", cwd, title: "ACP session" }),
+        ]);
+        await agent.request(acp.methods.agent.session.load, {
+          sessionId: "thread-1",
+          cwd,
+          mcpServers: [],
+        });
+        expect(updates.some((item) => JSON.stringify(item).includes("restored answer"))).toBe(true);
+        await agent.request(acp.methods.agent.session.resume, {
+          sessionId: "thread-1",
+          cwd,
+          mcpServers: [],
+        });
+        await agent.request(acp.methods.agent.session.close, { sessionId: "thread-1" });
+      },
+      { initialize: false },
+    );
     expect(calls.map((call) => call.mode)).toEqual([
       "__acp_session_new",
       "__acp_session_list",
@@ -217,6 +234,42 @@ describe("AcpServer official SDK projection", () => {
       "__acp_session_resume",
       "__acp_session_close",
     ]);
+  });
+
+  it("rejects a session request sent before initialize without reaching the daemon", async () => {
+    // SDK 2.x gates every request but `initialize` until the first successful
+    // handshake (JSON-RPC -32600). The gate sits in front of our handlers, so the
+    // daemon never sees the early request, and the same request then succeeds.
+    const cwd = project();
+    const modes: string[] = [];
+    await withClient(
+      async (params) => {
+        modes.push(params.mode);
+        return { sessionId: "thread-gated", cwd };
+      },
+      async (agent) => {
+        const early = await agent
+          .request(acp.methods.agent.session.new, { cwd, mcpServers: [] })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        expect(early).toBeInstanceOf(acp.RequestError);
+        expect(early).toMatchObject({ code: -32600 });
+        expect(modes).toEqual([]);
+        await agent.request(acp.methods.agent.initialize, {
+          protocolVersion: ACP_PROTOCOL_VERSION,
+          clientCapabilities: {},
+        });
+        const created = await agent.request(acp.methods.agent.session.new, {
+          cwd,
+          mcpServers: [],
+        });
+        expect(created.sessionId).toBe("thread-gated");
+        expect(modes).toEqual(["__acp_session_new"]);
+      },
+      { initialize: false },
+    );
   });
 
   it("accepts a symlinked session cwd without rewriting the client spelling", async () => {

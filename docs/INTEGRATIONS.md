@@ -2067,7 +2067,12 @@ For Zed, register Claudexor as an agent server in `settings.json`:
 }
 ```
 
-The server uses `@agentclientprotocol/sdk` and stable ACP protocol version 1.
+The server uses the stable v1 export of `@agentclientprotocol/sdk` (ACP protocol
+version 1). A client opens with `initialize`: until its first success the SDK
+refuses any other request with JSON-RPC `-32600`, before Claudexor sees it.
+`session/new`, `session/load` and `session/resume` require stable-v1 parameter
+shapes: malformed `mcpServers` entries or non-string `additionalDirectories`
+entries are rejected with `-32602`, not silently skipped as in SDK 1.5.1.
 ACP Terminal Auth is **experimental**. When a client explicitly advertises the
 experimental terminal-auth capability, Claudexor currently offers Codex
 subscription login on macOS and Linux. The client runs
@@ -2289,7 +2294,7 @@ the selected managed secret as `COPILOT_GITHUB_TOKEN`, with `HOME` and
 other provider credentials are removed. Native/device-code login is stage 2.
 
 Wire: one `copilot --acp --stdio` process per attempt, using the stable v1
-client exported by `@agentclientprotocol/sdk` 1.5.1. Startup flags live in the
+client exported by `@agentclientprotocol/sdk` 2.6.0. Startup flags live in the
 vendor row and were checked against the [official CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference),
 not a locally installed Copilot binary. The client negotiates `initialize`,
 creates `session/new {cwd, mcpServers: []}`, then sends one `session/prompt`.

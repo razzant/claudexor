@@ -60,8 +60,8 @@ importers:
   packages/acp-server:
     dependencies:
       '@agentclientprotocol/sdk':
-        specifier: 1.5.1
-        version: 1.5.1(zod@4.6.7)
+        specifier: 2.6.0
+        version: 2.6.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)
       '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
@@ -311,8 +311,8 @@ importers:
   packages/harness-acp:
     dependencies:
       '@agentclientprotocol/sdk':
-        specifier: 1.5.1
-        version: 1.5.1(zod@4.6.7)
+        specifier: 2.6.0
+        version: 2.6.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)
       '@claudexor/core':
         specifier: workspace:*
         version: link:../core
@@ -623,10 +623,14 @@ importers:
 
 packages:
 
-  '@agentclientprotocol/sdk@1.5.1':
-    resolution: {integrity: sha512-nSUIrC1fOR9+ppKfx9KdwjBBND2sAPzFHo4yVQrGbXZHnayUYpwL8CDVR5LSxbapY/oKMOzNP0wvwfyx3PS2KA==}
+  '@agentclientprotocol/sdk@2.6.0':
+    resolution: {integrity: sha512-3FtL6MkAV5F9qxg0FQV8wmBszIm2xuVPoDWOILIFSDQ+Vq3Twdh7Cw6Hk2GOPUbevgrTUpUAqZXQy7Geaj79mw==}
     peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
+      '@modelcontextprotocol/server': ^2.4.0
+      zod: ^3.25.76 || ^4.0.0
+    peerDependenciesMeta:
+      '@modelcontextprotocol/server':
+        optional: true
 
   '@babel/runtime@7.29.7':
     resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
@@ -2153,9 +2157,11 @@ packages:
 
 snapshots:
 
-  '@agentclientprotocol/sdk@1.5.1(zod@4.6.7)':
+  '@agentclientprotocol/sdk@2.6.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)':
     dependencies:
       zod: 4.6.7
+    optionalDependencies:
+      '@modelcontextprotocol/server': 2.4.0
 
   '@babel/runtime@7.29.7': {}
 
