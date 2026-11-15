@@ -407,9 +407,10 @@
                   "enum": [
                     "standard",
                     "fast",
+                    "ultrafast",
                     "economy"
                   ],
-                  "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+                  "description": "Advisory service preference. Fast, Ultrafast or Economy may use ordinary Standard service; fallback never introduces Fast or Ultrafast, and Fast never selects Ultrafast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
                 },
                 "promptCacheTtl": {
                   "type": "string",
@@ -732,7 +733,7 @@
                       },
                       "processingPreference": {
                         "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/processingPreference",
-                        "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+                        "description": "Advisory service preference. Fast, Ultrafast or Economy may use ordinary Standard service; fallback never introduces Fast or Ultrafast, and Fast never selects Ultrafast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
                       }
                     },
                     "required": [

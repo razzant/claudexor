@@ -695,8 +695,9 @@ positive promise instead of relying on a one-time documentation cleanup.
 
 `processingPreference` is an advisory transport option for the selected model,
 independent of routing goal, reasoning effort, context and output policy.
-Standard requests ordinary service. Fast and Economy may fall back to Standard;
-fallback, account rotation and retry must never introduce Fast. Omission keeps
+Standard requests ordinary service. Fast, Ultrafast and Economy may fall back to
+Standard; fallback, account rotation and retry must never introduce Fast or
+Ultrafast, and Fast never selects Ultrafast. Omission keeps
 legacy behavior, while explicit native `serviceTier` on `ModelCallOptions` takes
 precedence and is disclosed. Keep the captured preference and canonical request
 unchanged on exact replay. A confirmed no-generation processing refusal may
@@ -710,14 +711,14 @@ verified ChatGPT subscription, ordinary Codex Fast (`fast`/`priority`) consumes
 included subscription limits ([OpenAI Speed documentation](https://learn.chatgpt.com/docs/agent-configuration/speed))
 and remains eligible under `paid_fallback: never` and `finite(0)`. This allowance
 does not cover `ultrafast`, other premium or unknown tiers, API credentials or
-unknown routes. Advisory Fast still requires the selected model/account's
+unknown routes. Advisory Fast or Ultrafast still requires the selected model/account's
 advertisement; an inherited native setting is preserved only within the same
 paid policy, and omission never selects Fast by itself. For Codex, omission may
 inherit the first account's own native setting, recorded with its
 `codex.managed_config` provenance; a retry, rotation or in-run continuation keeps
 that chosen intent and never adopts another account's setting (other adapters
 ignore the intent and read each account's own setting). Ordinary Fast is one
-intent under either spelling (`fast`/`priority`); Ultrafast is not. Exact Retry
+intent under either spelling (`fast`/`priority`); Ultrafast is its own mode. Exact Retry
 keeps its source run's inherited intent as it keeps the frozen model and effort;
 a new command or thread turn chooses its own initial intent. An inherited intent the next account
 cannot serve falls back to ordinary service with its reason, like an advisory

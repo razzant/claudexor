@@ -69,7 +69,20 @@ describe("processing-aware usage evidence", () => {
       "valuation",
     );
   });
-  it.each(["fast", "mixed"] as const)(
+  it("keeps an attempt whose Standard submission observed Ultrafast out of included work", () => {
+    for (const observed of ["standard", "ultrafast"] as const) {
+      const tracker = new UsageCostTracker();
+      tracker.startAttempt();
+      observe(
+        tracker,
+        event({ ...receipt("standard"), observed, observedNative: [observed] }, "unknown"),
+      );
+      tracker.finishAttempt();
+      expect(tracker.snapshot().cashKnowledge).toBe(observed === "standard" ? "exact" : "unknown");
+      expect(tracker.unknownPaidUsd).toBe(observed === "standard" ? 0 : 2);
+    }
+  });
+  it.each(["fast", "ultrafast", "mixed"] as const)(
     "does not relabel submitted standard when observed mode is %s",
     (observed) => {
       expect(

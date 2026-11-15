@@ -36,7 +36,7 @@ export function validateSurfaceRunControls(obj: Record<string, unknown>): string
     obj.processingPreference !== undefined &&
     !ProcessingPreference.safeParse(obj.processingPreference).success
   ) {
-    return "processingPreference must be standard, fast, or economy";
+    return "processingPreference must be standard, fast, ultrafast, or economy";
   }
   if (obj.review !== undefined && typeof obj.review !== "boolean") {
     return "review must be a boolean";
@@ -130,7 +130,7 @@ export function validateSurfaceRunControls(obj: Record<string, unknown>): string
         entry.processingPreference !== undefined &&
         !ProcessingPreference.safeParse(entry.processingPreference).success
       ) {
-        return "reviewerPanel[].processingPreference must be standard, fast, or economy";
+        return "reviewerPanel[].processingPreference must be standard, fast, ultrafast, or economy";
       }
     }
   }

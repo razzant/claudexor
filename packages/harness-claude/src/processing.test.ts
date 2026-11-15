@@ -5,6 +5,7 @@ import {
   claudeProcessingCost,
   claudeProcessingObserver,
   prepareClaudeProcessing,
+  prepareClaudeSessionProcessing,
 } from "./processing.js";
 
 const event = (): HarnessEvent => ({ type: "usage", session_id: "s", ts: "2026-09-12T00:00:00Z" });
@@ -15,7 +16,7 @@ const message = (id: string, speed?: string) => ({
 
 describe("Claude processing", () => {
   it("preserves model and effort for true/false settings on fresh and resume", () => {
-    for (const preference of ["standard", "fast", "economy"] as const)
+    for (const preference of ["standard", "fast", "ultrafast", "economy"] as const)
       for (const resume_session_id of [null, "native-session"]) {
         const spec = HarnessRunSpec.parse({
           session_id: "s",
@@ -52,6 +53,32 @@ describe("Claude processing", () => {
       submitted: "fast",
       reason: "native_explicit",
     });
+  });
+  it("answers Ultrafast with ordinary service and its reason, never Fast", async () => {
+    for (const allowPaid of [true, false])
+      for (const inheritedFast of [undefined, false])
+        expect(prepareClaudeProcessing("ultrafast", inheritedFast, allowPaid)).toMatchObject({
+          requested: "ultrafast",
+          submitted: "standard",
+          submittedNative: "fastMode=false",
+          reason: "ultrafast_not_supported; ordinary_service_requested",
+        });
+    // Session preparation gives the same answer on API and subscription routes.
+    for (const authPreference of ["api_key", "subscription"] as const) {
+      const prepared = await prepareClaudeSessionProcessing({
+        preference: "ultrafast",
+        model: "claude-fable-5-1",
+        effort: null,
+        cwd: "/repo",
+        authPreference,
+        allowPaid: true,
+      });
+      expect(prepared.receipt).toMatchObject({
+        submitted: "standard",
+        submittedNative: "fastMode=false",
+        reason: "ultrafast_not_supported; ordinary_service_requested",
+      });
+    }
   });
   it("no-paid policy supplies ordinary settings without changing the model", () => {
     expect(prepareClaudeProcessing("fast", true, false)).toMatchObject({

@@ -7,6 +7,7 @@ import { codexExecArgs, createCodexAdapter, canonicalCodexProfileHome } from "./
 import { readModelListEfforts } from "./effort-probe.js";
 import {
   codexProcessingCapability,
+  codexProcessingCost,
   prepareCodexProcessing,
   observeCodexProcessing,
   codexConfiguredTier,
@@ -155,6 +156,116 @@ describe("Codex processing preserves exact native intent", () => {
   });
 });
 
+describe("Codex Fast and Ultrafast are separate modes", () => {
+  const listed = (...ids: string[]) =>
+    codexProcessingCapability({ service_tiers: ids.map((id) => ({ id })) }, "fixture");
+  // Before: the first listed match won, and Ultrafast read as Fast.
+  it.each([
+    ["ultrafast", "priority"],
+    ["priority", "ultrafast"],
+    ["ultrafast", "fast"],
+    ["fast", "ultrafast"],
+  ])("ordinary Fast selects only fast/priority from [%s, %s] under every policy", (a, b) => {
+    const ordinary = a === "ultrafast" ? b : a;
+    expect(prepareCodexProcessing("fast", listed(a, b))).toMatchObject({
+      requested: "fast",
+      submitted: "fast",
+      submittedNative: ordinary,
+      reason: null,
+    });
+    for (const allowPaid of [true, false])
+      for (const subscription of [true, false, null])
+        expect(
+          prepareCodexProcessing("fast", listed(a, b), undefined, allowPaid, subscription)
+            ?.submittedNative,
+        ).not.toBe("ultrafast");
+  });
+
+  it("projects Ultrafast as its own advertised mode and submits it only when asked", () => {
+    const capability = listed("ultrafast", "priority");
+    expect(capability.modes).toEqual(["standard", "ultrafast", "fast"]);
+    expect(capability.nativeModes).toEqual([
+      { mode: "ultrafast", id: "ultrafast" },
+      { mode: "fast", id: "priority" },
+    ]);
+    const receipt = prepareCodexProcessing("ultrafast", capability)!;
+    expect(receipt).toMatchObject({
+      requested: "ultrafast",
+      submitted: "ultrafast",
+      submittedNative: "ultrafast",
+      reason: null,
+    });
+    expect(observeCodexProcessing(receipt, "ultrafast")).toMatchObject({
+      observed: "ultrafast",
+      observedNative: ["ultrafast"],
+    });
+    expect(observeCodexProcessing(receipt, "priority").observed).toBe("fast");
+  });
+
+  it("falls back from unadvertised Ultrafast without introducing Fast, under every policy", () => {
+    for (const capability of [listed("priority", "flex"), listed(), undefined])
+      for (const allowPaid of [true, false])
+        for (const subscription of [true, false, null])
+          expect(
+            prepareCodexProcessing("ultrafast", capability, undefined, allowPaid, subscription),
+          ).toMatchObject({
+            requested: "ultrafast",
+            submitted: "standard",
+            submittedNative: "default",
+            reason: "requested_mode_not_advertised; ordinary_service_requested",
+          });
+  });
+
+  it("keeps the paid policy: Ultrafast has no subscription allowance", () => {
+    const capability = listed("ultrafast", "priority");
+    for (const subscription of [true, false, null])
+      expect(
+        prepareCodexProcessing("ultrafast", capability, undefined, false, subscription),
+      ).toMatchObject({
+        submitted: "standard",
+        submittedNative: "default",
+        reason: "paid_processing_disallowed; ordinary_service_requested",
+      });
+    expect(codexProcessingCost(prepareCodexProcessing("ultrafast", capability)!, true).kind).toBe(
+      "unknown",
+    );
+  });
+
+  it("reads a capability recorded while Ultrafast still read as Fast by its native id", () => {
+    const recorded = {
+      ...listed("priority"),
+      modes: ["standard" as const, "fast" as const],
+      nativeModes: [
+        { mode: "fast" as const, id: "ultrafast" },
+        { mode: "fast" as const, id: "priority" },
+      ],
+    };
+    expect(prepareCodexProcessing("fast", recorded)?.submittedNative).toBe("priority");
+    expect(prepareCodexProcessing("ultrafast", recorded)?.submittedNative).toBe("ultrafast");
+  });
+
+  it("keeps an exact native override authoritative, labelled by its own mode", () => {
+    const capability = listed("priority");
+    expect(prepareCodexProcessing("fast", capability, "ultrafast")).toMatchObject({
+      requested: "fast",
+      submitted: "ultrafast",
+      submittedNative: "ultrafast",
+      reason: "native_explicit",
+    });
+    expect(prepareCodexProcessing("ultrafast", listed("ultrafast"), "priority")).toMatchObject({
+      submitted: "fast",
+      submittedNative: "priority",
+      reason: "native_explicit",
+    });
+    // An unadvertised or unknown exact tier is still sent unchanged.
+    for (const tier of ["ultrafast", "scale"])
+      expect(prepareCodexProcessing("ultrafast", capability, tier)).toMatchObject({
+        submittedNative: tier,
+        reason: "native_explicit",
+      });
+  });
+});
+
 describe("Codex inventory route isolation", () => {
   it("declares native-only inventory and never reads native auth for an API-key query", async () => {
     const probeEfforts = vi.fn(async () => null);
@@ -166,6 +277,12 @@ describe("Codex inventory route isolation", () => {
     });
     const manifest = await adapter.discover();
     expect(manifest.capabilities.model_inventory_routes).toEqual(["local_session"]);
+    expect(manifest.capabilities.processing_preferences).toEqual([
+      "standard",
+      "fast",
+      "ultrafast",
+      "economy",
+    ]);
     expect(manifest.capabilities.known_models).toContain("gpt-6-astra");
     probeEfforts.mockClear();
     const profile = CredentialProfile.parse({

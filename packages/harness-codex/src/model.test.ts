@@ -413,6 +413,221 @@ describe("processing on the physical Codex model request", () => {
   });
 });
 
+describe("Ultrafast on a live Codex model turn", () => {
+  const tiered = (...ids: string[]) =>
+    Response.json({
+      models: catalog.models.map((model) => ({
+        ...model,
+        service_tiers: ids.map((id) => ({ id })),
+      })),
+    });
+  const answered = (tier: string, turnState: string) =>
+    withHeader(
+      new Response(
+        `data: ${JSON.stringify({
+          type: "response.completed",
+          response: {
+            model: "model-one",
+            output: [native],
+            reasoning: { effort: "medium" },
+            service_tier: tier,
+            usage: { input_tokens: 10, output_tokens: 4 },
+          },
+        })}\n\n`,
+      ),
+      turnState,
+    );
+
+  it("a scripted consumer moves one live turn from Fast to Ultrafast without resetting it", async () => {
+    const fixture = setup();
+    const sends: RequestInit[] = [];
+    let reply = () => answered("priority", "turn-one");
+    fixture.fetcher.mockImplementation(async (_url, init) => {
+      if (init?.method !== "POST") return tiered("ultrafast", "priority");
+      sends.push(init);
+      return reply();
+    });
+    const options = { reasoningEffort: "medium", cacheKey: "turn-owner" };
+    // The existing value first, as an older caller sends it; Ultrafast is
+    // listed first and is still never chosen for ordinary Fast.
+    const first = await fixture.adapter.invoke(
+      {
+        ...fixture.request,
+        nativeContinuation: null,
+        options: { ...options, processingPreference: "fast" },
+      },
+      fixture.context,
+    );
+    expect(first.processing).toMatchObject({
+      requested: "fast",
+      submitted: "fast",
+      submittedNative: "priority",
+      observed: "fast",
+    });
+    const turn = first.nativeContinuation!;
+    expect(turn).toMatchObject({ format: "codex.turn.v1", payload: { turnState: "turn-one" } });
+    // The next call of the same turn asks for the new value.
+    fixture.onDispatch.mockClear();
+    reply = () => answered("ultrafast", "turn-two");
+    const second = await fixture.adapter.invoke(
+      {
+        ...fixture.request,
+        nativeContinuation: turn,
+        messages: [
+          ...fixture.request.messages,
+          first.message!,
+          { role: "tool" as const, tool_call_id: "call_one", content: "tool evidence" },
+        ],
+        options: { ...options, processingPreference: "ultrafast" },
+      },
+      fixture.context,
+    );
+    expect(sends).toHaveLength(2);
+    expect(fixture.onDispatch).toHaveBeenCalledTimes(1);
+    const [one, two] = sends.map((init) => ({
+      body: JSON.parse(String(init.body)),
+      headers: new Headers(init.headers),
+    }));
+    expect(one.body.service_tier).toBe("priority");
+    expect(two.body.service_tier).toBe("ultrafast");
+    // The opaque turn state and the cache identity ride through unchanged.
+    expect(one.headers.has("x-codex-turn-state")).toBe(false);
+    expect(two.headers.get("x-codex-turn-state")).toBe("turn-one");
+    expect(two.headers.get("session_id")).toBe("turn-owner");
+    expect(two.body.prompt_cache_key).toBe("turn-owner");
+    expect(String(sends[1].body)).not.toContain("turn-one");
+    expect(second.nativeContinuation).toEqual(turn);
+    expect(second.processing).toMatchObject({
+      requested: "ultrafast",
+      submitted: "ultrafast",
+      submittedNative: "ultrafast",
+      observed: "ultrafast",
+      observedNative: ["ultrafast"],
+      reason: null,
+    });
+    // No allowance is claimed for Ultrafast.
+    expect(second.cost.processing?.kind).toBe("unknown");
+    expect(ModelCallResult.safeParse(second).success).toBe(true);
+  });
+
+  it.each([[["priority"]], [[]]])(
+    "does not submit unadvertised Ultrafast (tiers %j): ordinary service, its reason, the same turn",
+    async (tiers) => {
+      const fixture = setup();
+      const sends: RequestInit[] = [];
+      let reply = () => answered("default", "first-token");
+      fixture.fetcher.mockImplementation(async (_url, init) => {
+        if (init?.method !== "POST") return tiered(...tiers);
+        sends.push(init);
+        return reply();
+      });
+      const options = { reasoningEffort: "medium", cacheKey: "turn-owner" };
+      const first = await fixture.adapter.invoke(
+        { ...fixture.request, nativeContinuation: null, options },
+        fixture.context,
+      );
+      const turn = first.nativeContinuation!;
+      fixture.onDispatch.mockClear();
+      reply = () => answered("default", "later-token");
+      const result = await fixture.adapter.invoke(
+        {
+          ...fixture.request,
+          nativeContinuation: turn,
+          options: { ...options, processingPreference: "ultrafast" },
+        },
+        fixture.context,
+      );
+      // One ordinary generation; the unsupported wire value is never sent.
+      expect(result.outcome).toBe("completed");
+      expect(fixture.onDispatch).toHaveBeenCalledTimes(1);
+      expect(sends).toHaveLength(2);
+      const sent = sends[1];
+      expect(JSON.parse(String(sent.body)).service_tier).toBe("default");
+      expect(String(sent.body)).not.toContain("ultrafast");
+      // The opaque turn state and the cache identity ride through unchanged.
+      const headers = new Headers(sent.headers);
+      expect(headers.get("x-codex-turn-state")).toBe("first-token");
+      expect(headers.get("session_id")).toBe("turn-owner");
+      expect(result.nativeContinuation).toEqual(turn);
+      // The consumer reads the reason through the result schema the daemon applies.
+      expect(ModelCallResult.parse(result).processing).toEqual({
+        requested: "ultrafast",
+        submitted: "standard",
+        submittedNative: "default",
+        observed: "standard",
+        observedNative: ["default"],
+        reason: "requested_mode_not_advertised; ordinary_service_requested",
+        source: "codex.service_tier",
+      });
+    },
+  );
+
+  it("falls back for an unlisted model too, while an exact native tier is sent unchanged", async () => {
+    const fixture = setup();
+    const sends: RequestInit[] = [];
+    let reply = () => answered("default", "token");
+    fixture.fetcher.mockImplementation(async (_url, init) => {
+      if (init?.method !== "POST") return tiered("priority");
+      sends.push(init);
+      return reply();
+    });
+    const unlisted = await fixture.adapter.invoke(
+      {
+        ...fixture.request,
+        model: "unlisted-model",
+        options: { processingPreference: "ultrafast" },
+      },
+      fixture.context,
+    );
+    expect(JSON.parse(String(sends[0].body)).service_tier).toBe("default");
+    expect(unlisted.processing).toMatchObject({
+      requested: "ultrafast",
+      submittedNative: "default",
+      reason: "requested_mode_not_advertised; ordinary_service_requested",
+    });
+    // The existing exact native override is the caller's own choice.
+    fixture.onDispatch.mockClear();
+    reply = () => answered("ultrafast", "token");
+    const exact = await fixture.adapter.invoke(
+      {
+        ...fixture.request,
+        options: { processingPreference: "ultrafast", serviceTier: "ultrafast" },
+      },
+      fixture.context,
+    );
+    expect(JSON.parse(String(sends[1].body)).service_tier).toBe("ultrafast");
+    expect(exact.processing).toMatchObject({
+      submittedNative: "ultrafast",
+      observed: "ultrafast",
+      reason: "native_explicit",
+    });
+  });
+
+  it("classifies only a confirmed pre-generation Ultrafast refusal as advisory", async () => {
+    const refused = (status: number, code: string) => {
+      const fixture = setup((init) => {
+        expect(JSON.parse(String(init?.body)).service_tier).toBe("ultrafast");
+        return Response.json({ error: { code, param: "service_tier" } }, { status });
+      });
+      fixture.fetcher.mockResolvedValueOnce(tiered("ultrafast", "priority"));
+      fixture.request.options.processingPreference = "ultrafast";
+      return fixture.adapter.invoke(fixture.request, fixture.context);
+    };
+    expect((await refused(400, "unsupported_parameter")).problem).toMatchObject({
+      code: "processing_unavailable",
+      context: {
+        generationStarted: false,
+        processingFallback: "standard",
+        processingRefusal: "unsupported",
+      },
+    });
+    // Capacity refusal is documented as uncharged for Flex only.
+    const capacity = await refused(429, "resource_unavailable");
+    expect(capacity.problem?.code).not.toBe("processing_unavailable");
+    expect(capacity.problem?.context).not.toHaveProperty("generationStarted");
+  });
+});
+
 describe("exact-profile Codex model catalog", () => {
   it("does not borrow CLI compaction, effective percentages, aliases, or hardcoded defaults", async () => {
     const fixture = setup();

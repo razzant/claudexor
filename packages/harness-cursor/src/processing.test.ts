@@ -104,6 +104,31 @@ describe("Cursor processing uses listed same-effort variants", () => {
       "cursor-grok-4.6-xhigh",
     );
   });
+  it("answers Ultrafast with the ordinary variant and its reason, never the Fast one", () => {
+    for (const allowPaid of [true, false])
+      expect(
+        prepareCursorProcessing("ultrafast", "cursor-grok-4.6-xhigh", models, allowPaid),
+      ).toMatchObject({
+        model: "cursor-grok-4.6-xhigh",
+        receipt: {
+          requested: "ultrafast",
+          submitted: "standard",
+          submittedNative: "cursor-grok-4.6-xhigh",
+          reason: "ultrafast_not_supported; ordinary_variant_selected",
+        },
+      });
+    // A deliberately selected native Fast model stays the existing exact choice.
+    expect(
+      prepareCursorProcessing("ultrafast", "cursor-grok-4.6-xhigh-fast", models).receipt,
+    ).toMatchObject({ submitted: "fast", reason: "native_explicit" });
+    expect(prepareCursorProcessing("ultrafast", "claude-fable-5-1-high", models)).toMatchObject({
+      model: "claude-fable-5-1-high",
+      receipt: {
+        submitted: null,
+        reason: "processing_variant_unconfirmed; selected_model_preserved",
+      },
+    });
+  });
   it("does not turn catalog failure into a missing model or an invented capability", () => {
     expect(prepareCursorProcessing("fast", "cursor-grok-4.6-xhigh", []).model).toBe(
       "cursor-grok-4.6-xhigh",

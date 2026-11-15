@@ -5,10 +5,13 @@ import { BudgetLedger, rankHarnesses, RoutingPreflightError } from "@claudexor/b
 import {
   CredentialProfile,
   GlobalConfig,
+  HarnessModel,
   HarnessRunSpec,
   type HarnessEvent,
 } from "@claudexor/schema";
-import { prepareHarnessProcessing } from "@claudexor/core";
+import { prepareHarnessProcessing, type HarnessAdapter } from "@claudexor/core";
+import { createClaudeAdapter } from "../../harness-claude/src/index.js";
+import { createCursorAdapter } from "../../harness-cursor/src/index.js";
 import { prepareReviewerRunSpec } from "../../review/src/reviewerPreparation.js";
 import {
   canonicalCodexProfileHome,
@@ -311,5 +314,180 @@ describe("Codex Fast retains existing admission restrictions", () => {
     }
     expect(f.args[0]).toContain('service_tier="priority"');
     expect(f.launches[0]?.processing?.observed).toBe("unknown");
+  });
+});
+
+describe("An Ultrafast request no route offers continues on ordinary service with its reason", () => {
+  const governed = (adapter: HarnessAdapter, account: CredentialProfile | null) => ({
+    adapter,
+    knownModels: [],
+    modelInventory: {
+      model_inventory_routes: ["local_session" as const],
+      model_inventory_absence: "advisory" as const,
+    },
+    authRouteEstimate: "local_session" as const,
+    quotaAdmission: { profile: account },
+    settings: null,
+    paidFallback: "allowed_within_cap" as const,
+  });
+  const ultra = (over: Partial<HarnessRunSpec> = {}) =>
+    HarnessRunSpec.parse({
+      session_id: "s",
+      intent: "explain",
+      prompt: "test",
+      cwd: "/fixture",
+      processing_preference: "ultrafast",
+      processing_allow_paid: true,
+      ...over,
+    });
+  const drain = async (adapter: HarnessAdapter, spec: HarnessRunSpec) => {
+    const events: HarnessEvent[] = [];
+    for await (const event of runModelGovernedRoute(
+      governed(adapter, spec.credential_profile),
+      spec,
+    ))
+      events.push(event);
+    return events;
+  };
+
+  it("Codex: no tier on the wire where the account lacks it; the advertising account sends it", async () => {
+    const f = fixture();
+    await drain(
+      f.adapter,
+      ultra({ model_hint: "model", effort_hint: "high", credential_profile: profile("first") }),
+    );
+    expect(f.launches).toHaveLength(1);
+    expect(f.args[0]).toContain('service_tier="default"');
+    expect(f.args[0].join(" ")).not.toContain("ultrafast");
+    expect(f.launches[0]?.processing).toMatchObject({
+      requested: "ultrafast",
+      submitted: "standard",
+      submittedNative: "default",
+      reason: "requested_mode_not_advertised; ordinary_service_requested",
+    });
+    await drain(
+      f.adapter,
+      ultra({ model_hint: "model", effort_hint: "high", credential_profile: profile("second") }),
+    );
+    expect(f.args[1]).toContain('service_tier="ultrafast"');
+    expect(f.launches[1]?.processing).toMatchObject({
+      requested: "ultrafast",
+      submitted: "ultrafast",
+      submittedNative: "ultrafast",
+    });
+  });
+
+  it("Claude and Cursor: ordinary launch with the reason; Fast still launches Fast", async () => {
+    const launched: { args: string[]; spec: HarnessRunSpec }[] = [];
+    const completed = (sessionId: string): HarnessEvent => ({
+      type: "completed",
+      session_id: sessionId,
+      ts: new Date().toISOString(),
+    });
+    const claude = createClaudeAdapter({
+      detectVersion: async () => "2.1.89",
+      probeReadonlyProfile: async () => ({ supported: true, missingFlags: [], detail: "ok" }),
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+      probeEffortLevels: async () => ({ levels: ["high"], live: true }),
+      runCliHarness: async function* (options): AsyncGenerator<HarnessEvent> {
+        launched.push({ args: options.args, spec: options.spec });
+        yield completed(options.spec.session_id);
+      },
+    });
+    const cursorModels = ["grok-4.7-high", "grok-4.7-high-fast"].map((id) =>
+      HarnessModel.parse({ id }),
+    );
+    const cursor = createCursorAdapter({
+      cursorApiKey: () => "fixture-key",
+      smokeIsolatedApiKey: async () => ({ ok: true, detail: "fixture" }),
+      listCursorModels: async () => cursorModels,
+      runCliHarness: async function* (options): AsyncGenerator<HarnessEvent> {
+        launched.push({ args: options.args, spec: options.spec });
+        yield completed(options.spec.session_id);
+      },
+    });
+    const claudeSpec = ultra({ auth_preference: "subscription" });
+    const cursorSpec = ultra({ auth_preference: "api_key", model_hint: "grok-4.7-high" });
+    await drain(claude, claudeSpec);
+    await drain(cursor, cursorSpec);
+    expect(launched).toHaveLength(2);
+    expect(launched[0]!.args.join(" ")).toContain('"fastMode":false');
+    expect(launched[0]!.spec.processing).toMatchObject({
+      requested: "ultrafast",
+      submitted: "standard",
+      reason: "ultrafast_not_supported; ordinary_service_requested",
+    });
+    expect(launched[1]!.args[launched[1]!.args.indexOf("--model") + 1]).toBe("grok-4.7-high");
+    expect(launched[1]!.spec.processing).toMatchObject({
+      requested: "ultrafast",
+      submitted: "standard",
+      reason: "ultrafast_not_supported; ordinary_variant_selected",
+    });
+    for (const { args } of launched) expect(args.join(" ")).not.toContain("ultrafast");
+    // Paired control: the same routes still launch Fast.
+    await drain(claude, { ...claudeSpec, processing_preference: "fast" });
+    await drain(cursor, { ...cursorSpec, processing_preference: "fast" });
+    expect(launched[2]!.args.join(" ")).toContain('"fastMode":true');
+    expect(launched[3]!.args).toContain("grok-4.7-high-fast");
+  });
+
+  it("an adapter without processing controls discloses unavailable control and still runs", async () => {
+    const launches: HarnessRunSpec[] = [];
+    const plain = {
+      id: "plain",
+      discover: async () => {
+        throw new Error("not used");
+      },
+      doctor: async () => {
+        throw new Error("not used");
+      },
+      async *run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
+        launches.push(spec);
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    } as unknown as HarnessAdapter;
+    for (const preference of ["ultrafast", "fast"] as const) {
+      const events = await drain(plain, ultra({ processing_preference: preference }));
+      expect(events.find((event) => event.type === "status" && event.processing)).toMatchObject({
+        processing: {
+          requested: preference,
+          submitted: null,
+          reason: "processing_control_unavailable",
+        },
+      });
+    }
+    expect(launches).toHaveLength(2);
+  });
+
+  it("reviewer preparation keeps ordinary service with its reason where the account lacks the tier", async () => {
+    const f = fixture();
+    const review = (account: CredentialProfile) =>
+      prepareReviewerRunSpec(
+        f.adapter,
+        HarnessRunSpec.parse({
+          session_id: "review",
+          intent: "review",
+          prompt: "test",
+          cwd: "/fixture",
+          model_hint: "model",
+          credential_profile: account,
+          processing_preference: "ultrafast",
+          processing_allow_paid: true,
+        }),
+      );
+    expect((await review(profile("first"))).spec.processing).toMatchObject({
+      submittedNative: "default",
+      reason: "requested_mode_not_advertised; ordinary_service_requested",
+    });
+    expect((await review(profile("second"))).spec.processing).toMatchObject({
+      submittedNative: "ultrafast",
+    });
   });
 });

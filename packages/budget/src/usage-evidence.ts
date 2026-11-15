@@ -68,6 +68,7 @@ function ordinaryIncluded(
   if (
     ((processing?.submitted === "standard" &&
       processing.observed !== "fast" &&
+      processing.observed !== "ultrafast" &&
       processing.observed !== "mixed") ||
       (processing?.requested === null &&
         processing.submitted === null &&
