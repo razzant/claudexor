@@ -23,6 +23,13 @@ import {
 const platform = process.platform;
 const win = platform === "win32";
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
+// #672 TEST-ONLY: when the Windows capture prep ran (C672_CAPTURE_DIR is set),
+// attach the rename-failure capture to the CLI child through an explicit Node
+// --require. Never NODE_OPTIONS: vendor child processes inherit that, and must
+// stay untouched. The preload is passive and observes only the Copilot npm hide
+// rename, only after it fails (scripts/c672/c672-rename-capture.cjs).
+const capturePreload =
+  win && process.env.C672_CAPTURE_DIR ? join(repo, "scripts/c672/c672-rename-capture.cjs") : null;
 const root = mkdtempSync(
   join(realpathSync.native(process.env.RUNNER_TEMP ?? tmpdir()), "vendor-program-smoke-"),
 );
@@ -79,7 +86,12 @@ const present = (path) => {
 function cli(env, args, { refusal = false } = {}) {
   const result = spawnSync(
     process.execPath,
-    [join(repo, "packages/cli/dist/cli.js"), ...args, "--json"],
+    [
+      ...(capturePreload ? ["--require", capturePreload] : []),
+      join(repo, "packages/cli/dist/cli.js"),
+      ...args,
+      "--json",
+    ],
     {
       env,
       cwd: root,

@@ -286,6 +286,25 @@ Cursor Windows (#667) and OpenCode unattended Windows installation/second line
 (#668) remain absent capabilities. Existing standard npm launcher resolution is
 still tested; custom batch programs are not interpreted as npm launchers.
 
+The Windows leg also carries TEST-ONLY diagnostics for the intermittent Copilot
+npm->native conversion failure (#672). `scripts/c672/prepare-rename-capture.mjs`
+builds read-only observers before the smoke (a Framework compile of
+`c672obs.cs`, and handle64 admitted on a valid Microsoft signature then hashed
+and re-checked at use); any missing tool is a recorded gap, never a failure. The
+smoke attaches `scripts/c672/c672-rename-capture.cjs` to its CLI child by
+`--require` (never `NODE_OPTIONS`, which vendor children inherit): a pass-through
+`fs.renameSync` wrapper that only on the product's own
+`node_modules/@github/copilot` -> `.claudexor-converted` hide failing records the
+error first, then runs the observers under one finite budget, then re-throws the
+same error. Green runs write nothing and stdout stays the CLI receipt. It is
+diagnostics for the next real failure, not a fix; its native qualification is
+`qualify-rename-capture.mjs` plus the push-triggered QA workflow. It retains full
+CLI output/receipts and final qualification/cleanup in the uploaded evidence,
+checks retirement of the package and owned `.cmd`, and requires acknowledged
+holder exit. Portable tests do not establish native Windows qualification.
+Reassess/remove this temporary capture after a natural failure is captured and
+analyzed, and at #672 closure; retain the qualifier for reproducibility meanwhile.
+
 `scripts/harness-program-freshness.mjs` joins the model-hints release gate. It
 fetches each distinct adapter-declared newest source, applies the shared pick
 rule and supported-major guard, and runs each distinct declared executable verb
