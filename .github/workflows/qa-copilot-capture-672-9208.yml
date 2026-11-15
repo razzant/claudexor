@@ -1,0 +1,111 @@
+name: qa copilot 672 capture qualification
+
+# TEST-ONLY one-shot qualification of the #672 rename-failure capture, run BEFORE
+# acceptance. It is NOT a product gate. It triggers only on a push to its own QA
+# branch; the maintainer qualifies by pushing that branch. On main and every
+# other branch it never runs,
+# and a README/docs-only push starts nothing. Real vendor installers run, so it
+# uses only disposable GitHub-hosted Windows runners. Each of the four distinct
+# capture cases runs on its own fresh runner. See
+# scripts/c672/qualify-rename-capture.mjs.
+on:
+  push:
+    branches: [qa/copilot-capture-672-9208]
+    paths:
+      - "scripts/c672/**"
+      - "scripts/lib/c672-capture-prep.mjs"
+      - ".github/workflows/qa-copilot-capture-672-9208.yml"
+      - "!**/*.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-copilot-capture-672-9208
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Capture qualification (${{ matrix.case }})
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [control, held-file, held-cwd, broken-observer]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+          cache: pnpm
+
+      - name: Initialize pinned x64 MSVC environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe is unavailable on the hosted Windows image"
+          }
+          $installation = (& $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath | Select-Object -First 1).Trim()
+          if (-not $installation) { throw "x64 MSVC build tools are unavailable" }
+          $devCmd = Join-Path $installation "Common7\Tools\VsDevCmd.bat"
+          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) {
+            throw "VsDevCmd.bat is unavailable at $devCmd"
+          }
+          $setup = Join-Path $env:RUNNER_TEMP "claudexor-msvc-env.cmd"
+          "@call `"$devCmd`" -no_logo -arch=x64 -host_arch=x64`r`n@set`r`n" |
+            Set-Content -LiteralPath $setup -Encoding ascii
+          $developer = @{}
+          & $env:ComSpec /d /s /c "`"$setup`"" | ForEach-Object {
+            $separator = $_.IndexOf("=")
+            if ($separator -gt 0) {
+              $developer[$_.Substring(0, $separator)] = $_.Substring($separator + 1)
+            }
+          }
+          foreach ($name in @("Path", "INCLUDE", "LIB", "LIBPATH", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion", "UCRTVersion")) {
+            if ($developer.ContainsKey($name)) {
+              Add-Content -LiteralPath $env:GITHUB_ENV -Value "$name=$($developer[$name])" -Encoding utf8
+            }
+          }
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Prepare rename-failure observers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node scripts/c672/prepare-rename-capture.mjs
+          if ($LASTEXITCODE -ne 0) { throw "capture prep exited $LASTEXITCODE" }
+
+      - name: Qualify capture case (real CLI, real vendor, synthetic holder)
+        shell: pwsh
+        env:
+          CASE: ${{ matrix.case }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          node scripts/c672/qualify-rename-capture.mjs --case $env:CASE
+          if ($LASTEXITCODE -ne 0) { throw "capture qualification case failed" }
+
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: c672-capture-qualification-${{ matrix.case }}
+          path: ${{ runner.temp }}/c672-capture-evidence
+          if-no-files-found: ignore
+          retention-days: 30

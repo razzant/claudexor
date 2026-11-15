@@ -442,6 +442,21 @@ jobs:
           node --input-type=module -e 'import {readFileSync} from "node:fs"; const r=JSON.parse(readFileSync(process.env.OUT,"utf8").trim().split("\n").at(-1)); if(r.integrity?.ok!==true || !(r.flusher.counters.barriers>0) || !(r.flushed?.n>0)) throw new Error("store load smoke did not prove integrity and flush completion");'
           if ($LASTEXITCODE -ne 0) { throw "store load smoke did not pass" }
 
+      # TEST-ONLY diagnostics for the intermittent Copilot npm->native
+      # conversion failure (#672). Prepared BEFORE the smoke and in a separate
+      # process, so a later real rename failure is captured with observers that
+      # already exist (downloading after the failure is too late). It installs no
+      # vendor, changes no product state, and any missing tool is a recorded gap,
+      # never a failure: the smoke runs the same either way. See
+      # scripts/c672/c672-rename-capture.cjs.
+      - name: "Prepare #672 Copilot conversion rename-failure observers"
+        if: matrix.runner == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node scripts/c672/prepare-rename-capture.mjs
+          if ($LASTEXITCODE -ne 0) { throw "capture prep exited $LASTEXITCODE" }
+
       # The same real-vendor proof as the `vendor-programs` job, here because
       # the Windows build needs this job's MSVC environment. One runner is enough.
       # All phases share its actual Windows profile: winget/MSI do not honor a fake HOME.
@@ -452,6 +467,17 @@ jobs:
           $ErrorActionPreference = "Stop"
           node scripts/vendor-program-smoke.mjs
           if ($LASTEXITCODE -ne 0) { throw "vendor program smoke exited $LASTEXITCODE" }
+
+      # Present only if a watched rename actually failed this run; green runs
+      # write nothing, so the upload is skipped without warning.
+      - name: "Upload #672 rename-failure capture (only if a failure was captured)"
+        if: always() && matrix.runner == 'windows-latest'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: c672-rename-capture
+          path: ${{ runner.temp }}/c672-capture-evidence
+          if-no-files-found: ignore
+          retention-days: 30
 
   # Real vendor installers and updaters in a disposable HOME on each platform:
   # every adapter-declared installation route, the installed program's own
