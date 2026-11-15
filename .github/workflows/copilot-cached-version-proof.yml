@@ -1,0 +1,52 @@
+name: Copilot cached-version proof
+
+# Real-vendor qualification of the version question: an older npm Copilot whose
+# vendor package cache holds a newer release. Outside required CI. It starts only
+# when a maintainer dispatches it or pushes to a qa/copilot-cached-version/ branch;
+# the branch is the pre-merge door, since a dispatch-only workflow cannot start
+# before it reaches the default branch. Ordinary pushes and pull requests never
+# start it, and a run is evidence about its exact commit only.
+on:
+  push:
+    branches: ["qa/copilot-cached-version/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    name: Copilot cached-version proof (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The proof needs no ConPTY helper, so Windows builds without MSVC as the release lane does.
+      - run: pnpm build
+        env:
+          CLAUDEXOR_SKIP_WIN32_CONPTY_BUILD: "1"
+
+      - name: Installed-old/cached-new Copilot version answers
+        run: node scripts/copilot-cached-version-proof.mjs
+
+      - name: Upload the proof's evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: copilot-cached-version-proof-${{ matrix.os }}
+          path: ${{ runner.temp }}/copilot-cached-version-evidence
+          if-no-files-found: error
+          retention-days: 30

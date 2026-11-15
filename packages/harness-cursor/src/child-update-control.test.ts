@@ -19,9 +19,11 @@ it("sends the declared switch and preserves rejection without rerunning with upd
   const bin = join(root, "cursor"),
     log = join(root, "args"),
     unsafe = join(root, "updates-enabled");
+  // Logs every invocation; a plain --version would still answer, so only an
+  // unswitched retry could produce a version.
   writeFileSync(
     bin,
-    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 2026.08.11-e8db854; exit 0; fi\nprintf '%s\\n' "$@" >> '${log}'\nif [ "$1" = "--disable-auto-update" ]; then echo "error: unknown option '--disable-auto-update'" >&2; exit 2; fi\ntouch '${unsafe}'\n`,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nif [ "$*" = "--version" ]; then echo 2026.08.11-e8db854; exit 0; fi\nif [ "$1" = "--disable-auto-update" ]; then echo "error: unknown option '--disable-auto-update'" >&2; exit 2; fi\ntouch '${unsafe}'\n`,
     { mode: 0o755 },
   );
   vi.stubEnv("CLAUDEXOR_CURSOR_BIN", bin);
@@ -45,14 +47,15 @@ it("sends the declared switch and preserves rejection without rerunning with upd
     }),
   ))
     events.push(e);
-  expect(
-    readFileSync(log, "utf8")
-      .split("\n")
-      .filter((x) => x === "--disable-auto-update"),
-  ).toHaveLength(1);
-  expect(events.find((e) => e.type === "error")?.error).toContain(
-    "unknown option '--disable-auto-update'",
-  );
+  // The run's first version question and the work call both carry the switch.
+  const calls = readFileSync(log, "utf8").trim().split("\n");
+  expect(calls).toHaveLength(2);
+  expect(calls[0]).toBe("--disable-auto-update --version");
+  expect(calls[1]).toMatch(/^--disable-auto-update -p /);
+  expect(calls.filter((call) => call.split(" ").includes("-p"))).toHaveLength(1);
+  const failure = events.find((e) => e.type === "error");
+  expect(failure?.error).toContain("unknown option '--disable-auto-update'");
+  expect(failure?.program).toEqual({ path: bin, version: null, versionSource: "unknown" });
   expect(existsSync(unsafe)).toBe(false);
   expect(CURSOR_PROGRAM.childUpdateArgs).toEqual(["--disable-auto-update"]);
 });

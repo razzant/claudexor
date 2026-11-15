@@ -13,7 +13,7 @@ import {
   observeHarnessProgram,
   invalidateProgramObservations,
 } from "@claudexor/core";
-import { HarnessRunSpec } from "@claudexor/schema";
+import { HarnessRunSpec, type HarnessProgram } from "@claudexor/schema";
 import { harnessPrograms } from "./harness-programs.js";
 import { inspectHarness, runHarnessUpdate } from "./harness-maintenance.js";
 import { newestSource, observeNewest } from "./harness-newest.js";
@@ -29,6 +29,9 @@ const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 }, 0);
+/** Exactly the version question's argv: declared child-update arguments, then --version. */
+const asksVersion = (program: HarnessProgram, args: readonly string[]) =>
+  JSON.stringify(args) === JSON.stringify([...(program.childUpdateArgs ?? []), "--version"]);
 function image(path: string) {
   const bytes = Buffer.alloc(512);
   bytes.write("MZ");
@@ -159,7 +162,7 @@ describe("adapter vendor declarations", () => {
         sourceEnv,
         fetch: fetcher,
         spawn: ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
-          if (args[0] === "--version") return result("fixture 1.2.3\n");
+          if (asksVersion(program, args)) return result("fixture 1.2.3\n");
           invocations.push({ bin, args: [...args], env: opts.env! });
           if (id !== "copilot")
             expect(readFileSync(args[args.indexOf("-File") + 1]!, "utf8")).toBe(SCRIPT);
@@ -269,7 +272,7 @@ describe("adapter vendor declarations", () => {
       const installed = `${w.installed}.exe`;
       const spawn = vi.fn((bin: string, args: readonly string[] = []) => {
         if (args[0] === "query") return result("", 1);
-        if (args[0] === "--version") return result("copilot 1.0.109.");
+        if (asksVersion(program, args)) return result("copilot 1.0.109.");
         launches.push(bin);
         if (errorCode)
           return {
@@ -358,6 +361,79 @@ describe("adapter vendor declarations", () => {
       after: { path: installed, version: "1.2.3" },
     });
   });
+  it.each(programs.map((program) => program.id))(
+    "asks %s for its version under its declared update controls and keeps its explicit Update without them",
+    async (id) => {
+      const w = vendorFixture();
+      roots.push(w.home);
+      const declared = programs.find((program) => program.id === id)!;
+      // The real declarations, pinned: Copilot and Cursor take a switch, Agy and Grok a value.
+      const controls: Record<string, { args: string[]; env: Record<string, string> }> = {
+        copilot: { args: ["--no-auto-update"], env: {} },
+        cursor: { args: ["--disable-auto-update"], env: {} },
+        agy: { args: [], env: { AGY_CLI_DISABLE_AUTO_UPDATE: "true" } },
+        grok: { args: [], env: { GROK_DISABLE_AUTOUPDATER: "1" } },
+      };
+      const expected = controls[id] ?? { args: [], env: {} };
+      expect(declared.childUpdateArgs ?? []).toEqual(expected.args);
+      expect(declared.childUpdateEnv ?? {}).toEqual(expected.env);
+      const overrideEnv = `CONTROLS_${id.toUpperCase()}_BIN`;
+      const program = { ...declared, overrideEnv, launchers: [{ name: `controls-${id}` }] };
+      const path = join(w.home, "custom", `controls-${id}`);
+      const log = join(w.home, "asked.log");
+      const keys = Object.keys(expected.env);
+      const argv = [...expected.args, "--version"].join(" ");
+      // Answers only the exact declared question under the declared values.
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(
+        path,
+        `#!/bin/sh
+printf '%s|%s\\n' "$*" "${keys.map((key) => `${key}=\${${key}-unset}`).join(" ")}" >> '${log}'
+[ "$*" = "${argv}" ] || exit 9
+${keys.map((key) => `[ "\${${key}-}" = "${expected.env[key]}" ] || exit 8`).join("\n")}
+echo "${id} 1.2.3"
+`,
+        { mode: 0o755 },
+      );
+      const selected = {
+        ...w.options,
+        program,
+        sourceEnv: { ...w.options.sourceEnv, [overrideEnv]: path },
+      };
+      expect((await inspectHarness(id, selected)).selection).toMatchObject({
+        path,
+        version: "1.2.3",
+      });
+      const observed = await observeHarnessProgram(program, undefined, path, {
+        environment: { HOME: w.home, PATH: "" },
+        fresh: true,
+      });
+      expect(observed.program).toEqual({ path, version: "1.2.3" });
+      const question = `${argv}|${keys.map((key) => `${key}=${expected.env[key]}`).join(" ")}`;
+      const asked = () => readFileSync(log, "utf8").trim().split("\n");
+      expect(asked()).toEqual([question, question]);
+      if (!expected.args.length && !keys.length) return;
+      // Explicit Update keeps its declared verb and the installation environment.
+      const updates: Array<{ args: string[]; env: NodeJS.ProcessEnv | undefined }> = [];
+      const receipt = await runHarnessUpdate(id, undefined, {
+        ...selected,
+        spawn: ((bin: string, args: readonly string[] = [], options: SpawnSyncOptions = {}) => {
+          if (asksVersion(program, args)) return spawnSync(bin, args, options);
+          updates.push({ args: [...args], env: options.env });
+          return result("Updated");
+        }) as typeof spawnSync,
+      });
+      expect(receipt).toMatchObject({
+        ok: true,
+        outcome: "not_changed",
+        before: { version: "1.2.3" },
+        after: { version: "1.2.3" },
+      });
+      expect(updates.map((update) => update.args)).toEqual([["update"]]);
+      for (const key of keys) expect(updates[0]!.env?.[key]).toBeUndefined();
+      expect(asked()).toEqual(Array(4).fill(question));
+    },
+  );
   it("states Windows limits and holds OpenCode to its V1 command", async () => {
     const w = vendorFixture();
     roots.push(w.home);

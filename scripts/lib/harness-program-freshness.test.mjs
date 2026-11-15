@@ -145,6 +145,7 @@ console.log(process.argv.includes('--version') ? '1.2.3' : 'Usage: upgrade');
       overrideEnv: "FRESHNESS_FIXTURE_BIN",
       launchers: [{ name: "freshness-fixture" }],
       installationEnv: [],
+      childUpdateArgs: ["--declared-no-update"],
       childUpdateEnv: { FRESHNESS_FIXTURE_UPDATE: "declared" },
       platforms: {
         [process.platform]: {
@@ -168,8 +169,19 @@ console.log(process.argv.includes('--version') ? '1.2.3' : 'Usage: upgrade');
         .split("\n")
         .map((line) => JSON.parse(line)),
     ).toEqual([
-      { args: ["--version"], hasToken: false, input: "preserved", updateInput: null },
-      { args: ["upgrade", "--help"], hasToken: false, input: "preserved", updateInput: "declared" },
+      // The version question and the help child run in the same declared update mode.
+      {
+        args: ["--declared-no-update", "--version"],
+        hasToken: false,
+        input: "preserved",
+        updateInput: "declared",
+      },
+      {
+        args: ["--declared-no-update", "upgrade", "--help"],
+        hasToken: false,
+        input: "preserved",
+        updateInput: "declared",
+      },
     ]);
     // The parent's token is retained for source fetches, never printed or passed to programs.
     expect(Boolean(process.env.GITHUB_TOKEN)).toBe(present);

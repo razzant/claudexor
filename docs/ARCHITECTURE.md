@@ -8834,7 +8834,8 @@ Claude, Codex, Cursor, Antigravity, Copilot, OpenCode and Grok share this contra
 missing commands become unavailable actions with a sentence on the inventory row.
 
 `core/src/selected-program.ts` selects the entry that would run, its real path,
-its own bounded `--version` answer and explicit-override provenance. Runs,
+its own bounded `--version` answer under the update controls its ordinary
+children carry, and explicit-override provenance. Runs,
 doctor, inventory and program-derived probes use this owner. It resolves at
 call time, including declared vendor folders, so a newly installed copy is found
 without restarting the daemon. Copilot declares the MSI folder
@@ -8951,10 +8952,20 @@ only. Native attempt records retain each invoked path/version, using the vendor
 startup frame where available, and exhausted credential pools retain the last
 bounded, redacted vendor error sentence alongside each try's original refusal.
 
-Engine-spawned Cursor children receive `--disable-auto-update`; Antigravity,
-Copilot and Grok keep their declared controls. Claude, Codex and OpenCode receive
-no added update switch. An unsupported Cursor switch returns its vendor error
-without a retry. Explicit Cursor maintenance enumerates registered profile homes
+Version questions carry each program's adapter-declared update controls: the
+declared arguments come before `--version` and the declared values override the
+caller's environment. Cursor declares `--disable-auto-update`, which also leads its
+run, model-list, status and smoke children; Copilot declares `--no-auto-update`,
+which its ACP runs pass after `--acp --stdio`. Antigravity and Grok declare
+environment values that their profile environments also carry; Grok headless runs
+additionally pass an undeclared `--no-auto-update`, which version questions do
+not. Claude, Codex and OpenCode declare none. Cursor `login` and explicit install,
+update and exact-version commands receive no controls. Copilot documents that its
+switch also keeps a newer cached version from running instead of the installed
+one; otherwise the answer is whatever the selected entry, wrapper or launcher
+reports in that mode. A refused switch yields the vendor error or no version
+answer, and nothing falls back to an invocation without the switch.
+Explicit Cursor maintenance enumerates registered profile homes
 and reversibly hides each `.local/share/cursor-agent` copy in the fixed sibling
 `.cursor-agent.claudexor-hidden`. The selected program is asked for its version
 through the resolver while the copy is hidden. An answering independent program
@@ -9033,6 +9044,26 @@ or launch error fails the route. Every route is attempted before the proof fails
 phases share the actual ephemeral runner profile because winget/MSI ignore a
 fictitious LOCALAPPDATA; POSIX uses disposable homes. Native Windows login and
 Agent execution are separate acceptance claims.
+
+Outside required CI, `.github/workflows/copilot-cached-version-proof.yml` runs
+`scripts/copilot-cached-version-proof.mjs` on Linux, macOS and Windows runners
+when dispatched or pushed to a `qa/copilot-cached-version/` branch. It installs an
+older Copilot with npm where earlier engines did and lets a newer release's own
+first launch fill the shared package cache. Unswitched, the installed copy must
+answer the newer release; with `--no-auto-update`, its own. The cache answer
+passes when the same switched sync re-read, the async reader and `harness inspect`
+report the installed version and native run selection chooses that copy. The cold
+start is judged separately: the engine's first switched question, which extracts
+the installed package, must answer the installed version within the existing
+limit; it counts only when a direct look just before it finds the package's
+extraction marker absent. The run passes only when both pass. Failed seeding,
+another selected program or a change to the installed loader or binary
+leaves both not run; a contrast the runner cannot establish, including a
+direct ask stopped by the same limit, leaves only the cache
+answer not run. The workflow artifact keeps the full output of the npm commands,
+the seed, the direct asks, the engine's sync questions, the CLI process and any
+process census; the async reader and the program inside `harness inspect` are
+kept as their answers.
 
 `claudexor remote bootstrap --json` starts or discovers the remote daemon and
 returns its loopback endpoint. The daemon remains bound to `127.0.0.1`; the app
