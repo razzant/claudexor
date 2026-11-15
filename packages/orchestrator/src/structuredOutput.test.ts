@@ -291,4 +291,30 @@ describe("structured output schema dialects", () => {
       });
     }
   });
+
+  // ajv resolves a root $id through fast-uri. Below 3.1.5 (GHSA-7p8r-x3mc-p8w7)
+  // a backslash before "@" in the authority was accepted and the schema
+  // compiled; the patched floor refuses it, so it fails closed at admission.
+  it.each([
+    ["omitted", undefined],
+    ["draft 2020-12", "https://json-schema.org/draft/2020-12/schema"],
+  ])("refuses a root $id whose authority hides another host (%s $schema)", (_label, dialect) => {
+    const schema = (id: string): Record<string, unknown> => ({
+      ...(dialect ? { $schema: dialect } : {}),
+      $id: id,
+      type: "object",
+      properties: { a: { $ref: "#/$defs/s" } },
+      $defs: { s: { type: "string" } },
+    });
+    expect(() =>
+      assertOutputSchemaCompiles(schema("https://claudexor.example/out.json")),
+    ).not.toThrow();
+    try {
+      assertOutputSchemaCompiles(schema("http://trusted.example\\@evil.example/out.json"));
+      throw new Error("expected the backslash authority to be rejected");
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidOutputSchemaError);
+      expect(error).toMatchObject({ code: "invalid_output_schema", retryable: false, status: 400 });
+    }
+  });
 });
