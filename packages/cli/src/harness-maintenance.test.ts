@@ -54,6 +54,27 @@ function oldCopy(w: ReturnType<typeof world>, remote = false) {
   if (remote) w.options.sourceEnv!.CLAUDEXOR_REMOTE_RUNTIME = "1";
   return { pkg, entry, launcher };
 }
+/** Answers its own version only under the declared switch (null: refuses the
+ * switch); a plain --version reaches a newer cached copy, as Copilot does
+ * without --no-auto-update. Logs every invocation's argv. */
+function cachedVendor(path: string, own: string | null, cached: string, log: string) {
+  mkdirSync(dirname(path), { recursive: true });
+  const switched =
+    own === null
+      ? `echo "error: unknown option '--fixture-no-update'" >&2; exit 2`
+      : `[ "$2" = --version ] && [ "$#" = 2 ] && echo ${own} && exit 0`;
+  writeFileSync(
+    path,
+    `#!/bin/sh
+printf '%s\\n' "$*" >> '${log}'
+if [ "$1" = --fixture-no-update ]; then ${switched}; fi
+[ "$1" = --version ] && [ "$#" = 1 ] && echo ${cached} && exit 0
+exit 9
+`,
+    { mode: 0o755 },
+  );
+}
+const asked = (log: string) => readFileSync(log, "utf8").trim().split("\n");
 
 describe("selected vendor operation", () => {
   it.each([
@@ -650,6 +671,85 @@ echo 1.18.0
     expect(converted).toMatchObject({ ok: true, after: { path: w.installed, version: "1.19.5" } });
     expect(converted.limitations.some((line) => line.includes("next check answered"))).toBe(false);
     expect(existsSync(old.pkg)).toBe(false);
+  });
+  it("compares an old npm copy with its replacement by their own answers, not a newer cached copy", async () => {
+    const w = world(),
+      old = oldCopy(w),
+      log = join(w.home, "asked.log");
+    w.program.versionScheme = "semver";
+    w.program.childUpdateArgs = ["--fixture-no-update"];
+    cachedVendor(old.entry, "1.0.111", "1.0.112", log);
+    let replacement = "1.0.110";
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args.at(-1) === "--version") return spawnSync(bin, args, opts);
+      cachedVendor(w.installed, replacement, "1.0.112", log);
+      return result(`Installed ${replacement}`);
+    }) as typeof spawnSync;
+    const refused = await runHarnessUpdate("fixture", undefined, w.options);
+    // The package metadata says 9.9.9; the receipt carries the program's own answer.
+    expect(refused.before).toMatchObject({ path: old.launcher, version: "1.0.111" });
+    expect(refused.problem).toMatchObject({
+      code: "conversion_older_program",
+      message: `After the installer, ${w.installed} version 1.0.110 is found first and is older than the selected 1.0.111; the installer's copy may be hidden behind it. Conversion removed nothing.`,
+    });
+    expect(existsSync(old.pkg)).toBe(true);
+    expect(existsSync(old.launcher)).toBe(true);
+    replacement = "1.0.113";
+    const converted = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(converted).toMatchObject({
+      ok: true,
+      before: { version: "1.0.111" },
+      after: { path: w.installed, version: "1.0.113" },
+    });
+    expect(existsSync(old.pkg)).toBe(false);
+    expect(new Set(asked(log))).toEqual(new Set(["--fixture-no-update --version"]));
+  });
+  it("runs an exact version the installed copy lacks even when a newer cached copy answers it", async () => {
+    const w = world(),
+      log = join(w.home, "asked.log");
+    w.program.childUpdateArgs = ["--fixture-no-update"];
+    cachedVendor(w.installed, "1.0.111", "1.0.112", log);
+    const commands: string[][] = [];
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args.at(-1) === "--version") return spawnSync(bin, args, opts);
+      commands.push([...args]);
+      cachedVendor(w.installed, "1.0.112", "1.0.112", log);
+      return result("Installed 1.0.112");
+    }) as typeof spawnSync;
+    const receipt = await runHarnessUpdate("fixture", "1.0.112", w.options);
+    expect(commands).toEqual([["update", "--version", "1.0.112"]]);
+    expect(receipt).toMatchObject({
+      ok: true,
+      outcome: "changed",
+      before: { version: "1.0.111" },
+      after: { path: w.installed, version: "1.0.112" },
+    });
+    expect(new Set(asked(log))).toEqual(new Set(["--fixture-no-update --version"]));
+  });
+  it("keeps a program that refuses its declared switch selected but unanswered, never asking without it", async () => {
+    const w = world(),
+      log = join(w.home, "asked.log");
+    w.program.childUpdateArgs = ["--fixture-no-update"];
+    cachedVendor(w.installed, null, "1.0.112", log);
+    const row = await inspectHarness("fixture", w.options);
+    expect(row.selection).toMatchObject({ path: w.installed, version: null });
+    expect(row.actions.update).toMatchObject({ available: true, reason: null });
+    const unanswered =
+      "The selected program cannot answer --version; repair it or use Update before installing.";
+    expect(row.actions.install).toMatchObject({ available: false, reason: unanswered });
+    const receipt = await runHarnessUpdate("fixture", undefined, {
+      ...w.options,
+      installOnly: true,
+    });
+    expect(receipt).toMatchObject({
+      ok: false,
+      outcome: "unknown",
+      mutation: "none",
+      commands: [],
+      problem: { code: "program_verification_failed", message: unanswered },
+    });
+    // One inventory read, then two reads before and two after: none without the switch.
+    expect(asked(log)).toEqual(Array(5).fill("--fixture-no-update --version"));
   });
   it.each([false, true])(
     "accepts a nonzero installer only when it leaves an acceptable replacement (%s)",

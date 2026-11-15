@@ -35,7 +35,8 @@ export function selectProgramLauncher(
 
 export interface ProgramResolutionOptions {
   sourceEnv?: NodeJS.ProcessEnv;
-  /** Exact final child environment. Its PATH, including an explicit patch, wins. */
+  /** Exact final child environment; only declared child-update values are added.
+   * Its PATH, including an explicit patch, wins. */
   environment?: NodeJS.ProcessEnv;
   nodePath?: string;
   platform?: NodeJS.Platform;
@@ -103,6 +104,17 @@ export function selectProgramEntry(
   return { command, env, observed };
 }
 
+/** The version question runs in the update mode of the program's ordinary
+ * children: declared arguments before `--version`, declared values over the
+ * caller's environment. A refused switch leaves the version unknown; it is
+ * never asked again without it. */
+function versionQuestion(program: HarnessProgram, env: NodeJS.ProcessEnv) {
+  return {
+    args: [...(program.childUpdateArgs ?? []), "--version"],
+    env: program.childUpdateEnv ? { ...env, ...program.childUpdateEnv } : env,
+  };
+}
+
 function withVersion(observed: SelectedHarnessProgram, output: string): SelectedHarnessProgram {
   const versionOutput = redactSecrets(output.trim()).split(/\r?\n/)[0]?.slice(0, 256) || null;
   const version =
@@ -120,10 +132,11 @@ export function resolveSelectedProgram(
   const { command, env, observed } = selectProgramEntry(program, options);
   if (command) {
     try {
+      const question = versionQuestion(program, env);
       const invocation = interpretedCommand(
         command.entrypoint,
-        ["--version"],
-        env,
+        question.args,
+        question.env,
         command.interpreter,
       );
       const result = (options.spawn ?? spawnSync)(invocation.binary, invocation.args, {
@@ -155,9 +168,10 @@ export async function resolveSelectedProgramAsync(
   const { command, env, observed } = selectProgramEntry(program, options);
   if (command) {
     try {
-      const result = await runCapture(command.entrypoint, ["--version"], {
+      const question = versionQuestion(program, env);
+      const result = await runCapture(command.entrypoint, question.args, {
         inheritEnv: "clean",
-        env,
+        env: question.env,
         cwd: options.cwd,
         timeoutMs: 10_000,
         abortSignal: options.abortSignal,

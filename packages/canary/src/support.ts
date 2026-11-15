@@ -213,12 +213,25 @@ export function makeSandbox(): Sandbox {
   };
 }
 
-/** A vendor CLI stub that answers ONLY `--version`; every other argv exits 1. */
+/** A vendor CLI stub that answers ONLY a version question: a final `--version`,
+ * optionally after the adapter-declared update switches (Cursor's and Copilot's
+ * version questions carry them). Every other argv exits 1. */
 function versionOnlyStub(base: string, name: string, version: string): string {
   const stub = join(base, name);
   writeFileSync(
     stub,
-    `#!/bin/sh\ncase "$1" in\n  --version) echo "${version}" ;;\n  *) exit 1 ;;\nesac\n`,
+    [
+      "#!/bin/sh",
+      'while [ "$#" -gt 0 ]; do',
+      '  case "$1" in',
+      "    --disable-auto-update|--no-auto-update) shift ;;",
+      `    --version) [ "$#" -eq 1 ] && echo "${version}" && exit 0; exit 1 ;;`,
+      "    *) exit 1 ;;",
+      "  esac",
+      "done",
+      "exit 1",
+      "",
+    ].join("\n"),
   );
   chmodSync(stub, 0o755);
   return stub;

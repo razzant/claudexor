@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { HarnessRunSpec } from "@claudexor/schema";
 import { defineHarnessProgram } from "./program-registry.js";
-import { observeHarnessProgram, invalidateProgramObservations } from "./program-observation.js";
+import {
+  observeHarnessProgram,
+  invalidateProgramObservations,
+  onProgramObservationChange,
+} from "./program-observation.js";
 import { runCliHarness } from "./runloop.js";
 const roots: string[] = [];
 afterEach(() => {
@@ -76,3 +80,64 @@ it.each([true, false])(
     );
   },
 );
+it("asks a fresh version in the run's declared update mode, so the startup answer is no replacement", async () => {
+  const root = mkdtempSync(join(tmpdir(), "native-update-mode-"));
+  roots.push(root);
+  const bin = join(root, "native");
+  // The installed copy answers under the switch; without it a newer cached copy answers.
+  writeFileSync(
+    bin,
+    `#!/bin/sh
+if [ "$1" = --fixture-no-update ]; then
+  [ "$2" = --version ] && echo 1.0.111 && exit 0
+  echo '{"type":"init","version":"1.0.111"}'; exit 0
+fi
+[ "$1" = --version ] && echo 1.0.112 && exit 0
+echo '{"type":"init","version":"1.0.112"}'
+`,
+    { mode: 0o755 },
+  );
+  const program = defineHarnessProgram({
+    id: "update-mode-fixture",
+    overrideEnv: "UPDATE_MODE_FIXTURE_BIN",
+    launchers: [{ name: "update-mode-fixture" }],
+    installationEnv: [],
+    platforms: {},
+    childUpdateArgs: ["--fixture-no-update"],
+  });
+  const events = [];
+  for await (const event of runCliHarness({
+    program,
+    bin,
+    // Adapters put the declared switch on their ordinary children.
+    args: [...program.childUpdateArgs!],
+    spec: HarnessRunSpec.parse({
+      session_id: "s",
+      intent: "explain",
+      prompt: "fixture",
+      cwd: root,
+    }),
+    env: { HOME: root },
+    programVersion: (frame: unknown) => (frame as { version?: string }).version,
+    parseEvent: () => [{ type: "started", session_id: "s", ts: new Date().toISOString() }],
+  }))
+    events.push(event);
+  expect(events.find((e) => e.type === "started")?.program).toEqual({
+    path: bin,
+    version: "1.0.111",
+    versionSource: "vendor_stream",
+  });
+  const changes: Array<string | undefined> = [];
+  const stop = onProgramObservationChange((harness) => changes.push(harness));
+  try {
+    expect(
+      await observeHarnessProgram(program, { HOME: root }, bin, { fresh: true }),
+    ).toMatchObject({
+      versionSource: "version_probe",
+      program: { path: bin, version: "1.0.111" },
+    });
+    expect(changes).toEqual([]);
+  } finally {
+    stop();
+  }
+});

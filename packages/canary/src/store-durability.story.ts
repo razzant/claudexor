@@ -7,6 +7,7 @@ import {
   CONTROL_PROTOCOL_MAJOR,
   ControlDaemonStatus,
   ControlHandshakeResponse,
+  ControlHarnessListResponse,
   type ControlRunDetail,
   type ControlRunSummary,
   type ControlThread,
@@ -137,6 +138,13 @@ it("[INV-143:store-durability] keeps accepted conversation and crash custody wit
   const health = ControlDaemonStatus.parse(await api("GET", "/daemon/status"));
   expect(health.store?.flusher?.state).toBe("up");
   expect(health.store?.integrity).not.toBe("failed");
+  // The stub answers Cursor's declared version question, so discovery finds it.
+  const { harnesses } = ControlHarnessListResponse.parse(
+    await api("GET", "/harnesses?harness=cursor&fresh=true"),
+  );
+  expect(harnesses.find((row) => row.id === "cursor")?.checks).toContainEqual(
+    expect.objectContaining({ id: "installed", status: "pass", detail: "codex-cli 0.0.0-stub" }),
+  );
 
   const projectKey = randomUUID(),
     threadKey = randomUUID(),
