@@ -54,8 +54,10 @@ export interface RunScopeEntry {
   settled_at?: string;
   /** Birth floor of the scope: the earliest harness root's `lstart`. */
   scope_start: string | null;
-  /** Every harness root the run spawned, seeded at spawn (fix round 1 item 2). */
+  /** The harness roots' groups in force: seeded at spawn (fix round 1 item 2),
+   * and gone again once proven empty at the root's own close. */
   root_groups: RunScopeRootGroup[];
+  /** Recorded descendants; `pgid` -1 (`NO_GROUP_BASIS`): by pid and birth only. */
   captured: CapturedProcess[];
   outcome?: RunScopeOutcomeSummary;
   /** Later, separately bounded attempts this owner made after the terminal (#613). */
@@ -162,7 +164,8 @@ export function parseEntry(value: unknown): RunScopeEntry | null {
   };
 }
 
-/** The recorded sources of one entry as the reaper takes them. */
+/** The recorded sources of one entry as the reaper takes them: its rows are the
+ * bases in force (a group proven empty left them, `DaemonRunScopeIndex.retireRootGroup`). */
 export function reapSources(entry: RunScopeEntry) {
   return {
     captured: entry.captured,
@@ -176,6 +179,30 @@ export function reapSources(entry: RunScopeEntry) {
       ...(g.leader_identity ? { leaderIdentity: g.leader_identity } : {}),
     })),
   };
+}
+
+/**
+ * Keep the one order of `captured` a host of any age relies on: among the rows of
+ * one pid, a row without a group basis (`pgid` not above 1: an earlier generation
+ * whose group was proven empty) never follows a row with one. A host built before
+ * `NO_GROUP_BASIS` takes the LAST row of a pid as that pid's birth when a captured
+ * group's leader must vouch for it; with this order that is the live generation's
+ * row, so a newly captured leader keeps its group's members. Stable otherwise.
+ */
+export function orderCaptured(captured: CapturedProcess[]): void {
+  const firstBased = new Map<number, number>(); // pid -> index of its first row with a basis
+  for (let i = 0; i < captured.length; i += 1) {
+    const row = captured[i]!;
+    if (row.pgid > 1) {
+      if (!firstBased.has(row.pid)) firstBased.set(row.pid, i);
+      continue;
+    }
+    const at = firstBased.get(row.pid);
+    if (at === undefined) continue;
+    captured.splice(i, 1);
+    captured.splice(at, 0, row);
+    for (const [pid, index] of firstBased) if (index >= at) firstBased.set(pid, index + 1);
+  }
 }
 
 /** The earlier of two `lstart` readings (the scope floor keeps the minimum). */

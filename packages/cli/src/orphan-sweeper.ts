@@ -33,11 +33,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   WorkspaceManager,
+  envelopePreparationVerdict,
   git,
   processStartTime,
   readEnvelopeCustody,
   readEnvelopeRecoveryRecord,
   recoverOrphanCustody,
+  type PreparationQuietRead,
 } from "@claudexor/workspace";
 import { oneShotRuntimeDir, ownedProjectRuntimeDir, projectRuntimeDir } from "@claudexor/util";
 
@@ -52,6 +54,8 @@ interface SweepInput {
    * Claudexor's envelope scratch under their runtime namespace is swept; the
    * caller's tree and Git refs are never Claudexor's to collect. */
   knownExecutionRoots?: () => readonly string[];
+  /** The release criterion of an unfinished preparation (with the scope index). */
+  quiet?: PreparationQuietRead;
 }
 
 export async function sweepOrphanWorkspaces(input: SweepInput): Promise<string[]> {
@@ -61,7 +65,7 @@ export async function sweepOrphanWorkspaces(input: SweepInput): Promise<string[]
   for (const root of roots) {
     const project = projectRuntimeDir(root);
     for (const tree of [root, ...threadTreesUnder(root, actions)]) {
-      const swept = await sweepTreeNamespace(tree, actions);
+      const swept = await sweepTreeNamespace(tree, actions, input.quiet);
       // A current envelope of an isolated thread lives in its project's namespace. One
       // that cannot be walked hides which branches are owned, so they all stay.
       if (swept && !runtimeLink(root, "workspaces"))
@@ -70,14 +74,14 @@ export async function sweepOrphanWorkspaces(input: SweepInput): Promise<string[]
   }
   const executionRoots = knownProjectRoots(input.knownExecutionRoots ?? (() => []));
   for (const root of executionRoots.filter((candidate) => !roots.includes(candidate))) {
-    await sweepTreeNamespace(root, actions);
+    await sweepTreeNamespace(root, actions, input.quiet);
   }
   // Explicitly ephemeral runs keep their envelopes in the one-shot namespace (#503).
   // Like retention, this never follows a linked store: it may hold another one's envelopes.
   const oneShot = oneShotRuntimeDir();
   const linked = [oneShot, join(oneShot, "workspaces")].find(presentButNotPlainDirectory);
   if (linked) actions.push(`kept namespace ${linked}: not a plain directory`);
-  else actions.push(...(await sweepEnvelopeNamespace(oneShot, null)));
+  else actions.push(...(await sweepEnvelopeNamespace(oneShot, null, input.quiet)));
   actions.push(...sweepReadOnlyHomes());
   return actions;
 }
@@ -93,14 +97,18 @@ function runtimeLink(tree: string, ...segments: string[]): string | null {
   }
 }
 
-async function sweepTreeNamespace(tree: string, actions: string[]): Promise<boolean> {
+async function sweepTreeNamespace(
+  tree: string,
+  actions: string[],
+  quiet?: PreparationQuietRead,
+): Promise<boolean> {
   const runtime = projectRuntimeDir(tree);
   const link = runtimeLink(tree, "workspaces");
   if (link) {
     actions.push(`kept namespace ${runtime}: ${link}`);
     return false;
   }
-  actions.push(...(await sweepEnvelopeNamespace(runtime, tree)));
+  actions.push(...(await sweepEnvelopeNamespace(runtime, tree, quiet)));
   return true;
 }
 
@@ -155,6 +163,7 @@ function threadTreesUnder(root: string, actions: string[]): string[] {
 async function sweepEnvelopeNamespace(
   runtimeRoot: string,
   legacyRoot: string | null,
+  quiet?: PreparationQuietRead,
 ): Promise<string[]> {
   const actions: string[] = [];
   const workspacesDir = join(runtimeRoot, "workspaces");
@@ -186,6 +195,16 @@ async function sweepEnvelopeNamespace(
       if (owner) {
         actions.push(
           `kept envelope ${taskId}/${attemptId} under ${where}: live owner pid ${owner}`,
+        );
+        continue;
+      }
+      // An unfinished preparation (owner.json `preparing`) is read before any
+      // change: while what its stop left may still run, the base stays (r10 C),
+      // and where no read can prove its end only an operator's confirmation frees it.
+      const preparation = await envelopePreparationVerdict(join(taskDir, attemptId), quiet);
+      if (preparation.status === "held") {
+        actions.push(
+          `kept envelope ${taskId}/${attemptId} under ${where}: its stopped preparation may still run (${preparation.reasons.join("; ")})${preparation.operatorMayConfirm ? "; 'claudexor gc preparations' shows it, and releases it once you confirm its processes ended" : ""}`,
         );
         continue;
       }

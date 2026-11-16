@@ -193,8 +193,8 @@ describe("an isolated directory copy announces its preparation before the execut
     // Already on record when the executor started, and in its prompt.
     expect(seen).toHaveLength(1);
     expect(seen[0]!.before).toContain("workspace.prepared");
-    // After the envelope exists (harness.started precedes creation in this lane),
-    // before anything the executor itself emitted.
+    // As the executor starts: after `harness.started` (entry into the execution
+    // path, once the copy exists), before anything the executor itself emitted.
     expect(seen[0]!.before.indexOf("workspace.prepared")).toBeGreaterThan(
       seen[0]!.before.indexOf("harness.started"),
     );

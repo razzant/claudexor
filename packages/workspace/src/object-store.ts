@@ -12,9 +12,10 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import type { GitDeliveryPair, GitObjectFormat } from "@claudexor/schema";
-import { WorkspaceError } from "@claudexor/core";
+import { waitForRead, WorkspaceError } from "@claudexor/core";
 import { projectRuntimeDir } from "@claudexor/util";
 import { gitObserved, GitOperationError } from "./git-observed.js";
+import { throwIfCancelled } from "./git-run.js";
 import { repositoryObjectFormat, repositoryObjectFormatOrNull } from "./git-result.js";
 import { liveRootRecords, retainedPairOf, writeRootRecord } from "./object-store-roots.js";
 import { clearStoreSkeleton, retireEmptyObjectStore } from "./object-store-retire.js";
@@ -24,7 +25,10 @@ import {
   controlDir,
   endPendingRoots,
   livePendingRecords,
+  ownerState,
 } from "./object-store-leases.js";
+import { stagingVerdict } from "./staging-owner.js";
+import type { PreparationQuietRead } from "./preparation-hold.js";
 import {
   missingObjects,
   packIndexObjectIds,
@@ -63,11 +67,14 @@ export function storeEndpoint(store: string): ObjectEndpoint {
 }
 
 /** The user's repository as a transfer endpoint (its own object directory). */
-export async function repositoryEndpoint(repo: string): Promise<ObjectEndpoint> {
+export async function repositoryEndpoint(
+  repo: string,
+  signal?: AbortSignal,
+): Promise<ObjectEndpoint> {
   const objects = await gitObserved(
     repo,
     ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
-    { label: "rev-parse objects" },
+    { label: "rev-parse objects", signal },
   );
   return { cwd: repo, env: { GIT_OPTIONAL_LOCKS: "0" }, objectsDir: objects.stdout.trim() };
 }
@@ -118,11 +125,14 @@ async function initializeStore(store: string, format: GitObjectFormat): Promise<
 
 /** The object format a project keeps: its store's, else its own repository's;
  * null for a project in no Git repository that has no store yet. */
-async function projectObjectFormat(projectRoot: string): Promise<GitObjectFormat | null> {
+async function projectObjectFormat(
+  projectRoot: string,
+  signal?: AbortSignal,
+): Promise<GitObjectFormat | null> {
   const store = objectStorePath(projectRoot);
   if (existsSync(join(store, "objects")) && existsSync(join(store, "HEAD")))
-    return repositoryObjectFormat(store, storeEnv(store));
-  return repositoryObjectFormatOrNull(projectRoot);
+    return repositoryObjectFormat(store, storeEnv(store), signal);
+  return repositoryObjectFormatOrNull(projectRoot, signal);
 }
 
 const formatRefusal = (projectRoot: string, kept: GitObjectFormat, format: GitObjectFormat) =>
@@ -136,8 +146,9 @@ const formatRefusal = (projectRoot: string, kept: GitObjectFormat, format: GitOb
 export async function assertProjectObjectFormat(
   projectRoot: string,
   format: GitObjectFormat,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const kept = await projectObjectFormat(projectRoot);
+  const kept = await projectObjectFormat(projectRoot, signal);
   if (kept !== null && kept !== format)
     throw new GitOperationError("capture_failed", formatRefusal(projectRoot, kept, format));
 }
@@ -145,24 +156,34 @@ export async function assertProjectObjectFormat(
 export async function ensureObjectStore(
   projectRoot: string,
   objectFormat?: GitObjectFormat,
+  signal?: AbortSignal,
 ): Promise<{ store: string; objectFormat: GitObjectFormat }> {
   const store = objectStorePath(projectRoot);
-  const format = objectFormat ?? (await repositoryObjectFormat(projectRoot));
+  const format = objectFormat ?? (await repositoryObjectFormat(projectRoot, undefined, signal));
   if (!existsSync(join(store, "objects")) || !existsSync(join(store, "HEAD"))) {
     // A store takes its project's format, never one a foreign repository brings.
-    await assertProjectObjectFormat(projectRoot, format);
-    clearStoreSkeleton(store);
-    const pending = initializing.get(store) ?? initializeStore(store, format);
-    initializing.set(store, pending);
-    try {
-      await pending;
-    } finally {
-      if (initializing.get(store) === pending) initializing.delete(store);
+    await assertProjectObjectFormat(projectRoot, format, signal);
+    let pending = initializing.get(store);
+    if (!pending) {
+      clearStoreSkeleton(store);
+      const started = initializeStore(store, format);
+      // The shared initialization owns its own entry: it ends with its process,
+      // never with one waiter's stop, so another run's waiter is not orphaned.
+      const settle = () => {
+        if (initializing.get(store) === started) initializing.delete(store);
+      };
+      void started.then(settle, settle);
+      initializing.set(store, (pending = started));
     }
+    // One waiter's stop ends only its own wait (the shared process keeps running).
+    await (signal ? waitForRead(pending, signal) : pending).catch((error: unknown) => {
+      throwIfCancelled(signal);
+      throw error;
+    });
   }
   if (existsSync(join(store, "objects", "info", "alternates")))
     throw new WorkspaceError(`object store ${store} has alternates; refusing to use it`);
-  const stored = await repositoryObjectFormat(store, storeEnv(store));
+  const stored = await repositoryObjectFormat(store, storeEnv(store), signal);
   if (stored !== format)
     throw new GitOperationError("capture_failed", formatRefusal(projectRoot, stored, format));
   for (const name of ["pending", "tmp", "roots"])
@@ -186,6 +207,7 @@ async function closureBeyond(
   source: ObjectEndpoint,
   roots: readonly string[],
   boundary: { commit: string; tree: string } | null,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   if (roots.length === 0) return [];
   // A negative commit stops commit walks; a negative tree excludes its contents
@@ -200,6 +222,7 @@ async function closureBeyond(
   const listed = await gitObserved(source.cwd, args, {
     env: source.env,
     label: "rev-list --objects",
+    signal,
   });
   return [
     ...new Set(
@@ -233,25 +256,29 @@ export async function retainInObjectStore(input: {
   owner: string;
   /** The delivery pair these roots keep, recorded for a later replay. */
   pair?: GitDeliveryPair;
+  /** Preparation's stop: its own children end, its pending lease is released. */
+  signal?: AbortSignal;
 }): Promise<RetainResult> {
-  let { store } = await ensureObjectStore(input.projectRoot, input.objectFormat);
-  let pending = await beginPendingRoots(store, input.roots);
+  const { signal } = input;
+  let { store } = await ensureObjectStore(input.projectRoot, input.objectFormat, signal);
+  let pending = await beginPendingRoots(store, input.roots, signal);
   if (!existsSync(join(store, "objects"))) {
     // A strictly empty store was retired between ensure and this lease: make it again.
     endPendingRoots(pending);
-    ({ store } = await ensureObjectStore(input.projectRoot, input.objectFormat));
-    pending = await beginPendingRoots(store, input.roots);
+    ({ store } = await ensureObjectStore(input.projectRoot, input.objectFormat, signal));
+    pending = await beginPendingRoots(store, input.roots, signal);
   }
   try {
-    const needed = await closureBeyond(input.source, input.roots, input.boundary);
+    const needed = await closureBeyond(input.source, input.roots, input.boundary, signal);
     const target = storeEndpoint(store);
     const transfer = await transferObjects(
       input.source,
       target,
       needed,
       HASH_LENGTH[input.objectFormat],
+      signal,
     );
-    const absent = await missingObjects(target, needed);
+    const absent = await missingObjects(target, needed, signal);
     if (absent.length > 0) {
       throw new GitOperationError(
         "capture_object_missing",
@@ -369,6 +396,8 @@ export async function pruneProjectObjectStore(
     retiredOwners?: ReadonlySet<string>;
     /** Retire the store when it ends strictly empty (#503). */
     retireEmpty?: boolean;
+    /** The staging release criterion (the daemon's also reads the scope's index row). */
+    quiet?: PreparationQuietRead;
   },
 ): Promise<{ freedBytes: number; yielded: boolean }> {
   const store = join(runtimeDir, "git-store");
@@ -380,6 +409,7 @@ export async function pruneProjectObjectStore(
     objectFormat: await repositoryObjectFormat(store, storeEnv(store)),
     ...(options.retiredOwners ? { retiredOwners: options.retiredOwners } : {}),
     ...(options.retireEmpty ? { retireEmpty: true } : {}),
+    ...(options.quiet ? { quiet: options.quiet } : {}),
   });
 }
 
@@ -410,6 +440,8 @@ export async function pruneObjectStore(input: {
   retiredOwners?: ReadonlySet<string>;
   /** With no live root left, retire a strictly empty store (object-store-retire.ts). */
   retireEmpty?: boolean;
+  /** A staging record's scope read (default: its marker census alone). */
+  quiet?: PreparationQuietRead;
 }): Promise<{ freedBytes: number; yielded: boolean }> {
   const { store } = input;
   if (!existsSync(join(store, "objects"))) return { freedBytes: 0, yielded: false };
@@ -450,8 +482,13 @@ export async function pruneObjectStore(input: {
     let walked = 0;
     for (const fan of readdirSync(objectsDir)) {
       if (fan.startsWith("tmp_") && containerAge(join(objectsDir, fan)) < cutoff) {
-        // Publication staging an interrupted transfer left behind.
-        if (!input.dryRun) rmSync(join(objectsDir, fan), { recursive: true, force: true });
+        // Publication staging an interrupted transfer left behind; one whose
+        // recorded writer is alive or unknown stays (r11, #694).
+        if (
+          !input.dryRun &&
+          (await stagingVerdict(join(objectsDir, fan), ownerState, input.quiet)) !== "keep"
+        )
+          rmSync(join(objectsDir, fan), { recursive: true, force: true });
         continue;
       }
       if (!/^[0-9a-f]{2}$/.test(fan)) continue;

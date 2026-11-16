@@ -22,6 +22,7 @@ export * from "./auth-capability-verifier.js";
 export * from "./env-scope.js";
 export * from "./process-scope.js";
 export * from "./process-scope-census.js";
+export * from "./process-scope-quiet.js";
 export * from "./process-scope-readers.js";
 export * from "./process-table.js";
 export * from "./host-facts.js";

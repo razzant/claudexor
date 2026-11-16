@@ -9,6 +9,7 @@ import {
 import { requestRefusalFailure } from "./runTerminalResults.js";
 import {
   openRunScopeCustody,
+  prepSignal,
   scopedRouteContext,
   scopedSpecEnv,
   type RunScopeCustodian,
@@ -287,7 +288,7 @@ import {
   type ResolvedRouteContext,
 } from "./routeContext.js";
 import { resolveAutoReviewerPanel, resolveExplicitReviewerPanel } from "./reviewerPanel.js";
-import { ensureWriteModeGitBoundary } from "./git-precondition.js";
+import { ensureWriteModeGitBoundary, preTurnSnapshot } from "./git-precondition.js";
 import { buildContinuation, type ContinuityDisclosureResult } from "./continuity.js";
 import { resolveContinuitySummary, threadContinuityRequest } from "./continuity-facts.js";
 import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./diffReview.js";
@@ -342,6 +343,7 @@ import { runRuntimeRoot } from "./run-runtime-root.js";
 import {
   WorkspaceManager,
   rawAwareSnapshot,
+  throwIfCancelled,
   type EnsureGitRepositoryResult,
 } from "@claudexor/workspace";
 import {
@@ -673,6 +675,7 @@ export interface RunInput {
   /** Internal provenance: the run's process-scope marker, minted by `run()` before the
    * first launch and carried in every harness `spec.env`. Never set by a caller. */
   runScopeMarker?: string;
+  preparationSignal?: AbortSignal; // internal: the run's preparation carrier (prepSignal)
 }
 
 /** Context handed to RunInput.onInteraction for one pending question. */
@@ -844,7 +847,7 @@ export class Orchestrator {
     // and every announced run HOLDS its terminal until the barrier has ended
     // what still carries it. The reap never changes the verdict.
     const custody = await openRunScopeCustody(this.deps.runScopes, runId);
-    resolved = { ...resolved, runScopeMarker: custody.marker };
+    resolved = custody.scope(resolved);
     try {
       return await guardAnnouncedRun(
         resolved.signal,
@@ -889,6 +892,7 @@ export class Orchestrator {
           this.routingRationaleByRun.delete(settledRunId);
           this.deps.delegationBudgetAuthority?.releaseRun(settledRunId);
         },
+        resolved.preparationSignal,
       );
     } catch (error) {
       // A durable startup sink may refuse `run.created` before the strategy can
@@ -3076,6 +3080,7 @@ export class Orchestrator {
         paths,
         runId,
         mode,
+        prepSignal(input),
       );
       if (gitPreconditionError) {
         return {
@@ -3096,7 +3101,7 @@ export class Orchestrator {
     // run — revert is simply unavailable then.
     let preTurnSha: string | null = null;
     if (mutatingRun && input.inPlace === true && input.workspaceKind !== "directory") {
-      preTurnSha = await rawAwareSnapshot(execRoot).catch(() => null);
+      preTurnSha = await preTurnSnapshot(execRoot, prepSignal(input));
     }
 
     // ContextPack is LAZY: agent/race candidates explore the live tree
@@ -3298,12 +3303,6 @@ export class Orchestrator {
       let harnessHome: ScopedHarnessHome | undefined;
       const tried = new PoolAttemptEvidence(adapter.id, slot.attemptId);
       try {
-        log.emit("harness.started", {
-          harness_id: adapter.id,
-          attempt_id: slot.attemptId,
-          external_context_policy: knobs.webPolicy,
-          ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
-        });
         envelope = await kept.envelope(wsm, {
           taskId,
           attemptId: slot.attemptId,
@@ -3319,10 +3318,13 @@ export class Orchestrator {
             (input.inPlace === true &&
               requestedSingleCandidate &&
               slot.routed.implementationTransport !== "git_patch_envelope"),
+          signal: prepSignal(input),
         });
         // A continueFrom envelope already owns its record: no empty source overwrites it.
         if (!input.continuation?.adopt) await rawAdoption.seed(envelope.worktree_path);
         harnessHome = this.harnessHomeFor(wsm, envelope, slot.routed, input);
+        throwIfCancelled(input.signal); // entering the execution path (not proof of a spawn)
+        AC.emitHarnessStarted(log, adapter.id, slot.attemptId, knobs);
         const run = await this.runCandidateInEnvelope(
           slot.routed,
           envelope,
@@ -3436,13 +3438,8 @@ export class Orchestrator {
                 continuation_count: candidateContinuationCount,
                 packet_turns: packet.continuity.disclosure.packetTurns,
               });
-              log.emit("harness.started", {
-                harness_id: adapter.id,
-                attempt_id: contAttemptId,
-                external_context_policy: knobs.webPolicy,
-                ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
-                continuation_of: run.attemptId,
-              });
+              const continuationOf = { continuation_of: run.attemptId };
+              AC.emitHarnessStarted(log, adapter.id, contAttemptId, knobs, continuationOf);
               const contLeaseId = contLease.lease?.lease_id ?? "";
               const contTried = new PoolAttemptEvidence(adapter.id, contAttemptId);
               try {
@@ -3547,6 +3544,8 @@ export class Orchestrator {
         reviewEnvelopes.push(envelope);
         envelope = undefined;
       } catch (err) {
+        const stop = { ledger, leaseId: slot.lease.lease_id, log, harnessId: adapter.id };
+        if (AC.releaseStoppedPreparation(err, { ...stop, attemptId: slot.attemptId })) return;
         const failureCost = AC.attemptFailureCost(err, "post-stream-error", 0);
         ledger.settle(slot.lease.lease_id, failureCost.settlement);
         const message = safeErrorMessage(err);
@@ -3875,9 +3874,11 @@ export class Orchestrator {
               accessProfile: candidateAccess,
               workspaceKind: input.workspaceKind,
               scopePaths: input.scopePaths,
+              signal: prepSignal(input),
             });
             await rawAdoption.seed(envelope.worktree_path);
             const synthHome = this.harnessHomeFor(wsm, envelope, synthRouted, input);
+            throwIfCancelled(input.signal);
             const run = await this.runCandidateInEnvelope(
               synthRouted,
               envelope,
@@ -3983,18 +3984,20 @@ export class Orchestrator {
               await disposeReviewEnvelopes();
             }
           } catch (err) {
-            // Not yet in `runs`: the run goes on, so its tries' accounts stay in the history.
-            if (!runs.some((run) => run.attemptId === "synth"))
-              thrownSynthesis = { poolAttempts: synthTried.snapshot() };
-            ledger.settle(
-              lease.lease?.lease_id ?? "",
-              AC.attemptFailureCost(err, "synthesis-error").settlement,
-            );
-            log.emit("harness.completed", {
-              attempt_id: "synth",
-              status: "failed",
-              error: safeErrorMessage(err),
-            });
+            const leaseId = lease.lease?.lease_id ?? "";
+            const stop = { ledger, leaseId, log, harnessId: synthRouted.adapter.id };
+            // A stopped preparation released its lease; the earlier candidates stand.
+            if (!AC.releaseStoppedPreparation(err, { ...stop, attemptId: "synth" })) {
+              // Not yet in `runs`: the run goes on, so its tries' accounts stay in the history.
+              if (!runs.some((run) => run.attemptId === "synth"))
+                thrownSynthesis = { poolAttempts: synthTried.snapshot() };
+              ledger.settle(leaseId, AC.attemptFailureCost(err, "synthesis-error").settlement);
+              log.emit("harness.completed", {
+                attempt_id: "synth",
+                status: "failed",
+                error: safeErrorMessage(err),
+              });
+            }
           } finally {
             await disposeSaved?.();
             if (envelope) await wsm.dispose(envelope);
@@ -4663,6 +4666,7 @@ export class Orchestrator {
         paths,
         runId,
         mode,
+        prepSignal(input),
       );
       if (gitPreconditionError) {
         return {
@@ -4834,7 +4838,7 @@ export class Orchestrator {
       // access level the envelope did not actually run with.
       const convergenceAccess = contract.access.effective_profile;
       if (input.inPlace === true && input.workspaceKind !== "directory") {
-        preTurnSha = await rawAwareSnapshot(execRoot).catch(() => null);
+        preTurnSha = await preTurnSnapshot(execRoot, prepSignal(input));
       }
       envelope = await wsm.create({
         taskId,
@@ -4845,6 +4849,7 @@ export class Orchestrator {
         accessProfile: convergenceAccess,
         workspaceKind: input.workspaceKind,
         scopePaths: input.scopePaths,
+        signal: prepSignal(input),
       });
       for (;;) {
         if (input.signal?.aborted) break;
@@ -4902,12 +4907,7 @@ export class Orchestrator {
         const tried = new PoolAttemptEvidence(adapter.id, attemptId);
         try {
           harnessHome = this.harnessHomeFor(wsm, envelope, routed, input);
-          log.emit("harness.started", {
-            harness_id: adapter.id,
-            attempt_id: attemptId,
-            external_context_policy: knobs.webPolicy,
-            ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
-          });
+          AC.emitHarnessStarted(log, adapter.id, attemptId, knobs);
           run = await this.runCandidateInEnvelope(
             routed,
             envelope,
@@ -5281,6 +5281,8 @@ export class Orchestrator {
           }
         }
       }
+    } catch (error) {
+      if (!AC.preparationStopped(error)) throw error; // a stop ends via the cancelled terminal below
     } finally {
       if (envelope) await wsm.dispose(envelope);
     }

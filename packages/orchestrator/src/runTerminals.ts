@@ -14,6 +14,7 @@ import {
   type RunOutcomeFacts as RunOutcomeFactsType,
 } from "@claudexor/schema";
 import { orderedAppender, redactSecrets } from "@claudexor/util";
+import { preparationStopsOf } from "@claudexor/workspace";
 import { reconcileDecisionBudget, settledBudgetSnapshot } from "./decisionBudget.js";
 import {
   cancelReasonFromSignalToken,
@@ -76,6 +77,9 @@ export async function guardAnnouncedRun(
    * dies before its telemetry writer runs cannot leak it (QA-034 map leak).
    */
   onSettled?: (runId: string) => void | Promise<void>,
+  /** The run's preparation carrier: what its stop left unconfirmed in preparation,
+   * and what stays held, is disclosed on the terminal (any strategy, no attempt). */
+  preparation?: AbortSignal,
 ): Promise<OrchestratorResult> {
   let announced: AnnouncedRunContext | null = null;
   let preparedResult: OrchestratorResult | null = null;
@@ -293,6 +297,9 @@ export async function guardAnnouncedRun(
                 type: terminalEventTypeFor(originalType, prepared.facts.outcome),
                 payload: {
                   ...(committedCancel?.payload ?? payload),
+                  // A preparation step the stop left unconfirmed (any strategy,
+                  // also where no attempt began), and what stays held after it.
+                  ...preparationStopsOf(preparation),
                   lifecycle: prepared.facts.outcome.lifecycle,
                   facts: prepared.facts.outcome,
                   reason: prepared.facts.outcome.reason,

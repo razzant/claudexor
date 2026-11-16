@@ -1999,6 +1999,95 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("GET /runs/:id/produced for an isolated run whose tree preparation did not complete answers a typed 409, then serves it (#694)", async () => {
+    const { daemon, record } = fakeDaemon();
+    const liveRoot = reapMk(join(tmpdir(), "claudexor-iso-held-live-"));
+    const threadDir = reapMk(join(tmpdir(), "claudexor-iso-held-thread-"));
+    const worktree = join(threadDir, "tree");
+    mkdirSync(join(worktree, "artifacts"), { recursive: true });
+    writeFileSync(join(worktree, ".git"), "gitdir: /elsewhere\n");
+    writeFileSync(join(worktree, "artifacts", "note.md"), "HELD_TREE\n");
+    const prepRecord = join(threadDir, "preparation.json");
+    writeFileSync(
+      prepRecord,
+      JSON.stringify({ schema: 1, tree: worktree, held: { reason: "output_held", groups: [9] } }),
+    );
+    record.params = {
+      mode: "agent",
+      scope: { kind: "project", root: liveRoot },
+      threadId: "th-held",
+    };
+    // The real resolver: its readiness check refuses the held tree.
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async (id: string) => ({
+        thread: { id, workspace: { mode: "isolated", worktree_path: worktree } },
+        sessions: [],
+        turns: [],
+      }),
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        for (const url of [
+          `${base}/runs/run-d1/produced`,
+          `${base}/runs/run-d1/produced/note.md`,
+        ]) {
+          const res = await apiFetch(url, { headers: { authorization: `Bearer ${token}` } });
+          expect(res.status, url).toBe(409);
+          expect(await res.json(), url).toMatchObject({
+            code: "termination_unconfirmed",
+            retryable: true,
+            context: {
+              reason: "worktree_held",
+              thread_id: "th-held",
+              held: [worktree],
+              termination_unconfirmed: { survivors: [], reason: "output_held" },
+            },
+          });
+        }
+        // A release that proved the end and then could not finish: the same 409,
+        // with that cleanup fault's code and remedy instead of processes to wait for.
+        writeFileSync(
+          prepRecord,
+          JSON.stringify({
+            schema: 1,
+            tree: worktree,
+            held: { reason: "output_held", groups: [9] },
+            cleanup_error: "EIO: unlink preparation record",
+          }),
+        );
+        for (const url of [
+          `${base}/runs/run-d1/produced`,
+          `${base}/runs/run-d1/produced/note.md`,
+        ]) {
+          const res = await apiFetch(url, { headers: { authorization: `Bearer ${token}` } });
+          expect(res.status, url).toBe(409);
+          const body = (await res.json()) as { context: Record<string, unknown> };
+          expect(body, url).toMatchObject({
+            code: "preparation_cleanup_failed",
+            retryable: true,
+            requiredActions: [expect.stringContaining("Clear what prevents the cleanup")],
+            context: {
+              reason: "worktree_held",
+              thread_id: "th-held",
+              held: [worktree],
+              preparation: { cleanup_error: "EIO: unlink preparation record" },
+            },
+          });
+          expect(body.context, url).not.toHaveProperty("termination_unconfirmed");
+        }
+        rmSync(prepRecord);
+        const served = await apiFetch(`${base}/runs/run-d1/produced/note.md`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(served.status).toBe(200);
+        expect(await served.text()).toBe("HELD_TREE\n");
+      },
+      undefined,
+      services,
+    );
+  });
+
   it("GET /runs/:id/produced for an isolated run whose worktree was purged answers a typed 410", async () => {
     const { daemon, record } = fakeDaemon();
     const liveRoot = reapMk(join(tmpdir(), "claudexor-iso-purged-"));
@@ -4961,6 +5050,132 @@ describe("DaemonControlApiServer", () => {
         const invalid = await collect({ dry_run: true });
         expect(invalid.status).toBe(500);
         expect(await invalid.json()).toMatchObject({ code: "invalid_service_response" });
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("held preparation routes (#694 r17): an explicit read; one release recorded by the durable delivery command before its effect, run inside its thread's mutation chain; a repeated key answers the recorded receipt, an unsettled one says its outcome is unknown", async () => {
+    const { daemon } = fakeDaemon();
+    const order: string[] = [];
+    const digest = "a".repeat(64);
+    // The durable delivery-command owner's contract, in memory: accepted (running)
+    // before the effect, its result after; a key answers what it recorded.
+    const commands = new Map<string, { id: string; state: string; result?: unknown }>();
+    const operations: string[] = [];
+    const answer = (selector: string) => ({
+      selector,
+      kind: "thread",
+      path: "/p/threads/t1/tree",
+      outcome: "released",
+      basis: "operator_confirmed",
+      continued: false,
+      reasons: [],
+      cleanup_error: null,
+      writer: null,
+      remains: "nothing of this resource",
+      note: "unchanged",
+      generation: "thread:t1:2026-11-15T10:00:00.000Z:2026-11-15T10:05:00.000Z",
+      stop: { reason: "output_held", groups: [], at: "2026-11-15T10:05:00.000Z" },
+      confirmed_at: "2026-11-15T11:00:00.000Z",
+    });
+    const services: DaemonControlApiOptions["services"] = {
+      heldPreparations: async () => ({
+        preparations: [],
+        roots: 3,
+        confirmation: "states that you checked",
+        errors: [],
+      }),
+      releasePreparation: (request, serializeThread) =>
+        serializeThread("t1", async () => {
+          order.push(`start ${request.selector}`);
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          order.push(`end ${request.selector}`);
+          return answer(request.selector) as never;
+        }),
+      beginDelivery: async (_params, input) => {
+        operations.push(input.operation);
+        const known = commands.get(input.key);
+        if (known) return { ...known, reused: true };
+        const command = { id: `delivery-${commands.size + 1}`, state: "running" };
+        commands.set(input.key, command);
+        return { ...command, reused: false };
+      },
+      completeDelivery: async (id, result) => {
+        for (const command of commands.values())
+          if (command.id === id) Object.assign(command, { state: "succeeded", result });
+      },
+      failDelivery: async (id) => {
+        for (const command of commands.values())
+          if (command.id === id)
+            Object.assign(command, { state: "failed", result: { status: 500 } });
+      },
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const read = await apiFetch(`${base}/maintenance/preparations`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(read.status).toBe(200);
+        expect(await read.json()).toMatchObject({ preparations: [], roots: 3 });
+        const release = (body: unknown, key: string | null) =>
+          apiFetch(`${base}/maintenance/preparations/release`, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+              ...(key ? { "idempotency-key": key } : {}),
+            },
+            body: JSON.stringify(body),
+          });
+        // Without a key, the explicit confirmation or a well-formed digest: refused, nothing recorded.
+        for (const [body, key] of [
+          [{ selector: "prep1.x", digest, confirm_processes_ended: true }, null],
+          [{ selector: "prep1.x", digest }, "k0"],
+          [{ selector: "prep1.x", digest: "short", confirm_processes_ended: true }, "k0"],
+          [{ selector: "prep1.x", digest, confirm_processes_ended: false }, "k0"],
+        ] as const) {
+          const refused = await release(body, key);
+          expect(refused.status).toBe(400);
+        }
+        expect(order).toEqual([]);
+        expect(operations).toEqual([]);
+        // Two releases on one thread run one after the other in its mutation chain.
+        const [a, b] = await Promise.all([
+          release({ selector: "prep1.a", digest, confirm_processes_ended: true }, "ka"),
+          release({ selector: "prep1.b", digest, confirm_processes_ended: true }, "kb"),
+        ]);
+        expect([a.status, b.status]).toEqual([200, 200]);
+        const first = (await a.json()) as Record<string, unknown>;
+        expect(first).toMatchObject({
+          outcome: "released",
+          basis: "operator_confirmed",
+          operation_id: "delivery-1",
+          replayed: false,
+          generation: expect.stringMatching(/^thread:t1:/),
+          stop: { reason: "output_held" },
+        });
+        expect(order).toEqual(["start prep1.a", "end prep1.a", "start prep1.b", "end prep1.b"]);
+        expect(operations).toEqual(["preparation_release", "preparation_release"]);
+        // The same key again: the recorded receipt, no second release.
+        const again = await release(
+          { selector: "prep1.a", digest, confirm_processes_ended: true },
+          "ka",
+        );
+        expect(again.status).toBe(200);
+        expect(await again.json()).toEqual({ ...first, replayed: true });
+        expect(order).toHaveLength(4);
+        // A request whose command a restart left unsettled: its outcome is unknown, nothing runs.
+        commands.set("ku", { id: "delivery-9", state: "interrupted" });
+        const unknown = await release(
+          { selector: "prep1.u", digest, confirm_processes_ended: true },
+          "ku",
+        );
+        expect(unknown.status).toBe(409);
+        expect(await unknown.json()).toMatchObject({ code: "delivery_interrupted" });
+        expect(order).toHaveLength(4);
       },
       undefined,
       services,

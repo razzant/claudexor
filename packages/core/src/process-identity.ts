@@ -313,51 +313,10 @@ function executeDarwinHelper(path: string, pid: number): ProcessHelperExecution 
   };
 }
 
-/**
- * Windows birth-time reader. Windows exposes no `/proc`, so the kernel's own
- * `GetProcessTimes` creation time is read through the absolute System32
- * PowerShell (same pinned-path discipline as the `taskkill` owner) and printed
- * as a locale-independent FILETIME. Blocking — warm it is sub-second, but a
- * cold PowerShell on a loaded host takes many seconds — so it is opt-in per
- * lane rather than a default for every spawn.
- */
-export function executeWin32ProcessTimes(pid: number): ProcessHelperExecution {
-  const systemRoot = process.env["SystemRoot"] || "C:\\Windows";
-  const powershell = `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
-  const script =
-    "try { $p = [System.Diagnostics.Process]::GetProcessById(" +
-    String(pid) +
-    "); " +
-    "[Console]::Out.Write('claudexor-process-identity-win32-v1' + [char]9 + $p.Id + [char]9 + " +
-    "$p.StartTime.ToFileTimeUtc()); exit 0 } " +
-    "catch [System.ArgumentException] { exit 3 } " +
-    "catch [System.ComponentModel.Win32Exception] { exit 4 } " +
-    "catch { exit 5 }";
-  const result = spawnSync(
-    powershell,
-    ["-NoProfile", "-NonInteractive", "-NoLogo", "-Command", script],
-    {
-      encoding: "utf8",
-      // PowerShell COLD-STARTS well past five seconds on a loaded host — the
-      // GitHub Windows runners exceed it routinely under a parallel test run,
-      // and a user's machine under load is the same shape. An identity read
-      // that times out reports `unknown`, which every caller treats as
-      // fail-closed, so a short cap silently degrades Windows runs rather
-      // than protecting anything; the bound exists only to keep a wedged
-      // PowerShell from hanging a lane.
-      timeout: 30_000,
-      maxBuffer: 64 * 1024,
-      windowsHide: true,
-      env: { SystemRoot: systemRoot, PATH: `${systemRoot}\\System32` },
-    },
-  );
-  return {
-    status: result.status,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-    errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code,
-  };
-}
+export {
+  executeWin32ProcessTimes,
+  executeWin32ProcessTimesAsync,
+} from "./process-identity-win32.js";
 
 /** Strict parser for the win32 reader's locale-independent protocol. */
 export function parseWin32ReaderOutput(raw: string, expectedPid: number): ProcessIdentity {
@@ -472,12 +431,17 @@ export class ProcessIdentityService implements ProcessIdentityReader {
     } catch {
       return unknown(pid, "win32", "helper_failed");
     }
-    if (execution.errorCode) return unknown(pid, "win32", "helper_unavailable");
-    if (execution.status === 3) return { status: "missing", pid, platform: "win32" };
-    if (execution.status === 4) return unknown(pid, "win32", "permission_denied");
-    if (execution.status !== 0) return unknown(pid, "win32", "helper_failed");
-    return parseWin32ReaderOutput(execution.stdout, pid);
+    return win32Identity(execution, pid);
   }
+}
+
+/** The win32 reader's exit mapping, one for both readers. */
+function win32Identity(execution: ProcessHelperExecution, pid: number): ProcessIdentity {
+  if (execution.errorCode) return unknown(pid, "win32", "helper_unavailable");
+  if (execution.status === 3) return { status: "missing", pid, platform: "win32" };
+  if (execution.status === 4) return unknown(pid, "win32", "permission_denied");
+  if (execution.status !== 0) return unknown(pid, "win32", "helper_failed");
+  return parseWin32ReaderOutput(execution.stdout, pid);
 }
 
 export const defaultProcessIdentityService = new ProcessIdentityService();
@@ -493,6 +457,8 @@ export interface AsyncProcessIdentityReaderOptions {
   darwinHelperPath?: string | null;
   readTextFile?: (path: string) => Promise<string>;
   runDarwinHelper?: (path: string, pid: number) => Promise<ProcessHelperExecution>;
+  /** OPT-IN, as for the synchronous service: {@link executeWin32ProcessTimesAsync}. */
+  runWin32Reader?: (pid: number) => Promise<ProcessHelperExecution>;
 }
 
 function executeDarwinHelperAsync(path: string, pid: number): Promise<ProcessHelperExecution> {
@@ -526,9 +492,9 @@ function executeDarwinHelperAsync(path: string, pid: number): Promise<ProcessHel
  * fs/promises on Linux, the bundled helper through `execFile` on macOS. The
  * parsing and the missing/permission/failed mapping are byte-for-byte the
  * synchronous service's, so a handle captured by one reader compares equal
- * under the other. win32 stays `unsupported_platform` here: its opt-in
- * PowerShell reader is synchronous by design and no asynchronous owner
- * (the scope reaper) censuses Windows at all.
+ * under the other. win32 stays `unsupported_platform` unless a caller opts in
+ * with `runWin32Reader` (no asynchronous owner — the scope reaper — censuses
+ * Windows at all).
  */
 export function createAsyncProcessIdentityReader(
   options: AsyncProcessIdentityReaderOptions = {},
@@ -568,6 +534,15 @@ export function createAsyncProcessIdentityReader(
         if (execution.status === 4) return unknown(pid, platform, "permission_denied");
         if (execution.status !== 0) return unknown(pid, platform, "helper_failed");
         return parseDarwinHelperOutput(execution.stdout, pid);
+      }
+      if (platform === "win32" && options.runWin32Reader) {
+        let execution: ProcessHelperExecution;
+        try {
+          execution = await options.runWin32Reader(pid);
+        } catch {
+          return unknown(pid, platform, "helper_failed");
+        }
+        return win32Identity(execution, pid);
       }
       return unknown(pid, platform, "unsupported_platform");
     },

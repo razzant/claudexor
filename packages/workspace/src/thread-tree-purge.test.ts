@@ -6,6 +6,8 @@
  * done. A removal Git left half done, its registration gone and the directory
  * still there, finishes in the repository recorded before it (R3).
  */
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
   chmodSync,
   existsSync,
@@ -24,6 +26,14 @@ import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { projectRuntimeDir } from "@claudexor/util";
 import { git, worktreeRemoveRegistered } from "./git.js";
+import {
+  holdThreadPreparation,
+  PreparationHeld,
+  readThreadPreparation,
+  threadPreparationRecordPath,
+  writeThreadPreparation,
+  type ThreadPreparationRecord,
+} from "./preparation-hold.js";
 import {
   ensureThreadWorktree,
   purgeThreadWorktree,
@@ -468,4 +478,193 @@ describe("isolated thread purge", () => {
     expect(await registrations(repo)).toContain(join(user, "tree"));
     expect(await branchExists(repo, "feature")).toBe(true);
   });
+});
+
+// #694: a thread whose preparation left its record is purged through that
+// record's own release, however the config root is spelled. The record names the
+// tree, and the daemon owns the preparation's current child, in the
+// preparation's spelling (the root as configured); the purge walks the canonical
+// one. A current child, a malformed record and a foreign one refuse in every
+// spelling, so the purge never releases what the next turn would not.
+describe("isolated thread purge over a preparation record (#694)", () => {
+  /** A read that proves the end of what the preparation started. */
+  const provenEnd = async () => ({ status: "quiet" as const });
+  /** The config root, spelled another way (null: this filesystem has no such spelling). */
+  const spellings: Array<[string, (config: string) => string | null]> = [
+    ["as it is on disk", (config) => config],
+    [
+      "through a link",
+      (config) => {
+        const link = join(tempDir("claudexor-purge-link-"), "config");
+        symlinkSync(config, link, "junction");
+        return link;
+      },
+    ],
+    [
+      "in another letter case",
+      (config) => {
+        const respelled = join(dirname(config), basename(config).toUpperCase());
+        return existsSync(respelled) ? respelled : null;
+      },
+    ],
+  ];
+  async function configured(
+    spell: (config: string) => string | null,
+    context: { skip: () => void },
+  ) {
+    const config = tempDir("claudexor-purge-config-");
+    const spelled = spell(config);
+    if (spelled === null) context.skip(); // a case-sensitive filesystem
+    vi.stubEnv("CLAUDEXOR_CONFIG_DIR", spelled!);
+    // One directory either way; the purge walks the canonical spelling of it,
+    // which a link or another letter case is not.
+    expect(realpathSync.native(spelled!)).toBe(realpathSync.native(config));
+    if (spelled !== config) expect(realpathSync.native(spelled!)).not.toBe(spelled);
+    const repo = await userRepo();
+    const tree = (id: string) => join(projectRuntimeDir(repo), "threads", id, "tree");
+    return {
+      repo,
+      tree,
+      head: (await git(repo, ["rev-parse", "HEAD"])).stdout.trim(),
+      /** The record a preparation of `id` wrote, in its own spelling of the tree. */
+      record: (
+        id: string,
+        fields: Partial<ThreadPreparationRecord> = {},
+      ): ThreadPreparationRecord => ({
+        schema: 1,
+        thread_id: id,
+        tree: tree(id),
+        scope: null,
+        opened_at: new Date(Date.now() - 60_000).toISOString(),
+        own_registration: null,
+        own_branch: null,
+        held: { reason: "output_held", groups: [], at: new Date().toISOString() },
+        ...fields,
+      }),
+    };
+  }
+
+  it.for(spellings)(
+    "config root %s: a proven end releases the record and the purge finishes — an early record with no tree, a half-made worktree with its own registration and branch, a complete checkout",
+    async ([, spell], context) => {
+      const w = await configured(spell, context);
+      // Stopped before it made anything of the thread: the record alone.
+      mkdirSync(dirname(w.tree("th-early")), { recursive: true });
+      writeThreadPreparation(w.record("th-early", { early: true }));
+      await expect(
+        purgeThreadWorktree(w.repo, "th-early", { worktreeRecorded: false, quiet: provenEnd }),
+      ).resolves.toBe(join(w.repo, ".git"));
+      expect(existsSync(dirname(w.tree("th-early")))).toBe(false);
+
+      // What a killed `worktree add -b` left: the registration, a tree, the new branch.
+      mkdirSync(dirname(w.tree("th-half")), { recursive: true });
+      const added = await git(w.repo, [
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "claudexor/thread-th-half",
+        w.tree("th-half"),
+        w.head,
+      ]);
+      expect(added.code).toBe(0);
+      writeThreadPreparation(
+        w.record("th-half", {
+          own_registration: true,
+          own_branch: { name: "claudexor/thread-th-half", tip: w.head },
+        }),
+      );
+      await purgeThreadWorktree(w.repo, "th-half", { quiet: provenEnd });
+      expect(existsSync(dirname(w.tree("th-half")))).toBe(false);
+      expect(await registrations(w.repo)).not.toContain("th-half");
+      expect(await branchExists(w.repo, "claudexor/thread-th-half")).toBe(false);
+
+      // A finished checkout whose record came back (its scope was unsettled then).
+      const done = await ensureThreadWorktree(w.repo, "th-done");
+      expect(done.path).toBe(w.tree("th-done"));
+      writeThreadPreparation(w.record("th-done", { complete: true, own_registration: true }));
+      await purgeThreadWorktree(w.repo, "th-done", { quiet: provenEnd });
+      expect(existsSync(dirname(done.path))).toBe(false);
+      expect(await registrations(w.repo)).not.toContain("th-done");
+      expect(await branchExists(w.repo, "claudexor/thread-th-done")).toBe(false);
+    },
+  );
+
+  it.for(spellings)(
+    "config root %s: refused while the preparation's real current child has not exited, whatever the read says; finished after its exit",
+    async ([, spell], context) => {
+      const w = await configured(spell, context);
+      const tree = w.tree("th-child");
+      mkdirSync(tree, { recursive: true });
+      writeFileSync(join(tree, "half"), "checkout\n");
+      writeThreadPreparation(w.record("th-child", { held: undefined, own_registration: false }));
+      const child = spawn(process.execPath, ["-e", "process.stdin.resume()"], {
+        stdio: ["pipe", "ignore", "ignore"],
+      });
+      const directExit = once(child, "exit").then(() => {});
+      await once(child, "spawn");
+      try {
+        // The stop the preparation took: its own Git still runs, no group names it.
+        holdThreadPreparation(tree, {
+          reason: "direct_child_alive",
+          groups: [],
+          rootPid: child.pid!,
+          directExited: false,
+          directExit,
+        });
+        expect(readThreadPreparation(tree)?.held).toMatchObject({ direct_writer_pid: child.pid });
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const refused = await purgeThreadWorktree(w.repo, "th-child", {
+            worktreeRecorded: false,
+            quiet: provenEnd,
+          }).catch((error: unknown) => error);
+          expect(refused).toBeInstanceOf(PreparationHeld);
+          expect(refused).toMatchObject({
+            context: {
+              preparation: { unresolved: [expect.stringMatching(/current child has not exited/)] },
+            },
+          });
+          expect(child.exitCode).toBeNull();
+          expect(readFileSync(join(tree, "half"), "utf8")).toBe("checkout\n");
+        }
+        child.stdin.end();
+        await directExit;
+        await purgeThreadWorktree(w.repo, "th-child", {
+          worktreeRecorded: false,
+          quiet: provenEnd,
+        });
+        expect(existsSync(dirname(tree))).toBe(false);
+      } finally {
+        child.stdin.end();
+        await directExit;
+      }
+    },
+  );
+
+  it.for(spellings)(
+    "config root %s: a malformed, a torn and a foreign record are never released by the purge; nothing of the thread goes",
+    async ([, spell], context) => {
+      const w = await configured(spell, context);
+      const records: Array<[string, string]> = [
+        ["th-malformed", "{}"],
+        ["th-torn", JSON.stringify(w.record("th-torn")).slice(0, 40)],
+        // Another thread's record (it names that thread's tree) in this one's directory.
+        ["th-foreign", JSON.stringify(w.record("th-other", { early: true }))],
+      ];
+      for (const [id, bytes] of records) {
+        const tree = w.tree(id);
+        mkdirSync(tree, { recursive: true });
+        writeFileSync(join(tree, "keep"), "not released\n");
+        writeFileSync(threadPreparationRecordPath(tree), bytes);
+        const refused = await purgeThreadWorktree(w.repo, id, {
+          worktreeRecorded: false,
+          quiet: provenEnd,
+        }).catch((error: unknown) => error);
+        expect(refused, id).toBeInstanceOf(PreparationHeld);
+        expect((refused as Error).message, id).toMatch(/preparation record .* cannot be read/);
+        expect(readFileSync(join(tree, "keep"), "utf8"), id).toBe("not released\n");
+        expect(readFileSync(threadPreparationRecordPath(tree), "utf8"), id).toBe(bytes);
+      }
+    },
+  );
 });

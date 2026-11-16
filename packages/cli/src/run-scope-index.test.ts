@@ -1,7 +1,9 @@
 import { EventEmitter } from "node:events";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -25,6 +27,8 @@ import {
 import { DaemonRunScopeIndex, RUN_SCOPE_INDEX_FILE } from "./run-scope-index.js";
 import { spawnProcess } from "@claudexor/core";
 import { armDaemonLifecycle, runStartupCrashGc } from "./daemon-lifecycle.js";
+import { ensureThreadWorktree } from "@claudexor/workspace";
+import { threadPreparationScope } from "./thread-preparation-scope.js";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -148,6 +152,51 @@ describe("DaemonRunScopeIndex", () => {
     expect(lstatSync(path).ino).not.toBe(inode);
     expect(readIndex(root).entries).toHaveLength(2);
   });
+
+  it.runIf(process.platform !== "win32")(
+    "a preparation scope whose record cannot be written refuses: no entry stays and nothing is spawned (#694)",
+    async () => {
+      const root = tempRoot();
+      const dir = join(root, "daemon");
+      mkdirSync(dir);
+      const me = known(process.pid, "7");
+      const index = new DaemonRunScopeIndex({
+        path: join(dir, RUN_SCOPE_INDEX_FILE),
+        owner: async () => me,
+        identity: fakeIdentity({ [me.pid]: me }),
+        reap: fakeReaper().reap,
+        table: fakeTable([]),
+        roots: () => [],
+        log: () => {},
+      });
+      chmodSync(dir, 0o500); // the index cannot be written
+      try {
+        await expect(
+          index.open("thread-preparation:job-1", { requireDurable: true }),
+        ).rejects.toThrow();
+        expect(index.list()).toEqual([]);
+        // An ordinary run's scope still degrades to in-process custody (unchanged).
+        await expect(index.open("run-1")).resolves.toMatchObject({ marker: expect.any(String) });
+        // The thread preparation through the runner's scope: refused before its first
+        // Git step — the folder that would need initializing is never touched.
+        const project = join(root, "project");
+        mkdirSync(project);
+        writeFileSync(join(project, "a.txt"), "a\n");
+        const prep = threadPreparationScope(index, "job-2");
+        await expect(
+          ensureThreadWorktree(project, "th-1", {
+            openScope: prep.openScope,
+            settleScope: prep.settleScope,
+            quiet: prep.quiet,
+          }),
+        ).rejects.toThrow();
+        expect(existsSync(join(project, ".git"))).toBe(false);
+        expect(index.list().map((entry) => entry.run_id)).toEqual(["run-1"]);
+      } finally {
+        chmodSync(dir, 0o700);
+      }
+    },
+  );
 
   it("captures a live root's descendants (pid, pgid, birth) and the scope start on the tick, persisted", async () => {
     const root = tempRoot();

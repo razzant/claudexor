@@ -1,6 +1,7 @@
 import { handleThreadHistoryRoute, type ThreadHistoryServices } from "./thread-history-routes.js";
 import { handleThreadExportRoute, type ThreadExportRouteServices } from "./thread-export-routes.js";
 import { liveRunEventSeq } from "@claudexor/event-log";
+import { assertThreadTreeReady } from "@claudexor/workspace";
 import {
   readPatch,
   validRunOperatorDecision,
@@ -742,6 +743,8 @@ export class DaemonControlApiServer {
       pollMs: this.opts.pollMs,
       storeId: this.opts.storeId,
       waitForRunStart: (jobId: string) => this.waitForRunStart(jobId),
+      serializeThreadMutation: <T>(threadId: string, work: () => Promise<T>) =>
+        chainThreadMutation(this.threadTurnChains, threadId, work),
       stopping: this.stopSignal.signal,
       summarize: (record: DaemonRunRecord) => this.summarizeRunOrDiagnostic(record),
       bulk: this.bulk,
@@ -2009,6 +2012,8 @@ export class DaemonControlApiServer {
     if (!ws) return null;
     const mode = ws.mode === "isolated" || ws.mode === "delegated" ? ws.mode : "in_place";
     const tree = mode === "delegated" ? ws.workspace_root : ws.worktree_path;
+    // A thread tree whose preparation did not complete is never served as a result.
+    if (mode === "isolated" && typeof tree === "string" && tree.trim()) assertThreadTreeReady(tree);
     return { mode, worktreePath: typeof tree === "string" && tree.trim() ? tree : null };
   }
 

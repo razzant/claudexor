@@ -34,6 +34,8 @@ import {
 import { threadRunResumeInputs, threadContinuityContext } from "./thread-continuity-context.js";
 import { continuationForRun } from "./continue-from-run.js";
 import { createRunTimeLimit } from "./run-time-limit.js";
+import { daemonRunScopeIndex } from "./run-scope-index.js";
+import { threadPreparationScope } from "./thread-preparation-scope.js";
 import { exactRetryProcessingIntent } from "./retry-processing.js";
 import { oneShotRunInput } from "./one-shot-run-input.js";
 
@@ -133,6 +135,8 @@ export function createDaemonAgentRunner(deps: {
           ),
       });
     }
+    // The preparation's own short process scope, opened only if the tree is made.
+    const preparation = threadPreparationScope(daemonRunScopeIndex(), ctx.jobId);
     const {
       executionRoot: threadExecutionRoot,
       inPlace,
@@ -147,6 +151,11 @@ export function createDaemonAgentRunner(deps: {
       workspaceKind: p.execution.workspaceKind,
       protectedPaths: runConfig.project.constraints.protected_paths,
       threads,
+      // This job is already running: Stop reaches its thread worktree preparation.
+      signal: ctx.signal,
+      preparation,
+    }).catch(async (error: unknown) => {
+      throw await preparation.closeAfter(error);
     });
     const executionRoot = p.execution.workspaceRoot ?? threadExecutionRoot;
     const onRunStart = (info: { runId: string; taskId: string; runDir: string }): void => {

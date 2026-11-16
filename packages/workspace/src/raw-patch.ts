@@ -33,10 +33,19 @@ export const RAW_PENDING_RESULT_REF = "refs/worktree/claudexor/raw-pending-resul
 /** The tree a record ref names, or null when there is none. One that exists but names no
  * readable tree, or that Git fails to look up, is thrown: never read as nothing accepted.
  * Git before 2.43 has no `show-ref --exists`, and there a failed lookup reads as absence. */
-async function recordTree(worktreePath: string, ref: string): Promise<string | null> {
-  let found = await git(worktreePath, ["show-ref", "--exists", ref]);
+async function recordTree(
+  worktreePath: string,
+  ref: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  let found = await git(worktreePath, ["show-ref", "--exists", ref], undefined, signal);
   if (found.code === 129) {
-    const legacy = await git(worktreePath, ["rev-parse", "--verify", "--quiet", ref]);
+    const legacy = await git(
+      worktreePath,
+      ["rev-parse", "--verify", "--quiet", ref],
+      undefined,
+      signal,
+    );
     found = { ...legacy, code: legacy.code === 1 ? 2 : legacy.code };
   }
   if (found.code === 2) return null;
@@ -44,7 +53,12 @@ async function recordTree(worktreePath: string, ref: string): Promise<string | n
     throw new WorkspaceError(
       `accepted raw record ${ref} could not be read: ${found.stderr.trim()}`,
     );
-  const tree = await git(worktreePath, ["rev-parse", "--verify", "--quiet", `${ref}^{tree}`]);
+  const tree = await git(
+    worktreePath,
+    ["rev-parse", "--verify", "--quiet", `${ref}^{tree}`],
+    undefined,
+    signal,
+  );
   if (tree.code !== 0)
     throw new WorkspaceError(`accepted raw record ${ref} names no readable tree`);
   return tree.stdout.trim();
@@ -57,17 +71,19 @@ async function recordTree(worktreePath: string, ref: string): Promise<string | n
  * subdirectory is asked. Empty when no raw patch wrote in this worktree;
  * a record that cannot be read is thrown, never read as empty.
  */
-export async function rawAcceptedPaths(worktreePath: string, _base: string): Promise<string[]> {
+export async function rawAcceptedPaths(
+  worktreePath: string,
+  _base: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
   const paths = new Set<string>();
   for (const ref of [RAW_ACCEPTED_REF, RAW_PENDING_REF]) {
-    const tree = await recordTree(worktreePath, ref);
+    const tree = await recordTree(worktreePath, ref, signal);
     if (!tree) continue;
     const listed = await gitObserved(
       worktreePath,
       ["ls-tree", "--full-tree", "-r", "-z", "--name-only", tree],
-      {
-        label: "ls-tree (accepted raw paths)",
-      },
+      { label: "ls-tree (accepted raw paths)", signal },
     );
     for (const path of listed.stdout.split("\0")) if (path) paths.add(path);
   }
@@ -83,17 +99,21 @@ export type RawRecords = ReadonlyArray<readonly [ref: string, tree: string | nul
  * until {@link publishRawRecords}, so a candidate that is never adopted changes nothing.
  * Candidates are disposed before the winner's adoption, hence the two steps.
  */
-export async function exportRawRecords(source: string, destination: string): Promise<RawRecords> {
+export async function exportRawRecords(
+  source: string,
+  destination: string,
+  signal?: AbortSignal,
+): Promise<RawRecords> {
   const records: Array<readonly [string, string | null]> = [];
   for (const ref of [RAW_ACCEPTED_REF, RAW_PENDING_REF, RAW_PENDING_RESULT_REF])
-    records.push([ref, await recordTree(source, ref)]);
+    records.push([ref, await recordTree(source, ref, signal)]);
   const trees = records.flatMap(([, tree]) => (tree ? [tree] : []));
   if (trees.length === 0) return records;
   // An isolated candidate may use a private object store/alternate. A ref to a
   // tree that the persistent worktree cannot read is worse than no record.
   const objectIds = new Set<string>();
   for (const tree of trees) {
-    const listed = await git(source, ["rev-list", "--objects", tree]);
+    const listed = await git(source, ["rev-list", "--objects", tree], undefined, signal);
     if (listed.code !== 0)
       throw new WorkspaceError(`accepted raw tree could not be exported: ${listed.stderr.trim()}`);
     for (const line of listed.stdout.split("\n")) {
@@ -102,12 +122,12 @@ export async function exportRawRecords(source: string, destination: string): Pro
     }
   }
   const endpoint = async (cwd: string): Promise<ObjectEndpoint> => {
-    const objects = await git(cwd, [
-      "rev-parse",
-      "--path-format=absolute",
-      "--git-path",
-      "objects",
-    ]);
+    const objects = await git(
+      cwd,
+      ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
+      undefined,
+      signal,
+    );
     if (objects.code !== 0 || !objects.stdout.trim())
       throw new WorkspaceError(
         `accepted raw object store could not be resolved: ${objects.stderr.trim()}`,
@@ -119,15 +139,25 @@ export async function exportRawRecords(source: string, destination: string): Pro
     await endpoint(destination),
     [...objectIds],
     trees[0]!.length === 64 ? 32 : 20,
+    signal,
   );
   return records;
 }
 
 /** Make `records` this worktree's membership in one transaction; the export is
  * authoritative, including a ref it lacks (which removes stale membership here). */
-export async function publishRawRecords(destination: string, records: RawRecords): Promise<void> {
+export async function publishRawRecords(
+  destination: string,
+  records: RawRecords,
+  signal?: AbortSignal,
+): Promise<void> {
   const updates = records.map(([ref, tree]) => (tree ? `update ${ref} ${tree}` : `delete ${ref}`));
-  const moved = await git(destination, ["update-ref", "--stdin"], `${updates.join("\n")}\n`);
+  const moved = await git(
+    destination,
+    ["update-ref", "--stdin"],
+    `${updates.join("\n")}\n`,
+    signal,
+  );
   if (moved.code !== 0)
     throw new WorkspaceError(
       `accepted raw records could not be transferred: ${moved.stderr.trim()}`,
@@ -138,9 +168,14 @@ export async function publishRawRecords(destination: string, records: RawRecords
  * Copy the per-worktree membership records (Git keeps `refs/worktree/*` private
  * to each worktree) from `source` to `destination`, objects first.
  */
-export async function transferRawRecords(source: string, destination: string): Promise<void> {
+export async function transferRawRecords(
+  source: string,
+  destination: string,
+  signal?: AbortSignal,
+): Promise<void> {
   if (resolve(source) === resolve(destination)) return;
-  await publishRawRecords(destination, await exportRawRecords(source, destination));
+  const records = await exportRawRecords(source, destination, signal);
+  await publishRawRecords(destination, records, signal);
 }
 
 /**
@@ -290,8 +325,12 @@ export async function rawCandidateTree(worktreePath: string): Promise<string> {
 }
 
 /** The per-turn snapshot of a tree that may hold accepted paths the ignore rules hide. */
-export async function rawAwareSnapshot(worktreePath: string): Promise<string> {
-  return snapshotTree(worktreePath, [], await rawAcceptedPaths(worktreePath, "HEAD"));
+export async function rawAwareSnapshot(
+  worktreePath: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const keep = await rawAcceptedPaths(worktreePath, "HEAD", signal);
+  return snapshotTree(worktreePath, [], keep, signal);
 }
 
 /**

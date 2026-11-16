@@ -57,11 +57,13 @@ export function verifiedGitObjectResult(value: unknown): GitObjectResultValue | 
 export async function repositoryObjectFormat(
   repo: string,
   env?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<GitObjectFormat> {
   const result = await gitObserved(repo, ["rev-parse", "--show-object-format"], {
     env,
     label: "rev-parse --show-object-format",
     allowFailure: true,
+    signal,
   });
   const format = result.stdout.trim();
   // Git before 2.29 has no --show-object-format and only knows SHA-1.
@@ -71,12 +73,16 @@ export async function repositoryObjectFormat(
 }
 
 /** The object format of the repository holding `dir`; null when `dir` is in none. */
-export async function repositoryObjectFormatOrNull(dir: string): Promise<GitObjectFormat | null> {
+export async function repositoryObjectFormatOrNull(
+  dir: string,
+  signal?: AbortSignal,
+): Promise<GitObjectFormat | null> {
   const inside = await gitObserved(dir, ["rev-parse", "--git-dir"], {
     label: "rev-parse --git-dir",
     allowFailure: true,
+    signal,
   });
-  return inside.code === 0 ? repositoryObjectFormat(dir) : null;
+  return inside.code === 0 ? repositoryObjectFormat(dir, undefined, signal) : null;
 }
 
 /** The tree of a commit-ish (or a tree itself), resolved without reading blobs. */
@@ -84,11 +90,13 @@ export async function treeOf(
   repo: string,
   rev: string,
   env?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<string> {
   const result = await gitObserved(repo, ["rev-parse", "--verify", "--quiet", `${rev}^{tree}`], {
     env,
     label: "rev-parse tree",
     allowFailure: true,
+    signal,
   });
   const tree = result.stdout.trim();
   if (result.code !== 0 || !/^[0-9a-f]{40,64}$/.test(tree))
@@ -108,12 +116,14 @@ export async function storeBoundaryCommit(
   repo: string,
   commit: string | null,
   env?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   if (!commit) return null;
   const shown = await gitObserved(repo, ["cat-file", "commit", commit], {
     env,
     label: "cat-file commit",
     allowFailure: true,
+    signal,
   });
   if (shown.code !== 0) return null;
   const [header = "", ...body] = shown.stdout.split("\n\n");

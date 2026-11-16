@@ -1,74 +1,38 @@
 import { existsSync, mkdtempSync } from "node:fs";
-import { rmdir, stat } from "node:fs/promises";
+import { rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type {
-  AccessProfile,
   CaptureChangeInventory,
-  DirtyPolicy,
   GitObjectResult,
   PatchViewUnavailable,
   WorkspaceEnvelope,
-  WorkspaceKind,
 } from "@claudexor/schema";
 import { captureObjectFacts as objectFacts } from "./git-transient-capture.js";
-import { discardUnstartedEnvelope } from "./cleanup-fault.js";
-import { isolatedBaseCustody } from "./capture-objects.js";
-import { repositoryObjectFormat } from "./git-result.js";
-import { assertProjectObjectFormat } from "./object-store.js";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
 import { WorkspaceError } from "@claudexor/core";
-import {
-  ensureDirAsync,
-  newId,
-  nowIso,
-  projectRuntimeDir,
-  removeTree,
-  withPoolWriteSlot,
-  writeTextAsync,
-} from "@claudexor/util";
+import { newId, nowIso, projectRuntimeDir, removeTree, withPoolWriteSlot } from "@claudexor/util";
 import { ensureLaneHomeEnv, type LaneHomeEnv } from "./lanes.js";
-import { ensureHarnessHome, ensureHarnessHomeAsync, harnessHomeEnv } from "./harness-home.js";
+import { ensureHarnessHome, harnessHomeEnv } from "./harness-home.js";
 import { ArtifactOwnership } from "./artifact-ownership.js";
-import {
-  captureDirectoryWorkspace,
-  createDirectoryEnvelope,
-  type CapturedWorkspaceFiles,
-} from "./directory-workspace.js";
+import { captureDirectoryWorkspace, type CapturedWorkspaceFiles } from "./directory-workspace.js";
 import {
   envelopeBaseIn,
   physicalEnvelopeBase,
-  processStartTime,
   readEnvelopeRecoveryRecord,
 } from "./envelope-recovery.js";
-import {
-  isRetainedEnvelope,
-  liveEnvelopeCustody,
-  writeEnvelopeCustodyAsync,
-} from "./envelope-custody.js";
-import { snapshotLegacyDirectoryBaseline } from "./plain-diff.js";
-import { rawAcceptedPaths, rawAwareSnapshot } from "./raw-patch.js";
+import { isRetainedEnvelope } from "./envelope-custody.js";
+import { rawAcceptedPaths } from "./raw-patch.js";
 import { capturePlainDiff } from "./plain-diff-capture.js";
 import {
   CLAUDE_BRIDGE_BASENAME,
   CURRENT_CLAUDE_BRIDGE_GENERATION,
   bridgeCreatedMarkerGeneration,
-  ensureClaudeBridge,
   isGeneratedClaudeBridge,
-  writeBridgeCreatedMarker,
   type ClaudeBridgeGeneration,
 } from "./claude-bridge.js";
-import {
-  branchDelete,
-  captureWorkingTreeTransient,
-  isolatedCloneAdd,
-  isGitRepo,
-  revParse,
-  statusPorcelain,
-  stashCreate,
-  worktreePrune,
-  worktreeRemove,
-} from "./git.js";
+import { prepareEnvelope, type CreateEnvelopeOptions } from "./prepare-envelope.js";
+import { branchDelete, captureWorkingTreeTransient, worktreePrune, worktreeRemove } from "./git.js";
 
 /** One candidate capture. `diff` is the exact patch every consumer (apply,
  * synthesis, review, digests, saved copies) reads (INV-146). */
@@ -90,26 +54,7 @@ export interface CapturedWorkspaceDiff {
   existingPaths?: string[];
 }
 
-export interface CreateEnvelopeOptions {
-  taskId: string;
-  attemptId: string;
-  baseRef?: string;
-  accessProfile?: AccessProfile;
-  dirtyPolicy?: DirtyPolicy;
-  workspaceKind?: WorkspaceKind;
-  scopePaths?: string[];
-  /**
-   * Run against the live `repoRoot` directly instead of an isolated git worktree.
-   * Used for external stateful environments that may not be git repositories
-   * and whose runtime STATE, not a patch, is the deliverable.
-   * `dispose()` never deletes the live tree in this mode; a best-effort baseline
-   * snapshot backs `diff()` and reviewers also read the live tree directly.
-   */
-  inPlace?: boolean;
-  /** Holder run of an isolated Git envelope whose stopped work may be kept for
-   * continuation: `live` custody is recorded before any harness runs. */
-  custody?: { runId: string; runDir: string };
-}
+export type { CreateEnvelopeOptions } from "./prepare-envelope.js";
 
 /** Manages WorkspaceEnvelopes: an isolated Git checkout plus scoped HOME and per-harness
  * config dirs, and dirty-tree handling; Claudexor owns them (no native --worktree). */
@@ -168,164 +113,15 @@ export class WorkspaceManager {
     // and never land in a diff. Credentials are never copied into this
     // envelope; adapters may add only capability-declared, vendor-specific
     // child context (Claude/Cursor macOS Keychain bridge, INV-067).
-    const base = this.envelopeBase(opts.taskId, opts.attemptId);
-    const envelopeId = newId("env");
-    const workspaceMode = opts.inPlace ? "in_place" : "isolated";
-    // Lane start awaits the disk (#688); only an envelope this call made is removed on refusal.
-    const madeHere = (await stat(base).catch(() => null)) === null;
-    // A sibling's dispose prunes the task folder only while it is empty, also
-    // while this makes it: a parent gone under the mkdir is made again (#704).
-    await ensureDirAsync(base).catch((error: { code?: string }) =>
-      error?.code === "ENOENT" ? ensureDirAsync(base) : Promise.reject(error),
-    );
-    // Liveness marker for crash GC, written whole once the base exists: the
-    // sweeper must never dispose an envelope whose creating process (daemon,
-    // CLI, MCP/ACP serve) is still alive —
-    // startup GC's "nothing can own an envelope" premise only holds for
-    // daemon-tracked runs. Pid + ps START TIME form a recycling-proof identity
-    // (command names/titles mutate — vitest, daemons and tools retitle
-    // themselves; the kernel start time never does).
-    const owner = JSON.stringify({
-      pid: process.pid,
-      started: processStartTime(process.pid),
-      created_at: nowIso(),
-      envelope_id: envelopeId,
-      workspace_mode: workspaceMode,
-      workspace_kind: opts.workspaceKind,
-      execution_root: this.repoRoot,
-    });
-    await writeTextAsync(join(base, "owner.json"), owner + "\n");
-    const homeDir = join(base, "home");
-    const harnessConfigDirs = await ensureHarnessHomeAsync(homeDir);
-
-    if (opts.workspaceKind === "directory") {
-      return createDirectoryEnvelope({
-        ...opts,
-        sourceRoot: this.repoRoot,
-        envelopeRoot: base,
-        envelopeId,
-        homeDir,
-        harnessConfigDirs,
-      });
-    }
-
-    // In-place mode: mutate the live repoRoot directly (no isolated checkout).
-    // Used for thread turns (chat-first: the next turn sees this one's work) and
-    // for stateful external environments where runtime state is the deliverable.
-    // For a git project we record a per-turn snapshot sha so diff() captures only
-    // THIS turn's net change; a non-git folder falls back to a cpSync baseline.
-    if (opts.inPlace) {
-      const gitRepo = await isGitRepo(this.repoRoot);
-      // Read-only execution gets a scoped HOME but no write-oriented prep:
-      // no dangling Git snapshot, copied baseline, diff/capture, or later
-      // delivery. The native adapter policy owns the promised read-only mode.
-      const readOnly = opts.accessProfile === "readonly";
-      // One project keeps one object format: refused before the turn, not at its capture.
-      if (!readOnly && gitRepo && this.projectRoot && this.projectRoot !== this.repoRoot)
-        await assertProjectObjectFormat(
-          this.projectRoot,
-          await repositoryObjectFormat(this.repoRoot),
-        );
-      const baseSha = !readOnly && gitRepo ? await rawAwareSnapshot(this.repoRoot) : null;
-      if (!readOnly && !gitRepo) snapshotLegacyDirectoryBaseline(this.repoRoot, base);
-      return WorkspaceEnvelopeSchema.parse({
-        id: envelopeId,
-        task_id: opts.taskId,
-        attempt_id: opts.attemptId,
-        repo_root: this.repoRoot,
-        base_ref: opts.baseRef ?? "HEAD",
-        base_sha: baseSha,
-        worktree_path: this.repoRoot,
-        branch_name: "inplace",
-        home_dir: homeDir,
-        harness_config_dirs: harnessConfigDirs,
-        policy_profile: opts.accessProfile ?? "workspace_write",
-        // Record the EFFECTIVE policy, not the ignored request: in-place runs
-        // always fold dirty state into the per-turn base snapshot above.
-        dirty_policy: "snapshot",
-        created_at: nowIso(),
-      });
-    }
-
-    if (!(await isGitRepo(this.repoRoot))) {
-      throw new WorkspaceError(`not a git repository: ${this.repoRoot}`);
-    }
-    const baseRef = opts.baseRef ?? "HEAD";
-    const dirtyPolicy: DirtyPolicy = opts.dirtyPolicy ?? "refuse";
-    let baseSha = await revParse(this.repoRoot, baseRef);
-
-    const porcelain = await statusPorcelain(this.repoRoot);
-    const dirty = porcelain.trim().length > 0;
-    if (dirty && dirtyPolicy === "refuse") {
-      throw new WorkspaceError("working tree is dirty; commit/stash or set dirty_policy: snapshot");
-    }
-    // A snapshot base holds what an accepted raw patch left in this tree: status
-    // cannot show an ignored one, and the next candidate would start without it (#594).
-    const keep = dirtyPolicy === "snapshot" ? await rawAcceptedPaths(this.repoRoot, baseRef) : [];
-    if (dirty || keep.length > 0) {
-      // snapshot: a stash-create commit becomes the base SHA without touching
-      // the live tree. (The include/stash aliases and the untested `copy`
-      // variant were retired in the v0.15 triage.)
-      const snap = await stashCreate(this.repoRoot, {}, [], keep);
-      if (snap) baseSha = snap;
-    }
-
-    const path = join(base, "tree");
-    const branch = `claudexor/${opts.taskId}/${opts.attemptId}`;
-    // D2: a dirty base's own closure enters the project store BEFORE the clone,
-    // whose second alternate is that store (never the user repo's).
-    const storeObjects = await isolatedBaseCustody(
-      this.repoRoot,
-      this.projectRoot ?? this.repoRoot,
-      baseSha,
-      [base, ...(opts.custody ? [opts.custody.runDir] : [])],
-    );
-    await isolatedCloneAdd(this.repoRoot, path, branch, baseSha, storeObjects).catch(async (e) => {
-      throw madeHere ? await discardUnstartedEnvelope(base, e) : e;
-    });
-    await writeTextAsync(join(base, "private-clone-v1"), "private Git authority\n");
-
-    // AGENTS.md compatibility bridge (INV-113): the checkout omits any
-    // untracked project-root file, so a Claude Code candidate may need an
-    // envelope-local bridge. Never mutate the user's live project root here.
-    // Self-fenced (acts only with a committed AGENTS.md and no CLAUDE.md),
-    // best-effort, and no run event. `diff()` excludes the generated bridge so it never enters
-    // the candidate patch.
-    // ONLY when THIS prep actually created the bridge (recorded below) does diff()
-    // exclude it; a CLAUDE.md already present is never excluded (A-3 residual).
-    let bridgeCreatedHere = false;
-    try {
-      bridgeCreatedHere = (await ensureClaudeBridge(path)).created;
-    } catch {
-      /* a missing bridge is harmless; never fail envelope creation over it */
-    }
-
-    const envelope = WorkspaceEnvelopeSchema.parse({
-      id: envelopeId,
-      task_id: opts.taskId,
-      attempt_id: opts.attemptId,
-      repo_root: this.repoRoot,
-      base_ref: baseRef,
-      base_sha: baseSha,
-      worktree_path: path,
-      branch_name: branch,
-      home_dir: homeDir,
-      harness_config_dirs: harnessConfigDirs,
-      policy_profile: opts.accessProfile ?? "workspace_write",
-      dirty_policy: dirtyPolicy,
-      created_at: nowIso(),
+    const { envelope, bridgeCreated } = await prepareEnvelope({
+      repoRoot: this.repoRoot,
+      projectRoot: this.projectRoot,
+      base: this.envelopeBase(opts.taskId, opts.attemptId),
+      opts,
     });
     // Record the created-this-run fact keyed by envelope id, so diff() gates the
     // bridge exclusion on POSITIVE PROOF rather than on content bytes alone.
-    // Persisted beside owner.json as well (bridge-created.json): the in-memory
-    // set dies with THIS manager instance (daemon restart mid-run), and losing
-    // the fact CAPTURES a pristine generated bridge into patch.diff.
-    if (bridgeCreatedHere) {
-      this.bridgeCreatedEnvelopes.add(envelope.id);
-      await writeBridgeCreatedMarker(base, envelope.id);
-    }
-    if (opts.custody)
-      await writeEnvelopeCustodyAsync(base, liveEnvelopeCustody(envelope, opts.custody));
+    if (bridgeCreated) this.bridgeCreatedEnvelopes.add(envelope.id);
     return envelope;
   }
 

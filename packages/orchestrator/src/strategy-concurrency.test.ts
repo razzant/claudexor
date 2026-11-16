@@ -86,11 +86,12 @@ async function inspectFirstWave(
   run: Promise<OrchestratorResult>,
   wave: Wave,
   inspect: () => void,
+  observed?: Promise<void>,
 ): Promise<OrchestratorResult> {
   let deadline!: ReturnType<typeof setTimeout>;
   try {
     await Promise.race([
-      wave.ready,
+      Promise.all([wave.ready, observed]),
       run.then(() => {
         throw new Error("run completed without filling its expected first wave");
       }),
@@ -153,6 +154,10 @@ describe("configured ordinary strategy concurrency caps", () => {
         runtimeConcurrencyCaps: caps({ max_parallel_candidates: limit }),
       });
       let admitted = 0;
+      let signalAdmitted!: () => void;
+      const admittedReady = new Promise<void>((resolve) => {
+        signalAdmitted = resolve;
+      });
       const run = orch.run({
         repoRoot: initRepo(),
         prompt: "run all candidates",
@@ -160,13 +165,19 @@ describe("configured ordinary strategy concurrency caps", () => {
         harnesses: ["fake-success"],
         n: 8,
         onEvent(event) {
-          if (event.type === "harness.started") admitted += 1;
+          if (event.type === "harness.started" && ++admitted === limit) signalAdmitted();
         },
       });
-      const result = await inspectFirstWave(run, wave, () => {
-        expect(wave.state.active).toBe(limit);
-        expect(admitted).toBe(limit);
-      });
+      // onEvent follows the queued journal write, independently of adapter entry.
+      const result = await inspectFirstWave(
+        run,
+        wave,
+        () => {
+          expect(wave.state.active).toBe(limit);
+          expect(admitted).toBe(limit);
+        },
+        admittedReady,
+      );
       expect(result.lifecycle).toBe("succeeded");
       expect(wave.state.byIntent.implement).toBe(8);
       expect(wave.state.peak).toBe(limit);

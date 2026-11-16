@@ -129,6 +129,8 @@ export interface ScopeReapOutcome {
    */
   restricted: boolean;
   durationMs: number;
+  /** Same-uid process environments the marker census could not read (absent: none counted). */
+  censusUnreadable?: number;
 }
 
 export interface ScopeReapOptions {
@@ -456,6 +458,7 @@ async function reapOnce(opts: ScopeReapOptions): Promise<ScopeReapOutcome> {
       ...reapCompleteness(platform, censusFailure, pastDeadline(), censusUnreadable),
       restricted,
       durationMs: now() - start,
+      ...(censusUnreadable > 0 ? { censusUnreadable } : {}),
     };
   };
 

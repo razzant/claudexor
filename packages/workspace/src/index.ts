@@ -1,4 +1,15 @@
 export * from "./git.js";
+export * from "./preparation-hold.js";
+export * from "./envelope-preparation.js";
+export * from "./preparation-release.js";
+export * from "./staging-owner.js";
+export { noteCleanupFault } from "./cleanup-fault.js";
+export {
+  preparationStopsOf,
+  scopeMarkerOf,
+  terminationDisclosure,
+  withScopeMarker,
+} from "./git-run.js";
 export * from "./capture-failure.js";
 export * from "./git-capability.js";
 export * from "./revert.js";

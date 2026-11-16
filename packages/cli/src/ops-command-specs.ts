@@ -148,10 +148,16 @@ export const OPS_COMMAND_SPECS_AFTER_REMOTE = [
   },
   {
     id: "gc",
-    positionalPatterns: [{ min: 0, max: 0 }],
-    usageArgs: "[--dry-run | --last]",
-    summary: "Reclaim expired run/review artifact trees (daemon retention pass)",
-    flags: ["dry-run", "last", "json"],
+    positionalPatterns: [
+      { min: 0, max: 0 },
+      { prefix: ["preparations"], min: 1, max: 1 },
+      { prefix: ["release-preparation"], min: 2, max: 2 },
+    ],
+    usageArgs:
+      "[--dry-run | --last] | preparations | release-preparation <selector> --digest <sha256> --confirm-ended [--idempotency-key <key>]",
+    summary:
+      "Reclaim expired run/review artifact trees (daemon retention pass); list held preparations and release one on your confirmation",
+    flags: ["dry-run", "last", "json", "digest", "confirm-ended", "idempotency-key"],
     mutability: "ops",
     stability: "stable",
   },

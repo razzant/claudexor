@@ -103,17 +103,26 @@ export class RawPatchLane {
 export class RawAdoption {
   private readonly records = new Map<string, RawRecords>();
   private readonly inPlace: boolean;
+  /** The run's stop, for preparation only (`seed`); keep and publish never take it. */
+  private readonly signal: AbortSignal | undefined;
 
   constructor(
     private readonly execRoot: string,
-    run: { inPlace?: boolean; workspaceKind?: string },
+    run: {
+      inPlace?: boolean;
+      workspaceKind?: string;
+      signal?: AbortSignal;
+      preparationSignal?: AbortSignal;
+    },
   ) {
     this.inPlace = run.inPlace === true && run.workspaceKind !== "directory";
+    this.signal = run.preparationSignal ?? run.signal;
   }
 
-  /** Give a candidate the worktree's private record before RawPatchLane sizes its packet. */
+  /** Give a candidate the worktree's private record before RawPatchLane sizes its packet;
+   * part of preparation, so the run's stop ends it. */
   async seed(worktree: string): Promise<void> {
-    if (this.inPlace) await transferRawRecords(this.execRoot, worktree);
+    if (this.inPlace) await transferRawRecords(this.execRoot, worktree, this.signal);
   }
 
   /** Hold a finished candidate's record for adoption, its objects copied, no ref moved. */

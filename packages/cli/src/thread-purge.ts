@@ -30,6 +30,8 @@ import {
   threadWorktreeDirExists,
   type PurgeRepositoryRecord,
 } from "@claudexor/workspace";
+import { daemonRunScopeIndex } from "./run-scope-index.js";
+import { daemonPreparationQuiet } from "./thread-preparation-scope.js";
 
 /** What the purge obligation keeps of the thread's repository until it clears. */
 export interface ThreadPurgeRepository {
@@ -129,6 +131,7 @@ export function threadPurgeEffect(noProjectRoot: string, laneStores?: LaneCreden
         worktreeRecorded: thread.workspace.worktree_path !== null,
         repository: repository?.recorded ?? null,
         recordRepository: repository ? (record) => repository.record(record) : undefined,
+        quiet: daemonPreparationQuiet(daemonRunScopeIndex()),
       });
       parents.push(join(projectRuntimeDir(thread.repo.root), "threads"));
       if (gitDir)

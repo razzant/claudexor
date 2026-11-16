@@ -32,6 +32,7 @@ export interface DeliveryCommandServices {
     result?: unknown;
     error?: string;
     errorCode?: string;
+    errorRetryable?: boolean;
     errorRequiredActions?: string[];
     errorContext?: Record<string, unknown>;
     reused: boolean;
@@ -47,7 +48,8 @@ export async function runIdempotentDelivery<T>(
     key: string;
     operation: string;
     request: unknown;
-    work: () => Promise<T>;
+    /** The effect, given the durable command recorded before it. */
+    work: (command: { id: string }) => Promise<T>;
   },
 ): Promise<T> {
   const begin = services?.beginDelivery;
@@ -72,6 +74,9 @@ export async function runIdempotentDelivery<T>(
       throw Object.assign(new Error(command.error ?? "delivery failed"), {
         status: typeof receipt["status"] === "number" ? receipt["status"] : 409,
         code: command.errorCode ?? receipt["code"] ?? "delivery_failed",
+        ...(typeof command.errorRetryable === "boolean"
+          ? { retryable: command.errorRetryable }
+          : {}),
         ...(command.errorRequiredActions?.length
           ? { requiredActions: command.errorRequiredActions }
           : {}),
@@ -92,7 +97,7 @@ export async function runIdempotentDelivery<T>(
   }
   let result: T;
   try {
-    result = await input.work();
+    result = await input.work({ id: command.id });
   } catch (error) {
     await fail(command.id, error).catch(() => undefined);
     throw error;

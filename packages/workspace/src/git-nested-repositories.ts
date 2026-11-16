@@ -10,8 +10,9 @@ import { gitEnv, SCRATCH_INDEX_CONFIG } from "./git-run.js";
 async function declaredSubmodulePaths(
   repo: string,
   env: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<Set<string>> {
-  const cdup = await gitEnv(repo, ["rev-parse", "--show-cdup"], env);
+  const cdup = await gitEnv(repo, ["rev-parse", "--show-cdup"], env, undefined, signal);
   if (cdup.code !== 0) return new Set();
   const listed = await gitEnv(
     repo,
@@ -24,6 +25,8 @@ async function declaredSubmodulePaths(
       "^submodule\\..*\\.path$",
     ],
     env,
+    undefined,
+    signal,
   );
   if (listed.code !== 0) return new Set();
   // --null: each entry is "key\nvalue\0", so a path keeps its spaces and newlines.
@@ -54,6 +57,7 @@ export async function untrackedNestedRepositories(
   env: Record<string, string>,
   pathspec: string[],
   label: string,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   const listed = await gitEnv(
     repo,
@@ -68,6 +72,8 @@ export async function untrackedNestedRepositories(
       ...pathspec,
     ],
     env,
+    undefined,
+    signal,
   );
   if (listed.code !== 0) {
     throw new WorkspaceError(`${label} could not list untracked files: ${listed.stderr.trim()}`);
@@ -77,7 +83,7 @@ export async function untrackedNestedRepositories(
     .filter((entry) => entry.endsWith("/"))
     .map((entry) => entry.slice(0, -1));
   if (nested.length === 0) return [];
-  const declared = await declaredSubmodulePaths(repo, env);
+  const declared = await declaredSubmodulePaths(repo, env, signal);
   return nested.filter((path) => !declared.has(path));
 }
 

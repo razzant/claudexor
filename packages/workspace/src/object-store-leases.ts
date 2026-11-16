@@ -22,6 +22,7 @@ import {
 } from "@claudexor/core";
 import { noteCleanupFault } from "./cleanup-fault.js";
 import { existsStrict } from "./fs-presence.js";
+import { throwIfCancelled } from "./git-run.js";
 
 /*
  * Leases of the project object store (#535): the pending records that keep a
@@ -50,7 +51,7 @@ interface ProcessOwner {
   identity?: KnownProcessIdentity;
 }
 
-function selfOwner(): ProcessOwner {
+export function selfOwner(): ProcessOwner {
   const identity = defaultProcessIdentityService.self();
   return { pid: process.pid, ...(identity.status === "known" ? { identity } : {}) };
 }
@@ -60,7 +61,10 @@ function selfOwner(): ProcessOwner {
  * `dead`: it exited, or its PID now names another process; `unverified`: the
  * PID is in use but no birth was recorded or it cannot be read now.
  */
-function ownerState(owner: { pid?: unknown; identity?: unknown }): "alive" | "dead" | "unverified" {
+export function ownerState(owner: {
+  pid?: unknown;
+  identity?: unknown;
+}): "alive" | "dead" | "unverified" {
   const pid = Number(owner.pid);
   if (!Number.isSafeInteger(pid) || pid <= 0 || !processAlive(pid)) return "dead";
   if (!isKnownProcessIdentity(owner.identity)) return "unverified";
@@ -111,9 +115,15 @@ const PRUNE_WAIT_MS = 600_000;
  * then yields when any live pending record exists. One of the two always sees
  * the other, so a prune never deletes an object a concurrent import relies on.
  * The record names this process by PID and kernel birth: it stays live for as
- * long as this process runs, however long the import takes.
+ * long as this process runs, however long the import takes. An aborted `signal`
+ * ends the wait: the record this call wrote is removed and the cancellation thrown.
  */
-export async function beginPendingRoots(store: string, roots: string[]): Promise<PendingRoots> {
+export async function beginPendingRoots(
+  store: string,
+  roots: string[],
+  signal?: AbortSignal,
+): Promise<PendingRoots> {
+  throwIfCancelled(signal);
   const dir = controlDir(store, "pending");
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${process.pid}-${randomUUID()}.json`);
@@ -142,6 +152,7 @@ export async function beginPendingRoots(store: string, roots: string[]): Promise
     for (let waited = 0; held(); waited += 100) {
       if (waited > PRUNE_WAIT_MS)
         throw new WorkspaceError("object store prune did not finish in time");
+      throwIfCancelled(signal);
       await sleep(100);
     }
     return pending;

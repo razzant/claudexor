@@ -61,6 +61,8 @@ export function failDeliveryCommand(
     // This command store is the durable journal authority; redact before append.
     error: safeProblemMessage(error),
     errorCode: typeof value["code"] === "string" ? value["code"] : undefined,
+    // Only an explicit boolean is a retryability claim (absent: the wire default).
+    ...(typeof value["retryable"] === "boolean" ? { errorRetryable: value["retryable"] } : {}),
     // A replay answers the same typed recovery facts as the first refusal.
     ...(requiredActions.length > 0 ? { errorRequiredActions: requiredActions } : {}),
     ...(Object.keys(context).length > 0 ? { errorContext: context } : {}),

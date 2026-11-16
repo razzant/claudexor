@@ -20,7 +20,7 @@ import {
   type GcRunDeletion,
 } from "@claudexor/schema";
 import { prunePatchObjects, redactSecrets } from "@claudexor/util";
-import { pruneProjectObjectStore } from "@claudexor/workspace";
+import { pruneProjectObjectStore, type PreparationQuietRead } from "@claudexor/workspace";
 export { readRunTombstone } from "./run-tombstone.js";
 import { treeReclaimableBytes } from "./retention-bytes.js";
 import { ageStampOf, runKeepReason } from "./retention-candidates.js";
@@ -83,6 +83,9 @@ export interface RetentionDeps {
   maxDeletionsPerPass?: number;
   /** Signals a real skipped candidate to the lifecycle scheduler. */
   onTruncated?: () => void;
+  /** The held-staging release criterion; the daemon's reads the scope index row too
+   * (#694). Absent: a staging scope is read by its marker census alone. */
+  preparationQuiet?: PreparationQuietRead;
   /**
    * Absolute Claudexor-owned data root to scan for NOT-engine-owned top-level
    * entries (advisory disclosure only — the pass never deletes anything
@@ -467,6 +470,7 @@ export async function runRetentionPass(
           dryRun,
           retiredOwners,
           retireEmpty: true,
+          ...(deps.preparationQuiet ? { quiet: deps.preparationQuiet } : {}),
         })
       ).freedBytes;
       if (!dryRun && proofCurrent())
