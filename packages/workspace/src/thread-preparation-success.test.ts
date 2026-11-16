@@ -22,6 +22,7 @@ import { mintRunScopeMarker, preparationQuiet, type ScopeReapOutcome } from "@cl
 import { projectRuntimeDir } from "@claudexor/util";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  confirmThreadRelease,
   holdThreadPreparation,
   PreparationCleanupFailed,
   PreparationHeld,
@@ -33,7 +34,7 @@ import {
   type ThreadPreparationRecord,
 } from "./preparation-hold.js";
 import { ensureThreadWorktree } from "./thread-tree.js";
-import { holdPreparationChild } from "./preparation-release.js";
+import { holdPreparationChild, recordDigest } from "./preparation-release.js";
 
 import { gitFilterCommand, shellQuote } from "../../core/src/test-support/process-fixtures.js";
 
@@ -188,6 +189,20 @@ describe.runIf(process.platform !== "win32")(
       await expect(
         ensureThreadWorktree(w.repo, "handover", { quiet: win32Quiet }),
       ).rejects.toBeInstanceOf(PreparationCleanupFailed);
+      expect(readFileSync(threadPreparationRecordPath(tree), "utf8")).toBe(bytes);
+      expect(
+        await confirmThreadRelease(w.repo, tree, {
+          digest: recordDigest(bytes),
+          readWriter: null,
+          quiet: win32Quiet,
+        }),
+      ).toMatchObject({
+        outcome: "cleanup_failed",
+        basis: "saved_cleanup",
+        confirmed_at: null,
+        continued: false,
+        cleanup_error: expect.stringMatching(/operation not permitted/),
+      });
       expect(readFileSync(threadPreparationRecordPath(tree), "utf8")).toBe(bytes);
       refuseRecordRemoval = false;
       expect(await ensureThreadWorktree(w.repo, "handover", { quiet: win32Quiet })).toMatchObject({

@@ -34,7 +34,7 @@ export interface MaintenanceRouteServices {
   ): Promise<unknown>;
   getMaintenanceOperation(id: string): Promise<unknown>;
   cancelMaintenanceOperation(id: string): Promise<unknown>;
-  /** Held preparation resources (#694): an explicit read, and one confirmed release. */
+  /** Held preparation resources (#694): an explicit read, and one release. */
   heldPreparations(): Promise<ControlHeldPreparations>;
   releasePreparation(
     request: ControlPreparationReleaseRequest,
@@ -110,7 +110,7 @@ export const MAINTENANCE_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlPreparationReleaseReceipt",
     responseKind: "json",
     summary:
-      "Release one held preparation resource on the operator's confirmation that its processes ended, against the inspected digest; a measured live process, an active turn or creator refuses. A durable delivery command records the request before any effect and its receipt after; a repeat with the same Idempotency-Key answers that receipt (or that its outcome is unknown after a restart). Not a proof: the run's stop, costs and dispatch facts stay as recorded.",
+      "Release one held preparation resource against the inspected digest, on proof, its saved cleanup basis or operator confirmation. A measured live process, an active turn or creator refuses. A durable delivery command records the request before any effect and its receipt after; a repeat with the same Idempotency-Key answers that receipt (or that its outcome is unknown after a restart). Saved cleanup and confirmation are not machine proof; the run's stop, costs and dispatch facts stay as recorded.",
     idempotency: "key_required",
   },
   {

@@ -227,8 +227,15 @@ describe.runIf(posix)("thread preparation custody (#694 r10)", () => {
     const w = world();
     const marker = mintRunScopeMarker();
     const tree = w.tree("crash");
+    // Recovery registered a tree for a surviving branch, but checkout never
+    // finished. Keep the legacy schema-1 record without `repository`.
+    const branch = "claudexor/thread-crash";
+    git(w.repo, "branch", branch);
     mkdirSync(tree, { recursive: true });
-    writeFileSync(join(tree, ".git"), "gitdir: /nowhere\n");
+    git(w.repo, "worktree", "add", "--no-checkout", tree, branch);
+    const gitfile = readFileSync(join(tree, ".git"), "utf8");
+    const registrations = git(w.repo, "worktree", "list", "--porcelain");
+    expect(existsSync(join(tree, "y.held"))).toBe(false);
     writeThreadPreparation({
       schema: 1,
       thread_id: "crash",
@@ -238,6 +245,7 @@ describe.runIf(posix)("thread preparation custody (#694 r10)", () => {
       own_registration: true,
       own_branch: null,
     });
+    const record = readFileSync(threadPreparationRecordPath(tree), "utf8");
     // A writer of that scope (a hook's background process) is still alive.
     const writer = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
       env: { ...process.env, ...scopeMarkerEnv(marker) },
@@ -249,8 +257,14 @@ describe.runIf(posix)("thread preparation custody (#694 r10)", () => {
     own.push({ pid: writer.pid!, start: start as unknown as string });
     // The half checkout is never taken as a tree.
     expect(threadTreeState(tree)).toBe("held");
-    await expect(ensureThreadWorktree(w.repo, "crash")).rejects.toBeInstanceOf(PreparationHeld);
+    const refused = await ensureThreadWorktree(w.repo, "crash").catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(PreparationHeld);
+    expect(refused).toMatchObject({ code: "termination_unconfirmed", retryable: true });
     expect(existsSync(join(tree, ".git"))).toBe(true);
+    expect(readFileSync(join(tree, ".git"), "utf8")).toBe(gitfile);
+    expect(readFileSync(threadPreparationRecordPath(tree), "utf8")).toBe(record);
+    expect(git(w.repo, "worktree", "list", "--porcelain")).toBe(registrations);
+    expect(ps(writer.pid!)).toBe(start);
     await endOwn();
     await until(
       "the writer to be gone",
@@ -259,6 +273,10 @@ describe.runIf(posix)("thread preparation custody (#694 r10)", () => {
     const next = await ensureThreadWorktree(w.repo, "crash");
     expect(next.created).toBe(true);
     expect(threadTreeState(tree)).toBe("ready");
+    expect(existsSync(threadPreparationRecordPath(tree))).toBe(false);
+    expect(w.registered(tree)).toBe(true);
+    expect(git(tree, "symbolic-ref", "HEAD")).toBe(`refs/heads/${branch}`);
+    expect(readFileSync(join(tree, "y.held"), "utf8")).toBe("committed\n");
   }, 60_000);
 
   it("a record that cannot be deleted on success fails the preparation, typed, before the tree is handed over; Retry refuses while the fault stands and then hands the same tree over", async () => {

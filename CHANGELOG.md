@@ -4,7 +4,7 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
-- **v6.2.0** (unreleased) — **Continue past an account verification refusal.** Claude's
+- **v6.2.0** (2026-11-16) — **Continue past an account verification refusal.** Claude's
   `verification_required` result is recognized as an account refusal, with the
   vendor's reason retained, instead of a retryable transport failure. The account
   is temporarily excluded across models of that subscription route; a quota
@@ -29,12 +29,15 @@ on GitHub Releases.
   finishes first. A saved cleanup or handover basis survives removal faults
   for the same preparation generation; it cannot override a new hold or live
   child. Unconfirmed stops or crashes without a basis need operator recovery.
-  `claudexor gc preparations` inspects current holds;
-  `claudexor gc release-preparation` requires confirmation that the processes ended,
-  recording it only when the read cannot prove that end. CLI and timeline
-  warnings label held paths as historical and point to these commands (#725).
+  `claudexor gc preparations` distinguishes `saved_cleanup` from machine proof
+  and operator confirmation. `claudexor gc release-preparation` reuses that
+  generation's saved basis after fresh checks, recording new confirmation only
+  when neither proof nor a saved basis permits release. CLI and timeline warnings
+  label held paths as historical and point to these commands (#725).
 
-  Failed Git status no longer looks clean; unread workspace facts in a
+  Failed Git status refuses workspace preparation. Diagnostic before/after
+  status failures in Apply and Revert remain unknown without hiding the actual
+  operation result or skipping its cleanup. Unread workspace facts in a
   continuation packet remain unknown. Late direct exits update the corresponding
   holds without erasing other process uncertainty. Natural pipe close clears
   the capture drain timer, so delayed group settlement cannot falsely mark

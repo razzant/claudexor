@@ -37,6 +37,7 @@ import {
   releaseDecision,
   removeOwnBranch,
   resolveThreadRepository,
+  threadCleanupContinuation,
   threadGeneration,
   type ConfirmationInput,
   type ConfirmationOutcome,
@@ -398,16 +399,11 @@ export async function releaseThreadPreparation(
   const verdict: PreparationQuietVerdict = hasPreparationChild(tree)
     ? { status: "held", reasons: ["this preparation's current child has not exited"] }
     : await quiet(holdFactsOf(record.scope?.marker, record.held));
-  const continued =
-    record.held === undefined &&
-    record.cleanup_basis?.generation === threadGeneration(record) &&
-    (record.cleanup_basis.basis === "platform_limit" || record.cleanup_basis.basis === "handover")
-      ? record.cleanup_basis.basis
-      : undefined;
+  const continued = threadCleanupContinuation(record)?.basis;
   const decision = releaseDecision(verdict, {
     operator: boundOperatorRelease(record.operator_release, threadGeneration(record)),
-    platformLimit:
-      record.held === undefined && (options.platformLimit === true || continued !== undefined),
+    platformLimit: record.held === undefined && options.platformLimit === true,
+    savedCleanup: continued !== undefined,
   });
   if (!decision.release) throw heldRefusal(tree, record, decision);
   try {
@@ -457,7 +453,10 @@ export async function releaseThreadPreparation(
     rmSync(dirname(tree), { recursive: true, force: true });
     return "released";
   } catch (fault) {
-    if (decision.basis !== "platform_limit" || continued === "handover")
+    if (
+      decision.basis !== "platform_limit" &&
+      !(decision.basis === "saved_cleanup" && continued === "platform_limit")
+    )
       throw cleanupFailed(tree, record, fault);
     // No read proved an end here (the platform has none), so this is not a
     // cleanup fault after a proven end: the step may have failed on what still
@@ -556,10 +555,9 @@ export function writeAtomic(path: string, value: unknown): void {
 }
 
 /**
- * An operator's confirmation that what this thread's held preparation started
- * has ended (`confirmPreparationRelease`): compared with the inspected digest,
- * recorded in the record, then the thread's own release. The caller holds the
- * thread's mutation chain and has found none of its turns queued or running.
+ * Release this thread's preparation against the inspected digest, recording
+ * confirmation only where no proof or saved basis permits it. The caller holds
+ * the thread's mutation chain and has found no turns queued or running.
  */
 export function confirmThreadRelease(
   projectRoot: string,
@@ -576,6 +574,7 @@ export function confirmThreadRelease(
     refusal: async () =>
       hasPreparationChild(tree) ? "this preparation's current child has not exited" : null,
     quiet: (record) => quiet(holdFactsOf(record.scope?.marker, record.held)),
+    savedCleanup: (record) => threadCleanupContinuation(record) !== null,
     writer: (record) => ({
       opened_at: record.opened_at,
       ...(record.held ? { held_at: record.held.at } : {}),

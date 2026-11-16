@@ -508,8 +508,15 @@ describe.runIf(process.platform !== "win32")(
       const f = await fixture();
       const { mintRunScopeMarker, scopeMarkerEnv } = await import("@claudexor/core");
       const marker = mintRunScopeMarker();
+      // Recovery registered a tree for a surviving branch, but checkout never
+      // finished. Keep the legacy schema-1 record without `repository`.
+      const branch = `claudexor/thread-${f.thread.id}`;
+      git(f.repo, "branch", branch);
       mkdirSync(f.treePath, { recursive: true });
-      writeFileSync(join(f.treePath, ".git"), "gitdir: /nowhere\n"); // a half checkout
+      git(f.repo, "worktree", "add", "--no-checkout", f.treePath, branch);
+      const gitfile = readFileSync(join(f.treePath, ".git"), "utf8");
+      const registrations = git(f.repo, "worktree", "list", "--porcelain");
+      expect(existsSync(join(f.treePath, "y.held"))).toBe(false);
       writeFileSync(
         f.recordPath,
         JSON.stringify({
@@ -522,19 +529,31 @@ describe.runIf(process.platform !== "win32")(
           own_branch: null,
         }),
       );
+      const record = readFileSync(f.recordPath, "utf8");
       // A process of that scope (a hook's background job) is still alive.
       const writer = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
         env: { ...process.env, ...scopeMarkerEnv(marker) },
         stdio: "ignore",
       });
-      await identified(writer.pid!);
+      const identity = await identified(writer.pid!);
       const refused = await f.turn("edit");
       expect((await f.terminal(refused.jobId)).runId).toBeUndefined();
       expect(f.turnError(refused.turnId)).toMatchObject({ code: "termination_unconfirmed" });
       expect(existsSync(join(f.treePath, ".git"))).toBe(true); // never taken, never removed
+      expect(readFileSync(join(f.treePath, ".git"), "utf8")).toBe(gitfile);
+      expect(readFileSync(f.recordPath, "utf8")).toBe(record);
+      expect(git(f.repo, "worktree", "list", "--porcelain")).toBe(registrations);
+      expect(startOf(identity.pid)).toBe(identity.start);
       await endOwn();
       const next = await f.turn("edit");
-      expect((await f.terminal(next.jobId)).state).toBe("succeeded");
+      const done = await f.terminal(next.jobId);
+      expect(done.state).toBe("succeeded");
+      expect(done.runId).toEqual(expect.any(String));
+      expect(existsSync(f.recordPath)).toBe(false);
+      expect(git(f.repo, "worktree", "list", "--porcelain").split("\n")).toContain(
+        `worktree ${f.treePath}`,
+      );
+      expect(git(f.treePath, "symbolic-ref", "HEAD")).toBe(`refs/heads/${branch}`);
       expect(readFileSync(join(f.treePath, "y.held"), "utf8")).toBe("user data\n");
     }, 180_000);
   },

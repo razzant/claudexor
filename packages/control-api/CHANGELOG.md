@@ -63,7 +63,9 @@
   that exit, and other membership uncertainty still blocks release.
 
   Failed Git status refuses envelope preparation instead of treating empty stdout
-  as clean. A continuation packet keeps unread HEAD and dirty-file counts unknown,
+  as clean. Apply and Revert retain their structured result and cleanup when
+  diagnostic before/after status is unavailable; that observation remains unknown.
+  A continuation packet keeps unread HEAD and dirty-file counts unknown,
   without dropping the packet or calling the tree unborn. Natural pipe close
   clears the capture drain timer; delayed group settlement cannot invent truncation,
   and an already truncated capture stays truncated.
@@ -90,10 +92,11 @@
   `claudexor gc preparations` lists what is held under the daemon's
   known roots (a purged thread's leftover record included) with a fresh read, and
   `claudexor gc release-preparation <selector> --digest <sha256> --confirm-ended`
-  releases one of them once you have checked that its processes ended. An eligible
-  release records your confirmation at the resource only when its read cannot
-  prove that end. A machine-proven release records no new confirmation
-  (`confirmed_at` is null unless an earlier confirmation is retained). The release
+  releases one selected resource after fresh checks. Inspection and receipts name
+  `saved_cleanup` when this generation may continue its recorded ordinary cleanup
+  or handover. Neither that basis nor operator confirmation is machine proof.
+  New confirmation is recorded only when proof and a saved basis cannot already
+  permit release; `confirmed_at` retains an earlier confirmation when present. The release
   runs as one durable daemon operation whose receipt (the record's generation, its stop, the
   outcome) stays; repeating its `--idempotency-key` reads that receipt back. A
   measured scope member, a queued or running turn of the thread, a live

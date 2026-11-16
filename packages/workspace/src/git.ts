@@ -427,15 +427,10 @@ function absent(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
-/**
- * Apply a unified diff to a tree with a 3-way merge (race-winner adoption into
- * the live in-place tree). Throws loudly on conflict so the caller can disclose
- * `adopted:false` and offer a manual apply — the work is never silently lost.
- */
-
+/** Outcome of exact, preimage-checked patch application. */
 export interface ProtectedApplyResult {
   ok: boolean;
-  /** True when the tree does NOT match its pre-apply state (restore failed). */
+  /** True if the patch remains applied, or failure could not establish an unchanged target. */
   treeMutated: boolean;
   detail?: string;
 }
@@ -463,7 +458,9 @@ async function runProtectedApply(
       detail: `${options.reverse ? "reverse " : ""}apply --check refused: ${check.stderr.trim()}`,
     };
   }
-  const before = await statusPorcelain(repo);
+  // Diagnostic only: the exact apply check above owns admission. An unavailable
+  // observation must not hide the apply result or skip its caller's cleanup.
+  const before = await statusPorcelain(repo).catch(() => null);
   const applied = await git(repo, [...flags, "-"], diff);
   if (applied.code === 0) {
     return {
@@ -472,16 +469,19 @@ async function runProtectedApply(
       treeMutated: !options.reverse,
     };
   }
-  const after = await statusPorcelain(repo);
-  const unchanged = after === before;
+  const after = await statusPorcelain(repo).catch(() => null);
+  const observed = before !== null && after !== null;
+  const unchanged = observed && after === before;
   return {
     ok: false,
     treeMutated: options.reverse ? true : !unchanged,
     detail:
       `${options.reverse ? "reverse " : ""}apply failed after preflight: ${applied.stderr.trim()}` +
-      (unchanged
-        ? "; tree and index remain at the observed pre-operation state"
-        : "; target changed during apply; no destructive rollback was attempted"),
+      (!observed
+        ? "; target state is unknown because git status was unavailable; no destructive rollback was attempted"
+        : unchanged
+          ? "; tree and index remain at the observed pre-operation state"
+          : "; target changed during apply; no destructive rollback was attempted"),
   };
 }
 

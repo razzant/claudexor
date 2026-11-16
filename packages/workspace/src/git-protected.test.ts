@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CaptureResult } from "@claudexor/core";
 import {
   applyPatchAndIndexProtected,
   applyPatchProtected,
@@ -10,6 +11,21 @@ import {
 } from "./git.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
+
+// Fault only the selected status/apply boundary; preflight and all other Git
+// operations remain real. In particular a failed status still throws in git-run.
+let intercept: ((args: string[]) => CaptureResult | undefined) | null = null;
+vi.mock("@claudexor/core", async (original) => {
+  const core = await original<typeof import("@claudexor/core")>();
+  return {
+    ...core,
+    runCaptureRaw: async (...args: Parameters<typeof core.runCaptureRaw>) =>
+      intercept?.(args[1]) ?? core.runCaptureRaw(...args),
+  };
+});
+afterEach(() => {
+  intercept = null;
+});
 
 // W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
 const __reapDirs: string[] = [];
@@ -69,6 +85,86 @@ function initRepo(): string {
 }
 
 describe("preimage-bound protected Git mutation", () => {
+  const mutations = [
+    { name: "forward", run: applyPatchProtected, reverse: false },
+    { name: "indexed", run: applyPatchAndIndexProtected, reverse: false },
+    { name: "reverse", run: reversePatchAndIndexProtected, reverse: true },
+  ];
+
+  it.each(mutations)(
+    "$name preserves a failed apply result when status is unavailable",
+    async ({ run, reverse }) => {
+      for (const unavailable of ["before", "after", "both", "throws", "neither"]) {
+        const repo = initRepo();
+        if (reverse) expect((await applyPatchAndIndexProtected(repo, PATCH)).ok).toBe(true);
+        const index = git(repo, ["write-tree"]);
+        const bytes = readFileSync(join(repo, "a.txt"), "utf8");
+        let reads = 0;
+        let applies = 0;
+        intercept = (args) => {
+          if (args[1] !== repo) return;
+          if (args.includes("status")) {
+            reads++;
+            if (unavailable === "throws") throw new Error("status transport failed");
+            if (
+              unavailable === "both" ||
+              (unavailable === "before" && reads === 1) ||
+              (unavailable === "after" && reads === 2)
+            )
+              return {
+                code: reads === 1 ? 128 : null,
+                signal: null,
+                stdout: "",
+                stderr: "status unavailable",
+              };
+          }
+          if (args.includes("apply") && !args.includes("--check")) {
+            applies++;
+            return { code: 1, signal: null, stdout: "", stderr: "apply sentinel" };
+          }
+        };
+        const result = await run(repo, PATCH);
+        expect(result).toMatchObject({
+          ok: false,
+          treeMutated: reverse || unavailable !== "neither",
+        });
+        expect(result.detail).toContain("apply sentinel");
+        if (unavailable === "neither")
+          expect(result.detail).toContain("observed pre-operation state");
+        else {
+          expect(result.detail).toContain("target state is unknown");
+          expect(result.detail).not.toMatch(/remain at|target changed/);
+        }
+        expect(reads).toBe(2);
+        expect(applies).toBe(1);
+        expect(git(repo, ["write-tree"])).toBe(index);
+        expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe(bytes);
+        intercept = null;
+      }
+    },
+  );
+
+  it.each(mutations)(
+    "$name still applies the exact patch when diagnostic status fails",
+    async ({ run, reverse }) => {
+      const repo = initRepo();
+      if (reverse) expect((await applyPatchAndIndexProtected(repo, PATCH)).ok).toBe(true);
+      let reads = 0;
+      intercept = (args) => {
+        if (args[1] === repo && args.includes("status")) {
+          reads++;
+          return { code: 128, signal: null, stdout: "", stderr: "status unavailable" };
+        }
+      };
+      expect(await run(repo, PATCH)).toMatchObject({ ok: true, treeMutated: !reverse });
+      expect(reads).toBe(1);
+      expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe(reverse ? "one\n" : "two\n");
+      expect(git(repo, ["diff", "--cached", "--name-only"])).toBe(
+        run === applyPatchAndIndexProtected ? "a.txt\nb.txt\nc.txt\n" : "",
+      );
+    },
+  );
+
   it("reverses only the exact patch postimage and preserves unrelated concurrent edits", async () => {
     const repo = initRepo();
     const applied = await applyPatchAndIndexProtected(repo, PATCH);

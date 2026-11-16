@@ -15,7 +15,7 @@
         "confirm_processes_ended": {
           "type": "boolean",
           "const": true,
-          "description": "The operator checked that the stopped preparation's processes and their children have ended."
+          "description": "The operator checked that the stopped preparation's processes and their children have ended; recorded as a release basis only when proof or a saved basis does not already permit release."
         }
       },
       "required": [
@@ -24,7 +24,7 @@
         "confirm_processes_ended"
       ],
       "additionalProperties": false,
-      "description": "Release one held preparation resource on the operator's confirmation."
+      "description": "Release one held preparation resource, recording operator confirmation only if needed."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

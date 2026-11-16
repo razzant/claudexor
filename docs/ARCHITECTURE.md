@@ -2720,16 +2720,16 @@ release under that limit. Unconfirmed stops/crashes without a basis require
 operator confirmation. A late observed exit stamps PID and POSIX group holds;
 `held.at` is not exit time, and other membership uncertainty still holds.
 
-`gc preparations` (`GET /v2/maintenance/preparations`) lists known roots, including
-purged threads, and read failures; it follows no links, `.` or `..`.
-Other tree/config-root spellings are unreadable and unconfirmable;
-restart with the recorded spelling.
+`gc preparations` (`GET /v2/maintenance/preparations`) lists roots (purged threads too)
+and read errors. No links, `.` or `..`; other tree/config-root spellings require
+the recorded spelling on restart. A permitted saved ordinary cleanup/handover
+is `saved_cleanup`, not machine proof.
 `gc release-preparation` requires Idempotency-Key and inspected digest.
-Its durable `delivery.preparation_release` records generation-bound operator
-confirmation before effects only if the end is unproven. Machine proof adds none;
-`confirmed_at` can retain one.
-It holds the owner turn (no queued/running thread turns, base turn, prune lock);
-receipts (generation, stop, basis, outcome) replay for the same key.
+`delivery.preparation_release` durably records generation-bound consent before effects
+if needed; proof or `saved_cleanup` adds none; `confirmed_at` keeps prior consent.
+Release holds the owner
+(thread without queued/running turns, base turn or prune lock).
+Receipts (generation, stop, basis, outcome) replay by key.
 Restart's `interrupted` is unknown. Current children, measured scope members,
 live creators, unreadable recorded identities and writer PIDs born within the
 record's window refuse. A sole PID-only hold with unknown birth may be

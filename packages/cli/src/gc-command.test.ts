@@ -385,6 +385,9 @@ describe("gc preparations and gc release-preparation (#694 r17)", () => {
       };
       expect(explicit.headers["Idempotency-Key"]).toBe("my-key");
       expect(printed()).toContain("the recorded receipt of an earlier request with this key");
+      respond(receipt("released", "saved_cleanup"));
+      expect(await gcCommand(parseArgs(argv), false)).toBe(0);
+      expect(printed()).toContain("released: thread /p/threads/t1/tree (saved_cleanup)");
       await expect(
         gcCommand(parseArgs(["gc", "preparations", "--idempotency-key", "x"]), false),
       ).rejects.toThrow();

@@ -65,13 +65,16 @@ import { ensureThreadWorktree } from "./thread-tree.js";
 
 // Refuse only this test's tree removal; all other filesystem/Git work is real.
 let busyTree: string | null = null;
+let busyRemovalTried = false;
 vi.mock("@claudexor/util", async (original) => {
   const util = await original<typeof import("@claudexor/util")>();
   return {
     ...util,
     removeTree: (...args: Parameters<typeof util.removeTree>) => {
-      if (args[0] === busyTree)
+      if (args[0] === busyTree) {
+        busyRemovalTried = true;
         return Promise.reject(Object.assign(new Error("tree is busy"), { code: "EBUSY" }));
+      }
       return util.removeTree(...args);
     },
   };
@@ -80,6 +83,7 @@ vi.mock("@claudexor/util", async (original) => {
 const dirs: string[] = [];
 afterEach(() => {
   busyTree = null;
+  busyRemovalTried = false;
   vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 }, 0);
@@ -723,29 +727,66 @@ describe("releaseThreadPreparation (#694)", () => {
 });
 
 describe("a release where no read can prove the end (Windows, injected) (#694)", () => {
-  it("ordinary cleanup retains its platform limit after EBUSY, so a later consumer can retry without the flag", async () => {
-    const w = world();
-    const tree = w.tree("ordinary-retry");
-    mkdirSync(tree, { recursive: true });
-    writeFileSync(join(tree, "half"), "checkout\n");
-    writeThreadPreparation(w.record("ordinary-retry", { own_registration: false }));
-    // No hold is not evidence of an ordinary failure: this could be a crash.
-    await expect(releaseThreadPreparation(w.repo, tree, win32Quiet())).rejects.toMatchObject({
-      context: { release_requires: "operator_confirmation" },
-    });
-    busyTree = tree;
-    await expect(
-      releaseThreadPreparation(w.repo, tree, win32Quiet(), { platformLimit: true }),
-    ).rejects.toBeInstanceOf(PreparationHeld);
-    expect(readThreadPreparation(tree)).toMatchObject({
-      cleanup_basis: { basis: "platform_limit", generation: expect.any(String) },
-    });
-    expect(readThreadPreparation(tree)).not.toHaveProperty("cleanup_error");
-    expect(readFileSync(join(tree, "half"), "utf8")).toBe("checkout\n");
-    busyTree = null;
-    expect(await releaseThreadPreparation(w.repo, tree, win32Quiet())).toBe("released");
-    expect(threadTreeState(tree)).toBe("absent");
-  });
+  it.each(["owner", "explicit"] as const)(
+    "ordinary cleanup retains its platform limit after EBUSY for a later %s release",
+    async (consumer) => {
+      const w = world();
+      const tree = w.tree("ordinary-retry");
+      mkdirSync(tree, { recursive: true });
+      writeFileSync(join(tree, "half"), "checkout\n");
+      writeThreadPreparation(w.record("ordinary-retry", { own_registration: false }));
+      // No hold is not evidence of an ordinary failure: this could be a crash.
+      await expect(releaseThreadPreparation(w.repo, tree, win32Quiet())).rejects.toMatchObject({
+        context: { release_requires: "operator_confirmation" },
+      });
+      busyTree = tree;
+      await expect(
+        releaseThreadPreparation(w.repo, tree, win32Quiet(), { platformLimit: true }),
+      ).rejects.toBeInstanceOf(PreparationHeld);
+      expect(readThreadPreparation(tree)).toMatchObject({
+        cleanup_basis: { basis: "platform_limit", generation: expect.any(String) },
+      });
+      expect(readThreadPreparation(tree)).not.toHaveProperty("cleanup_error");
+      expect(readFileSync(join(tree, "half"), "utf8")).toBe("checkout\n");
+      const bytes = readFileSync(threadPreparationRecordPath(tree), "utf8");
+      const read = vi.fn<PreparationQuietRead>((facts) => {
+        expect(readThreadPreparation(tree)).not.toHaveProperty("operator_release");
+        return win32Quiet()(facts);
+      });
+      busyRemovalTried = false;
+      expect(
+        await confirmThreadRelease(w.repo, tree, {
+          digest: recordDigest(bytes),
+          quiet: read,
+          readWriter: null,
+        }),
+      ).toMatchObject({
+        outcome: "refused",
+        confirmed_at: null,
+        reasons: ["a read at the release measured what holds it again"],
+      });
+      expect(busyRemovalTried).toBe(true); // The owner actually retried cleanup on the saved basis.
+      expect(readFileSync(threadPreparationRecordPath(tree), "utf8")).toBe(bytes);
+      expect(readFileSync(join(tree, "half"), "utf8")).toBe("checkout\n");
+      busyTree = null;
+      if (consumer === "owner")
+        expect(await releaseThreadPreparation(w.repo, tree, read)).toBe("released");
+      else
+        expect(
+          await confirmThreadRelease(w.repo, tree, {
+            digest: recordDigest(bytes),
+            quiet: read,
+            readWriter: null,
+          }),
+        ).toMatchObject({
+          outcome: "released",
+          basis: "saved_cleanup",
+          confirmed_at: null,
+          continued: false,
+        });
+      expect(threadTreeState(tree)).toBe("absent");
+    },
+  );
 
   it.for([
     "new generation",

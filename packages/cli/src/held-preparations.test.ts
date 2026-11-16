@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { preparationQuiet } from "@claudexor/core";
 import { projectRuntimeDir } from "@claudexor/util";
+import { ControlHeldPreparations, ControlPreparationReleaseReceipt } from "@claudexor/schema";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   ensureObjectStore,
@@ -28,10 +29,15 @@ import {
   holdPreparationChild,
   holdThreadPreparation,
   objectStorePath,
+  readThreadPreparation,
   recordDigest,
+  releaseThreadPreparation,
+  threadGeneration,
+  threadPreparationRecordPath,
   writeStagingOwner,
   writeThreadPreparation,
   type PreparationQuietRead,
+  type ThreadPreparationRecord,
 } from "@claudexor/workspace";
 import { mintRunScopeMarker } from "@claudexor/core";
 import { heldPreparationServices, type ThreadSerializer } from "./held-preparations.js";
@@ -44,7 +50,10 @@ const win32Quiet: PreparationQuietRead = (facts) =>
   preparationQuiet(facts, { platform: "win32", probePidAlive: () => false });
 const GIT = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 
-async function world(jobs: Array<{ state: string; params?: unknown }> = []) {
+async function world(
+  jobs: Array<{ state: string; params?: unknown }> = [],
+  quiet: PreparationQuietRead = win32Quiet,
+) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-held-prep-")));
   dirs.push(root);
   const project = join(root, "project");
@@ -95,7 +104,7 @@ async function world(jobs: Array<{ state: string; params?: unknown }> = []) {
   const service = heldPreparationServices({
     roots: () => ({ projects: () => [project], execution: () => [] }),
     jobs: () => jobs,
-    quiet: win32Quiet,
+    quiet,
     readWriter: null,
   });
   const calls: string[] = [];
@@ -106,7 +115,245 @@ async function world(jobs: Array<{ state: string; params?: unknown }> = []) {
   return { project, tree, base, finished, staging, service, calls, serialize };
 }
 
+function savedCleanup(
+  tree: string,
+  basis: "platform_limit" | "handover",
+  fields: Partial<ThreadPreparationRecord> = {},
+): ThreadPreparationRecord {
+  const { held: _stop, early: _early, ...original } = readThreadPreparation(tree)!;
+  const record = { ...original, own_registration: false, ...fields };
+  record.cleanup_basis = { generation: threadGeneration(record), basis };
+  writeThreadPreparation(record);
+  return record;
+}
+
 describe("held preparation maintenance (#694 r17)", () => {
+  it.each(
+    (["platform_limit", "handover"] as const).flatMap((basis) =>
+      (["early", "complete", "partial", "absent"] as const).map((phase) => ({ basis, phase })),
+    ),
+  )(
+    "$basis cleanup of $phase releases through maintenance on its saved basis without new consent",
+    async ({ basis, phase }) => {
+      const quiet = vi.fn(win32Quiet);
+      const w = await world([], quiet);
+      savedCleanup(w.tree, basis, {
+        ...(phase === "early" ? { early: true } : {}),
+        ...(phase === "complete" ? { complete: true } : {}),
+      });
+      if (phase === "absent") rmSync(w.tree, { recursive: true });
+      else writeFileSync(join(w.tree, "keep"), "existing bytes\n");
+      const path = threadPreparationRecordPath(w.tree);
+      const bytes = readFileSync(path, "utf8");
+      const held = ControlHeldPreparations.parse(await w.service.heldPreparations());
+      const item = held.preparations.find((entry) => entry.kind === "thread")!;
+      expect(item).toMatchObject({
+        read: { status: "quiet", unproven: expect.stringContaining("no process groups") },
+        release: "saved_cleanup",
+        operator_release: null,
+        refusal: null,
+        on_release: expect.stringContaining("not a machine proof"),
+      });
+      expect(item.on_release).toContain(`saved ${basis} cleanup basis`);
+      expect(readFileSync(path, "utf8")).toBe(bytes); // Inspection is read-only.
+      quiet.mockClear();
+      const request = {
+        selector: item.selector,
+        digest: item.digest,
+        confirm_processes_ended: true as const,
+      };
+      expect(
+        await w.service.releasePreparation({ ...request, digest: "0".repeat(64) }, w.serialize),
+      ).toMatchObject({ outcome: "stale", basis: null, confirmed_at: null });
+      expect(quiet).not.toHaveBeenCalled();
+      expect(readFileSync(path, "utf8")).toBe(bytes);
+      // The owner's fresh read sees the record before cleanup: no transient
+      // confirmation was written only to disappear with the record.
+      quiet.mockImplementation((facts) => {
+        expect(readThreadPreparation(w.tree)).not.toHaveProperty("operator_release");
+        return win32Quiet(facts);
+      });
+      const result = await w.service.releasePreparation(request, w.serialize);
+      const receipt = ControlPreparationReleaseReceipt.parse(
+        JSON.parse(JSON.stringify({ ...result, operation_id: "delivery-test", replayed: false })),
+      );
+      expect(receipt).toMatchObject({
+        outcome: phase === "complete" ? "completed" : "released",
+        basis: "saved_cleanup",
+        confirmed_at: null,
+        continued: false,
+        stop: null,
+        reasons: [],
+      });
+      expect(quiet).toHaveBeenCalled();
+      expect(existsSync(path)).toBe(false);
+      if (phase === "early" || phase === "complete")
+        expect(readFileSync(join(w.tree, "keep"), "utf8")).toBe("existing bytes\n");
+      else expect(existsSync(w.tree)).toBe(false);
+      expect(existsSync(w.base)).toBe(true);
+      expect(existsSync(w.staging)).toBe(true);
+    },
+  );
+
+  it.each([
+    "new generation",
+    "new hold",
+    "unknown basis",
+    "unknown read",
+    "measured member",
+    "current child",
+    "active turn",
+  ])("a saved cleanup basis never overrides %s in inspection or release", async (change) => {
+    const jobs: Array<{ state: string; params?: unknown }> = [];
+    const quiet: PreparationQuietRead =
+      change === "unknown read" || change === "measured member"
+        ? async () => ({ status: "held", reasons: [change] })
+        : win32Quiet;
+    const w = await world(jobs, quiet);
+    const record = savedCleanup(w.tree, "handover", { early: true });
+    if (change === "new generation")
+      writeThreadPreparation({
+        ...record,
+        opened_at: new Date(Date.parse(record.opened_at) + 1_000).toISOString(),
+      });
+    if (change === "new hold")
+      holdThreadPreparation(w.tree, { reason: "scope_unsettled", groups: [] });
+    if (change === "unknown basis")
+      writeFileSync(
+        threadPreparationRecordPath(w.tree),
+        JSON.stringify({
+          ...record,
+          cleanup_basis: { ...record.cleanup_basis, basis: "unknown" },
+        }),
+      );
+    if (change === "active turn")
+      jobs.push({ state: "queued", params: { threadId: "purged-1", mode: "ask" } });
+    let exited!: () => void;
+    const exit = new Promise<void>((resolve) => {
+      exited = resolve;
+    });
+    if (change === "current child") holdPreparationChild(w.tree, exit);
+    try {
+      const bytes = readFileSync(threadPreparationRecordPath(w.tree), "utf8");
+      const item = (await w.service.heldPreparations()).preparations.find(
+        (entry) => entry.kind === "thread",
+      )!;
+      const confirmable = ["new generation", "new hold", "unknown basis"].includes(change);
+      expect(item.release).toBe(confirmable ? "operator_confirmation" : "refused");
+      if (confirmable || change === "unknown read" || change === "measured member")
+        expect(item.on_release).not.toContain("saved handover cleanup basis");
+      if (change === "current child") expect(item.refusal).toContain("current child");
+      if (change === "active turn") expect(item.refusal).toContain("queued or running");
+      // Active turns are a serializer gate, not a workspace-layer process fact.
+      if (change !== "active turn")
+        await expect(releaseThreadPreparation(w.project, w.tree, quiet)).rejects.toMatchObject({
+          code: "termination_unconfirmed",
+        });
+      expect(readFileSync(threadPreparationRecordPath(w.tree), "utf8")).toBe(bytes);
+      const result = await w.service.releasePreparation(
+        { selector: item.selector, digest: item.digest, confirm_processes_ended: true },
+        w.serialize,
+      );
+      if (confirmable) {
+        // Legacy operator recovery still works on a genuinely unproven generation.
+        expect(result).toMatchObject({
+          outcome: "released",
+          basis: "operator_confirmed",
+          confirmed_at: expect.any(String),
+        });
+      } else {
+        expect(result).toMatchObject({ outcome: "refused", basis: null, confirmed_at: null });
+        expect(readFileSync(threadPreparationRecordPath(w.tree), "utf8")).toBe(bytes);
+      }
+    } finally {
+      exited();
+      await exit;
+    }
+  });
+
+  it("a proven end still releases a saved cleanup without operator consent", async () => {
+    const quiet = vi.fn<PreparationQuietRead>(async () => ({ status: "quiet" }));
+    const w = await world([], quiet);
+    savedCleanup(w.tree, "handover", { complete: true });
+    const item = (await w.service.heldPreparations()).preparations.find(
+      (entry) => entry.kind === "thread",
+    )!;
+    expect(item.release).toBe("machine");
+    quiet.mockClear();
+    expect(
+      await w.service.releasePreparation(
+        { selector: item.selector, digest: item.digest, confirm_processes_ended: true },
+        w.serialize,
+      ),
+    ).toMatchObject({ outcome: "completed", basis: "machine_proven", confirmed_at: null });
+    expect(quiet).toHaveBeenCalledTimes(2); // Confirmation boundary, then the resource's release.
+    expect(existsSync(w.tree)).toBe(true);
+  });
+
+  it("a new hold in the owner's release read keeps the saved cleanup untouched", async () => {
+    const quiet = vi.fn(win32Quiet);
+    const w = await world([], quiet);
+    savedCleanup(w.tree, "handover", { complete: true });
+    const item = (await w.service.heldPreparations()).preparations.find(
+      (entry) => entry.kind === "thread",
+    )!;
+    expect(item.release).toBe("saved_cleanup");
+    const bytes = readFileSync(threadPreparationRecordPath(w.tree), "utf8");
+    quiet.mockImplementationOnce(win32Quiet).mockResolvedValue({
+      status: "held",
+      reasons: ["scope identity unreadable"],
+    });
+    expect(
+      await w.service.releasePreparation(
+        { selector: item.selector, digest: item.digest, confirm_processes_ended: true },
+        w.serialize,
+      ),
+    ).toMatchObject({ outcome: "refused", basis: null, confirmed_at: null });
+    expect(readFileSync(threadPreparationRecordPath(w.tree), "utf8")).toBe(bytes);
+    expect(existsSync(w.tree)).toBe(true);
+  });
+
+  it.each([false, true])(
+    "retains prior consent alongside saved cleanup (proven read: %s)",
+    async (proven) => {
+      const quiet = vi.fn<PreparationQuietRead>(
+        proven ? async () => ({ status: "quiet" }) : win32Quiet,
+      );
+      const w = await world([], quiet);
+      const record = savedCleanup(w.tree, "handover", { complete: true });
+      const prior = {
+        confirmed_at: "2026-11-15T10:00:00.000Z",
+        generation: threadGeneration(record),
+        observation: { reasons: [], unproven: "no census" },
+      };
+      writeThreadPreparation({ ...record, operator_release: prior });
+      const item = (await w.service.heldPreparations()).preparations.find(
+        (entry) => entry.kind === "thread",
+      )!;
+      expect(item).toMatchObject({
+        release: proven ? "machine" : "operator_confirmation",
+        operator_release: { confirmed_at: prior.confirmed_at },
+      });
+      quiet.mockImplementation((facts) => {
+        expect(readThreadPreparation(w.tree)?.operator_release).toEqual(prior);
+        return proven ? Promise.resolve({ status: "quiet" }) : win32Quiet(facts);
+      });
+      expect(
+        await w.service.releasePreparation(
+          { selector: item.selector, digest: "0".repeat(64), confirm_processes_ended: true },
+          w.serialize,
+        ),
+      ).toMatchObject({
+        outcome: "completed",
+        basis: proven ? "machine_proven" : "operator_confirmed",
+        confirmed_at: prior.confirmed_at,
+        continued: true,
+      });
+      expect(existsSync(threadPreparationRecordPath(w.tree))).toBe(false);
+      expect(existsSync(w.tree)).toBe(true);
+    },
+  );
+
   it("discloses missing root coverage and refuses resolution with the read error, never root_unknown", async () => {
     const w = await world();
     const items = (await w.service.heldPreparations()).preparations;
