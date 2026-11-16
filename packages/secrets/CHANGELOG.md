@@ -1,5 +1,11 @@
 # @claudexor/secrets
 
+## 6.2.0
+
+### Patch Changes
+
+- @claudexor/util@6.2.0
+
 ## 6.1.2
 
 ### Patch Changes

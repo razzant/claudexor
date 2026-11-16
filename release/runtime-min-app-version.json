@@ -1,4 +1,4 @@
 {
   "minAppVersion": "6.2.0",
-  "rationale": "Engine records can name the ultrafast processing preference. Claudexor.app 6.0.0-6.1.2 decodes ReviewerPanelEntry.processingPreference strictly and cannot read a run whose reviewer panel names it; the app shipped with this change can. The pending schema minor changeset makes the next release at least 6.2.0, so this is the first such app. The existing appUpdateRequired path preserves the previous working engine until the application is updated. This floor applies to Claudexor.app, not to embedding-host compatibility."
+  "rationale": "Engine records can name the ultrafast processing preference. Claudexor.app 6.0.0-6.1.2 decodes ReviewerPanelEntry.processingPreference strictly and cannot read a run whose reviewer panel names it; Claudexor.app 6.2.0 can decode this value. The local updater leaves the current engine in place when it reports appUpdateRequired. The SSH manifest separately uses the release version as its app floor; its compatibility check prevents an older app from connecting to the host until the application is updated. This floor applies to Claudexor.app, not to embedding-host compatibility."
 }

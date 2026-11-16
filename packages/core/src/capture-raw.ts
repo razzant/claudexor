@@ -265,6 +265,10 @@ export async function runCaptureRaw(
           reject(err);
         });
         child.on("close", (c, s) => {
+          // Pipes have closed. Group settlement may outlast the drain bound;
+          // it must not turn this natural close into a cut capture. A drain
+          // that already cut the pipes keeps its recorded truncation.
+          drain.clear();
           // A natural close may prove its group empty (its basis then retires);
           // after a stop we asked for (its drain and bound included), nothing is
           // concluded from it. Either way only THIS registration is removed.

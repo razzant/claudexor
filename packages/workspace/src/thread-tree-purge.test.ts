@@ -28,6 +28,7 @@ import { projectRuntimeDir } from "@claudexor/util";
 import { git, worktreeRemoveRegistered } from "./git.js";
 import {
   holdThreadPreparation,
+  PreparationCleanupFailed,
   PreparationHeld,
   readThreadPreparation,
   threadPreparationRecordPath,
@@ -489,6 +490,99 @@ describe("isolated thread purge", () => {
 describe("isolated thread purge over a preparation record (#694)", () => {
   /** A read that proves the end of what the preparation started. */
   const provenEnd = async () => ({ status: "quiet" as const });
+
+  it.for([false, true])(
+    "unfinished preparation keeps its original repository through purge (ref locked: %s)",
+    async (locked) => {
+      const project = await userRepo();
+      const id = "th-preparing-moved";
+      const branch = `claudexor/thread-${id}`;
+      const tree = await ensureThreadWorktree(project, id);
+      // The state an interrupted checkout leaves, including a legacy record
+      // with no repository saved yet. The linked worktree is the authority.
+      writeThreadPreparation({
+        schema: 1,
+        thread_id: id,
+        tree: tree.path,
+        scope: null,
+        opened_at: new Date().toISOString(),
+        own_registration: true,
+        own_branch: { name: branch, tip: tree.baseSha },
+      });
+      const moved = join(tempDir("claudexor-purge-moved-"), "repo");
+      renameSync(project, moved);
+      expect((await git(moved, ["worktree", "repair"])).code).toBe(0);
+      // A different repository with the SAME branch and tip is not its owner.
+      expect((await git(moved, ["clone", "-q", "--no-hardlinks", moved, project])).code).toBe(0);
+      expect((await git(project, ["branch", branch, tree.baseSha])).code).toBe(0);
+      writeFileSync(join(project, "SENTINEL"), "replacement work\n");
+      const common = join(moved, ".git");
+      const lock = join(common, "refs", "heads", `${branch}.lock`);
+      if (locked) writeFileSync(lock, "another Git writer\n");
+      const recorded: PurgeRepositoryRecord[] = [];
+      const recordRepository = async (repository: PurgeRepositoryRecord) => {
+        // Both authorities must survive BEFORE the preparation loses .git.
+        expect(existsSync(join(tree.path, ".git"))).toBe(true);
+        expect(readThreadPreparation(tree.path)).toMatchObject({ repository });
+        recorded.push(repository);
+      };
+      if (locked) {
+        await expect(
+          purgeThreadWorktree(project, id, { quiet: provenEnd, recordRepository }),
+        ).rejects.toBeInstanceOf(PreparationCleanupFailed);
+        expect(readThreadPreparation(tree.path)).toMatchObject({ repository: recorded[0] });
+        expect(existsSync(join(tree.path, ".git"))).toBe(false);
+        expect(await branchExists(moved, branch)).toBe(true);
+        expect(await branchExists(project, branch)).toBe(true);
+        rmSync(lock);
+      }
+      const owner = await purgeThreadWorktree(project, id, {
+        quiet: provenEnd,
+        repository: recorded[0],
+        recordRepository,
+      });
+      expect(await branchExists(project, branch)).toBe(true);
+      expect(readFileSync(join(project, "SENTINEL"), "utf8")).toBe("replacement work\n");
+      expect(owner).toBe(common);
+      expect(recorded).toEqual([{ gitDir: common, identity: expect.any(String) }]);
+      expect(await branchExists(moved, branch)).toBe(false);
+      expect(await registrations(moved)).not.toContain(id);
+      expect(existsSync(dirname(tree.path))).toBe(false);
+    },
+  );
+
+  it("an unfinished preparation keeps its pointer when purge cannot persist its repository", async () => {
+    const project = await userRepo();
+    const id = "th-preparing-record-fault";
+    const tree = await ensureThreadWorktree(project, id);
+    const branch = `claudexor/thread-${id}`;
+    writeThreadPreparation({
+      schema: 1,
+      thread_id: id,
+      tree: tree.path,
+      scope: null,
+      opened_at: new Date().toISOString(),
+      own_registration: true,
+      own_branch: { name: branch, tip: tree.baseSha },
+    });
+    const pointer = readFileSync(join(tree.path, ".git"), "utf8");
+    await expect(
+      purgeThreadWorktree(project, id, {
+        quiet: provenEnd,
+        recordRepository: async () => {
+          throw new Error("purge journal unavailable");
+        },
+      }),
+    ).rejects.toThrow(/purge journal unavailable/);
+    expect(readFileSync(join(tree.path, ".git"), "utf8")).toBe(pointer);
+    expect(await registrations(project)).toContain(realpathSync(tree.path));
+    expect(await branchExists(project, branch)).toBe(true);
+    expect(existsSync(threadPreparationRecordPath(tree.path))).toBe(true);
+    await purgeThreadWorktree(project, id, { quiet: provenEnd });
+    expect(existsSync(dirname(tree.path))).toBe(false);
+    expect(await branchExists(project, branch)).toBe(false);
+  });
+
   /** The config root, spelled another way (null: this filesystem has no such spelling). */
   const spellings: Array<[string, (config: string) => string | null]> = [
     ["as it is on disk", (config) => config],

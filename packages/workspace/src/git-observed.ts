@@ -124,6 +124,10 @@ export interface ObservedGitOptions {
   /** The caller's stop: the child is ended and the stop is thrown, typed by whether
    * its end was proven, before any Git failure or allowed failure is read. */
   signal?: AbortSignal;
+  /** Admission only: checked again after the awaited baseline. A Windows step
+   * taking user locks may refuse to start on Stop without interrupting a step
+   * already running; `signal` still owns that step's interruption contract. */
+  startSignal?: AbortSignal;
   /** The child's pid and its capture-time measured identity, once spawned. */
   onCaptured?: (pid: number, identity: KnownProcessIdentity | undefined) => void;
   /** End this child the process owner's ordinary way (SIGINT, then SIGKILL a
@@ -175,6 +179,7 @@ export async function gitObserved(
   args: string[],
   options: ObservedGitOptions & { allowFailure?: boolean },
 ): Promise<ObservedGitResult> {
+  throwIfCancelled(options.startSignal);
   throwIfCancelled(options.signal);
   const stallMs = options.stallMs ?? GIT_STALL_MS;
   const watchdog = new AbortController();
@@ -185,7 +190,8 @@ export async function gitObserved(
   // completed before the child starts.
   let lastProgress = probe ? await probe() : 0;
   // A stop that arrived while the baseline probe was awaited starts no child.
-  if (probe) throwIfCancelled(options.signal);
+  throwIfCancelled(options.startSignal);
+  throwIfCancelled(options.signal);
   let lastActivity = Date.now();
   let probing = false;
   let stalled = false;

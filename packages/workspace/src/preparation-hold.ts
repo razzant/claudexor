@@ -1,25 +1,16 @@
 /**
- * Preparation custody (#694): the resources a preparation makes — an isolated
- * thread's worktree with its registration and new branch, an envelope base, an
- * object-store staging directory — carry their owner's record from before the
- * first process that changes them. After a stop whose end was not proven they
- * are neither removed nor reused; one release function frees them once a READ
- * proves that what the stop left has ended (`preparationQuiet` in core).
+ * Preparation custody (#694): worktree, registration, new branch, envelope
+ * base and staging directory carry their owner's record before mutation.
+ * Unconfirmed stops hold them until `preparationQuiet` proves the end or the
+ * operator confirms it (`claudexor gc release-preparation`). A measured process
+ * always holds; a new generation never inherits a confirmation.
  *
- * A thread's record is `threads/<id>/preparation.json`, written before the
- * preparation's first Git step (`early`: the project's initialization, the base
- * snapshot and the lookups own nothing of the thread yet), rewritten with what
- * the preparation owns before the first step that changes the thread, and
- * deleted last: on success, or by the release. While it exists the tree is not
- * ready, whoever reads its path.
- *
- * Where no read can prove that end (Windows has no group probe and no census; a
- * daemon that died midway left no observed exit), nothing is released by
- * itself after an unconfirmed stop or a crash: an operator who checked that the
- * old processes ended records that confirmation at the resource
- * (`operator_release`, bound to that record's generation), and the same release
- * then frees it (`claudexor gc release-preparation`). A confirmation never
- * outweighs a process a read measures alive, and a new record never inherits one.
+ * `threads/<id>/preparation.json` precedes the first Git step. Its `early`
+ * phase owns nothing of the thread during initialization, snapshot and lookups;
+ * the record names ownership before thread mutation and is deleted last.
+ * While it exists, every reader considers the tree unready. Ordinary cleanup
+ * and successful handover retain their particular decision across removal
+ * failure; without such a basis, an unproven end after a crash stays held.
  */
 import {
   existsSync,
@@ -44,10 +35,13 @@ import {
   hasPreparationChild,
   holdPreparationChild,
   releaseDecision,
+  removeOwnBranch,
+  resolveThreadRepository,
   threadGeneration,
   type ConfirmationInput,
   type ConfirmationOutcome,
   type OperatorReleaseBasis,
+  type PurgeRepositoryRecord,
   type ReleaseDecision,
 } from "./preparation-release.js";
 import { removeTree, writeTextAsync } from "@claudexor/util";
@@ -89,6 +83,9 @@ export interface ThreadPreparationRecord {
   own_registration: boolean | null;
   /** A branch this preparation created, removable only while still at `tip`. */
   own_branch: { name: string; tip: string } | null;
+  /** Original Git authority, kept before thread mutation and refreshed from its
+   * repaired .git pointer before cleanup. Absent on older preparations. */
+  repository?: PurgeRepositoryRecord;
   /** The checkout completed; only its scope's end was not proven yet. Its release
    * then frees the record alone and the tree is handed over as made. */
   complete?: boolean;
@@ -96,6 +93,9 @@ export interface ThreadPreparationRecord {
   cleanup_error?: string;
   /** An operator's confirmation that this generation's processes ended (r17). */
   operator_release?: OperatorReleaseBasis;
+  /** An ordinary release or successful handover already authorized for this
+   * generation. Neither is a machine proof; a fresh hold or live child wins. */
+  cleanup_basis?: { generation: string; basis: "platform_limit" | "handover" };
 }
 
 /**
@@ -138,15 +138,11 @@ export class PreparationHeld extends WorkspaceError {
 }
 
 /**
- * What a preparation started HAS provably ended (the release's read said so, or
- * its scope settled), but something it made — at least its record — could not be
- * removed. The record stays, so the tree is still not ready and every reader of
- * it refuses; nothing about any process is unconfirmed, so this is not a
- * `termination_unconfirmed`. Retryable once the fault is gone: the release of
- * the thread's next turn that changes files, or of its purge, reads again and
- * finishes. Apply, a read-only turn and file reads release nothing: they answer
- * from the record, whose `cleanup_error` is the last fault a release SAVED
- * there, not a fresh read of any process.
+ * An end or successful handover was accepted, but cleanup failed. The record
+ * keeps the tree unready: this is a removal fault, not a new process claim.
+ * The next changing turn or purge reads again and retries. Apply, read-only
+ * turns and file reads release nothing: `cleanup_error` is the last saved
+ * fault, not a fresh process read.
  */
 export class PreparationCleanupFailed extends WorkspaceError {
   readonly code = "preparation_cleanup_failed";
@@ -163,13 +159,13 @@ export class PreparationCleanupFailed extends WorkspaceError {
   };
   constructor(tree: string, record: ThreadPreparationRecord | null, fault: string) {
     super(`the thread worktree ${tree} could not be released: ${fault}`);
-    // The record's own stop facts (`held`) are history here: the end was proven.
+    // Stop facts are history here; this refusal is the accepted cleanup's fault.
     const { held: _held, ...facts } = heldFacts(tree, record);
     this.context = { held: [tree], preparation: { ...facts, cleanup_error: fault } };
   }
 }
 
-/** A cleanup step failed after the end was proven: the fault is kept at the record
+/** An accepted cleanup step failed: the fault is kept at the record
  * once (rewritten only when its text changes; the same fault may refuse that write
  * too, and the refusal still names it), and the typed refusal is returned to throw. */
 function cleanupFailed(
@@ -188,10 +184,21 @@ function cleanupFailed(
   return new PreparationCleanupFailed(tree, record, text);
 }
 
-/** Remove the record of a preparation whose scope settled (the last step before
- * its tree is handed over); a record that cannot be removed refuses, typed. */
+/** The creator calls after success and settlement. Save that handover decision
+ * before unlink, so a refusal cannot turn healthy Windows work into a crash. */
 export function removeThreadPreparationRecord(tree: string): void {
+  const record = readThreadPreparation(tree);
+  if (!record || record.held || hasPreparationChild(tree))
+    throw new PreparationHeld(
+      `the thread worktree ${tree} cannot be handed over while its preparation is held`,
+      heldFacts(tree, record),
+      holdCause(record),
+    );
   try {
+    writeThreadPreparation({
+      ...record,
+      cleanup_basis: { generation: threadGeneration(record), basis: "handover" },
+    });
     unlinkSync(threadPreparationRecordPath(tree));
   } catch (fault) {
     throw cleanupFailed(tree, readThreadPreparation(tree), fault);
@@ -320,7 +327,11 @@ export function holdFactsOf(
 }
 
 export const sameHold = (a: PreparationHeldFacts, b: PreparationHeldFacts): boolean =>
-  a.at === b.at && a.direct_writer_pid === b.direct_writer_pid;
+  a.at === b.at &&
+  a.direct_writer_pid === b.direct_writer_pid &&
+  a.reason === b.reason &&
+  a.groups.length === b.groups.length &&
+  a.groups.every((group, index) => group === b.groups[index]);
 
 /** The hold once its step's own process was seen to exit: no pid to wait on. */
 export function directExitObserved(held: PreparationHeldFacts): PreparationHeldFacts {
@@ -329,12 +340,10 @@ export function directExitObserved(held: PreparationHeldFacts): PreparationHeldF
 }
 
 /**
- * The resource owns its current child until the observed exit, even after the
- * preparation call returned. A hold naming `direct_writer_pid` is then
- * rewritten by `stamp`, so a later read
- * does not wait on a pid another process may have taken since. Nobody awaits
- * it and its fault changes nothing: the record then still names the pid, and a
- * read holds while that pid is in use (after a daemon restart too).
+ * The resource owns its current child until observed exit. Stamp that exit for
+ * both PID-only and POSIX group holds: later reads can distinguish reuse.
+ * Failure keeps the previous facts; a hold's timestamp never substitutes for
+ * an observed exit, and a rejected observation proves nothing.
  */
 export function afterDirectExit(
   path: string,
@@ -344,53 +353,41 @@ export function afterDirectExit(
 ): void {
   if (!("directExit" in termination) || !termination.directExit) return;
   if (termination.directExited === false) holdPreparationChild(path, termination.directExit);
-  if (held.direct_writer_pid === undefined) return;
+  if (held.direct_exit_observed_at !== undefined) return;
   const later = async (): Promise<void> => {
     try {
       await stamp();
     } catch {
-      /* the record keeps the pid: the read still measures it */
+      /* the record keeps its previous facts: later reads remain conservative */
     }
   };
   void termination.directExit.then(later, () => {});
 }
 
 /**
- * The one release of a thread preparation's resources, for the creator and for
- * every later consumer (Retry, the next turn, purge, after a restart too). Its
- * criterion only reads; while it says held, nothing the preparation made changes
- * and the refusal names what is held (a `cleanup_error` an earlier release wrote
- * after a proven end leaves the record: this read does not prove that end, and
- * readers of the tree go by the record). A complete checkout (`complete`) then
- * loses only its record: `completed`, the tree is ready. An `early` record owns nothing of the
- * thread and goes alone (`released`; whatever tree is there stays as it was).
- * Any other unfinished one is undone in the order Git allows: the own
- * registration at the exact path, the tree directory, the own branch only while
- * it is still at the recorded tip (`removeOwnBranch`), and the record last:
- * `released`. Once the read proved the end, a step that fails — the record's own
- * removal included — is a cleanup fault, never an unconfirmed termination: it is
- * recorded once and thrown as `PreparationCleanupFailed`. `none`: no record.
- *
- * Where the read can prove nothing (`unproven`: Windows, or a daemon that died
- * midway) the resources stay held after an unconfirmed stop or a crash: only
- * the record's own bound operator confirmation lets this release run there
- * (`releaseDecision`), and once it ran a step that fails is a cleanup fault
- * under that confirmation. The one exception is the preparation's own call
- * after an ordinary failure, whose direct Git exited by itself and whose record
- * names no stop (`platformLimit`): it releases under the platform's tree-only
- * limit as before, and a step that fails there is a hold (`PreparationHeld`),
- * not a cleanup fault after a proven end: nothing is saved as `cleanup_error`
- * and the next release tries again.
+ * One release for creator, Retry, next turn and purge. A fresh read or current
+ * child can hold it; without proof, only a bound operator confirmation or saved
+ * ordinary cleanup/handover decision authorizes retry. `complete` or the absence
+ * of a hold alone never authorizes it. A new generation cannot inherit a basis.
+ * Complete/early records go alone. Otherwise: own registration, tree, branch
+ * still at its recorded tip, record last. Before losing .git, save its resolved
+ * owner in preparation and purge. Failures after an established end or handover
+ * are `PreparationCleanupFailed`; a platform-limit cleanup failure stays held,
+ * retaining its basis but never claiming a proven end. `none`: no record.
  */
 export async function releaseThreadPreparation(
   projectRoot: string,
   tree: string,
   quiet: PreparationQuietRead = (facts) => preparationQuiet(facts),
-  options: { platformLimit?: boolean } = {},
+  options: {
+    platformLimit?: boolean;
+    repository?: PurgeRepositoryRecord | null;
+    recordRepository?: (repository: PurgeRepositoryRecord) => Promise<void>;
+  } = {},
 ): Promise<"none" | "released" | "completed"> {
   const recordPath = threadPreparationRecordPath(tree);
   if (!existsSync(recordPath)) return "none";
-  const record = readThreadPreparation(tree);
+  let record = readThreadPreparation(tree);
   if (!record) {
     throw new PreparationHeld(
       `the thread worktree ${tree} is held: its preparation record ${recordPath} cannot be read`,
@@ -401,12 +398,26 @@ export async function releaseThreadPreparation(
   const verdict: PreparationQuietVerdict = hasPreparationChild(tree)
     ? { status: "held", reasons: ["this preparation's current child has not exited"] }
     : await quiet(holdFactsOf(record.scope?.marker, record.held));
+  const continued =
+    record.held === undefined &&
+    record.cleanup_basis?.generation === threadGeneration(record) &&
+    (record.cleanup_basis.basis === "platform_limit" || record.cleanup_basis.basis === "handover")
+      ? record.cleanup_basis.basis
+      : undefined;
   const decision = releaseDecision(verdict, {
     operator: boundOperatorRelease(record.operator_release, threadGeneration(record)),
-    platformLimit: options.platformLimit === true && record.held === undefined,
+    platformLimit:
+      record.held === undefined && (options.platformLimit === true || continued !== undefined),
   });
   if (!decision.release) throw heldRefusal(tree, record, decision);
   try {
+    if (decision.basis === "platform_limit" && continued === undefined) {
+      record = {
+        ...record,
+        cleanup_basis: { generation: threadGeneration(record), basis: "platform_limit" },
+      };
+      writeThreadPreparation(record);
+    }
     if (record.complete === true) {
       unlinkSync(recordPath);
       return "completed";
@@ -416,23 +427,41 @@ export async function releaseThreadPreparation(
       removeEmptyDir(dirname(tree));
       return "released";
     }
+    const repository = await resolveThreadRepository(
+      projectRoot,
+      tree,
+      record.thread_id,
+      record.repository ?? options.repository ?? null,
+      record.own_registration === true || !!record.own_branch,
+    );
+    if (repository !== null) {
+      if (
+        record.repository?.gitDir !== repository.gitDir ||
+        record.repository.identity !== repository.identity
+      ) {
+        record = { ...record, repository };
+        writeThreadPreparation(record);
+      }
+      await options.recordRepository?.(repository);
+    }
     if (record.own_registration === true) {
-      const removed = await git(projectRoot, ["worktree", "remove", "-f", "-f", tree]);
-      if (removed.code !== 0 && (await worktreeRegistered(projectRoot, tree)))
+      const removed = await git(repository!.gitDir, ["worktree", "remove", "-f", "-f", tree]);
+      if (removed.code !== 0 && (await worktreeRegistered(repository!.gitDir, tree)))
         throw new WorkspaceError(`git worktree remove -f -f failed: ${removed.stderr.trim()}`);
     }
     // A half checkout can be large: removed off the main thread (#704), and before
     // the record, so a removal cut short or refused leaves the record's facts.
     await removeTree(tree);
-    if (record.own_branch) await removeOwnBranch(projectRoot, record.own_branch);
+    if (record.own_branch) await removeOwnBranch(repository!.gitDir, record.own_branch);
     unlinkSync(recordPath);
     rmSync(dirname(tree), { recursive: true, force: true });
     return "released";
   } catch (fault) {
-    if (decision.basis !== "platform_limit") throw cleanupFailed(tree, record, fault);
+    if (decision.basis !== "platform_limit" || continued === "handover")
+      throw cleanupFailed(tree, record, fault);
     // No read proved an end here (the platform has none), so this is not a
     // cleanup fault after a proven end: the step may have failed on what still
-    // runs. The record stays as it is and the next release tries again.
+    // runs. The saved basis allows retry; a new hold or measured child still wins.
     const text = fault instanceof Error ? fault.message : String(fault);
     const held = withoutCleanupError(record);
     throw new PreparationHeld(
@@ -481,37 +510,6 @@ function withoutCleanupError(record: ThreadPreparationRecord): ThreadPreparation
     /* not writable now: the record keeps the saved fault (see above) */
   }
   return current;
-}
-
-/**
- * Delete the branch a preparation made, only while it is still at the tip the
- * preparation recorded (Git's own atomic compare). A branch that moved since —
- * someone committed on it — is no longer this preparation's to delete: it is
- * kept and the release goes on, so the thread is not refused forever and its
- * next turn recovers the tree from that branch. Only a branch still at its
- * recorded tip that Git could not delete (a held ref lock, an I/O fault), or a
- * ref that could not be read, fails the release.
- */
-async function removeOwnBranch(
-  projectRoot: string,
-  own: { name: string; tip: string },
-): Promise<void> {
-  const ref = `refs/heads/${own.name}`;
-  /** The ref's commit now; null when the branch does not exist. */
-  const tipNow = async (): Promise<string | null> => {
-    const read = await git(projectRoot, ["rev-parse", "--verify", "--quiet", ref]);
-    if (read.code === 0) return read.stdout.trim();
-    if (read.code === 1) return null;
-    throw new WorkspaceError(`git rev-parse ${ref} failed: ${read.stderr.trim()}`);
-  };
-  if ((await tipNow()) !== own.tip) return;
-  const deleted = await git(projectRoot, ["update-ref", "-d", ref, own.tip]);
-  if (deleted.code === 0) return;
-  // The compare may have lost to a move or a deletion in between: read again.
-  if ((await tipNow()) !== own.tip) return;
-  throw new WorkspaceError(
-    `branch ${own.name} is still at the tip this preparation made it at, but could not be deleted: ${deleted.stderr.trim()}`,
-  );
 }
 
 /** Remove a directory only when nothing is in it (the thread directory an early

@@ -26,7 +26,104 @@
  * base its envelope id and its stop's `at`, of a staging directory its creator.
  */
 import { createHash } from "node:crypto";
-import type { PreparationQuietVerdict, ProcessIdentity } from "@claudexor/core";
+import { existsSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import {
+  WorkspaceError,
+  type PreparationQuietVerdict,
+  type ProcessIdentity,
+} from "@claudexor/core";
+import { gitCommonDir, worktreeRepository } from "./git.js";
+import { git } from "./git-run.js";
+
+/** The common Git directory kept before cleanup loses the worktree's .git
+ * pointer. Its inode distinguishes a replacement at that path after a restart;
+ * null where the filesystem has none. Shared by preparation and purge. */
+export interface PurgeRepositoryRecord {
+  gitDir: string;
+  identity: string | null;
+}
+
+export function repositoryRecord(gitDir: string): PurgeRepositoryRecord {
+  const { ino } = statSync(gitDir, { bigint: true });
+  return { gitDir, identity: ino === 0n ? null : String(ino) };
+}
+
+/** The worktree's own pointer wins (including after a move and repair), then
+ * the saved identity, then the project for legacy records with no pointer.
+ * An unreadable authority refuses before any tree or Git state is removed. */
+export async function resolveThreadRepository(
+  projectRoot: string,
+  tree: string,
+  threadId: string,
+  repository: PurgeRepositoryRecord | null,
+  worktreeRecorded: boolean,
+): Promise<PurgeRepositoryRecord | null> {
+  const recorded = () => recordedRepository(repository, threadId);
+  const owner =
+    worktreeRepository(tree, recorded) ??
+    recorded() ??
+    (await projectRepository(projectRoot, worktreeRecorded));
+  return owner === null ? null : repositoryRecord(owner);
+}
+
+function recordedRepository(
+  repository: PurgeRepositoryRecord | null,
+  threadId: string,
+): string | null {
+  if (repository === null) return null;
+  const now = statSync(repository.gitDir, { bigint: true, throwIfNoEntry: false });
+  if (
+    now &&
+    (repository.identity === null || now.ino === 0n || String(now.ino) === repository.identity)
+  )
+    return repository.gitDir;
+  throw new WorkspaceError(
+    `repository ${repository.gitDir}, which this cleanup recorded as holding thread ${threadId}'s worktree registration and branch, is gone or another one is there now; returning it there lets the next attempt finish this cleanup`,
+  );
+}
+
+/** Without the worktree's pointer or saved identity, use the project folder's
+ * repository. No repository is not proof of absence for recorded Git state. */
+async function projectRepository(
+  projectRoot: string,
+  worktreeRecorded: boolean,
+): Promise<string | null> {
+  if (existsSync(projectRoot)) {
+    for (let current = resolve(projectRoot); ; current = dirname(current)) {
+      if (existsSync(join(current, ".git"))) return gitCommonDir(projectRoot);
+      if (dirname(current) === current) break;
+    }
+  }
+  if (!worktreeRecorded) return null;
+  throw new WorkspaceError(
+    `project folder ${projectRoot} is gone or in no Git repository, so the thread's worktree registration and branch cannot be checked; restoring the folder there lets the next attempt finish this cleanup`,
+  );
+}
+
+/** Delete only the branch this preparation made, by Git's atomic tip compare.
+ * A moved branch is kept for the next turn to recover; an unreadable ref or a
+ * still-owned branch whose deletion failed keeps the release retryable. */
+export async function removeOwnBranch(
+  repo: string,
+  own: { name: string; tip: string },
+): Promise<void> {
+  const ref = `refs/heads/${own.name}`;
+  const tipNow = async (): Promise<string | null> => {
+    const read = await git(repo, ["rev-parse", "--verify", "--quiet", ref]);
+    if (read.code === 0) return read.stdout.trim();
+    if (read.code === 1) return null;
+    throw new WorkspaceError(`git rev-parse ${ref} failed: ${read.stderr.trim()}`);
+  };
+  if ((await tipNow()) !== own.tip) return;
+  const deleted = await git(repo, ["update-ref", "-d", ref, own.tip]);
+  if (deleted.code === 0) return;
+  // The compare may have lost to a move or a deletion in between: read again.
+  if ((await tipNow()) !== own.tip) return;
+  throw new WorkspaceError(
+    `branch ${own.name} is still at the tip this preparation made it at, but could not be deleted: ${deleted.stderr.trim()}`,
+  );
+}
 
 export type ReleaseBasis = "machine_proven" | "platform_limit" | "operator_confirmed";
 

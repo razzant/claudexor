@@ -139,8 +139,8 @@ export async function threadContinuityRequest(
   };
 }
 
-/** HEAD sha + dirty file count for the packet's workspace anchor. Best-effort:
- * a non-git or unborn tree yields a null sha / zero dirty count, never a throw. */
+/** Best-effort workspace observations: an unread HEAD or dirty count is null,
+ * never proof of an unborn or clean tree, and never a reason to drop the packet. */
 export async function workspaceAnchor(repoRoot: string): Promise<ContinuityAnchor> {
   let headSha: string | null = null;
   try {
@@ -148,11 +148,11 @@ export async function workspaceAnchor(repoRoot: string): Promise<ContinuityAncho
   } catch {
     headSha = null;
   }
-  let dirtyCount = 0;
+  let dirtyCount: number | null = null;
   try {
     dirtyCount = (await statusPorcelain(repoRoot)).split("\n").filter((l) => l.trim()).length;
   } catch {
-    dirtyCount = 0;
+    dirtyCount = null;
   }
   return { headSha, dirtyCount };
 }

@@ -1,6 +1,7 @@
 import type { AuthPreference, AuthSourceReadiness } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAccountDoctorReceipt } from "@claudexor/core";
+import { CURSOR_VERSION_UNAVAILABLE } from "./bin.js";
 import {
   cursorObservationAuthenticated,
   cursorObservationError,
@@ -35,10 +36,8 @@ export async function probeCursorDoctorForAccounts(
       report: ConformanceReportSchema.parse({
         harness_id: "cursor",
         status: "unavailable",
-        checks: [{ id: "installed", status: "fail", detail: "Cursor CLI not found on PATH" }],
-        reasons: [
-          "Cursor CLI not found: no `cursor-agent`, and no `agent` inside a Cursor install (install Cursor CLI or set CLAUDEXOR_CURSOR_BIN)",
-        ],
+        checks: [{ id: "installed", status: "fail", detail: CURSOR_VERSION_UNAVAILABLE }],
+        reasons: [CURSOR_VERSION_UNAVAILABLE],
       }),
       identity: null,
     };

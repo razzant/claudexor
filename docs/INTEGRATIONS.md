@@ -70,6 +70,10 @@ view support from the existing operation catalog before requesting `view=account
 preserve per-account models, capability evidence and observation provenance.
 Keep legacy request shapes when the parameter is not advertised. The exact wire
 forms and admission distinction live in [ARCHITECTURE](ARCHITECTURE.md#processing-and-account-catalogs).
+Strict readers must accept `ultrafast` in processing enums even without an
+explicit Ultrafast request: Claude, Codex and Cursor capability rows advertise
+the preference, and Codex receipts can name an inherited or observed native
+Ultrafast tier.
 A confirmed processing refusal may authorize a separate caller-owned Standard
 request/reservation; it does not erase the first operation's physical dispatch
 or permit retrying an unknown outcome.
@@ -706,12 +710,17 @@ or `resumable.limitCode` names `vendor_limit_rejected`. Do not schedule a timed
 retry from it, even when another of the account's windows has a date, since that
 date belongs to that window. `credential_pool_exhausted` with `resetsAt: null`
 likewise promises no time, and one such member leaves the whole pool undated.
-An account the vendor holds for verification is a `capability_refused` try row
-whose `vendorFailure` (`verification_required`) carries the vendor's own next
-step: do not prompt a login or schedule a timed retry from it. A
-vendor-dated window with no such refusal beside it keeps
+A vendor-dated window with no such refusal beside it keeps
 `subscription_window_exhausted` and its `resetsAt`. No quota read retires the
 refusal (#318): only the engine's own bounded recheck lets a later run try the account.
+
+An account the vendor holds for verification is a `capability_refused` try row
+whose `vendorFailure` (`verification_required`) carries the vendor's own next
+step: do not prompt a login or schedule a timed retry from it. Strict event
+readers must accept `verification_required` in `status.error_category`. The
+mark's clearing rules are separate from the usage refusal above; see
+[account observations](ARCHITECTURE.md#credential-profiles-inv-135-unified-account-model).
+
 The failure's `poolAttempts` (on `summary.failure`, the run detail, the run list
 and MCP run results) lists every failed execution try in order, each with its account row,
 requested model, phase, typed category and its own redacted error text, so a
@@ -858,11 +867,15 @@ on the run's event stream and timeline, where the text shows as the row detail;
 a consumption echo that arrives after an `accepted` receipt surfaces there as
 the adapter's status event with code live_input_delivered carrying the `message_id`.
 
-A thread turn whose run is refused before it starts (trust gate, preflight)
-carries a persisted sanitized problem in its projection (`enqueueError`):
-message, code, retryability, bounded required actions, and bounded structured
-context. Clients present the message/actions and do not dump context wholesale;
-`POST /v2/threads/:id/turns/:turnId/retry` re-enqueues that same turn.
+A pre-start refusal (trust gate, preflight) persists on the turn as sanitized
+`enqueueError`: message, code, retryability, bounded required actions and bounded
+structured context. Show message/actions, not wholesale context.
+`POST /v2/threads/:id/turns/:turnId/retry` re-enqueues that turn.
+Held preparations can make thread Apply, turn and file-read routes return
+retryable HTTP 409 `termination_unconfirmed` (end unproven) or
+`preparation_cleanup_failed` (cleanup failed); consume context and `requiredActions`.
+CLI/timeline warnings retain outcome reasons and historical held paths.
+Inspect current holds with `claudexor gc preparations` before release.
 `GET /v2/trust` / `POST /v2/trust` are the sole CLI/app trust boundary for the
 user-level full-access grant and `readonly|workspace_write` access default. An
 embedding orchestrator that owns the workspace marks its runs

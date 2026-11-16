@@ -30,6 +30,7 @@ import {
   SCRATCH_INDEX_CONFIG,
   scopeEnvOf,
   scopedGitArgs,
+  statusPorcelain,
   stoppedAfter,
   throwIfCancelled,
   userLockStep,
@@ -47,6 +48,7 @@ export {
   PreparationStopped,
   PreparationTerminationUnconfirmed,
   revParse,
+  statusPorcelain,
   throwIfCancelled,
   unconfirmedTerminationOf,
 } from "./git-run.js";
@@ -89,14 +91,6 @@ export async function ensureGitRepository(
     dependencies.beforeMutation,
     dependencies.platform,
   );
-}
-
-export async function statusPorcelain(repo: string, signal?: AbortSignal): Promise<string> {
-  // A read that takes no optional lock (no index refresh written back): it can
-  // be interrupted on every platform without leaving the user's index.lock.
-  return (
-    await gitEnv(repo, ["status", "--porcelain"], { GIT_OPTIONAL_LOCKS: "0" }, undefined, signal)
-  ).stdout;
 }
 
 export { snapshotTree, stashCreate } from "./git-snapshot.js";
@@ -161,9 +155,11 @@ export async function materializePatchTree(
   }
 }
 
-/** `signal` stops this `git worktree add` gently (SIGINT first, its stall too): on
- * SIGINT Git removes the worktree it was creating and its registration itself, while
- * a SIGKILL leaves the registration locked "initializing" (releaseThreadPreparation removes it). */
+/** Stop after the awaited baseline starts no child. A started Windows user-lock
+ * step finishes before taking Stop (its watchdog still applies). Elsewhere Stop
+ * is gentle (SIGINT first, its stall too): Git then removes its new worktree and
+ * registration itself; SIGKILL leaves an "initializing" registration for
+ * releaseThreadPreparation to remove. */
 export async function worktreeAdd(
   repo: string,
   path: string,
@@ -177,6 +173,7 @@ export async function worktreeAdd(
     progress: diskProgress(repo),
     allowFailure: true,
     signal: userLockStep(signal, platform),
+    startSignal: signal,
     gentleStop: true,
   });
   throwIfCancelled(signal); // the step's boundary (Windows: the step was not interrupted)

@@ -1,5 +1,34 @@
 # @claudexor/harness-claude
 
+## 6.2.0
+
+### Patch Changes
+
+- 42d1eb7: A Claude account the vendor holds for verification is no longer treated as a transport failure. The failed stdout result's exact `verification_required` code (HTTP 403; the vendor's words name the next step in its verification portal) adds the typed account denial beside the unchanged vendor record: `status.error_category` gains `verification_required`, and the account is marked `capability_refused` for every model of that subscription route, with `verification_required` as the detail Accounts shows. The engine attaches no login guidance to it, while Accounts still renders the row like any unverified one (`Not verified — log in`, a `Log in` action). No quota read lifts the mark; a served response on that account, a credential change (a login included) or the mark's own expiry does, and a login or expiry only makes the account eligible for another try, it does not mean the vendor repaired it. A retry frame naming the code proves nothing. Before, the run resumed the held account's session until its retry budget ran out.
+
+  After progress within an already running attempt, the account its own hop moved the work to may refuse it this way before doing any work of its own. The same work now moves on to the next eligible account (the moved session, or an evidence packet), as after a typed limit, instead of ending the attempt. This covers the adapter-proven account-wide denial class: the new code and the organization's exact refusal (`oauth_not_allowed_for_organization` and its recorded results), which also used to end such an attempt. Only that try is judged. Its own agent progress, file change, accepted answer or workspace change, an unknown capture, an auth, model, request, permission or configuration refusal, a same-account resume, the first try of a new `continue_from` successor, a pin, a disabled account or another credential kind keep the existing stop. With no eligible account left the attempt ends `credential_pool_exhausted`; the held account adds no reset time to it.
+
+  A strict reader that validates harness events against an older schema rejects the new `error_category` value.
+
+- 7f01267: Separate Codex Ultrafast from ordinary Fast. `processingPreference` accepts `ultrafast`, and processing receipts and model capabilities report it as its own mode. Advisory Fast selects only an advertised `fast` or `priority` tier, whatever order the account lists its tiers in; before, a model that listed `ultrafast` first received Ultrafast for a Fast request. Ultrafast is submitted only where the selected model and account advertise it. Otherwise the request continues on ordinary service and the receipt keeps `requested: ultrafast` with its reason.
+
+  When the selected model does not advertise a requested Fast, Ultrafast or Economy tier, a raw Codex HTTP request now omits `service_tier` instead of sending `default`; the Codex CLI still selects `default` explicitly so it cannot inherit a native setting. Claude reports `ultrafast_not_supported`. Cursor reports it when the model has a listed standard/`-fast` pair and selects the standard variant; a model without such a pair keeps `processing_variant_unconfirmed` with the selected model, and an explicitly selected `-fast` model remains native Fast (`native_explicit`) under the existing paid policy. Claude and Cursor now list `ultrafast` in `processing_preferences`, which names the preferences an adapter accepts and answers with a receipt, not the service a model or route provides.
+
+  Claudexor does not establish an included allowance for Ultrafast, so its existing no-paid policy keeps ordinary service; this is not a claim about vendor billing. Observed Ultrafast is never inferred to be ordinary included work. A confirmed pre-generation refusal of a submitted Ultrafast tier may fall back to Standard like Fast; an unknown outcome is not retried. A retry keeps the Ultrafast intent of a receipt recorded before this change, which named it Fast.
+
+  Strict readers using older schemas reject `ultrafast` in processing capability and receipt enums. The value can appear without an explicit Ultrafast request: Claude, Codex and Cursor capability rows advertise the preference, and Codex receipts can name an inherited or observed native Ultrafast tier. The existing data-root serving floor also prevents an older engine from opening a root this release has served; returning requires a complete stopped backup.
+
+  Claudexor.app 6.0.0–6.1.2 cannot decode a run whose reviewer panel names `ultrafast`, so the runtime update floor requires Claudexor.app 6.2.0. The local updater reports `appUpdateRequired` and leaves the current engine in place; the SSH compatibility check instead prevents an older app from connecting to the host until the application is updated. This app floor does not establish embedding-host compatibility.
+
+- Updated dependencies [42d1eb7]
+- Updated dependencies [7f01267]
+- Updated dependencies [d90d662]
+- Updated dependencies [101e1a1]
+  - @claudexor/schema@6.2.0
+  - @claudexor/core@6.2.0
+  - @claudexor/secrets@6.2.0
+  - @claudexor/util@6.2.0
+
 ## 6.1.2
 
 ### Patch Changes

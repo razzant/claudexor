@@ -18,21 +18,41 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mintRunScopeMarker, type ScopeReapOutcome } from "@claudexor/core";
+import { mintRunScopeMarker, preparationQuiet, type ScopeReapOutcome } from "@claudexor/core";
 import { projectRuntimeDir } from "@claudexor/util";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  holdThreadPreparation,
+  PreparationCleanupFailed,
   PreparationHeld,
   readThreadPreparation,
   threadPreparationRecordPath,
   threadTreeState,
+  writeThreadPreparation,
+  type PreparationQuietRead,
+  type ThreadPreparationRecord,
 } from "./preparation-hold.js";
 import { ensureThreadWorktree } from "./thread-tree.js";
+import { holdPreparationChild } from "./preparation-release.js";
 
 import { gitFilterCommand, shellQuote } from "../../core/src/test-support/process-fixtures.js";
 
+let refuseRecordRemoval = false;
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return {
+    ...fs,
+    unlinkSync: (...args: Parameters<typeof fs.unlinkSync>) => {
+      if (refuseRecordRemoval && String(args[0]).endsWith("preparation.json"))
+        throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      return fs.unlinkSync(...args);
+    },
+  };
+});
+
 const dirs: string[] = [];
 afterEach(() => {
+  refuseRecordRemoval = false;
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   delete process.env.GIT_CONFIG_COUNT;
 }, 0);
@@ -142,9 +162,97 @@ function scope(settled: () => Promise<ScopeReapOutcome | null>) {
   };
 }
 
+const win32Quiet: PreparationQuietRead = (facts) =>
+  preparationQuiet(facts, { platform: "win32", probePidAlive: () => false });
+
 describe.runIf(process.platform !== "win32")(
   "thread preparation scope and success (#694 r12)",
   () => {
+    it("a successful handover survives refused unlink and retries with an unproven Windows read", async () => {
+      const w = world();
+      const s = scope(async () =>
+        outcome({ settled: false, census: "unsupported", coverage: "tree_only" }),
+      );
+      refuseRecordRemoval = true;
+      await expect(
+        ensureThreadWorktree(w.repo, "handover", { ...s.options, quiet: win32Quiet }),
+      ).rejects.toBeInstanceOf(PreparationCleanupFailed);
+      const tree = w.tree("handover");
+      expect(readThreadPreparation(tree)).toMatchObject({
+        complete: true,
+        cleanup_basis: { basis: "handover", generation: expect.any(String) },
+        cleanup_error: expect.stringMatching(/operation not permitted/),
+      });
+      writeFileSync(join(tree, "kept"), "work\n");
+      const bytes = readFileSync(threadPreparationRecordPath(tree), "utf8");
+      await expect(
+        ensureThreadWorktree(w.repo, "handover", { quiet: win32Quiet }),
+      ).rejects.toBeInstanceOf(PreparationCleanupFailed);
+      expect(readFileSync(threadPreparationRecordPath(tree), "utf8")).toBe(bytes);
+      refuseRecordRemoval = false;
+      expect(await ensureThreadWorktree(w.repo, "handover", { quiet: win32Quiet })).toMatchObject({
+        path: tree,
+        created: true,
+      });
+      expect(threadTreeState(tree)).toBe("ready");
+      expect(readFileSync(join(tree, "kept"), "utf8")).toBe("work\n");
+      expect(git(w.repo, "worktree", "list", "--porcelain")).toContain(tree);
+      expect(git(w.repo, "branch", "--list", "claudexor/thread-handover")).toContain(
+        "claudexor/thread-handover",
+      );
+    });
+
+    it("complete before settlement is not a handover basis after a crash", async () => {
+      const w = world();
+      const beforeSettlement: ThreadPreparationRecord[] = [];
+      const s = scope(async () => {
+        beforeSettlement.push(readThreadPreparation(w.tree("crash-before-handover"))!);
+        return outcome();
+      });
+      await ensureThreadWorktree(w.repo, "crash-before-handover", s.options);
+      const record = beforeSettlement[0]!;
+      expect(record).toMatchObject({ complete: true });
+      expect(record).not.toHaveProperty("cleanup_basis");
+      expect(record).not.toHaveProperty("held");
+      // Only these bytes would survive a crash before settlement and handover.
+      writeThreadPreparation(record);
+      await expect(
+        ensureThreadWorktree(w.repo, "crash-before-handover", { quiet: win32Quiet }),
+      ).rejects.toMatchObject({ context: { release_requires: "operator_confirmation" } });
+      expect(readThreadPreparation(record.tree)).toEqual(record);
+      expect(existsSync(join(record.tree, ".git"))).toBe(true);
+    });
+
+    it.for(["new hold", "current child"] as const)(
+      "a saved handover cannot override a %s",
+      async (change) => {
+        const w = world();
+        refuseRecordRemoval = true;
+        await expect(ensureThreadWorktree(w.repo, "handover-held")).rejects.toBeInstanceOf(
+          PreparationCleanupFailed,
+        );
+        const tree = w.tree("handover-held");
+        refuseRecordRemoval = false;
+        let exit = () => {};
+        const directExit = new Promise<void>((resolve) => {
+          exit = resolve;
+        });
+        if (change === "new hold")
+          holdThreadPreparation(tree, { reason: "scope_unsettled", groups: [] });
+        else holdPreparationChild(tree, directExit);
+        try {
+          await expect(
+            ensureThreadWorktree(w.repo, "handover-held", { quiet: win32Quiet }),
+          ).rejects.toBeInstanceOf(PreparationHeld);
+          expect(threadTreeState(tree)).toBe("held");
+          expect(existsSync(join(tree, ".git"))).toBe(true);
+        } finally {
+          exit();
+          await directExit;
+        }
+      },
+    );
+
     it("opens the scope before the first Git step: the project's initialization and the base snapshot run its filters inside it", async () => {
       const w = world(true); // a plain folder: initialization's `add` cleans a.f
       const s = scope(async () => outcome());

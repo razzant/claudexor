@@ -1,5 +1,16 @@
 # @claudexor/gateway
 
+## 6.2.0
+
+### Patch Changes
+
+- Updated dependencies [42d1eb7]
+- Updated dependencies [7f01267]
+- Updated dependencies [d90d662]
+- Updated dependencies [101e1a1]
+  - @claudexor/schema@6.2.0
+  - @claudexor/core@6.2.0
+
 ## 6.1.2
 
 ### Patch Changes

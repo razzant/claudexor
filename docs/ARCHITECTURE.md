@@ -2669,65 +2669,75 @@ summary, telemetry, and native session. Patch-convergence controls (`attempts` o
 `untilClean`) are incompatible with readonly and refuse typed before provider or
 workspace work; they are never ignored or silently redirected.
 
-Envelope semantics are strict. Project runs execute under
-`~/.claudexor/v3/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
-the harness `cwd` is the envelope worktree. That is the project's namespace also
-when another tree executes (an isolated thread worktree, a delegated workspace):
-the envelope's `owner.json` records that `execution_root`, and recovery, adoption
-and release act on the base its scoped HOME records, so an adopted envelope keeps
-its path and a missing execution root never redirects cleanup to the project. A
-one-shot run of an explicitly ephemeral root (`scope.ephemeral`) keeps its envelopes in
-`~/.claudexor/v3/one-shot/workspaces/`, beside, never inside, its run trees.
-Legacy envelopes under an execution root's own namespace stay readable and are
-swept there; nothing migrates. That worktree is a complete checkout of
-its base commit or the run does not start: when no object directory holds the
-content of some of its files (what a partial clone never fetched, or a sparse
-checkout of one left out), or Git cannot copy a shallow source because its branches
-reach such content, the run fails in its workspace phase naming what is missing and
-the two ways forward, a complete copy of that content or an in-place run, and
-Claudexor fetches nothing. An envelope whose preparation fails or is stopped never
-started, so the call that made its directory removes it (an isolated base prepared in a
-process scope: by the release below, once that scope settled); a removal that fails keeps
-the refusal, adds what was left to its message and notes the fault beside it, and a directory
-that already existed is never removed. The run's Stop reaches every preparation step
-(#694), thread worktrees and directory scans included; one waiter's stop never ends a
-shared store initialization, and `harness.started` marks entry into the execution path.
-Preparation Git, snapshots and copies get a private per-run carrier of the stop, so their
-children (hooks, filters; never the user's fsmonitor: `core.fsmonitor=false`) join the
-run's scope, or the short `thread-preparation:<job>` scope a thread turn opens before its
-first Git step when its tree must be made; they end with it, on success too. A stopped
-step is `cancelled`, its lease released uncharged. When its end was not proven (pipes
-closed by themselves, group empty) the attempt's completion and the run's terminal
-disclose `termination_unconfirmed` and `held`, and what it made (thread tree, registration
-and new branch; isolated base; scoped staging) stays held by its owner record written
-before the first spawn (`threads/<id>/preparation.json`, `early` until the thread itself
-changes; `owner.json`; unreadable holds too). A thread checkout is `complete` and handed
-over only after its scope settled with no member alive or unreadable; a failed preparation
-settles, then releases. One release (creator, Retry, next turn, purge, run barrier, store
-prune, startup sweep; a base held past its barrier waits for that sweep) frees it only when
-a signal-free read proves its known members ended: a complete tree or an early record then
-loses only the record, and an own branch that moved is kept; a proven end whose cleanup fails
-is `preparation_cleanup_failed` (retryable), not unconfirmed. Readers refuse a tree with a
-record (HTTP 409). Windows user-lock steps finish before Stop (a hung step waits
-for the watchdog). Direct exit with naturally closed pipes is `confirmed/not_provable`
-(`tree_only`); unconfirmed stops and crashes stay held until operator confirmation.
-Confirmed stops and ordinary failures release under that limit.
-`gc preparations` (`GET /v2/maintenance/preparations`) lists known roots, purged threads
-included, with missing coverage disclosed on read failure, never through a link, `.` or `..`.
-It reads a thread record by the releases' parser: one naming another tree (another thread's,
-or the config root as an earlier daemon spelled it) is unreadable, never confirmable; restarting
-with that spelling recovers it.
-`gc release-preparation` (Idempotency-Key) is a durable `delivery.preparation_release`
-command: before effects it records confirmation bound to the inspected digest and generation.
-Release runs in the owner's turn (thread chain without queued/running turns, base turn, prune
-lock) and retains its receipt (generation, stop, basis, outcome); the same key replays it.
-`interrupted` after Restart means unknown.
-A current child until actual exit, a measured member, a live creator, an unreadable recorded
-identity or a writer born inside the record's window refuse. Old PID-only recovery after
-Restart remains allowed; a new request or owner release continues confirmed cleanup.
-The historical stop stays `termination_unconfirmed`.
-Residual (INV-144): a process that closed our pipes, left the group and hides its
-environment, never captured, cannot be seen.
+Project envelopes live under
+`~/.claudexor/v3/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`,
+which is the harness cwd. Isolated-thread and delegated execution keep this
+project namespace: `owner.json` records `execution_root`; recovery, adoption and
+release use the base recorded by its scoped HOME. Adoption keeps that path;
+a missing execution root never redirects cleanup to the project.
+Explicitly ephemeral roots (`scope.ephemeral`) use
+`~/.claudexor/v3/one-shot/workspaces/`, beside their run trees. Legacy envelopes
+remain readable and swept in their old namespace, without migration.
+The checkout must contain the complete base commit. Missing partial-clone or
+sparse-checkout objects, or shallow-source branches needing them, refuse workspace
+preparation with the missing content and remedies: supply it or run in-place.
+Claudexor fetches nothing. Failed Git status refuses preparation, never proves clean.
+Failed/stopped preparation removes only directories it created; scoped isolated
+bases wait for settlement and the release below. Removal failure retains the
+refusal, names leftovers and records the fault. Stop reaches all preparation,
+including thread worktrees and directory scans; one waiter cannot stop shared
+store initialization. `harness.started` marks entry into the execution path.
+
+Preparation Git, snapshots and copies carry the run's stop. Hooks and filters
+(`core.fsmonitor=false`) join its scope, or `thread-preparation:<job>` opened before
+a new tree's first Git step; success also settles it. Raw-record seeding stays
+inside envelope preparation, before handover, for candidates and synthesis.
+A caller Stop cancels preparation and releases its lease uncharged. A failure
+without that Stop stays failed with its existing unknown-cost settlement.
+Completion keeps the step's unconfirmed termination; `preparationSignal` carries
+it to the terminal, whose `held` lists paths still present.
+
+Resources retain their pre-spawn record (`threads/<id>/preparation.json`,
+`early` until thread mutation; `owner.json`; unreadable records hold too).
+Before mutation, `repository` saves the original Git common directory and inode.
+Cleanup follows the worktree's repaired `.git`, then saved identity, then the
+legacy project path; missing or replaced authority refuses before removal.
+It saves that authority for preparation and purge before deleting `.git`.
+`complete` precedes settlement, not handover. Failure settles first; live or
+unreadable members hold. Generation-bound `cleanup_basis` preserves ordinary
+`platform_limit` cleanup or successful `handover` across removal faults.
+New holds and live children override it; `complete` or absent `held` is no basis.
+
+One signal-free release serves creator, Retry, turns, purge, barrier, store prune
+and startup sweep (also bases held past their barrier). Complete/early records
+go alone; moved branches stay. Cleanup faults are retryable
+`preparation_cleanup_failed`; platform-limit removal faults stay held without
+claiming proof. Readers refuse held trees (HTTP 409). On Windows, Stop during
+the baseline probe starts no Git child; a started user-lock step finishes first,
+bounded by its watchdog. Direct exit and natural pipe closure give
+`confirmed/not_provable` (`tree_only`); confirmed stops and ordinary failures
+release under that limit. Unconfirmed stops/crashes without a basis require
+operator confirmation. A late observed exit stamps PID and POSIX group holds;
+`held.at` is not exit time, and other membership uncertainty still holds.
+
+`gc preparations` (`GET /v2/maintenance/preparations`) lists known roots, including
+purged threads, and read failures; it follows no links, `.` or `..`.
+Other tree/config-root spellings are unreadable and unconfirmable;
+restart with the recorded spelling.
+`gc release-preparation` requires Idempotency-Key and inspected digest.
+Its durable `delivery.preparation_release` records generation-bound operator
+confirmation before effects only if the end is unproven. Machine proof adds none;
+`confirmed_at` can retain one.
+It holds the owner turn (no queued/running thread turns, base turn, prune lock);
+receipts (generation, stop, basis, outcome) replay for the same key.
+Restart's `interrupted` is unknown. Current children, measured scope members,
+live creators, unreadable recorded identities and writer PIDs born within the
+record's window refuse. A sole PID-only hold with unknown birth may be
+operator-confirmed even after Restart, never machine-proven.
+Later requests or owner release continue cleanup; historical
+`termination_unconfirmed` stays.
+Residual (INV-144): an uncaptured process that closed our pipes, left the group
+and hides its environment cannot be seen.
 
 Proven work product is the git diff in that worktree, a
 declared run artifact, or the text answer. Capture reads only the physical execution root, whatever
@@ -4147,8 +4157,9 @@ not retry automatically.
   with a bounded continuation packet delivered as `context/THREAD.md` and
   discloses it via a typed `session.continuity` event + a `continuity` field on
   the turn record (INV-137); a plain in-lane turn resumes natively with no
-  packet. Each earlier turn carries its `final/answer.md`. A turn that wrote no
-  answer and whose run did not succeed carries its recorded output instead, read
+  packet. Unread HEAD and dirty-file counts stay unknown in the packet's workspace
+  anchor, not unborn or zero. Each earlier turn carries its `final/answer.md`.
+  A turn that wrote no answer and whose run did not succeed carries its recorded output, read
   by the rule a `continueFrom` successor uses: its `final/retained-output.md`
   exactly as stored, else the same projection of its `events.jsonl` when its
   terminal never wrote that file (an engine restart interrupted the run). A

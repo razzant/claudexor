@@ -35,6 +35,14 @@ type Intercept = (
   },
 ) => Promise<CaptureResult> | undefined;
 let intercept: Intercept | null = null;
+let statfsBarrier: (() => Promise<{ bavail: number }>) | null = null;
+vi.mock("node:fs/promises", async (original) => {
+  const fs = await original<typeof import("node:fs/promises")>();
+  return {
+    ...fs,
+    statfs: (...args: Parameters<typeof fs.statfs>) => statfsBarrier?.() ?? fs.statfs(...args),
+  };
+});
 // A filesystem without hard links: the transfer streams through its staging.
 let refuseLinks = false;
 vi.mock("node:fs", async (original) => {
@@ -96,6 +104,7 @@ afterAll(() => {
 }, 0);
 afterEach(() => {
   intercept = null;
+  statfsBarrier = null;
   refuseLinks = false;
 });
 const ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
@@ -244,6 +253,85 @@ describe("the stop outcome survives workspace wrappers (#694 r10)", () => {
       },
       project_git_initialization: { partial: true, failed_stage: "add" },
     });
+  });
+});
+
+describe("envelope status must be observed successfully", () => {
+  const project = () => {
+    const root = mkdtempSync(join(tmpdir(), "cx-status-outcome-"));
+    dirs.push(root);
+    const repo = join(root, "project");
+    mkdirSync(repo);
+    sh(repo, ["init", "-q", "-b", "main"]);
+    writeFileSync(join(repo, ".gitattributes"), "a.txt text eol=lf\n");
+    writeFileSync(join(repo, "a.txt"), "base\n");
+    sh(repo, ["add", ".gitattributes", "a.txt"]);
+    sh(repo, ["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qm", "base"]);
+    return { repo, base: join(root, "envelope") };
+  };
+  const prepare = async (repo: string, base: string, dirtyPolicy: "refuse" | "snapshot") => {
+    const { prepareEnvelope } = await import("./prepare-envelope.js");
+    const { withScopeMarker } = await import("./git-run.js");
+    return prepareEnvelope({
+      repoRoot: repo,
+      projectRoot: undefined,
+      base,
+      opts: {
+        taskId: "status",
+        attemptId: "a01",
+        dirtyPolicy,
+        signal: withScopeMarker(undefined, realCore.mintRunScopeMarker()),
+      },
+    });
+  };
+
+  it.each([
+    [128, "refuse"],
+    [128, "snapshot"],
+    [null, "refuse"],
+    [null, "snapshot"],
+  ] as const)("exit %s with empty stdout refuses %s before clone", async (code, policy) => {
+    const { repo, base } = project();
+    writeFileSync(join(repo, "a.txt"), "user work\n");
+    const index = readFileSync(join(repo, ".git", "index"));
+    const calls: string[][] = [];
+    intercept = (args, opts) => {
+      calls.push(args);
+      if (!args.includes("status")) return undefined;
+      expect(args).toContain("--porcelain");
+      expect(args).toContain("core.fsmonitor=false");
+      expect(opts.env?.["GIT_OPTIONAL_LOCKS"]).toBe("0");
+      return Promise.resolve({ code, signal: null, stdout: "", stderr: "index read failed" });
+    };
+    await expect(prepare(repo, base, policy)).rejects.toThrow(
+      "git status failed: index read failed",
+    );
+    expect(calls.some((args) => args.includes("rev-parse") && args.includes("HEAD"))).toBe(true);
+    expect(calls.filter((args) => args.includes("status"))).toHaveLength(1);
+    expect(calls.some((args) => args.includes("clone") || args.includes("add"))).toBe(false);
+    expect(existsSync(base)).toBe(false);
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("user work\n");
+    expect(readFileSync(join(repo, ".git", "index"))).toEqual(index);
+  });
+
+  it.each(["refuse", "snapshot"] as const)(
+    "successful empty status admits a clean tree under %s",
+    async (policy) => {
+      const { repo, base } = project();
+      const { envelope } = await prepare(repo, base, policy);
+      expect(envelope.base_sha).toBe(sh(repo, ["rev-parse", "HEAD"]));
+      expect(readFileSync(join(envelope.worktree_path, "a.txt"), "utf8")).toBe("base\n");
+    },
+  );
+
+  it("successful dirty status refuses or captures the user's actual bytes under snapshot", async () => {
+    const { repo, base } = project();
+    writeFileSync(join(repo, "a.txt"), "user work\n");
+    await expect(prepare(repo, base, "refuse")).rejects.toThrow("working tree is dirty");
+    const { envelope } = await prepare(repo, base, "snapshot");
+    expect(envelope.base_sha).not.toBe(sh(repo, ["rev-parse", "HEAD"]));
+    expect(readFileSync(join(envelope.worktree_path, "a.txt"), "utf8")).toBe("user work\n");
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("user work\n");
   });
 });
 
@@ -628,6 +716,47 @@ describe("Windows step boundaries (r10 E)", () => {
     const stop = unconfirmedStop(alive);
     return { ...stop, termination: { ...stop.termination, groups: [] } as CaptureTermination };
   };
+
+  it.each(["linux", "win32"] as const)(
+    "%s (injected): Stop during the worktree add baseline starts no Git child or hook",
+    async (platform) => {
+      const { worktreeAdd } = await import("./git.js");
+      const { withScopeMarker } = await import("./git-run.js");
+      const repo = project();
+      const before = userState(repo);
+      const controller = new AbortController();
+      const tree = join(threadDir(repo, "th-baseline"), "tree");
+      const base = sh(repo, ["rev-parse", "HEAD"]);
+      let finishProbe!: (value: { bavail: number }) => void;
+      const pendingProbe = new Promise<{ bavail: number }>((resolve) => {
+        finishProbe = resolve;
+      });
+      const probe = vi.fn(() => pendingProbe);
+      statfsBarrier = probe;
+      const starts: string[][] = [];
+      intercept = (args) => {
+        starts.push(args);
+        return undefined;
+      };
+      const pending = worktreeAdd(
+        repo,
+        tree,
+        "claudexor/thread-th-baseline",
+        base,
+        withScopeMarker(controller.signal, realCore.mintRunScopeMarker()),
+        platform,
+      ).catch((error: unknown) => error);
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(starts).toEqual([]);
+      controller.abort("stop");
+      finishProbe({ bavail: 100 });
+      expect(await pending).toBeInstanceOf(PreparationCancelled);
+      // All captures are observed here: no add means none of its hooks can run.
+      expect(starts).toEqual([]);
+      expect(existsSync(tree)).toBe(false);
+      expect(userState(repo)).toEqual(before);
+    },
+  );
 
   it("win32 (injected): a Stop during `git worktree add` does not interrupt it — Git finishes the step, then the stop is taken at its boundary and what it made is released", async () => {
     const repo = project();

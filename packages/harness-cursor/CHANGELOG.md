@@ -1,5 +1,46 @@
 # @claudexor/harness-cursor
 
+## 6.2.0
+
+### Patch Changes
+
+- 7f01267: Separate Codex Ultrafast from ordinary Fast. `processingPreference` accepts `ultrafast`, and processing receipts and model capabilities report it as its own mode. Advisory Fast selects only an advertised `fast` or `priority` tier, whatever order the account lists its tiers in; before, a model that listed `ultrafast` first received Ultrafast for a Fast request. Ultrafast is submitted only where the selected model and account advertise it. Otherwise the request continues on ordinary service and the receipt keeps `requested: ultrafast` with its reason.
+
+  When the selected model does not advertise a requested Fast, Ultrafast or Economy tier, a raw Codex HTTP request now omits `service_tier` instead of sending `default`; the Codex CLI still selects `default` explicitly so it cannot inherit a native setting. Claude reports `ultrafast_not_supported`. Cursor reports it when the model has a listed standard/`-fast` pair and selects the standard variant; a model without such a pair keeps `processing_variant_unconfirmed` with the selected model, and an explicitly selected `-fast` model remains native Fast (`native_explicit`) under the existing paid policy. Claude and Cursor now list `ultrafast` in `processing_preferences`, which names the preferences an adapter accepts and answers with a receipt, not the service a model or route provides.
+
+  Claudexor does not establish an included allowance for Ultrafast, so its existing no-paid policy keeps ordinary service; this is not a claim about vendor billing. Observed Ultrafast is never inferred to be ordinary included work. A confirmed pre-generation refusal of a submitted Ultrafast tier may fall back to Standard like Fast; an unknown outcome is not retried. A retry keeps the Ultrafast intent of a receipt recorded before this change, which named it Fast.
+
+  Strict readers using older schemas reject `ultrafast` in processing capability and receipt enums. The value can appear without an explicit Ultrafast request: Claude, Codex and Cursor capability rows advertise the preference, and Codex receipts can name an inherited or observed native Ultrafast tier. The existing data-root serving floor also prevents an older engine from opening a root this release has served; returning requires a complete stopped backup.
+
+  Claudexor.app 6.0.0–6.1.2 cannot decode a run whose reviewer panel names `ultrafast`, so the runtime update floor requires Claudexor.app 6.2.0. The local updater reports `appUpdateRequired` and leaves the current engine in place; the SSH compatibility check instead prevents an older app from connecting to the host until the application is updated. This app floor does not establish embedding-host compatibility.
+
+- 101e1a1: Version checks ask the selected program under its adapter-declared update controls.
+  Copilot is asked `--no-auto-update --version` and Cursor
+  `--disable-auto-update --version`; Antigravity and Grok receive their declared
+  environment values. Inventory, doctor, maintenance receipts, npm-copy conversion and
+  program provenance on model lists therefore observe the program in that declared mode. Copilot
+  documents that its switch keeps a newer cached version from running instead of the
+  installed one. Before, such a cached version could answer for an older installed copy,
+  hide an older replacement during conversion or turn an exact-version request into a
+  false no-op. Receipts recorded earlier keep the answers they received.
+
+  A program that rejects its declared switch reports no version. Cursor discovery
+  and doctor keep that result unavailable, but no longer call it proof that the
+  executable is missing: refusal, timeout or an empty answer can also produce null.
+  The existing second read repeats the same switched question, no check falls back to an
+  unswitched one, and the 10-second limit is unchanged, so a later answer stays unknown.
+  Explicit install, update and exact-version commands keep their own arguments and
+  installation environment.
+
+- Updated dependencies [42d1eb7]
+- Updated dependencies [7f01267]
+- Updated dependencies [d90d662]
+- Updated dependencies [101e1a1]
+  - @claudexor/schema@6.2.0
+  - @claudexor/core@6.2.0
+  - @claudexor/secrets@6.2.0
+  - @claudexor/util@6.2.0
+
 ## 6.1.2
 
 ### Patch Changes

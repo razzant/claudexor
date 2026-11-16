@@ -1,5 +1,86 @@
 import { describe, expect, it } from "vitest";
+import { makeOutcomeFacts } from "@claudexor/schema";
 import { timelineEvents } from "./run-timeline.js";
+
+describe("timeline preparation stop disclosure", () => {
+  it("keeps historical held paths separate from an empty terminal list", () => {
+    const stop = { survivors: [], unresolved: [], reason: "output_held" };
+    const rows = timelineEvents({}, [
+      {
+        type: "harness.completed",
+        payload: {
+          harness_id: "codex",
+          attempt_id: "a01",
+          status: "cancelled",
+          phase: "workspace",
+          termination_unconfirmed: stop,
+          held: ["/kept/base"],
+        },
+      },
+      {
+        type: "run.failed",
+        payload: {
+          facts: makeOutcomeFacts("cancelled", { reason: "user_cancelled" }),
+          detail: "Cancelled by the operator",
+          termination_unconfirmed: stop,
+          held: [],
+        },
+      },
+    ]);
+    expect(rows[0]).toMatchObject({ severity: "warning", attemptId: "a01", harnessId: "codex" });
+    expect(rows[0]!.detail).toContain('Held paths at this event: "/kept/base"');
+    expect(rows[1]!.detail).toContain("Cancelled by the operator");
+    expect(rows[1]!.detail).toContain("No held paths reported in this event");
+    expect(rows[1]!.detail).not.toContain("/kept/base");
+    // The warning must never downgrade an error-shaped terminal.
+    expect(rows[1]!.severity).toBe("error");
+    for (const row of rows) {
+      expect(row.detail).toContain("Termination unconfirmed at this event (output_held)");
+      expect(row.detail).toContain("claudexor gc preparations");
+      expect(row.detail).toContain(
+        "claudexor gc release-preparation <selector> --digest <digest> --confirm-ended",
+      );
+    }
+  });
+
+  it("projects a terminal's own held list without erasing its error", () => {
+    const [row] = timelineEvents({}, [
+      {
+        type: "run.failed",
+        payload: {
+          error: "preparation failed",
+          termination_unconfirmed: { survivors: [42], unresolved: [], reason: "group_alive" },
+          held: ["/kept/tree"],
+        },
+      },
+    ]);
+    expect(row).toMatchObject({ title: "preparation failed", severity: "error" });
+    expect(row!.detail).toContain("preparation failed");
+    expect(row!.detail).toContain('Held paths at this event: "/kept/tree"');
+  });
+
+  it("ordinary cancellation and malformed or prose-only stop facts add no warning", () => {
+    for (const termination_unconfirmed of [
+      undefined,
+      true,
+      "output_held",
+      {},
+      { survivors: [42], unresolved: [] }, // a harness stop, without preparation facts
+    ]) {
+      const [row] = timelineEvents({}, [
+        {
+          type: "harness.completed",
+          payload: {
+            status: "cancelled",
+            detail: "termination_unconfirmed",
+            termination_unconfirmed,
+          },
+        },
+      ]);
+      expect(row).toMatchObject({ detail: "termination_unconfirmed", severity: "info" });
+    }
+  });
+});
 
 // QA-070: an unsupported per-harness knob (INV-105) is disclosed on
 // harness.started as `ignored_settings`, but the timeline projection dropped it

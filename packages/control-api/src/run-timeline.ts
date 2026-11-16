@@ -7,6 +7,7 @@
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { preparationStopSummary } from "@claudexor/workspace";
 import {
   commandOutcomeUnconfirmed,
   ControlTimelineEvent,
@@ -411,7 +412,7 @@ export function timelineEvents(
                 payload["error"],
             )) ?? prettyEventType(type);
     const errorSummary = stringOrNull(tool["error_summary"] ?? payload["error"]);
-    const detail = textKind
+    const eventDetail = textKind
       ? stringOrNull(payload["text"])
       : partialGitInitialization
         ? `Stopped during ${String(payload["failed_stage"] ?? "unknown")} at ${String(payload["repo_root"] ?? "?")}; partial Git metadata may remain.`
@@ -420,6 +421,8 @@ export function timelineEvents(
           : (stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ??
             stringOrNull(tool["content_summary"]) ??
             errorSummary);
+    const stop = preparationStopSummary(payload);
+    const detail = stop ? [eventDetail, stop].filter(Boolean).join("\n") : eventDetail;
     const toolName = stringOrNull(tool["name"]);
     const target = stringOrNull(tool["target"]);
     // INV-105 disclosure (QA-070): unsupported per-harness knobs the route could
@@ -450,7 +453,7 @@ export function timelineEvents(
         speechKey: speech ? stringOrNull(speech.key) : null,
         speechOp: speech?.op ?? null,
         textFinal,
-        severity,
+        severity: stop && severity === "info" ? "warning" : severity,
         toolName,
         target,
         errorSummary,
