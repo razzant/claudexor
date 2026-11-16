@@ -130,6 +130,9 @@ export interface TryFacts {
   workspaceDiffNonEmpty?: boolean;
   /** The current workspace diff when the lane has one (evidence index file list). */
   currentDiff?: string;
+  /** A writable lane: the exact Git-result digest, or null for an incomplete,
+   * directory or legacy preview capture. Read-only access (Ask, Agent) omits it. */
+  workspaceIdentity?: string | null;
   markers: AttemptOutputMarkers;
   lastLimit: { retryDelayMs: number | null; resetsAt: string | null } | null;
   refusal: PreProgressRefusalSubject | null;

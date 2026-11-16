@@ -52,6 +52,11 @@ export function capturedDiff(capture: CapturedWorkspaceDiff | undefined): string
   return capture?.captureIncomplete ? undefined : (capture?.diff ?? "");
 }
 
+/** An exact Git-result digest; incomplete captures and legacy previews stay unknown. */
+export function capturedIdentity(capture: CapturedWorkspaceDiff | undefined): string | null {
+  return capture?.captureIncomplete ? null : (capture?.result?.digest ?? null);
+}
+
 export { hasCandidateChanges } from "./candidateEvidence.js";
 
 /** A try left the tree as it found it: never true for an unknown (incomplete) capture. */

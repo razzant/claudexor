@@ -112,10 +112,10 @@ export function pollerCredentialRejections(
  * a model (`model: null` on an observation means credential-wide):
  * - an auth rejection condemns the credential for every model;
  * - a denial of subscription access the adapter proved (`entitlementDenied`: the
- *   vendor's exact `oauth_org_not_allowed` code or its recorded result, never a
- *   category inferred from prose) condemns that credential for every model on
- *   the observed subscription route, and proves nothing about an API key or
- *   another route;
+ *   vendor's exact `oauth_org_not_allowed` or `verification_required` code or its
+ *   recorded result, never a category inferred from prose) condemns that
+ *   credential for every model on the observed subscription route, and proves
+ *   nothing about an API key or another route;
  * - any other capability refusal concerns the model the run requested: a known
  *   model stays exact, and a run that named none proves nothing about the
  *   credential, so nothing is recorded and the diagnostics stay the run's own.

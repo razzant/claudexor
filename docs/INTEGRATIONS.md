@@ -705,7 +705,10 @@ waiting cures it: its record has `code: null`, `category: harness_unavailable`,
 or `resumable.limitCode` names `vendor_limit_rejected`. Do not schedule a timed
 retry from it, even when another of the account's windows has a date, since that
 date belongs to that window. `credential_pool_exhausted` with `resetsAt: null`
-likewise promises no time, and one such member leaves the whole pool undated. A
+likewise promises no time, and one such member leaves the whole pool undated.
+An account the vendor holds for verification is a `capability_refused` try row
+whose `vendorFailure` (`verification_required`) carries the vendor's own next
+step: do not prompt a login or schedule a timed retry from it. A
 vendor-dated window with no such refusal beside it keeps
 `subscription_window_exhausted` and its `resetsAt`. No quota read retires the
 refusal (#318): only the engine's own bounded recheck lets a later run try the account.

@@ -25,9 +25,9 @@ arbitration; honest budget/quota accounting (unknown cost is never `$0`);
 deterministic gates and protected paths; and — since 2.1 — **credential
 profiles**: named Antigravity/Claude/Codex/Cursor/Grok Build subscription
 bindings side by side, each with Claudexor-scoped state and platform-declared credential
-custody. Live subscription-quota tracking — and the opt-in policy that rotates
-a spent account out of the way on typed vendor limits — covers the harnesses
-with a vendor quota source (Antigravity, Claude, and Codex). Cursor's internal
+custody. Live subscription-quota tracking — and the default policy that moves
+an unpinned run, with its work, off a spent or vendor-refused account — covers
+the harnesses with a vendor quota source (Antigravity, Claude, and Codex). Cursor's internal
 dashboard supplies dated monetary resources, not an execution-quota verdict.
 Everything runs on your machine, files are the source of truth, and there is no telemetry.
 
@@ -612,17 +612,22 @@ projection — no client re-derives Enabled or next-up. When the harness exposes
 it, each row's secondary line shows the account's non-secret **email · plan**,
 projected daemon-side under that binding's effective credential route; agy
 currently exposes no machine-readable account identity.
-Vendor-session resume never crosses accounts. Subscription quota is tracked
+A native session has one holder account at a time: when an Agent or Ask run
+that already did work moves to another account, its session moves too (or the
+work continues from an evidence packet) rather than restarting. Subscription quota is tracked
 per account through each harness's declared vendor source: vendor usage
 endpoints where available and Antigravity's own `/quota` command (proactive
 window/per-model percentages in the app's quota footer, one chip per account).
 Source-specific credential access stays inside the adapter/vendor route;
 Windows agy uses the current OS user's Credential Manager identity while the
 binding HOME scopes vendor state. Each harness may declare a typed
-`profile_policy` (`limit_action: fail|ask|rotate`): reactive rotation moves
-pool-selected accounts ONLY on typed vendor-limit signals — never on ordinary
-network errors and never off an explicit pin — with full provenance on the
-run record. Downgrading to an older engine is supported through the engine's
+`profile_policy` (`limit_action: auto|fail|ask|rotate`; the default `auto`
+rotates subscription accounts and fails metered ones): reactive rotation moves
+pool-selected accounts on typed vendor limits, on a session that died before
+any work, and on a vendor-proven account refusal (such as Claude's
+`verification_required`) that came before the account did any work — never on
+ordinary network errors and never off an explicit pin — with full provenance on
+the run record. Downgrading to an older engine is supported through the engine's
 own rollback (`claudexor profiles rollback-migration`) run BEFORE the
 downgrade. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5 for the complete contract.

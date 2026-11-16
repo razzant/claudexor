@@ -9,6 +9,7 @@ import type {
   HarnessEvent,
   HarnessRunSpec,
   QuotaAbsence,
+  QuotaSnapshot,
 } from "@claudexor/schema";
 import { CredentialUnusableLedger } from "../../daemon/src/credential-unusable-ledger.js";
 import { PreProgressRefusalLedger } from "../../daemon/src/pre-progress-refusal-ledger.js";
@@ -30,7 +31,7 @@ import {
 import { createCredentialExecutionObserver } from "./credential-execution.js";
 import { selectedProfileAvailability } from "./credential-profiles.js";
 import { dominantHarnessFailureCategory } from "./harnessFailure.js";
-import { limit, run, seedSession } from "./inrun-continuity.test-support.js";
+import { limit, run, seedSession, tempStoreRoot } from "./inrun-continuity.test-support.js";
 
 // #609: a refusal keeps its actual subject and scope. Every stream below is raw
 // vendor frames through the Claude adapter's real parser, the production subject
@@ -127,6 +128,17 @@ const nativeParsed =
   };
 const orgExactCode = nativeParsed(deniedResult(DENIED_CODE));
 const deniedWordsOnly = nativeParsed(deniedResult(null));
+/** The 15 Nov 2026 verification hold: HTTP 403 under its exact code. Synthetic
+ * words with a fixture portal: the code decides, the words are the diagnostic. */
+const HELD_CODE = "verification_required";
+const HELD_WORDS =
+  "API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal: https://portal.example.test/verify?org=fixture";
+const heldResult = (code: string | null) => ({
+  ...deniedResult(code),
+  result: HELD_WORDS,
+});
+const heldExactCode = nativeParsed(heldResult(HELD_CODE));
+const heldWordsOnly = nativeParsed(heldResult(null));
 /** The same try as the adapter ends it: its frames, then the failed exit with the
  * vendor record `withClaudeVendorFailure` attaches. */
 async function adapterTerminal(frames: Frames): Promise<HarnessEvent[]> {
@@ -202,7 +214,9 @@ function fixture() {
     attempt.fail();
   };
   const served = (at: Try, observedModel: string) => dispatch(at).serve(observedModel);
-  const quota = () => ({ snapshots: [], absences: [], honored: ledger.honored() });
+  /** Quota reads the poller made; empty unless a test adds a later authenticated read. */
+  const snapshots: QuotaSnapshot[] = [];
+  const quota = () => ({ snapshots, absences: [], honored: ledger.honored() });
   /** The exact composition `accounts-services.ts` `withAccountEvidence` lists. */
   const listed = async (profile: CredentialProfile) =>
     composeCredentialProfileEvidence(await passing(profile), {
@@ -242,6 +256,21 @@ function fixture() {
     listed,
     pin,
     pool,
+    /** A successful vendor-authenticated quota read of `work`, later than every refusal. */
+    quotaRead() {
+      snapshots.push({
+        subject: {
+          harness: "claude",
+          credential_route: "vendor_native",
+          plan_label: null,
+          subject_id: "work",
+        },
+        constraints: [],
+        source: "claude_oauth_usage",
+        observed_at: stamp(),
+        freshness: "fresh",
+      });
+    },
     advance(ms: number) {
       clock += ms;
     },
@@ -622,6 +651,132 @@ describe("a subscription-wide refusal (#609)", () => {
   });
 });
 
+describe("a verification hold: the exact stdout code, account-wide under its own name", () => {
+  it.each([OPUS, null])(
+    "on a run naming %s covers every model of that exact subject for an hour",
+    async (model) => {
+      const f = fixture();
+      f.refused({ model }, heldExactCode);
+      const [mark, ...others] = f.ledger.live();
+      expect(others).toEqual([]);
+      expect(mark).toMatchObject({
+        harness_id: "claude",
+        profile_id: "work",
+        credential_route: "vendor_native",
+        model: null,
+        code: "capability_refused",
+        source: "attempt_stream",
+        detail: HELD_CODE,
+      });
+      expect(Date.parse(mark!.expires_at) - Date.parse(mark!.observed_at)).toBe(60 * 60_000);
+      expect(await f.listed(work)).toMatchObject({ verification: "failed", detail: HELD_CODE });
+      expect((await f.listed(spare)).verification).toBe("passed");
+      for (const other of [OPUS, SONNET, null]) {
+        expect(await f.pin(work, other)).toContain("credential is unusable (capability_refused)");
+        expect(await f.pool(other)).toEqual(["spare"]);
+      }
+    },
+  );
+
+  it("is classified by the code alone, never transport, and is the differential's verdict", async () => {
+    expect(transientsOf(heldExactCode)).toMatchObject([
+      {
+        category: "capability_refused",
+        adapterCode: HELD_CODE,
+        retryable: false,
+        entitlementDenied: true,
+      },
+    ]);
+    expect(transientsOf(heldWordsOnly)).toEqual([]);
+    await expect(
+      differentialSubjectVerdict({
+        harnessId: "claude",
+        profile: work,
+        model: OPUS,
+        quota: { snapshots: [], absences: [] },
+        transients: transientsOf(heldExactCode),
+      }),
+    ).resolves.toMatchObject({ code: "capability_refused", model: null, detail: HELD_CODE });
+  });
+
+  it("keeps the class's own recovery: service, credential change, expiry", () => {
+    const f = fixture();
+    f.refused({ model: OPUS }, heldExactCode);
+    f.served({ model: SONNET }, SONNET);
+    expect(f.ledger.live()).toEqual([]);
+    f.refused({ model: OPUS }, heldExactCode);
+    f.ledger.clearSubject("claude", "work");
+    expect(f.ledger.live()).toEqual([]);
+    f.refused({ model: OPUS }, heldExactCode);
+    f.advance(59 * 60_000);
+    expect(f.ledger.live()).toHaveLength(1);
+    f.advance(61_000);
+    expect(f.ledger.live()).toEqual([]);
+  });
+
+  it("a retry frame naming the code condemns nothing, whether the try then serves or fails", () => {
+    const recovered = fixture();
+    const attempt = recovered.dispatch({ model: OPUS });
+    attempt.refuse(apiRetry(HELD_CODE));
+    attempt.serve(OPUS);
+    expect(recovered.ledger.live()).toEqual([]);
+    const failed = fixture();
+    failed.refused({ model: OPUS }, apiRetry(HELD_CODE));
+    expect(failed.ledger.live()).toEqual([]);
+    expect(transientsOf(apiRetry(HELD_CODE))).toEqual([]);
+  });
+
+  it("the same words with no code record nothing", () => {
+    const f = fixture();
+    f.refused({ model: OPUS }, heldWordsOnly);
+    expect(f.ledger.live()).toEqual([]);
+  });
+
+  it("a later authenticated quota read does not lift it, though it lifts an auth rejection", async () => {
+    // The usage endpoint can still answer for a held account: only service,
+    // a credential change or expiry ends the hold (never a quota read).
+    const hold = fixture();
+    hold.refused({ model: OPUS }, heldExactCode);
+    hold.quotaRead();
+    expect(await hold.listed(work)).toMatchObject({ verification: "failed", detail: HELD_CODE });
+    expect(await hold.pin(work, OPUS)).toContain("credential is unusable (capability_refused)");
+    expect(await hold.pool(OPUS)).toEqual(["spare"]);
+    const auth = fixture();
+    auth.refused({ model: OPUS }, authFailed);
+    expect(await auth.pool(OPUS)).toEqual(["spare"]);
+    auth.quotaRead();
+    expect((await auth.listed(work)).verification).toBe("passed");
+    expect(await auth.pool(OPUS)).toEqual(["spare", "work"]);
+  });
+
+  it("a credential change voids it, and a try bound before the change cannot recreate it", () => {
+    const f = fixture();
+    const inFlight = f.dispatch({ model: OPUS });
+    inFlight.refuse(heldExactCode);
+    f.ledger.clearSubject("claude", "work");
+    inFlight.fail();
+    expect(f.ledger.live()).toEqual([]);
+    f.refused({ model: OPUS }, heldExactCode);
+    f.ledger.noteCredentialChange();
+    expect(f.ledger.live()).toEqual([]);
+  });
+
+  it("never reaches another profile, harness or route", async () => {
+    const f = fixture();
+    f.refused({ model: OPUS }, heldExactCode);
+    expect(await f.pin(spare, OPUS)).toBe("available");
+    const applies = (harness_id: string, profile_id: string, route: CredentialRoute) =>
+      applicableCredentialUnusable(
+        { harness_id, profile_id },
+        { unusable: f.ledger.live(), model: SONNET, route },
+      );
+    expect(applies("claude", "work", "vendor_native")).not.toBeNull();
+    expect(applies("claude", "work", "managed_api_key")).toBeNull();
+    expect(applies("claude", "spare", "vendor_native")).toBeNull();
+    expect(applies("codex", "work", "vendor_native")).toBeNull();
+  });
+});
+
 describe("a refusal only the parser's prose fallback calls org-wide (#609)", () => {
   it.each(PROSE_ONLY)("%s: keeps its diagnostic and retry class", (prose) => {
     const [frame] = apiRetry(prose)("session-1");
@@ -888,11 +1043,13 @@ describe("the real Orchestrator's account path (#609)", () => {
   }, 120_000);
 
   /** #318's observed shape: an account that acted hops on a typed limit, and the
-   * next account's every try meets the exact code, which ends with exit 1. */
-  const deniedAfterHop = (terminal: HarnessEvent[]): Script =>
+   * next account's every try meets the exact code, which ends with exit 1; a
+   * third account, when registered, serves. The account stores live outside the
+   * workspace, as in production, so moving the session is no change of `b`'s. */
+  const deniedAfterHop = (terminal: HarnessEvent[], stores: string, bWorks = false): Script =>
     function* ({ profile, spec, emit }) {
       if (profile === "a") {
-        seedSession(spec.cwd, "a", "sid-A");
+        seedSession(stores, "a", "sid-A");
         yield emit({ type: "started", payload: { native_session_id: "sid-A" } });
         writeFileSync(join(spec.cwd, "part1.txt"), "first half\n");
         yield emit({ type: "file_change", payload: { path: "part1.txt" } });
@@ -900,50 +1057,131 @@ describe("the real Orchestrator's account path (#609)", () => {
         return;
       }
       yield emit({ type: "started", payload: { native_session_id: "sid-A" } });
+      if (profile === "c") {
+        yield emit({ type: "message", text: "served", final: true });
+        yield emit({ type: "completed" });
+        return;
+      }
+      if (bWorks) yield emit({ type: "tool_call", tool: { name: "Read", kind: "file" } });
       for (const event of terminal)
         yield emit({ ...event, session_id: spec.session_id, ts: new Date().toISOString() });
     };
 
-  it("after progress, the exact code ends the attempt on that account with its own record: no same-account retry (#318)", async () => {
+  // Scope, fixed explicitly: the class is the adapter-PROVEN account-wide denial
+  // (`entitlement_denied`), the exact verification code and the organization's
+  // exact code alike. Its after-progress refusal by the hop's target, before any
+  // work of that try, now carries the work on instead of ending the attempt.
+  const accountDenials = [
+    ["the organization's exact code (#318)", orgExactCode, "oauth_org_not_allowed", DENIED_WORDS],
+    ["the exact verification-required code", heldExactCode, HELD_CODE, HELD_WORDS],
+  ] as const;
+
+  it.each(accountDenials)(
+    "after progress, %s on the hop's target moves the SAME work to a third account",
+    async (_name, frames, detail, _words) => {
+      const e = evidence();
+      const stores = tempStoreRoot();
+      const o = await run({
+        mode: "agent",
+        profiles: ["a", "b", "c"],
+        maxRetries: 2,
+        storeRoot: stores,
+        deps: e.deps,
+        script: deniedAfterHop(await adapterTerminal(frames), stores),
+      });
+      expect(o.result.lifecycle, o.result.summary).toBe("succeeded");
+      expect(o.spawns.map((spawn) => [spawn.profile, spawn.resume])).toEqual([
+        ["a", null],
+        ["b", "sid-A"],
+        ["c", "sid-A"],
+      ]);
+      expect(o.receipts.map((r) => [r["carrier"], r["cause"]])).toEqual([
+        ["native_moved", "vendor_limit"],
+        ["native_moved", "other"],
+      ]);
+      expect(e.unusable.live()).toMatchObject([
+        { profile_id: "b", model: null, credential_route: "vendor_native", detail },
+      ]);
+      // #363: the refused row also ranks after its siblings for this model.
+      expect(e.refusals.live()).toMatchObject([{ profile_id: "b", requested_model: "m1" }]);
+    },
+    120_000,
+  );
+
+  it.each(accountDenials)(
+    "after progress, %s with no other eligible account ends typed with its own record: no same-account retry",
+    async (_name, frames, detail, words) => {
+      const e = evidence();
+      const stores = tempStoreRoot();
+      const o = await run({
+        mode: "agent",
+        profiles: ["a", "b"],
+        maxRetries: 2,
+        storeRoot: stores,
+        deps: e.deps,
+        script: deniedAfterHop(await adapterTerminal(frames), stores),
+      });
+      expect(o.spawns.map((spawn) => spawn.profile)).toEqual(["a", "b"]);
+      expect(o.rotated).toMatchObject([{ from_profile_id: "a", to_profile_id: "b" }]);
+      expect(o.result.lifecycle).toBe("failed");
+      expect(o.resumable).toMatchObject({
+        cause: "pool_exhausted",
+        limitCode: "credential_pool_exhausted",
+        resetsAt: null,
+        session: { nativeSessionId: "sid-A", holderProfileId: "b" },
+      });
+      const failed = JSON.stringify(o.events.find((event) => event.type === "run.failed"));
+      expect(failed).toContain(words);
+      expect(e.unusable.live()).toMatchObject([
+        {
+          profile_id: "b",
+          model: null,
+          credential_route: "vendor_native",
+          code: "capability_refused",
+          detail,
+        },
+      ]);
+    },
+    120_000,
+  );
+
+  it("after the hop's target already worked, the exact code still marks the account but the attempt stops", async () => {
     const e = evidence();
-    const terminal = await adapterTerminal(orgExactCode);
+    const stores = tempStoreRoot();
     const o = await run({
       mode: "agent",
-      profiles: ["a", "b"],
+      profiles: ["a", "b", "c"],
       maxRetries: 2,
+      storeRoot: stores,
       deps: e.deps,
-      script: deniedAfterHop(terminal),
+      script: deniedAfterHop(await adapterTerminal(heldExactCode), stores, true),
     });
     expect(o.spawns.map((spawn) => spawn.profile)).toEqual(["a", "b"]);
-    expect(o.rotated).toMatchObject([{ from_profile_id: "a", to_profile_id: "b" }]);
-    expect(o.result.lifecycle).toBe("failed");
     expect(o.resumable).toMatchObject({ cause: "other" });
-    const failed = JSON.stringify(o.events.find((event) => event.type === "run.failed"));
-    expect(failed).toContain(DENIED_WORDS);
-    expect(e.unusable.live()).toMatchObject([
-      {
-        profile_id: "b",
-        model: null,
-        credential_route: "vendor_native",
-        code: "capability_refused",
-        detail: "oauth_org_not_allowed",
-      },
-    ]);
+    expect(e.unusable.live()).toMatchObject([{ profile_id: "b", model: null, detail: HELD_CODE }]);
   }, 120_000);
 
-  it("control: the same words with no code stay an untyped failure the same account retries", async () => {
-    const e = evidence();
-    const terminal = await adapterTerminal(deniedWordsOnly);
-    const o = await run({
-      mode: "agent",
-      profiles: ["a", "b"],
-      maxRetries: 2,
-      deps: e.deps,
-      script: deniedAfterHop(terminal),
-    });
-    expect(o.spawns.map((spawn) => spawn.profile)).toEqual(["a", "b", "b", "b"]);
-    expect(e.unusable.live()).toEqual([]);
-  }, 120_000);
+  it.each([
+    ["the organization's words (#318)", deniedWordsOnly],
+    ["the verification words", heldWordsOnly],
+  ])(
+    "control: %s with no code stay an untyped failure the same account retries",
+    async (_name, frames) => {
+      const e = evidence();
+      const stores = tempStoreRoot();
+      const o = await run({
+        mode: "agent",
+        profiles: ["a", "b", "c"],
+        maxRetries: 2,
+        storeRoot: stores,
+        deps: e.deps,
+        script: deniedAfterHop(await adapterTerminal(frames), stores),
+      });
+      expect(o.spawns.map((spawn) => spawn.profile)).toEqual(["a", "b", "b", "b"]);
+      expect(e.unusable.live()).toEqual([]);
+    },
+    120_000,
+  );
 
   it("a pin meets the exact code once: no retry, no other account or route, and the next pinned run is refused before spawn (#318)", async () => {
     const e = evidence();

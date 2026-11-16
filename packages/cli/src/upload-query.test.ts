@@ -7,6 +7,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -70,6 +71,10 @@ function file(name = "note.txt", bytes = "document") {
   writeFileSync(path, bytes);
   return path;
 }
+// Set before a source opens, a fixed historical mtime makes a later same-size
+// in-place rewrite always change it. A rewrite of a fresh file can share its
+// timestamp, and the source check compares identity, size and timestamps only.
+const OLD = new Date("2020-01-01T00:00:00Z");
 const status = (state = "open") => ({
   uploadId: "u",
   state,
@@ -270,6 +275,7 @@ describe("thin upload translation and recovery", () => {
   it("preserves a changed-source refusal through a wrapped fetch failure", async () => {
     connect();
     const path = file();
+    utimesSync(path, OLD, OLD);
     mocks.fetch
       .mockResolvedValueOnce(Response.json(status()))
       .mockImplementationOnce(async (_addr, _path, init) => {
@@ -409,6 +415,7 @@ describe("explicit local document descriptor", () => {
   it("detects same-size replacement and in-place mutation, and closes its descriptor", async () => {
     for (const replace of [false, true]) {
       const path = file();
+      utimesSync(path, OLD, OLD);
       const source = await openDocumentSource(path, 8);
       try {
         if (replace) renameSync(path, `${path}.old`);

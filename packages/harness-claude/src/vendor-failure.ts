@@ -8,6 +8,9 @@ import { claudeEntitlementDenial, isClaudeEntitlementDenial } from "./retry-sign
 /** The API's own code for a Claude subscription its organization does not
  * allow this client to use (HTTP 403 in the recorded shape). */
 const CLAUDE_SUBSCRIPTION_DENIED_CODE = "oauth_not_allowed_for_organization";
+/** The API's own code for an account whose replies the vendor holds until a
+ * verification step (HTTP 403 in the observed shape). */
+const CLAUDE_VERIFICATION_REQUIRED_CODE = "verification_required";
 
 /** Native stdout result evidence, not a search through model prose. Older
  * CLIs retain the API sentence but omit api_error_code; that remains unknown
@@ -69,13 +72,17 @@ export function withClaudeApiFailureParser(
         : undefined;
     // #318: that code is the same typed subscription denial the org-disabled
     // prose and retry frame carry (`oauth_org_not_allowed`), never transport,
-    // so no same-account retry replays it. The code alone decides; the words
-    // stay the diagnostic and are never read for a cause.
+    // so no same-account retry replays it. A verification hold is the same
+    // account-wide denial under its own code; only this terminal result
+    // carries it, never a retry frame the CLI recovered from. The code alone
+    // decides; the words stay the diagnostic and are never read for a cause.
     const denial =
-      code === CLAUDE_SUBSCRIPTION_DENIED_CODE &&
-      !(parsed ?? []).some((event) => isClaudeEntitlementDenial(event))
-        ? [claudeEntitlementDenial(message ?? code, sessionId, nowIso())]
-        : [];
+      code === CLAUDE_VERIFICATION_REQUIRED_CODE
+        ? [claudeEntitlementDenial(message ?? code, sessionId, nowIso(), code)]
+        : code === CLAUDE_SUBSCRIPTION_DENIED_CODE &&
+            !(parsed ?? []).some((event) => isClaudeEntitlementDenial(event))
+          ? [claudeEntitlementDenial(message ?? code, sessionId, nowIso())]
+          : [];
     return [
       // Replace the result parser's generic subtype error with the native
       // API cause; usage and all non-error evidence keep their order. The

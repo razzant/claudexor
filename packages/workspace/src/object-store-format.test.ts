@@ -120,8 +120,23 @@ describe("one project keeps one Git object format", () => {
     expect((await capture(first, project)).captureIncomplete).toBe(false);
     const store = objectStorePath(project);
     // As retention leaves it: the store's objects in a pack and its index.
-    // (The store has no refs, so its objects are packed as unreachable ones.)
-    git(store, ["repack", "-a", "-d", "-q", "--keep-unreachable"], storeEnv(store));
+    // The store has no refs: explicitly pack its stored objects by ID,
+    // then remove their packed loose copies.
+    const env = storeEnv(store);
+    const stored = git(
+      store,
+      ["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"],
+      env,
+    );
+    const packName = execFileSync(
+      "git",
+      ["-C", store, "pack-objects", "-q", join(store, "objects", "pack", "pack")],
+      { env: { ...ENV, ...env }, input: `${stored}\n` },
+    )
+      .toString("utf8")
+      .trim();
+    git(store, ["prune-packed", "-q"], env);
+    git(store, ["verify-pack", join(store, "objects", "pack", `pack-${packName}.idx`)], env);
     expect(readdirSync(join(store, "objects", "pack")).some((name) => name.endsWith(".idx"))).toBe(
       true,
     );

@@ -2330,6 +2330,7 @@ export class Orchestrator {
     // Isolated scoped-home sessions are never retained after disposal.
     const inPlaceEnvelope = envelope.worktree_path === envelope.repo_root;
     const directory = envelope.workspace_kind === "directory";
+    const writable = isMutatingAccess(access);
     let directoryCapture: Awaited<ReturnType<typeof captureDirectoryCandidate>> = {};
     const captureDirectory = async (final = false) =>
       (directoryCapture = await captureDirectoryCandidate({
@@ -2697,7 +2698,7 @@ export class Orchestrator {
           : await secretDiff.captureCandidateDiff(wsm, envelope, paths.root);
         const currentDiff = secretDiff.capturedDiff(currentCapture);
         const workspaceUnchanged = directory
-          ? !isMutatingAccess(access) || directoryCapture.files?.noChanges === true
+          ? !writable || directoryCapture.files?.noChanges === true
           : secretDiff.captureUnchanged(currentCapture);
         const deliverableEmpty = workspaceUnchanged && answer.text().length === 0;
         const delivered = !harnessErrored && !deliverableEmpty && !signal?.aborted;
@@ -2717,6 +2718,7 @@ export class Orchestrator {
           rawDeliverableEmpty: deliverableEmpty,
           workspaceDiffNonEmpty: !workspaceUnchanged,
           ...(currentDiff === undefined ? {} : { currentDiff }),
+          ...(writable ? { workspaceIdentity: secretDiff.capturedIdentity(currentCapture) } : {}),
           lastLimit: telemetry.rateLimits.at(-1) ?? null,
           refusal,
           telemetry,
@@ -2874,7 +2876,7 @@ export class Orchestrator {
           worktreePath: envelope.worktree_path,
           artifactRelativeDir,
           ...secretDiff.attemptPatchInput(captured),
-          persistPatch: !directory && captureRefusal === undefined && isMutatingAccess(access),
+          persistPatch: !directory && captureRefusal === undefined && writable,
           persistProducedMedia: !directory,
           answerText,
           record: {

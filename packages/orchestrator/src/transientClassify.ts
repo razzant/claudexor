@@ -27,8 +27,9 @@ export interface TransientFailureObservation {
   retryDelayMs: number | null;
   httpStatus: number | null;
   signal: string | null;
-  /** The adapter proved the vendor denied this credential's subscription access,
-   * beyond a category inferred from prose. In memory only, for refusal scope. */
+  /** The adapter proved the vendor denied this credential's subscription access
+   * (organization refusal or verification hold), beyond a category inferred from
+   * prose. In memory only, for refusal scope and the in-run account hop. */
   entitlementDenied?: true;
   adapterCode: string | null;
 }
@@ -104,6 +105,7 @@ export function classifyStatusError(event: HarnessEvent): TransientFailureObserv
       category = "auth_failed";
       break;
     case "oauth_org_not_allowed":
+    case "verification_required":
     case "model_not_found":
       category = "capability_refused";
       break;
@@ -120,7 +122,9 @@ export function classifyStatusError(event: HarnessEvent): TransientFailureObserv
   return observation(category, {
     retryDelayMs: event.status?.retry_delay_ms ?? null,
     adapterCode: ec,
-    ...(ec === "oauth_org_not_allowed" && event.payload?.["entitlement_denied"] === true
+    // The adapter's proof of an account-wide denial, never a model's absence.
+    ...((ec === "oauth_org_not_allowed" || ec === "verification_required") &&
+    event.payload?.["entitlement_denied"] === true
       ? { entitlementDenied: true as const }
       : {}),
   });
