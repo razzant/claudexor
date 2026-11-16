@@ -36,6 +36,8 @@ import {
 } from "./preparation-hold.js";
 import { ensureThreadWorktree, purgeThreadWorktree } from "./thread-tree.js";
 import {
+  gitFilterCommand,
+  shellQuote,
   endIdentified,
   startOf as ps,
   type Identity,
@@ -131,7 +133,7 @@ const HOLD_JS =
 function holdUntil(root: string, release: string): string {
   const program = join(root, "hold-until.cjs");
   writeFileSync(program, HOLD_JS);
-  return `exec '${process.execPath}' '${program}' '${release}' '${root}' '${join(root, "holding")}'`;
+  return `exec ${shellQuote(process.execPath)} ${shellQuote(program)} ${shellQuote(release)} ${shellQuote(root)} ${shellQuote(join(root, "holding"))}`;
 }
 
 /**
@@ -171,20 +173,20 @@ function world(plain = false) {
   const clean = join(root, "clean.sh");
   writeFileSync(
     clean,
-    `#!/bin/sh\necho run >> '${log}'\nif [ -e '${flag("clean-fail")}' ]; then exit 1; fi\nif [ -e '${flag("clean-hold")}' ]; then '${process.execPath}' '${survivor("2")}'; fi\nif [ -e '${flag("clean-hold")}' ] || [ -e '${flag("clean-block")}' ]; then ${holdUntil(root, "")}; fi\nexec cat\n`,
+    `#!/bin/sh\necho run >> ${shellQuote(log)}\nif [ -e ${shellQuote(flag("clean-fail"))} ]; then exit 1; fi\nif [ -e ${shellQuote(flag("clean-hold"))} ]; then ${shellQuote(process.execPath)} ${shellQuote(survivor("2"))}; fi\nif [ -e ${shellQuote(flag("clean-hold"))} ] || [ -e ${shellQuote(flag("clean-block"))} ]; then ${holdUntil(root, "")}; fi\nexec cat\n`,
     { mode: 0o755 },
   );
   const smudge = join(root, "smudge.sh");
   writeFileSync(
     smudge,
-    `#!/bin/sh\nif [ -e '${flag("smudge-fail")}' ]; then '${process.execPath}' '${survivor("'ignore'")}'; exit 1; fi\nexec cat\n`,
+    `#!/bin/sh\nif [ -e ${shellQuote(flag("smudge-fail"))} ]; then ${shellQuote(process.execPath)} ${shellQuote(survivor("'ignore'"))}; exit 1; fi\nexec cat\n`,
     { mode: 0o755 },
   );
   process.env.GIT_CONFIG_COUNT = "3";
   process.env.GIT_CONFIG_KEY_0 = "filter.held.clean";
-  process.env.GIT_CONFIG_VALUE_0 = clean;
+  process.env.GIT_CONFIG_VALUE_0 = gitFilterCommand(clean);
   process.env.GIT_CONFIG_KEY_1 = "filter.held.smudge";
-  process.env.GIT_CONFIG_VALUE_1 = smudge;
+  process.env.GIT_CONFIG_VALUE_1 = gitFilterCommand(smudge);
   process.env.GIT_CONFIG_KEY_2 = "filter.held.required";
   process.env.GIT_CONFIG_VALUE_2 = "true";
   const tree = (id: string) => join(projectRuntimeDir(repo), "threads", id, "tree");

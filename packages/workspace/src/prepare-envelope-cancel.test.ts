@@ -31,6 +31,8 @@ import {
   allAlive,
   allEnded,
   endIdentified,
+  gitFilterCommand,
+  shellQuote,
   holdUntil,
   identify,
   leavingFilter,
@@ -118,7 +120,7 @@ function holdingProgram(root: string): { program: string; pids: string; release:
   const release = join(root, "release");
   writeFileSync(
     program,
-    `#!/bin/sh\nmkdir -p '${pids}'\necho "$$ $PPID" > '${pids}/$$.tmp' && mv '${pids}/$$.tmp' '${pids}/$$'\n${holdUntil(root, release)}\n`,
+    `#!/bin/sh\nmkdir -p ${shellQuote(pids)}\necho "$$ $PPID" > ${shellQuote(`${pids}/$$.tmp`)} && mv ${shellQuote(`${pids}/$$.tmp`)} ${shellQuote(`${pids}/$$`)}\n${holdUntil(root, release)}\n`,
     { mode: 0o755 },
   );
   releases.push(release);
@@ -126,11 +128,11 @@ function holdingProgram(root: string): { program: string; pids: string; release:
 }
 
 /** Configure the filter for every Git child of this process (the user's repository and private clones alike). */
-function useFilter(program: string, side: "clean" | "smudge"): void {
+function useFilter(command: string, side: "clean" | "smudge"): void {
   setEnv({
     GIT_CONFIG_COUNT: "2",
     GIT_CONFIG_KEY_0: `filter.held.${side}`,
-    GIT_CONFIG_VALUE_0: program,
+    GIT_CONFIG_VALUE_0: command,
     GIT_CONFIG_KEY_1: `filter.held.${side === "clean" ? "smudge" : "clean"}`,
     GIT_CONFIG_VALUE_1: "cat",
   });
@@ -206,7 +208,10 @@ process.stdin.on('data', c=>chunks.push(c)); process.stdin.on('end', ()=>{
     setEnv({
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "filter.held.clean",
-      GIT_CONFIG_VALUE_0: `"${process.execPath.replaceAll("\\", "/")}" "${program.replaceAll("\\", "/")}"`,
+      GIT_CONFIG_VALUE_0: gitFilterCommand(
+        process.execPath.replaceAll("\\", "/"),
+        program.replaceAll("\\", "/"),
+      ),
     });
     writeFileSync(join(repo, "x.held"), "dirty\n");
     const index = readFileSync(join(repo, ".git", "index"));
@@ -245,7 +250,7 @@ posixDescribe("Stop reaches envelope preparation (#694)", () => {
   it("a stop before preparation makes nothing and starts no Git", async () => {
     const { root, repo, runtime } = world();
     const hold = holdingProgram(root);
-    useFilter(hold.program, "clean");
+    useFilter(gitFilterCommand(hold.program), "clean");
     writeFileSync(join(repo, "x.held"), "dirty\n");
     const stop = new AbortController();
     stop.abort();
@@ -276,7 +281,7 @@ posixDescribe("Stop reaches envelope preparation (#694)", () => {
     async (_label, inPlace) => {
       const { root, repo, runtime } = world();
       const hold = holdingProgram(root);
-      useFilter(hold.program, "clean");
+      useFilter(gitFilterCommand(hold.program), "clean");
       writeFileSync(join(repo, "x.held"), "dirty\n");
       const statusBefore = git(repo, ["status", "--porcelain"]);
       const stop = new AbortController();
@@ -311,7 +316,7 @@ posixDescribe("Stop reaches envelope preparation (#694)", () => {
     git(repo, ["add", "-A"]);
     git(repo, ["commit", "-qm", "held file"]);
     const hold = holdingProgram(root);
-    useFilter(hold.program, "smudge");
+    useFilter(gitFilterCommand(hold.program), "smudge");
     const stop = new AbortController();
     const created = new WorkspaceManager(repo, { runtimeRoot: runtime }).create({
       taskId: "t3",
@@ -332,7 +337,7 @@ posixDescribe("Stop reaches envelope preparation (#694)", () => {
     const { root, repo, runtime } = world();
     const hold = holdingProgram(root);
     writeFileSync(hold.release, ""); // the filter passes through at once
-    useFilter(hold.program, "clean");
+    useFilter(gitFilterCommand(hold.program), "clean");
     writeFileSync(join(repo, "x.held"), "dirty\n");
     const wsm = new WorkspaceManager(repo, { runtimeRoot: runtime });
     const env = await wsm.create({
@@ -350,7 +355,7 @@ posixDescribe("Stop reaches envelope preparation (#694)", () => {
   it("a stop that cannot remove the never-started envelope says so and stays a stop", async () => {
     const { root, repo, runtime } = world();
     const hold = holdingProgram(root);
-    useFilter(hold.program, "clean");
+    useFilter(gitFilterCommand(hold.program), "clean");
     writeFileSync(join(repo, "x.held"), "dirty\n");
     const stop = new AbortController();
     const created = new WorkspaceManager(repo, { runtimeRoot: runtime }).create({
@@ -409,8 +414,8 @@ posixDescribe("Stop reaches envelope preparation (#694)", () => {
       join(bin, "git"),
       [
         "#!/bin/sh",
-        `case " $* " in *" init --bare "*) echo $$ > '${marker}.tmp' && mv '${marker}.tmp' '${marker}'; while [ ! -e '${release}' ] && [ -d '${root}' ]; do sleep 0.02; done; exec '${REAL_GIT}' "$@";; esac`,
-        `'${REAL_GIT}' "$@"; status=$?; echo done >> '${calls}'; exit $status`,
+        `case " $* " in *" init --bare "*) echo $$ > ${shellQuote(`${marker}.tmp`)} && mv ${shellQuote(`${marker}.tmp`)} ${shellQuote(marker)}; while [ ! -e ${shellQuote(release)} ] && [ -d ${shellQuote(root)} ]; do sleep 0.02; done; exec ${shellQuote(REAL_GIT)} "$@";; esac`,
+        `${shellQuote(REAL_GIT)} "$@"; status=$?; echo done >> ${shellQuote(calls)}; exit $status`,
         "",
       ].join("\n"),
       { mode: 0o755 },
@@ -453,7 +458,12 @@ posixDescribe("Stop reaches envelope preparation (#694)", () => {
     const calls = join(root, "calls");
     writeFileSync(
       join(bin, "git"),
-      ["#!/bin/sh", `echo "$*" >> '${calls}'`, `exec '${REAL_GIT}' "$@"`, ""].join("\n"),
+      [
+        "#!/bin/sh",
+        `echo "$*" >> ${shellQuote(calls)}`,
+        `exec ${shellQuote(REAL_GIT)} "$@"`,
+        "",
+      ].join("\n"),
       { mode: 0o755 },
     );
     setEnv({ HOME: home });
@@ -479,7 +489,7 @@ posixDescribe("Stop reaches envelope preparation (#694)", () => {
     writeFileSync(join(folder, ".gitattributes"), "*.held filter=held\n");
     writeFileSync(join(folder, "x.held"), "user data\n");
     const hold = holdingProgram(root);
-    useFilter(hold.program, "clean");
+    useFilter(gitFilterCommand(hold.program), "clean");
     const stop = new AbortController();
     const initialized = ensureGitRepository(folder, { signal: stop.signal });
     await until("the user's `git add` to hold", () => publishedPids(hold.pids).length >= 2);

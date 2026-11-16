@@ -10,6 +10,17 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+/** One literal POSIX shell word, including embedded apostrophes. */
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+/** Git expands %f (and %% to %) BEFORE the shell parses a filter command.
+ * Quote both layers and replace the command shell, keeping the filter's parent Git. */
+export function gitFilterCommand(program: string, ...args: string[]): string {
+  return `exec ${[program, ...args].map(shellQuote).join(" ").replaceAll("%", "%%")}`;
+}
+
 /** Bounded wait for a condition (a failure detector, never the success path). */
 export async function until(what: string, condition: () => boolean, ms = 60_000): Promise<void> {
   const end = Date.now() + ms;
@@ -144,7 +155,7 @@ export const HOLD_JS =
 export function holdUntil(root: string, release: string): string {
   const program = join(root, "hold-until.cjs");
   writeFileSync(program, HOLD_JS);
-  return `exec '${process.execPath}' '${program}' '${release}' '${root}'`;
+  return `exec ${[process.execPath, program, release, root].map(shellQuote).join(" ")}`;
 }
 
 /**
@@ -182,7 +193,7 @@ export function leavingFilter(
       "setInterval(()=>{if(!fs.existsSync(root))process.exit(0);},25);},10);",
   );
   return {
-    command: `'${process.execPath}' '${filter}' ${mode} '${child}' '${pids}' '${root}' ${life}`,
+    command: gitFilterCommand(process.execPath, filter, mode, child, pids, root, String(life)),
     left: () =>
       existsSync(pids)
         ? readdirSync(pids)

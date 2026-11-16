@@ -21,6 +21,8 @@ import { projectRuntimeDir } from "@claudexor/util";
 import { createSqlDaemonRuntime } from "./sql-daemon-runtime.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
 import {
+  gitFilterCommand,
+  shellQuote,
   allAlive,
   allEnded,
   identify,
@@ -103,7 +105,7 @@ const HOLD_JS =
 function holdUntil(root: string, release: string, pids: string): string {
   const program = join(root, "hold-until.cjs");
   writeFileSync(program, HOLD_JS);
-  return `exec '${process.execPath}' '${program}' '${release}' '${root}' '${pids}'`;
+  return `exec ${shellQuote(process.execPath)} ${shellQuote(program)} ${shellQuote(release)} ${shellQuote(root)} ${shellQuote(pids)}`;
 }
 
 function temp(prefix: string): string {
@@ -144,15 +146,15 @@ async function fixture(side: "smudge" | "clean", repository: boolean, survivor =
     spawnSurvivor,
     `const c=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore','ignore',2]});const f=require('node:fs');f.mkdirSync(${JSON.stringify(survivors)},{recursive:true});f.writeFileSync(${JSON.stringify(survivors)}+'/'+c.pid+'.tmp',String(c.pid));f.renameSync(${JSON.stringify(survivors)}+'/'+c.pid+'.tmp',${JSON.stringify(survivors)}+'/'+c.pid);c.unref();`,
   );
-  const start = survivor ? `'${process.execPath}' '${spawnSurvivor}'; ` : "";
+  const start = survivor ? `${shellQuote(process.execPath)} ${shellQuote(spawnSurvivor)}; ` : "";
   writeFileSync(
     program,
-    `#!/bin/sh\nif [ -e '${hold}' ]; then ${start}${holdUntil(root, release, pids)}; fi\nexec cat\n`,
+    `#!/bin/sh\nif [ -e ${shellQuote(hold)} ]; then ${start}${holdUntil(root, release, pids)}; fi\nexec cat\n`,
     { mode: 0o755 },
   );
   process.env.GIT_CONFIG_COUNT = "1";
   process.env.GIT_CONFIG_KEY_0 = `filter.held.${side}`;
-  process.env.GIT_CONFIG_VALUE_0 = program;
+  process.env.GIT_CONFIG_VALUE_0 = gitFilterCommand(program);
 
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),

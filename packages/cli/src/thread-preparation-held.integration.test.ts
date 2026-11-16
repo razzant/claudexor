@@ -17,6 +17,8 @@ import type { ScopeReapOptions, ScopeReapOutcome } from "@claudexor/core";
 import { projectRuntimeDir } from "@claudexor/util";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
 import {
+  gitFilterCommand,
+  shellQuote,
   endIdentified,
   startOf,
   until,
@@ -212,12 +214,12 @@ async function fixture(side: "smudge" | "clean" = "smudge") {
   const runs = join(root, "filter.log");
   writeFileSync(
     program,
-    `#!/bin/sh\necho run >> '${runs}'\nif [ -e '${hold}' ] && [ ! -e '${survivorFile}' ]; then '${process.execPath}' '${spawnSurvivor}'; exec '${process.execPath}' '${holder}' '${root}' '${holding}'; fi\nexec cat\n`,
+    `#!/bin/sh\necho run >> ${shellQuote(runs)}\nif [ -e ${shellQuote(hold)} ] && [ ! -e ${shellQuote(survivorFile)} ]; then ${shellQuote(process.execPath)} ${shellQuote(spawnSurvivor)}; exec ${shellQuote(process.execPath)} ${shellQuote(holder)} ${shellQuote(root)} ${shellQuote(holding)}; fi\nexec cat\n`,
     { mode: 0o755 },
   );
   process.env.GIT_CONFIG_COUNT = "1";
   process.env.GIT_CONFIG_KEY_0 = `filter.held.${side}`;
-  process.env.GIT_CONFIG_VALUE_0 = program;
+  process.env.GIT_CONFIG_VALUE_0 = gitFilterCommand(program);
   const daemonDir = join(root, "daemon");
   let instance = await daemonInstance(daemonDir, true);
   const thread = instance.graph.threads.createThread({

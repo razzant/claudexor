@@ -25,6 +25,8 @@ import { scopeMarkerOf } from "@claudexor/workspace";
 import { Orchestrator, type OrchestratorResult, type RunInput } from "./orchestrator.js";
 import { openRunScopeCustody } from "./runScope.js";
 import {
+  gitFilterCommand,
+  shellQuote,
   endIdentified,
   startOf,
   until,
@@ -94,12 +96,12 @@ function world() {
   const program = join(root, "filter.sh");
   writeFileSync(
     program,
-    `#!/bin/sh\nif [ -e '${hold}' ] && [ ! -e '${survivorFile}' ]; then '${process.execPath}' '${spawnSurvivor}'; exec '${process.execPath}' '${holder}' '${root}' '${holding}'; fi\nexec cat\n`,
+    `#!/bin/sh\nif [ -e ${shellQuote(hold)} ] && [ ! -e ${shellQuote(survivorFile)} ]; then ${shellQuote(process.execPath)} ${shellQuote(spawnSurvivor)}; exec ${shellQuote(process.execPath)} ${shellQuote(holder)} ${shellQuote(root)} ${shellQuote(holding)}; fi\nexec cat\n`,
     { mode: 0o755 },
   );
   process.env.GIT_CONFIG_COUNT = "2";
   process.env.GIT_CONFIG_KEY_0 = "filter.held.clean";
-  process.env.GIT_CONFIG_VALUE_0 = program;
+  process.env.GIT_CONFIG_VALUE_0 = gitFilterCommand(program);
   process.env.GIT_CONFIG_KEY_1 = "filter.held.smudge";
   process.env.GIT_CONFIG_VALUE_1 = "cat";
   return {

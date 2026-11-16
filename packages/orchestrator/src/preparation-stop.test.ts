@@ -23,6 +23,8 @@ import {
   allAlive,
   allEnded,
   endIdentified,
+  gitFilterCommand,
+  shellQuote,
   holdUntil,
   identify,
   leavingFilter,
@@ -78,12 +80,12 @@ function world(plainFolder = false) {
   const program = join(root, "filter.sh");
   writeFileSync(
     program,
-    `#!/bin/sh\nif [ -e '${hold}' ]; then mkdir -p '${pids}' && echo "$$ $PPID" > '${pids}/$$.tmp' && mv '${pids}/$$.tmp' '${pids}/$$'; ${holdUntil(root, release)}; fi\nexec cat\n`,
+    `#!/bin/sh\nif [ -e ${shellQuote(hold)} ]; then mkdir -p ${shellQuote(pids)} && echo "$$ $PPID" > ${shellQuote(`${pids}/$$.tmp`)} && mv ${shellQuote(`${pids}/$$.tmp`)} ${shellQuote(`${pids}/$$`)}; ${holdUntil(root, release)}; fi\nexec cat\n`,
     { mode: 0o755 },
   );
   process.env.GIT_CONFIG_COUNT = "2";
   process.env.GIT_CONFIG_KEY_0 = "filter.held.clean";
-  process.env.GIT_CONFIG_VALUE_0 = program;
+  process.env.GIT_CONFIG_VALUE_0 = gitFilterCommand(program);
   process.env.GIT_CONFIG_KEY_1 = "filter.held.smudge";
   process.env.GIT_CONFIG_VALUE_1 = "cat";
   return {

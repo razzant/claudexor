@@ -32,6 +32,8 @@ import {
 } from "./preparation-hold.js";
 import { ensureThreadWorktree, purgeThreadWorktree } from "./thread-tree.js";
 import {
+  gitFilterCommand,
+  shellQuote,
   endIdentified,
   startOf as ps,
   type Identity,
@@ -126,12 +128,12 @@ function world() {
   const program = join(root, "filter.sh");
   writeFileSync(
     program,
-    `#!/bin/sh\nif [ -e '${hold}' ]; then '${process.execPath}' '${survivor}'; exec '${process.execPath}' '${holder}'; fi\nexec cat\n`,
+    `#!/bin/sh\nif [ -e ${shellQuote(hold)} ]; then ${shellQuote(process.execPath)} ${shellQuote(survivor)}; exec ${shellQuote(process.execPath)} ${shellQuote(holder)}; fi\nexec cat\n`,
     { mode: 0o755 },
   );
   process.env.GIT_CONFIG_COUNT = "2";
   process.env.GIT_CONFIG_KEY_0 = "filter.held.smudge";
-  process.env.GIT_CONFIG_VALUE_0 = program;
+  process.env.GIT_CONFIG_VALUE_0 = gitFilterCommand(program);
   process.env.GIT_CONFIG_KEY_1 = "filter.held.clean";
   process.env.GIT_CONFIG_VALUE_1 = "cat";
   const tree = (id: string) => join(projectRuntimeDir(repo), "threads", id, "tree");

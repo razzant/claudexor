@@ -19,13 +19,18 @@ import { afterEach, describe, expect, it } from "vitest";
 import { statusPorcelain } from "./git.js";
 import { scopedGitArgs, STAT_TRUST_OFF, withScopeMarker } from "./git-run.js";
 
+import { shellQuote } from "../../core/src/test-support/process-fixtures.js";
+
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 }, 0);
 
 function repoWithFsmonitorHook() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-fsmonitor-")));
+  // The owned path carries a space, an apostrophe and a percent: the hook is
+  // handed to Git as a shell command, so it must be shell-quoted (no Git
+  // percent expansion applies to core.fsmonitor).
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "cx fs'mon 100%-")));
   dirs.push(root);
   const repo = join(root, "repo");
   const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
@@ -37,8 +42,10 @@ function repoWithFsmonitorHook() {
   const log = join(root, "hook.log");
   const hook = join(root, "fsmonitor-hook.sh");
   // A v2 hook that answers "everything may have changed" after logging the call.
-  writeFileSync(hook, `#!/bin/sh\necho called >> '${log}'\nprintf '/\\0'\n`, { mode: 0o755 });
-  git("config", "core.fsmonitor", hook);
+  writeFileSync(hook, `#!/bin/sh\necho called >> ${shellQuote(log)}\nprintf '/\\0'\n`, {
+    mode: 0o755,
+  });
+  git("config", "core.fsmonitor", shellQuote(hook));
   git("config", "core.fsmonitorHookVersion", "2");
   writeFileSync(join(repo, "b"), "b\n");
   return {

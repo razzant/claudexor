@@ -29,6 +29,8 @@ import {
 } from "./preparation-hold.js";
 import { ensureThreadWorktree } from "./thread-tree.js";
 
+import { gitFilterCommand, shellQuote } from "../../core/src/test-support/process-fixtures.js";
+
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -80,10 +82,10 @@ function world(plain = false) {
     const program = join(root, `${side}.sh`);
     writeFileSync(
       program,
-      `#!/bin/sh\necho "${side} $(env | grep -o '^CLAUDEXOR_RUN_SCOPE_[0-9a-f]*' | tr '\\n' ' ')" >> '${log}'\nexec cat\n`,
+      `#!/bin/sh\necho "${side} $(env | grep -o '^CLAUDEXOR_RUN_SCOPE_[0-9a-f]*' | tr '\\n' ' ')" >> ${shellQuote(log)}\nexec cat\n`,
       { mode: 0o755 },
     );
-    return program;
+    return gitFilterCommand(program);
   };
   process.env.GIT_CONFIG_COUNT = "2";
   process.env.GIT_CONFIG_KEY_0 = "filter.f.clean";
