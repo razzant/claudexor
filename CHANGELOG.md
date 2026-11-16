@@ -4,6 +4,93 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v6.2.0** (2026-11-16) — **Continue past an account verification refusal.** Claude's
+  `verification_required` result is recognized as an account refusal, with the
+  vendor's reason retained, instead of a retryable transport failure. The account
+  is temporarily excluded across models of that subscription route; a quota
+  refresh alone does not clear the exclusion (#726).
+
+  When an unpinned Agent or Ask attempt has already made progress and moved to
+  another account, a verification or organization subscription denial on that
+  account can now pass the saved work to the next eligible account, provided
+  the refused try did no work of its own. Continuation uses the moved native
+  session or a disclosed evidence packet. Pins, other refusal classes and the
+  first try of a new `continue_from` successor keep their existing behavior.
+  With no eligible account left, the attempt ends `credential_pool_exhausted`;
+  a verification hold supplies no known reset time.
+
+  **Stop reaches workspace preparation.** A Stop accepted before model dispatch
+  reaches Git, directory work and raw-record seeding, releasing the unused
+  reservation. A failure without Stop keeps its failure and cost semantics;
+  both disclose unconfirmed termination and retain resources until release is
+  justified. Cleanup follows the original repository after a move and repair,
+  preserving a replacement at the old path. Windows retains tree-only proof:
+  Stop during a pre-spawn probe starts no Git child; a started user-lock step
+  finishes first. A saved cleanup or handover basis survives removal faults
+  for the same preparation generation; it cannot override a new hold or live
+  child. Unconfirmed stops or crashes without a basis need operator recovery.
+  `claudexor gc preparations` distinguishes `saved_cleanup` from machine proof
+  and operator confirmation. `claudexor gc release-preparation` reuses that
+  generation's saved basis after fresh checks, recording new confirmation only
+  when neither proof nor a saved basis permits release. CLI and timeline warnings
+  label held paths as historical and point to these commands (#725).
+
+  Failed Git status refuses workspace preparation. Diagnostic before/after
+  status failures in Apply and Revert remain unknown without hiding the actual
+  operation result or skipping its cleanup. Unread workspace facts in a
+  continuation packet remain unknown. Late direct exits update the corresponding
+  holds without erasing other process uncertainty. Natural pipe close clears
+  the capture drain timer, so delayed group settlement cannot falsely mark
+  complete output as truncated.
+
+  **Fast and Ultrafast are separate choices.** Ordinary Codex Fast selects only
+  an advertised `fast` or `priority` tier, never Ultrafast because it appeared
+  first in an account's list. `processingPreference: ultrafast` has its own
+  capability and receipt values. An unavailable advisory tier falls back to
+  ordinary service with its reason recorded; the existing no-paid policy also
+  keeps ordinary service for Ultrafast, whose included allowance Claudexor has
+  not established. Codex retries and account rotation preserve the chosen intent
+  (#722).
+
+  **Version checks observe the selected program.** Probes use the adapter's
+  declared update controls, including Copilot's `--no-auto-update` and Cursor's
+  `--disable-auto-update`. A newer cached Copilot no longer answers in place of
+  the installed copy during version checks. A rejected control leaves the
+  version unknown. Cursor discovery and doctor no longer call an unanswered
+  version probe proof of a missing executable. Explicit install and update
+  commands keep their own behavior (#724). Windows diagnostics capture Copilot
+  conversion rename failures; they do not fix that intermittent failure (#723, #672).
+
+  **ACP clients initialize first.** ACP SDK 2.6.0 keeps the stable version-1
+  wire protocol. `claudexor acp serve` rejects other requests before a successful
+  `initialize` with `-32600`, and malformed `mcpServers` or
+  `additionalDirectories` in session creation, load or resume with `-32602`.
+  JSON-RPC batches remain unsupported and receive `-32600` without closing the
+  connection (#700).
+
+  **Dependencies.** Lockfile-built engine and CLI bundles use fast-uri 3.1.9
+  through ajv. Malformed authorities that fail local reference resolution now
+  fail admission as `invalid_output_schema`; this does not ban every such `$id`
+  or add URI fetching. npm packages still resolve fast-uri through ajv's range
+  (#716). Development and release-tool dependencies are refreshed, including
+  Vitest 4.1.12 (#717).
+
+  **Compatibility and rollback.** Local and SSH runtime manifests require
+  Claudexor.app 6.2.0: older apps cannot decode a reviewer panel naming
+  `ultrafast`. The local updater leaves the current engine in place; over SSH,
+  an older app reports `appUpdateRequired` and cannot connect to the host through
+  that compatibility check. This is an application floor, not an embedding-host
+  requirement. Strict readers must accept `verification_required` in harness
+  events and `ultrafast` in processing capability and receipt enums: capability
+  rows and inherited or observed Codex tiers can expose it without an explicit
+  Ultrafast request. Existing thread Apply, turn and file-read routes can return
+  retryable HTTP 409 `termination_unconfirmed` or `preparation_cleanup_failed`
+  while preparation resources are held. Control protocol major 3 and engine
+  store schema 8 are unchanged. The existing data-root floor still applies:
+  older engines, including 6.1.2, refuse a data root served by 6.2.0
+  (`root_authority_floor_regression`); returning requires the complete stopped
+  backup described under v6.1.0, not just an older executable.
+
 - **v6.1.2** (2026-11-15): **The daemon keeps answering while lanes write to a
   slow disk, and the capability catalog answers without waiting for a full
   sweep.** Harness event journals, a run's final answer, patch, facts and

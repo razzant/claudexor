@@ -1,8 +1,8 @@
 /**
  * The one release decision over a held preparation resource (#694 r17), shared
  * by a thread's record, an envelope base and an object-store staging directory,
- * and the operator's confirmation that only it can turn into a release where no
- * read proves the end.
+ * and the operator's confirmation where neither proof nor a saved ordinary
+ * cleanup basis already permits release.
  *
  * A read that proved the end releases (`machine_proven`). Where the read could
  * prove nothing (`unproven`: Windows has no group probe and no census, or a
@@ -17,7 +17,8 @@
  * failed census. The preparation's own call after an ordinary failure, whose
  * record names no stop, still releases under the platform's tree-only limit
  * (`platform_limit`): healthy work on Windows is not blocked by what this
- * platform cannot read.
+ * platform cannot read. A saved ordinary cleanup or handover of that same
+ * generation continues as `saved_cleanup`, without a new confirmation or proof.
  *
  * The confirmation is the operator's statement, recorded; it is never a proof
  * and never changes what the stop was (`termination_unconfirmed` stays), its
@@ -26,9 +27,108 @@
  * base its envelope id and its stop's `at`, of a staging directory its creator.
  */
 import { createHash } from "node:crypto";
-import type { PreparationQuietVerdict, ProcessIdentity } from "@claudexor/core";
+import { existsSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import {
+  WorkspaceError,
+  type PreparationQuietVerdict,
+  type ProcessIdentity,
+} from "@claudexor/core";
+import type { PreparationReleaseBasis } from "@claudexor/schema";
+import { gitCommonDir, worktreeRepository } from "./git.js";
+import { git } from "./git-run.js";
+import type { ThreadPreparationRecord } from "./preparation-hold.js";
 
-export type ReleaseBasis = "machine_proven" | "platform_limit" | "operator_confirmed";
+/** The common Git directory kept before cleanup loses the worktree's .git
+ * pointer. Its inode distinguishes a replacement at that path after a restart;
+ * null where the filesystem has none. Shared by preparation and purge. */
+export interface PurgeRepositoryRecord {
+  gitDir: string;
+  identity: string | null;
+}
+
+export function repositoryRecord(gitDir: string): PurgeRepositoryRecord {
+  const { ino } = statSync(gitDir, { bigint: true });
+  return { gitDir, identity: ino === 0n ? null : String(ino) };
+}
+
+/** The worktree's own pointer wins (including after a move and repair), then
+ * the saved identity, then the project for legacy records with no pointer.
+ * An unreadable authority refuses before any tree or Git state is removed. */
+export async function resolveThreadRepository(
+  projectRoot: string,
+  tree: string,
+  threadId: string,
+  repository: PurgeRepositoryRecord | null,
+  worktreeRecorded: boolean,
+): Promise<PurgeRepositoryRecord | null> {
+  const recorded = () => recordedRepository(repository, threadId);
+  const owner =
+    worktreeRepository(tree, recorded) ??
+    recorded() ??
+    (await projectRepository(projectRoot, worktreeRecorded));
+  return owner === null ? null : repositoryRecord(owner);
+}
+
+function recordedRepository(
+  repository: PurgeRepositoryRecord | null,
+  threadId: string,
+): string | null {
+  if (repository === null) return null;
+  const now = statSync(repository.gitDir, { bigint: true, throwIfNoEntry: false });
+  if (
+    now &&
+    (repository.identity === null || now.ino === 0n || String(now.ino) === repository.identity)
+  )
+    return repository.gitDir;
+  throw new WorkspaceError(
+    `repository ${repository.gitDir}, which this cleanup recorded as holding thread ${threadId}'s worktree registration and branch, is gone or another one is there now; returning it there lets the next attempt finish this cleanup`,
+  );
+}
+
+/** Without the worktree's pointer or saved identity, use the project folder's
+ * repository. No repository is not proof of absence for recorded Git state. */
+async function projectRepository(
+  projectRoot: string,
+  worktreeRecorded: boolean,
+): Promise<string | null> {
+  if (existsSync(projectRoot)) {
+    for (let current = resolve(projectRoot); ; current = dirname(current)) {
+      if (existsSync(join(current, ".git"))) return gitCommonDir(projectRoot);
+      if (dirname(current) === current) break;
+    }
+  }
+  if (!worktreeRecorded) return null;
+  throw new WorkspaceError(
+    `project folder ${projectRoot} is gone or in no Git repository, so the thread's worktree registration and branch cannot be checked; restoring the folder there lets the next attempt finish this cleanup`,
+  );
+}
+
+/** Delete only the branch this preparation made, by Git's atomic tip compare.
+ * A moved branch is kept for the next turn to recover; an unreadable ref or a
+ * still-owned branch whose deletion failed keeps the release retryable. */
+export async function removeOwnBranch(
+  repo: string,
+  own: { name: string; tip: string },
+): Promise<void> {
+  const ref = `refs/heads/${own.name}`;
+  const tipNow = async (): Promise<string | null> => {
+    const read = await git(repo, ["rev-parse", "--verify", "--quiet", ref]);
+    if (read.code === 0) return read.stdout.trim();
+    if (read.code === 1) return null;
+    throw new WorkspaceError(`git rev-parse ${ref} failed: ${read.stderr.trim()}`);
+  };
+  if ((await tipNow()) !== own.tip) return;
+  const deleted = await git(repo, ["update-ref", "-d", ref, own.tip]);
+  if (deleted.code === 0) return;
+  // The compare may have lost to a move or a deletion in between: read again.
+  if ((await tipNow()) !== own.tip) return;
+  throw new WorkspaceError(
+    `branch ${own.name} is still at the tip this preparation made it at, but could not be deleted: ${deleted.stderr.trim()}`,
+  );
+}
+
+export type ReleaseBasis = PreparationReleaseBasis | "platform_limit";
 
 /** What an operator recorded at a held resource before its release. */
 export interface OperatorReleaseBasis {
@@ -59,16 +159,19 @@ export function writerOnlyHeld(verdict: PreparationQuietVerdict): boolean {
  * Whether a read's verdict releases the resource, and on what basis.
  * `operator`: the record carries an operator confirmation bound to its own
  * generation. `platformLimit`: the creator's own call after an ordinary failure.
+ * `savedCleanup`: this generation may continue its saved ordinary cleanup/handover.
  */
 export function releaseDecision(
   verdict: PreparationQuietVerdict,
-  grounds: { operator: boolean; platformLimit: boolean },
+  grounds: { operator: boolean; platformLimit: boolean; savedCleanup?: boolean },
 ): ReleaseDecision {
   if (verdict.status === "quiet" && verdict.unproven === undefined)
     return { release: true, basis: "machine_proven", unproven: [] };
   const writerOnly = writerOnlyHeld(verdict);
   if (grounds.operator && (verdict.status === "quiet" || writerOnly))
     return { release: true, basis: "operator_confirmed", unproven: unprovenOf(verdict) };
+  if (verdict.status === "quiet" && grounds.savedCleanup)
+    return { release: true, basis: "saved_cleanup", unproven: unprovenOf(verdict) };
   if (verdict.status === "quiet" && grounds.platformLimit)
     return { release: true, basis: "platform_limit", unproven: unprovenOf(verdict) };
   if (verdict.status === "quiet")
@@ -101,6 +204,25 @@ export function threadGeneration(record: {
   held?: { at: string };
 }): string {
   return `thread:${record.thread_id}:${record.opened_at}:${record.held?.at ?? ""}`;
+}
+
+/** The saved ordinary release that this generation may continue. It is no
+ * process proof: a fresh read, current child or active turn still holds it. */
+export function threadCleanupContinuation(
+  record: ThreadPreparationRecord,
+): { basis: "platform_limit" | "handover"; reason: string } | null {
+  const saved = record.cleanup_basis;
+  if (
+    !saved ||
+    record.held !== undefined ||
+    saved.generation !== threadGeneration(record) ||
+    (saved.basis !== "platform_limit" && saved.basis !== "handover")
+  )
+    return null;
+  return {
+    basis: saved.basis,
+    reason: `This generation's saved ${saved.basis} cleanup basis permits release after fresh checks, without a new operator confirmation. It is not a machine proof.`,
+  };
 }
 
 export function envelopeGeneration(
@@ -210,7 +332,7 @@ export function isPreparationUnderWay(path: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// The operator's door: one held resource, confirmed on an inspected digest.
+// The explicit release door: one resource, bound to an inspected digest.
 
 export interface ConfirmationInput {
   /** The digest an inspection handed out for the record's exact bytes. */
@@ -222,8 +344,8 @@ export interface ConfirmationInput {
 /**
  * - `released` / `completed`: the resource's own release ran (`completed`: a
  *   finished checkout kept as made, only its record went);
- * - `cleanup_failed`: it ran and a step failed; the record keeps the
- *   confirmation, so a new request or the resource's next release finishes it;
+ * - `cleanup_failed`: it ran and a step failed; the record keeps any saved
+ *   basis, so a new request or the resource's next release can retry it;
  *   the same idempotency key only reads the retained receipt;
  * - `refused`: what a read measures, an unreadable record, a live creator or a
  *   preparation still under way: nothing changed;
@@ -235,7 +357,7 @@ export interface ConfirmationInput {
 export type ConfirmationOutcome =
   | ({
       outcome: "released" | "completed" | "cleanup_failed";
-      basis: ReleaseBasis;
+      basis: PreparationReleaseBasis;
       /** An earlier request's confirmation of this same generation was continued. */
       continued: boolean;
       cleanup_error?: string;
@@ -271,6 +393,9 @@ export interface ConfirmationSteps<R> {
   /** A live owner or a preparation still under way refuses (its reason), else null. */
   refusal(record: R): Promise<string | null>;
   quiet(record: R): Promise<PreparationQuietVerdict>;
+  /** Whether this generation may continue its saved ordinary cleanup/handover.
+   * It permits only an otherwise quiet release, never a new confirmation or proof. */
+  savedCleanup?(record: R): boolean;
   /** The record's window for the writer observation. */
   writer(record: R): { opened_at?: string; held_at?: string };
   recordBasis(record: R, basis: OperatorReleaseBasis): Promise<void> | void;
@@ -338,7 +463,12 @@ export async function confirmPreparationRelease<R>(
       };
   }
   const extra = writer ? { writer } : {};
-  const operator = verdict.status === "held" || verdict.unproven !== undefined;
+  const savedCleanup =
+    !continued &&
+    verdict.status === "quiet" &&
+    verdict.unproven !== undefined &&
+    steps.savedCleanup?.(record) === true;
+  const operator = !savedCleanup && (verdict.status === "held" || verdict.unproven !== undefined);
   if (operator && !continued) {
     const basis: OperatorReleaseBasis = {
       confirmed_at: new Date().toISOString(),
@@ -363,7 +493,11 @@ export async function confirmPreparationRelease<R>(
     }
     facts.confirmed_at = basis.confirmed_at;
   }
-  const basis: ReleaseBasis = operator ? "operator_confirmed" : "machine_proven";
+  const basis: PreparationReleaseBasis = savedCleanup
+    ? "saved_cleanup"
+    : operator
+      ? "operator_confirmed"
+      : "machine_proven";
   try {
     const done = await steps.release();
     if (done === "held")

@@ -1,9 +1,21 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WorkspaceError } from "@claudexor/core";
+import { WorkspaceError, type CaptureResult } from "@claudexor/core";
+
+let intercept: ((args: string[]) => CaptureResult | undefined) | null = null;
+let refuseCleanup = true;
+const removedScratch: string[] = [];
+vi.mock("@claudexor/core", async (original) => {
+  const core = await original<typeof import("@claudexor/core")>();
+  return {
+    ...core,
+    runCaptureRaw: async (...args: Parameters<typeof core.runCaptureRaw>) =>
+      intercept?.(args[1]) ?? core.runCaptureRaw(...args),
+  };
+});
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -15,7 +27,8 @@ vi.mock("node:fs", async (importOriginal) => {
     ) => {
       actual.rmSync(path, options);
       if (String(path).includes("claudexor-transient-revert-")) {
-        throw new Error("revert cleanup sentinel");
+        removedScratch.push(String(path));
+        if (refuseCleanup) throw new Error("revert cleanup sentinel");
       }
     },
   };
@@ -46,10 +59,88 @@ function initRepo(): string {
 }
 
 afterEach(() => {
+  intercept = null;
+  refuseCleanup = true;
+  removedScratch.length = 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("transient Git revert cleanup", () => {
+  it.each(["before", "after", "both", "no-index", "neither"])(
+    "keeps the failed reverse result and scratch cleanup with %s status observation",
+    async (unavailable) => {
+      const repo = initRepo();
+      writeFileSync(join(repo, "README.md"), "candidate\n");
+      const patch = execFileSync("git", ["-C", repo, "diff", "--binary"], { encoding: "utf8" });
+      let reads = 0;
+      let applies = 0;
+      intercept = (args) => {
+        if (args[1] !== repo) return;
+        if (args.includes("status")) {
+          reads++;
+          if (
+            unavailable === "both" ||
+            (unavailable === "before" && reads === 1) ||
+            (unavailable === "after" && reads === 2)
+          )
+            return {
+              code: reads === 1 ? 128 : null,
+              signal: null,
+              stdout: "",
+              stderr: "status unavailable",
+            };
+        }
+        if (args.includes("apply") && !args.includes("--check")) {
+          applies++;
+          return { code: 1, signal: null, stdout: "", stderr: "reverse sentinel" };
+        }
+      };
+      const result = await revertWorkingTreePatch(repo, patch, {
+        isolateObjectWrites: true,
+        noIndex: unavailable === "no-index",
+      });
+      expect(result).toMatchObject({
+        reverted: false,
+        removed: [],
+        reasonCode: "reverse_apply_failed",
+        cleanupError: "revert cleanup sentinel",
+      });
+      expect(result.reason).toContain("reverse sentinel");
+      if (unavailable === "neither") expect(result.reason).toContain("observed pre-revert state");
+      else {
+        expect(result.reason).toContain("target state is unknown");
+        expect(result.reason).not.toMatch(/remains at|target changed/);
+      }
+      expect(reads).toBe(unavailable === "no-index" ? 0 : 2);
+      expect(applies).toBe(1);
+      expect(removedScratch).toHaveLength(1);
+      expect(existsSync(removedScratch[0]!)).toBe(false);
+      expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("candidate\n");
+    },
+  );
+
+  it("exact reverse succeeds and cleans its scratch when diagnostic status throws", async () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "README.md"), "candidate\n");
+    const patch = execFileSync("git", ["-C", repo, "diff", "--binary"], { encoding: "utf8" });
+    refuseCleanup = false;
+    let reads = 0;
+    intercept = (args) => {
+      if (args[1] === repo && args.includes("status")) {
+        reads++;
+        throw new Error("status transport failed");
+      }
+    };
+    expect(await revertWorkingTreePatch(repo, patch, { isolateObjectWrites: true })).toEqual({
+      reverted: true,
+      removed: [],
+    });
+    expect(reads).toBe(1);
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("base\n");
+    expect(removedScratch).toHaveLength(1);
+    expect(existsSync(removedScratch[0]!)).toBe(false);
+  });
+
   it("marks cleanup-only failure after a successful reverse without denying the rollback", async () => {
     const repo = initRepo();
     writeFileSync(join(repo, "README.md"), "candidate\n");

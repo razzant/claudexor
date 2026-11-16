@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, rmSync, statSync, unlinkSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, lstatSync, rmSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { WorkspaceError, type ScopeReapOutcome } from "@claudexor/core";
 import { ensureDir, ownedProjectRuntimeDir, projectRuntimeDir } from "@claudexor/util";
 import {
@@ -17,7 +17,6 @@ import {
   worktreeAddExisting,
   worktreeRegistered,
   worktreeRemoveRegistered,
-  worktreeRepository,
   unconfirmedTerminationOf,
 } from "./git.js";
 import { terminationDisclosure, withScopeMarker } from "./git-run.js";
@@ -36,9 +35,15 @@ import {
   type PreparationQuietRead,
   type ThreadPreparationRecord,
 } from "./preparation-hold.js";
+import {
+  repositoryRecord,
+  resolveThreadRepository,
+  type PurgeRepositoryRecord,
+} from "./preparation-release.js";
 import type { EnsureGitRepositoryResult } from "./git.js";
 import { noteCleanupFault } from "./cleanup-fault.js";
 import { diskProgress, gitObserved } from "./git-observed.js";
+export type { PurgeRepositoryRecord } from "./preparation-release.js";
 
 export interface ThreadWorktreeResult {
   /** Absolute path to the thread's persistent worktree (the execution root). */
@@ -79,8 +84,8 @@ function preparedTree(projectRoot: string, threadId: string): string {
  * refuses with nothing spawned. That first record is `early` — it owns nothing
  * of the thread — and is rewritten with what the preparation owns before the
  * first step that changes the thread. The record goes last, on success, and
- * only after `settleScope` proved that what the scope's processes started has
- * ended — otherwise the tree is held, not handed over. A tree with a record is
+ * only after `settleScope` found no live or unreadable known member; the accepted
+ * handover is saved before unlink. A tree with a record is
  * never reused: the record's release runs first and, while what an earlier stop
  * left may still run, refuses with what is held. A failed preparation settles
  * its scope and then releases what it made, or refuses with what stays held
@@ -211,6 +216,7 @@ export async function ensureThreadWorktree(
     // From here the thread changes: the record names what this preparation owns.
     const owning: ThreadPreparationRecord = {
       ...record!,
+      repository: repositoryRecord(await gitCommonDir(projectRoot)),
       own_registration: branchExisted ? null : !registeredBefore,
       own_branch: branchExisted ? null : { name: branch, tip: baseSha },
     };
@@ -300,8 +306,8 @@ function scopeUnresolved(outcome: ScopeReapOutcome): string[] {
  * - still held, or not removable, after any other failure: that failure, with
  *   what stays held (or was left) added to its message; the next attempt's
  *   release reads again and refuses, typed, while the record stands. After an
- *   ordinary failure (no stop) this call alone may release under the platform's
- *   tree-only limit where nothing can be read (`platformLimit`).
+ *   ordinary failure (no stop), this call establishes `platformLimit` where no
+ *   end can be read; the record keeps that basis if cleanup must be retried.
  *
  * A surviving branch, a tree or a registration that was there before this
  * preparation is never removed: the record names only what it made.
@@ -411,15 +417,6 @@ export function threadWorktreeDirExists(projectRoot: string, threadId: string): 
   return existsSync(join(projectRuntimeDir(projectRoot), "threads", threadId));
 }
 
-/** The repository a purge attempt asked, kept by its caller for the next one:
- * the common Git directory, and that directory's inode, which tells it apart
- * from another repository later put at the same path. Unlike the device
- * number, an inode survives a restart; null where the filesystem has none. */
-export interface PurgeRepositoryRecord {
-  gitDir: string;
-  identity: string | null;
-}
-
 /** Explicit purge of daemon-owned isolated-thread resources. Lifecycle
  * authority lives in the journal; the generic orphan sweeper never guesses.
  * Git drops the worktree registration and then the branch before the
@@ -477,63 +474,27 @@ export async function purgeThreadWorktree(
   // case of, the canonical one walked above. No component below that root is a
   // link here, so both spellings name this one directory.
   const prepared = preparedTree(projectRoot, threadId);
+  const keep = async (record: PurgeRepositoryRecord) => {
+    if (record.gitDir !== repository?.gitDir || record.identity !== repository.identity)
+      await recordRepository(record);
+    repository = record;
+  };
   if (threadTreeState(prepared) === "held")
-    await releaseThreadPreparation(projectRoot, prepared, quiet);
-  const recorded = () => recordedRepository(repository, threadId);
-  const owner =
-    worktreeRepository(path, recorded) ??
-    recorded() ??
-    (await projectRepository(projectRoot, worktreeRecorded));
+    await releaseThreadPreparation(projectRoot, prepared, quiet, {
+      repository,
+      recordRepository: keep,
+    });
+  const owner = await resolveThreadRepository(
+    projectRoot,
+    path,
+    threadId,
+    repository,
+    worktreeRecorded,
+  );
   if (owner !== null) {
-    const record = { gitDir: owner, identity: directoryIdentity(owner) };
-    let kept = record.gitDir === repository?.gitDir && record.identity === repository.identity;
-    const keep = async () => {
-      if (!kept) await recordRepository(record);
-      kept = true;
-    };
-    await worktreeRemoveRegistered(owner, path, keep);
-    await branchDeleteIfPresent(owner, `claudexor/thread-${threadId}`, keep);
+    await worktreeRemoveRegistered(owner.gitDir, path, () => keep(owner));
+    await branchDeleteIfPresent(owner.gitDir, `claudexor/thread-${threadId}`, () => keep(owner));
   }
   rmSync(threadDir, { recursive: true, force: true });
-  return owner;
-}
-
-function directoryIdentity(dir: string): string | null {
-  const { ino } = statSync(dir, { bigint: true });
-  return ino === 0n ? null : String(ino);
-}
-
-function recordedRepository(
-  repository: PurgeRepositoryRecord | null,
-  threadId: string,
-): string | null {
-  if (repository === null) return null;
-  const now = statSync(repository.gitDir, { bigint: true, throwIfNoEntry: false });
-  if (
-    now &&
-    (repository.identity === null || now.ino === 0n || String(now.ino) === repository.identity)
-  )
-    return repository.gitDir;
-  throw new WorkspaceError(
-    `repository ${repository.gitDir}, which this cleanup recorded as holding thread ${threadId}'s worktree registration and branch, is gone or another one is there now; returning it there lets the next attempt finish this cleanup`,
-  );
-}
-
-/** Without the worktree's own record of its repository: the project folder's
- * repository, which may be a larger one around it. None there is no proof for
- * a recorded worktree, since a moved or deleted repository looks the same. */
-async function projectRepository(
-  projectRoot: string,
-  worktreeRecorded: boolean,
-): Promise<string | null> {
-  if (existsSync(projectRoot)) {
-    for (let current = resolve(projectRoot); ; current = dirname(current)) {
-      if (existsSync(join(current, ".git"))) return gitCommonDir(projectRoot);
-      if (dirname(current) === current) break;
-    }
-  }
-  if (!worktreeRecorded) return null;
-  throw new WorkspaceError(
-    `project folder ${projectRoot} is gone or in no Git repository, so the thread's worktree registration and branch cannot be checked; restoring the folder there lets the next attempt finish this cleanup`,
-  );
+  return owner?.gitDir ?? null;
 }

@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { retainedOutput } from "@claudexor/event-log";
 import type { RunEvent } from "@claudexor/schema";
+import * as workspace from "@claudexor/workspace";
+import { workspaceAnchor } from "./continuity-facts.js";
 import {
   buildContinuation,
   planContinuation,
@@ -200,6 +202,59 @@ describe("continuity packet budget + fallback (INV-137)", () => {
     expect(r.packetMarkdown).toContain("## Workspace anchor");
     expect(r.packetMarkdown).toContain("abc1234");
     expect(r.packetMarkdown).toContain("2 file(s)");
+  });
+});
+
+describe("workspace anchor observations (INV-137)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    { head: null, status: null, dirtyCount: null },
+    { head: "abc1234", status: null, dirtyCount: null },
+    { head: null, status: " M changed.txt\n?? new.txt\n", dirtyCount: 2 },
+    { head: "abc1234", status: "", dirtyCount: 0 },
+    { head: "abc1234", status: " M changed.txt\n?? new.txt\n", dirtyCount: 2 },
+  ])("preserves independent readings: $head / $status", async ({ head, status, dirtyCount }) => {
+    const readHead = vi.spyOn(workspace, "revParse");
+    const readStatus = vi.spyOn(workspace, "statusPorcelain");
+    if (head === null) readHead.mockRejectedValue(new Error("HEAD read failed"));
+    else readHead.mockResolvedValue(head);
+    if (status === null) readStatus.mockRejectedValue(new Error("status read failed"));
+    else readStatus.mockResolvedValue(status);
+
+    const anchor = await workspaceAnchor("/fixture/repo");
+    expect(anchor).toEqual({ headSha: head, dirtyCount });
+    expect(readHead).toHaveBeenCalledWith("/fixture/repo", "HEAD");
+    expect(readStatus).toHaveBeenCalledWith("/fixture/repo");
+    const result = buildContinuation(req({ priorTurns: [turn("t1", "one")], anchor }));
+    expect(result.disclosure.kind).toBe("packet");
+    expect(result.packetMarkdown).toContain("one");
+    expect(result.packetMarkdown).toContain(
+      `HEAD ${head ?? "(unknown)"} · ` +
+        (dirtyCount === null
+          ? "Uncommitted file count unknown"
+          : `${dirtyCount} file(s) with uncommitted changes`) +
+        " at the start of this turn.",
+    );
+    expect(result.packetMarkdown).not.toContain("(unborn)");
+    if (dirtyCount === null) expect(result.packetMarkdown).not.toContain("0 file(s)");
+  });
+
+  it("unknown anchor facts do not change fresh or native-resume selection", () => {
+    const anchor = { headSha: null, dirtyCount: null };
+    const fresh = buildContinuation(req({ anchor }));
+    expect(fresh.disclosure.kind).toBe("fresh");
+    expect(fresh.packetMarkdown).toBeNull();
+    const native = buildContinuation(
+      req({
+        priorTurns: [turn("t1", "one")],
+        laneCheckpointTurnId: "t1",
+        nativeResumeAvailable: true,
+        anchor,
+      }),
+    );
+    expect(native.disclosure.kind).toBe("native_resume");
+    expect(native.packetMarkdown).toBeNull();
   });
 });
 

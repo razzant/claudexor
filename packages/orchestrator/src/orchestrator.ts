@@ -3321,9 +3321,9 @@ export class Orchestrator {
               requestedSingleCandidate &&
               slot.routed.implementationTransport !== "git_patch_envelope"),
           signal: prepSignal(input),
+          // A continueFrom envelope already owns its record: never overwrite it.
+          seedRawRecords: !input.continuation?.adopt && rawAdoption.seedRawRecords,
         });
-        // A continueFrom envelope already owns its record: no empty source overwrites it.
-        if (!input.continuation?.adopt) await rawAdoption.seed(envelope.worktree_path);
         harnessHome = this.harnessHomeFor(wsm, envelope, slot.routed, input);
         throwIfCancelled(input.signal); // entering the execution path (not proof of a spawn)
         AC.emitHarnessStarted(log, adapter.id, slot.attemptId, knobs);
@@ -3559,13 +3559,10 @@ export class Orchestrator {
           slot.routed.adapterAccess,
           this.credentials.effectiveProfileId(input, adapter.id),
         );
-        log.emit("harness.completed", {
-          harness_id: adapter.id,
-          attempt_id: slot.attemptId,
-          status: "failed",
-          error: message,
-          phase: infraPhase,
-        });
+        log.emit(
+          "harness.completed",
+          AC.failedCompletion(err, message, slot.attemptId, infraPhase, adapter.id),
+        );
         await store.writeYamlAsync(
           join(paths.attemptsDir, slot.attemptId, "attempt.yaml"),
           AC.attemptFailureRecord(
@@ -3877,8 +3874,8 @@ export class Orchestrator {
               workspaceKind: input.workspaceKind,
               scopePaths: input.scopePaths,
               signal: prepSignal(input),
+              seedRawRecords: rawAdoption.seedRawRecords,
             });
-            await rawAdoption.seed(envelope.worktree_path);
             const synthHome = this.harnessHomeFor(wsm, envelope, synthRouted, input);
             throwIfCancelled(input.signal);
             const run = await this.runCandidateInEnvelope(
@@ -3991,14 +3988,15 @@ export class Orchestrator {
             // A stopped preparation released its lease; the earlier candidates stand.
             if (!AC.releaseStoppedPreparation(err, { ...stop, attemptId: "synth" })) {
               // Not yet in `runs`: the run goes on, so its tries' accounts stay in the history.
-              if (!runs.some((run) => run.attemptId === "synth"))
-                thrownSynthesis = { poolAttempts: synthTried.snapshot() };
+              const recorded = runs.some((run) => run.attemptId === "synth");
+              if (!recorded) thrownSynthesis = { poolAttempts: synthTried.snapshot() };
               ledger.settle(leaseId, AC.attemptFailureCost(err, "synthesis-error").settlement);
-              log.emit("harness.completed", {
-                attempt_id: "synth",
-                status: "failed",
-                error: safeErrorMessage(err),
-              });
+              // Handoff clears the envelope before review; a recorded synthesis still ran.
+              const phase = envelope || recorded ? "harness" : "workspace";
+              log.emit(
+                "harness.completed",
+                AC.failedCompletion(err, safeErrorMessage(err), "synth", phase),
+              );
             }
           } finally {
             await disposeSaved?.();

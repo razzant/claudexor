@@ -114,9 +114,10 @@
                 "enum": [
                   "machine",
                   "operator_confirmation",
+                  "saved_cleanup",
                   "refused"
                 ],
-                "description": "What a release needs now: machine (the read proves the end), operator_confirmation (no read can), refused (a read measures it alive, its record is unreadable, a turn or creator is active)."
+                "description": "What permits release: machine (the read proves the end), operator_confirmation (the operator's statement is needed or already recorded), saved_cleanup (this generation's saved ordinary cleanup or handover basis; no new confirmation or proof), refused (blocked). Release checks again."
               },
               "refusal": {
                 "type": [

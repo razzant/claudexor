@@ -16,6 +16,7 @@ import {
 } from "@claudexor/budget";
 import type { EventLog } from "@claudexor/event-log";
 import {
+  preparationStopsOf,
   PreparationStopped,
   terminationDisclosure,
   unconfirmedTerminationOf,
@@ -122,21 +123,46 @@ export function releaseStoppedPreparation(
   args.ledger.cancel(args.leaseId);
   // Cancelled either way (the user's stop); an end that was not proven is a
   // separate disclosure with what stays held until a read proves it.
-  const unconfirmed = unconfirmedTerminationOf(err);
-  const heldBase = (err as { heldBase?: unknown }).heldBase;
   args.log.emit("harness.completed", {
     harness_id: args.harnessId,
     attempt_id: args.attemptId,
     status: "cancelled",
     phase: "workspace",
-    ...(unconfirmed
-      ? {
-          termination_unconfirmed: terminationDisclosure(unconfirmed),
-          held: typeof heldBase === "string" ? [heldBase] : [],
-        }
-      : {}),
+    ...preparationTerminationFacts(err),
   });
   return true;
+}
+
+type PreparationFacts = ReturnType<typeof preparationStopsOf>;
+
+/** The failed step's observation, kept unchanged in its attempt event. */
+function preparationTerminationFacts(error: unknown): PreparationFacts {
+  const unconfirmed = unconfirmedTerminationOf(error);
+  if (!unconfirmed) return {};
+  const heldBase = (error as { heldBase?: unknown }).heldBase;
+  return {
+    termination_unconfirmed: terminationDisclosure(unconfirmed),
+    held: typeof heldBase === "string" ? [heldBase] : [],
+  };
+}
+
+/** Candidate and synthesis failures share the same event producer. The caller
+ * keeps its error, status and settlement; only preparation carries these facts. */
+export function failedCompletion(
+  error: unknown,
+  message: string,
+  attemptId: string,
+  phase: "workspace" | "harness",
+  harnessId?: string,
+): Record<string, unknown> {
+  return {
+    ...(harnessId ? { harness_id: harnessId } : {}),
+    attempt_id: attemptId,
+    status: "failed",
+    error: message,
+    phase,
+    ...(phase === "workspace" ? preparationTerminationFacts(error) : {}),
+  };
 }
 
 export class AttemptPostStreamError extends Error {

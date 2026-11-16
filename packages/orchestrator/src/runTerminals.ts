@@ -77,7 +77,7 @@ export async function guardAnnouncedRun(
    * dies before its telemetry writer runs cannot leak it (QA-034 map leak).
    */
   onSettled?: (runId: string) => void | Promise<void>,
-  /** The run's preparation carrier: what its stop left unconfirmed in preparation,
+  /** The run's preparation carrier: what stopped preparation left unconfirmed,
    * and what stays held, is disclosed on the terminal (any strategy, no attempt). */
   preparation?: AbortSignal,
 ): Promise<OrchestratorResult> {
@@ -297,8 +297,8 @@ export async function guardAnnouncedRun(
                 type: terminalEventTypeFor(originalType, prepared.facts.outcome),
                 payload: {
                   ...(committedCancel?.payload ?? payload),
-                  // A preparation step the stop left unconfirmed (any strategy,
-                  // also where no attempt began), and what stays held after it.
+                  // Preparation may fail without a Stop. Keep the termination
+                  // fact and observe its held paths after the scope's release.
                   ...preparationStopsOf(preparation),
                   lifecycle: prepared.facts.outcome.lifecycle,
                   facts: prepared.facts.outcome,

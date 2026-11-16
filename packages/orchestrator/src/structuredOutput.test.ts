@@ -292,6 +292,30 @@ describe("structured output schema dialects", () => {
     }
   });
 
+  // The fast-uri floor fixes reference resolution, not a blanket $id ban:
+  // without a local $ref the same malformed authority can still compile.
+  it.each([
+    ["omitted", undefined],
+    ["draft-07", "http://json-schema.org/draft-07/schema#"],
+    ["draft 2020-12", "https://json-schema.org/draft/2020-12/schema"],
+  ])(
+    "A10-URI-NO-REF keeps root $id compilation without resolution (%s $schema)",
+    (_label, dialect) => {
+      for (const id of [
+        "https://claudexor.example/out.json",
+        "http://trusted.example\\@evil.example/out.json",
+      ]) {
+        const schema = {
+          ...(dialect ? { $schema: dialect } : {}),
+          $id: id,
+          type: "object",
+          properties: { a: { type: "string" } },
+        };
+        expect(() => assertOutputSchemaCompiles(schema)).not.toThrow();
+      }
+    },
+  );
+
   // ajv resolves a root $id through fast-uri. Below 3.1.5 (GHSA-7p8r-x3mc-p8w7)
   // a backslash before "@" in the authority was accepted and the schema
   // compiled; the patched floor refuses it, so it fails closed at admission.

@@ -1,5 +1,154 @@
 # @claudexor/orchestrator
 
+## 6.2.0
+
+### Patch Changes
+
+- 42d1eb7: A Claude account the vendor holds for verification is no longer treated as a transport failure. The failed stdout result's exact `verification_required` code (HTTP 403; the vendor's words name the next step in its verification portal) adds the typed account denial beside the unchanged vendor record: `status.error_category` gains `verification_required`, and the account is marked `capability_refused` for every model of that subscription route, with `verification_required` as the detail Accounts shows. The engine attaches no login guidance to it, while Accounts still renders the row like any unverified one (`Not verified — log in`, a `Log in` action). No quota read lifts the mark; a served response on that account, a credential change (a login included) or the mark's own expiry does, and a login or expiry only makes the account eligible for another try, it does not mean the vendor repaired it. A retry frame naming the code proves nothing. Before, the run resumed the held account's session until its retry budget ran out.
+
+  After progress within an already running attempt, the account its own hop moved the work to may refuse it this way before doing any work of its own. The same work now moves on to the next eligible account (the moved session, or an evidence packet), as after a typed limit, instead of ending the attempt. This covers the adapter-proven account-wide denial class: the new code and the organization's exact refusal (`oauth_not_allowed_for_organization` and its recorded results), which also used to end such an attempt. Only that try is judged. Its own agent progress, file change, accepted answer or workspace change, an unknown capture, an auth, model, request, permission or configuration refusal, a same-account resume, the first try of a new `continue_from` successor, a pin, a disabled account or another credential kind keep the existing stop. With no eligible account left the attempt ends `credential_pool_exhausted`; the held account adds no reset time to it.
+
+  A strict reader that validates harness events against an older schema rejects the new `error_category` value.
+
+- 7026715: The fast-uri floor is raised from 3.1.4 to 3.1.9, the release that carries the
+  fixes for parser advisories affecting 3.1.4 (host confusion,
+  SSRF-style normalization, and scheme or path equivalence defects). fast-uri
+  reaches the engine only through ajv, which resolves an output schema's `$id` with
+  it. The structured-output validator never fetches a URI, so the advisories' fetch
+  scenarios do not apply to it. The regression covered here is reference resolution:
+  when ajv resolves a local reference against a root `$id` with a malformed
+  authority, such as a backslash before `@`, compilation now fails at run admission
+  as `invalid_output_schema` (HTTP 400). The same `$id` without such resolution can
+  still compile; this adds no blanket prohibition on `$id` values. Packages
+  installed from npm resolve fast-uri through ajv's own range; this floor applies
+  to the lockfile-built engine and CLI bundles.
+- d90d662: A Stop accepted while a run is still preparing its workspace, before any model
+  dispatch, now reaches that preparation (#694). The Git, raw-record seeding and
+  directory steps that build the envelope or an isolated thread's worktree take
+  the stop; their child processes belong to the run's process scope, or to a
+  short scope a thread turn opens before its first Git step when its worktree must
+  be made, so background hook and filter processes end with it (also after a
+  successful preparation). Such a Git step never starts the user's fsmonitor
+  daemon. The attempt's reserved budget lease is released without inventing an
+  unknown cost and it completes as cancelled. When the end of a stopped Git step
+  cannot be proven (a process it started may still run), the attempt's completion
+  and the run's cancelled terminal disclose `termination_unconfirmed`, in the
+  shape a harness's completion already uses, and the worktree, base or object
+  staging it was making is kept rather than removed or reused until a later read
+  shows that nothing of it runs (on macOS and Linux; Windows below): Retry, the
+  next turn, purge, Apply, read-only runs and file reads refuse such a thread
+  worktree with what is held, as a retryable 409 that an idempotent Apply replay
+  repeats; the next turn that changes files, or a purge, releases it. The store's
+  ordinary prune reads a held staging's scope with the daemon's recorded members. A
+  thread's preparation is recorded before its first Git step, so a stop during
+  the project's initialization or the base snapshot is held the same way, and
+  what existed before it is never removed. An initialization step that Git's
+  60-second bound cut with its end unproven is reported as partial
+  initialization with that termination, as a stopped one is. A completed thread worktree whose
+  preparation left a process alive is held the same way and then handed over as
+  made; a ready worktree the thread does not name yet (its hand-over was cut by a
+  stop or a crash) is recorded by the next turn that gets it. An isolated thread
+  worktree is made only once its preparation scope is durably recorded: when
+  `run-scopes.json` cannot be written, that turn is refused before any process
+  starts (ordinary runs still degrade to in-process custody). On macOS and Linux
+  an isolated candidate base whose preparation failed or was stopped inside a run
+  is removed after the run's scope settled, by the same read, so never from under
+  a filter's process that left its Git's group; one still held when its run ends
+  is released by the next daemon start; an envelope whose owner record cannot be
+  read is kept, not collected. When everything a preparation started has provably ended
+  but its record or files cannot be removed, the turn, and then Apply, read-only
+  runs and file reads of that worktree, are refused as
+  `preparation_cleanup_failed` (retryable once the fault is cleared) instead of
+  `termination_unconfirmed`. `harness.started` marks entry into the execution path.
+
+  Raw-record seeding for candidates and synthesis stays inside preparation, before
+  handover, so an unconfirmed transfer keeps its base under the same release owner.
+  A watchdog failure without caller Stop remains failed, with the existing
+  unknown-cost settlement; it does not become an uncharged cancellation. Its
+  completion keeps the step's facts; the existing preparation carrier supplies
+  the terminal's unconfirmed termination and paths still present. CLI and timeline
+  warnings keep each event's held paths as historical observations, preserve the
+  outcome reason and point to current inspection and release. An empty terminal
+  held list does not erase earlier unconfirmed termination or prove that a base
+  is still retained.
+
+  Thread cleanup records the original repository before mutation and follows its
+  repaired worktree pointer after a move. It preserves that authority for retries
+  and purge before removing the pointer; missing or replaced authority refuses
+  cleanup rather than deleting a replacement repository's branch. A branch that
+  moved from the preparation's recorded tip stays. A late observed direct exit
+  updates its PID or POSIX group hold; a hold's timestamp never substitutes for
+  that exit, and other membership uncertainty still blocks release.
+
+  Failed Git status refuses envelope preparation instead of treating empty stdout
+  as clean. Apply and Revert retain their structured result and cleanup when
+  diagnostic before/after status is unavailable; that observation remains unknown.
+  A continuation packet keeps unread HEAD and dirty-file counts unknown,
+  without dropping the packet or calling the tree unborn. Natural pipe close
+  clears the capture drain timer; delayed group settlement cannot invent truncation,
+  and an already truncated capture stays truncated.
+
+  The schema package exports `ControlHeldPreparations`,
+  `ControlPreparationReleaseRequest` and `ControlPreparationReleaseReceipt` for
+  `GET /v2/maintenance/preparations` and
+  `POST /v2/maintenance/preparations/release`. Release requires an
+  `Idempotency-Key`, the inspected record's digest and
+  `confirm_processes_ended: true`.
+
+  Windows keeps its existing tree-only limit. Stop during the baseline probe
+  starts no Git child; a user-lock step already running finishes before Stop. No
+  `taskkill` names the direct child's pid once its exit was seen. There is no process-group probe
+  and no process census. A direct exit with naturally closed pipes remains a
+  confirmed stop with `not_provable` tree-only proof and releases under that limit. A genuinely unconfirmed
+  stop (`output_held` or `direct_child_alive`), or a crash, leaves its resources held (`release_requires: operator_confirmation`), never released by
+  age, Retry, purge or a restart without a release basis. Ordinary cleanup and
+  successful handover persist their generation-bound basis before removal, so a
+  filesystem fault can be retried under the same platform limit. A new hold or
+  live child overrides it; `complete` alone or absent `held` is not permission.
+  A platform-limit cleanup fault stays held without claiming machine proof;
+  failed handover-record removal is `preparation_cleanup_failed`.
+  `claudexor gc preparations` lists what is held under the daemon's
+  known roots (a purged thread's leftover record included) with a fresh read, and
+  `claudexor gc release-preparation <selector> --digest <sha256> --confirm-ended`
+  releases one selected resource after fresh checks. Inspection and receipts name
+  `saved_cleanup` when this generation may continue its recorded ordinary cleanup
+  or handover. Neither that basis nor operator confirmation is machine proof.
+  New confirmation is recorded only when proof and a saved basis cannot already
+  permit release; `confirmed_at` retains an earlier confirmation when present. The release
+  runs as one durable daemon operation whose receipt (the record's generation, its stop, the
+  outcome) stays; repeating its `--idempotency-key` reads that receipt back. A
+  measured scope member, a queued or running turn of the thread, a live
+  creator, a current child awaiting its actual exit, an unreadable recorded writer
+  identity, a writer pid born during preparation and a link below the runtime root
+  still refuse. If a legacy PID-only writer is the sole hold, an unknown birth read
+  may still allow operator confirmation, including after Restart; it never proves
+  that the writer ended. Root-discovery failures disclose missing inspection coverage.
+  A thread record is read as its release reads it: one that names another tree,
+  such as one written while the config root was spelled differently (through a
+  link or in another letter case), is listed as unreadable and refused; start the
+  daemon with the original spelling to release it. The run's stop stays `termination_unconfirmed`;
+  its costs and dispatch facts are unchanged.
+
+- Updated dependencies [42d1eb7]
+- Updated dependencies [7f01267]
+- Updated dependencies [d90d662]
+- Updated dependencies [101e1a1]
+  - @claudexor/schema@6.2.0
+  - @claudexor/budget@6.2.0
+  - @claudexor/core@6.2.0
+  - @claudexor/workspace@6.2.0
+  - @claudexor/arbitration@6.2.0
+  - @claudexor/config@6.2.0
+  - @claudexor/context@6.2.0
+  - @claudexor/delivery@6.2.0
+  - @claudexor/event-log@6.2.0
+  - @claudexor/gateway@6.2.0
+  - @claudexor/policy@6.2.0
+  - @claudexor/review@6.2.0
+  - @claudexor/synthesis@6.2.0
+  - @claudexor/artifact-store@6.2.0
+  - @claudexor/util@6.2.0
+
 ## 6.1.2
 
 ### Patch Changes

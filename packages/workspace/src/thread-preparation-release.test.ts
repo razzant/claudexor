@@ -23,6 +23,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -34,18 +35,20 @@ import {
   preparationQuiet,
   ScopeReaper,
   type AsyncProcessIdentityReader,
+  type ProcessTableReader,
 } from "@claudexor/core";
 import { projectRuntimeDir } from "@claudexor/util";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   envelopePreparationVerdict,
   holdEnvelopePreparation,
   readEnvelopePreparation,
 } from "./envelope-preparation.js";
-import { recordDigest } from "./preparation-release.js";
+import { holdPreparationChild, recordDigest, threadGeneration } from "./preparation-release.js";
 import {
   assertThreadTreeReady,
   confirmThreadRelease,
+  holdFactsOf,
   heldFrom,
   holdThreadPreparation,
   PreparationCleanupFailed,
@@ -60,8 +63,28 @@ import {
 } from "./preparation-hold.js";
 import { ensureThreadWorktree } from "./thread-tree.js";
 
+// Refuse only this test's tree removal; all other filesystem/Git work is real.
+let busyTree: string | null = null;
+let busyRemovalTried = false;
+vi.mock("@claudexor/util", async (original) => {
+  const util = await original<typeof import("@claudexor/util")>();
+  return {
+    ...util,
+    removeTree: (...args: Parameters<typeof util.removeTree>) => {
+      if (args[0] === busyTree) {
+        busyRemovalTried = true;
+        return Promise.reject(Object.assign(new Error("tree is busy"), { code: "EBUSY" }));
+      }
+      return util.removeTree(...args);
+    },
+  };
+});
+
 const dirs: string[] = [];
 afterEach(() => {
+  busyTree = null;
+  busyRemovalTried = false;
+  vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 }, 0);
 const GIT_ENV = {
@@ -203,6 +226,170 @@ function directWriterStop(pid: number) {
 }
 
 describe("releaseThreadPreparation (#694)", () => {
+  it("the creator records the repository for release when no worktree pointer remains", async () => {
+    const w = world();
+    const id = "no-pointer";
+    const tree = w.tree(id);
+    const branch = `claudexor/thread-${id}`;
+    const records: ThreadPreparationRecord[] = [];
+    await ensureThreadWorktree(w.repo, id, {
+      openScope: async () => ({ marker: mintRunScopeMarker() }),
+      settleScope: async () => {
+        const record = readThreadPreparation(tree);
+        if (record) records.push(record);
+        return null;
+      },
+    });
+    expect(records).toHaveLength(1);
+    // A failed checkout may leave only its branch/registration and record.
+    writeThreadPreparation({ ...records[0]!, complete: false });
+    rmSync(tree, { recursive: true, force: true });
+    const tip = w.tip(id);
+    const moved = join(dirname(w.repo), "moved");
+    renameSync(w.repo, moved);
+    git(moved, "clone", "-q", "--no-hardlinks", moved, w.repo);
+    git(w.repo, "branch", branch, tip);
+    await expect(releaseThreadPreparation(w.repo, tree, provenQuiet)).rejects.toThrow(
+      /is gone or another one is there now/,
+    );
+    expect(w.tip(id)).toBe(tip);
+    expect(git(moved, "rev-parse", branch)).toBe(tip);
+    expect(git(moved, "worktree", "list", "--porcelain")).toContain(tree);
+    renameSync(w.repo, join(dirname(w.repo), "replacement"));
+    renameSync(moved, w.repo);
+    expect(await releaseThreadPreparation(w.repo, tree, provenQuiet)).toBe("released");
+    expect(w.tip(id)).toBe("");
+    expect(w.registered(id)).toBe(false);
+  });
+
+  it.for(["early", "complete"] as const)(
+    "%s releases only its record even when repository authority is unavailable",
+    async (phase) => {
+      const w = world();
+      const made = await ensureThreadWorktree(w.repo, phase);
+      writeThreadPreparation(
+        w.record(phase, phase === "early" ? { early: true } : { complete: true }),
+      );
+      const pointer = readFileSync(join(made.path, ".git"), "utf8");
+      const moved = join(dirname(w.repo), "moved");
+      renameSync(w.repo, moved);
+      expect(await releaseThreadPreparation(w.repo, made.path, provenQuiet)).toBe(
+        phase === "complete" ? "completed" : "released",
+      );
+      expect(readFileSync(join(made.path, ".git"), "utf8")).toBe(pointer);
+      expect(git(moved, "rev-parse", `claudexor/thread-${phase}`)).toBe(made.baseSha);
+      expect(git(moved, "worktree", "list", "--porcelain")).toContain(made.path);
+      expect(existsSync(threadPreparationRecordPath(made.path))).toBe(false);
+    },
+  );
+
+  it.for(["direct", "operator"] as const)(
+    "%s release follows the repaired repository and preserves a replacement's identical branch",
+    async (consumer) => {
+      const w = world();
+      const id = "relocated";
+      const tree = w.tree(id);
+      const branch = `claudexor/thread-${id}`;
+      mkdirSync(dirname(tree), { recursive: true });
+      git(w.repo, "worktree", "add", "-q", "-b", branch, tree, w.head);
+      writeThreadPreparation(
+        w.record(id, { own_registration: true, own_branch: { name: branch, tip: w.head } }),
+      );
+      const moved = join(dirname(w.repo), "moved");
+      renameSync(w.repo, moved);
+      git(moved, "worktree", "repair");
+      git(moved, "clone", "-q", "--no-hardlinks", moved, w.repo);
+      git(w.repo, "branch", branch, w.head);
+      if (consumer === "operator") {
+        const result = await confirmThreadRelease(w.repo, tree, {
+          digest: recordDigest(readFileSync(threadPreparationRecordPath(tree))),
+          readWriter: null,
+          quiet: win32Quiet(),
+        });
+        expect(result).toMatchObject({ outcome: "released", basis: "operator_confirmed" });
+      } else {
+        expect(await releaseThreadPreparation(w.repo, tree, provenQuiet)).toBe("released");
+      }
+      expect(w.tip(id)).toBe(w.head);
+      expect(git(moved, "for-each-ref", "--format=%(objectname)", `refs/heads/${branch}`)).toBe("");
+      expect(git(moved, "worktree", "list", "--porcelain")).not.toContain(tree);
+      expect(existsSync(dirname(tree))).toBe(false);
+    },
+  );
+
+  it("keeps unknown repository authority and held processes intact, then releases after repair", async () => {
+    const w = world();
+    const id = "unrepaired";
+    const tree = w.tree(id);
+    const branch = `claudexor/thread-${id}`;
+    mkdirSync(dirname(tree), { recursive: true });
+    git(w.repo, "worktree", "add", "-q", "-b", branch, tree, w.head);
+    writeThreadPreparation(
+      w.record(id, { own_registration: true, own_branch: { name: branch, tip: w.head } }),
+    );
+    const pointer = readFileSync(join(tree, ".git"), "utf8");
+    const bytes = readFileSync(threadPreparationRecordPath(tree), "utf8");
+    const moved = join(dirname(w.repo), "moved");
+    renameSync(w.repo, moved);
+    git(moved, "clone", "-q", "--no-hardlinks", moved, w.repo);
+    git(w.repo, "branch", branch, w.head);
+    await expect(
+      releaseThreadPreparation(w.repo, tree, async () => ({
+        status: "held",
+        reasons: ["a known scope member is alive"],
+      })),
+    ).rejects.toBeInstanceOf(PreparationHeld);
+    expect(readFileSync(threadPreparationRecordPath(tree), "utf8")).toBe(bytes);
+    await expect(releaseThreadPreparation(w.repo, tree, provenQuiet)).rejects.toThrow(
+      /git worktree repair/,
+    );
+    expect(readFileSync(join(tree, ".git"), "utf8")).toBe(pointer);
+    expect(w.tip(id)).toBe(w.head);
+    expect(git(moved, "rev-parse", branch)).toBe(w.head);
+    expect(git(moved, "worktree", "list", "--porcelain")).toContain(tree);
+    git(moved, "worktree", "repair");
+    expect(await releaseThreadPreparation(w.repo, tree, provenQuiet)).toBe("released");
+    expect(w.tip(id)).toBe(w.head);
+    expect(git(moved, "worktree", "list", "--porcelain")).not.toContain(tree);
+  });
+
+  it("retains the repository after a ref-lock failure and refuses its replacement on retry", async () => {
+    const w = world();
+    const id = "release-retry";
+    const tree = w.tree(id);
+    const branch = `claudexor/thread-${id}`;
+    mkdirSync(dirname(tree), { recursive: true });
+    git(w.repo, "worktree", "add", "-q", "-b", branch, tree, w.head);
+    writeThreadPreparation(
+      w.record(id, { own_registration: true, own_branch: { name: branch, tip: w.head } }),
+    );
+    const lock = join(w.repo, ".git", "refs", "heads", `${branch}.lock`);
+    writeFileSync(lock, "another Git writer\n");
+    await expect(releaseThreadPreparation(w.repo, tree, provenQuiet)).rejects.toBeInstanceOf(
+      PreparationCleanupFailed,
+    );
+    expect(readThreadPreparation(tree)).toMatchObject({
+      repository: { gitDir: join(w.repo, ".git"), identity: expect.any(String) },
+    });
+    expect(existsSync(join(tree, ".git"))).toBe(false);
+    rmSync(lock);
+    const moved = join(dirname(w.repo), "moved");
+    renameSync(w.repo, moved);
+    git(moved, "clone", "-q", "--no-hardlinks", moved, w.repo);
+    git(w.repo, "branch", branch, w.head);
+    await expect(releaseThreadPreparation(w.repo, tree, provenQuiet)).rejects.toThrow(
+      /is gone or another one is there now/,
+    );
+    expect(w.tip(id)).toBe(w.head);
+    expect(git(moved, "rev-parse", branch)).toBe(w.head);
+    // Returning the original directory restores the saved authority.
+    renameSync(w.repo, join(dirname(w.repo), "replacement"));
+    renameSync(moved, w.repo);
+    expect(await releaseThreadPreparation(w.repo, tree, provenQuiet)).toBe("released");
+    expect(w.tip(id)).toBe("");
+    expect(existsSync(dirname(tree))).toBe(false);
+  });
+
   it("linux: an unrelated same-uid process with an unreadable environment does not keep a failed preparation held; an unreadable known member does", async () => {
     const w = world();
     const marker = mintRunScopeMarker();
@@ -540,6 +727,120 @@ describe("releaseThreadPreparation (#694)", () => {
 });
 
 describe("a release where no read can prove the end (Windows, injected) (#694)", () => {
+  it.each(["owner", "explicit"] as const)(
+    "ordinary cleanup retains its platform limit after EBUSY for a later %s release",
+    async (consumer) => {
+      const w = world();
+      const tree = w.tree("ordinary-retry");
+      mkdirSync(tree, { recursive: true });
+      writeFileSync(join(tree, "half"), "checkout\n");
+      writeThreadPreparation(w.record("ordinary-retry", { own_registration: false }));
+      // No hold is not evidence of an ordinary failure: this could be a crash.
+      await expect(releaseThreadPreparation(w.repo, tree, win32Quiet())).rejects.toMatchObject({
+        context: { release_requires: "operator_confirmation" },
+      });
+      busyTree = tree;
+      await expect(
+        releaseThreadPreparation(w.repo, tree, win32Quiet(), { platformLimit: true }),
+      ).rejects.toBeInstanceOf(PreparationHeld);
+      expect(readThreadPreparation(tree)).toMatchObject({
+        cleanup_basis: { basis: "platform_limit", generation: expect.any(String) },
+      });
+      expect(readThreadPreparation(tree)).not.toHaveProperty("cleanup_error");
+      expect(readFileSync(join(tree, "half"), "utf8")).toBe("checkout\n");
+      const bytes = readFileSync(threadPreparationRecordPath(tree), "utf8");
+      const read = vi.fn<PreparationQuietRead>((facts) => {
+        expect(readThreadPreparation(tree)).not.toHaveProperty("operator_release");
+        return win32Quiet()(facts);
+      });
+      busyRemovalTried = false;
+      expect(
+        await confirmThreadRelease(w.repo, tree, {
+          digest: recordDigest(bytes),
+          quiet: read,
+          readWriter: null,
+        }),
+      ).toMatchObject({
+        outcome: "refused",
+        confirmed_at: null,
+        reasons: ["a read at the release measured what holds it again"],
+      });
+      expect(busyRemovalTried).toBe(true); // The owner actually retried cleanup on the saved basis.
+      expect(readFileSync(threadPreparationRecordPath(tree), "utf8")).toBe(bytes);
+      expect(readFileSync(join(tree, "half"), "utf8")).toBe("checkout\n");
+      busyTree = null;
+      if (consumer === "owner")
+        expect(await releaseThreadPreparation(w.repo, tree, read)).toBe("released");
+      else
+        expect(
+          await confirmThreadRelease(w.repo, tree, {
+            digest: recordDigest(bytes),
+            quiet: read,
+            readWriter: null,
+          }),
+        ).toMatchObject({
+          outcome: "released",
+          basis: "saved_cleanup",
+          confirmed_at: null,
+          continued: false,
+        });
+      expect(threadTreeState(tree)).toBe("absent");
+    },
+  );
+
+  it.for([
+    "new generation",
+    "new hold",
+    "current child",
+    "measured member",
+    "unknown basis",
+  ] as const)("ordinary cleanup's saved basis cannot override a %s", async (change) => {
+    const w = world();
+    const tree = w.tree("ordinary-bound");
+    mkdirSync(tree, { recursive: true });
+    writeFileSync(join(tree, "half"), "checkout\n");
+    writeThreadPreparation(w.record("ordinary-bound", { own_registration: false }));
+    busyTree = tree;
+    await expect(
+      releaseThreadPreparation(w.repo, tree, win32Quiet(), { platformLimit: true }),
+    ).rejects.toBeInstanceOf(PreparationHeld);
+    busyTree = null;
+    const stop = directWriterStop(4242);
+    if (change === "new generation") {
+      const record = readThreadPreparation(tree)!;
+      writeThreadPreparation({
+        ...record,
+        opened_at: new Date(Date.parse(record.opened_at) + 1_000).toISOString(),
+      });
+    }
+    if (change === "new hold")
+      holdThreadPreparation(tree, { reason: "scope_unsettled", groups: [] });
+    if (change === "current child") holdPreparationChild(tree, stop.termination.directExit);
+    if (change === "unknown basis") {
+      const record = readThreadPreparation(tree)!;
+      writeFileSync(
+        threadPreparationRecordPath(tree),
+        JSON.stringify({
+          ...record,
+          cleanup_basis: { generation: threadGeneration(record), basis: "unknown" },
+        }),
+      );
+    }
+    const quiet: PreparationQuietRead =
+      change === "measured member"
+        ? async () => ({ status: "held", reasons: ["scope member 4242 is alive"] })
+        : win32Quiet();
+    try {
+      await expect(releaseThreadPreparation(w.repo, tree, quiet)).rejects.toBeInstanceOf(
+        PreparationHeld,
+      );
+      expect(readFileSync(join(tree, "half"), "utf8")).toBe("checkout\n");
+      expect(threadTreeState(tree)).toBe("held");
+    } finally {
+      await stop.exit();
+    }
+  });
+
   it("r17: an unconfirmed stop is held there — no release runs by itself; once an operator's confirmation is recorded a failing step is a cleanup fault under it, kept across a restart, and the next release finishes", async () => {
     const w = world();
     const tree = w.tree("unproven");
@@ -748,22 +1049,176 @@ describe("a release where no read can prove the end (Windows, injected) (#694)",
     expect(existsSync(threadPreparationRecordPath(gone))).toBe(false);
   });
 
-  it("a stop that recorded a process group (POSIX) names no direct writer: its record is as before, and the group's probe answers for it", async () => {
+  it("a late direct exit stamps a POSIX group hold; only a later leader releases that group", async () => {
     const w = world();
     const tree = w.tree("grouped");
     mkdirSync(tree, { recursive: true });
     writeThreadPreparation(w.record("grouped", { own_registration: false }));
-    holdThreadPreparation(tree, {
-      reason: "direct_child_alive",
-      groups: [4242],
-      rootPid: 4242,
-      directExited: false,
-      directExit: Promise.resolve(),
+    const stop = directWriterStop(4242);
+    holdThreadPreparation(tree, { ...stop.termination, groups: [4242] });
+    const before = readThreadPreparation(tree)!.held!;
+    expect(Object.keys(before).sort()).toEqual(["at", "groups", "reason"]);
+    const exitAt = Date.parse(before.at) + 5_000;
+    const tableAt = (born: number | null): ProcessTableReader => ({
+      snapshot: async () => [],
+      row: async () =>
+        born === null
+          ? "unreadable"
+          : { pid: 4242, ppid: 1, pgid: 4242, birth: new Date(born).toString().slice(0, 24) },
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const held = readThreadPreparation(tree)!.held!;
-    expect(Object.keys(held).sort()).toEqual(["at", "groups", "reason"]);
-    expect(held.groups).toEqual([4242]);
+    const quietAt =
+      (born: number | null): PreparationQuietRead =>
+      (facts) =>
+        preparationQuiet(facts, {
+          platform: "linux",
+          probeGroupAlive: () => true,
+          table: tableAt(born),
+        });
+    // Neither the hold's timestamp nor a quiet probe releases a current child.
+    expect(await quietAt(exitAt + 2_000)(holdFactsOf(null, before))).toMatchObject({
+      status: "held",
+    });
+    await expect(releaseThreadPreparation(w.repo, tree, provenQuiet)).rejects.toMatchObject({
+      context: { preparation: { unresolved: [expect.stringMatching(/current child/)] } },
+    });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(exitAt);
+    await stop.exit();
+    clock.mockRestore();
+    expect(readThreadPreparation(tree)!.held).toEqual({
+      ...before,
+      direct_exit_observed_at: exitAt,
+    });
+    // An older leader (even born after held.at), the same second, or an unreadable
+    // leader proves nothing. This checks the saved observation through the consumer.
+    for (const born of [exitAt - 2_000, exitAt, null])
+      await expect(releaseThreadPreparation(w.repo, tree, quietAt(born))).rejects.toMatchObject({
+        context: { preparation: { unresolved: ["process group 4242 still has members"] } },
+      });
+    // A separate scope membership uncertainty still holds after this group's
+    // reuse. Exercise the real scope/table rule over injected read-only sources.
+    const member = {
+      pid: 5151,
+      ppid: 1,
+      pgid: 5151,
+      birth: new Date(exitAt + 2_000).toString().slice(0, 24),
+    };
+    const table: ProcessTableReader = {
+      snapshot: async () => [member],
+      row: async (pid) => (pid === 5151 ? member : tableAt(exitAt + 2_000).row(pid)),
+    };
+    await expect(
+      releaseThreadPreparation(w.repo, tree, (facts) =>
+        preparationQuiet(
+          { ...facts, marker: mintRunScopeMarker() },
+          {
+            platform: "linux",
+            probeGroupAlive: () => true,
+            table,
+            sources: {
+              scopeStartAt: before.at,
+              rootGroups: [{ pgid: 5151, leaderPid: 5151, leaderBirth: null }],
+            },
+            census: (opts) =>
+              new ScopeReaper().reap({
+                ...opts,
+                excludePids: [1],
+                census: {
+                  census: async (markers) => ({
+                    status: "ok",
+                    members: new Map(markers.map((marker) => [marker, []])),
+                    unreadable: 0,
+                  }),
+                  confirm: async () => false,
+                },
+                identity: {
+                  read: async (pid) => ({
+                    status: "unknown",
+                    pid,
+                    platform: "linux",
+                    reason: "helper_failed",
+                  }),
+                },
+              }),
+          },
+        ),
+      ),
+    ).rejects.toMatchObject({
+      context: {
+        preparation: {
+          unresolved: ["scope member 5151 could not be read (group_membership_unproven)"],
+        },
+      },
+    });
+    expect(await releaseThreadPreparation(w.repo, tree, quietAt(exitAt + 2_000))).toBe("released");
+  });
+
+  it("a POSIX exit observation cannot stamp a replacement hold or recreate a removed record", async () => {
+    const w = world();
+    for (const removed of [false, true]) {
+      const id = removed ? "group-removed" : "group-replaced";
+      const tree = w.tree(id);
+      mkdirSync(tree, { recursive: true });
+      writeThreadPreparation(w.record(id, { own_registration: false }));
+      const stop = directWriterStop(4242);
+      holdThreadPreparation(tree, { ...stop.termination, groups: [4242] });
+      const record = readThreadPreparation(tree)!;
+      const replacement = {
+        ...record,
+        // Two holds can share a millisecond; their different groups still matter.
+        held: { ...record.held!, groups: [5151] },
+      };
+      if (removed) rmSync(threadPreparationRecordPath(tree));
+      else writeThreadPreparation(replacement);
+      await stop.exit();
+      expect(readThreadPreparation(tree)).toEqual(removed ? null : replacement);
+    }
+  });
+
+  it("a late POSIX group exit also reaches the envelope owner record", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-base-group-exit-")));
+    dirs.push(root);
+    writeFileSync(
+      join(root, "owner.json"),
+      JSON.stringify({ pid: 1, preparation: { scope_marker: null, preparing: true } }),
+    );
+    const stop = directWriterStop(4242);
+    await holdEnvelopePreparation(root, { ...stop.termination, groups: [4242] });
+    expect(await envelopePreparationVerdict(root, provenQuiet)).toMatchObject({
+      status: "held",
+      reasons: [expect.stringMatching(/current child/)],
+    });
+    await stop.exit();
+    for (
+      let i = 0;
+      i < 250 && readEnvelopePreparation(root)?.held?.direct_exit_observed_at === undefined;
+      i += 1
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    const held = readEnvelopePreparation(root)!.held!;
+    expect(held.direct_exit_observed_at).toEqual(expect.any(Number));
+    const quietAt =
+      (born: number): PreparationQuietRead =>
+      (facts) =>
+        preparationQuiet(facts, {
+          platform: "linux",
+          probeGroupAlive: () => true,
+          table: {
+            snapshot: async () => [],
+            row: async () => ({
+              pid: 4242,
+              ppid: 1,
+              pgid: 4242,
+              birth: new Date(born).toString().slice(0, 24),
+            }),
+          },
+        });
+    expect(await envelopePreparationVerdict(root, quietAt(held.direct_exit_observed_at!))).toEqual({
+      status: "held",
+      reasons: ["process group 4242 still has members"],
+    });
+    expect(
+      await envelopePreparationVerdict(root, quietAt(held.direct_exit_observed_at! + 2_000)),
+    ).toEqual({ status: "quiet", basis: "machine_proven" });
   });
 
   it("a current envelope child holds despite a quiet PID probe; its observed exit stamps the record and leaves only the tree limitation", async () => {

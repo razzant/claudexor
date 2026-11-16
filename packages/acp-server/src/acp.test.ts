@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { createInterface } from "node:readline";
 import { PassThrough, Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import { noProjectRepoRoot } from "@claudexor/util";
@@ -86,7 +87,201 @@ async function withClient<T>(
   }
 }
 
+/** Bypass the SDK client encoder so malformed inputs reach the real server's
+ * NDJSON boundary. Each exchange reads one response; these session fixtures
+ * emit no notifications. No dependency-private parser or validator is called. */
+async function withRawClient(
+  runner: RunnerFn,
+  op: (
+    exchange: (frame: unknown) => Promise<{
+      jsonrpc: string;
+      id: number | null;
+      result?: Record<string, unknown>;
+      error?: { code: number; message: string };
+    }>,
+  ) => Promise<void>,
+): Promise<void> {
+  const read = new PassThrough();
+  const write = new PassThrough();
+  const lines = createInterface({ input: write });
+  const frames = lines[Symbol.asyncIterator]();
+  const serving = new AcpServer({ runner, transport: { read, write } }).serve();
+  try {
+    await op(async (frame) => {
+      // Bound a missing reply too, so a broken connection fails here and still
+      // reaches teardown instead of leaving a pending reader after test timeout.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const next = frames.next();
+        read.write(JSON.stringify(frame) + "\n");
+        const response = await Promise.race([
+          next,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error("ACP wire response not received")), 10_000);
+          }),
+        ]);
+        expect(response.done).toBe(false);
+        return JSON.parse(response.value!);
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+  } finally {
+    read.end();
+    try {
+      await serving;
+    } finally {
+      lines.close();
+      read.destroy();
+      write.destroy();
+    }
+  }
+}
+
 describe("AcpServer official SDK projection", () => {
+  describe.each([
+    ["NEW", "session/new", "__acp_session_new"],
+    ["LOAD", "session/load", "__acp_session_load"],
+    ["RESUME", "session/resume", "__acp_session_resume"],
+  ] as const)("A10-ACP-%s raw parameter admission", (_caseId, method, mode) => {
+    it.each([
+      ["MCP-CONTAINER", "mcpServers", {}],
+      ["MCP-ENTRY", "mcpServers", [{ name: "missing-transport" }]],
+      ["DIRECTORIES-CONTAINER", "additionalDirectories", {}],
+      ["DIRECTORIES-ENTRY", "additionalDirectories", [42]],
+    ] as const)(
+      "%s refuses malformed input, then accepts its ordinary neighbor",
+      async (_id, field, bad) => {
+        const cwd = project();
+        const calls: unknown[] = [];
+        await withRawClient(
+          async (params) => {
+            calls.push(params);
+            return { sessionId: "thread-raw", cwd, turns: [] };
+          },
+          async (exchange) => {
+            const initialized = await exchange({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "initialize",
+              params: { protocolVersion: 1, clientCapabilities: {} },
+            });
+            expect(initialized).toMatchObject({ id: 1, result: { protocolVersion: 1 } });
+            const params = {
+              cwd,
+              mcpServers: [],
+              additionalDirectories: [cwd],
+              ...(method === "session/new" ? {} : { sessionId: "thread-raw" }),
+            };
+            const refused = await exchange({
+              jsonrpc: "2.0",
+              id: 2,
+              method,
+              params: { ...params, [field]: bad },
+            });
+            expect(refused).toMatchObject({ jsonrpc: "2.0", id: 2, error: { code: -32602 } });
+            expect(refused).not.toHaveProperty("result");
+            expect(calls).toEqual([]);
+            const accepted = await exchange({ jsonrpc: "2.0", id: 3, method, params });
+            expect(accepted).toMatchObject({ jsonrpc: "2.0", id: 3 });
+            expect(accepted).not.toHaveProperty("error");
+            expect(accepted.result).toEqual(
+              method === "session/new" ? { sessionId: "thread-raw" } : {},
+            );
+            expect(calls).toEqual([
+              {
+                mode,
+                sessionId: method === "session/new" ? undefined : "thread-raw",
+                repoPath: cwd,
+                additionalDirectories: [cwd],
+              },
+            ]);
+          },
+        );
+      },
+    );
+  });
+
+  it("A10-ACP-BATCH refuses a batch without dispatching it or closing the connection", async () => {
+    const cwd = project();
+    const calls: unknown[] = [];
+    await withRawClient(
+      async (params) => {
+        calls.push(params);
+        return { sessionId: "thread-after-batch", cwd };
+      },
+      async (exchange) => {
+        expect(
+          await exchange({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: { protocolVersion: 1, clientCapabilities: {} },
+          }),
+        ).toMatchObject({ id: 1, result: { protocolVersion: 1 } });
+        const request = {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "session/new",
+          params: { cwd, mcpServers: [] },
+        };
+        expect(await exchange([request, { ...request, id: 3 }])).toMatchObject({
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32600 },
+        });
+        expect(calls).toEqual([]);
+        const accepted = await exchange({ ...request, id: 4 });
+        expect(accepted).toEqual({
+          jsonrpc: "2.0",
+          id: 4,
+          result: { sessionId: "thread-after-batch" },
+        });
+        expect(calls).toEqual([
+          {
+            mode: "__acp_session_new",
+            sessionId: undefined,
+            repoPath: cwd,
+            additionalDirectories: [],
+          },
+        ]);
+      },
+    );
+  });
+
+  it("A10-ACP-REINITIALIZE answers both handshakes and then accepts a session", async () => {
+    const cwd = project();
+    const modes: string[] = [];
+    await withRawClient(
+      async (params) => {
+        modes.push(params.mode);
+        return { sessionId: "thread-reinitialized", cwd };
+      },
+      async (exchange) => {
+        for (const id of [1, 2]) {
+          const response = await exchange({
+            jsonrpc: "2.0",
+            id,
+            method: "initialize",
+            params: { protocolVersion: 1, clientCapabilities: {} },
+          });
+          expect(response).toMatchObject({ jsonrpc: "2.0", id, result: { protocolVersion: 1 } });
+          expect(response).not.toHaveProperty("error");
+          expect(modes).toEqual([]);
+        }
+        expect(
+          await exchange({
+            jsonrpc: "2.0",
+            id: 3,
+            method: "session/new",
+            params: { cwd, mcpServers: [] },
+          }),
+        ).toEqual({ jsonrpc: "2.0", id: 3, result: { sessionId: "thread-reinitialized" } });
+        expect(modes).toEqual(["__acp_session_new"]);
+      },
+    );
+  });
+
   it("forwards explicit soft timer controls and presents the reached warning without cancelling", async () => {
     await withClient(
       async (params, hooks) => {

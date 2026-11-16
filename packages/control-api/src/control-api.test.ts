@@ -5079,6 +5079,14 @@ describe("DaemonControlApiServer", () => {
       generation: "thread:t1:2026-11-15T10:00:00.000Z:2026-11-15T10:05:00.000Z",
       stop: { reason: "output_held", groups: [], at: "2026-11-15T10:05:00.000Z" },
       confirmed_at: "2026-11-15T11:00:00.000Z",
+      ...(selector === "prep1.b"
+        ? {
+            basis: "saved_cleanup",
+            generation: "thread:t1:2026-11-15T10:00:00.000Z:",
+            stop: null,
+            confirmed_at: null,
+          }
+        : {}),
     });
     const services: DaemonControlApiOptions["services"] = {
       heldPreparations: async () => ({
@@ -5157,6 +5165,16 @@ describe("DaemonControlApiServer", () => {
           generation: expect.stringMatching(/^thread:t1:/),
           stop: { reason: "output_held" },
         });
+        const saved = (await b.json()) as Record<string, unknown>;
+        expect(saved).toMatchObject({
+          outcome: "released",
+          basis: "saved_cleanup",
+          operation_id: "delivery-2",
+          replayed: false,
+          continued: false,
+          stop: null,
+          confirmed_at: null,
+        });
         expect(order).toEqual(["start prep1.a", "end prep1.a", "start prep1.b", "end prep1.b"]);
         expect(operations).toEqual(["preparation_release", "preparation_release"]);
         // The same key again: the recorded receipt, no second release.
@@ -5166,6 +5184,13 @@ describe("DaemonControlApiServer", () => {
         );
         expect(again.status).toBe(200);
         expect(await again.json()).toEqual({ ...first, replayed: true });
+        expect(order).toHaveLength(4);
+        const savedAgain = await release(
+          { selector: "prep1.b", digest, confirm_processes_ended: true },
+          "kb",
+        );
+        expect(savedAgain.status).toBe(200);
+        expect(await savedAgain.json()).toEqual({ ...saved, replayed: true });
         expect(order).toHaveLength(4);
         // A request whose command a restart left unsettled: its outcome is unknown, nothing runs.
         commands.set("ku", { id: "delivery-9", state: "interrupted" });

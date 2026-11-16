@@ -30,7 +30,7 @@
             "not_held",
             "basis_not_recorded"
           ],
-          "description": "released/completed: its release ran (completed: a finished checkout kept as made); cleanup_failed: it ran and a step failed, the confirmation stays recorded for the next release; refused: nothing was released; stale: inspect again; not_held: nothing held there (not a proof of an earlier release); basis_not_recorded: the confirmation could not be saved, nothing was released."
+          "description": "released/completed: its release ran (completed: a finished checkout kept as made); cleanup_failed: it ran and a step failed, any saved basis stays for retry; refused: nothing was released; stale: inspect again; not_held: nothing held there (not a proof of an earlier release); basis_not_recorded: the confirmation could not be saved, nothing was released."
         },
         "operation_id": {
           "type": "string",
@@ -91,15 +91,16 @@
               "type": "string",
               "enum": [
                 "machine_proven",
-                "operator_confirmed"
+                "operator_confirmed",
+                "saved_cleanup"
               ],
-              "description": "machine_proven: a read proved that what the preparation started has ended; operator_confirmed: no read could prove it and the operator's recorded confirmation released it (not a proof)."
+              "description": "machine_proven: a read proved that what the preparation started has ended; operator_confirmed: the operator's recorded confirmation released it (not a proof); saved_cleanup: this generation's ordinary cleanup or handover basis permitted release after fresh checks, without a new confirmation or machine proof."
             },
             {
               "type": "null"
             }
           ],
-          "description": "machine_proven: a read proved that what the preparation started has ended; operator_confirmed: no read could prove it and the operator's recorded confirmation released it (not a proof)."
+          "description": "machine_proven: a read proved that what the preparation started has ended; operator_confirmed: the operator's recorded confirmation released it (not a proof); saved_cleanup: this generation's ordinary cleanup or handover basis permitted release after fresh checks, without a new confirmation or machine proof."
         },
         "continued": {
           "type": "boolean",

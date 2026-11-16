@@ -23,7 +23,6 @@ import {
   publishRawRecords,
   rawCandidateTree,
   rawPatchRefusalIsModelCorrectable,
-  transferRawRecords,
   type RawRecords,
 } from "@claudexor/workspace";
 import type { CandidateRun } from "./candidateEvidence.js";
@@ -102,32 +101,23 @@ export class RawPatchLane {
  */
 export class RawAdoption {
   private readonly records = new Map<string, RawRecords>();
-  private readonly inPlace: boolean;
-  /** The run's stop, for preparation only (`seed`); keep and publish never take it. */
-  private readonly signal: AbortSignal | undefined;
+  /** Fresh candidates inherit the source's record inside envelope preparation,
+   * before handoff. Adoption of an existing envelope never seeds it again. */
+  readonly seedRawRecords: boolean;
 
   constructor(
     private readonly execRoot: string,
     run: {
       inPlace?: boolean;
       workspaceKind?: string;
-      signal?: AbortSignal;
-      preparationSignal?: AbortSignal;
     },
   ) {
-    this.inPlace = run.inPlace === true && run.workspaceKind !== "directory";
-    this.signal = run.preparationSignal ?? run.signal;
-  }
-
-  /** Give a candidate the worktree's private record before RawPatchLane sizes its packet;
-   * part of preparation, so the run's stop ends it. */
-  async seed(worktree: string): Promise<void> {
-    if (this.inPlace) await transferRawRecords(this.execRoot, worktree, this.signal);
+    this.seedRawRecords = run.inPlace === true && run.workspaceKind !== "directory";
   }
 
   /** Hold a finished candidate's record for adoption, its objects copied, no ref moved. */
   async keep(attemptId: string, worktree: string): Promise<void> {
-    if (!this.inPlace || worktree === this.execRoot) return;
+    if (!this.seedRawRecords || worktree === this.execRoot) return;
     this.records.set(attemptId, await exportRawRecords(worktree, this.execRoot));
   }
 

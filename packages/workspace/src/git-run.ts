@@ -175,6 +175,31 @@ export interface TerminationDisclosure {
   reason: string;
 }
 
+/** Shared event presentation for preparation stop facts. Even a terminal's
+ * held list is a dated observation, never a fresh resource inventory. An empty
+ * list does not turn an unconfirmed stop into proof of a retained base. */
+export function preparationStopSummary(payload: Record<string, unknown>): string | null {
+  const value = payload["termination_unconfirmed"];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const stop = value as Record<string, unknown>;
+  if (
+    typeof stop["reason"] !== "string" ||
+    !Array.isArray(stop["survivors"]) ||
+    !Array.isArray(stop["unresolved"])
+  )
+    return null;
+  const held = Array.isArray(payload["held"])
+    ? payload["held"].filter((path): path is string => typeof path === "string" && path.length > 0)
+    : [];
+  return (
+    `Termination unconfirmed at this event (${stop["reason"]}). ` +
+    (held.length
+      ? `Held paths at this event: ${held.map((path) => JSON.stringify(path)).join(", ")}. `
+      : "No held paths reported in this event. ") +
+    "Inspect current state with `claudexor gc preparations`. If release is needed, first verify the processes and their children ended, then use `claudexor gc release-preparation <selector> --digest <digest> --confirm-ended` from that inspection."
+  );
+}
+
 export function terminationDisclosure(termination: {
   reason: string;
   groups: readonly number[];
@@ -249,14 +274,16 @@ export function throwIfCancelled(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new PreparationCancelled(signal.reason);
 }
 
-/** After a capture the caller stopped: the stop, typed by what became of the child. */
+/** Keep an unproven capture end on its preparation carrier, even without a caller
+ * abort (a watchdog or time bound). Only the caller's abort is a preparation stop. */
 export function stoppedAfter(
   signal: AbortSignal | undefined,
   termination: CaptureTermination | undefined,
 ): void {
+  if (signal && termination?.status === "unconfirmed")
+    scopeMarkers.get(signal)?.stops.unconfirmed.push(termination);
   if (!signal?.aborted) return;
   if (termination?.status === "unconfirmed") {
-    scopeMarkers.get(signal)?.stops.unconfirmed.push(termination);
     throw new PreparationTerminationUnconfirmed(signal.reason, termination);
   }
   throw new PreparationCancelled(signal.reason);
@@ -280,6 +307,21 @@ export async function revParse(repo: string, ref: string, signal?: AbortSignal):
   const r = await git(repo, ["rev-parse", ref], undefined, signal);
   if (r.code !== 0) throw new WorkspaceError(`git rev-parse ${ref} failed: ${r.stderr.trim()}`);
   return r.stdout.trim();
+}
+
+/** A status read takes no optional lock (no index refresh written back), so it
+ * can be interrupted on every platform. Only a successful read can establish
+ * a clean tree; failed/unknown exits may also have empty stdout. */
+export async function statusPorcelain(repo: string, signal?: AbortSignal): Promise<string> {
+  const r = await gitEnv(
+    repo,
+    ["status", "--porcelain"],
+    { GIT_OPTIONAL_LOCKS: "0" },
+    undefined,
+    signal,
+  );
+  if (r.code !== 0) throw new WorkspaceError(`git status failed: ${r.stderr.trim()}`);
+  return r.stdout;
 }
 
 /** `git` with extra environment (e.g. a scratch GIT_INDEX_FILE for snapshots). */

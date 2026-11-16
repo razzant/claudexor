@@ -8,7 +8,7 @@
 // No process exists here: `spawn` returns a scripted ChildProcess, the process
 // registry is a no-op, and the taskkill is an injected spy (the Windows kill
 // strategy injected on any host).
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
@@ -125,5 +125,66 @@ describe("Windows taskkill after an observed direct exit (#694 V17)", () => {
     const result = await running;
     expect(taskkill).toHaveBeenCalledTimes(1);
     expect(result.termination?.status).toBe("confirmed");
+  });
+});
+
+// The scripted child above also separates pipe close from group settlement.
+// POSIX alone probes a group; no real process or signal is used in either case.
+describe.runIf(process.platform !== "win32")("raw capture drain during group settlement", () => {
+  it("natural close disarms the drain before an awaited group re-probe crosses its bound", async () => {
+    vi.useFakeTimers();
+    try {
+      const probe = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+      const { running, controller, child } = capture({
+        exitDrainMs: 100,
+        cancelKillDelayMs: -1,
+        probeGroupAlive: probe,
+      });
+      child.stdout.write("exact\r\nbytes");
+      controller.abort("stop");
+      child.exit(7);
+      await vi.advanceTimersByTimeAsync(90);
+      const closed = once(child, "close");
+      child.endPipes();
+      await closed;
+      expect(probe).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(100);
+      const result = await running;
+      expect(probe).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({
+        code: 7,
+        stdout: "exact\r\nbytes",
+        termination: { status: "confirmed", proof: "group_empty" },
+      });
+      expect(result.drain).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("control: pipes still open at the drain bound retain real truncation after close", async () => {
+    vi.useFakeTimers();
+    try {
+      const probe = vi.fn(() => false);
+      const { running, controller, child } = capture({
+        exitDrainMs: 100,
+        cancelKillDelayMs: -1,
+        probeGroupAlive: probe,
+      });
+      child.stdout.write("partial");
+      controller.abort("stop");
+      child.exit(0);
+      await vi.advanceTimersByTimeAsync(150);
+      const result = await running;
+      expect(result).toMatchObject({
+        code: null,
+        stdout: "partial",
+        drain: "truncated",
+        termination: { status: "unconfirmed", reason: "output_held", directExited: true },
+      });
+      expect(probe).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

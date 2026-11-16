@@ -30,6 +30,7 @@ import {
   SCRATCH_INDEX_CONFIG,
   scopeEnvOf,
   scopedGitArgs,
+  statusPorcelain,
   stoppedAfter,
   throwIfCancelled,
   userLockStep,
@@ -47,6 +48,7 @@ export {
   PreparationStopped,
   PreparationTerminationUnconfirmed,
   revParse,
+  statusPorcelain,
   throwIfCancelled,
   unconfirmedTerminationOf,
 } from "./git-run.js";
@@ -89,14 +91,6 @@ export async function ensureGitRepository(
     dependencies.beforeMutation,
     dependencies.platform,
   );
-}
-
-export async function statusPorcelain(repo: string, signal?: AbortSignal): Promise<string> {
-  // A read that takes no optional lock (no index refresh written back): it can
-  // be interrupted on every platform without leaving the user's index.lock.
-  return (
-    await gitEnv(repo, ["status", "--porcelain"], { GIT_OPTIONAL_LOCKS: "0" }, undefined, signal)
-  ).stdout;
 }
 
 export { snapshotTree, stashCreate } from "./git-snapshot.js";
@@ -161,9 +155,11 @@ export async function materializePatchTree(
   }
 }
 
-/** `signal` stops this `git worktree add` gently (SIGINT first, its stall too): on
- * SIGINT Git removes the worktree it was creating and its registration itself, while
- * a SIGKILL leaves the registration locked "initializing" (releaseThreadPreparation removes it). */
+/** Stop after the awaited baseline starts no child. A started Windows user-lock
+ * step finishes before taking Stop (its watchdog still applies). Elsewhere Stop
+ * is gentle (SIGINT first, its stall too): Git then removes its new worktree and
+ * registration itself; SIGKILL leaves an "initializing" registration for
+ * releaseThreadPreparation to remove. */
 export async function worktreeAdd(
   repo: string,
   path: string,
@@ -177,6 +173,7 @@ export async function worktreeAdd(
     progress: diskProgress(repo),
     allowFailure: true,
     signal: userLockStep(signal, platform),
+    startSignal: signal,
     gentleStop: true,
   });
   throwIfCancelled(signal); // the step's boundary (Windows: the step was not interrupted)
@@ -430,15 +427,10 @@ function absent(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
-/**
- * Apply a unified diff to a tree with a 3-way merge (race-winner adoption into
- * the live in-place tree). Throws loudly on conflict so the caller can disclose
- * `adopted:false` and offer a manual apply — the work is never silently lost.
- */
-
+/** Outcome of exact, preimage-checked patch application. */
 export interface ProtectedApplyResult {
   ok: boolean;
-  /** True when the tree does NOT match its pre-apply state (restore failed). */
+  /** True if the patch remains applied, or failure could not establish an unchanged target. */
   treeMutated: boolean;
   detail?: string;
 }
@@ -466,7 +458,9 @@ async function runProtectedApply(
       detail: `${options.reverse ? "reverse " : ""}apply --check refused: ${check.stderr.trim()}`,
     };
   }
-  const before = await statusPorcelain(repo);
+  // Diagnostic only: the exact apply check above owns admission. An unavailable
+  // observation must not hide the apply result or skip its caller's cleanup.
+  const before = await statusPorcelain(repo).catch(() => null);
   const applied = await git(repo, [...flags, "-"], diff);
   if (applied.code === 0) {
     return {
@@ -475,16 +469,19 @@ async function runProtectedApply(
       treeMutated: !options.reverse,
     };
   }
-  const after = await statusPorcelain(repo);
-  const unchanged = after === before;
+  const after = await statusPorcelain(repo).catch(() => null);
+  const observed = before !== null && after !== null;
+  const unchanged = observed && after === before;
   return {
     ok: false,
     treeMutated: options.reverse ? true : !unchanged,
     detail:
       `${options.reverse ? "reverse " : ""}apply failed after preflight: ${applied.stderr.trim()}` +
-      (unchanged
-        ? "; tree and index remain at the observed pre-operation state"
-        : "; target changed during apply; no destructive rollback was attempted"),
+      (!observed
+        ? "; target state is unknown because git status was unavailable; no destructive rollback was attempted"
+        : unchanged
+          ? "; tree and index remain at the observed pre-operation state"
+          : "; target changed during apply; no destructive rollback was attempted"),
   };
 }
 

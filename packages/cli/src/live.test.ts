@@ -151,6 +151,75 @@ describe("claudexor follow", () => {
     ).toBe("run ended: Cancelled");
   });
 
+  it("discloses a cancelled preparation's held paths as historical and offers current inspection", () => {
+    const stop = { survivors: [], unresolved: [], reason: "output_held" };
+    const attempt = formatRunEventLine({
+      type: "harness.completed",
+      payload: {
+        harness_id: "codex",
+        attempt_id: "a01",
+        phase: "workspace",
+        status: "cancelled",
+        termination_unconfirmed: stop,
+        held: ["/kept/base"],
+      },
+    });
+    expect(attempt).toContain("completed: cancelled");
+    expect(attempt).toContain("WARNING: Termination unconfirmed at this event (output_held)");
+    expect(attempt).toContain('Held paths at this event: "/kept/base"');
+    expect(attempt).toContain("claudexor gc preparations");
+    expect(attempt).toContain(
+      "claudexor gc release-preparation <selector> --digest <digest> --confirm-ended",
+    );
+
+    // The terminal filters paths released after the attempt event. Replaying
+    // that earlier event must never repopulate the terminal's empty held list.
+    const terminal = formatRunEventLine({
+      type: "run.failed",
+      payload: {
+        lifecycle: "cancelled",
+        facts: makeOutcomeFacts("cancelled", { reason: "user_cancelled" }),
+        termination_unconfirmed: stop,
+        held: [],
+      },
+    });
+    expect(terminal).toContain("run ended: Cancelled — WARNING:");
+    expect(terminal).toContain("No held paths reported in this event");
+    expect(terminal).not.toContain("/kept/base");
+    expect(terminal).not.toContain("Held paths at this event:");
+  });
+
+  it("keeps a deadline reason with held paths, and does not infer stop facts from prose", () => {
+    const line = formatRunEventLine({
+      type: "run.failed",
+      payload: {
+        facts: makeOutcomeFacts("cancelled", { reason: "wall_clock_exceeded" }),
+        termination_unconfirmed: { survivors: [42], unresolved: [], reason: "group_alive" },
+        held: ["/kept/tree"],
+      },
+    });
+    expect(line).toContain("run ended: Time limit reached — WARNING:");
+    expect(line).toContain('Held paths at this event: "/kept/tree"');
+    for (const termination_unconfirmed of [
+      undefined,
+      true,
+      "output_held",
+      {},
+      { survivors: [42], unresolved: [] }, // a harness stop, without preparation facts
+    ]) {
+      expect(
+        formatRunEventLine({
+          type: "harness.completed",
+          payload: {
+            status: "cancelled",
+            error: "termination_unconfirmed",
+            termination_unconfirmed,
+          },
+        }),
+      ).not.toContain("gc preparations");
+    }
+  });
+
   it("discloses ignored_settings as a WARNING suffix on harness.started (QA-070)", () => {
     const line = formatRunEventLine({
       type: "harness.started",

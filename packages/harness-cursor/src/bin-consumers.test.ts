@@ -132,7 +132,7 @@ describe.skipIf(standDown)("Cursor consumers resolve the CLI through one lookup"
     process.env.PATH = "";
     delete process.env.CLAUDEXOR_CURSOR_BIN;
     const adapter = createCursorAdapter(noKey);
-    await expect(adapter.discover()).rejects.toThrow(/Cursor CLI not found/);
+    await expect(adapter.discover()).rejects.toThrow(/Cursor CLI is missing or did not answer/);
     const host = stage("cursorFirst");
     expect((await adapter.discover()).version).toBe("fixture-cursor 1.0");
     expect(existsSync(host.marker)).toBe(false);
@@ -141,10 +141,10 @@ describe.skipIf(standDown)("Cursor consumers resolve the CLI through one lookup"
   it("refuses when the agent the child would run is not Cursor, and runs nothing", async () => {
     const host = stage("unrelatedFirst");
     const adapter = createCursorAdapter(noKey);
-    await expect(adapter.discover()).rejects.toThrow(/Cursor CLI not found/);
+    await expect(adapter.discover()).rejects.toThrow(/Cursor CLI is missing or did not answer/);
     const report = await adapter.doctor({ cwd: host.home });
     expect(report.status).toBe("unavailable");
-    expect(report.reasons.join("\n")).toContain("no `agent` inside a Cursor install");
+    expect(report.reasons.join("\n")).toContain("--disable-auto-update --version");
     expect(existsSync(host.marker)).toBe(false);
   });
 

@@ -55,7 +55,7 @@ import {
 export { canonicalCursorProfileHome, cursorProfilePathEnv } from "./profile.js";
 export { readCursorDashboard, CursorDashboardError } from "./quota.js";
 import { prepareCursorMcpInjection } from "./mcp-config.js";
-import { detectCursorVersion, resolveCursorBin } from "./bin.js";
+import { CURSOR_VERSION_UNAVAILABLE, detectCursorVersion, resolveCursorBin } from "./bin.js";
 export { resolveCursorBin } from "./bin.js";
 import {
   smokeIsolatedApiKey,
@@ -259,9 +259,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
     async discover(): Promise<HarnessManifest> {
       const version = await runtime.detectVersion();
       if (version === null) {
-        throw new HarnessUnavailableError(
-          "Cursor CLI not found on PATH: no `cursor-agent`, and no `agent` inside a Cursor install (set CLAUDEXOR_CURSOR_BIN)",
-        );
+        throw new HarnessUnavailableError(CURSOR_VERSION_UNAVAILABLE);
       }
       // D-U3: there is no default native session to detect (the host Keychain
       // is never probed); manifest source availability reads the key only.

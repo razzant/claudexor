@@ -6,6 +6,7 @@ export * from "./staging-owner.js";
 export { noteCleanupFault } from "./cleanup-fault.js";
 export {
   preparationStopsOf,
+  preparationStopSummary,
   scopeMarkerOf,
   terminationDisclosure,
   withScopeMarker,

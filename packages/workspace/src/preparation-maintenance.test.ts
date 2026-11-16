@@ -748,11 +748,16 @@ describe("the release decision (#694 r17)", () => {
     reasons: ["writer 4242 in use", "group 77 alive"],
     writerInUse: 4242,
   };
-  it("a proven end releases on every ground; unproven only with a bound confirmation or the creator's platform limit; a measured member never", () => {
+  it("a proven end releases on every ground; unproven needs confirmation, the creator's platform limit or saved cleanup; a measured member never", () => {
     const none = { operator: false, platformLimit: false };
     const op = { operator: true, platformLimit: false };
     const creator = { operator: false, platformLimit: true };
-    expect(releaseDecision(quiet, none)).toMatchObject({ release: true, basis: "machine_proven" });
+    const saved = { operator: false, platformLimit: false, savedCleanup: true };
+    for (const grounds of [none, op, creator, saved])
+      expect(releaseDecision(quiet, grounds)).toMatchObject({
+        release: true,
+        basis: "machine_proven",
+      });
     expect(releaseDecision(unproven, none)).toMatchObject({
       release: false,
       operatorMayConfirm: true,
@@ -765,6 +770,11 @@ describe("the release decision (#694 r17)", () => {
       release: true,
       basis: "platform_limit",
     });
+    expect(releaseDecision(unproven, saved)).toMatchObject({
+      release: true,
+      basis: "saved_cleanup",
+      unproven: ["no census"],
+    });
     expect(releaseDecision(writer, none)).toMatchObject({
       release: false,
       operatorMayConfirm: true,
@@ -773,10 +783,12 @@ describe("the release decision (#694 r17)", () => {
       release: true,
       basis: "operator_confirmed",
     });
-    // The creator's platform limit never covers a writer pid in use.
+    // Neither an ordinary platform limit nor its saved basis covers a writer pid in use.
     expect(releaseDecision(writer, creator)).toMatchObject({ release: false });
-    for (const verdict of [measured, both])
-      for (const grounds of [none, op, creator])
+    expect(releaseDecision(writer, saved)).toMatchObject({ release: false });
+    const unknown: PreparationQuietVerdict = { status: "held", reasons: ["identity unreadable"] };
+    for (const verdict of [measured, both, unknown])
+      for (const grounds of [none, op, creator, saved])
         expect(releaseDecision(verdict, grounds)).toMatchObject({
           release: false,
           operatorMayConfirm: false,

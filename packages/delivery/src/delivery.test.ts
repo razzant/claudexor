@@ -10,8 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { runCapture } from "@claudexor/core";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { runCapture, type CaptureResult } from "@claudexor/core";
 import { sha256 } from "@claudexor/util";
 import { DecisionRecord, makeOutcomeFacts } from "@claudexor/schema";
 import {
@@ -27,6 +27,19 @@ import {
 } from "./index.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
+
+let intercept: ((args: string[]) => CaptureResult | undefined) | null = null;
+vi.mock("@claudexor/core", async (original) => {
+  const core = await original<typeof import("@claudexor/core")>();
+  return {
+    ...core,
+    runCaptureRaw: async (...args: Parameters<typeof core.runCaptureRaw>) =>
+      intercept?.(args[1]) ?? core.runCaptureRaw(...args),
+  };
+});
+afterEach(() => {
+  intercept = null;
+});
 
 // W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
 const __reapDirs: string[] = [];
@@ -317,6 +330,89 @@ async function initRepo(): Promise<string> {
 }
 
 describe("protected apply path", () => {
+  it.each(["before", "after", "both"])(
+    "branch cleanup survives a failed %s status observation after checkout",
+    async (unavailable) => {
+      const { repo, patch } = await makePatchRepo();
+      const branch = "claudexor/status-fault";
+      const index = execFileSync("git", ["-C", repo, "write-tree"], { encoding: "utf8" });
+      let onBranch = false;
+      let reads = 0;
+      let applies = 0;
+      intercept = (args) => {
+        if (args[1] !== repo) return;
+        if (args.includes("checkout") && args.includes("-b") && args.includes(branch))
+          onBranch = true;
+        if (!onBranch) return; // Never bypass delivery's mandatory clean-tree read.
+        if (args.includes("status") && args.includes("--porcelain")) {
+          reads++;
+          if (
+            unavailable === "both" ||
+            (unavailable === "before" && reads === 1) ||
+            (unavailable === "after" && reads === 2)
+          )
+            return {
+              code: reads === 1 ? 128 : null,
+              signal: null,
+              stdout: "",
+              stderr: "status unavailable",
+            };
+        }
+        if (args.includes("apply") && !args.includes("--check")) {
+          applies++;
+          return { code: 1, signal: null, stdout: "", stderr: "apply sentinel" };
+        }
+      };
+      const result = await deliver(repo, patch, { mode: "branch", branch });
+      expect(result).toMatchObject({ applied: false, branch, treeMutated: true });
+      expect(result.detail).toContain("apply sentinel");
+      expect(result.detail).toContain("target state is unknown");
+      expect(result.detail).not.toMatch(/remain at|target changed/);
+      expect(reads).toBe(2);
+      expect(applies).toBe(1);
+      expect((await git(repo, ["branch", "--show-current"])).stdout.trim()).toBe("main");
+      expect((await git(repo, ["branch", "--list", branch])).stdout.trim()).toBe("");
+      expect((await git(repo, ["write-tree"])).stdout).toBe(index);
+      expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("one\n");
+    },
+  );
+
+  it.each([false, true])(
+    "branch delivery keeps its exact apply/compensation path with unavailable status (commit fault: %s)",
+    async (commitFault) => {
+      const { repo, patch } = await makePatchRepo();
+      const branch = "claudexor/status-positive";
+      let onBranch = false;
+      let reads = 0;
+      intercept = (args) => {
+        if (args[1] !== repo) return;
+        if (args.includes("checkout") && args.includes("-b") && args.includes(branch))
+          onBranch = true;
+        if (!onBranch) return;
+        if (args.includes("status") && args.includes("--porcelain")) {
+          reads++;
+          return { code: 128, signal: null, stdout: "", stderr: "status unavailable" };
+        }
+        if (commitFault && args.includes("commit-tree"))
+          return { code: 1, signal: null, stdout: "", stderr: "commit sentinel" };
+      };
+      const result = await deliver(repo, patch, { mode: "branch", branch });
+      expect(result.applied).toBe(!commitFault);
+      expect(reads).toBe(commitFault ? 2 : 1);
+      if (commitFault) {
+        expect(result.treeMutated).toBe(false);
+        expect(result.detail).toContain("commit sentinel");
+        expect(result.detail).toContain("exact patch postimage removed");
+        expect((await git(repo, ["branch", "--list", branch])).stdout.trim()).toBe("");
+      } else expect(result.commit).toBeTruthy();
+      expect((await git(repo, ["branch", "--show-current"])).stdout.trim()).toBe(
+        commitFault ? "main" : branch,
+      );
+      expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe(commitFault ? "one\n" : "two\n");
+      expect((await git(repo, ["diff", "--cached", "--name-only"])).stdout).toBe("");
+    },
+  );
+
   it("a conflicting 3way apply refuses cleanly with the tree RESTORED (adopted:false means unchanged)", async () => {
     const repo = await initRepo();
     // Patch built against content the tree no longer has -> --check refuses.

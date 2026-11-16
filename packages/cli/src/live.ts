@@ -2,6 +2,7 @@ import { controlApiAddress, type ControlApiAddress } from "./control-api-address
 export { controlApiAddress, type ControlApiAddress } from "./control-api-address.js";
 import { laneOf, truncate } from "./live-format.js";
 import { randomUUID } from "node:crypto";
+import { preparationStopSummary } from "@claudexor/workspace";
 import type { RunOutcomeFacts } from "@claudexor/schema";
 import {
   RunOutcomeFacts as RunOutcomeFactsSchema,
@@ -44,6 +45,8 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
   const type = String(ev["type"] ?? "");
   const p = (ev["payload"] ?? {}) as Record<string, unknown>;
   const who = [p["attempt_id"], p["harness_id"]].filter(Boolean).join("/");
+  const stop = preparationStopSummary(p);
+  const stopWarning = stop ? ` — WARNING: ${stop}` : "";
   switch (type) {
     case "run.created":
       return `run created (${String(p["mode"] ?? "?")})`;
@@ -117,7 +120,7 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
     case "interaction.withdrawn":
       return `[${who}] question withdrawn by the agent — no answer needed`;
     case "harness.completed":
-      return `[${who}] completed: ${String(p["status"] ?? "?")}${p["error"] ? ` — ${truncate(String(p["error"]), 160)}` : ""}`;
+      return `[${who}] completed: ${String(p["status"] ?? "?")}${p["error"] ? ` — ${truncate(String(p["error"]), 160)}` : ""}${stopWarning}`;
     case "gate.completed": {
       // Zero configured gates: `passed` is vacuously true (gatesPassed([]) ===
       // true), so "gates passed" would paint verification that never ran.
@@ -155,14 +158,14 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
     case "budget.observation":
       return typeof p["usd"] === "number" ? `spend +$${(p["usd"] as number).toFixed(4)}` : null;
     case "run.completed":
-      return `run completed: ${String(p["lifecycle"] ?? "succeeded")}`;
+      return `run completed: ${String(p["lifecycle"] ?? "succeeded")}${stopWarning}`;
     case "run.failed": {
       const facts = RunOutcomeFactsSchema.safeParse(p["facts"]);
-      if (facts.success) return `run ended: ${runOutcomeLabel(facts.data)}`;
-      return `run failed: ${truncate(String(p["error"] ?? p["status"] ?? "failed"), 200)}`;
+      if (facts.success) return `run ended: ${runOutcomeLabel(facts.data)}${stopWarning}`;
+      return `run failed: ${truncate(String(p["error"] ?? p["status"] ?? "failed"), 200)}${stopWarning}`;
     }
     case "run.blocked":
-      return `run blocked: ${truncate(String(p["error"] ?? "needs human decision"), 200)}`;
+      return `run blocked: ${truncate(String(p["error"] ?? "needs human decision"), 200)}${stopWarning}`;
     case "control.applied": {
       const control = p["control"] as Record<string, unknown> | null | undefined;
       const timeLimit = p["timeLimit"] as Record<string, unknown> | null | undefined;

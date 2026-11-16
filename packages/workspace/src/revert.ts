@@ -114,21 +114,24 @@ export async function revertWorkingTreePatch(
       };
       return primaryResult;
     }
-    const before = options.noIndex ? null : await statusPorcelain(repo);
+    // Only the exact reverse check admits this operation; status is diagnostic.
+    const before = options.noIndex ? null : await statusPorcelain(repo).catch(() => null);
     const apply = await runApply(
       ["apply", ...mode, "--reverse", "--whitespace=nowarn", "-"],
       patch,
     );
     if (apply.code !== 0) {
-      const after = options.noIndex ? null : await statusPorcelain(repo);
+      const after = options.noIndex ? null : await statusPorcelain(repo).catch(() => null);
       primaryResult = {
         reverted: false,
         removed: [],
         reason:
           `reverse apply failed after preflight: ${apply.stderr.trim()}; ` +
-          (before !== null && after === before
-            ? "tree remains at the observed pre-revert state"
-            : "target changed during revert; no destructive rollback was attempted"),
+          (before === null || after === null
+            ? "target state is unknown; no destructive rollback was attempted"
+            : after === before
+              ? "tree remains at the observed pre-revert state"
+              : "target changed during revert; no destructive rollback was attempted"),
         reasonCode: "reverse_apply_failed",
       };
       return primaryResult;

@@ -1,25 +1,17 @@
 /**
- * Held preparation maintenance (#694 r17): the daemon's explicit inspection of
- * the preparation resources it keeps after a stop whose end was not proven or a
- * crash, and the one operator-confirmed release of a single resource.
+ * Held preparation maintenance (#694 r17): inspection after an unproven stop or
+ * crash, and explicit release of one resource.
  *
- * Reach is the crash sweep's: the roots the command store knows (every
- * project's thread directories — those of hidden and purged threads included,
- * since a directory scan is not the thread list — its envelope namespaces and
- * its object store), the delegated execution roots' envelope namespaces and the
- * one-shot namespace. A selector is an address, not a credential (the control
- * API's token is): it is resolved here again against the roots known now, by the
- * same rule discovery applies (`locate`), so it can name nothing an inspection
- * would not list. No path component below a runtime root may be a link, `.` or
- * `..`, and the record must be a regular file: a link is refused, never followed.
+ * The crash sweep's known roots supply thread directories (including hidden
+ * and purged threads), envelopes, object stores, delegated execution envelopes
+ * and the one-shot namespace. Selectors are addresses, not credentials: `locate`
+ * resolves them again under current roots, by the discovery rule. Below a runtime
+ * root, links, `.` and `..` are refused; the record must be a regular file.
  *
- * An inspection only reads. A release runs in the resource's own serialization
- * (the thread's mutation chain with none of its turns queued or running — read
- * only and before-run turns included — the envelope base's turn, the store's
- * prune lock) through the resource's existing release (`confirm*Release` in
- * workspace), which compares the inspected digest, records the confirmation at
- * the resource and then releases it. Nothing here changes a run's recorded
- * stop, its costs or its dispatch facts.
+ * Inspection only reads. Release compares the digest and records consent only
+ * when needed, under the owner's serialization: thread chain without queued or
+ * running turns (read-only and before-run included), envelope turn or prune lock.
+ * A saved ordinary basis needs no new consent. Stop, cost and dispatch facts stay.
  */
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -51,6 +43,7 @@ import {
   stagingGeneration,
   stagingRead,
   stagingPreparationRefusal,
+  threadCleanupContinuation,
   threadGeneration,
   type ConfirmationOutcome,
   type EnvelopeOwnerRecord,
@@ -68,7 +61,7 @@ const SEGMENT = /^(?!\.\.?$)[A-Za-z0-9._-]+$/;
 const STAGING = /^tmp_claudexor-[0-9a-f-]{36}$/;
 
 const CONFIRMATION =
-  "Confirming states that you checked that the stopped preparation's processes and their children have ended. It releases only the selected resource, through its own release; it is recorded there as your confirmation, not as a proof, and it never changes the run's recorded stop (termination_unconfirmed stays), its costs or whether anything was dispatched. A process a read measures alive, an unreadable record, a queued or running turn of the thread and a live creator still refuse.";
+  "Confirming states that you checked that the stopped preparation's processes and their children have ended. Only when proof or a saved cleanup basis does not already permit release is a new confirmation recorded at the resource, never as a proof. Release touches only the selected resource; the run's recorded stop (termination_unconfirmed stays), costs and dispatch facts stay unchanged. A process a read measures alive, an unreadable record, a queued or running turn of the thread and a live creator still refuse.";
 
 type Selector =
   | { k: "thread"; root: string; id: string }
@@ -341,7 +334,13 @@ async function inspect(
   const verdict = facts.staging
     ? await stagingRead(facts.staging, undefined, quiet)
     : await quiet(holdFactsOf(facts.marker, facts.held));
-  const decision = releaseDecision(verdict, { operator: facts.operator, platformLimit: false });
+  const decision = releaseDecision(verdict, {
+    operator: facts.operator,
+    platformLimit: false,
+    savedCleanup: facts.savedCleanup !== undefined,
+  });
+  const savedCleanup =
+    decision.release && decision.basis === "saved_cleanup" ? facts.savedCleanup : undefined;
   const refusal =
     item.selector.k === "thread"
       ? activeTurn(item.selector.id)
@@ -368,14 +367,16 @@ async function inspect(
         : decision.release
           ? decision.basis === "machine_proven"
             ? "machine"
-            : "operator_confirmation"
+            : decision.basis === "saved_cleanup"
+              ? "saved_cleanup"
+              : "operator_confirmation"
           : decision.operatorMayConfirm
             ? "operator_confirmation"
             : "refused",
     refusal,
     operator_release: facts.basis ? { confirmed_at: facts.basis.confirmed_at } : null,
     cleanup_error: facts.cleanupError ?? null,
-    on_release: facts.onRelease,
+    on_release: savedCleanup ? `${savedCleanup} ${facts.onRelease}` : facts.onRelease,
   };
 }
 
@@ -417,6 +418,7 @@ interface Facts {
   operator: boolean;
   basis?: OperatorReleaseBasis;
   cleanupError?: string;
+  savedCleanup?: string;
   onRelease: string;
   staging?: StagingOwnerRecord;
   envelope?: EnvelopeOwnerRecord;
@@ -429,6 +431,7 @@ function factsOf(item: Found, bytes: string): Facts {
     // (another tree's, as an earlier daemon spelled the config root otherwise) is
     // shown unreadable for that reason, never offered for a confirmation.
     const record = parseThreadPreparation(bytes, item.path);
+    const continued = threadCleanupContinuation(record);
     return {
       marker: record.scope?.marker ?? null,
       held: record.held,
@@ -436,6 +439,7 @@ function factsOf(item: Found, bytes: string): Facts {
       operator: boundOperatorRelease(record.operator_release, threadGeneration(record)),
       ...(record.operator_release ? { basis: record.operator_release } : {}),
       ...(record.cleanup_error ? { cleanupError: record.cleanup_error } : {}),
+      ...(continued ? { savedCleanup: continued.reason } : {}),
       onRelease: threadOnRelease(record),
     };
   }
@@ -541,7 +545,7 @@ function receipt(
   outcome: ConfirmationOutcome,
 ): PreparationReleaseAnswer {
   const note =
-    "The run's recorded stop and its unconfirmed termination, its costs and its dispatch facts are unchanged; an operator confirmation is not a proof that what the preparation started ended.";
+    "The run's recorded stop and its unconfirmed termination, its costs and its dispatch facts are unchanged; neither an operator confirmation nor a saved cleanup basis is a machine proof that what the preparation started ended.";
   const common = { selector, kind, path, note };
   const facts = {
     generation: "generation" in outcome ? (outcome.generation ?? null) : null,
@@ -580,14 +584,14 @@ function receipt(
     ...common,
     ...facts,
     outcome: outcome.outcome,
-    basis: outcome.basis === "platform_limit" ? "operator_confirmed" : outcome.basis,
+    basis: outcome.basis,
     continued: outcome.continued,
     reasons: [],
     cleanup_error: outcome.cleanup_error ?? null,
     writer: outcome.writer ?? null,
     remains:
       outcome.outcome === "cleanup_failed"
-        ? "the record and what could not be removed; the confirmation stays recorded with it, so a new request or the resource's next release can continue cleanup; the same Idempotency-Key only reads this receipt"
+        ? "the record and what could not be removed; any saved cleanup basis or confirmation stays recorded for a new request or the resource's next release to retry; the same Idempotency-Key only reads this receipt"
         : outcome.outcome === "completed"
           ? "the finished resource as made (a checkout handed over, or a base kept for its continuation custody)"
           : "nothing of this resource",

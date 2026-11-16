@@ -4,8 +4,8 @@ import { z } from "zod/v3";
  * Held preparation maintenance (#694): an explicit inspection of the
  * preparation resources Claudexor keeps after a stop whose end was not proven,
  * or after a crash (an isolated thread's record, an envelope base, an object
- * store's staging directory), and one operator-confirmed release of a single
- * one of them. Ordinary GC, Retry and purge never confirm anything.
+ * store's staging directory), and release of one on proof, a saved cleanup
+ * basis, or operator confirmation. Ordinary GC, Retry and purge never confirm anything.
  */
 
 export const HeldPreparationKind = z
@@ -16,10 +16,11 @@ export const HeldPreparationKind = z
 export type HeldPreparationKind = z.infer<typeof HeldPreparationKind>;
 
 export const PreparationReleaseBasis = z
-  .enum(["machine_proven", "operator_confirmed"])
+  .enum(["machine_proven", "operator_confirmed", "saved_cleanup"])
   .describe(
-    "machine_proven: a read proved that what the preparation started has ended; operator_confirmed: no read could prove it and the operator's recorded confirmation released it (not a proof).",
+    "machine_proven: a read proved that what the preparation started has ended; operator_confirmed: the operator's recorded confirmation released it (not a proof); saved_cleanup: this generation's ordinary cleanup or handover basis permitted release after fresh checks, without a new confirmation or machine proof.",
   );
+export type PreparationReleaseBasis = z.infer<typeof PreparationReleaseBasis>;
 
 export const PreparationWriterObservation = z
   .object({
@@ -61,9 +62,9 @@ export const HeldPreparation = z
         "This inspection's own read of what the preparation started (a read releases nothing).",
       ),
     release: z
-      .enum(["machine", "operator_confirmation", "refused"])
+      .enum(["machine", "operator_confirmation", "saved_cleanup", "refused"])
       .describe(
-        "What a release needs now: machine (the read proves the end), operator_confirmation (no read can), refused (a read measures it alive, its record is unreadable, a turn or creator is active).",
+        "What permits release: machine (the read proves the end), operator_confirmation (the operator's statement is needed or already recorded), saved_cleanup (this generation's saved ordinary cleanup or handover basis; no new confirmation or proof), refused (blocked). Release checks again.",
       ),
     refusal: z.string().nullable(),
     operator_release: z
@@ -97,11 +98,13 @@ export const ControlPreparationReleaseRequest = z
     confirm_processes_ended: z
       .literal(true)
       .describe(
-        "The operator checked that the stopped preparation's processes and their children have ended.",
+        "The operator checked that the stopped preparation's processes and their children have ended; recorded as a release basis only when proof or a saved basis does not already permit release.",
       ),
   })
   .strict()
-  .describe("Release one held preparation resource on the operator's confirmation.");
+  .describe(
+    "Release one held preparation resource, recording operator confirmation only if needed.",
+  );
 export type ControlPreparationReleaseRequest = z.infer<typeof ControlPreparationReleaseRequest>;
 
 export const ControlPreparationReleaseReceipt = z
@@ -120,7 +123,7 @@ export const ControlPreparationReleaseReceipt = z
         "basis_not_recorded",
       ])
       .describe(
-        "released/completed: its release ran (completed: a finished checkout kept as made); cleanup_failed: it ran and a step failed, the confirmation stays recorded for the next release; refused: nothing was released; stale: inspect again; not_held: nothing held there (not a proof of an earlier release); basis_not_recorded: the confirmation could not be saved, nothing was released.",
+        "released/completed: its release ran (completed: a finished checkout kept as made); cleanup_failed: it ran and a step failed, any saved basis stays for retry; refused: nothing was released; stale: inspect again; not_held: nothing held there (not a proof of an earlier release); basis_not_recorded: the confirmation could not be saved, nothing was released.",
       ),
     operation_id: z
       .string()

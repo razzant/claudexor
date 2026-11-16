@@ -81,8 +81,10 @@ export interface ContinuityPlanPointer {
 }
 
 export interface ContinuityAnchor {
+  /** Null means unread or unavailable, not a proven unborn tree. */
   headSha: string | null;
-  dirtyCount: number;
+  /** Null means unread or unavailable; zero is an observed clean status. */
+  dirtyCount: number | null;
 }
 
 export interface ContinuityRequest {
@@ -349,10 +351,14 @@ function renderPacket(
     );
   }
   if (anchor) {
+    const changes =
+      anchor.dirtyCount === null
+        ? "Uncommitted file count unknown"
+        : `${anchor.dirtyCount} file(s) with uncommitted changes`;
     parts.push(
       "## Workspace anchor",
       "",
-      `HEAD ${anchor.headSha ?? "(unborn)"} · ${anchor.dirtyCount} file(s) with uncommitted changes at the start of this turn.`,
+      `HEAD ${anchor.headSha ?? "(unknown)"} · ${changes} at the start of this turn.`,
       "",
     );
   }

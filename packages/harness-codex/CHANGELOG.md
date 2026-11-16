@@ -1,5 +1,28 @@
 # @claudexor/harness-codex
 
+## 6.2.0
+
+### Patch Changes
+
+- 7f01267: Separate Codex Ultrafast from ordinary Fast. `processingPreference` accepts `ultrafast`, and processing receipts and model capabilities report it as its own mode. Advisory Fast selects only an advertised `fast` or `priority` tier, whatever order the account lists its tiers in; before, a model that listed `ultrafast` first received Ultrafast for a Fast request. Ultrafast is submitted only where the selected model and account advertise it. Otherwise the request continues on ordinary service and the receipt keeps `requested: ultrafast` with its reason.
+
+  When the selected model does not advertise a requested Fast, Ultrafast or Economy tier, a raw Codex HTTP request now omits `service_tier` instead of sending `default`; the Codex CLI still selects `default` explicitly so it cannot inherit a native setting. Claude reports `ultrafast_not_supported`. Cursor reports it when the model has a listed standard/`-fast` pair and selects the standard variant; a model without such a pair keeps `processing_variant_unconfirmed` with the selected model, and an explicitly selected `-fast` model remains native Fast (`native_explicit`) under the existing paid policy. Claude and Cursor now list `ultrafast` in `processing_preferences`, which names the preferences an adapter accepts and answers with a receipt, not the service a model or route provides.
+
+  Claudexor does not establish an included allowance for Ultrafast, so its existing no-paid policy keeps ordinary service; this is not a claim about vendor billing. Observed Ultrafast is never inferred to be ordinary included work. A confirmed pre-generation refusal of a submitted Ultrafast tier may fall back to Standard like Fast; an unknown outcome is not retried. A retry keeps the Ultrafast intent of a receipt recorded before this change, which named it Fast.
+
+  Strict readers using older schemas reject `ultrafast` in processing capability and receipt enums. The value can appear without an explicit Ultrafast request: Claude, Codex and Cursor capability rows advertise the preference, and Codex receipts can name an inherited or observed native Ultrafast tier. The existing data-root serving floor also prevents an older engine from opening a root this release has served; returning requires a complete stopped backup.
+
+  Claudexor.app 6.0.0–6.1.2 cannot decode a run whose reviewer panel names `ultrafast`, so the runtime update floor requires Claudexor.app 6.2.0. The local updater reports `appUpdateRequired` and leaves the current engine in place; the SSH compatibility check instead prevents an older app from connecting to the host until the application is updated. This app floor does not establish embedding-host compatibility.
+
+- Updated dependencies [42d1eb7]
+- Updated dependencies [7f01267]
+- Updated dependencies [d90d662]
+- Updated dependencies [101e1a1]
+  - @claudexor/schema@6.2.0
+  - @claudexor/core@6.2.0
+  - @claudexor/secrets@6.2.0
+  - @claudexor/util@6.2.0
+
 ## 6.1.2
 
 ### Patch Changes

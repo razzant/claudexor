@@ -18,7 +18,7 @@ import { createDirectoryEnvelope } from "./directory-workspace.js";
 import { processStartTime } from "./envelope-recovery.js";
 import { liveEnvelopeCustody, writeEnvelopeCustodyAsync } from "./envelope-custody.js";
 import { snapshotLegacyDirectoryBaseline } from "./plain-diff.js";
-import { rawAcceptedPaths, rawAwareSnapshot } from "./raw-patch.js";
+import { rawAcceptedPaths, rawAwareSnapshot, transferRawRecords } from "./raw-patch.js";
 import { ensureClaudeBridge, writeBridgeCreatedMarker } from "./claude-bridge.js";
 import {
   afterScopeSettled,
@@ -54,6 +54,9 @@ export interface CreateEnvelopeOptions {
   /** Holder run of an isolated Git envelope whose stopped work may be kept for
    * continuation: `live` custody is recorded before any harness runs. */
   custody?: { runId: string; runDir: string };
+  /** Copy this source's Raw membership into a fresh isolated Git candidate before
+   * handoff. In-place and directory envelopes need no transfer. */
+  seedRawRecords?: boolean;
   /** The run's stop. Checked before anything is made and between steps; a running
    * Git child is stopped (`PreparationStopped`); its Git children join the scope the
    * signal carries (`withScopeMarker`). */
@@ -290,6 +293,13 @@ async function prepareAt(input: {
   await isolatedCloneAdd(repoRoot, path, branch, baseSha, storeObjects, signal);
   throwIfCancelled(signal);
   await writeTextAsync(join(base, "private-clone-v1"), "private Git authority\n");
+
+  // Still preparation: a failed transfer must keep the whole private base under
+  // prepareOrKeep, before either the caller or continuation custody owns it.
+  if (opts.seedRawRecords) {
+    await transferRawRecords(repoRoot, path, signal);
+    throwIfCancelled(signal);
+  }
 
   // AGENTS.md compatibility bridge (INV-113): the checkout omits any
   // untracked project-root file, so a Claude Code candidate may need an

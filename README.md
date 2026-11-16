@@ -25,15 +25,20 @@ arbitration; honest budget/quota accounting (unknown cost is never `$0`);
 deterministic gates and protected paths; and — since 2.1 — **credential
 profiles**: named Antigravity/Claude/Codex/Cursor/Grok Build subscription
 bindings side by side, each with Claudexor-scoped state and platform-declared credential
-custody. Live subscription-quota tracking — and the default policy that moves
-an unpinned run, with its work, off a spent or vendor-refused account — covers
-the harnesses with a vendor quota source (Antigravity, Claude, and Codex). Cursor's internal
-dashboard supplies dated monetary resources, not an execution-quota verdict.
+custody. Live subscription-quota tracking and default rotation of unpinned runs
+off spent accounts cover the harnesses with a vendor quota source (Antigravity,
+Claude, and Codex). In Agent and Ask, saved work can also pass a verification or
+organization subscription refusal from an in-run hop target that has done no
+work of its own. Cursor's internal dashboard supplies dated monetary resources,
+not an execution-quota verdict.
 Everything runs on your machine, files are the source of truth, and there is no telemetry.
 
-Current status: **v6.1.2**. See "Stability at 2.0" below for what is a stable
-contract and what remains experimental; retired verbs and mode ids hard-error
-with the new spelling instead of silently aliasing.
+Current status: **v6.2.0**. This is the source version. See the
+[changelog](CHANGELOG.md) for its changes and
+[GitHub Releases](https://github.com/razzant/claudexor/releases) for
+published builds. "Stability at 2.0" below distinguishes stable contracts from
+experimental ones; retired verbs and mode ids hard-error with the new spelling
+instead of silently aliasing.
 
 Claudexor also runs as the exact-pinned delegated execution layer inside
 [Ouroboros](https://github.com/razzant/ouroboros), a persistent self-developing
@@ -623,12 +628,14 @@ Windows agy uses the current OS user's Credential Manager identity while the
 binding HOME scopes vendor state. Each harness may declare a typed
 `profile_policy` (`limit_action: auto|fail|ask|rotate`; the default `auto`
 rotates subscription accounts and fails metered ones): reactive rotation moves
-pool-selected accounts on typed vendor limits, on a session that died before
-any work, and on a vendor-proven account refusal (such as Claude's
-`verification_required`) that came before the account did any work — never on
-ordinary network errors and never off an explicit pin — with full provenance on
-the run record. Downgrading to an older engine is supported through the engine's
-own rollback (`claudexor profiles rollback-migration`) run BEFORE the
+pool-selected accounts on typed vendor limits and on a session that died before
+any work. After progress, Agent and Ask can also move saved work past a
+verification or organization subscription refusal from the current attempt's
+own hop target, only if that try did no work of its own. These refusals still
+stop a same-account resume or the first try of a new `continue_from` successor.
+Ordinary network errors do not rotate, and an explicit pin never moves; the run
+record keeps full provenance. Downgrading to an older engine is supported through
+the engine's own rollback (`claudexor profiles rollback-migration`) run BEFORE the
 downgrade. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5 for the complete contract.
 
