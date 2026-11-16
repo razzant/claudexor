@@ -66,6 +66,10 @@ interface Scenario {
   /** Runs inside each asynchronous credential readiness probe (e.g. time
    * passing or a new quota observation landing while readiness is checked). */
   onProbe?: (profileId: string) => void | Promise<void>;
+  /** Where the account stores live (default `<repo>/store-<id>`). Outside the
+   * workspace (`tempStoreRoot`), a session move leaves the captured tree as it
+   * was, as production stores do. */
+  storeRoot?: string;
 }
 
 export const RESET = "2026-10-06T21:00:00.000Z";
@@ -108,10 +112,20 @@ export function fileStoreContinuity(
   };
 }
 
+/** A directory outside every fixture repository for account stores (`storeRoot`). */
+export function tempStoreRoot(): string {
+  const dir = mkdtempSync(join(tmpdir(), "cx-inrun-stores-"));
+  roots.push(dir);
+  return dir;
+}
+
 export async function run(scenario: Scenario) {
   const root = gitRepo();
   const configDir = process.env.CLAUDEXOR_CONFIG_DIR!;
-  const stores = Object.fromEntries(scenario.profiles.map((id) => [id, join(root, `store-${id}`)]));
+  const storeRoot = scenario.storeRoot ?? root;
+  const stores = Object.fromEntries(
+    scenario.profiles.map((id) => [id, join(storeRoot, `store-${id}`)]),
+  );
   const profiles = scenario.profiles.map((id) =>
     CredentialProfile.parse({
       profile_id: id,

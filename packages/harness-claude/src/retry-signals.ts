@@ -80,14 +80,22 @@ const CLAUDE_ORG_DISABLED_RE = /organization has disabled claude subscription ac
 
 /** The one typed denial of this credential's subscription access, from the
  * org-disabled prose here or the stdout result's exact API error code
- * (vendor-failure.ts). `text` is the vendor's failure prose, a diagnostic. */
-export function claudeEntitlementDenial(text: string, sessionId: string, ts: string): HarnessEvent {
+ * (vendor-failure.ts): the organization does not allow it, or the vendor holds
+ * the account's replies until a verification step (`verification_required`).
+ * `text` is the vendor's failure prose, a diagnostic. */
+export function claudeEntitlementDenial(
+  text: string,
+  sessionId: string,
+  ts: string,
+  category: "oauth_org_not_allowed" | "verification_required" = "oauth_org_not_allowed",
+): HarnessEvent {
+  const label = category === "verification_required" ? "verification" : "entitlement";
   return {
     type: "status",
     session_id: sessionId,
     ts,
-    text: `entitlement: ${redactSecrets(text).slice(0, 500)}`,
-    status: { kind: "api_retry", error_category: "oauth_org_not_allowed" },
+    text: `${label}: ${redactSecrets(text).slice(0, 500)}`,
+    status: { kind: "api_retry", error_category: category },
     payload: { entitlement_denied: true },
   };
 }

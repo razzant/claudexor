@@ -1798,6 +1798,9 @@ typed marker set (thinking/tool/file/patch/compaction — deliberately not
 retryable deaths stay with the same-profile retry machinery, and an observed
 mutation (workspace diff or any `file_change` event) fences only the `fresh`
 carrier; native, moved and packet carriers continue the work after progress.
+After progress one typed refusal also moves the work: the adapter-proven
+account-wide denial of the account a hop just moved it to, before that try did
+any work of its own (see "In-run continuation").
 Adapters keep a failed result's prose out of answer material entirely: a
 non-success terminal result rides a `status` event, never a `message`, and an
 errored attempt with no typed final has no deliverable (`acceptedTryOutput`) —
@@ -1926,8 +1929,13 @@ typed category proves, with one owner (`credentialStreamRefusal`) for the observ
 and the differential probe: an auth rejection, or a denial of subscription access on
 the observed subscription route that the adapter proved (`entitlement_denied`: the
 vendor's exact `oauth_org_not_allowed` code, its recorded result, or the stdout
-result's exact `oauth_not_allowed_for_organization` API code, #318), covers every
-model of that exact subject and route and never another route, row or harness. Any
+result's exact `oauth_not_allowed_for_organization` or `verification_required` API
+code, #318), covers every model of that exact subject and route and never another
+route, row or harness. A verification hold keeps its own code as the observation's
+`detail`; the engine attaches no login guidance to it, while Accounts still renders
+the row like any unverified one (`Not verified — log in`, a `Log in` action). A login,
+like the hold's expiry, makes the row eligible for a retry, not known repaired, and
+no quota read lifts it (only `auth_revoked` yields to newer authenticated quota). Any
 other capability refusal covers only the model the run requested, including prose the
 parser's fallback files under the same category, which keeps its diagnostics and retry
 class. A refusal from a run that named no model enters no ledger,
@@ -7980,6 +7988,11 @@ wire, whichever arrives first, once per try) rides that event as a typed
 `result.error` refusal `Individual quota reached` is translated the same way:
 its original `vendor_failure` (`code`, exact words, `agy_result`) remains beside
 it, while no relative reset phrase is converted into an absolute reopening time.
+Claude's failed stdout result with the exact `oauth_not_allowed_for_organization`
+or `verification_required` code adds the typed account denial (`status`
+`error_category` `oauth_org_not_allowed` / `verification_required`,
+`entitlement_denied`) beside its unchanged record; a retry frame naming a code
+proves nothing.
 The Codex code covers a spent plan window and a workspace out of credits alike;
 the AGY phrase likewise does not imply a window that a timer reopens. Decisions
 read that typed signal (see "In-run continuation" and the quota admission
@@ -8325,7 +8338,19 @@ before its first `started`, a steering message admitted but not echoed) rides th
 as a reference to reconcile, never a blind replay. Pinned accounts, `fail` /
 `ask` policies and a spent pool end typed. A typed request refusal ends the
 attempt with no retry, continuation or rotation, after its try settles like any
-other: its progress still counts as acted work and its cause is `other`. Thread session/checkpoint publication
+other: its progress still counts as acted work and its cause is `other`. Any
+other typed refusal after progress also ends it (`other`), except one: when this
+attempt's own hop moved the work to an account whose try ends in the
+adapter-proven account-wide denial (`entitlement_denied`: Claude's
+`verification_required` or the organization's exact refusal) before any work of
+that try (no agent progress, file change or accepted answer, which alone decide
+under read-only access, Ask's or an Agent's; a writable lane also needs the same
+Git-result digest as before, and its incomplete, directory and legacy preview
+captures never qualify), the same work hops on (receipt cause `other`,
+rotation `structural_pre_progress_failure`) with no same-account retry; a refusal
+beside it of another class, a same-account resume and a successor's first try
+keep the stop. A spent pool then ends `credential_pool_exhausted`; the held account
+adds no reset to it. Thread session/checkpoint publication
 follows an accepted handshake; mismatched sessions and sessions whose recorded
 history is not full (packet-born, or a successor's partial or unknown one) never
 replace the lane binding. A packet continuation updates the thread disclosure to `packet`,

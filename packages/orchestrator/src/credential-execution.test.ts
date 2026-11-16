@@ -165,6 +165,42 @@ describe("dispatch-bound credential intake", () => {
     expect(ledger.live()).toHaveLength(1);
   });
 
+  it("a verification hold is recorded account-wide only from a failed terminal, never a recovered or cancelled try", () => {
+    const held = () =>
+      event({
+        status: { kind: "api_retry", error_category: "verification_required" },
+        payload: { entitlement_denied: true },
+      });
+    const ledger = new CredentialUnusableLedger();
+    const recovered = createCredentialExecutionObserver(ledger, ledger.bind(subject));
+    recovered.observe(held());
+    recovered.observe(served());
+    recovered.observe(event({ type: "completed", payload: { exit_code: 0 } }));
+    recovered.finish();
+    expect(ledger.live()).toEqual([]);
+    const cancelled = createCredentialExecutionObserver(ledger, ledger.bind(subject));
+    cancelled.observe(held());
+    cancelled.observe(event({ type: "completed", payload: { aborted: true } }));
+    cancelled.finish();
+    expect(ledger.live()).toEqual([]);
+    const refused = createCredentialExecutionObserver(ledger, ledger.bind(subject));
+    refused.observe(held());
+    refused.observe(event({ type: "error", error: "held" }));
+    refused.observe(failed());
+    refused.finish();
+    expect(ledger.live()).toMatchObject([
+      {
+        profile_id: "work",
+        credential_route: "vendor_native",
+        model: null,
+        code: "capability_refused",
+        detail: "verification_required",
+      },
+    ]);
+    // Served usage reported before the failed result is no recovery.
+    expect(ledger.honored()).toEqual([]);
+  });
+
   it("unknown served model clears auth but never clears model-specific capability", () => {
     const ledger = new CredentialUnusableLedger();
     ledger.record(observation());

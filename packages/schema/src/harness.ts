@@ -822,12 +822,11 @@ export const HarnessEvent = z
       "Typed rate-limit/quota signal set by the adapter when the native CLI reports a 429/quota/overload.",
     ),
     /**
-     * Typed transient-status detail; set on `status` events. Today's only kind
-     * is claude's native `api_retry` (the CLI is retrying an API call by
-     * itself): the adapter maps the official fields through instead of
-     * fabricating a thinking block, so retries land in the activity feed —
-     * never in the reasoning disclosure. `error_category` passes the vendor's
-     * own label (e.g. rate_limit, overloaded) verbatim as disclosed evidence.
+     * Typed transient-status detail; set on `status` events. Its only kind is
+     * claude's native `api_retry` (the CLI retrying an API call), mapped through so
+     * retries land in the activity feed, never the reasoning disclosure; a typed
+     * account denial from a failed result rides it too. `error_category` is the
+     * vendor's own label or exact code (e.g. rate_limit, verification_required).
      */
     status: z
       .object({
@@ -849,6 +848,7 @@ export const HarnessEvent = z
           .enum([
             "authentication_failed",
             "oauth_org_not_allowed",
+            "verification_required",
             "billing_error",
             "rate_limit",
             "overloaded",

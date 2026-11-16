@@ -155,4 +155,43 @@ describe("shared account evidence composition", () => {
       }).verification,
     ).toBe("failed");
   });
+  it("newer authenticated quota lifts only an auth rejection, never a vendor verification hold", () => {
+    const hold = refusal({ code: "capability_refused", detail: "verification_required" });
+    const later = new Date().toISOString();
+    const quota = {
+      snapshots: [
+        {
+          subject: {
+            harness: "claude",
+            credential_route: "vendor_native" as const,
+            subject_id: "work",
+            plan_label: null,
+          },
+          constraints: [],
+          source: "claude_oauth_usage" as const,
+          observed_at: later,
+          freshness: "fresh" as const,
+        },
+      ],
+      absences: [],
+      honored: [
+        {
+          harness_id: "claude",
+          profile_id: "work",
+          credential_route: "vendor_native" as const,
+          model: null,
+          observed_at: later,
+        },
+      ],
+    };
+    expect(composeCredentialProfileEvidence(status, { ...evidence([hold]), quota })).toMatchObject({
+      verification: "failed",
+      detail: "verification_required",
+    });
+    // The same evidence recovers an auth rejection (its own rule); the hold ends
+    // only by expiry, a credential change, or service the ledger itself covers.
+    expect(
+      composeCredentialProfileEvidence(status, { ...evidence([refusal()]), quota }).verification,
+    ).toBe("passed");
+  });
 });

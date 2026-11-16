@@ -1571,6 +1571,7 @@
               "enum": [
                 "authentication_failed",
                 "oauth_org_not_allowed",
+                "verification_required",
                 "billing_error",
                 "rate_limit",
                 "overloaded",

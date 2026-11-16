@@ -400,3 +400,112 @@ describe("Claude's exact subscription-denied API code (#318)", () => {
     });
   });
 });
+
+/** The stdout result for an account whose replies the vendor holds until a
+ * verification step: the shape of the 15 Nov 2026 incident (HTTP 403, exact
+ * code `verification_required`, a portal link in the words). The code is the
+ * evidence; the words (synthetic, with a fixture portal) are the diagnostic. */
+const HELD_CODE = "verification_required";
+const HELD_WORDS =
+  "API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal: https://portal.example.test/verify?org=fixture";
+const held = (extra: Record<string, unknown> = {}) => ({
+  ...recording("2.1.288").at(-1),
+  api_error_status: 403,
+  api_error_code: HELD_CODE,
+  result: HELD_WORDS,
+  ...extra,
+});
+const typedHolds = (events: HarnessEvent[]) =>
+  events.filter((event) => event.status?.error_category === HELD_CODE);
+
+describe("Claude's exact verification-required API code", () => {
+  it("is a typed account-wide denial under its own code, the vendor's words kept, never transport", () => {
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(held(), "fixture")!;
+    for (const event of events) EventSchema.parse(event);
+    expect(typedDenials(events)).toEqual([]);
+    const [hold, ...more] = typedHolds(events);
+    expect(more).toEqual([]);
+    expect(hold).toMatchObject({
+      type: "status",
+      text: `verification: ${HELD_WORDS}`,
+      status: { kind: "api_retry", error_category: HELD_CODE },
+      payload: { entitlement_denied: true },
+    });
+    const errors = events.filter((event) => event.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.error).toBe(HELD_WORDS);
+    expect(errors[0]!.request_refusal).toBeUndefined();
+    expect(errors[0]!.payload).toEqual({
+      api_error_status: 403,
+      vendor_failure: { code: HELD_CODE, message: HELD_WORDS, source: "claude_stdout" },
+    });
+    expect(events.indexOf(hold!)).toBeLessThan(events.indexOf(errors[0]!));
+    expect(events.some((event) => event.final || event.transient || event.rate_limit)).toBe(false);
+  });
+
+  it.each([
+    ["the same words with no code", { api_error_code: undefined }],
+    ["the same words under another code", { api_error_code: "permission_error" }],
+    ["the code on an ordinary answer", { is_error: false }],
+  ])("%s is no denial: the words are never read for a cause", (_name, extra) => {
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      held(extra),
+      "fixture",
+    )!;
+    expect(typedHolds(events)).toEqual([]);
+    expect(events.some((event) => event.payload?.["entitlement_denied"] === true)).toBe(false);
+  });
+
+  it("a retry frame naming the code, which the CLI may recover from, is no denial", () => {
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      { type: "system", subtype: "api_retry", attempt: 1, max_retries: 10, error: HELD_CODE },
+      "fixture",
+    )!;
+    expect(events).toHaveLength(1);
+    expect(events[0]!.status?.error_category).toBe("unknown");
+    expect(events[0]!.payload?.["entitlement_denied"]).toBeUndefined();
+  });
+
+  it("the real adapter/run loop carries the denial and the terminal vendor evidence", async () => {
+    const [init] = recording("2.1.288");
+    const records = [init!, held()];
+    const adapter = createClaudeAdapter({
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+      probeEffortLevels: async () => ({ levels: [], live: true }),
+      runCliHarness: (options) =>
+        runCliHarness({
+          ...options,
+          bin: process.execPath,
+          args: [
+            "-e",
+            `process.stdout.write(${JSON.stringify(records.map((row) => JSON.stringify(row)).join("\n") + "\n")},()=>{process.exitCode=1})`,
+          ],
+        }),
+    });
+    const events: HarnessEvent[] = [];
+    for await (const event of adapter.run(
+      HarnessRunSpec.parse({
+        session_id: "replay",
+        intent: "implement",
+        prompt: "fixture",
+        cwd: process.cwd(),
+        access: "full",
+        auth_preference: "subscription",
+      }),
+    ))
+      events.push(event);
+    expect(typedHolds(events)).toMatchObject([{ payload: { entitlement_denied: true } }]);
+    expect(events.at(-1)?.payload).toMatchObject({
+      exit_code: 1,
+      harness_reported_error: true,
+      vendor_failure: { code: HELD_CODE, message: HELD_WORDS, source: "claude_stdout" },
+    });
+  });
+});

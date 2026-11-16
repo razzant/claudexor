@@ -1,8 +1,8 @@
 /** Agent and Ask share one per-attempt continuation owner. Before progress,
  * existing fresh-retry/rotation rules apply. After progress, limits move the
- * session to another account (or a packet); transport resumes the same account
- * bounded by max_retries. Permission/context refusals and the max-turns cap stop
- * rather than replaying the same limitation. Pins never rotate.
+ * session to another account (or a packet), as does a hop target's proven account
+ * refusal before work of its own; transport resumes the same account bounded by
+ * max_retries. Other typed refusals and the max-turns cap stop. Pins never rotate.
  *
  * Acted is sticky across every try (answer, activity, file change or diff): a
  * silent resumed try never reopens the fresh rung. The capsule, per-try receipts,
@@ -39,7 +39,7 @@ import {
   rotateSpecOnTypedLimit,
   type EmitFn,
 } from "./credential-profile-rotation.js";
-import { inRunRotationArgs } from "./rotation-predicate.js";
+import { TYPED_REFUSALS, inRunRotationArgs, refusedBeforeOwnWork } from "./rotation-predicate.js";
 import { emitTransientRetryPlan } from "./laneStreamEvents.js";
 import { rotatedSpecInLaneHome } from "./orchestrator-credentials.js";
 import { transientRetryDelayMs } from "./runSupport.js";
@@ -56,8 +56,6 @@ import {
 } from "./pre-progress-refusal.js";
 import { PoolAttemptEvidence, withRotationAttempts } from "./pool-attempt-evidence.js";
 import { pinnedTypedLimit, quotaRefusalWithScope } from "./quota-refusal-scope.js";
-
-const TYPED_REFUSALS = new Set(["auth_failed", "capability_refused", "config_error"]);
 
 export class InRunContinuity {
   private capsule: SessionCapsule | null;
@@ -93,6 +91,7 @@ export class InRunContinuity {
   private unstartedInputs: UncertainInput[] = [];
   private refusal: PreProgressRefusalSubject | null = null;
   private readonly poolEvidence: PoolAttemptEvidence;
+  private workspaceBefore: string | null | undefined; // the last settled try's tree identity
 
   constructor(private readonly deps: InRunContinuityDeps) {
     this.poolEvidence =
@@ -244,6 +243,9 @@ export class InRunContinuity {
       facts.workspaceDiffNonEmpty === true;
     await this.relocate(facts.runSpec);
     this.settledCarrier = this.continued?.carrier ?? null;
+    // Judged before the receipt clears `continued`: did the hop's target refuse first?
+    const hopRefused = refusedBeforeOwnWork(facts, this.continued, this.workspaceBefore);
+    this.workspaceBefore = facts.workspaceIdentity;
     this.emitReceipt(facts.runSpec);
     // The carrier and input readers below read the run's journals raw: they land first.
     await orderedAppender.settledUnder(this.deps.runDir);
@@ -272,8 +274,9 @@ export class InRunContinuity {
     if (facts.telemetry.contextExhausted) return this.breakWith("context_exhausted");
     if (facts.telemetry.turnLimitReached) return this.breakWith("turn_limit"); // #299
     if (!this.acted) return this.legacy(facts);
-    const typedRefusal = facts.newTransients.some((t) => TYPED_REFUSALS.has(t.category));
-    if (typedRefusal) return this.breakWith("other");
+    // A typed refusal stops, unless the hop's target refused before any work of its own.
+    if (facts.newTransients.some((t) => TYPED_REFUSALS.has(t.category)))
+      return hopRefused ? this.hopWithWork(facts, "other") : this.breakWith("other");
     // A11: a bare backoff frame (a delay, no reset, no constraint) is transport —
     // the same session is simply resumed — when a session exists to resume;
     // without one the typed limit still hops (nothing to resume on this account).
@@ -458,20 +461,7 @@ export class InRunContinuity {
       !facts.sawRetryable &&
       !facts.markers.sawAgentProgress &&
       facts.markers.fileChanges === 0;
-    if (packetDiedUnused) {
-      const rotated = await this.rotate(facts, true);
-      if (rotated && "poolExhausted" in rotated) {
-        return this.poolTerminal(rotated.poolExhausted);
-      }
-      if (!rotated) return { kind: "break" };
-      this.hopped(rotated);
-      return this.prepareContinuedTry(
-        facts,
-        this.inLaneHome(facts.runSpec, rotated),
-        "transport",
-        0,
-      );
-    }
+    if (packetDiedUnused) return this.hopWithWork(facts, "transport");
     if (this.sameAccountTries >= this.deps.retryPolicy.maxRetries) return { kind: "break" };
     const retryIndex = this.sameAccountTries;
     this.sameAccountTries += 1;
@@ -486,6 +476,17 @@ export class InRunContinuity {
       retryIndex,
     );
     return this.prepareContinuedTry(facts, spec, "transport", delayMs);
+  }
+
+  /** Carry acted work on to the next eligible account after a try that did none of its own,
+   * ended by its own terminal failure: a transient it recovered from earlier is no retry. */
+  private async hopWithWork(facts: TryFacts, cause: ResumableCause): Promise<AfterTryVerdict> {
+    const rotated = await this.rotate({ ...facts, sawRetryable: false }, true);
+    if (rotated && "poolExhausted" in rotated) return this.poolTerminal(rotated.poolExhausted);
+    if (!rotated) return this.breakWith(cause);
+    this.hopped(rotated);
+    this.lastCause = cause;
+    return this.prepareContinuedTry(facts, this.inLaneHome(facts.runSpec, rotated), cause, 0);
   }
 
   private async rotate(
@@ -506,7 +507,7 @@ export class InRunContinuity {
       triedProfiles: this.triedProfiles,
       ...inRunRotationArgs(facts, forceEligible),
       // This try's own limit (with the window it named) when it saw one.
-      lastLimit: this.limit ?? facts.lastLimit,
+      lastLimit: this.limit ?? (facts.sawTypedLimit ? facts.lastLimit : null),
       // An in-run exhaustion names each account's own failed tries (settled first).
       emit: ((type, payload) =>
         this.deps.emit(
