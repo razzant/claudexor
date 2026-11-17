@@ -72,9 +72,11 @@ describe("enqueueAndAwait caller idempotency", () => {
 
   it("preserves generated keys when no caller key is provided", async () => {
     const keys: string[] = [];
+    const urls: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (_url, init) => {
+      vi.fn(async (url, init) => {
+        urls.push(String(url));
         keys.push(new Headers(init.headers).get("Idempotency-Key")!);
         return Response.json({ jobId: "job", runId: "run", runDir: "/fixture" });
       }),
@@ -82,6 +84,8 @@ describe("enqueueAndAwait caller idempotency", () => {
     const client = { status: vi.fn().mockResolvedValue({ state: "running" }) };
     for (let i = 0; i < 2; i++)
       await enqueueAndAwait(client as never, addr, request, { waitForTerminal: false });
+    // The no-project request registers nothing: each launch is one POST /runs.
+    expect(urls).toEqual([`${addr.baseUrl}/v2/runs`, `${addr.baseUrl}/v2/runs`]);
     expect(keys).toHaveLength(2);
     expect(keys.every((key) => key.length > 0)).toBe(true);
     expect(keys[0]).not.toBe(keys[1]);

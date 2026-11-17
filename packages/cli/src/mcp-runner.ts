@@ -21,7 +21,11 @@ import {
   projectDegradedRecoveryRunDetail,
   projectRecoveryRunDetail,
 } from "./mcp-run-projections.js";
-import { keyedLaunchNeedsProject, projectLaunchHandle } from "./mcp-launch-handle.js";
+import {
+  keyedLaunchNeedsProject,
+  projectLaunchHandle,
+  requestsNoProjectAsk,
+} from "./mcp-launch-handle.js";
 import { answerInteraction, projectRunInteractions } from "./mcp-run-interactions.js";
 import { readRunDetailResponse } from "./run-detail-response.js";
 import { catalogQuery } from "./mcp-catalog-query.js";
@@ -159,11 +163,17 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
     const attachments =
       p?.attachments === undefined ? undefined : ResourceAttachmentRef.array().parse(p.attachments);
     const metadata = taskGroupLaunchMetadata(p, beltContext);
-    // A replayable launch key names one stable project; it never follows
-    // whatever directory this server process happens to run in.
+    // A replayable launch key names one stable scope (a project, or an explicit
+    // no-project Ask); it never follows whatever directory this process runs in.
+    const noProject = requestsNoProjectAsk(p, mode, beltContext);
     const explicitRoot = typeof p?.repoPath === "string" && p.repoPath.trim().length > 0;
-    if (p?.idempotencyKey !== undefined && !options.delegationRepoRoot && !explicitRoot)
-      throw keyedLaunchNeedsProject();
+    if (
+      p?.idempotencyKey !== undefined &&
+      !options.delegationRepoRoot &&
+      !explicitRoot &&
+      !noProject
+    )
+      throw keyedLaunchNeedsProject(mode);
     const connection = options.requireExistingDaemon
       ? await connectDaemonIfRunning()
       : await ensureDaemon();
@@ -180,7 +190,7 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       prompt: String(p?.prompt ?? ""),
       ...(attachments !== undefined ? { attachments } : {}),
       mode,
-      scope: { kind: "project", root: repoRoot },
+      scope: noProject ? { kind: "none" } : { kind: "project", root: repoRoot },
       execution: options.delegationParentRunId
         ? { ...options.delegationExecution, isolation: "envelope" }
         : RunExecution.parse(p?.execution ?? { isolation: "envelope" }),

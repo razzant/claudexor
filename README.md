@@ -759,8 +759,9 @@ replace it.
 
 Every project run creates files under the external per-project namespace
 `~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/`; the repository's
-`.claudexor/` directory remains user-owned versioned config. App-launched Ask
-without a project uses an empty synthetic cwd at
+`.claudexor/` directory remains user-owned versioned config. An Ask without a
+project (from the app with no project selected, or MCP `claudexor_ask` with
+`noProject: true`) uses an empty synthetic cwd at
 `~/.cache/claudexor/no-project` and writes artifacts to
 `~/.claudexor/v3/runs/<run_id>/`:
 

@@ -17,6 +17,7 @@ vi.mock("./live.js", () => ({ controlApiFetch: mocks.fetch }));
 vi.mock("./mcp-launch-handle.js", () => ({
   projectLaunchHandle: mocks.project,
   keyedLaunchNeedsProject: vi.fn(),
+  requestsNoProjectAsk: vi.fn(() => false),
 }));
 
 describe("CLI bridge resource refs", () => {

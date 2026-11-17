@@ -162,11 +162,15 @@ describe("MCP launch handles", () => {
   });
 
   it("names the keyed-launch project requirement as a typed usage refusal", () => {
-    expect(keyedLaunchNeedsProject()).toMatchObject({
+    expect(keyedLaunchNeedsProject("agent")).toMatchObject({
       category: "usage",
       code: "idempotency_repo_path_required",
       retryable: false,
     });
+    expect(keyedLaunchNeedsProject("agent").message).not.toContain("noProject");
+    // Only the Ask names its explicit no-project alternative.
+    expect(keyedLaunchNeedsProject("ask").message).toContain("noProject: true");
+    expect(keyedLaunchNeedsProject("ask").requiredActions?.[0]).toContain("noProject: true");
   });
 
   it("produces handles the declared MCP result schema accepts once mirrored", async () => {
