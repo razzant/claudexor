@@ -85,6 +85,7 @@ afterEach(() => {
   busyTree = null;
   busyRemovalTried = false;
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 }, 0);
 const GIT_ENV = {
@@ -114,6 +115,9 @@ const git = (repo: string, ...args: string[]) =>
     .trim();
 
 function world() {
+  // Git lists a worktree by its real path, which the checks below compare as text: run
+  // on the real spelling of the suite's config root (macOS: /var is /private/var).
+  vi.stubEnv("CLAUDEXOR_CONFIG_DIR", realpathSync(process.env.CLAUDEXOR_CONFIG_DIR!));
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-thread-release-")));
   dirs.push(root);
   const repo = join(root, "project");
@@ -249,7 +253,9 @@ describe("releaseThreadPreparation (#694)", () => {
     renameSync(w.repo, moved);
     git(moved, "clone", "-q", "--no-hardlinks", moved, w.repo);
     git(w.repo, "branch", branch, tip);
-    await expect(releaseThreadPreparation(w.repo, tree, provenQuiet)).rejects.toThrow(
+    // The creator's record names its real scope marker: the release reads that scope
+    // with this host's own census (the shipped default), not the synthetic proven end.
+    await expect(releaseThreadPreparation(w.repo, tree)).rejects.toThrow(
       /is gone or another one is there now/,
     );
     expect(w.tip(id)).toBe(tip);
@@ -257,7 +263,7 @@ describe("releaseThreadPreparation (#694)", () => {
     expect(git(moved, "worktree", "list", "--porcelain")).toContain(tree);
     renameSync(w.repo, join(dirname(w.repo), "replacement"));
     renameSync(moved, w.repo);
-    expect(await releaseThreadPreparation(w.repo, tree, provenQuiet)).toBe("released");
+    expect(await releaseThreadPreparation(w.repo, tree)).toBe("released");
     expect(w.tip(id)).toBe("");
     expect(w.registered(id)).toBe(false);
   });

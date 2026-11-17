@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { projectRuntimeDir } from "@claudexor/util";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { worktreeAdd } from "./git.js";
 import { PreparationCancelled } from "./git-run.js";
 import { ensureThreadWorktree } from "./thread-tree.js";
@@ -44,6 +44,7 @@ const posixDescribe = describe.runIf(process.platform !== "win32");
 const dirs: string[] = [];
 const releases: string[] = [];
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const release of releases.splice(0)) writeFileSync(release, "");
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   delete process.env.GIT_CONFIG_COUNT;
@@ -117,6 +118,9 @@ async function settled<T>(promise: Promise<T>, ms = 60_000) {
 /** A project with a committed `y.held` (smudge filter `held`) and a holding filter
  * program configured for every Git child of this process. */
 function world() {
+  // Git lists a worktree by its real path, and a removed tree has no real path left to
+  // resolve: run on the real spelling of the suite's config root (macOS: /var is /private/var).
+  vi.stubEnv("CLAUDEXOR_CONFIG_DIR", realpathSync(process.env.CLAUDEXOR_CONFIG_DIR!));
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-thread-stop-")));
   dirs.push(root);
   const repo = join(root, "project");

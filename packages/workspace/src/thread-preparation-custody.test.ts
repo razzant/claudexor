@@ -60,6 +60,7 @@ const own: Identity[] = [];
 const endOwn = (): Promise<void> => endIdentified(own);
 afterEach(async () => {
   refuseRecordRemoval = false;
+  vi.unstubAllEnvs();
   await endOwn();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   delete process.env.GIT_CONFIG_COUNT;
@@ -103,6 +104,9 @@ const until = async (what: string, ok: () => boolean, ms = 30_000): Promise<void
  * a stop sent after that finds no shell in Git's group (a shell can miss a SIGINT
  * that lands as its foreground child exits, and would stand for a second survivor). */
 function world() {
+  // Git lists a worktree by its real path, which the checks below compare as text: run
+  // on the real spelling of the suite's config root (macOS: /var is /private/var).
+  vi.stubEnv("CLAUDEXOR_CONFIG_DIR", realpathSync(process.env.CLAUDEXOR_CONFIG_DIR!));
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-thread-custody-")));
   dirs.push(root);
   const repo = join(root, "project");

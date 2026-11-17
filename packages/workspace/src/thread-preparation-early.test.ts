@@ -74,6 +74,7 @@ const endOwn = (): Promise<void> => endIdentified(own);
 afterEach(async () => {
   refuseRecordWrite = false;
   refuseRecordRemoval = false;
+  vi.unstubAllEnvs();
   await endOwn();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   delete process.env.GIT_CONFIG_COUNT;
@@ -147,6 +148,9 @@ function holdUntil(root: string, release: string): string {
  *   group, no pipe of Git's) and fails the checkout.
  */
 function world(plain = false) {
+  // Git lists a worktree by its real path, which the checks below compare as text: run
+  // on the real spelling of the suite's config root (macOS: /var is /private/var).
+  vi.stubEnv("CLAUDEXOR_CONFIG_DIR", realpathSync(process.env.CLAUDEXOR_CONFIG_DIR!));
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-thread-early-")));
   dirs.push(root);
   const repo = join(root, "project");
