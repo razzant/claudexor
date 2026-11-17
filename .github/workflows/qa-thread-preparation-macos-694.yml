@@ -1,0 +1,602 @@
+name: qa thread preparation macOS 694 paired
+
+# TEST-ONLY one-shot paired qualification of the four #694 thread-preparation
+# home modules that failed the first 6.2.0 macOS release candidate (Release run
+# 43969857587, attempt 1). It is NOT a product gate and NOT the release
+# qualification. It triggers only on a push to its own QA branch; on main and
+# every other branch it never runs. Each leg is a fresh GitHub-hosted runner
+# that checks out ONE pinned commit (base or candidate), installs that side's
+# frozen lockfile into its own store, builds as the release gate does, and runs
+# exactly the four modules with one Vitest worker and the committed assertions
+# and timeouts. No secrets, signing, vendor programs or logins; contents: read.
+# Every run keeps its own artifacts (names carry the run id and attempt) and no
+# run cancels another (no concurrency group). The separate `git-registration`
+# job is an instrumented diagnostic of Git itself (no product code, no checkout):
+# it keeps raw `git worktree list` output beside independently resolved physical
+# paths, and it is not the subject of the base/candidate module checks.
+on:
+  push:
+    branches: [qa/thread-preparation-macos-694]
+    paths:
+      - ".github/workflows/qa-thread-preparation-macos-694.yml"
+
+permissions:
+  contents: read
+
+env:
+  BASE_SHA: 007ed8659952f8d643fa9b5867bfce64967df359
+  # Reviewed candidate tree: 9f6184d0a17f93f783bd15e522f39344e0dc8777.
+  CANDIDATE_SHA: 4783a95b402269304eee6176dd6a223d67716edc
+  MODULES: >-
+    packages/workspace/src/thread-preparation-custody.test.ts
+    packages/workspace/src/thread-preparation-early.test.ts
+    packages/workspace/src/thread-preparation-release.test.ts
+    packages/workspace/src/thread-worktree-stop.test.ts
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  leg:
+    name: ${{ matrix.side }} - ${{ matrix.os }} - ${{ matrix.tmp }} TMPDIR
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The release's own condition: macOS TMPDIR under /var/folders (a link to /private/var).
+          - { os: macos-26, side: base, tmp: symlinked, expect: macos-base }
+          - { os: macos-26, side: candidate, tmp: symlinked, expect: none }
+          # Ordinary Linux CI's condition: a canonical temp root.
+          - { os: ubuntu-latest, side: base, tmp: canonical, expect: none }
+          - { os: ubuntu-latest, side: candidate, tmp: canonical, expect: none }
+          # Portable control of the same class: a Linux temp root spelled through a link.
+          - { os: ubuntu-latest, side: base, tmp: symlinked, expect: linux-symlinked-base }
+          - { os: ubuntu-latest, side: candidate, tmp: symlinked, expect: none }
+    env:
+      SIDE: ${{ matrix.side }}
+      TMP_MODE: ${{ matrix.tmp }}
+      EXPECT: ${{ matrix.expect }}
+    steps:
+      - name: Select and validate this side's pin
+        run: |
+          set -euo pipefail
+          for pin in "$BASE_SHA" "$CANDIDATE_SHA"; do
+            if ! [[ "$pin" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::not a full commit SHA: $pin"
+              exit 1
+            fi
+          done
+          if [ "$CANDIDATE_SHA" = 0000000000000000000000000000000000000000 ]; then
+            echo "::error::CANDIDATE_SHA is still the placeholder"
+            exit 1
+          fi
+          if [ "$CANDIDATE_SHA" = "$BASE_SHA" ]; then
+            echo "::error::the candidate pin equals the base pin"
+            exit 1
+          fi
+          case "$SIDE" in
+            base) pin="$BASE_SHA" ;;
+            candidate) pin="$CANDIDATE_SHA" ;;
+            *) echo "::error::unknown side $SIDE"; exit 1 ;;
+          esac
+          echo "PIN=$pin" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.PIN }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+
+      - name: Isolate TMP, HOME and caches; record the exact source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PIN"
+          test -z "$(git status --porcelain)"
+          q="$RUNNER_TEMP/q694"
+          mkdir -p "$q/evidence" "$q/home" "$q/cache" "$q/store" "$q/turbo"
+          case "$TMP_MODE" in
+            symlinked)
+              if [ "$RUNNER_OS" = macOS ]; then
+                user_tmp="${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR)}"
+                tmp="$(mktemp -d "${user_tmp%/}/cx-q694.XXXXXX")"
+              else
+                mkdir "$q/tmp-real"
+                ln -s "$q/tmp-real" "$q/tmp-link"
+                tmp="$q/tmp-link"
+              fi
+              if [ "$(cd "$tmp" && pwd -P)" = "$tmp" ]; then
+                echo "::error::TMPDIR $tmp is not spelled through a link; this leg would prove nothing"
+                exit 1
+              fi
+              ;;
+            canonical)
+              mkdir "$q/tmp"
+              tmp="$q/tmp"
+              if [ "$(cd "$tmp" && pwd -P)" != "$tmp" ]; then
+                echo "::error::TMPDIR $tmp is not canonical"
+                exit 1
+              fi
+              ;;
+            *) echo "::error::unknown TMP mode $TMP_MODE"; exit 1 ;;
+          esac
+          {
+            echo "side=$SIDE"
+            echo "pin=$PIN"
+            echo "head=$(git rev-parse HEAD)"
+            echo "tree=$(git rev-parse 'HEAD^{tree}')"
+            echo "expect=$EXPECT"
+            echo "tmp_mode=$TMP_MODE"
+            echo "TMPDIR=$tmp"
+            echo "TMPDIR_real=$(cd "$tmp" && pwd -P)"
+          } > "$q/evidence/source.txt"
+          for f in $MODULES vitest.setup.ts; do
+            if [ -f "$f" ]; then shasum -a 256 "$f"; else echo "absent  $f"; fi
+          done > "$q/evidence/modules.sha256"
+          {
+            echo "EVIDENCE=$q/evidence"
+            echo "PNPM_STORE=$q/store"
+            echo "TMPDIR=$tmp"
+            echo "HOME=$q/home"
+            echo "XDG_CACHE_HOME=$q/cache"
+            echo "XDG_CONFIG_HOME=$q/home/.config"
+            echo "XDG_DATA_HOME=$q/home/.local/share"
+            echo "npm_config_cache=$q/cache/npm"
+            echo "TURBO_CACHE_DIR=$q/turbo"
+            echo "TURBO_TELEMETRY_DISABLED=1"
+          } >> "$GITHUB_ENV"
+
+      - name: Install this side's frozen dependencies into its own store
+        run: |
+          set +e
+          pnpm --version > "$EVIDENCE/pnpm-version.txt"
+          pnpm install --frozen-lockfile --store-dir "$PNPM_STORE" > "$EVIDENCE/install.log" 2>&1
+          code=$?
+          echo "$code" > "$EVIDENCE/install-exit.txt"
+          tail -n 40 "$EVIDENCE/install.log"
+          exit "$code"
+
+      - name: Build, as the release gate does before its tests
+        run: |
+          set +e
+          pnpm build > "$EVIDENCE/build.log" 2>&1
+          code=$?
+          echo "$code" > "$EVIDENCE/build-exit.txt"
+          tail -n 40 "$EVIDENCE/build.log"
+          exit "$code"
+
+      - name: Run exactly the four home modules (one worker; committed assertions and timeouts)
+        id: modules
+        continue-on-error: true
+        run: |
+          set +e
+          read -r -a modules <<< "$MODULES"
+          argv=(node node_modules/vitest/vitest.mjs run "${modules[@]}" --maxWorkers=1
+            --reporter=default --reporter=junit --outputFile.junit="$EVIDENCE/junit.xml"
+            --reporter=json --outputFile.json="$EVIDENCE/vitest.json")
+          printf '%s\n' "${argv[@]}" > "$EVIDENCE/argv.txt"
+          {
+            echo "node=$(node -p process.version)"
+            echo "platform=$(node -p 'process.platform + " " + process.arch')"
+            echo "git=$(git --version)"
+            echo "uname=$(uname -a)"
+            echo "HOME=$HOME"
+            echo "TMPDIR=$TMPDIR"
+            echo "TMPDIR_real=$(cd "$TMPDIR" && pwd -P)"
+          } > "$EVIDENCE/runtime.txt"
+          env -u CLAUDEXOR_CONFIG_DIR "${argv[@]}" > "$EVIDENCE/vitest.stdout.txt" 2> "$EVIDENCE/vitest.stderr.txt"
+          code=$?
+          echo "$code" > "$EVIDENCE/vitest-exit.txt"
+          cat "$EVIDENCE/vitest.stdout.txt"
+          cat "$EVIDENCE/vitest.stderr.txt" >&2
+          exit "$code"
+
+      - name: Verdict against this leg's expectation
+        if: always() && steps.modules.outcome != 'skipped'
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+
+          E = Path(os.environ["EVIDENCE"])
+          custody = "packages/workspace/src/thread-preparation-custody.test.ts"
+          early = "packages/workspace/src/thread-preparation-early.test.ts"
+          release = "packages/workspace/src/thread-preparation-release.test.ts"
+          stop = "packages/workspace/src/thread-worktree-stop.test.ts"
+          counts = {custody: 4, early: 11, release: 30, stop: 6}
+          inCustody = custody + " > thread preparation custody (#694 r10) > "
+          inEarly = early + " > early thread preparation custody (#694) > "
+          inRelease = release + " > releaseThreadPreparation (#694) > "
+          inStop = stop + " > Stop interrupts the isolated-thread worktree's Git (#694, POSIX) > "
+          # Names and Boolean assertion locations observed in Release 43969857587 attempt 1.
+          macosBase = [
+              inCustody + "a daemon that died midway (record, half checkout, no stop): released only once nothing of its scope runs",
+              inCustody + "a record that cannot be deleted on success fails the preparation, typed, before the tree is handed over; Retry refuses while the fault stands and then hands the same tree over",
+              inCustody + "a complete tree held for a member its settlement saw alive, whose end a later read proves while the record cannot be removed: a cleanup refusal, no longer an unconfirmed termination; then the same tree",
+              inEarly + "a ready tree whose project must be initialized again is recorded for that step and never removed: held, refused to readers, then reused as it was",
+              inEarly + "the same during the project's initialization over a ready tree: the partial receipt rides the cleanup refusal, the ready tree is never removed, and it is reused once the record can go",
+              inRelease + "the creator records the repository for release when no worktree pointer remains",
+              inRelease + "an early record owns nothing of the thread: its release frees the record alone",
+              inRelease + "an early or a complete record that cannot be removed (its directory is read-only) refuses the release as a cleanup fault, changes nothing, and goes once the fault is cleared",
+              inStop + "a recovery add killed after the lost directory's stale registration went: its own locked registration goes, the branch stays, the next turn recovers",
+          ]
+          # Predicted, NOT observed: these substring assertions and no-pointer's toContain
+          # fail on a Linux link spelling; Linux /proc does not cause the Darwin failure.
+          linuxSymlinkedBase = macosBase + [
+              inRelease + "early releases only its record even when repository authority is unavailable",
+              inRelease + "complete releases only its record even when repository authority is unavailable",
+              inRelease + "keeps unknown repository authority and held processes intact, then releases after repair",
+          ]
+          expectation = os.environ["EXPECT"]
+          expected = {"none": [], "macos-base": macosBase, "linux-symlinked-base": linuxSymlinkedBase}.get(expectation)
+          problems = []
+          if expected is None:
+              problems.append("unknown expectation " + expectation)
+          want = set(expected or [])
+          boolean_lines = dict(zip(
+              [macosBase[i] for i in (0, 1, 2, 3, 4, 6, 7, 8)],
+              [277, 322, 385, 488, 665, 471, 723, 297],
+          ))
+          substring_lines = dict(zip(
+              [macosBase[5], *linuxSymlinkedBase[9:]],
+              [(257, "no-pointer"), (281, "early"), (281, "complete"), (349, "unrepaired")],
+          ))
+          ansi = re.compile(r"\x1b\[[0-9;]*m")
+          non_assertion = re.compile(r"(?:timed? out|timeout|STACK_TRACE_ERROR|beforeAll|afterAll|beforeEach|afterEach|failed to (?:import|load)|cannot find module|ERR_MODULE_NOT_FOUND)", re.I)
+
+
+          def check_reason(name, raw, source):
+              text = ansi.sub("", raw).strip()
+              path = name.split(" > ", 1)[0]
+              header = text.splitlines()[0] if text else ""
+              ok = not non_assertion.search(text)
+              if name in boolean_lines:
+                  line = boolean_lines[name]
+                  ok = ok and header == "AssertionError: expected false to be true // Object.is equality"
+              elif name == macosBase[5] and expectation == "macos-base":
+                  line = 252
+                  ok = ok and header.startswith("AssertionError: expected [Function] to throw error matching /is gone or another one is there now/ but got 'the thread worktree ")
+                  # JSON's stack can abbreviate Chai's received string. JUnit's failure body
+                  # retains the full Expected/Received diff: require the actual /proc cause there.
+                  if source == "JUnit":
+                      ok = ok and all(s in text for s in ("/threads/no-pointer/tree", "scope census failed (/proc unreadable:", "ENOENT", "scandir '/proc'"))
+              elif name in substring_lines and expectation == "linux-symlinked-base":
+                  line, thread = substring_lines[name]
+                  ok = ok and header.startswith("AssertionError: expected ") and " to contain " in header
+                  if source == "JUnit":
+                      ok = ok and "worktree " in text and "/threads/" + thread + "/tree" in text
+              else:
+                  line, ok = -1, False
+              if not ok or not re.search(re.escape(path) + ":" + str(line) + r":\d+", text):
+                  problems.append(f"{source}: wrong or unproven failure cause: {name}")
+
+
+          tests = {}
+          files = []
+          try:
+              report = json.loads((E / "vitest.json").read_text())
+              files = report["testResults"]
+              if not isinstance(files, list):
+                  raise ValueError("testResults is not an array")
+              seen_files = set()
+              for file in files:
+                  path = os.path.relpath(file["name"])
+                  if path not in counts or path in seen_files:
+                      problems.append("unexpected or duplicate file: " + path)
+                  seen_files.add(path)
+                  # A failing afterAll lives here, not in assertionResults (Vitest 4).
+                  if file.get("message", "") or file.get("testExecError"):
+                      problems.append("suite/hook/runtime error: " + path)
+                  assertions = file["assertionResults"]
+                  if not isinstance(assertions, list):
+                      raise ValueError("assertionResults is not an array")
+                  statuses = []
+                  for t in assertions:
+                      titles = t["ancestorTitles"]
+                      if not isinstance(titles, list) or not all(isinstance(s, str) for s in titles):
+                          raise ValueError("invalid ancestorTitles")
+                      titles = [s for i, s in enumerate(titles) if i > 0 or (s and not file["name"].endswith(s))]
+                      name = " > ".join([path, *titles, t["title"]])
+                      status = t["status"]
+                      if name in tests:
+                          problems.append("duplicate assertion: " + name)
+                      tests[name] = status
+                      statuses.append(status)
+                      if status not in ("passed", "failed"):
+                          problems.append(f"not run ({status}): {name}")
+                      messages = t.get("failureMessages", [])
+                      if not isinstance(messages, list) or not all(isinstance(m, str) for m in messages):
+                          raise ValueError("invalid failureMessages")
+                      if status == "failed":
+                          if not messages:
+                              problems.append("no assertion failure message: " + name)
+                          for message in messages:
+                              check_reason(name, message, "JSON")
+                      elif messages:
+                          problems.append("failure message on a passing assertion: " + name)
+                  if file.get("status") != ("failed" if "failed" in statuses else "passed"):
+                      problems.append("file status disagrees with assertions: " + path)
+              for path, n in counts.items():
+                  got = sum(name.startswith(path + " > ") for name in tests)
+                  if got != n:
+                      problems.append(f"{path}: {got} tests reported, {n} expected")
+              # Check optional counters only when emitted. Suite counts include describe
+              # nodes, so they are NOT file counts. Missing runtime counters are not zero.
+              counters = {"numTotalTests": len(tests), "numPassedTests": list(tests.values()).count("passed"), "numFailedTests": list(tests.values()).count("failed"), "numPendingTests": 0, "numTodoTests": 0, "numRuntimeErrorTestSuites": 0}
+              for key, n in counters.items():
+                  if key in report and (type(report[key]) is not int or report[key] != n):
+                      problems.append(f"JSON {key}={report[key]!r}, expected {n}")
+              for key in ("unhandledErrors", "runtimeErrors", "testExecError"):
+                  if report.get(key):
+                      problems.append("JSON runtime errors: " + key)
+              if "success" in report and report["success"] is not (not any(s == "failed" for s in tests.values())):
+                  problems.append("JSON success disagrees with assertions")
+          except (OSError, ValueError, KeyError, TypeError) as exc:
+              problems.append("invalid or missing Vitest JSON: " + str(exc))
+
+          junit = {}
+          try:
+              root = ET.parse(E / "junit.xml").getroot()
+              if root.tag not in ("testsuites", "testsuite"):
+                  raise ValueError("not a JUnit testsuites/testsuite root")
+              for suite in root.iter("testsuite"):
+                  if suite.find("error") is not None or suite.find("failure") is not None:
+                      problems.append("JUnit suite-level error: " + suite.get("name", ""))
+                  for case in suite.findall("testcase"):
+                      name = " > ".join([case.attrib["classname"], case.attrib["name"]])
+                      if case.get("classname") != suite.get("name"):
+                          problems.append("JUnit classname disagrees with suite: " + name)
+                      if name in junit:
+                          problems.append("duplicate JUnit testcase: " + name)
+                      failures, errors, skipped = case.findall("failure"), case.findall("error"), case.findall("skipped")
+                      status = "failed" if failures else "passed"
+                      if errors or skipped:
+                          problems.append("JUnit error/skipped testcase: " + name)
+                      junit[name] = status
+                      for failure in failures:
+                          body = "".join(failure.itertext()).strip()
+                          if failure.get("type") != "AssertionError":
+                              problems.append("JUnit non-assertion failure: " + name)
+                          check_reason(name, body, "JUnit")
+              if list(root.iter("error")):
+                  problems.append("JUnit runtime/hook error")
+              if root.find("failure") is not None:
+                  problems.append("JUnit root-level failure")
+              for node in root.iter():
+                  if node.tag not in ("testsuites", "testsuite"):
+                      continue
+                  cases = list(node.iter("testcase"))
+                  values = {"tests": len(cases), "failures": sum(bool(c.findall("failure")) for c in cases), "errors": 0, "skipped": 0}
+                  for key, n in values.items():
+                      if key in node.attrib and node.get(key) != str(n):
+                          problems.append(f"JUnit {node.tag} {key}={node.get(key)}, expected {n}")
+              if len(list(root.iter("testcase"))) != sum(counts.values()) or len(junit) != sum(counts.values()) or junit != tests:
+                  problems.append("JUnit inventory/status differs from the full 51-case JSON inventory")
+          except (OSError, ET.ParseError, ValueError, KeyError, TypeError) as exc:
+              problems.append("invalid or missing JUnit: " + str(exc))
+
+          # Vitest 4.1.12 also prints runtime/close/worker-termination diagnostics outside
+          # JSON/JUnit, sometimes preserving exit=0/1. Match those line prefixes, not test names.
+          for stream in ("vitest.stdout.txt", "vitest.stderr.txt"):
+              try:
+                  text = ansi.sub("", (E / stream).read_text())
+                  if re.search(r"^\s*(?:[⎯─━= -]*\s*(?:Unhandled Errors?|Unhandled Rejections?|Uncaught Exceptions?)\b|error during close\b|close timed out after \d+ms\b|\[vitest-pool\]: (?:Timeout terminating|Failed to terminate)\b)", text, re.M):
+                      problems.append("Vitest runtime diagnostic in " + stream)
+              except OSError as exc:
+                  problems.append("missing runtime output: " + str(exc))
+
+          failed = sorted(name for name, status in tests.items() if status == "failed")
+          for name in failed:
+              if name not in want:
+                  problems.append("unexpected failure: " + name)
+          for name in sorted(want):
+              if name not in failed:
+                  problems.append("expected failure did not occur: " + name)
+          try:
+              exit_text = (E / "vitest-exit.txt").read_text().strip()
+          except OSError:
+              exit_text = "missing"
+          want_exit = "1" if want else "0"
+          if exit_text != want_exit:
+              problems.append(f"vitest exit {exit_text}, expected {want_exit}")
+          (E / "failed.txt").write_text("".join(name + "\n" for name in failed))
+          (E / "verdict.txt").write_text("".join(p + "\n" for p in problems) if problems else "expectation met\n")
+          print(f"expectation {expectation}: {len(failed)} failed of {len(tests)}; {len(junit)} JUnit cases")
+          for problem in problems:
+              print("::error::" + problem)
+          sys.exit(1 if problems else 0)
+          PY
+
+      - name: Preserve this leg's evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: q694-${{ matrix.os }}-${{ matrix.side }}-${{ matrix.tmp }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/q694/evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  pair:
+    name: Pair each base with its candidate
+    needs: leg
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: q694-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: legs
+
+      - name: Compare each pair's test inventory and outcomes
+        env:
+          RUN_SUFFIX: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          suffix = os.environ["RUN_SUFFIX"]
+          pairs = [("macos-26", "symlinked"), ("ubuntu-latest", "canonical"), ("ubuntu-latest", "symlinked")]
+
+
+          def outcomes(os_name, side, tmp):
+              evidence = Path(f"legs/q694-{os_name}-{side}-{tmp}-{suffix}")
+              # A red leg may still have all expected assertion names. Accept its report
+              # only after its JSON/JUnit/runtime/exit verdict succeeded, with JUnit kept.
+              if (evidence / "verdict.txt").read_text() != "expectation met\n" or not (evidence / "junit.xml").is_file():
+                  raise ValueError("missing/invalid leg verdict or JUnit")
+              report = json.loads((evidence / "vitest.json").read_text())
+              result = {}
+              for file in report["testResults"]:
+                  path = file["name"][file["name"].index("packages/"):]
+                  for t in file["assertionResults"]:
+                      titles = [s for i, s in enumerate(t["ancestorTitles"]) if i > 0 or (s and not file["name"].endswith(s))]
+                      name = " > ".join([path, *titles, t["title"]])
+                      if name in result:
+                          raise ValueError("duplicate assertion: " + name)
+                      result[name] = t["status"]
+              return result
+
+
+          problems = []
+          for os_name, tmp in pairs:
+              try:
+                  base = outcomes(os_name, "base", tmp)
+                  candidate = outcomes(os_name, "candidate", tmp)
+              except (OSError, ValueError, KeyError, TypeError) as exc:
+                  problems.append(f"{os_name} {tmp}: missing/invalid leg evidence: {exc}")
+                  continue
+              names = sorted(base.keys() | candidate.keys())
+              for name in names:
+                  b, c = base.get(name, "absent"), candidate.get(name, "absent")
+                  if b == "absent" or c == "absent":
+                      problems.append(f"{os_name} {tmp}: test inventory differs: {name} (base {b}, candidate {c})")
+                  elif b != c:
+                      print(f"{os_name} {tmp}: {b} -> {c}: {name}")
+                  if c not in ("passed", "absent"):
+                      problems.append(f"{os_name} {tmp}: candidate {c}: {name}")
+              print(f"{os_name} {tmp}: {len(names)} tests paired")
+          for problem in problems:
+              print("::error::" + problem)
+          sys.exit(1 if problems else 0)
+          PY
+
+  git-registration:
+    name: Git registration mechanism - ${{ matrix.os }} - ${{ matrix.tmp }} TMPDIR
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-26, tmp: symlinked }
+          - { os: ubuntu-latest, tmp: symlinked }
+          - { os: ubuntu-latest, tmp: canonical }
+    env:
+      TMP_MODE: ${{ matrix.tmp }}
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_NOSYSTEM: "1"
+    steps:
+      - name: Register worktrees under a config root spelled as vitest.setup spells it
+        run: |
+          set -euo pipefail
+          ev="$RUNNER_TEMP/q694diag/evidence"
+          mkdir -p "$ev"
+          cp "$0" "$ev/script.sh"
+          {
+            echo "subject=instrumented diagnostic of Git worktree registration; not the base/candidate modules"
+            echo "script_sha256=$(shasum -a 256 "$0" | cut -d' ' -f1)"
+            echo "workflow_ref=$GITHUB_WORKFLOW_REF"
+            echo "workflow_commit=$GITHUB_SHA"
+            echo "git=$(git --version)"
+            echo "uname=$(uname -a)"
+            echo "tmp_mode=$TMP_MODE"
+          } > "$ev/identity.txt"
+          q="$RUNNER_TEMP/q694diag"
+          case "$TMP_MODE" in
+            symlinked)
+              if [ "$RUNNER_OS" = macOS ]; then
+                user_tmp="${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR)}"
+                base="${user_tmp%/}"
+              else
+                mkdir "$q/real"
+                ln -s "$q/real" "$q/link"
+                base="$q/link"
+              fi
+              ;;
+            canonical) mkdir "$q/canonical"; base="$q/canonical" ;;
+            *) echo "::error::unknown TMP mode $TMP_MODE"; exit 1 ;;
+          esac
+          # The config root as vitest.setup makes it (mkdtemp under TMPDIR, not resolved),
+          # its physical path resolved independently of Git, and a project root resolved
+          # as the modules' world() resolves it.
+          config="$(mktemp -d "$base/claudexor-vitest-config-XXXXXX")"
+          config_real="$(cd "$config" && pwd -P)"
+          root="$(cd "$(mktemp -d "$base/cx-thread-diag-XXXXXX")" && pwd -P)"
+          repo="$root/project"
+          git init -q -b main "$repo"
+          git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m base
+          threads="$config/projects/diag/threads"
+          a="$threads/a/tree"
+          b="$threads/b/tree"
+          a_real="$config_real/projects/diag/threads/a/tree"
+          b_real="$config_real/projects/diag/threads/b/tree"
+          printf '%s\n' "config_spelled=$config" "config_physical=$config_real" "a_spelled=$a" \
+            "a_physical=$a_real" "b_spelled=$b" "b_physical=$b_real" > "$ev/paths.txt"
+          mkdir -p "$threads/a" "$threads/b"
+          git -C "$repo" worktree add -q -b diag-a "$a"
+          git -C "$repo" worktree add -q -b diag-b "$b"
+          status=0
+          fail() { echo "::error::$1"; status=1; }
+          listed() { grep -Fxq "worktree $1" "$2"; }
+          # 1. Git lists each tree by its physical path, never by a link spelling.
+          git -C "$repo" worktree list --porcelain > "$ev/1-after-add.txt"
+          listed "$a_real" "$ev/1-after-add.txt" || fail "a is not listed by its physical path"
+          listed "$b_real" "$ev/1-after-add.txt" || fail "b is not listed by its physical path"
+          if [ "$TMP_MODE" = symlinked ]; then
+            [ "$a" != "$a_real" ] || fail "the config root is not spelled through a link"
+            if listed "$a" "$ev/1-after-add.txt"; then fail "Git listed the link spelling"; fi
+          else
+            [ "$a" = "$a_real" ] || fail "the canonical config root resolved elsewhere"
+          fi
+          # 2. A tree removed without Git keeps its registration, and its spelling no
+          #    longer resolves (what a realpath-or-self comparison falls back to).
+          rm -rf "$threads/a"
+          git -C "$repo" worktree list --porcelain > "$ev/2-after-direct-rm.txt"
+          listed "$a_real" "$ev/2-after-direct-rm.txt" || fail "the registration went with the directory"
+          grep -q '^prunable' "$ev/2-after-direct-rm.txt" || fail "the stale registration is not reported prunable"
+          node -e 'try { console.log("resolved " + require("node:fs").realpathSync(process.argv[1])) } catch (e) { console.log("unresolved " + e.code) }' "$a" > "$ev/2-realpath-of-removed-spelling.txt"
+          grep -q '^unresolved ENOENT$' "$ev/2-realpath-of-removed-spelling.txt" || fail "the removed spelling still resolves"
+          # 3. Removing exactly the path Git registered removes that registration only.
+          git -C "$repo" worktree remove --force "$a_real" 2> "$ev/3-remove-stderr.txt" ||
+            fail "git worktree remove of the exact registered path failed"
+          git -C "$repo" worktree list --porcelain > "$ev/3-after-exact-remove.txt"
+          if listed "$a_real" "$ev/3-after-exact-remove.txt"; then fail "the exact removal left a registered"; fi
+          listed "$b_real" "$ev/3-after-exact-remove.txt" || fail "the neighbouring registration went too"
+          echo "${status}" > "$ev/exit.txt"
+          for f in "$ev"/paths.txt "$ev"/[123]-*.txt; do echo "== ${f##*/}"; cat "$f"; done
+          exit "$status"
+
+      - name: Preserve the diagnostic's evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: q694diag-${{ matrix.os }}-${{ matrix.tmp }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/q694diag/evidence
+          if-no-files-found: error
+          retention-days: 30
