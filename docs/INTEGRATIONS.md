@@ -985,8 +985,8 @@ One-shot launches and thread create/turn accept an optional caller-owned
 `idempotencyKey`. An omitted
 key is generated per invocation; retry an unknown outcome with the same key
 and body, and use a new key for a deliberately new turn. Changed content under
-the same key conflicts. A keyed one-shot launch names its project with an
-explicit `repoPath` (see below). `claudexor_thread_turn` declares the durable
+the same key conflicts. A keyed one-shot launch names its scope explicitly
+(see below). `claudexor_thread_turn` declares the durable
 `McpThreadTurnResult` handle as its outputSchema. `claudexor_thread_read`
 returns daemon-owned thread, turn and session records without starting work or
 a daemon; with no daemon running it fails with retryable `daemon_unavailable`.
@@ -1323,14 +1323,23 @@ to the wait, status, result and message tools: reads report the canonical
 tool errors.
 
 **Replay.** A keyed one-shot launch requires an explicit absolute `repoPath`
-(`idempotency_repo_path_required`); it never follows the MCP server's working
-directory. After an unknown response, repeat the identical arguments and key
-from any MCP process or directory: the daemon returns the accepted handle and
-starts nothing new, while changed arguments conflict (`idempotency_conflict`).
-Recovery assumes the same registered project root is still available at that
-path. A missing, moved or unmounted root is refused (`project_root_missing`)
-before the replay lookup, so nothing is replayed or started; `claudexor_runs`
-still lists the earlier run.
+or, on `claudexor_ask`, `noProject: true` (`idempotency_repo_path_required`); it
+never follows the MCP server's working directory. `noProject: true` is the
+engine's no-project Ask scope (INV-071): it registers no project, adds no
+project context, and refuses `repoPath` (`no_project_scope_conflict`);
+`execution` goes to the engine unchanged, whose run-start admission refuses
+`execution.workspaceRoot` without a project (`execution_workspace_invalid`).
+False or omission keeps the project scope, and Delegate tools never take it.
+After an unknown response, repeat the identical arguments and key from any MCP
+process or directory: the daemon returns the accepted handle and starts nothing
+new, while changed arguments conflict (`idempotency_conflict`). No-project keys
+live in the engine store's global key scope, which one-shot (ephemeral) project
+roots share; only registered projects have separate key scopes. Save the key,
+the exact arguments and the receipt's `storeId`. A project launch's
+recovery assumes the same registered root is still available at that path. A
+missing, moved or unmounted root is refused (`project_root_missing`) before the
+replay lookup, so nothing is replayed or started; `claudexor_runs` still lists
+the earlier run.
 
 **Telling absence from another store.** A `no such run` answer speaks for one
 engine store, so it never proves on its own that a run did not start. An MCP or

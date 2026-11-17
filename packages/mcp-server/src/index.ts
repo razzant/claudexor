@@ -4,6 +4,7 @@ import { uploadTools } from "./upload-tools.js";
 import { catalogTools } from "./catalog-tools.js";
 import { runExecutionSchema } from "./run-execution-schema.js";
 import { idempotencyKeySchema } from "./idempotency-key-schema.js";
+import { noProjectSchema } from "./no-project-schema.js";
 import { isAbsolute } from "node:path";
 import mcpRunToolResultSchemaRaw from "@claudexor/schema/generated/McpRunToolResult.schema.json" with { type: "json" };
 import mcpRunHandleResultSchemaRaw from "@claudexor/schema/generated/McpRunHandleResult.schema.json" with { type: "json" };
@@ -259,8 +260,11 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       repoPath: {
         type: "string",
         description:
-          "Absolute path of the target project. Defaults to the MCP server cwd; required with idempotencyKey.",
+          mode === "ask"
+            ? "Absolute path of the target project. Defaults to the MCP server cwd; with idempotencyKey, pass it or noProject: true."
+            : "Absolute path of the target project. Defaults to the MCP server cwd; required with idempotencyKey.",
       },
+      ...(mode === "ask" ? { noProject: noProjectSchema } : {}),
       execution: runExecutionSchema,
       ...accessAndLimitProperties(),
       ...(runControlApplicability({ mode }).reviewerPanel.applicable ? reviewProperties() : {}),

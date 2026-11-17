@@ -125,6 +125,12 @@ const MCP_TO_CLI = {
     cli: null,
     reason: "the CLI runs in its cwd; MCP hosts pass the project root explicitly",
   },
+  noProject: {
+    cli: null,
+    tools: ["claudexor_ask"],
+    reason:
+      "the CLI's invoking directory is its project scope (INV-071); an MCP host names a no-project Ask explicitly",
+  },
   tests: { cli: "test", tools: AGENT_RUN_TOOL_NAMES },
   paidBudget: {
     cli: "max-usd",
@@ -555,6 +561,7 @@ const ACP_EQUIVALENT = {
   attachments:
     "ACP native image/resource content parts are uploaded/finalized before thread enqueue; refs are not session/prompt metadata",
   repoPath: "session/new cwd anchors the project",
+  noProject: "an ACP session always has its session/new cwd as the project anchor",
   idempotencyKey: "caller-owned MCP transport identity; ACP does not expose launch replay keys",
   taskGroupId:
     "external one-shot correlation metadata; ACP session/prompt fields deliberately reject it",

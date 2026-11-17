@@ -2503,8 +2503,8 @@ only the daemon owns user-level trust files and the selected managed-secret back
 Creates a run directory, writes a `TaskContract`, runs one adapter with
 `intent: explain`, `access: readonly`, writes `final/answer.md`,
 `final/summary.md`, and a `report` WorkProduct. There is no patch/apply control.
-In the macOS app, Ask may run with no project selected. The harness cwd is an
-empty synthetic directory at `~/.cache/claudexor/no-project`, while artifacts live
+Ask may run with scope `none`: the macOS app with no project selected, or MCP
+`claudexor_ask` with `noProject: true`. The harness cwd is an empty synthetic directory at `~/.cache/claudexor/no-project`, while artifacts live
 in the user-level store `~/.claudexor/v3/runs/<run_id>/`. If routing or the harness
 fails, the run still writes inspectable failure artifacts
 (`context/context_error.md`, `final/failure.yaml`, `final/summary.md`) and emits

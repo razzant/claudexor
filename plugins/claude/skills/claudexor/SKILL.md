@@ -54,8 +54,9 @@ Start read-only unless the user explicitly asked to change or create files.
    `external_terminal` means the host must provide the supported client
    terminal attach path; it is not itself unreadiness and must not be silently
    treated as `in_app`.
-4. Use `claudexor_ask` for read-only answers and bounded research, or
-   `claudexor_plan` for a read-only implementation plan.
+4. Use `claudexor_ask` for read-only answers and bounded research (where it
+   advertises `noProject`, pass `noProject: true` for a general question that
+   needs no project), or `claudexor_plan` for a read-only implementation plan.
 5. Only for explicit implementation intent, use `claudexor_run`,
    `claudexor_best_of`, or `claudexor_create`. Pass an absolute `repoPath`
    whenever the target repository could be ambiguous. Pass
@@ -140,9 +141,9 @@ selected sandbox; documents add no permission grant or project copy.
 Run tools enqueue work and return a durable handle, not terminal output or
 proof of completion. Use `claudexor_runs`, `claudexor_inspect`,
 `claudexor_run_status`, and `claudexor_run_result` to recover and follow it.
-Pass a stable `idempotencyKey` with an explicit `repoPath` on a one-shot launch
-when its response may need recovery; retry the same key and arguments, not a
-new launch. A queued launch returns its `jobId` with `runId: null`; pass the
+Pass a stable `idempotencyKey` with an explicit `repoPath` (or `noProject: true`
+on `claudexor_ask`) on a one-shot launch when its response may need recovery;
+retry the same key and arguments, not a new launch. A queued launch returns its `jobId` with `runId: null`; pass the
 `jobId` as `runId` to the follow-up tools until the run binds.
 
 Optional retained task groups are an API for caller-owned correlation on a
