@@ -2156,6 +2156,28 @@ describe("remembered catalog (INV-135, owner decision 2026-11-18)", () => {
     },
   );
 
+  it.each([false, true])(
+    "keeps the profile catalog after an HTTP 403 content refusal (typedRefusals=%s)",
+    async (typedRefusals) => {
+      const error = { code: "cyber_policy", message: "The picnic menu is undecided." };
+      const f = setup(() => Response.json({ error }, { status: 403 }), undefined, known());
+      const context = { ...f.context, credentialGeneration: 1, reuseCatalog: true };
+      const catalog = await f.adapter.catalog(context);
+      const result = await f.adapter.invoke(f.request, { ...context, catalog, typedRefusals });
+      expect(result).toMatchObject({
+        outcome: "failed",
+        problem: {
+          code: typedRefusals ? "provider_content_refused" : "provider_refused",
+          retryable: false,
+          context: { vendorCode: error.code, httpStatus: 403 },
+        },
+      });
+      expect(await f.adapter.catalog(context)).toEqual(catalog);
+      const methods = f.fetcher.mock.calls.map(([, init]) => init?.method ?? "GET");
+      expect(methods).toEqual(["GET", "POST"]);
+    },
+  );
+
   it.each([
     [401, "invalid_token", "auth_required", true],
     [401, "invalid_token", "auth_refresh_failed", true],

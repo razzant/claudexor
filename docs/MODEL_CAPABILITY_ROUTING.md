@@ -64,8 +64,8 @@ and plain-text representation.
 For a failed Codex inference, `problem.context.vendorCode = cyber_policy`
 from an HTTP error or a stream error (`error` or `response.failed`) produces
 `provider_content_refused` in the typed view, with `retryable: false`.
-End the request even if a fallback account or model is configured. Account
-evidence stays intact. This error does not establish whether generation
+End the request even with a fallback account or model. Both views retain the
+cached catalog and account evidence. It remains unknown whether generation
 started. For all Codex text failures, public diagnostics report only recognized
 codes, field names, event types, incomplete reasons and error classes, plus
 request IDs in known formats. Unrecognized values are omitted or masked.

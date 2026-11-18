@@ -791,17 +791,7 @@ export class DaemonControlApiServer {
       return;
 
     if (method === "GET" && path === "/runs") {
-      return serveRunList(
-        {
-          daemon: this.opts.daemon,
-          summarize: (record) => this.summarizeRunOrDiagnostic(record),
-          requestError: (response, error) => this.requestError(response, error),
-          json: (response, status, body) => this.json(response, status, body),
-        },
-        url,
-        req,
-        res,
-      );
+      return serveRunList(dataRoutes, url, req, res);
     }
 
     if (

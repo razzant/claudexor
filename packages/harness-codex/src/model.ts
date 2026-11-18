@@ -116,13 +116,21 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
       let dispatched = false;
       let delivery: RequestDelivery | undefined;
       const capture = new ResponseFailureCapture(context.captureFailureEvidence);
+      let contentRefused = false;
+      const refusals = {
+        typedRefusals: context.typedRefusals === true,
+        onContentRefusal: () => {
+          contentRefused = true;
+          context.onContentRefusal?.();
+        },
+      };
       let processing: ProcessingReceipt | undefined;
       let effortResolution: EffortResolution | undefined;
       let nativeContinuation: ModelNativeContinuation | null | undefined =
         request.nativeContinuation === undefined ? undefined : null;
       const withTurnState = (result: ModelCallResult): ModelCallResult => {
         const problem = result.problem;
-        if (dispatched && problem) {
+        if (dispatched && problem && !contentRefused) {
           if (
             ["model_capability_refused", "model_unavailable"].includes(problem.code) ||
             (problem.code === "provider_failed" &&
@@ -283,7 +291,7 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
           const result = emptyModelResult({ ...route, model: null });
           const error = await capture.readRefusal(response);
           const problem = authenticatedProblem(response, error, auth, now());
-          const refusal = contentRefusalProblem(problem, context);
+          const refusal = contentRefusalProblem(problem, refusals);
           if (refusal) {
             result.problem = refusal;
           } else if (response.status === 408) {
@@ -321,7 +329,7 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
           nativeContinuation = { route, format: TURN_FORMAT, payload: { turnState } };
         }
         return withTurnState(
-          await readResponsesStream(response, route, context.captureFailureEvidence, context),
+          await readResponsesStream(response, route, context.captureFailureEvidence, refusals),
         );
       } catch (error) {
         const result = emptyModelResult({ ...route, model: null });
