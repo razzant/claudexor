@@ -1,0 +1,37 @@
+name: Claude turn replies — isolated Node verification
+
+on:
+  push:
+    branches: [qa/verify-claude-turns-b6d46f16]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 095300e8e51ea164eb164cd1e06c2bb73c50be24
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the exact product checkout
+        run: |
+          test "$(git rev-parse HEAD)" = 095300e8e51ea164eb164cd1e06c2bb73c50be24
+          test "$(git rev-parse 'HEAD^{tree}')" = b6d46f16e300ccd7fcbbef716fb57792350cc52b
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.3
+          package-manager-cache: false
+      - name: Prepare pinned publication scanner
+        run: |
+          node scripts/provision-betterleaks.mjs --dest "$RUNNER_TEMP/betterleaks/betterleaks"
+          echo "CLAUDEXOR_BETTERLEAKS_PATH=$RUNNER_TEMP/betterleaks/betterleaks" >> "$GITHUB_ENV"
+      - name: Scan the outgoing commit and product tree
+        run: node scripts/publication-scan.mjs --repo . --range 8210f1880aeffd49352af154db252617b7d34a6f..095300e8e51ea164eb164cd1e06c2bb73c50be24 --tree HEAD
+      - run: pnpm install --frozen-lockfile
+      - name: Run the complete contributor gate
+        run: pnpm release:verify:node
