@@ -44,8 +44,9 @@ Read these together before changing shared behavior:
   named control-plane subsystems.
 - `packages/artifact-store` and `packages/event-log` own run artifact trees and
   the append-only event log.
-- `packages/claudexor` is the bare-name bin wrapper over `@claudexor/cli`
-  (the only package that installs the global `claudexor`/`claudexord` bins).
+- `packages/claudexor` owns the global `claudexor`/`claudexord` bins over
+  `@claudexor/cli` and the Pi package: its manifest declares the resources,
+  and `pi/index.js` registers the MCP server.
 - `packages/cli`, `packages/daemon`, `packages/control-api`,
   `packages/mcp-server`, `packages/acp-server`, and `apps/macos` are surfaces.
   Keep them thin.
@@ -76,7 +77,7 @@ pnpm typecheck
 pnpm typecheck:tests   # type-checks *.test.ts, schema scripts, and canary sources
 pnpm test
 pnpm schema:gen
-pnpm gen:version  # root-version projections and canonical portable plugin asset copies
+pnpm gen:version  # project the root version and refresh the portable plugin assets
 git diff --exit-code packages/schema/generated
 node scripts/validate-generated-schemas.mjs   # ajv-compiles every generated schema (draft-07)
 pnpm docs:check    # docs-truth gate (endpoints / mode ids / CLI flags vs source)
@@ -89,6 +90,9 @@ node scripts/complexity-ratchet.mjs   # readability ratchet: tracked files may o
 node scripts/model-hints-freshness.mjs # manifest known_models vs installed vendor CLIs (release: --strict)
 pnpm canary        # canary golden stories (offline fake harnesses; needs pnpm build first)
 ```
+
+To change the shared Skill or stdio descriptor, edit `plugins/copilot` and run
+`pnpm gen:version` to refresh the host copies, including `packages/claudexor/pi`.
 
 Control-api tests load the built worker (`dist/bulk-worker.js`); run `pnpm --filter @claudexor/control-api build` before its focused tests.
 

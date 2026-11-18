@@ -1557,6 +1557,42 @@
         }
       }
 
+      /* Agent host packages: three-card install row with stable per-host anchors. */
+      .hosts {
+        grid-template-columns: repeat(3, 1fr);
+      }
+      .hosts .step {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 20px 19px;
+      }
+      .hosts .step p {
+        margin-bottom: 16px;
+      }
+      .hosts .btn {
+        margin-top: auto;
+        margin-bottom: 12px;
+      }
+      #agent-hosts .cell a,
+      .hosts .note a {
+        color: var(--ice-2);
+      }
+      #agent-hosts code {
+        font-family: var(--data);
+        font-size: 0.92em;
+        color: var(--ice);
+      }
+      .plane[id],
+      #agent-hosts [id] {
+        scroll-margin-top: calc(var(--header-h) + 20px);
+      }
+      @media (max-width: 860px) {
+        .hosts {
+          grid-template-columns: 1fr;
+        }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         * {
           animation: none !important;
@@ -1613,6 +1649,7 @@
                     >Download for macOS <small>signed</small></a
                   >
                   <a class="btn s" href="#install">Install the CLI <small>npm</small></a>
+                  <a class="btn s" href="#agent-hosts">Install in Hermes, Pi or OpenClaw</a>
                 </div>
                 <p class="meta">MIT · no telemetry · macOS 26+ app · macOS/Linux CLI</p>
                 <p class="aside">
@@ -1899,6 +1936,118 @@
           </div>
         </div>
 
+        <div class="plane" id="agent-hosts">
+          <div class="z">
+            <section>
+              <p class="kick">agent host packages</p>
+              <h2>Use Claudexor in Hermes, Pi or OpenClaw.</h2>
+              <p class="lead">
+                Ask a second model to explain a passage or draft an edit for review. Your agent
+                brings the answer or proposed changes back to the same chat.
+              </p>
+              <div class="split" id="host-setup">
+                <div class="cell flat">
+                  <h3>Set up the CLI and account first</h3>
+                  <p>
+                    On the machine running your agent, install Claudexor with Node.js 24.15+ on
+                    macOS or Linux. Use the account you already connected. For a first Codex login,
+                    open the CLI's sign-in link in a private window or a browser profile signed in
+                    to no other OpenAI account. Switching accounts can revoke other sessions.
+                    <a href="https://github.com/razzant/claudexor#set-up-the-cli-and-account"
+                      >CLI and account setup</a
+                    >
+                  </p>
+                </div>
+                <div class="flat term" style="overflow: hidden">
+                  <div class="bar"><i></i><i></i><i></i><span>terminal</span></div>
+                  <pre><span class="p">$</span> npm install -g claudexor
+<span class="c"># First Codex connection only</span>
+<span class="p">$</span> claudexor auth login codex
+<span class="p">$</span> claudexor doctor</pre>
+                </div>
+              </div>
+              <div class="pipe hosts">
+                <div class="step flat" id="install-in-hermes">
+                  <h3>Hermes</h3>
+                  <p>
+                    Enable the Git plugin at the commit you inspected. Start a new Hermes session in
+                    that profile to use its skill and tools.
+                  </p>
+                  <a class="btn s" href="https://github.com/razzant/claudexor#install-in-hermes"
+                    >Install in Hermes</a
+                  >
+                  <div class="note">
+                    <a href="#host-setup">CLI setup</a> ·
+                    <a href="#host-first-result">First answer</a>
+                  </div>
+                  <small class="note"
+                    >Integration by
+                    <a href="https://github.com/razzant/ouroboros">Ouroboros</a></small
+                  >
+                </div>
+                <div class="step flat" id="install-in-pi">
+                  <h3>Pi</h3>
+                  <p>
+                    Install the Pi extension with <code>pi install npm:claudexor</code> once your
+                    release includes it, or use a Git checkout. After <code>/reload</code>, look for
+                    Claudexor in <code>/mcp</code>.
+                  </p>
+                  <a class="btn s" href="https://github.com/razzant/claudexor#install-in-pi"
+                    >Install in Pi</a
+                  >
+                  <div class="note">
+                    <a href="#host-setup">CLI setup</a> ·
+                    <a href="https://github.com/razzant/claudexor#get-a-package-checkout"
+                      >Git checkout</a
+                    >
+                    ·
+                    <a href="#host-first-result">First answer</a>
+                  </div>
+                  <small class="note"
+                    >Pi integration by
+                    <a href="https://github.com/razzant/ouroboros">Ouroboros</a></small
+                  >
+                </div>
+                <div class="step flat" id="install-in-openclaw">
+                  <h3>OpenClaw</h3>
+                  <p>
+                    Install the bundle on your Gateway and allow its tools for your embedded agent.
+                    OpenClaw 2026.11.5 needs Node 24.16.0–24.x or 26.1.0+.
+                  </p>
+                  <a class="btn s" href="https://github.com/razzant/claudexor#install-in-openclaw"
+                    >Install in OpenClaw</a
+                  >
+                  <div class="note">
+                    <a href="#host-setup">CLI setup</a> ·
+                    <a href="#host-first-result">First answer</a>
+                  </div>
+                  <small class="note"
+                    >Integration by
+                    <a href="https://github.com/razzant/ouroboros">Ouroboros</a></small
+                  >
+                </div>
+              </div>
+              <div class="cell flat" id="host-first-result" style="margin-top: 20px">
+                <h3>Get your first answer</h3>
+                <p>
+                  Compare the host's status with <code>claudexor doctor</code>. If you use a
+                  <a
+                    href="https://github.com/razzant/claudexor/blob/main/docs/INTEGRATIONS.md#custom-claudexor-configuration-directory"
+                    >custom Claudexor store</a
+                  >, verify it first. With no project selected and a CLI that supports projectless
+                  Ask, try “Use Claudexor's read-only Ask without a project. If I chose a named
+                  account, pass its profile_id from Claudexor Accounts as credentialProfileId and
+                  its harness_id as harness. Leave Auto unpinned. The shop opens at 09:00 and closes
+                  at 17:00. When does it close? Show me Claudexor's answer and the run ID.”
+                  <a href="https://github.com/razzant/claudexor#first-delegation-from-any-host"
+                    >Read the result or use the repository example for older CLIs</a
+                  >
+                </p>
+              </div>
+            </section>
+          </div>
+        </div>
+
         <div class="plane" id="trust">
           <div class="z">
             <section>
@@ -1978,7 +2127,7 @@
                   <pre><span class="p">$</span> npm install -g claudexor
 <span class="p">$</span> claudexor doctor
 
-<span class="c"># sign in through Claudexor, then ask</span>
+<span class="c"># Open the Codex sign-in link in a private window.</span>
 <span class="p">$</span> claudexor auth login codex
 <span class="p">$</span> cd /path/to/your/project
 <span class="p">$</span> claudexor ask <span class="s">"map this repo"</span>
@@ -2001,12 +2150,13 @@
                 <a href="https://github.com/razzant/claudexor">GitHub</a>
                 <a href="https://www.npmjs.com/package/claudexor">npm</a>
                 <a href="https://github.com/razzant/claudexor/releases">Releases</a>
+                <a href="#agent-hosts">Agent hosts</a>
                 <a href="https://github.com/razzant/claudexor/blob/main/LICENSE">MIT</a>
               </div>
               <p class="note">
-                Claude Code, Codex, Cursor and OpenCode names and marks belong to their respective
-                owners and identify compatibility only. Claudexor is independent and is not endorsed
-                by Anthropic, OpenAI, Anysphere, or the OpenCode project.
+                Claude Code, Codex, Cursor, OpenCode, Hermes, Pi and OpenClaw names and marks belong
+                to their respective owners and identify compatibility only. Claudexor is independent
+                and is not endorsed by the named vendors or projects.
               </p>
             </footer>
           </div>
