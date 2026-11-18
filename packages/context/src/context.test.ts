@@ -282,8 +282,8 @@ describe("assertMandatoryContext (uniform preflight)", () => {
         context: {
           executionRoot: repo,
           unavailableFiles: [
-            { path: "link.txt", reason: "symlink resolves outside the allowed root" },
-            { path: "dangling.txt", reason: "symlink target cannot be resolved (ENOENT)" },
+            { path: "link.txt", reason: "symlink target is unavailable within the allowed root" },
+            { path: "dangling.txt", reason: "symlink target is unavailable within the allowed root" },
             { path: "../outside.txt", reason: "path escapes the repo" },
           ],
         },
@@ -538,7 +538,7 @@ describe("atlas symlink containment (R33 gate finding)", () => {
     const res = await buildScopeAtlas(repo);
     const leak = res.atlas.find((e) => e.path === "leak.txt");
     expect(leak?.disposition).toBe("excluded");
-    expect(leak?.reason).toContain("symlink resolves outside");
+    expect(leak?.reason).toBe("symlink target is unavailable within the allowed root");
     // The out-of-tree content never lands anywhere in the atlas result.
     expect(JSON.stringify(res).includes("HOST SECRET CONTENT")).toBe(false);
     // The in-tree symlink still maps normally.

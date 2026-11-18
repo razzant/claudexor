@@ -656,9 +656,9 @@ async function* runClaude(
               handle: (obj, io) => handleControlRequestFrame(obj, io, spec.session_id, channel),
               // Hold stdin for live messages and background work, never past a quota refusal.
               closeStdinOn: (obj) => live.closeStdinOn(spec.session_id, obj),
-              onIo: (io, sessionId) => {
+              onIo: (io, sessionId, closeStdinIf) => {
                 inputOpen = io !== null;
-                live.onIo(io, sessionId, promptUuid);
+                live.onIo(io, sessionId, promptUuid, closeStdinIf);
               },
             },
           }

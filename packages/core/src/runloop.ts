@@ -47,6 +47,8 @@ export function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefin
     : undefined;
 }
 
+export type CloseStdinIf = (ready: () => boolean) => void;
+
 export interface CliRunLoopOptions {
   program?: HarnessProgram;
   /** Adapter-owned field from the vendor startup frame, never error prose. */
@@ -94,12 +96,12 @@ export interface CliRunLoopOptions {
     handle: (obj: unknown, io: ChildStdin) => AsyncGenerator<HarnessEvent>;
     closeStdinOn?: (obj: unknown) => boolean;
     /**
-     * Live stdin seam for an adapter's live-input owner: called with the handle
-     * right after spawn (once `initialStdin` is written) and with `null` exactly
-     * once when stdin closes — on the `closeStdinOn` path or in the loop's
-     * finally — so no live message is ever written into a closed session.
+     * Called with the live handle after `initialStdin` is written and with
+     * `null` exactly once when stdin closes. Between frames the adapter can
+     * request EOF with its current close condition. A control handler already
+     * using stdin finishes its reply before the loop checks that condition.
      */
-    onIo?: (io: ChildStdin | null, sessionId: string) => void;
+    onIo?: (io: ChildStdin | null, sessionId: string, closeStdinIf?: CloseStdinIf) => void;
   };
   /** Injection seam for the whole-tree death proof (deterministic tests of the
    * termination_unconfirmed terminal fact). Forwarded to spawnProcess; production
@@ -174,13 +176,19 @@ async function* runCliHarnessObserved(
   // Box the stdin handle: it is assigned inside the onSpawn callback, which
   // TypeScript's control-flow narrowing cannot see through a plain let.
   const session: { io: ChildStdin | null } = { io: null };
-  // One owner for the close: stdin ends once and the adapter hears `null` once,
-  // whether the native terminal frame closed it or the loop's finally did.
+  // Frames, released holds and loop cleanup all end stdin and notify the adapter once.
   const closeSessionStdin = (): void => {
     if (!session.io) return;
     session.io.end();
     session.io = null;
     opts.session?.onIo?.(null, spec.session_id);
+  };
+  let handlingControl = false;
+  let checkAfterControl: (() => boolean) | undefined;
+  const closeStdinIf: CloseStdinIf = (ready) => {
+    // A control handler that already has stdin may still be writing its reply.
+    if (handlingControl) checkAfterControl = ready;
+    else if (session.io && ready()) closeSessionStdin();
   };
   try {
     for await (const ev of (opts.spawn ?? spawnProcess)(opts.bin, opts.args, {
@@ -201,7 +209,7 @@ async function* runCliHarnessObserved(
             onSpawn: (io: ChildStdin) => {
               session.io = io;
               if (opts.session?.initialStdin) io.write(opts.session.initialStdin);
-              opts.session?.onIo?.(io, spec.session_id);
+              opts.session?.onIo?.(io, spec.session_id, closeStdinIf);
             },
           }
         : {}),
@@ -238,6 +246,7 @@ async function* runCliHarnessObserved(
       }
       program?.observeVersion(opts.programVersion?.(obj));
       if (opts.session && session.io && opts.session.matches(obj)) {
+        handlingControl = true;
         for await (const out of opts.session.handle(obj, session.io)) {
           if (out.type === "error") sawError = harnessReportedError = true;
           yield out;
@@ -245,6 +254,11 @@ async function* runCliHarnessObserved(
             const advisory = takeLaunchAdvisory();
             if (advisory) yield advisory;
           }
+        }
+        handlingControl = false;
+        if (checkAfterControl) {
+          closeStdinIf(checkAfterControl);
+          checkAfterControl = undefined;
         }
         continue;
       }

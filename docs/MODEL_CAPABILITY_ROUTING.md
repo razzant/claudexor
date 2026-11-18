@@ -58,9 +58,11 @@ from an HTTP error or a stream error (`error` or `response.failed`) produces
 `provider_content_refused` in the typed view, with `retryable: false`.
 End the request even if a fallback account or model is configured. Account
 evidence stays intact. This error does not establish whether generation
-started. Public diagnostics withhold unrecognized provider codes and field
-names. Exact HTTP or stream failure bytes require the separate
-`captureFailureEvidence=true` opt-in and stay in the private result.
+started. For all Codex text failures, public diagnostics report only recognized
+codes, field names, event types, incomplete reasons and error classes, plus
+request IDs in known formats. Unrecognized values are omitted or masked.
+Exact HTTP or stream failure bytes require the separate `captureFailureEvidence=true`
+opt-in and stay in the private result.
 
 A completed assistant message containing a refusal part is still an answer.
 The typed view preserves ordered `{type: "text", text}` and

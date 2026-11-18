@@ -20,7 +20,8 @@ CLI inspect accepts `--include-final-messages`. A recorded document transfers
 with its verified size and digest. Default reads and launches keep their original shape.
 
 Codex text operations advertise `typedRefusals`. A failed content refusal
-ends the request without retrying or penalizing the account. A completed
+ends the request without retrying or penalizing the account. Public Codex
+failure details omit or mask unrecognized provider diagnostics. A completed
 refusal remains an assistant answer with usage and any tool calls. Claude
 Code closes input on a confirmed quota refusal of its own command and still
 collects late receipts. A late queue acknowledgment is distinguishable from
