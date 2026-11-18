@@ -13,5 +13,7 @@ every account the operation tried failed this way, the operation ends with the s
 retryable `catalog_unavailable` and `poolCause: "network"` instead of
 `credential_pool_exhausted`; accounts it did not try because of quota or sign-in keep
 those causes in `poolCauses`. The public catalog GET returns the same problem fields as the
-operation receipt, including retryability and the connection code. A failure after the provider answered, or one without such
+operation receipt, including retryability and the connection code. A socket timeout
+requires connect-phase evidence. The catalog deadline preserves a connection error
+reported as the transport aborts. A failure after the provider answered, or one without such
 a code, is reported as before.

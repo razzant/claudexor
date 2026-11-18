@@ -1844,7 +1844,7 @@ describe("raw catalog read ownership", () => {
         });
         const pending = f.adapter.catalog(f.context).catch((e) => e);
         await ready.promise;
-        await vi.advanceTimersByTimeAsync(CODEX_CATALOG_TRANSPORT_MS);
+        await vi.advanceTimersByTimeAsync(CODEX_CATALOG_TRANSPORT_MS + 1);
         expect(await pending).toMatchObject({
           problem: { code: "catalog_unavailable", retryable: true },
         });
@@ -2115,6 +2115,51 @@ describe("a catalog read that never reached the provider", () => {
       },
     });
   });
+
+  it.each([
+    ["connect", true],
+    ["read", false],
+    [undefined, false],
+  ])("requires connect-phase evidence for ETIMEDOUT (%s)", async (syscall, network) => {
+    const f = setup();
+    f.fetcher.mockRejectedValueOnce(failed({ code: "ETIMEDOUT", syscall }));
+    const refusal = await f.adapter.catalog(f.context).catch((error) => error);
+    expect(refusal.problem.context).toEqual(
+      network ? { cause: "network", errorCode: "ETIMEDOUT" } : {},
+    );
+  });
+
+  it.each(["ENOTFOUND", "UND_ERR_CONNECT_TIMEOUT", undefined])(
+    "keeps the transport's typed cause when the deadline aborts (%s)",
+    async (code) => {
+      vi.useFakeTimers();
+      try {
+        const f = setup();
+        let start!: () => void;
+        const started = new Promise<void>((resolve) => {
+          start = resolve;
+        });
+        f.fetcher.mockImplementationOnce(
+          (_url, init) =>
+            new Promise((_resolve, reject) => {
+              init!.signal!.addEventListener("abort", () => reject(failed({ code })), {
+                once: true,
+              });
+              start();
+            }),
+        );
+        const pending = f.adapter.catalog(f.context).catch((error) => error);
+        await started;
+        await vi.advanceTimersByTimeAsync(CODEX_CATALOG_TRANSPORT_MS + 1);
+        const { problem } = await pending;
+        expect(problem.code).toBe("catalog_unavailable");
+        expect(problem.context).toEqual(code ? { cause: "network", errorCode: code } : {});
+        expect(problem.message).toContain(code ?? "transport limit");
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("claims nothing about the network for a failure after a connection or without a code", async () => {
     const f = setup();

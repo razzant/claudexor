@@ -29,7 +29,6 @@ const UNREACHABLE = new Set([
   "EHOSTDOWN",
   "EADDRNOTAVAIL",
   "ECONNREFUSED",
-  "ETIMEDOUT",
   "UND_ERR_CONNECT_TIMEOUT",
 ]);
 
@@ -38,8 +37,9 @@ const UNREACHABLE = new Set([
 export function unreachableCode(error: unknown, seen = new Set<unknown>()): string | null {
   if (!error || typeof error !== "object" || seen.has(error)) return null;
   seen.add(error);
-  const code = (error as { code?: unknown }).code;
-  if (typeof code === "string" && UNREACHABLE.has(code)) return code;
+  const { code, syscall } = error as NodeJS.ErrnoException;
+  if (code && (UNREACHABLE.has(code) || (code === "ETIMEDOUT" && syscall === "connect")))
+    return code;
   const inner = [(error as { cause?: unknown }).cause];
   if (error instanceof AggregateError) inner.push(...error.errors);
   for (const nested of inner) {
@@ -208,7 +208,12 @@ export function createCodexCatalogReader(
       reads.read(scope, key, context.signal, async (signal) => {
         const startedAt = Date.now();
         const deadline = new AbortController();
-        const timer = setTimeout(() => deadline.abort(), CODEX_CATALOG_TRANSPORT_MS);
+        const fallback = new AbortController();
+        const timer = setTimeout(() => {
+          deadline.abort();
+          // Let the aborted transport settle with its socket error before bounding an unresponsive one.
+          setImmediate(() => fallback.abort(deadline.signal.reason));
+        }, CODEX_CATALOG_TRANSPORT_MS);
         timer.unref?.();
         const transport = AbortSignal.any([signal, deadline.signal]);
         try {
@@ -257,20 +262,20 @@ export function createCodexCatalogReader(
               models: measureWork("catalog.read", () => parseCodexModelCatalog(body)),
             };
           };
-          const answer = await waitForRead(work(), transport);
+          const answer = await waitForRead(work(), AbortSignal.any([signal, fallback.signal]));
           if (key !== null) publish({ key, at: startedAt, value: answer });
           return answer;
         } catch (error) {
           signal.throwIfAborted();
           publish();
           if (error instanceof CodexModelError) throw error;
-          const network = deadline.signal.aborted ? null : unreachableCode(error);
+          const network = unreachableCode(error);
           throw new CodexModelError(
             "catalog_unavailable",
-            deadline.signal.aborted
-              ? "The selected Codex account's catalog exceeded its transport limit."
-              : network
-                ? `The model provider could not be reached from this machine (${network}).`
+            network
+              ? `The model provider could not be reached from this machine (${network}).`
+              : deadline.signal.aborted
+                ? "The selected Codex account's catalog exceeded its transport limit."
                 : "The selected Codex account's catalog could not be reached.",
             network ? { cause: "network", errorCode: network } : {},
             true,

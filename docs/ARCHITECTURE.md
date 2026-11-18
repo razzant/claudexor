@@ -3322,12 +3322,13 @@ physical I/O already in progress. Accepted durable model operations retain their
 lifetime, independent of the connection that created them. The Codex `/models`
 request and response body share a 60-second transport limit; expiry yields
 `catalog_unavailable`, never an empty successful inventory, and Auto continues
-its normal candidate search. A fetch that never reached the provider (the socket or
-DNS code it reports in its causes: name not resolved, no route, refused or connect
-timeout) is `catalog_unavailable` with `context.cause: network` and that
-`errorCode`. The public catalog GET returns the same retryability and problem
-context as the operation receipt, including `poolCause` on pool exhaustion. A failed read is never remembered and never becomes
-an empty catalog; only a successful read answers later selections, as above.
+its normal candidate search. A DNS failure, missing route, connection refusal or
+connect timeout produces `catalog_unavailable` with `context.cause: network` and the
+connection's `errorCode`. A socket `ETIMEDOUT` qualifies only when the failing syscall
+was `connect`. A deadline that aborts the read preserves any such connection error the
+transport reports as it settles. The public catalog GET returns the same retryability
+and problem context as the operation receipt, including `poolCause` on pool exhaustion.
+Only a successful read can answer a later selection.
 
 Operation receipts carry optional `preparation`; HTTP GET exposes it only with
 `includePreparation=true`, so strict earlier clients keep their DTO. It contains `totalMs`, `steps`
