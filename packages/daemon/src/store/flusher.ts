@@ -123,7 +123,7 @@ export class FlusherController {
   }
 
   /** Resolves once a pass that started after this call proved its barrier. The
-   * waiter may advance an idle periodic slot. */
+   * waiter can trigger one extra early barrier in an idle slot. */
   flushed(): Promise<void> {
     const g = this.nextGeneration();
     return new Promise<void>((resolve, reject) => {

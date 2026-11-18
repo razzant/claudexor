@@ -30,7 +30,7 @@ export interface FlusherWorkerData {
 
 export type FlusherCommand =
   | { type: "register"; g: number; dir: string }
-  /** A waiter may advance the scheduled pass once. Waking adds no pass. */
+  /** An idle slot allows one extra early pass. The periodic deadline stays in place. */
   | { type: "flush"; g: number; wake?: true }
   | { type: "tick" }
   | { type: "exit"; code: number }

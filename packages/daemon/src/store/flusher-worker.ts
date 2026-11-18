@@ -13,7 +13,8 @@ import {
 } from "./flusher-protocol.js";
 
 /**
- * The periodic flusher pass can run early for a waiting `flushed()`:
+ * The flusher runs periodic passes. The first waiter in an idle slot can trigger
+ * one extra early pass.
  *   1. g_target := the highest generation received so far (FIFO: every
  *      registration or flush request handled before this tick is covered);
  *   2. one F_FULLFSYNC per directory touched by a covered registration;
@@ -168,20 +169,20 @@ export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerDat
     }, delay);
   };
 
-  // Borrow an idle slot once. Later commands collect at the next periodic
-  // barrier. Under continuous demand the timer already serves the waiters.
+  // An idle slot allows one extra early barrier. Followers share the original
+  // periodic deadline. Under continuous demand the timer serves every waiter.
   const wake = (): void => {
     waiting = true;
     if (advanceableDue === null) return;
-    const replaced = advanceableDue;
+    const due = advanceableDue;
     advanceableDue = null;
     clearTimeout(timer!);
     woken = setImmediate(() => {
       woken = null;
       waiting = false;
-      const remaining = Math.max(0, replaced - performance.now());
       pass(false);
-      schedule(remaining + interval, false);
+      const remaining = Math.max(0, due - performance.now());
+      schedule(remaining, false);
     });
   };
 

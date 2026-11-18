@@ -6264,7 +6264,7 @@ kept only for cold import and an independent frozen copy kept for tests.
   committed and durable across an engine process crash or kill, not power loss
   or kernel panic: recent commits can be lost until a completed flusher barrier.
   Provider generation and native account-reset I/O await `flushed()` before the
-  external effect; that waiter may advance a scheduled flusher pass (below).
+  external effect. A waiter in an idle slot can trigger an extra early barrier (below).
   Bodies up to 64 KiB live inline in the `blob` table; larger bodies are
   content-addressed files under the resource store, present in the same tick
   as the owning transaction. Where the bytes are known at an asynchronous
@@ -6425,13 +6425,15 @@ kept only for cold import and an independent frozen copy kept for tests.
   generations; a pass acknowledges every generation it received before it
   started, a dead worker rejects its earlier waiters typed
   (`store_flush_unavailable`, retryable) and is restarted with its
-  unacknowledged registrations replayed. A `flushed()` waiter may run the scheduled pass early.
-  It covers all generations the worker has received by the time it starts.
-  The wake consumes that slot, so waking adds no pass. Later waiters share the
-  next periodic pass. While each periodic pass serves waiters, the worker
-  keeps that schedule. A periodic pass with no waiters makes the next slot
-  available to advance again. Every periodic pass attempts a PASSIVE checkpoint
-  for space. An early pass leaves the checkpoint to the next periodic pass.
+  unacknowledged registrations replayed. The first `flushed()` waiter in an idle slot may trigger
+  one extra early pass. It covers the generations received before it starts and
+  performs the WAL barrier when dirty. The periodic pass keeps its original
+  deadline. If the early pass is still running then, the worker finishes it
+  before serving followers. Periodic passes that serve waiters keep subsequent
+  waiters on the timer. A periodic pass with no waiters permits another early
+  pass in the following slot. Every periodic pass attempts a PASSIVE checkpoint
+  for space. A pass whose data version matches the last proven barrier skips the
+  explicit WAL fsync.
   Pass cost, worker delays and pinned readers affect when space is reclaimed.
 - Obligations (`effect_obligation`) are rows created in the same transaction
   as the decision whose file effects they protect (terminal files, blob
