@@ -2,16 +2,12 @@
 
 The product names, logos, and brands shown on the Claudexor landing page are
 used solely to identify interoperability. Claudexor is an independent project
-and is not endorsed by Anthropic, OpenAI, Anysphere, or the OpenCode project.
+and is not endorsed by Anthropic, OpenAI, Anysphere, Google, xAI, the OpenCode
+project, or the Hermes, Pi and OpenClaw projects.
 
-- Claude Code: icon extracted without modification from the official Claude
-  macOS application distributed by Anthropic.
-- Codex: icon extracted without modification from the official ChatGPT macOS
-  application distributed by OpenAI (`icon-codex-dark-color.png`).
-- Cursor: icon extracted without modification from the official Cursor macOS
-  application distributed by Anysphere.
-- OpenCode: production application icon from the official
-  `anomalyco/opencode` repository, `dev` branch.
+The page draws the marks of Claude Code (Anthropic), Codex (OpenAI), Cursor
+(Anysphere) and Antigravity (Google) as small single-colour vector shapes,
+inline in the page, next to or inside elements that name the product. OpenCode,
+Grok Build, Hermes, Pi and OpenClaw appear by name only.
 
-Retrieved for descriptive compatibility use on 2026-07-23. All trademarks
-remain the property of their respective owners.
+All trademarks remain the property of their respective owners.
