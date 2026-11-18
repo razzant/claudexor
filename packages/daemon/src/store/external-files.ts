@@ -208,7 +208,7 @@ export async function writeStagedTemp(
   }
 }
 
-/** Network chunks are gathered into blocks of at least this size before one
+/** Network chunks are gathered into blocks of at most this size before one
  * `O_DSYNC` pool write, so a body costs one write and one callback per block. */
 export const EXTERNAL_WRITE_BLOCK_BYTES = 1 << 20;
 

@@ -22,7 +22,8 @@ export async function readControlRequestBody(
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) return {};
-  // Decode whole bytes so a valid multibyte character may cross a chunk boundary.
+  // Decode across chunk boundaries and reject malformed UTF-8 because replacement characters
+  // could otherwise pass validation, the secret fence and idempotency hashing.
   return measureWork("control.handler", () => {
     let decoded: string;
     try {
