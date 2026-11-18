@@ -22,6 +22,8 @@ request, a rate limit or a server failure keeps it, and a read that was in fligh
 evidence arrived is not remembered. The public catalog GET and the Accounts catalog
 acquisition after Refresh read the provider even within those 90 seconds. The GET can
 reuse a confirmed login within its lifetime. Accounts Refresh checks the login again.
+An account-wide image authentication refusal also drops that account’s text catalog.
+Image quota and model-specific image entitlement leave the text catalog available.
 
 Starting an Agent run, and resolving a reviewer seat, now reuses a confirmed login under the
 same rule: one login readiness owner per engine store serves both raw model operations and

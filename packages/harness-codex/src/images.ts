@@ -305,6 +305,7 @@ export function parseImageResponse(body: unknown): {
 export function createCodexImageFacet(
   deps: CodexImageDeps = {},
   authorize = prepareCodexModelAuth,
+  onAuthRefusal?: (profileId: string) => void,
 ): ModelImageFacet {
   const fetcher = deps.fetch ?? globalThis.fetch;
   const now = deps.now ?? Date.now;
@@ -433,6 +434,8 @@ export function createCodexImageFacet(
                   problem.context,
                 ).problem
               : problem;
+          if (["auth_required", "auth_refresh_failed"].includes(result.problem.code))
+            onAuthRefusal?.(context.profile.profile_id);
           return withRequestId(capture.finish(result), response);
         }
         capture.response(response);

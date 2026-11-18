@@ -3301,7 +3301,9 @@ under the same catalog key and the stat versions of the owned `auth.json` and
 observation date and records no `catalogTransport` step. A failed catalog read,
 failed account authorization, unknown or changed identity, or program replacement
 invalidates the fact. An HTTP or terminal stream refusal of a listed model or its
-account also invalidates it. A request fault, rate limit or server failure on a
+account also invalidates it. An account-wide authentication refusal on an image request
+drops the text catalog. Image quota and image-model entitlement leave it available.
+A request fault, rate limit or server failure on a
 generation leaves the catalog available. An earlier read cannot publish over
 contrary evidence. A pin and its run-start probe keep the pin's own
 wait and never join an ordinary probe. After each wait a consumer judges again only the

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { getGlobalDispatcher, setGlobalDispatcher, type Dispatcher } from "undici";
 import {
   CredentialProfile,
+  ImageCallRequest,
   ModelCallRequest,
   ModelCallResult,
   ModelCatalogEntry,
@@ -2004,6 +2005,38 @@ describe("remembered catalog (INV-135, owner decision 2026-11-18)", () => {
       expect(gets(f)).toBe(1);
       await f.adapter.catalog(context);
       expect(gets(f)).toBe(drops ? 2 : 1);
+    },
+  );
+
+  it.each([
+    [401, "invalid_token", "auth_required", true],
+    [401, "invalid_token", "auth_refresh_failed", true],
+    [403, "image_model_not_entitled", "provider_refused", false],
+    [429, "quota_exceeded", "image_generation_limit_reached", false],
+  ] as const)(
+    "an image refusal classified as %s/%s/%s invalidates only a contradicted text catalog",
+    async (status, code, problem, drops) => {
+      const f = setup(() => Response.json({ error: { code } }, { status }), undefined, known());
+      if (problem === "auth_refresh_failed")
+        f.readAuthFile.mockResolvedValue(
+          (await f.readAuthFile()).replace(f.token, "opaque-fixture"),
+        );
+      const context = { ...f.context, credentialGeneration: 1, reuseCatalog: true };
+      const other = { ...context, profile: { ...f.profile, profile_id: "other" } };
+      await f.adapter.catalog(context);
+      const sibling = await f.adapter.catalog(other);
+      const request = ImageCallRequest.parse({
+        source: "codex",
+        account: f.request.account,
+        model: "gpt-image-1.5",
+        prompt: "fixture",
+      });
+      const result = await f.adapter.image!.invoke(request, { ...context, imageTurnId: "fixture" });
+      expect(result.problem?.code).toBe(problem);
+      expect(await f.adapter.catalog(other)).toEqual(sibling);
+      expect(gets(f)).toBe(2);
+      await f.adapter.catalog(context);
+      expect(gets(f)).toBe(drops ? 3 : 2);
     },
   );
 

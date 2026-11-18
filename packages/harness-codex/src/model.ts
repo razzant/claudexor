@@ -102,7 +102,7 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
   return {
     id: "codex",
     // Same managed account, auth and delivery owners; a different wire.
-    image: createCodexImageFacet(deps, authorize),
+    image: createCodexImageFacet(deps, authorize, catalogFor.forget),
     close: catalogFor.close,
     inventoryAbsence: "advisory",
     catalog: (context) => catalogFor(authorize(context.profile, context.signal), context),
