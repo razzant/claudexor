@@ -12,7 +12,7 @@ import {
 } from "./test-support/resource-fixture.js";
 
 /** Every positioned write of an upload part, as the pool received it. */
-const parts = vi.hoisted(() => ({ writes: [] as number[] }));
+const parts = vi.hoisted(() => ({ writes: [] as number[], capacities: new Set<number>() }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
@@ -22,6 +22,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       if (!String(args[0]).endsWith(".part")) return handle;
       const write = handle.write.bind(handle);
       handle.write = (async (...writeArgs: Parameters<typeof write>) => {
+        const [bytes] = writeArgs;
+        if (Buffer.isBuffer(bytes)) parts.capacities.add(bytes.buffer.byteLength);
         const written = await write(...writeArgs);
         parts.writes.push(written.bytesWritten);
         return written;
@@ -41,6 +43,7 @@ const roots: string[] = [];
 const fixtures: ResourceFixture[] = [];
 afterEachClosed(async () => {
   parts.writes.length = 0;
+  parts.capacities.clear();
   for (const opened of fixtures.splice(0)) await opened.close();
   const owned = roots.splice(0);
   return () => {
@@ -69,6 +72,7 @@ describeStore("an upload is accepted in large blocks", () => {
       state: "uploaded",
       receivedBytes: body.length,
     });
+    expect([...parts.capacities]).toEqual([EXTERNAL_WRITE_BLOCK_BYTES]);
     expect(parts.writes).toEqual([
       EXTERNAL_WRITE_BLOCK_BYTES,
       EXTERNAL_WRITE_BLOCK_BYTES,
@@ -96,9 +100,26 @@ describeStore("an upload is accepted in large blocks", () => {
     await f.resources.write(status.uploadId, producer());
     expect(readFileSync(join(f.store.paths.uploads, `${status.uploadId}.part`))).toEqual(supplied);
     expect(parts.writes).toEqual([supplied.length]);
+    expect([...parts.capacities]).toEqual([supplied.length]);
     expect(await f.resources.finalize(status.uploadId, sha256, "reused-final")).toMatchObject({
       sha256,
     });
+  });
+
+  it("accepts an empty upload without a block and refuses bytes declared empty", async () => {
+    const f = await fixture();
+    const empty = f.resources.create({ ...uploadRequest, sizeBytes: 0 }, "empty");
+    expect(await f.resources.write(empty.uploadId, network(Buffer.alloc(0), 1))).toMatchObject({
+      state: "uploaded",
+      receivedBytes: 0,
+    });
+    const over = f.resources.create({ ...uploadRequest, sizeBytes: 0 }, "over-empty");
+    await expect(
+      f.resources.write(over.uploadId, network(Buffer.alloc(1), 1)),
+    ).rejects.toMatchObject({
+      code: "upload_size_exceeded",
+    });
+    expect(parts.writes).toEqual([]);
   });
 
   it("refuses the chunk that exceeds the declared size before writing it, and a wrong total", async () => {

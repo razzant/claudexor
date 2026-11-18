@@ -217,8 +217,8 @@ export const EXTERNAL_WRITE_BLOCK_BYTES = 1 << 20;
  * same flags as `writeStagedTemp`. The caller owns the path (an upload part).
  * `accept` runs on the request thread for each network chunk, with the bytes
  * accepted before it, and may throw to stop the transfer before that chunk is
- * written. Accepted bytes are copied into one owned block of
- * `EXTERNAL_WRITE_BLOCK_BYTES` as they arrive (a producer may reuse its buffer
+ * written. Accepted bytes are copied into one owned block bounded by the declared
+ * total and `EXTERNAL_WRITE_BLOCK_BYTES` (a producer may reuse its buffer
  * once asked for the next chunk), written when it fills and at the end;
  * `committed` runs after each write returns, with a view of the written bytes
  * valid only during the call and the bytes written so far.
@@ -233,6 +233,7 @@ export async function writeExternalIncremental(
   path: string,
   chunks: AsyncIterable<Uint8Array>,
   hooks?: {
+    expectedBytes?: number;
     accept?: (chunk: Uint8Array, received: number) => void;
     committed?: (chunk: Uint8Array, received: number) => void;
     cancelled?: () => void;
@@ -275,7 +276,7 @@ export async function writeExternalIncremental(
     for await (const chunk of chunks) {
       hooks?.accept?.(chunk, received + filled);
       for (let taken = 0; taken < chunk.byteLength;) {
-        block ??= Buffer.allocUnsafe(EXTERNAL_WRITE_BLOCK_BYTES);
+        block ??= Buffer.allocUnsafe(Math.min(EXTERNAL_WRITE_BLOCK_BYTES, hooks?.expectedBytes || Infinity));
         const part = chunk.subarray(taken, taken + block.byteLength - filled);
         block.set(part, filled);
         filled += part.byteLength;
