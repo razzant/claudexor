@@ -2,12 +2,12 @@
 
 > Local-first control plane for quota-aware work across Claude Code, Codex, Cursor, OpenCode, Antigravity, and Grok Build.
 
-Claudexor runs locally and keeps one coding thread across harness and account lanes. Several subscriptions of the same agent can use isolated profiles. Live quota and typed rotation of unpinned runs cover Claude Code, Codex, and Antigravity, whose vendors report quota; Cursor, OpenCode, and Grok Build participate in the multi-harness pool. When a run that already did work moves to another account of the same agent, its native session moves with it where the agent supports that, or the work continues from a bounded evidence packet. Between different agents, continuation uses bounded Claudexor context packets.
+Claudexor runs locally and keeps one coding thread across harness and account lanes. Several subscriptions of the same agent can use isolated profiles. Live quota and typed rotation of unpinned runs cover Claude Code, Codex, and Antigravity, whose vendors report quota; Cursor, OpenCode, and Grok Build participate in the multi-harness pool. When an Agent or Ask run that already did work moves to another account of the same agent, its native session moves with it where the agent supports that, or the work continues from a bounded evidence packet. Between different agents, continuation uses bounded Claudexor context packets.
 
 ## Documentation
 
 - [README and quickstart](https://github.com/razzant/claudexor#readme)
-- [Credential profiles and quota](https://github.com/razzant/claudexor#credential-profiles-and-quota)
+- [Accounts and quota](https://github.com/razzant/claudexor#accounts-and-quota)
 - [Integrations](https://github.com/razzant/claudexor#integrations)
 - [Agent host packages (Hermes, Pi, OpenClaw)](https://github.com/razzant/claudexor#agent-host-packages)
 - [Architecture](https://github.com/razzant/claudexor/blob/main/docs/ARCHITECTURE.md)

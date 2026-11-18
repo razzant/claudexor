@@ -98,6 +98,8 @@ h2 { max-width: 17ch; font-size: clamp(32px, 4vw, 56px); line-height: 1.04; text
 .cmd { display: inline-flex; align-items: center; gap: 8px; height: 52px; padding: 0 6px 0 18px; border: 1px solid rgba(232, 240, 248, .24); font-size: 14px; }
 .cmd code { font-family: var(--mono); font-size: 14px; }
 .cmd span { padding: 7px 10px; color: var(--steel); }
+html:not(.js) .cmd span { display: none; }
+.note code { font-family: var(--mono); font-size: .92em; color: var(--ice); }
 .cmd:hover { border-color: rgba(232, 240, 248, .55); }
 .cmd:hover span { color: var(--ice); }
 .cmd:focus-visible { outline: 2px solid var(--ice); outline-offset: 4px; }
@@ -142,12 +144,12 @@ html:not(.js) .host-name { display: block; margin-top: 18px; font-size: 16px; fo
 #agent-hosts h3 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
 #agent-hosts p { max-width: 52ch; margin-top: 10px; font-size: 16px; line-height: 1.55; color: var(--steel); }
 #agent-hosts p a, .credit a { color: var(--ice); text-decoration: underline; text-decoration-color: rgba(232, 240, 248, .35); text-underline-offset: 3px; }
-#agent-hosts code { font-family: var(--mono); font-size: .9em; color: var(--ice); }
+#agent-hosts code { font-family: var(--mono); font-size: .9em; color: var(--ice); overflow-wrap: anywhere; }
 #agent-hosts [id] { scroll-margin-top: 24px; }
 .hosts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 40px 70px; align-items: start; margin-top: 60px; }
 .hosts .term { margin-top: 22px; font-size: 14px; }
 .tabs { display: flex; gap: 26px; margin-top: 14px; border-bottom: 1px solid rgba(232, 240, 248, .14); }
-.tabs button { min-height: 44px; padding: 10px 2px 12px; margin-bottom: -1px; border-bottom: 2px solid transparent; font-size: 16px; font-weight: 600; color: var(--steel); }
+.tabs button { min-height: 44px; min-width: 44px; padding: 10px 2px 12px; margin-bottom: -1px; border-bottom: 2px solid transparent; font-size: 16px; font-weight: 600; color: var(--steel); }
 .tabs button[aria-selected="true"] { color: var(--ice); border-bottom-color: var(--ice); }
 .tabs button:hover { color: var(--ice); }
 .tabs button:focus-visible { outline: 2px solid var(--ice); outline-offset: 4px; }
@@ -249,7 +251,7 @@ footer small { max-width: 90ch; font-size: 12.5px; color: var(--dim); }
   <dl class="facts">
     <div><dt>One task history</dt><dd>Plans, runs, reviews and results stay connected.</dd></div>
     <div><dt>Ready-agent routing</dt><dd>Choose the agent yourself, or route from live readiness and quota.</dd></div>
-    <div><dt>Cross-family verification</dt><dd>Ask for a review and a model from another family reads the work before it is delivered.</dd></div>
+    <div><dt>Cross-family verification</dt><dd>Ask for a review and Claudexor picks a panel from other model families to read the work before it is delivered.</dd></div>
   </dl>
 </div></section>
 
@@ -257,16 +259,16 @@ footer small { max-width: 90ch; font-size: 12.5px; color: var(--dim); }
   <h2>Use the headroom you already pay for.</h2>
   <p class="sub">Add separate accounts for the same agent without mixing credentials. Where the vendor reports quota, for Claude Code, Codex and Antigravity, Claudexor shows each account's live windows and moves an unpinned run off an account that hit a confirmed limit. An ordinary network error never moves it, and a pinned run stays where you put it.</p>
   <dl class="facts">
-    <div><dt>Separate profiles</dt><dd>Each account keeps its own configuration and its own credential store. No shared credential jar.</dd></div>
+    <div><dt>Separate profiles</dt><dd>Each account is a named profile with its own scoped state. Where its credentials are kept follows the vendor and the platform.</dd></div>
     <div><dt>Real quota facts</dt><dd>The windows a vendor reports, with their resets, stay with the account that reported them: five-hour and seven-day for Claude Code and Codex, per model for Antigravity.</dd></div>
-    <div><dt>One holder at a time</dt><dd>When a run that already did work moves to the next account, its session moves with it where the agent supports that. Otherwise the work continues from a recorded packet.</dd></div>
+    <div><dt>One holder at a time</dt><dd>When an Agent or Ask run that already did work moves to the next account, its session moves with it where the agent supports that. Otherwise the work continues from a recorded packet.</dd></div>
   </dl>
 </div></section>
 
 <section class="band stage" id="cost"><div class="wrap">
   <h2>What it cannot know, it does not invent.</h2>
   <div class="sums" id="sums">
-    <div><span class="pxword">$0.41</span><p>Claude Code on an API key. The provider reported the price, so it is on the record.</p></div>
+    <div><span class="pxword">$0.41</span><p>Claude Code on an API key. Its CLI reported what the run cost, so the record keeps that amount and says where it came from.</p></div>
     <div><span class="pxword">Included</span><p>Codex on a subscription. The window it used is on the record instead.</p></div>
     <div><span class="pxword" data-level=".5">Unknown</span><p>A run whose price nobody reported. It is printed as unknown, never as zero. Budgets die of confident zeroes.</p></div>
   </div>
@@ -285,10 +287,10 @@ footer small { max-width: 90ch; font-size: 12.5px; color: var(--dim); }
 
 <section class="band stage" id="race"><div class="wrap">
   <h2>Three agents race. One patch lands.</h2>
-  <p class="sub">Ask for a race and each agent works in its own isolated copy of your tree. A model from another family reads every patch, the gates run, and the winner's patch is applied with the record that says why. A patch that touches a protected path waits for you.</p>
+  <p class="sub">Ask for a race and each agent works in its own isolated copy of your tree. A model from another family reads every patch and the gates run. In this race the winner's patch is adopted into the thread's working tree, with the record that says why. A patch that touches a protected path waits for you.</p>
   <div class="lanes" id="lanes">
     <div class="lane"><div class="who"><i data-logo="codex"></i>Codex</div><div class="bar"></div><div class="say">212 of 214 tests, 1 finding</div></div>
-    <div class="lane win"><div class="who"><i data-logo="claude"></i>Claude Code</div><div class="bar"></div><div class="say">214 of 214 tests, applied to your tree</div></div>
+    <div class="lane win"><div class="who"><i data-logo="claude"></i>Claude Code</div><div class="bar"></div><div class="say">214 of 214 tests, adopted into the thread</div></div>
     <div class="lane"><div class="who"><i data-logo="antigravity"></i>Antigravity</div><div class="bar"></div><div class="say">214 of 214 tests, 2 findings</div></div>
   </div>
   <p class="aside">First is not the same as right.</p>
@@ -311,7 +313,7 @@ footer small { max-width: 90ch; font-size: 12.5px; color: var(--dim); }
   <div class="hosts">
     <div id="host-setup">
       <h3>First, the CLI</h3>
-      <p>On the machine that runs your agent: macOS or Linux with Node.js 24.15 or newer, and the agent's own CLI installed. The host process must find <code>node</code> and <code>claudexor</code> on its PATH. Use the account you already connected; switching accounts during a Codex sign-in can revoke other sessions. <a href="https://github.com/razzant/claudexor#set-up-the-cli-and-account">CLI and account setup</a></p>
+      <p>On the machine that runs your agent: macOS or Linux with Node.js 24.15 or newer, and the agent's own CLI installed. The host process must find <code>node</code> and <code>claudexor</code> on its PATH. Use the account you already connected, and sign in only if this machine has none; switching accounts during a Codex sign-in can revoke other sessions. <a href="https://github.com/razzant/claudexor#set-up-the-cli-and-account">CLI and account setup</a></p>
       <div class="term"><i>$</i> npm install -g claudexor<br><i># Open the Codex sign-in link</i><br><i># in a private window.</i><br><i>$</i> claudexor auth login codex<br><i>$</i> claudexor doctor</div>
     </div>
     <div>
@@ -323,17 +325,18 @@ footer small { max-width: 90ch; font-size: 12.5px; color: var(--dim); }
       </div>
       <div class="pane on" role="tabpanel" id="install-in-hermes" aria-labelledby="tab-hermes">
         <h4 class="host-name">Hermes</h4>
-        <div class="term"><i># Paste the full SHA you inspected</i><br><i>$</i> read -r SHA<br><i>$</i> hermes plugins install \<br>&nbsp;&nbsp;&nbsp;&nbsp;razzant/claudexor/plugins/hermes \<br>&nbsp;&nbsp;&nbsp;&nbsp;--ref "$SHA" --enable<br><i>$</i> hermes plugins list</div>
-        <p>Start a new Hermes session in that profile and ask it to load <code>claudexor:claudexor</code>. <a href="https://github.com/razzant/claudexor#install-in-hermes">All steps</a></p>
+        <div class="term"><i># Asks for the full SHA you inspected</i><br><i>$</i> printf 'Inspected commit SHA: ' &amp;&amp;<br>IFS= read -r sha &amp;&amp;<br>hermes plugins install \<br>razzant/claudexor/plugins/hermes \<br>--ref "${sha:?Full SHA required}" --enable</div>
+        <p>Confirm the pin with <code>hermes plugins list</code>, then start a new Hermes session in that profile and ask it to load <code>claudexor:claudexor</code>. <a href="https://github.com/razzant/claudexor#install-in-hermes">All steps</a></p>
       </div>
       <div class="pane" role="tabpanel" id="install-in-pi" aria-labelledby="tab-pi">
         <h4 class="host-name">Pi</h4>
-        <div class="term"><i># From npm, once it has the extension:</i><br><i>$</i> pi install npm:claudexor<br><i># or from a checkout:</i><br><i>$</i> pi install \<br>"$HOME/claudexor-hosts/packages/claudexor"</div>
-        <p>Use a Pi with built-in MCP. After <code>/reload</code>, check that Claudexor is connected in <code>/mcp</code>. <a href="https://github.com/razzant/claudexor#get-a-package-checkout">Get a checkout</a> · <a href="https://github.com/razzant/claudexor#install-in-pi">All steps</a></p>
+        <div class="term"><i># Does the npm package carry the extension?</i><br><i>$</i> npm view claudexor@latest \<br>pi.extensions --json</div>
+        <p>If it lists <code>./pi/index.js</code>, install with <code>pi install npm:claudexor</code>. If not, <a href="https://github.com/razzant/claudexor#get-a-package-checkout">get a checkout</a> and run <code>pi install "$HOME/claudexor-hosts/packages/claudexor"</code>.</p>
+        <p>Use a Pi version with built-in MCP and <code>registerMcpServer</code>, such as 1.5.2. After <code>/reload</code>, check that Claudexor is connected in <code>/mcp</code>. <a href="https://github.com/razzant/claudexor#install-in-pi">All steps</a></p>
       </div>
       <div class="pane" role="tabpanel" id="install-in-openclaw" aria-labelledby="tab-openclaw">
         <h4 class="host-name">OpenClaw</h4>
-        <div class="term"><i># On the Gateway machine, from a checkout</i><br><i>$</i> openclaw plugins install \<br>&nbsp;&nbsp;&nbsp;&nbsp;"$HOME/claudexor-hosts/plugins/claude"<br><i>$</i> openclaw plugins inspect claudexor</div>
+        <div class="term"><i># On the Gateway machine, from a checkout</i><br><i>$</i> openclaw plugins install \<br>"$HOME/claudexor-hosts/plugins/claude"<br><i>$</i> openclaw plugins inspect claudexor</div>
         <p>Put <code>node</code> and <code>claudexor</code> on the Gateway service's PATH and allow the tools for your embedded agent. OpenClaw 2026.11.5 needs Node 24.16.0 to 24.x, or 26.1.0 and newer. <a href="https://github.com/razzant/claudexor#get-a-package-checkout">Get a checkout</a> · <a href="https://github.com/razzant/claudexor#install-in-openclaw">All steps</a></p>
       </div>
     </div>
@@ -346,7 +349,7 @@ footer small { max-width: 90ch; font-size: 12.5px; color: var(--dim); }
   <dl class="defs">
     <div><dt>Where rotation applies</dt><dd>Live quota and moving a run off a spent account cover Claude Code, Codex and Antigravity, the agents whose vendors report quota.</dd></div>
     <div><dt>Where each agent can take part</dt><dd>Every connected agent can join the same thread wherever Doctor has enabled the requested role. A role that is not available stays off, with the reason attached.</dd></div>
-    <div><dt>What “shared context” means</dt><dd>Between different agents, bounded continuation packets carry the thread. Between two accounts of the same agent, a session has one holder at a time: it moves with the run where the agent supports that, or the work continues from a recorded packet.</dd></div>
+    <div><dt>What “shared context” means</dt><dd>Between different agents, bounded continuation packets carry the thread. Between two accounts of the same agent, a session has one holder at a time: when an Agent or Ask run that already did work moves, its session moves too where the agent supports that, or the work continues from a recorded packet.</dd></div>
     <div><dt>What this page collects</dt><dd>Nothing. No analytics, no trackers, no remote fonts, no external requests of any kind.</dd></div>
   </dl>
 </div></section>
@@ -357,9 +360,9 @@ footer small { max-width: 90ch; font-size: 12.5px; color: var(--dim); }
     <div>
       <p class="sub">On macOS 26 or newer, download the signed and notarized app and drag it to Applications. It brings its own runtime, so you need no Node or pnpm. In a terminal on macOS or Linux, install the npm package with Node.js 24.15 or newer (use the latest Node 24 release), or build it from source.</p>
       <div class="row"><a class="get" href="https://github.com/razzant/claudexor/releases/latest">Download for macOS</a><a class="ghost" href="https://github.com/razzant/claudexor#quickstart">First steps</a><a class="ghost" href="https://github.com/razzant/claudexor#from-a-source-checkout">Build from source</a></div>
-      <p class="note">Connect one coding agent through Claudexor, choose a project and try an Ask question. A subscription login counts against that plan; an API key is a paid fallback. Git and the selected coding agent are checked during setup.</p>
+      <p class="note">Connect one coding agent through Claudexor, choose a project and try an Ask question. When a run ends, the CLI prints its run ID, and <code>claudexor inspect</code> with that ID shows what it did. A subscription login counts against that plan; an API key is a paid fallback. Git and the selected coding agent are checked during setup.</p>
     </div>
-    <div class="term"><i>$</i> npm install -g claudexor<br><i>$</i> claudexor doctor<br><i># Open the Codex sign-in link</i><br><i># in a private window.</i><br><i>$</i> claudexor auth login codex<br><i>$</i> cd /path/to/your/project<br><i>$</i> claudexor ask "map this repo"<br><i>$</i> claudexor inspect &lt;run_id&gt;</div>
+    <div class="term"><i>$</i> npm install -g claudexor<br><i>$</i> claudexor doctor<br><i># Open the Codex sign-in link</i><br><i># in a private window.</i><br><i>$</i> claudexor auth login codex<br><i># Then, in your project directory:</i><br><i>$</i> claudexor ask "map this repo"</div>
   </div>
 </div></section>
 </main>
@@ -385,7 +388,7 @@ document.querySelectorAll("[data-logo]").forEach((el) => {
 });
 const $ = (id) => document.getElementById(id);
 const fact = $("fact"), spot = $("spot"), dropsEl = $("drops");
-const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const motion = window.matchMedia("(prefers-reduced-motion: reduce)"); let still = motion.matches;
 const HUE = { claude: [1.0, .83, .72], codex: [.72, .97, .87], cursor: [.87, .81, 1.0], antigravity: [.74, .9, 1.0] };   // light tints of each agent's colour
 const LOGO_INDEX = { claude: 0, codex: 1, cursor: 2, antigravity: 3 };
 // a 5 by 7 face for the words that are made of pixels
@@ -566,15 +569,17 @@ function makeStage(part) {
   });
   gl.uniform1i(U.uFar, 0); gl.uniform1i(U.uNear, 1); gl.uniform1i(U.uLogo, 2);
   gl.activeTexture(gl.TEXTURE2); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
+  const far = document.createElement("canvas"), near = document.createElement("canvas"), F = far.getContext("2d"), N = near.getContext("2d");
+  if (!F || !N) return null;                         // without its painting surfaces this part stays plain text
   root.prepend(cv); root.classList.add("lit");
-  const far = document.createElement("canvas"), near = document.createElement("canvas");
-  const s = { ...part, root, cv, gl, U, far, near, F: far.getContext("2d"), N: near.getContext("2d"),
+  const s = { ...part, root, cv, gl, U, far, near, F, N,
     bubbles: BUBBLES.filter((b) => b.stage === part.id), rects: [], w: 1, h: 1, key: "", fresh: true };
   cv.addEventListener("webglcontextlost", () => {      // the browser took the picture back: show this part as plain text again
     const i = STAGES.indexOf(s); if (i >= 0) STAGES.splice(i, 1);
     root.classList.remove("lit"); cv.remove();
     root.querySelectorAll(".pxword").forEach((el) => { el.style.width = el.style.height = ""; });
     if (part.id === "top") dropsEl.hidden = true;
+    if (part.id === "race") { raceT = 6.5; race(0); }   // the race stops where it would have ended
   });
   return s;
 }
@@ -609,7 +614,7 @@ function paintStage(s) {
 }
 function size() {
   VW = window.innerWidth; VH = window.innerHeight; dpr = Math.min(2, window.devicePixelRatio || 1); wide = VW > 860;
-  cell = Math.max(4, Math.round(VW / 290)); layout(); STAGES.forEach(paintStage);
+  cell = Math.max(4, Math.min(10, Math.round(VW / 290))); layout(); STAGES.forEach(paintStage);   // dots stop growing on very wide screens
 }
 // how much room a glass has here: the distance to the nearest word of its part, or to the part's edge
 function room(s, x, y) {
@@ -650,7 +655,7 @@ function story(dt) {
   ACC.forEach(label);
 }
 // the race, while it is on screen
-const RACE = [{ dur: 3.1, tests: 212, verdict: "1 finding" }, { dur: 4.4, tests: 214, verdict: "applied to your tree", win: true }, { dur: 2.2, tests: 214, verdict: "2 findings" }];
+const RACE = [{ dur: 3.1, tests: 212, verdict: "1 finding" }, { dur: 4.4, tests: 214, verdict: "adopted into the thread", win: true }, { dur: 2.2, tests: 214, verdict: "2 findings" }];
 const lanes = [...document.querySelectorAll(".lane")], barP = new Float32Array(6); let raceT = 0;
 function race(dt) {
   raceT = (raceT + dt) % 10.5;
@@ -686,7 +691,7 @@ function draw(s, sr, t, dt) {
     const m = (hero ? .3 : .18) * sm.on;                 // depth: the near glass slides with the pointer, the far glass against it
     ax += (sm.x - VW / 2) * (b.z - 1) * m; ay += (sm.y - VH / 2) * (b.z - 1) * m;
     R = Math.min(R * b.z, room(s, ax, ay) - 8); if (R < (hero || wide ? 12 : 22)) R = 0;   // and no glass ever lies on words
-    b.x = ax; b.y = ay; b.r = b.r ? b.r + (R - b.r) * (1 - Math.exp(-dt * 6)) : R;
+    b.x = ax; b.y = ay; b.r = b.r && !still ? b.r + (R - b.r) * (1 - Math.exp(-dt * 6)) : R;
     b.blur = Math.max(0, Math.min(.7, (1 - b.z) * 2.2));
     const glow = hero && b.hero === serving && a.used < 100 ? 1 : 0, hot = hero && a.used >= 100 ? 1 : 0;
     const ease4 = still ? 1 : 1 - Math.exp(-dt * 4); b.glow += (glow - b.glow) * ease4; b.hot += (hot - b.hot) * ease4;
@@ -737,9 +742,10 @@ function frame(ms) {
   const tabs = [...document.querySelectorAll('.tabs [role="tab"]')]; if (!tabs.length) return;
   document.documentElement.classList.add("js");
   const pick = (t, focus) => { tabs.forEach((x) => { const on = x === t; x.setAttribute("aria-selected", on); x.tabIndex = on ? 0 : -1; document.getElementById(x.getAttribute("aria-controls")).classList.toggle("on", on); }); if (focus) t.focus(); };
-  tabs.forEach((t, i) => { t.addEventListener("click", () => pick(t)); t.addEventListener("keydown", (e) => {
+  const choose = (t, focus) => { pick(t, focus); history.replaceState(null, "", "#" + t.getAttribute("aria-controls")); };   // a chosen host is the address you share
+  tabs.forEach((t, i) => { t.addEventListener("click", () => choose(t)); t.addEventListener("keydown", (e) => {
     const n = tabs.length, to = e.key === "ArrowRight" ? (i + 1) % n : e.key === "ArrowLeft" ? (i + n - 1) % n : e.key === "Home" ? 0 : e.key === "End" ? n - 1 : -1;
-    if (to >= 0) { e.preventDefault(); pick(tabs[to], true); }
+    if (to >= 0) { e.preventDefault(); choose(tabs[to], true); }
   }); });
   const follow = () => { const t = tabs.find((x) => x.getAttribute("aria-controls") === location.hash.slice(1)); if (t) { pick(t); document.getElementById(location.hash.slice(1)).scrollIntoView(); } };
   window.addEventListener("hashchange", follow);
@@ -750,7 +756,8 @@ document.querySelectorAll("[data-copy]").forEach((b) => { let back = null; b.add
   const manual = () => { const r = document.createRange(); r.selectNodeContents(b.querySelector("code")); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); tell(/Mac/.test(navigator.platform) ? "Press ⌘C" : "Press Ctrl+C"); };
   (navigator.clipboard ? navigator.clipboard.writeText(b.dataset.copy) : Promise.reject()).then(() => tell("Copied"), manual);
 }); });
-try { buildAtlas(); PARTS.forEach((p) => { const s = makeStage(p); if (s) STAGES.push(s); }); } catch (err) { console.error(err); }
+try { buildAtlas(); } catch (err) { console.error(err); }
+PARTS.forEach((p) => { try { const s = makeStage(p); if (s) STAGES.push(s); } catch (err) { console.error(err); } });   // one part failing leaves the others
 if (still || !STAGES.some((s) => s.id === "race")) raceT = 6.5;          // nothing will run the race: show how it ended
 if (STAGES.length) {
   size(); ACC.forEach(label); say(`Run 7f3a is working on ${ACC[0].key}.`); race(0);
@@ -758,6 +765,11 @@ if (STAGES.length) {
   window.addEventListener("resize", all); window.addEventListener("load", all); if (document.fonts && document.fonts.ready) document.fonts.ready.then(all);
     window.addEventListener("pointermove", (e) => { if (e.pointerType === "touch") return; mouse.x = e.clientX; mouse.y = e.clientY; if (sm.on < .05) { sm.x = mouse.x; sm.y = mouse.y; } mouse.on = true; });
   document.documentElement.addEventListener("pointerleave", () => { mouse.on = false; });
+  motion.addEventListener("change", () => {      // the reader asked for less motion, or for motion again
+    const was = still; still = motion.matches;
+    if (still) { raceT = 6.5; race(0); STAGES.forEach((s) => { s.fresh = true; }); }
+    if (was && !still) { last = null; requestAnimationFrame(frame); } else requestAnimationFrame(frame);
+  });
   requestAnimationFrame(frame);
 } else { dropsEl.remove(); say(`Run 7f3a is working on ${ACC[0].key}.`); race(0); }
 </script>
