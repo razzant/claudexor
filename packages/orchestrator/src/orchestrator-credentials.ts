@@ -92,6 +92,8 @@ export interface CredentialResolutionHost {
   credentialEvidence?(): CredentialEvidenceAuthority | undefined;
   /** #363 cross-run pre-progress refusal memory (absent = nothing remembered). */
   preProgressRefusals(): PreProgressRefusalMemory | undefined;
+  /** The dated positive login owner's probe for run start (absent = physical probe). */
+  runStartProbe?(adapter: HarnessAdapter): ProfileProbe | undefined;
   authPreferenceForHarness(
     repoRoot: string,
     harnessId: string,
@@ -159,6 +161,14 @@ export class OrchestratorCredentials {
   private readonly poolApiKeyRoutes = new PoolRouteFlags();
 
   constructor(private readonly host: CredentialResolutionHost) {}
+
+  /** Run start reuses a dated positive login probe under the rule raw-model
+   * selection uses (INV-135, owner decision 2026-11-18); a host without that owner
+   * keeps the adapter's physical probe. Mid-run rotation keeps physical probes. */
+  runStartProbe(adapter: HarnessAdapter | undefined): ProfileProbe | undefined {
+    if (!adapter?.probeCredentialProfile) return undefined;
+    return this.host.runStartProbe?.(adapter) ?? adapter.probeCredentialProfile.bind(adapter);
+  }
 
   /** The EXPLICIT pin (INV-135): strict. Null = unpinned (preflightProfile). */
   effectiveProfileId(input: RunInput, _harnessId: string): string | null {
@@ -434,7 +444,7 @@ export class OrchestratorCredentials {
     // reviewer contract without changing ordinary runs.
     if (pinnedProfile) {
       // The seat's pin waits for its sign-in check like a run's pin (#532).
-      const adapterProbe = adapter?.probeCredentialProfile?.bind(adapter);
+      const adapterProbe = this.runStartProbe(adapter);
       const status = composeCredentialProfileEvidence(
         await probeCredentialProfileStatus(
           pinnedProfile,
@@ -469,7 +479,7 @@ export class OrchestratorCredentials {
       unusable: this.host.credentialUnusable(),
       refusals: this.host.preProgressRefusals()?.live(),
       lastService: this.host.preProgressRefusals()?.services,
-      probe: adapter?.probeCredentialProfile?.bind(adapter),
+      probe: this.runStartProbe(adapter),
       pinnedProfile,
       excludedProfileIds: input.excludedProfileIds,
       boundProfileId: null,
@@ -499,7 +509,7 @@ export class OrchestratorCredentials {
     const profileCardinality = credentialProfilePolicyState({ adapter, registry });
     if (profileCardinality.ambiguous)
       throw credentialProfilePolicyProblem(profileCardinality, "credential_profile_ambiguous");
-    const probe = adapter?.probeCredentialProfile?.bind(adapter);
+    const probe = this.runStartProbe(adapter);
     return resolveAccountForRun({
       harnessId,
       registry,
@@ -535,8 +545,7 @@ export class OrchestratorCredentials {
     profile: CredentialProfile,
     probes?: AdmissionProfileProbes,
   ): Promise<AuthVerification> {
-    const adapter = this.host.registry().get(profile.harness_id);
-    const adapterProbe = adapter?.probeCredentialProfile?.bind(adapter);
+    const adapterProbe = this.runStartProbe(this.host.registry().get(profile.harness_id));
     const probe = probes ? probes.reuse(profile, adapterProbe) : adapterProbe;
     return profileBillingVerification(
       composeCredentialProfileEvidence(await probeCredentialProfileStatus(profile, probe), {

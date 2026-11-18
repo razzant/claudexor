@@ -1734,7 +1734,8 @@ invalidation, a harness install or update through the daemon (that harness's
 observations and the Accounts harness statuses) and an explicit atomic Refresh
 request new evidence. Catalog payloads retain original timestamps, including null
 when the adapter supplies none. This
-cache is display-only: real run and model admission retain their fresh route checks.
+cache is display-only: real run and model admission keep their own admission-grade checks
+(at most a dated positive under its exact key, see [caller-owned model operations](#caller-owned-model-operations)).
 The ordinary response does not claim fenced `next_up` authority. Display-only
 `GET /v2/quota` owns shown quota values. Explicit Refresh/Retry and exact post-login
 verification use `GET /v2/credential-profiles` with `snapshot=true`: one epoch contains
@@ -3258,11 +3259,13 @@ constant moves with a recorded catalog fixture pair (`fixtures/models-http-*.jso
 whose shared rows must stay identical. Refresh work is serialized per canonical
 managed home; a cancelled caller cannot release another past a still-live
 refresh, and each caller rereads current authorization. Selection hands its
-exact-profile catalog to the invocation, which rechecks the account fingerprint; no catalog or credentials are cached across operations, and an
+exact-profile catalog to the invocation, which rechecks the account fingerprint; credentials are never cached across operations, a catalog only as a dated positive below, and an
 unknown fingerprint keeps fresh discovery and cannot authorize native
 continuation reuse.
-Raw model selection owns a separate admission-grade positive login observation
-(`model-login-readiness.ts`), keyed by the whole profile and locator, the stat
+Raw model selection and run start (the admission pass, the account preflight,
+billing verification and reviewer seats; mid-run rotation still probes
+physically) share one admission-grade positive login observation per store
+graph (`model-login-readiness.ts`), keyed by the whole profile and locator, the stat
 versions of its owned `auth.json` and `config.toml` (including missing settings),
 known credential generation, and `observeHarnessProgram` identity/version.
 Unknown identity never authorizes reuse. Positive, dated, non-stale probes
@@ -3289,7 +3292,14 @@ at shutdown) runs once more under the new identity (any login lifecycle moves
 every row's generation), so its caller still gets an answer; nothing from the
 ended read is used, a read that ended with its own answer keeps that answer,
 and a second change during the repeated read still fails its operation
-`auth_changed`. After each wait a consumer judges again only the
+`auth_changed`. A successful Codex catalog read is remembered the same way
+(`model-catalog.ts`, owner decision 2026-11-18): under the catalog key above plus
+the stat versions of the owned `auth.json` and `config.toml`, from the read's own
+start for the doctor positive TTL; a hit never renews it and records no
+`catalogTransport` step. A failed or refused read, an unknown identity and any
+key change drop it, and so does a generation the provider refused with a definite
+HTTP 4xx other than 408 or 429. A pin and its run-start probe keep the pin's own
+wait and never join an ordinary probe. After each wait a consumer judges again only the
 account it waited for (`liveAccountRefusal`: enablement, a revoked or unusable
 credential, and live usage against the headroom threshold read at admission, as
 a strict pin of that account is judged; refusals, substitutions and capability
@@ -3306,8 +3316,8 @@ display observation policy. Accepted durable model operations retain their own
 lifetime, independent of the connection that created them. The Codex `/models`
 request and response body share a 60-second transport limit; expiry yields
 `catalog_unavailable`, never an empty successful inventory, and Auto continues
-its normal candidate search. Catalog admission remains NEVER cached: completed
-catalogs are not retained across selections.
+its normal candidate search. A failed read is never remembered and never becomes
+an empty catalog; only a successful read answers later selections, as above.
 
 Operation receipts carry optional `preparation`; HTTP GET exposes it only with
 `includePreparation=true`, so strict earlier clients keep their DTO. It contains `totalMs`, `steps`

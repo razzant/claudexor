@@ -2869,6 +2869,51 @@ describe("admission-grade login readiness", () => {
       date.mockRestore();
     }
   });
+  it("run start and raw-model selection share one dated positive (owner decision 2026-11-18)", async () => {
+    const f = await readinessFixture();
+    const runStart = f.owner.runStartProbe(f.adapter);
+    const first = await runStart(f.profile);
+    expect(await f.call()).toEqual(first);
+    expect(await runStart(f.profile)).toEqual(first);
+    expect(f.probe).toHaveBeenCalledTimes(1);
+    f.credentials.clearSubject("codex", f.profile.profile_id);
+    await runStart(f.profile);
+    expect(f.probe).toHaveBeenCalledTimes(2);
+  });
+  it("run start keeps the own probe of an adapter that versions no login files", async () => {
+    const f = await readinessFixture();
+    const adapter = { ...f.adapter, credentialProfileIdentity: undefined };
+    const runStart = f.owner.runStartProbe(adapter);
+    await runStart(f.profile, undefined, { pinned: true });
+    await runStart(f.profile);
+    expect(f.probe).toHaveBeenCalledTimes(2);
+    expect(f.probe.mock.calls.map((call) => (call as unknown[])[2])).toEqual([
+      { pinned: true },
+      undefined,
+    ]);
+  });
+  it("a run-start pin's physical probe keeps the pin fact and never joins an ordinary one", async () => {
+    const f = await readinessFixture();
+    const raw = f.probe.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.probe.mockImplementation(async (profile, signal) => {
+      await gate;
+      return raw(profile, signal);
+    });
+    const runStart = f.owner.runStartProbe(f.adapter);
+    const ordinary = runStart(f.profile);
+    const pinned = runStart(f.profile, undefined, { pinned: true });
+    await vi.waitFor(() => expect(f.probe).toHaveBeenCalledTimes(2));
+    expect(f.probe.mock.calls.map((call) => (call as unknown[])[2])).toEqual([
+      undefined,
+      { pinned: true },
+    ]);
+    release();
+    await Promise.all([ordinary, pinned]);
+  });
   it("shares a raw probe, keeps the remaining reader, and cancels when all leave", async () => {
     const f = await readinessFixture();
     const raw = f.probe.getMockImplementation()!;

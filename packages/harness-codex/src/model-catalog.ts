@@ -1,4 +1,5 @@
 import {
+  DatedPositives,
   SharedRead,
   waitForRead,
   onProgramObservationChange,
@@ -11,6 +12,7 @@ import { CodexModelError, providerProblem, record, text } from "./responses.js";
 import { codexProcessingCapability } from "./processing.js";
 import { codexModelEfforts } from "./model-effort.js";
 import type { CodexCatalogClientVersion } from "./http-client-version.js";
+import { codexProfileLoginIdentity } from "./profile-login-identity.js";
 
 /** Transport limit for the entire /models request and body, not a selection budget.
  * Never shorter than the host's 60-second catalog read timeout. */
@@ -118,22 +120,30 @@ export function parseCodexModelCatalog(value: unknown): ModelCatalogEntry[] {
   });
 }
 
-/** One adapter instance owns raw in-flight reads, never completed catalogs. */
+/** One adapter instance owns raw in-flight reads and the dated positives of its
+ * completed reads (INV-135, owner decision 2026-11-18): a successful read answers
+ * the same full key within the doctor TTL of its start; a hit never renews it. */
 export function createCodexCatalogReader(
   fetcher: typeof fetch,
   now: () => number,
   clientVersion: () => Promise<CodexCatalogClientVersion>,
+  fileIdentity: typeof codexProfileLoginIdentity = codexProfileLoginIdentity,
 ) {
   const reads = new SharedRead<ControlModelCatalogResponse>();
-  return async (
+  const positives = new DatedPositives<ControlModelCatalogResponse>();
+  const read = async (
     auth: CodexModelAuth,
     context: Omit<ModelAdapterContext, "onDispatch">,
   ): Promise<ControlModelCatalogResponse> => {
     context.signal.throwIfAborted();
-    const declared = await waitForRead(clientVersion(), context.signal);
+    const [declared, files] = await waitForRead(
+      Promise.all([clientVersion(), fileIdentity(context.profile)]),
+      context.signal,
+    );
     const scope = context.profile.profile_id;
     const key =
       Number.isFinite(context.credentialGeneration) &&
+      files !== null &&
       auth.accountFingerprint &&
       auth.capabilityFingerprint &&
       declared.programKey &&
@@ -142,6 +152,7 @@ export function createCodexCatalogReader(
             "codex",
             context.profile,
             context.credentialGeneration,
+            files,
             auth.credentialFingerprint,
             auth.accountFingerprint,
             auth.capabilityFingerprint,
@@ -150,8 +161,11 @@ export function createCodexCatalogReader(
             declared.source,
           ])
         : null;
+    const remembered = positives.get(scope, key);
+    if (remembered) return remembered;
     const catalog = await measureModelPreparation("catalogTransport", () =>
       reads.read(scope, key, context.signal, async (signal) => {
+        const startedAt = Date.now();
         const replaced = new AbortController();
         const unsubscribe = onProgramObservationChange((harness) => {
           if (!harness || harness === "codex")
@@ -211,8 +225,11 @@ export function createCodexCatalogReader(
               models: parseCodexModelCatalog(body),
             };
           };
-          return await waitForRead(work(), transport);
+          const answer = await waitForRead(work(), transport);
+          if (key !== null) positives.set(scope, key, startedAt, answer);
+          return answer;
         } catch (error) {
+          positives.drop((remembered) => remembered === scope);
           signal.throwIfAborted();
           replaced.signal.throwIfAborted();
           if (error instanceof CodexModelError) throw error;
@@ -234,4 +251,7 @@ export function createCodexCatalogReader(
     // labelled with the client version it was read for.
     return structuredClone(catalog);
   };
+  /** A vendor refusal that contradicts the remembered catalog drops it. */
+  const forget = (profileId: string) => positives.drop((scope) => scope === profileId);
+  return Object.assign(read, { forget });
 }

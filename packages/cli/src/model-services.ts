@@ -489,6 +489,7 @@ export function createModelServices(deps: Dependencies) {
   });
   return {
     operations,
+    loginReadiness: readiness,
     routes: {
       modelSources: async (view?: "accounts") => ({
         sources: sources.map(({ adapter, label, credentialHarness }) => ({

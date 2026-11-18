@@ -4,8 +4,8 @@ An account that cannot serve a requested Codex model is demoted for that model.
 Other models, account enablement, quota and authentication retain their existing
 rules. Each model operation still sends inference at most once.
 
-Selection's raw login readiness may reuse a dated positive probe for the same
-profile, `auth.json` and `config.toml` file versions, known credential generation
+Selection's raw login readiness, which run start shares, may reuse a dated
+positive probe for the same profile, `auth.json` and `config.toml` file versions, known credential generation
 and observed program identity. Its age starts at the physical probe, uses the
 positive doctor TTL (`CLAUDEXOR_DOCTOR_TTL_MS`, default 90 seconds), and never
 renews on a hit. Negative, unknown, failed, undated or stale results always
@@ -25,9 +25,14 @@ capability binding/reservation and release remain its own work. The last
 departed reader, shutdown, or a change of that read's own credential generation
 or program cancels pending I/O and fences late results. Catalog fetch and body
 together have a 60-second transport limit; expiry is typed
-`catalog_unavailable`, so Auto can try the next account. A completed catalog is
-never retained for admission: the next selection and selected-account catalog
-GET read again. A GET that arrives while an identical read is in flight joins
+`catalog_unavailable`, so Auto can try the next account. A successful catalog
+read is remembered for admission under the same rule as a login probe (its key
+adds the account and capability fingerprints, an authorization digest and the
+declared client version) and answers later selections and selected-account
+catalog GETs of that key from its start for the doctor positive TTL; a failed or
+refused read, any key change, and a generation the provider refused with a
+definite HTTP 4xx other than 408 or 429 drop it, so the next read is physical
+(owner decision 2026-11-18). A GET that arrives while an identical read is in flight joins
 it: its `observedAt` is that read's completion time, and the vendor request may
 have been sent before the GET arrived. The account display view keeps its
 separate explicit-refresh observation policy.
@@ -224,7 +229,8 @@ outstanding bindings. While a login holds the credential-mutation window,
 generations are unknown rather than changed: operations proceed, nothing is
 recorded, cleared or confirmed, and existing marks keep ordering selection.
 External capability changes are recognized on the next execution discovery or
-uncached account-catalog read. Accounts Refresh refreshes readiness and quota;
+uncached account-catalog read, at most the doctor positive TTL after the last
+successful read of the same key, which answers with its original `observedAt`. Accounts Refresh refreshes readiness and quota;
 for model catalogs it only invalidates the display cache, preparing it for the
 next uncached read. Ordinary cached catalog and read-only status responses do
 not acquire new evidence.

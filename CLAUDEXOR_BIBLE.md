@@ -1281,12 +1281,21 @@ invariant or operator decision before proceeding.
   and a change about another account never restarts it or re-reads a
   catalog. Identical in-flight raw probes and
   catalog reads may share I/O, with independent waiter cancellation, but
-  never share a selection or retain a completed admission catalog; different
-  or unknown identities run as separate reads. A read ends when its last
+  never share a selection; different or unknown identities run as separate
+  reads. A read ends when its last
   waiter leaves, at shutdown, or when its own credential generation or
-  program changes; accepted durable operations keep their own lifetime. The
-  vendor catalog remains a fresh read at every selection, bounded as a
-  transport including its body.
+  program changes; accepted durable operations keep their own lifetime.
+  **CONCEPT-CHANGE(INV-135), owner decision 2026-11-18:** a successful vendor
+  catalog read, bounded as a transport including its body, may answer later
+  selections of that account under this same rule, its key adding the
+  harness, declared client version and route, and run start may reuse a dated
+  positive login probe under this rule too; a failed or refused read, an
+  unknown identity, a changed credential generation or program, and a definite
+  vendor refusal of a generation on that account drop the remembered fact, and
+  a hit never renews its date. Rationale: on one install over 19 hours catalog
+  reads took 7.6 h, 95 % of them repeating the same account within 90 seconds
+  (a replay of that window: 81.9 % hits, 4.9 h saved), and run-start login
+  checks took 1.4 h.
   **CONCEPT-CHANGE(INV-135), #363:** an unpinned choice is admitted on FRESH
   readiness, with one bounded exception for Cursor rows: when a row's
   `cursor-agent status` probe did not answer within its own budget, that row

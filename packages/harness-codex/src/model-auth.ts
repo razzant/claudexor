@@ -30,8 +30,8 @@ export interface CodexModelAuthDeps {
   now?: () => number;
 }
 
-// Only in-flight vendor work is shared. No token, catalog or completed result
-// is cached; every caller rereads its managed file after its turn in the queue.
+// Only in-flight vendor work is shared. No token or refresh result is cached;
+// every caller rereads its managed file after its turn in the queue.
 const refreshes = new Map<string, Promise<void>>();
 
 function claims(token: unknown): Record<string, unknown> | null {

@@ -415,6 +415,8 @@ export interface OrchestratorDeps {
   credentialEvidence?: CredentialEvidenceAuthority;
   /** #363 cross-run pre-progress refusal memory; it only orders the pool. */
   preProgressRefusals?: PreProgressRefusalMemory;
+  /** Run-start login probes through the dated positive owner (INV-135); absent: physical. */
+  runStartProbe?: (adapter: HarnessAdapter) => HarnessAdapter["probeCredentialProfile"];
   /** Typed per-harness run refusal while that harness's unified-accounts
    * migration is incomplete (crash between phases; INV-137). Null = not blocked. */
   accountsMigrationGate?: (harnessId: string) => { reason: string } | null;
@@ -1123,6 +1125,7 @@ export class Orchestrator {
     credentialObserverFactory: () => this.deps.credentialObserverFactory,
     credentialEvidence: () => this.deps.credentialEvidence,
     preProgressRefusals: () => this.deps.preProgressRefusals,
+    runStartProbe: (adapter) => this.deps.runStartProbe?.(adapter),
     authPreferenceForHarness: (repoRoot, harnessId, runPreference) =>
       this.authPreferenceForHarness(repoRoot, harnessId, runPreference),
   });
@@ -1309,9 +1312,7 @@ export class Orchestrator {
       // the profile's transport, so the default store's state is not the
       // routing truth). Capability/manifest gating above still applies.
       const profileAdapter = this.deps.registry.get(id);
-      const profileProbe = admissionProbes.record(
-        profileAdapter?.probeCredentialProfile?.bind(profileAdapter),
-      );
+      const profileProbe = admissionProbes.record(this.credentials.runStartProbe(profileAdapter));
       const explicitPin = this.credentials.effectiveProfileId(input, id);
       // Pins and bound/pool rows are checked against their own readiness.
       const rows = await this.credentials.admitRouteRows({

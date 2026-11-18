@@ -1,5 +1,5 @@
 import { CODEX_CATALOG_TRANSPORT_MS } from "./model-catalog.js";
-import { invalidateProgramObservations } from "@claudexor/core";
+import { DOCTOR_TTL_MS, invalidateProgramObservations } from "@claudexor/core";
 import { join } from "node:path";
 import * as zlib from "node:zlib";
 import { zstdDecompressSync } from "node:zlib";
@@ -109,13 +109,17 @@ function setup(
     }
     return Response.json(catalog);
   });
+  // The owned login/settings file versions a remembered catalog is keyed by.
+  const files = { identity: "auth-1 settings-1" as string | null };
   return {
     profile,
     onDispatch,
     readAuthFile,
     fetcher,
+    files,
     token,
     adapter: createCodexModelAdapter({
+      profileIdentity: async () => files.identity,
       fetch: async (url, init) =>
         fetcher(
           url,
@@ -1676,7 +1680,7 @@ describe("raw catalog read ownership", () => {
     });
     return { promise, resolve };
   };
-  it("joins identical concurrent reads, detaches one reader, and retains no completed answer", async () => {
+  it("joins identical concurrent reads, detaches one reader, and remembers the completed answer", async () => {
     const f = setup(undefined, undefined, knownClient());
     const body = deferred<Response>();
     f.fetcher.mockImplementationOnce(() => body.promise);
@@ -1693,7 +1697,11 @@ describe("raw catalog read ownership", () => {
     expect(physical.aborted).toBe(false);
     body.resolve(Response.json(catalog));
     expect((await b).models[0]!.id).toBe("model-one");
+    // INV-135 (owner decision 2026-11-18): the same full key within the doctor
+    // TTL answers from the completed read; another key reads again.
     await f.adapter.catalog({ ...f.context, credentialGeneration: 1 });
+    expect(f.fetcher).toHaveBeenCalledTimes(1);
+    await f.adapter.catalog({ ...f.context, credentialGeneration: 2 });
     expect(f.fetcher).toHaveBeenCalledTimes(2);
   });
   it("cancels physical work when every waiter leaves and permits a new read", async () => {
@@ -1871,4 +1879,107 @@ describe("raw catalog read ownership", () => {
       vi.useRealTimers();
     }
   });
+});
+
+describe("remembered catalog (INV-135, owner decision 2026-11-18)", () => {
+  const known = (): CodexCatalogClientVersion => ({
+    ...VERIFIED_CLIENT,
+    program: { path: "/fixture/codex", version: "0.156.1" },
+    programKey: "program-1",
+  });
+  const gets = (f: ReturnType<typeof setup>) =>
+    f.fetcher.mock.calls.filter(([, init]) => init?.method !== "POST").length;
+  const clock = { now: Date.now() };
+  beforeEach(() => {
+    clock.now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("answers the same full key within the doctor TTL of the read's start; a hit never renews it", async () => {
+    const f = setup(undefined, undefined, known());
+    const context = { ...f.context, credentialGeneration: 1 };
+    const first = await f.adapter.catalog(context);
+    clock.now += DOCTOR_TTL_MS - 1;
+    expect(await f.adapter.catalog(context)).toEqual(first);
+    expect(gets(f)).toBe(1);
+    clock.now += 1;
+    await f.adapter.catalog(context);
+    expect(gets(f)).toBe(2);
+  });
+
+  it.each(["generation", "files", "version", "program", "account", "profile"])(
+    "a changed %s reads again",
+    async (change) => {
+      const client = known();
+      const f = setup(undefined, undefined, client);
+      const context = { ...f.context, credentialGeneration: 1 };
+      await f.adapter.catalog(context);
+      if (change === "generation") context.credentialGeneration = 2;
+      if (change === "files") f.files.identity = "auth-2 settings-1";
+      if (change === "version") client.version = "0.157.0";
+      if (change === "program") client.programKey = "program-2";
+      if (change === "profile") context.profile = { ...context.profile, display_name: "Renamed" };
+      if (change === "account") {
+        const auth = JSON.parse(await f.readAuthFile());
+        auth.tokens.account_id = "account-two";
+        f.readAuthFile.mockResolvedValue(JSON.stringify(auth));
+      }
+      await f.adapter.catalog(context);
+      expect(gets(f)).toBe(2);
+    },
+  );
+
+  it.each(["files", "generation", "program"])(
+    "an unknown %s identity is never remembered",
+    async (unknown) => {
+      const client = known();
+      if (unknown === "program") delete (client as CodexCatalogClientVersion).programKey;
+      const f = setup(undefined, undefined, client);
+      if (unknown === "files") f.files.identity = null;
+      const context = {
+        ...f.context,
+        credentialGeneration: unknown === "generation" ? Number.NaN : 1,
+      };
+      await f.adapter.catalog(context);
+      await f.adapter.catalog(context);
+      expect(gets(f)).toBe(2);
+    },
+  );
+
+  it("a failed read drops the account's remembered catalog and is never an empty catalog", async () => {
+    const f = setup(undefined, undefined, known());
+    await f.adapter.catalog({ ...f.context, credentialGeneration: 1 });
+    f.fetcher.mockRejectedValueOnce(new TypeError("fetch failed"));
+    await expect(
+      f.adapter.catalog({ ...f.context, credentialGeneration: 2 }),
+    ).rejects.toMatchObject({ problem: { code: "catalog_unavailable" } });
+    expect(
+      (await f.adapter.catalog({ ...f.context, credentialGeneration: 1 })).models,
+    ).toHaveLength(1);
+    expect(gets(f)).toBe(3);
+  });
+
+  it.each([
+    [404, true],
+    [401, true],
+    [429, false],
+    [500, false],
+  ])(
+    "a generation refused with HTTP %i drops the remembered catalog: %s",
+    async (status, drops) => {
+      const f = setup(
+        () => Response.json({ error: { code: "fixture", message: "refused" } }, { status }),
+        undefined,
+        known(),
+      );
+      const context = { ...f.context, credentialGeneration: 1 };
+      await f.adapter.catalog(context);
+      const result = await f.adapter.invoke(f.request, context);
+      expect(result.outcome).toBe("failed");
+      expect(gets(f)).toBe(1);
+      await f.adapter.catalog(context);
+      expect(gets(f)).toBe(drops ? 2 : 1);
+    },
+  );
 });

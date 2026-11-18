@@ -26,6 +26,7 @@ import { createRunRequirementsPreflight } from "./request-preflight.js";
 import { oneShotRunInput } from "./one-shot-run-input.js";
 import { buildRunOrchestrator } from "./run-orchestrator.js";
 import { continuationForRun } from "./continue-from-run.js";
+import type { ModelLoginReadiness } from "./model-login-readiness.js";
 import { readContinuationEvidence } from "@claudexor/workspace";
 
 /** Production producer of the immutable capsule, shared with ordinary start
@@ -37,6 +38,7 @@ export function createDeferredStartPreparation(deps: {
   authority: DelegationBudgetAuthority;
   quota: () => QuotaRegistry;
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
+  loginReadiness?: ModelLoginReadiness;
 }): DeferredStartPreparation {
   const registry = buildRegistry();
   const services = {
@@ -104,6 +106,7 @@ export function createDeferredStartPreparation(deps: {
         delegationBudgetAuthority: deps.authority,
         quotaStore: deps.quota,
         runtimeConcurrencyCaps: deps.runtimeConcurrencyCaps,
+        loginReadiness: deps.loginReadiness,
       });
       const continuation = continuationForRun(normalized, deps.commands);
       if (continuation.from) {

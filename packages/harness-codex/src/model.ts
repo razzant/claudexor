@@ -13,7 +13,12 @@ import {
 } from "./processing.js";
 import type { ProcessingReceipt, EffortResolution } from "@claudexor/schema";
 import type { ModelAdapter } from "@claudexor/core";
-import type { ModelCallResult, ModelNativeContinuation, ModelRoute } from "@claudexor/schema";
+import type {
+  CredentialProfile,
+  ModelCallResult,
+  ModelNativeContinuation,
+  ModelRoute,
+} from "@claudexor/schema";
 import { prepareCodexModelAuth, type CodexModelAuthDeps } from "./model-auth.js";
 import {
   buildResponsesRequest,
@@ -76,6 +81,8 @@ export interface CodexModelAdapterDeps extends CodexModelAuthDeps {
   requestCompression?: () => boolean;
   /** The client version the catalog read declares (see http-client-version.ts). */
   clientVersion?: () => Promise<CodexCatalogClientVersion>;
+  /** Owned login/settings file versions keying a remembered catalog (null: unknown). */
+  profileIdentity?: (profile: CredentialProfile) => Promise<string | null>;
 }
 
 /** One adapter-owned generation, with the official CLI owning token refresh. */
@@ -83,7 +90,7 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
   const fetcher = deps.fetch ?? globalThis.fetch;
   const now = deps.now ?? Date.now;
   const clientVersion = deps.clientVersion ?? (() => codexCatalogClientVersion());
-  const catalogFor = createCodexCatalogReader(fetcher, now, clientVersion);
+  const catalogFor = createCodexCatalogReader(fetcher, now, clientVersion, deps.profileIdentity);
   const requestCompression = deps.requestCompression ?? codexRequestCompression;
   return {
     id: "codex",
@@ -259,6 +266,9 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
           redirect: "error",
         });
         if (!response.ok) {
+          // A definite refusal contradicts this account's remembered catalog.
+          if (response.status < 500 && ![408, 429].includes(response.status))
+            catalogFor.forget(context.profile.profile_id);
           const result = emptyModelResult({ ...route, model: null });
           const error = await capture.readRefusal(response);
           if (response.status === 408) {
