@@ -1510,19 +1510,46 @@ have separate 5-second budgets, so a call can take `waitMs` plus about 15
 seconds; keep `waitMs` below the host's tool-call timeout. A timeout,
 disconnect or cancelled call closes only that read; the worker continues.
 
-**Oversized events.** An event no page can hold, such as a long `run.created`
-prompt, message or question (which still wakes `interactions`), is named in
-`oversizedEvent`, and the cursor stays before it. `claudexor_run_event_read {runId, seq, offset?,
-maxBytes?}` reads bounded parts (32 KiB by default, at most 64 KiB) of the exact
-line the event stream delivers, with `totalBytes`, `nextOffset` and the
-whole event's `sha256`; parts never split a character, and the text content
-repeats the part after one header line. A partial read does not consume the
-event: after the last part (`nextOffset` equals `totalBytes`) and verification,
-resume the wait with `afterSeq` set to that `seq`. Reads are addressed by run
-and seq only (`GET /v2/runs/:id/events/:seq`), never by path, artifact or whole
-log; an absent or invalid event is refused (`run_event_not_found`,
-`run_event_invalid`), and an invalid stream frame still stops a page
-(`invalid_event`) instead of being skipped.
+**Oversized events.** `oversizedEvent` names an event too large for a page,
+including long prompts, messages and questions. A question still wakes
+`interactions`. The cursor stays before that event. Read its exact stream JSON
+with `claudexor_run_event_read {runId, seq, offset?, maxBytes?}` (32 KiB
+default, 64 KiB maximum). Parts end on UTF-8 character boundaries. Each part
+also appears in the text content after one header line. Verify the run ID,
+sequence, byte offsets and whole `sha256`. Set `afterSeq` to `seq` only after
+`nextOffset === totalBytes` and successful verification. The HTTP address is
+`GET /v2/runs/:id/events/:seq`. Missing or invalid events yield
+`run_event_not_found` or `run_event_invalid`.
+
+**Reading a Claude reply before the run finishes.** A zero wait reads available
+events. The example expects two functions from your controller: one calls an
+MCP tool and returns its structured content; the other saves a reply at its
+journal address. Use the bound `runId` from start/status and begin with
+`afterSeq = 0`.
+
+```js
+async function readEvent(runId, seq, event) {
+  const p = event.payload;
+  if (event.run_id !== runId || (event.seq !== undefined && event.seq !== seq) ||
+      event.type !== "harness.event" || p.harness_id !== "claude" ||
+      p.type !== "message" || p.final !== true || p.after_stop !== false ||
+      p.buffered === true || p.payload?.buffered === true ||
+      typeof p.text !== "string" || !p.text.length) return;
+  const id = value => typeof value === "string" && value.length ? value : null;
+  await saveTurnReply({ runId, seq, attemptId: id(p.attempt_id), sessionId: id(p.session_id), text: p.text });
+}
+const page = await call("claudexor_run_wait", { runId, afterSeq, waitMs: 0 });
+if (page.runId !== runId) throw new Error("Unexpected run in event page");
+for (const { seq, event } of page.events) await readEvent(runId, seq, event);
+afterSeq = page.nextSeq;
+```
+
+Match both known IDs when relating replies from one attempt. `after_stop: true`
+identifies a message collected during Stop cleanup. Older journals leave its
+timing unknown. Both remain readable as evidence. Pass verified oversized
+events to `readEvent` too. An `invalid_event` stops that page. Record the gap
+and read a known later sequence directly. A reply reports one Claude turn.
+Drain remaining events at terminal status, then read `claudexor_run_result`.
 
 **Questions and messages.** Answer a pending question with
 `claudexor_answer_interaction`, using the ids and option labels from

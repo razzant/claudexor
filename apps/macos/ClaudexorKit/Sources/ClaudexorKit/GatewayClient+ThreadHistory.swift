@@ -10,7 +10,7 @@ extension GatewayClient {
         var query = [URLQueryItem(name: "limit", value: String(limit))]
         if let selector { query.append(selector.queryItem) }
         if let expectedStoreId { query.append(URLQueryItem(name: "expectedStoreId", value: expectedStoreId)) }
-        let page = try await historyRead("threads/\(id)/history", query: query, as: ThreadHistoryPage.self)
+        let page = try await historyRead("threads/\(id)/history", query: query, replyProjection: true, as: ThreadHistoryPage.self)
         guard page.threadId == id, page.turns.count <= limit,
               expectedStoreId == nil || page.storeId == expectedStoreId else {
             throw GatewayError.decoding("History response does not match its requested thread/store.")
@@ -33,8 +33,9 @@ extension GatewayClient {
         return part
     }
 
-    private func historyRead<T: Decodable>(_ path: String, query: [URLQueryItem], as type: T.Type) async throws -> T {
-        let req = request(path, method: "GET", queryItems: query)
+    func historyRead<T: Decodable>(_ path: String, query: [URLQueryItem], replyProjection: Bool = false, as type: T.Type) async throws -> T {
+        var req = request(path, method: "GET", queryItems: query)
+        if replyProjection { req.setValue("1", forHTTPHeaderField: "X-Claudexor-Claude-Turn-Replies") }
         let (data, response) = try await session.data(for: req)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw GatewayError.http(status: (response as? HTTPURLResponse)?.statusCode ?? -1,

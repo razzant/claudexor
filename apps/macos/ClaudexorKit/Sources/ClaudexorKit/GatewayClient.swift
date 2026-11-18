@@ -456,18 +456,22 @@ public final class GatewayClient: Sendable {
         }
     }
 
-    /// Raw byte-level frame stream shared by run, global and setup consumers.
-    /// Keeping this below the DTO wrappers prevents the `AsyncBytes.lines`
-    /// empty-line regression from returning through a second SSE implementation.
-    /// It is the only `streamSession` caller; every other request uses `session`.
-    func sseFrames(path: String, lastEventId: String?) -> AsyncThrowingStream<SSEFrame, Error> {
+    /// An addressed replay reads one frame within the request deadline.
+    func sseFrames(path: String, lastEventId: String? = nil, replaySeq: Int? = nil) -> AsyncThrowingStream<SSEFrame, Error> {
         AsyncThrowingStream(bufferingPolicy: .bufferingOldest(256)) { continuation in
             let task = Task {
                 do {
                     var req = self.request(path, method: "GET")
                     req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    if let last = lastEventId { req.setValue(last, forHTTPHeaderField: "Last-Event-ID") }
+                    let resumeID = replaySeq.map { String($0 - 1) } ?? lastEventId
+                    if let resumeID { req.setValue(resumeID, forHTTPHeaderField: "Last-Event-ID") }
                     let (bytes, resp) = try await self.streamSession.bytes(for: req)
+                    let transfer = bytes.task
+                    let deadline = replaySeq != nil ? Task {
+                        try await Task.sleep(for: .seconds(req.timeoutInterval))
+                        transfer.cancel() // Heartbeats may outlive a reclaimed event.
+                    } : nil
+                    defer { deadline?.cancel(); if replaySeq != nil { transfer.cancel() } }
                     guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
                         let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
                         throw GatewayError.http(status: status, body: "events stream failed")
@@ -478,13 +482,13 @@ public final class GatewayClient: Sendable {
                     var parser = SSEParser()
                     var chunk: [UInt8] = []
                     chunk.reserveCapacity(1024)
-                    func flush() throws -> (stop: Bool, terminalEnd: Bool) {
+                    func flush() throws -> (stop: Bool, finished: Bool) {
                         defer { chunk.removeAll(keepingCapacity: true) }
                         for frame in parser.feed(chunk) {
                             guard try Self.yieldChecked(frame, to: continuation, context: "raw SSE") else {
                                 return (true, false)
                             }
-                            if frame.event == "end" { return (true, true) }
+                            if replaySeq != nil || frame.event == "end" { return (true, true) }
                         }
                         return (false, false)
                     }
@@ -493,13 +497,13 @@ public final class GatewayClient: Sendable {
                         if byte == 0x0A {
                             let result = try flush()
                             if result.stop {
-                                if result.terminalEnd { continuation.finish() }
+                                if result.finished { continuation.finish() }
                                 return
                             }
                         }
                     }
                     let result = try flush()
-                    if result.terminalEnd {
+                    if result.finished {
                         continuation.finish()
                     } else if result.stop {
                         return

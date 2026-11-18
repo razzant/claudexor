@@ -1,6 +1,11 @@
 import ClaudexorKit
 import Foundation
 
+extension RunSummary {
+    /// Before admission the summary uses jobId as its runId placeholder.
+    var boundRunID: String? { jobId == runId && runDir == nil ? nil : runId }
+}
+
 extension AppModel {
     static func liveTask(from summary: RunSummary) -> TaskRun {
         let prompt = summary.prompt ?? ""
@@ -31,7 +36,7 @@ extension AppModel {
             plan: [], activity: [], candidates: [], findings: [], diff: [],
             isLive: true
         )
-        task.resolvedRunId = summary.runId
+        task.resolvedRunId = summary.boundRunID
         task.repoRoot = summary.project?.root
         task.executionRoot = summary.executionRoot
         task.engineError = summary.failure?.safeMessage ?? summary.error

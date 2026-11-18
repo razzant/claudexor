@@ -333,6 +333,20 @@ struct ThreadsScreen: View {
             if let status = model.threadStatus {
                 StatusBanner(message: status)
             }
+            if let history = model.selectedHistory, let retry = history.stopHoldRetry,
+               model.isCurrentGateway(retry.client, at: history.locationID) {
+                StatusBanner(message: retry.message)
+                Button("Retry Stop to hold next message") {
+                    guard !stopping else { return }
+                    stopping = true
+                    Task {
+                        defer { stopping = false }
+                        guard history.stopHoldRetry?.runID == retry.runID, model.selectedHistory === history,
+                              model.isCurrentGateway(retry.client, at: history.locationID) else { return }
+                        await model.cancel(retry.runID, at: history.locationID, threadId: history.threadID)
+                    }
+                }.buttonStyle(.link).disabled(stopping)
+            }
 
             // The isolated-thread apply-thread action moved into the thread
             // workspace's Changes tab (D42) — the conversation is just the feed +

@@ -1260,7 +1260,7 @@
       "path": "/v2/runs/:id/events/:id",
       "mutating": false,
       "applicability": "run",
-      "summary": "Read one bounded part of one validated run event by seq, in the exact stored serialization the run event stream delivers.",
+      "summary": "Read one bounded part of a validated journal event by seq. By default it contains the exact JSON serialization delivered by the run event stream.",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [
@@ -1281,6 +1281,17 @@
           "enum": null,
           "schema_ref": null,
           "description": "Maximum part bytes, 4 to 65536 (default 32768); a part may end earlier at a character boundary."
+        },
+        {
+          "name": "x-claudexor-claude-turn-replies",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send 1 for Claude reply previews in history and reply text in event parts."
         }
       ],
       "response_schema": "ControlRunEventPart",
@@ -1880,6 +1891,17 @@
           "enum": null,
           "schema_ref": "ThreadHistoryInput#/properties/expectedStoreId",
           "description": "Optional expectedStoreId; validated by ThreadHistoryInput."
+        },
+        {
+          "name": "x-claudexor-claude-turn-replies",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send 1 for Claude reply previews in history and reply text in event parts."
         }
       ],
       "response_schema": "ThreadHistoryPage",

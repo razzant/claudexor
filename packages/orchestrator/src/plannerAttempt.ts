@@ -307,7 +307,7 @@ export async function runPlannerAttempt(
         // Re-sampled: the callback above may itself have pressed Stop.
         log.emit(
           "harness.event",
-          harnessEventPayload(adapter.id, attemptId, ev),
+          harnessEventPayload(adapter.id, attemptId, ev, stoppedBefore),
           shown && !input.signal?.aborted,
         );
         appendHarnessEvent(attemptEventsPath, ev);

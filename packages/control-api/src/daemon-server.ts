@@ -1703,7 +1703,7 @@ export class DaemonControlApiServer {
       return;
 
     const eventPartCtx = { findRun: (id: string) => this.findRun(id), json: this.json.bind(this) };
-    if (await handleRunEventPartRoute(eventPartCtx, method, path, url, res)) return;
+    if (await handleRunEventPartRoute(eventPartCtx, method, path, url, res, req.headers)) return;
 
     const eventsMatch = /^\/runs\/([^/]+)\/events$/.exec(path);
     if (method === "GET" && eventsMatch) {

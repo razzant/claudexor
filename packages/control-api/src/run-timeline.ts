@@ -73,6 +73,10 @@ export interface RunEventsIntegrity {
 export interface RunEventsRead {
   events: Record<string, unknown>[];
   integrity: RunEventsIntegrity;
+  /** Array index to SSE line number for pre-seq events in a bounded read from byte zero. */
+  legacySequences?: Map<number, number>;
+  /** Parsed for historical summaries but not yet published as an SSE line. */
+  unterminatedEventIndex?: number;
 }
 
 export const COMPLETE_INTEGRITY: Readonly<RunEventsIntegrity> = {
@@ -93,14 +97,8 @@ export function evidenceLevel(i: RunEventsIntegrity): ControlEvidenceIntegrity {
   return "complete";
 }
 
-/**
- * The ONE lenient events.jsonl reader for Control projections. Returns the
- * parsed objects AND a typed count of everything it skipped, so no caller can
- * mistake a partial/empty set for complete evidence (QA-074). `readRunEvents`
- * preserves the historical array-only shape for callers that do not disclose
- * integrity. Omitting maxBytes captures the complete log for detail/summary
- * folds; bounded history receipts pass their explicit tail allowance.
- */
+/** Control projections share one lenient reader and its omission counts (QA-074).
+ * Detail/summary read the whole file; history specifies its tail allowance. */
 export function readRunEventsWithIntegrity(rec: RunDirCarrier, maxBytes?: number): RunEventsRead {
   return projectionRead(rec.runDir ?? "", `events:${maxBytes ?? "all"}`, () =>
     readEventsSnapshot(rec, maxBytes),
@@ -161,9 +159,16 @@ function readEventsSnapshot(rec: RunDirCarrier, maxBytes?: number): RunEventsRea
   if (typeof path !== "string") return { events: [], integrity: path };
   const integrity: RunEventsIntegrity = { ...COMPLETE_INTEGRITY };
   const out: Record<string, unknown>[] = [];
+  const snapshot: RunEventsRead = { events: out, integrity };
+  let lineNo = 0;
   const parseLine = (line: string): void => {
+    if (!line.length) return;
+    lineNo++;
     const event = parseEventLine(line, integrity);
-    if (event) out.push(event);
+    if (!event) return;
+    if (event.seq === undefined && integrity.tailTruncated === false)
+      (snapshot.legacySequences ??= new Map()).set(out.length, lineNo);
+    out.push(event);
   };
   try {
     const fd = openSync(path, "r");
@@ -194,9 +199,13 @@ function readEventsSnapshot(rec: RunDirCarrier, maxBytes?: number): RunEventsRea
         }
         carry = text.slice(start);
       }
-      // Historical detail reads also accept a complete final JSON record with
-      // no newline; a torn record is counted as malformed, never hidden.
-      if (!skipPartialLine) parseLine(carry + decoder.end());
+      // Summary readers accept final JSON without LF; an SSE address requires LF.
+      if (!skipPartialLine) {
+        const complete = out.length;
+        parseLine(carry + decoder.end());
+        if (maxBytes !== undefined && out.length > complete)
+          snapshot.unterminatedEventIndex = complete;
+      }
     } finally {
       closeSync(fd);
     }
@@ -209,7 +218,7 @@ function readEventsSnapshot(rec: RunDirCarrier, maxBytes?: number): RunEventsRea
     return { events: [], integrity: { ...COMPLETE_INTEGRITY, unreadable: true } };
   }
   eventsParseCount++;
-  return { events: out, integrity };
+  return snapshot;
 }
 
 export function readRunEvents(rec: RunDirCarrier): Record<string, unknown>[] {

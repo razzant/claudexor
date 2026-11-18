@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  CLAUDE_TURN_REPLIES_HEADER,
   ThreadHistoryInput,
   ThreadHistoryPage,
   ThreadPromptPartInput,
@@ -7,11 +8,11 @@ import {
   threadHistoryProblem,
 } from "@claudexor/schema";
 import type { OperationDraft } from "./operation-draft.js";
-import { queryParam } from "./operation-parameters.js";
+import { queryParam, REPLY_PROJECTION_HEADER } from "./operation-parameters.js";
 import { requestGone } from "./request-liveness.js";
 
 export interface ThreadHistoryServices {
-  threadHistory(input: ThreadHistoryInput): ThreadHistoryPage;
+  threadHistory(input: ThreadHistoryInput, includeClaudeReplies?: boolean): ThreadHistoryPage;
   threadPromptPart(input: ThreadPromptPartInput): ThreadPromptPart;
 }
 interface Context {
@@ -29,6 +30,7 @@ export async function handleThreadHistoryRoute(
   const historyMatch = /^\/threads\/([^/]+)\/history$/.exec(path);
   const promptMatch = /^\/threads\/([^/]+)\/turns\/([^/]+)\/prompt$/.exec(path);
   if (!((method === "GET" && historyMatch) || (method === "GET" && promptMatch))) return false;
+  if (historyMatch) res.setHeader("Vary", CLAUDE_TURN_REPLIES_HEADER);
   try {
     const match = (historyMatch ?? promptMatch)!;
     const decode = (value: string) => {
@@ -78,7 +80,10 @@ export async function handleThreadHistoryRoute(
       );
     if (!requestGone(req, res)) {
       const result = historyMatch
-        ? ctx.threadHistoryReads.threadHistory(input as ThreadHistoryInput)
+        ? ctx.threadHistoryReads.threadHistory(
+            input as ThreadHistoryInput,
+            req.headers[CLAUDE_TURN_REPLIES_HEADER] === "1",
+          )
         : ctx.threadHistoryReads.threadPromptPart(input as ThreadPromptPartInput);
       ctx.json(res, 200, result);
     }
@@ -105,10 +110,13 @@ export const THREAD_HISTORY_OPERATION_DRAFTS: OperationDraft[] = [
     requestSchema: null,
     responseSchema: "ThreadHistoryPage",
     responseKind: "json",
-    parameters: parameters(
-      ["limit", "cursor", "beforeTurnId", "afterTurnId", "aroundTurnId", "expectedStoreId"],
-      "ThreadHistoryInput",
-    ),
+    parameters: [
+      ...parameters(
+        ["limit", "cursor", "beforeTurnId", "afterTurnId", "aroundTurnId", "expectedStoreId"],
+        "ThreadHistoryInput",
+      ),
+      REPLY_PROJECTION_HEADER,
+    ],
   },
   {
     method: "GET",

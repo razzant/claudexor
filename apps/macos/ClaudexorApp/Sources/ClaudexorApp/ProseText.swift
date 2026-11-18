@@ -64,6 +64,7 @@ struct ProseText: NSViewRepresentable {
     var onFocusChange: ((Bool) -> Void)?
     @Environment(\.proseLinkGate) private var linkGate
     @Environment(\.proseMessageID) private var messageID
+    @Environment(\.proseReplySequence) private var replySequence
     @Environment(\.conversationComposerInput) private var composerInput
     @Environment(\.proseMessageSource) private var messageSource
     @Environment(\.proseMessageCopyAction) private var copyMessageAction
@@ -80,7 +81,8 @@ struct ProseText: NSViewRepresentable {
     }
 
     func updateNSView(_ view: ProseTextView, context: Context) {
-        let replacing = view.shownID != document.id || view.messageID != messageID
+        let shownID = replySequence.map { "reply-\($0):\(document.id)" } ?? document.id
+        let replacing = view.shownID != shownID || view.messageID != messageID
         if replacing {
             // Notify the old document's owners before installing new callbacks.
             context.coordinator.selectionChanged?(false)
@@ -99,23 +101,23 @@ struct ProseText: NSViewRepresentable {
         context.coordinator.selectionChanged = { selected in
             onSelectionChange?(selected)
             guard let messageID else { return }
-            let key = messageID + ":" + document.id
+            let key = messageID + ":" + shownID
             if selected { presentation?.selectedMessages.insert(key) }
             else { presentation?.selectedMessages.remove(key) }
         }
         view.focusChanged = { focused in
             onFocusChange?(focused)
             guard let messageID else { return }
-            let key = messageID + ":" + document.id
+            let key = messageID + ":" + shownID
             if focused { presentation?.focusedMessages.insert(key) }
             else { presentation?.focusedMessages.remove(key) }
         }
         view.setAccessibilityLabel(accessibilityName)
         // The content identity, not the cache object's address, owns replacement.
-        if view.shownID != document.id {
+        if view.shownID != shownID {
             view.cancelCopyFeedback()
             view.textStorage?.setAttributedString(document.text)
-            view.shownID = document.id
+            view.shownID = shownID
         }
         if replacing {
             context.coordinator.selectionChanged?(view.selectedRange().length > 0)
@@ -171,6 +173,8 @@ private struct ProseMessageIDKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
+    @Entry var proseReplySequence: Int? = nil
+
     var proseMessageID: String? {
         get { self[ProseMessageIDKey.self] }
         set { self[ProseMessageIDKey.self] = newValue }

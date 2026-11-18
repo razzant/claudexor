@@ -4,7 +4,7 @@ import type { ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ControlRunEventPart, RunEvent } from "@claudexor/schema";
+import { CLAUDE_TURN_REPLIES_HEADER, ControlRunEventPart, RunEvent } from "@claudexor/schema";
 import {
   DaemonControlApiServer,
   type DaemonFacadeClient,
@@ -62,9 +62,9 @@ async function withServer(records: DaemonRunRecord[], fn: (base: string) => Prom
   }
 }
 
-const get = (base: string, path: string) =>
+const get = (base: string, path: string, headers: Record<string, string> = {}) =>
   fetch(`${base}${path}`, {
-    headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" },
+    headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3", ...headers },
   });
 
 /** The data line the run event stream delivers for its first frame. */
@@ -94,6 +94,82 @@ async function firstStreamData(base: string, runId: string): Promise<string> {
 }
 
 describe("GET /v2/runs/:id/events/:seq parts", () => {
+  it("reads a known reply past a damaged line in verified text pages", async () => {
+    const rec = record();
+    const text = "notes\n🍎".repeat(3000);
+    const row = {
+      seq: 5,
+      run_id: rec.runId,
+      task_id: "task-e1",
+      ts: "2026-10-19T00:00:01.000Z",
+      type: "harness.event",
+      payload: {
+        harness_id: "claude",
+        type: "message",
+        final: true,
+        attempt_id: "b",
+        session_id: "s2",
+        after_stop: false,
+        text,
+      },
+    };
+    const rows = [
+      row,
+      { ...row, seq: 6, payload: { ...row.payload, after_stop: true } },
+      { ...row, seq: 7, run_id: "foreign-run" },
+    ];
+    appendFileSync(
+      join(rec.runDir!, "events.jsonl"),
+      rows.map((r) => JSON.stringify(r) + "\n").join(""),
+    );
+    // A damaged eighth line has positional id 8. The retained reply after
+    // it has durable seq 8 and is much larger than one response.
+    const largeText = "🍎".repeat(550_000);
+    const largeRow = { ...row, seq: 8, payload: { ...row.payload, text: largeText } };
+    appendFileSync(
+      join(rec.runDir!, "events.jsonl"),
+      "damaged\n" + JSON.stringify(largeRow) + "\n",
+    );
+    await withServer([rec], async (base) => {
+      const optIn = { [CLAUDE_TURN_REPLIES_HEADER]: "1" };
+      const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+      const source = { attemptId: "b", sessionId: "s2", afterStop: false };
+      const read = async (seq: number, offset: number) => {
+        const path = `/runs/run-e1/events/${seq}?offset=${offset}&limit=8192`;
+        const response = await get(base, path, optIn);
+        return ControlRunEventPart.parse(await response.json());
+      };
+      let received = "";
+      for (let offset = 0; offset < Buffer.byteLength(text);) {
+        const part = await read(5, offset);
+        expect(part).toMatchObject({
+          runId: "run-e1",
+          seq: 5,
+          offset,
+          sha256: hash(text),
+          claudeTurnReply: { source, partSha256: hash(part.text) },
+        });
+        expect(Buffer.byteLength(part.text)).toBeLessThanOrEqual(8192);
+        expect(part.nextOffset).toBeGreaterThan(offset);
+        received += part.text;
+        offset = part.nextOffset;
+      }
+      expect(received).toBe(text);
+      expect((await read(6, 0)).claudeTurnReply?.source.afterStop).toBe(true);
+      const raw = await get(base, "/runs/run-e1/events/5?limit=65536");
+      expect(raw.headers.get("vary")).toBe(CLAUDE_TURN_REPLIES_HEADER);
+      const legacySchema = ControlRunEventPart.omit({ claudeTurnReply: true }).strict();
+      const legacy = legacySchema.parse(await raw.json());
+      expect(JSON.parse(legacy.text)).toEqual(row);
+      expect((await get(base, "/runs/run-e1/events/7", optIn)).status).toBe(422);
+      const firstPage = await read(8, 0);
+      expect(firstPage.totalBytes).toBe(Buffer.byteLength(largeText));
+      expect(firstPage.sha256).toBe(hash(largeText));
+      expect(firstPage.nextOffset).toBe(8192);
+      expect(Buffer.byteLength(JSON.stringify(firstPage))).toBeLessThan(9000);
+    });
+  });
+
   it("reassembles the exact stream serialization from bounded character-safe parts", async () => {
     const rec = record();
     await withServer([rec], async (base) => {
@@ -340,7 +416,7 @@ async function partWithTurns(rec: DaemonRunRecord, seq: number, offset: number) 
     "GET",
     url.pathname,
     url,
-    {} as ServerResponse,
+    { setHeader: () => {} } as unknown as ServerResponse,
   );
   inFlight = false;
   return { ...reply, turns };

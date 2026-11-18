@@ -62,8 +62,7 @@ extension AppModel {
         }
     }
 
-    /// Advance the resume cursor and enqueue one delivered SSE envelope. Kept
-    /// internal so the delayed snapshot/event ordering has a deterministic test.
+    /// Advance the resume cursor and enqueue one delivered SSE envelope.
     func ingestStreamEnvelope(_ env: BusEnvelope, to runId: String) {
         if env.seq > 0, env.seq <= (lastEventIds[runId] ?? 0) { return }
         if env.seq > 0 { lastEventIds[runId] = env.seq }
@@ -341,13 +340,17 @@ extension AppModel {
     /// `review.finding.proposed`, `run.completed`, …) and sends the full record as data;
     /// the in-proc bus uses a normalized kind. We classify off the record's own `type`,
     /// falling back to the SSE kind — so it works against both servers.
-    /// W23 memory bound for the snapshot-fence buffer: a flooding run during a
-    /// slow detail load must not hoard envelopes without limit (part of the
-    /// 30GB-hang class). On overflow the buffer resets and the load's defer
-    /// fetches a FRESH snapshot instead of replaying an incomplete tail.
+    /// Cap deferred rows during a detail load. An overflow triggers a fresh snapshot.
     static let deferredEnvelopeCap = 512
 
     func apply(_ env: BusEnvelope, to runId: String) {
+        // The transcript has its own replay cursor. A detail snapshot covers the
+        // activity/spend below, but cannot substitute for a delivered Claude reply.
+        let box = ensureLiveBox(runId)
+        let isReply = ClaudeTurnReplies.journalReply(in: env) != nil
+        let owner = isReply ? replyRunID(runId, at: .local) : nil
+        let belongs = !isReply || ClaudeTurnReplies.matchesAddress(env, runID: owner)
+        if belongs { box.transcript.apply(env, replyRunID: owner) }
         // Snapshot fence, write side: never interleave with an in-flight
         // detail load; the load's defer re-applies these in arrival order.
         if snapshotLoadDepth[runId] ?? 0 > 0 {
@@ -358,14 +361,7 @@ extension AppModel {
             deferredEnvelopes[runId, default: []].append(env)
             return
         }
-        // HOT fields (transcript, activity, spend ticks) mutate the per-run
-        // box: only that box's readers re-render. The tasks ARRAY is written
-        // only when a low-frequency truth changes (status, findings,
-        // interactions, caps) — its property write invalidates every list.
-        let box = ensureLiveBox(runId)
-        // Fold the live transcript (the chat shows working progress — reasoning +
-        // tools — as it happens, not just the final answer).
-        _ = box.transcript.apply(env)
+        guard belongs, env.seq <= 0 || env.seq > (snapshotReplayFences[runId] ?? 0) else { return }
         guard let idx = liveTasks.firstIndex(where: { $0.id == runId }) else { return }
         let type = env.event["type"]?.stringValue ?? env.kind
         let payload = env.event["payload"] ?? env.event
@@ -430,6 +426,7 @@ extension AppModel {
             }
             else if let s = lifecycle { t.phase = RunPhase(api: s) }
             else if t.phase == .queued { t.phase = .running }
+            if before.isTerminal && !t.phase.isTerminal { t.phase = before }
             if let eventFacts, t.outcomeFacts != eventFacts {
                 t.outcomeFacts = eventFacts
                 taskChanged = true
