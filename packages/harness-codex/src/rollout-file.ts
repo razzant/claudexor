@@ -1,7 +1,9 @@
 /**
- * The checked boundary every Claudexor reader of a Codex session rollout
- * shares: the transcript facts (model, quota, vendor failure) and the
- * continuity locator and copy. The run's selected `CODEX_HOME` is
+ * The Codex adapter uses these readers for transcript facts (model, quota,
+ * vendor failure), continuity locate and copy, and retention's first-line proof
+ * for session and archived files. Within the adapter, only retention decodes a
+ * zstd header. Vendor-native export has its own decoder in the control API.
+ * The run's selected `CODEX_HOME` is
  * canonicalized once, so a home that is itself a link or sits under one
  * (macOS `/var`, `/tmp`) stays usable. Below it nothing is read through a
  * link: `sessions`, its date directories and the part must be plain, and a
@@ -24,25 +26,30 @@ import {
   statSync,
   writeSync,
   type Dirent,
+  type ReadStream,
 } from "node:fs";
+import { open } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
+import { Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createZstdDecompress } from "node:zlib";
 
 const DEFAULT_LIMITS = { chunkBytes: 1 << 20, maxLineBytes: 8 << 20 };
 let limits = DEFAULT_LIMITS;
-const stats = { bytes: 0, reads: 0, peakCarryBytes: 0 };
+const stats = { bytes: 0, reads: 0, headReads: 0, peakCarryBytes: 0 };
 
 /** Test seam: shrink the read chunk and the carried-line bound; null restores the defaults. */
 export function setRolloutReadLimitsForTests(next: Partial<typeof DEFAULT_LIMITS> | null): void {
   limits = next ? { ...DEFAULT_LIMITS, ...next } : DEFAULT_LIMITS;
 }
 
-/** Bytes and read calls the scanner issued, and the largest line it carried, since the last reset. */
+/** Input bytes, scan chunk reads, header reads and largest carried line since the last reset. */
 export function rolloutReadStatsForTests(): Readonly<typeof stats> {
   return { ...stats };
 }
 
 export function resetRolloutReadStatsForTests(): void {
-  Object.assign(stats, { bytes: 0, reads: 0, peakCarryBytes: 0 });
+  Object.assign(stats, { bytes: 0, reads: 0, headReads: 0, peakCarryBytes: 0 });
 }
 
 export interface CodexRolloutPart {
@@ -249,6 +256,74 @@ export function copyCodexRolloutPart(home: string, source: string, dest: string)
   } finally {
     closeSync(file.fd);
     if (out !== null) closeSync(out);
+  }
+}
+
+/**
+ * Read the first complete JSON record of one inventoried rollout. Bound both
+ * the input (including zstd frames that produce no output) and the decoded
+ * line. The rest of a long conversation is outside this proof.
+ */
+export async function readCodexRolloutHead(
+  path: string,
+  identity: { dev: number; ino: number },
+): Promise<unknown> {
+  stats.headReads++;
+  const handle = await open(
+    path,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+  );
+  let source: ReadStream | undefined;
+  try {
+    const file = await handle.stat();
+    if (
+      !file.isFile() ||
+      file.dev !== identity.dev ||
+      file.ino !== identity.ino ||
+      realpathSync(path) !== path
+    )
+      throw new Error("not the inventoried plain file");
+    if (!file.size) throw new Error("empty rollout");
+    const { maxLineBytes, chunkBytes } = limits;
+    const highWaterMark = Math.min(16 << 10, chunkBytes);
+    const pieces: Buffer[] = [];
+    let size = 0;
+    // Signal the completed line through the sink so pipeline stops every stage together.
+    const lineComplete = new Error("rollout header complete");
+    const sink = new Writable({
+      write(bytes: Buffer, _encoding, done) {
+        const end = bytes.indexOf(0x0a);
+        const piece = end < 0 ? bytes : bytes.subarray(0, end);
+        size += piece.length;
+        if (size > maxLineBytes)
+          return done(new Error("first line exceeds the rollout header limit"));
+        pieces.push(piece);
+        stats.peakCarryBytes = Math.max(stats.peakCarryBytes, size);
+        done(end < 0 ? undefined : lineComplete);
+      },
+    });
+    const zstd = path.toLowerCase().endsWith(".zst") ? createZstdDecompress() : undefined;
+    source = handle.createReadStream({
+      highWaterMark,
+      end: Math.min(file.size, maxLineBytes + highWaterMark) - 1,
+    });
+    try {
+      if (zstd) await pipeline(source, zstd, sink);
+      else await pipeline(source, sink);
+      throw new Error("no complete first line within the rollout header limit");
+    } catch (error) {
+      if (error !== lineComplete) throw error;
+    }
+    try {
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      return JSON.parse(decoder.decode(Buffer.concat(pieces, size)));
+    } catch {
+      throw new Error("first line is not valid UTF-8 JSON");
+    }
+  } finally {
+    // Once constructed, the auto-closing source owns the handle.
+    if (source) stats.bytes += source.bytesRead;
+    else await handle.close();
   }
 }
 

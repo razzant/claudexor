@@ -26,7 +26,8 @@ it("normalizes only when the reference set grows while retaining late mixed-case
     mkdirSync(day, { recursive: true });
     const paths = [1, 2, 3, 4].map((n) => {
       const path = join(day, `rollout-2020-01-01T00-00-00-${id(n)}.jsonl`);
-      writeFileSync(path, `part ${n}`);
+      // An independent rollout's header: its first line names no history base.
+      writeFileSync(path, `${JSON.stringify({ type: "session_meta", payload: { id: id(n) } })}\n`);
       utimesSync(path, new Date("2020-01-01"), new Date("2020-01-01"));
       return path;
     });

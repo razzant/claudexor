@@ -373,6 +373,7 @@ jobs:
           packages/harness-codex/src/model-auth.test.ts
           packages/harness-codex/src/model.test.ts
           packages/harness-codex/src/responses.test.ts
+          packages/harness-codex/src/native-home-lineage.test.ts
           packages/daemon/src/model-operations.test.ts
           packages/control-api/src/files-result.test.ts
           packages/workspace/src/directory-portable.test.ts
