@@ -3325,7 +3325,8 @@ request and response body share a 60-second transport limit; expiry yields
 its normal candidate search. A fetch that never reached the provider (the socket or
 DNS code it reports in its causes: name not resolved, no route, refused or connect
 timeout) is `catalog_unavailable` with `context.cause: network` and that
-`errorCode`. A failed read is never remembered and never becomes
+`errorCode`. The public catalog GET returns the same retryability and problem
+context as the operation receipt, including `poolCause` on pool exhaustion. A failed read is never remembered and never becomes
 an empty catalog; only a successful read answers later selections, as above.
 
 Operation receipts carry optional `preparation`; HTTP GET exposes it only with

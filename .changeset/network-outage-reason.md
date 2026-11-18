@@ -12,5 +12,6 @@ timed out), that refusal now says so: `catalog_unavailable`, retryable, with
 every account the operation tried failed this way, the operation ends with the same
 retryable `catalog_unavailable` and `poolCause: "network"` instead of
 `credential_pool_exhausted`; accounts it did not try because of quota or sign-in keep
-those causes in `poolCauses`. A failure after the provider answered, or one without such
+those causes in `poolCauses`. The public catalog GET returns the same problem fields as the
+operation receipt, including retryability and the connection code. A failure after the provider answered, or one without such
 a code, is reported as before.

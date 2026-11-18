@@ -16,7 +16,6 @@ import {
   type VendorQuotaObservations,
 } from "@claudexor/orchestrator";
 import {
-  ControlProblem,
   GlobalConfig,
   type CredentialProfile,
   type CredentialUnusableObservation,
@@ -25,7 +24,7 @@ import {
   type QuotaSnapshot,
 } from "@claudexor/schema";
 import type { ModelLoginReadiness } from "./model-login-readiness.js";
-import { modelError } from "./model-service-refusals.js";
+import { modelError, modelRefusal } from "./model-service-refusals.js";
 
 /** Pin/pool readiness only. Mutable decision facts are re-read after awaits;
  * this consumes raw observations, never account display projections. */
@@ -134,13 +133,11 @@ function credentialRefusal(
     (vendor?.outcome === "revoked" ? vendor.observed_at : null);
   if (!observedAt) return dead ? modelError("auth_unavailable", NO_LOGIN) : null;
   const message = "The pinned managed model account requires sign-in";
-  return Object.assign(modelError("auth_required", message), {
-    problem: ControlProblem.parse({
-      code: "auth_required",
-      message,
-      retryable: false,
-      context: { source: sourceId, credentialProfileId: profile.profile_id, observedAt },
-    }),
+  return modelRefusal({
+    code: "auth_required",
+    message,
+    retryable: false,
+    context: { source: sourceId, credentialProfileId: profile.profile_id, observedAt },
   });
 }
 
