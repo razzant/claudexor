@@ -1,0 +1,152 @@
+name: qa p06 run-results qualification
+
+# TEST-ONLY one-shot branch qualification of the P06 run-results and
+# typed-refusal change, run BEFORE acceptance. NOT a product gate: it
+# triggers only on a push to its own QA branch (no tags, no publish). The
+# QA branch is the product branch plus test-only carrier commit(s) carrying
+# this workflow and qa/p06/*; the public product branch and PR never contain
+# these files. One GitHub-hosted Ubuntu runner, a read-only token, no
+# secrets. Evidence uploads only with a successful final manifest AND a
+# clean scanner, and an absent artifact set is reported, never an empty
+# success.
+#
+# PUBLICATION STEP: before pushing the QA branch, replace the single
+# __P06_PRODUCT_HEAD_SHA__ placeholder in env below with the exact product
+# commit SHA the QA branch is based on, e.g.
+#   sed -i.bak 's/__P06_PRODUCT_HEAD_SHA__/<product-sha>/' .github/workflows/qa-p06-run-results.yml
+# run-qa.mjs identity rejects the placeholder, so an un-injected carrier can
+# never run. Repeated fast-forward carrier revisions are fine: identity only
+# checks that the branch tip differs from the bound product head by exactly
+# the six carrier files (not by commit count), so HEAD~1 is never assumed.
+# PRODUCT_BASE_SHA stays pinned here independently of any moving ref.
+on:
+  push:
+    branches: [qa/p06-run-results]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-p06-run-results
+  cancel-in-progress: false
+
+env:
+  # Public main sha the product branch started from (pinned independently;
+  # never derived from HEAD~1 or any moving ref).
+  PRODUCT_BASE_SHA: 4ac8ac03cc50f9261fa4108070ca0e9e8f25df44
+  # Single publication-time placeholder for the exact product commit SHA.
+  # Never defaults to HEAD~1: with repeated QA carrier commits HEAD~1 can
+  # already be a previous carrier revision, not the product.
+  PRODUCT_HEAD_SHA: "fc56130b6251e5a826fe26a070a938c2a03b69eb"
+
+jobs:
+  qualify:
+    name: P06 QA (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # Bounded like the main CI jobs; release:verify:node runs the full node
+    # battery, so keep headroom and raise this bound when honest runs near it.
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Full history and tags: the lanes resolve the pinned base sha,
+          # the injected product sha and the nearest release tag from real refs.
+          fetch-depth: 0
+
+      # No `version:` — pnpm/action-setup reads `packageManager` (pnpm@10.34.5).
+      - name: Install pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Set up private scratch and the pinned offline publication scanner
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/qa-p06" "$RUNNER_TEMP/qa-p06-run" "$RUNNER_TEMP/qa-p06-logs"
+          echo "QA_OUT=$RUNNER_TEMP/qa-p06" >> "$GITHUB_ENV"
+          echo "QA_RUN=$RUNNER_TEMP/qa-p06-run" >> "$GITHUB_ENV"
+          echo "QA_STORE=$RUNNER_TEMP/qa-p06-pnpm-store" >> "$GITHUB_ENV"
+          scanner="$RUNNER_TEMP/qa-p06-run/tools/betterleaks"
+          node scripts/provision-betterleaks.mjs --dest "$scanner"
+          echo "CLAUDEXOR_BETTERLEAKS_PATH=$scanner" >> "$GITHUB_ENV"
+
+      - name: Record exact tested tree and origin
+        id: identity
+        run: node qa/p06/run-qa.mjs identity
+
+      - name: Generate on the product and export the allowlisted patch
+        id: export
+        run: node qa/p06/run-qa.mjs export
+
+      - name: Install dependencies on the generated tree
+        id: gen_install
+        run: node qa/p06/run-qa.mjs install
+
+      - name: Build fixture packages on the exact generated tree
+        id: fixture_build
+        run: node qa/p06/run-qa.mjs fixture-build
+
+      - name: Emit synthetic 307/697 fixture bytes (loopback HTTP only, no live calls)
+        run: node qa/p06/run-qa.mjs emit
+
+      - name: Verify fixture completeness
+        if: ${{ !cancelled() && steps.fixture_build.outcome == 'success' }}
+        run: node qa/p06/run-qa.mjs verify-fixtures
+
+      # Runs whenever export bound the generated tree (gen-wt) — even if a
+      # fixture lane failed — so the paired control and the full node battery
+      # are never skipped by an independent earlier failure.
+      - name: Observe the unchanged baseline
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
+        run: node qa/p06/run-qa.mjs control-base
+
+      - name: Observe the candidate independently of the baseline
+        if: ${{ !cancelled() && steps.fixture_build.outcome == 'success' }}
+        run: node qa/p06/run-qa.mjs control-candidate
+
+      - name: release:verify:node unmodified on the exact generated tree
+        # Runs whenever export bound the product SHA and produced the generated
+        # tree — even if a fixture lane failed — so the artifact keeps both
+        # outcomes instead of silently skipping the product verification.
+        if: ${{ !cancelled() && steps.gen_install.outcome == 'success' }}
+        run: node qa/p06/run-qa.mjs release
+
+      - name: Write the immutable final evidence manifest
+        id: manifest
+        if: always()
+        run: node qa/p06/run-qa.mjs manifest
+
+      - name: Check the selected synthetic evidence before upload
+        id: safe_evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$QA_OUT" && test -x "$CLAUDEXOR_BETTERLEAKS_PATH"
+          test -z "$(find "$QA_OUT" ! -type f ! -type d -print -quit)"
+          printf '[extend]\nuseDefault = true\n' > "$QA_RUN/scan.toml"
+          : > "$QA_RUN/empty.ignore"
+          "$CLAUDEXOR_BETTERLEAKS_PATH" dir "$QA_OUT" --config "$QA_RUN/scan.toml" --gitleaks-ignore-path "$QA_RUN/empty.ignore" --ignore-gitleaks-allow --validation=false --redact=100 --exit-code=1 --report-format json --report-path "$QA_RUN/scan.json" --no-banner --no-color --log-level error
+          node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!Array.isArray(r)||r.length) process.exit(1)' "$QA_RUN/scan.json"
+
+      # QA_OUT holds only allowlisted selected evidence (identity, patch,
+      # validated fixtures, control outcome hashes, release outcome, steps,
+      # receipts, sanitized failure locations, final manifest); raw fixture
+      # bytes and install/build/test logs stay in the runner scratch under
+      # QA_RUN/logs and never enter the uploaded tree. Upload requires the
+      # final manifest step AND the clean scanner to have succeeded; a missing
+      # artifact set is an error, not an empty success.
+      - name: Upload only checked evidence (requires successful manifest and clean scan)
+        if: ${{ always() && steps.manifest.outcome == 'success' && steps.safe_evidence.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qa-p06-run-results
+          path: ${{ runner.temp }}/qa-p06
+          if-no-files-found: error
+          retention-days: 30
