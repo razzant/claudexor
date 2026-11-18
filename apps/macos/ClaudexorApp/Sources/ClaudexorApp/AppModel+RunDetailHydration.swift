@@ -38,12 +38,7 @@ extension AppModel {
                     snapshotLoadDepth[id] = nil
                     let deferred = deferredEnvelopes[id] ?? []
                     deferredEnvelopes[id] = nil
-                    // Seq fence for the REPLAY too: the snapshot we just
-                    // merged reflects everything <= lastSeq; re-applying a
-                    // deferred envelope from that range would double-count spend
-                    // and duplicate timeline rows.
-                    let fence = snapshotReplayFences.removeValue(forKey: id) ?? 0
-                    for env in deferred where !(env.seq > 0 && env.seq <= fence) { apply(env, to: id) }
+                    for env in deferred { apply(env, to: id) }
                     if deferredOverflow.remove(id) != nil {
                         // W23: envelopes were dropped at the cap — a replay would be
                         // incomplete, so a FRESH snapshot supersedes them instead.
@@ -69,8 +64,10 @@ extension AppModel {
             // remaps it; a missing alias can never authorize a foreign insert.
             let existingBaseIdx = liveTasks.firstIndex(where: { $0.id == id })
             let exactIdentity = detail.summary.runId == id
+            let boundRun = existingBaseIdx.flatMap { liveTasks[$0].resolvedRunId }
             let queuedAlias = detail.summary.jobId == id && existingBaseIdx != nil
-            guard exactIdentity || queuedAlias else { return }
+            guard exactIdentity || queuedAlias, boundRun == nil || boundRun == detail.summary.runId
+            else { return }
             if existingBaseIdx == nil {
                 let belongsToSelectedThread = selectedThreadAuthorizesColdRun(id)
                 guard exactIdentity, insertingIfMissing, belongsToSelectedThread else { return }
@@ -80,12 +77,15 @@ extension AppModel {
             // have reordered liveTasks, and a stale index would merge this
             // snapshot into (and copy hydrated fields from) a DIFFERENT run.
             guard let baseIdx = liveTasks.firstIndex(where: { $0.id == id }) else { return }
-            // Concurrent detail loads race (release wave round-12): an OLDER
-            // response resolving after a newer one must not roll the task
-            // back — deferred events at or below the newer fence were already
-            // consumed and cannot repair it. Older-than-fence responses are
-            // no-ops.
-            if detail.lastSeq < (snapshotReplayFences[id] ?? 0) { return }
+            let previous = liveTasks[baseIdx].phase
+            let phase = RunPhase(api: detail.summary.state)
+            let fence = snapshotReplayFences[id] ?? 0
+            // The command can finish even when its journal no longer yields a cursor.
+            // Positive regressing cursors still identify stale reads.
+            guard !previous.isTerminal || phase.isTerminal,
+                  detail.lastSeq >= fence ||
+                    (detail.lastSeq == 0 && phase.isTerminal && (!previous.isTerminal || previous == phase))
+            else { return }
             let existingIds = Set(liveTasks.map(\.id))
             let resolvedParentRunId = detail.summary.runId
             let activeRestoredChildren = Self.restoredActiveChildIds(
@@ -93,13 +93,9 @@ extension AppModel {
             liveTasks = Self.mergingDelegatedChildren(
                 detail.children, parentRunId: resolvedParentRunId, into: liveTasks)
             for childRunId in activeRestoredChildren { stream(runId: childRunId) }
-            // Snapshot truth and stream progress are related but distinct: the
-            // resume cursor may already be newer than this response.
-            snapshotReplayFences[id] = max(snapshotReplayFences[id] ?? 0, detail.lastSeq)
-            lastEventIds[id] = max(lastEventIds[id] ?? 0, detail.lastSeq)
             var task = liveTasks[baseIdx]
-            task.resolvedRunId = detail.summary.runId
-            task.phase = RunPhase(api: detail.summary.state)
+            task.resolvedRunId = detail.summary.boundRunID ?? boundRun
+            task.phase = phase
             task.mode = RunMode(apiValue: detail.summary.mode, strategy: detail.summary.strategy)
             task.operatorDecisionAction = detail.operatorDecisionAction
             task.parentRunId = detail.summary.parentRunId ?? task.parentRunId
@@ -250,7 +246,11 @@ extension AppModel {
             }
             // Re-resolve the row index at WRITE time: streams/refreshes may have
             // inserted or removed rows during the awaits above.
-            if let writeIdx = liveTasks.firstIndex(where: { $0.id == id }) {
+            if let writeIdx = liveTasks.firstIndex(where: { $0.id == id }),
+               !liveTasks[writeIdx].phase.isTerminal || phase.isTerminal {
+                // Only delivered SSE advances Last-Event-ID. The snapshot owns
+                // spend and lifecycle through lastSeq, including on reconnect.
+                snapshotReplayFences[id] = max(fence, detail.lastSeq)
                 reconcileHistoryInteractions(&task, lastSeq: detail.lastSeq, at: .local)
                 liveTasks[writeIdx] = task
                 hydratedRunDetails.insert(id)

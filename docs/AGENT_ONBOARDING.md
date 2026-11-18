@@ -5,6 +5,12 @@ to use a Claudexor install on this machine. Everything here is derived from
 machine-readable surfaces you can query yourself; when this document and a
 live surface disagree, trust the live surface.
 
+For Hermes, Pi, or OpenClaw, [set up the local CLI and account](../README.md#set-up-the-cli-and-account),
+then follow the [Hermes](../README.md#install-in-hermes), [Pi](../README.md#install-in-pi),
+or [OpenClaw](../README.md#install-in-openclaw) steps and [read your first answer](../README.md#first-delegation-from-any-host).
+Those hosts manage their own packages. The `claudexor plugin` inspection and
+repair steps below apply to managed Claude Code, Codex, Cursor, and OpenCode installs.
+
 ## Install And Login
 
 If you are a third-party agent (Cursor, Claude Code, Codex, OpenCode, a
@@ -20,7 +26,7 @@ contract throughout these steps, including repair and connection recovery.
    it does not prove or veto a particular credential profile, model route, or
    setup transport. Do not infer readiness from a binary being on `PATH` or
    from a host/default login.
-2. **Read the Accounts doorway before choosing a reviewer account.** Run
+2. **Read Accounts before choosing a run or reviewer account.** Run
    `claudexor accounts --json` (or call the read-only `claudexor_accounts` MCP
    tool; its default retains the first readiness observation with its original
    check time and composes current quota and registry facts. Viewing does not
@@ -131,7 +137,13 @@ contract throughout these steps, including repair and connection recovery.
    profile's successful probe is not readiness. Use capabilities for setup
    transport and `models` only for default-route discovery; accept a selected
    profile route only from its preflight and observed result telemetry.
-5. **Run something read-only.** `claudexor ask "what does this repo do?" --json`.
+5. **Ask a read-only question.** `claudexor ask "what does this repo do?" --json`
+   uses Auto. If the user chose a named account, add `--harness <harness-id> --profile <profile-id>`
+   using its IDs from Accounts. On the first MCP `claudexor_ask`, pass the same
+   row's `harness_id` as `harness` and `profile_id` as `credentialProfileId`.
+   This applies both with the selected project's absolute `repoPath` and with
+   `noProject: true` for a self-contained question with no project selected.
+   For Auto, omit the profile pin and pass a harness only if the user chose one.
 
 ### Reviewer identity and account pins
 
@@ -180,8 +192,8 @@ entries; do not invent an `@profile` mini-grammar.
   `claudexor_run_continue` (contract: [Observing and directing an existing
   run](INTEGRATIONS.md#observing-and-directing-an-existing-run)). A cancel or
   answer is successful only after the `/v2` control API acknowledges it.
-  Use the read-only `claudexor_accounts` tool to inspect account/profile state
-  before selecting a pinned reviewer; it never starts authentication.
+  Use the read-only `claudexor_accounts` tool before pinning a run or reviewer.
+  It never starts authentication.
   Documents reach a run as `attachments: [{resourceId}]` from
   `claudexor_upload_import` or the upload stages (contract: [Document ingress
   and resource references](INTEGRATIONS.md#document-ingress-and-resource-references)).
@@ -203,10 +215,12 @@ entries; do not invent an `@profile` mini-grammar.
   is the one write mode, and its candidates work in isolated envelopes until an
   explicit apply. The old `audit`/`explore`/`orchestrate` verbs are retired and
   hard-error.
-- New project threads (including ACP sessions) default to `in_place`: their
-  turns can change the live project tree. Choose `isolated` explicitly when you
-  want a persistent thread worktree and a later Apply step. Standalone CLI/MCP
-  candidate runs still use external isolated envelopes.
+- New project threads (including ACP sessions) default to `in_place` and
+  normally write to the live project. Configured project `protected_paths`
+  move the thread into an isolated worktree before a write turn. Choose
+  `isolated` explicitly for a persistent thread worktree. Show all pending
+  changes together and get the user's approval for the entire set before
+  thread Apply. Standalone CLI/MCP candidate runs still use external isolated envelopes.
 - Prompts, instructions, messages and attachments reach the selected harness
   exactly, including credential-shaped test fixtures, and stay in the local
   run records. Claudexor does not refuse or mask them by pattern. Keys that
@@ -221,9 +235,18 @@ entries; do not invent an `@profile` mini-grammar.
 
 Every mutating result carries a `runId`. The decision tree:
 
-1. `status: succeeded` (the daemon-tracked terminal for mutating runs) +
-   `applyEligibility.eligible: true` →
-   `claudexor apply <runId>` (or `--mode commit|branch|pr`).
+1. For an isolated candidate with `status: succeeded` and
+   `applyEligibility.eligible: true`, show the complete change, including
+   every hunk and the full contents of added and deleted files. If the user
+   has seen or approved only part, leave the candidate unapplied. The CLI
+   requests all eligible changes.
+   After the user explicitly approves the entire result, and if the host
+   permits the command, run `claudexor apply <runId> --dry-run --json`, then
+   `claudexor apply <runId> --json` if the check succeeds. For a directory
+   result, report what this call wrote from `appliedPaths`. Read `detail` for
+   skipped paths with unknown original contents, even on success.
+   Choose `--mode commit|branch|pr` only for a Git result when the user has
+   authorized that delivery action.
 2. `applyEligibility.eligible: false` → read `requiredAction`. Typical
    verdicts: add a `--test` gate and re-run (`ungated` / `review_not_run`),
    or a typed operator decision for `blocked` runs.

@@ -9,6 +9,7 @@ Claudexor runs locally and keeps one coding thread across harness and account la
 - [README and quickstart](https://github.com/razzant/claudexor#readme)
 - [Credential profiles and quota](https://github.com/razzant/claudexor#credential-profiles-and-quota)
 - [Integrations](https://github.com/razzant/claudexor#integrations)
+- [Agent host packages (Hermes, Pi, OpenClaw)](https://github.com/razzant/claudexor#agent-host-packages)
 - [Architecture](https://github.com/razzant/claudexor/blob/main/docs/ARCHITECTURE.md)
 - [External-agent onboarding](https://github.com/razzant/claudexor/blob/main/docs/AGENT_ONBOARDING.md)
 - [Security policy](https://github.com/razzant/claudexor/blob/main/SECURITY.md)

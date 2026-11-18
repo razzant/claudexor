@@ -259,6 +259,7 @@ export function harnessEventPayload(
   harnessId: string,
   attemptId: string,
   ev: HarnessEvent,
+  afterStop?: boolean,
 ): Record<string, unknown> {
   // Working content (text, tool and interaction payloads) is journaled exactly;
   // engine diagnostics are masked through the one shared journal seam (INV-146).
@@ -298,6 +299,9 @@ export function harnessEventPayload(
     // losing them here broke both on the live path (F2.5 E2E). The adapter-
     // issued speech key/op rides beside them so readers key text by identity.
     final: ev.final,
+    ...(ev.type === "message" && ev.final && afterStop !== undefined
+      ? { after_stop: afterStop }
+      : {}),
     speech: ev.speech,
     status: ev.status,
     payload,

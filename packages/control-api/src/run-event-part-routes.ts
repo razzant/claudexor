@@ -1,8 +1,10 @@
-import type { ServerResponse } from "node:http";
+import type { IncomingHttpHeaders, ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import { open, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  CLAUDE_TURN_REPLIES_HEADER,
+  claudeTurnReply,
   ControlRunEventPart,
   RUN_EVENT_PART_DEFAULT_BYTES,
   RUN_EVENT_PART_MAX_BYTES,
@@ -10,7 +12,7 @@ import {
   RunEvent,
 } from "@claudexor/schema";
 import { expiredRunBody } from "./artifact-serve-routes.js";
-import { queryParam } from "./operation-parameters.js";
+import { queryParam, REPLY_PROJECTION_HEADER } from "./operation-parameters.js";
 import type { OperationDraft } from "./operation-draft.js";
 import { readRunTombstone } from "./retention.js";
 import type { DaemonRunRecord } from "./run-record.js";
@@ -26,7 +28,7 @@ export const RUN_EVENT_PART_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlRunEventPart",
     responseKind: "json",
     summary:
-      "Read one bounded part of one validated run event by seq, in the exact stored serialization the run event stream delivers.",
+      "Read one bounded part of a validated journal event by seq. By default it contains the exact JSON serialization delivered by the run event stream.",
     parameters: [
       queryParam({
         name: "offset",
@@ -37,6 +39,7 @@ export const RUN_EVENT_PART_OPERATION_DRAFTS: OperationDraft[] = [
         name: "limit",
         description: `Maximum part bytes, ${RUN_EVENT_PART_MIN_BYTES} to ${RUN_EVENT_PART_MAX_BYTES} (default ${RUN_EVENT_PART_DEFAULT_BYTES}); a part may end earlier at a character boundary.`,
       }),
+      REPLY_PROJECTION_HEADER,
     ],
   },
 ];
@@ -60,13 +63,17 @@ function decimal(raw: string | null, name: string, min: number, max: number): nu
 }
 
 /**
- * The first complete line the run event stream serves under `seq`, scanning
+ * The first valid complete event at the stream address `seq`, scanning
  * events.jsonl in bounded reads with the stream's own line and id rules. An
  * unterminated tail is not served, exactly as the stream holds it back. Each
  * read yields to the daemon's event loop; a part still rescans the history
  * before its event, so the work stays proportional to that history.
  */
-async function eventLine(path: string, seq: number): Promise<string | null> {
+async function eventLine(
+  path: string,
+  runId: string,
+  seq: number,
+): Promise<{ raw: string; event: RunEvent } | "invalid" | null> {
   let file: FileHandle;
   try {
     file = await open(path, "r");
@@ -78,8 +85,11 @@ async function eventLine(path: string, seq: number): Promise<string | null> {
     let carry: Buffer[] = [];
     let position = 0;
     let lineNo = 0;
-    for (;;) {
-      const { bytesRead: read } = await file.read(buffer, 0, READ_BYTES, position);
+    let invalidMatch = false;
+    const { size } = await file.stat();
+    while (position < size) {
+      const length = Math.min(READ_BYTES, size - position);
+      const { bytesRead: read } = await file.read(buffer, 0, length, position);
       if (read === 0) return null;
       position += read;
       let start = 0;
@@ -91,10 +101,23 @@ async function eventLine(path: string, seq: number): Promise<string | null> {
         if (line.length === 0) continue;
         lineNo += 1;
         const text = line.toString("utf8");
-        if (streamLineIdentity(text, lineNo).seq === seq) return text;
+        if (streamLineIdentity(text, lineNo).seq !== seq) continue;
+        try {
+          const parsed = RunEvent.safeParse(JSON.parse(text));
+          if (
+            parsed.success &&
+            parsed.data.run_id === runId &&
+            (parsed.data.seq === undefined || parsed.data.seq === seq)
+          )
+            return { raw: text, event: parsed.data };
+        } catch {
+          // A damaged row gets a positional SSE id that may equal a later durable seq.
+        }
+        invalidMatch = true;
       }
       if (start < read) carry.push(Buffer.from(buffer.subarray(start, read)));
     }
+    return invalidMatch ? "invalid" : null;
   } finally {
     await file.close();
   }
@@ -113,9 +136,11 @@ export async function handleRunEventPartRoute(
   path: string,
   url: URL,
   res: ServerResponse,
+  headers: IncomingHttpHeaders = {},
 ): Promise<boolean> {
   const runEventPartMatch = /^\/runs\/([^/]+)\/events\/([^/]+)$/.exec(path);
   if (!(method === "GET" && runEventPartMatch)) return false;
+  res.setHeader("Vary", CLAUDE_TURN_REPLIES_HEADER);
   let seq: number;
   let offset: number;
   let limit: number;
@@ -151,35 +176,34 @@ export async function handleRunEventPartRoute(
   }
   const tombstone = () => (rec.runDir ? readRunTombstone(rec.runDir) : null);
   let reclaimed = tombstone();
-  const raw =
-    reclaimed || !rec.runDir ? null : await eventLine(join(rec.runDir, "events.jsonl"), seq);
+  const runId = rec.runId ?? rec.id;
+  const found =
+    reclaimed || !rec.runDir ? null : await eventLine(join(rec.runDir, "events.jsonl"), runId, seq);
   // Retention may reclaim the run while the scan yields: answer as of its end.
   reclaimed ??= tombstone();
   if (reclaimed) {
     ctx.json(res, 410, expiredRunBody(reclaimed));
     return true;
   }
-  if (raw === null) {
+  if (found === null) {
     ctx.json(res, 404, { error: `run has no event ${seq}`, code: "run_event_not_found" });
     return true;
   }
-  const serialized = sseDataLine(raw);
-  let event: RunEvent | null = null;
-  try {
-    const parsed = RunEvent.safeParse(JSON.parse(serialized));
-    if (parsed.success && (parsed.data.seq === undefined || parsed.data.seq === seq))
-      event = parsed.data;
-  } catch {
-    // Unparseable bytes cannot name an event.
-  }
-  if (!event) {
+  if (found === "invalid") {
     ctx.json(res, 422, {
       error: `event ${seq} is not a valid run event; it has no readable parts`,
       code: "run_event_invalid",
     });
     return true;
   }
-  const bytes = Buffer.from(serialized, "utf8");
+  const { raw, event } = found;
+  // Only an opted-in reader gets decoded text pages. The default still reads
+  // the exact event serialization, including evidence observed after Stop.
+  const reply =
+    headers[CLAUDE_TURN_REPLIES_HEADER] === "1" && event.type === "harness.event"
+      ? claudeTurnReply(event.payload)
+      : null;
+  const bytes = Buffer.from(reply?.text ?? sseDataLine(raw), "utf8");
   // A part starts on a character and never splits one at its end.
   if (offset >= bytes.length || ((bytes[offset] as number) & 0xc0) === 0x80) {
     ctx.json(res, 400, {
@@ -190,18 +214,27 @@ export async function handleRunEventPartRoute(
   }
   let end = Math.min(offset + limit, bytes.length);
   while (end < bytes.length && ((bytes[end] as number) & 0xc0) === 0x80) end -= 1;
+  const part = bytes.subarray(offset, end);
   ctx.json(
     res,
     200,
     ControlRunEventPart.parse({
-      runId: rec.runId ?? rec.id,
+      runId,
       seq,
       type: event.type,
       totalBytes: bytes.length,
       sha256: createHash("sha256").update(bytes).digest("hex"),
       offset,
       nextOffset: end,
-      text: bytes.subarray(offset, end).toString("utf8"),
+      text: part.toString("utf8"),
+      ...(reply
+        ? {
+            claudeTurnReply: {
+              source: reply.source,
+              partSha256: createHash("sha256").update(part).digest("hex"),
+            },
+          }
+        : {}),
     }),
   );
   return true;

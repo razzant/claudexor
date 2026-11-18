@@ -1,4 +1,8 @@
-import { CONTROL_STORE_IDENTITY_HEADER, QuotaRequestKind } from "@claudexor/schema";
+import {
+  CLAUDE_TURN_REPLIES_HEADER,
+  CONTROL_STORE_IDENTITY_HEADER,
+  QuotaRequestKind,
+} from "@claudexor/schema";
 import type { ControlOperationParameter } from "@claudexor/schema";
 
 /**
@@ -58,6 +62,12 @@ export const STORE_IDENTITY_HEADER = headerParam({
   enum: ["1"],
   description:
     "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape.",
+});
+
+export const REPLY_PROJECTION_HEADER = headerParam({
+  name: CLAUDE_TURN_REPLIES_HEADER,
+  enum: ["1"],
+  description: "Send 1 for Claude reply previews in history and reply text in event parts.",
 });
 
 /**

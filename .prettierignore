@@ -9,6 +9,8 @@ packages/*/generated
 apps/macos/ClaudexorKit/Tests/ClaudexorKitTests/Fixtures/wire/
 # Generated endpoint map (gen-endpoints-doc.mjs owns the bytes; docs-truth checks staleness)
 docs/reference/endpoints.json
+# Agent Plugins v1 projection of the portable MCP descriptor (gen-version.mjs).
+plugins/hermes/mcp.json
 # Immutable published release-attestation bytes (archive-verification fixture; never reformat)
 packages/cli/fixtures/review-attestation-v3.2.0-schema5.json
 

@@ -65,17 +65,29 @@ extension AppModel {
         task.attentionNote = current?.attentionNote ?? task.attentionNote
     }
 
+    /// A job key can address the stream before a run ID is available.
+    func replyRunID(_ key: String, at location: ExecutionLocationID) -> String? {
+        if let id = task(key, at: location)?.resolvedRunId { return id }
+        guard let history = selectedHistory, history.locationID == location,
+              history.threadID == selectedThreadId else { return nil }
+        if history.header?.headRun?.runId == key { return key }
+        return history.rows.contains {
+            $0.runId == key || ($0.run?.delegatedChildRunIds ?? []).contains(key)
+        } ? key : nil
+    }
+
     /// Remote card-visible events must not wait behind a throttled detail read.
     func applyRemoteHistoryCardEvent(_ event: BusEnvelope, runID: String, at location: ExecutionLocationID) {
-        // The engine's preparation receipt (#563) reaches the remote turn card
-        // through the same bounded reducer, keyed by location and run id.
-        if location != .local, (event.event["type"]?.stringValue ?? event.kind) == "workspace.prepared" {
+        // Remote preparation receipts and Claude turn replies share the card reducer.
+        let type = event.event["type"]?.stringValue ?? event.kind
+        if location != .local, type == "workspace.prepared" || ClaudeTurnReplies.journalReply(in: event) != nil {
+            let owner = replyRunID(runID, at: location)
+            guard type == "workspace.prepared" || ClaudeTurnReplies.matchesAddress(event, runID: owner) else { return }
             remoteTranscripts[RunDetailLoadKey(locationID: location, runId: runID), default: TranscriptReducer()]
-                .apply(event)
+                .apply(event, replyRunID: owner)
             return
         }
         guard var task = task(runID, at: location) else { return }
-        let type = event.event["type"]?.stringValue ?? event.kind
         let payload = event.event["payload"] ?? event.event
         if type == "interaction.requested", let question = Self.pendingInteraction(from: payload, runId: runID) {
             recordHistoryInteractionRequest(runID: runID, interactionID: question.interactionId, seq: event.seq, at: location)

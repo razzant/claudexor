@@ -83,6 +83,7 @@ extension AppModel {
                 remoteTasks[locationID, default: []].append(task)
             }
             guard let index = remoteTasks[locationID]?.firstIndex(where: { $0.id == id }) else { return false }
+            if remoteTasks[locationID]?[index].phase.isTerminal == true && task.phase.isActive { return false }
             let failure = detail.failure ?? detail.summary.failure
             let findings = detail.reviewFindings.compactMap {
                 Self.finding(from: $0, taskTitle: task.title)

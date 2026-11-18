@@ -100,7 +100,7 @@
         "totalBytes": {
           "type": "integer",
           "exclusiveMinimum": 0,
-          "description": "UTF-8 byte length of the event's complete stream serialization: the stored JSON line the run event stream delivers."
+          "description": "UTF-8 byte length of the serialized event, or of the exact reply text when claudeTurnReply is present."
         },
         "sha256": {
           "type": "string",
@@ -122,6 +122,50 @@
         "text": {
           "type": "string",
           "description": "Bytes [offset, nextOffset) decoded as UTF-8; a boundary never splits a character."
+        },
+        "claudeTurnReply": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "object",
+              "properties": {
+                "attemptId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sessionId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "afterStop": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "attemptId",
+                "sessionId",
+                "afterStop"
+              ],
+              "additionalProperties": false
+            },
+            "partSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "source",
+            "partSha256"
+          ],
+          "additionalProperties": false,
+          "description": "Opt-in reply text. Offsets and sha256 cover the reply, and partSha256 covers this page."
         }
       },
       "required": [

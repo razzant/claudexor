@@ -2576,18 +2576,15 @@ export class Orchestrator {
               attemptAbort.abort();
               void adapter.cancel?.(activeSessionId)?.catch(() => {});
             },
-            // Waiting on the USER is legitimate silence. The interaction policy
-            // either enforces a finite deadline or waits until answer/cancel/
-            // terminal/restart when the timeout is disabled. So is the journal wait.
+            // The user and journal can wait silently until resolution, deadline or shutdown.
             ...laneSuspension(pacing, interaction),
             stopSignal: signal, // after Stop: drained events are recorded, never used
           });
           for await (const ev of pacedByAppends(watched, [paths.eventsPath], pacing)) {
-            // After Stop: stored evidence only, but file paths are still collected for the capture.
             const stopped = signal?.aborted === true;
             if (!stopped) rawLane.observe(ev);
             if (ev.type === "patch_produced") continue;
-            if (directory) observeDirectoryPaths(observedPaths, ev, envelope.worktree_path);
+            if (directory) observeDirectoryPaths(observedPaths, ev, envelope.worktree_path); // even after Stop
             const capped = dropDeltaPastBudget(
               ev,
               deltaFlood,
@@ -2597,7 +2594,11 @@ export class Orchestrator {
               attemptId,
             );
             const display = !stopped && !capped && ev.payload?.["buffered"] !== true;
-            log?.emit("harness.event", harnessEventPayload(adapter.id, attemptId, ev), display);
+            log?.emit(
+              "harness.event",
+              harnessEventPayload(adapter.id, attemptId, ev, stopped),
+              display,
+            );
             if (signal?.aborted) continue; // a live observer may itself have pressed Stop
             if (display) safeInvoke(onHarnessEvent, ev);
             observeAuthSwitch(log, adapter.id, attemptId, ev);
@@ -6779,14 +6780,16 @@ export class Orchestrator {
               stopSignal: input.signal, // after Stop: drained events are recorded, never used
             });
             const files = [paths.eventsPath, attemptEventsPath];
-            const read = pacedByAppends(watchedReport, files, pacing);
-            for await (const ev of read) {
-              // A read after Stop is stored evidence only; a callback may itself press Stop.
-              const shown = !input.signal?.aborted && ev.payload?.["buffered"] !== true;
+            for await (const ev of pacedByAppends(watchedReport, files, pacing)) {
+              const stopped = input.signal?.aborted === true;
+              const shown = !stopped && ev.payload?.["buffered"] !== true;
               if (shown) safeInvoke(input.onHarnessEvent, ev);
               observeAuthSwitch(log, adapter.id, attemptId, ev);
-              const live = shown && !input.signal?.aborted; // the callback may have pressed Stop
-              log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, ev), live);
+              log.emit(
+                "harness.event",
+                harnessEventPayload(adapter.id, attemptId, ev, stopped),
+                shown && !input.signal?.aborted,
+              );
               appendHarnessEvent(attemptEventsPath, ev);
               if (input.signal?.aborted) continue;
               observeAttemptTelemetry(telemetry, ev);
@@ -6798,8 +6801,7 @@ export class Orchestrator {
               if (laneRun && continuity.mayPublishSession)
                 observeNativeSessionEvent(input, adapter.id, ev);
               emitPlanProgress((t, p) => log.emit(t, p), adapter.id, attemptId, ev);
-              // read-only routes burn quota too (the orchestrate PLANNER is
-              // the loudest) — same single owner as the agent loop.
+              // Read-only routes, including the planner, share the agent loop's quota accounting.
               observeBudgetSignals(ledger, log, adapter.id, attemptId, ev, budgetSignalState);
               this.deps.quotaEventSink?.(adapter.id, ev);
               const spend = observeUsageSpend(

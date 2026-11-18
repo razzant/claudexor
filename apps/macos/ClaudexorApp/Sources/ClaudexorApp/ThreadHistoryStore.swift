@@ -11,6 +11,7 @@ import Observation
     struct LiveFact { var task: TaskRun; var throughRead: Int }
     let locationID: ExecutionLocationID
     let threadID: String
+    var stopHoldRetry: (runID: String, client: GatewayClient, message: String)?
     let presentation = ConversationPresentation()
     var state: State = .loading
     var earlierState: HistoryControlState = .ready

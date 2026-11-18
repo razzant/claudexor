@@ -9,6 +9,7 @@ import {
 } from "./control.js";
 import { ControlPrimaryOutput, ControlRunDetail } from "./control-run-detail.js";
 import { ControlRunEventPart } from "./control-run-event-part.js";
+import { ClaudeTurnReplySource } from "./claude-turn-reply.js";
 import { ControlHandshakeResponse } from "./operation.js";
 
 export const THREAD_HISTORY_MAX_TURNS = 20;
@@ -22,6 +23,8 @@ export const THREAD_HISTORY_METADATA_BYTES = 32_768;
 export const THREAD_HISTORY_SESSION_LIMIT = 16;
 export const THREAD_HISTORY_FACT_BYTES = 1_048_576;
 export const THREAD_HISTORY_EVENT_BYTES = 262_144;
+export const THREAD_HISTORY_CLAUDE_REPLIES = 4;
+export const THREAD_HISTORY_REPLY_BYTES = 8192;
 const id = ControlThread.shape.id.max(256);
 const ordinal = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const cursor = z.string().min(1).max(2048);
@@ -107,6 +110,21 @@ export const ThreadHistoryRun = ControlTurnRunCard.extend({
     "Recorded decision whose exact evidence exceeds the history read bound. Never grants authority.",
   ),
   failureMessageInfo: ThreadHistoryTextFacts.nullable(),
+  claudeTurnReplies: z
+    .object({
+      rows: z
+        .array(
+          z.object({
+            seq: z.number().int().positive(),
+            source: ClaudeTurnReplySource,
+            text: z.string().max(THREAD_HISTORY_REPLY_BYTES),
+            truncated: z.boolean(),
+          }),
+        )
+        .max(THREAD_HISTORY_CLAUDE_REPLIES),
+      partial: z.boolean(),
+    })
+    .optional(),
   toolCount: count,
   fileCount: count.describe(
     "File-kind tool calls, not distinct paths or the WorkProduct diffstat.",
@@ -276,7 +294,12 @@ export const ThreadPromptPartInput = z
   })
   .strict();
 export type ThreadPromptPartInput = z.infer<typeof ThreadPromptPartInput>;
-export const ThreadPromptPart = ControlRunEventPart.omit({ runId: true, seq: true, type: true })
+export const ThreadPromptPart = ControlRunEventPart.omit({
+  runId: true,
+  seq: true,
+  type: true,
+  claudeTurnReply: true,
+})
   .extend({
     threadId: id,
     turnId: id,

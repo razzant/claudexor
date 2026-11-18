@@ -80,6 +80,7 @@ public struct ThreadHistoryRun: Codable, Sendable, Equatable {
     public let planQuestions: [PlanQuestion]
     public let outcomeBanner: String?
     public let operatorDecision: ThreadHistoryOperatorDecision?
+    public let claudeTurnReplies: ClaudeTurnReplies?
     public let toolCount: ThreadHistoryCount
     public let fileCount: ThreadHistoryCount
 }

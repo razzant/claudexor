@@ -1,4 +1,5 @@
 import AppKit
+import ClaudexorKit
 import SwiftUI
 import Testing
 @testable import ClaudexorApp
@@ -10,7 +11,11 @@ struct HistoryWidthReadingTests {
         try await Self.exercise(name: name)
     }
 
-    static func exercise(name: String,
+    @Test func resizingKeepsTheSecondOfTwoIdenticalReplies() async throws {
+        try await Self.exercise(name: "light", duplicateReplies: true)
+    }
+
+    static func exercise(name: String, duplicateReplies: Bool = false,
         capture: ((NSView, NSWindow, String, String, ConversationFeedState, [String: Any]) throws -> Void)? = nil) async throws {
         let app = NSApplication.shared
         let policy = app.activationPolicy()
@@ -19,6 +24,19 @@ struct HistoryWidthReadingTests {
         let source = try HistoryTestSource(count: 3)
         source.runs[1].answerText = (0..<40).map { "Passage \($0): " + HistoryMockupFixtures.paragraph($0) }.joined(separator: "\n\n")
         let model = HistoryMockupFixtures.model(detail: source.detail, runs: source.runs, source: source)
+        if duplicateReplies {
+            let runID = source.runs[1].id
+            for seq in 1...2 {
+                model.apply(BusEnvelope(seq: seq, kind: "harness.event", event: .object([
+                    "run_id": .string(runID), "type": .string("harness.event"), "payload": .object([
+                        "type": .string("message"), "harness_id": .string("claude"), "final": .bool(true),
+                        "after_stop": .bool(false), "attempt_id": .string("try-\(seq)"),
+                        "session_id": .string("session"), "text": .string("Entrance hours\n\n" +
+                            String(repeating: "Both entrances are open on weekdays. ", count: 8) + "Meet at nine.")
+                    ])
+                ])), to: runID)
+            }
+        }
         let history = try #require(model.selectedHistory)
         history.presentation.expanded["answer:mock-turn-1"] = true
         let state = ConversationFeedState()
@@ -38,10 +56,12 @@ struct HistoryWidthReadingTests {
         host.frame = window.frame
         defer { window.close() }
         await settle(host)
-        let prose = try #require(views(host).compactMap { $0 as? ProseTextView }.first { $0.string.hasPrefix("Passage 0:") })
+        let prose = try #require(views(host).compactMap { $0 as? ProseTextView }.first {
+            duplicateReplies ? $0.shownID?.hasPrefix("reply-2:") == true : $0.string.hasPrefix("Passage 0:")
+        })
         let layout = try #require(prose.layoutManager)
         let container = try #require(prose.textContainer)
-        let range = (prose.string as NSString).range(of: "Passage 20:")
+        let range = (prose.string as NSString).range(of: duplicateReplies ? "Meet at nine." : "Passage 20:")
         #expect(range.location != NSNotFound)
         layout.ensureLayout(for: container)
         let glyph = layout.glyphIndexForCharacter(at: range.location)
@@ -58,7 +78,8 @@ struct HistoryWidthReadingTests {
         state.navigate(toY: prose.convert(line, to: document).minY + 4)
         await settle(host)
         let passage = try #require(state.readingPosition.passage)
-        #expect(passage.turnID == "mock-turn-1" && passage.character > 1_000)
+        #expect(passage.turnID == "mock-turn-1" && passage.documentID == prose.shownID)
+        #expect(passage.character > (duplicateReplies ? 0 : 1_000))
         let before = try #require(state.readingPosition.lineOffset(for: passage))
         for (width, scene) in [(680.0, "19-width-change-before"), (420.0, "19-width-change-after"), (680.0, "19-width-change-restored")] {
             window.setContentSize(NSSize(width: width, height: 700))

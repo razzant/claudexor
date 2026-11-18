@@ -2843,6 +2843,75 @@
                           }
                         ]
                       },
+                      "claudeTurnReplies": {
+                        "type": "object",
+                        "properties": {
+                          "rows": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "seq": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0
+                                },
+                                "source": {
+                                  "type": "object",
+                                  "properties": {
+                                    "attemptId": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "sessionId": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "afterStop": {
+                                      "type": [
+                                        "boolean",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "attemptId",
+                                    "sessionId",
+                                    "afterStop"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "maxLength": 8192
+                                },
+                                "truncated": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "seq",
+                                "source",
+                                "text",
+                                "truncated"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "maxItems": 4
+                          },
+                          "partial": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "rows",
+                          "partial"
+                        ],
+                        "additionalProperties": false
+                      },
                       "toolCount": {
                         "type": "object",
                         "properties": {

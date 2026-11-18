@@ -1,6 +1,7 @@
 import { z } from "zod/v3";
 import { RunEventType } from "./events.js";
 import { Id } from "./primitives.js";
+import { ClaudeTurnReplySource } from "./claude-turn-reply.js";
 
 /** One UTF-8 character always fits, so every part makes progress. */
 export const RUN_EVENT_PART_MIN_BYTES = 4;
@@ -21,7 +22,7 @@ export const ControlRunEventPart = z
       .int()
       .positive()
       .describe(
-        "UTF-8 byte length of the event's complete stream serialization: the stored JSON line the run event stream delivers.",
+        "UTF-8 byte length of the serialized event, or of the exact reply text when claudeTurnReply is present.",
       ),
     sha256: z
       .string()
@@ -35,6 +36,16 @@ export const ControlRunEventPart = z
       .string()
       .describe(
         "Bytes [offset, nextOffset) decoded as UTF-8; a boundary never splits a character.",
+      ),
+    claudeTurnReply: z
+      .object({
+        source: ClaudeTurnReplySource,
+        partSha256: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "Opt-in reply text. Offsets and sha256 cover the reply, and partSha256 covers this page.",
       ),
   })
   .strict()

@@ -246,7 +246,8 @@ function pack(pkg) {
   // pnpm pack (workspace: specs rewritten) + source-mirrored executable bits —
   // neither tool alone provides both; see scripts/lib/pack-with-modes.mjs.
   try {
-    return packWithSourceModes(pkg.directory, out);
+    // The Pi wrapper ships an exact file inventory. AppleDouble adds extra members on macOS.
+    return packWithSourceModes(pkg.directory, out, { omitMacMetadata: pkg.name === "claudexor" });
   } catch (error) {
     fail(`packing ${pkg.name}: ${error instanceof Error ? error.message : String(error)}`);
   }

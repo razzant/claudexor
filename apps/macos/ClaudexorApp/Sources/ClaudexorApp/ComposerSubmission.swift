@@ -252,11 +252,11 @@ extension ThreadsScreen {
         guard !stopping, model.selectedThreadBusy, !model.selectedThreadStarting,
               let runId = model.selectedHeadRunId else { return }
         stopping = true
-        Task {
+        Task { [location = model.selectedExecutionLocation, threadId = model.selectedThreadId] in
             // defer: the button must re-enable on EVERY exit (incl. task
             // cancellation mid-await), never park as "Stopping...".
             defer { stopping = false }
-            await model.cancel(runId)
+            await model.cancel(runId, at: location, threadId: threadId)
         }
     }
 }

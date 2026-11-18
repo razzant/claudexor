@@ -14,6 +14,7 @@ extension AppModel {
     static func mergeRefreshedTask(summary: RunSummary, existing: TaskRun?) -> TaskRun {
         var task = liveTask(from: summary)
         guard let existing else { return task }
+        if existing.phase.isTerminal && task.phase.isActive { return existing }
         // Locally-hydrated payloads the summary never re-sends.
         if !existing.activity.isEmpty { task.activity = existing.activity }
         if !existing.diff.isEmpty { task.diff = existing.diff }
