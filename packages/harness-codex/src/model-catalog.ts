@@ -196,6 +196,7 @@ export function createCodexCatalogReader(
     if (remembered) return remembered;
     const catalog = await measureModelPreparation("catalogTransport", () =>
       reads.read(scope, key, context.signal, async (signal) => {
+        const publish = positives.observe(scope);
         const startedAt = Date.now();
         const replaced = new AbortController();
         const unsubscribe = onProgramObservationChange((harness) => {
@@ -258,10 +259,10 @@ export function createCodexCatalogReader(
             };
           };
           const answer = await waitForRead(work(), transport);
-          if (key !== null) positives.set(scope, key, startedAt, answer);
+          if (key !== null) publish({ key, at: startedAt, value: answer });
           return answer;
         } catch (error) {
-          positives.drop((remembered) => remembered === scope);
+          publish();
           signal.throwIfAborted();
           replaced.signal.throwIfAborted();
           if (error instanceof CodexModelError) throw error;

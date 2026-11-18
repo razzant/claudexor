@@ -102,6 +102,7 @@ export class ModelLoginReadiness {
     const joinKey = key !== null && options?.pinned ? `${key}\0pinned` : key;
     const result = await this.reads
       .read(scope, joinKey, signal, async (physicalSignal) => {
+        const publish = this.positives.observe(scope);
         const startedAt = Date.now();
         try {
           const status = CredentialProfileStatus.parse(
@@ -123,13 +124,13 @@ export class ModelLoginReadiness {
             observedAt <= Date.now();
           // A refused, unknown or stale answer is evidence against the remembered
           // login; an older success answering later cannot restore it.
-          if (!positive) this.positives.contradict(scope, startedAt);
+          if (!positive) publish();
           else if (unchanged)
-            this.positives.set(scope, key, Math.min(startedAt, observedAt), status, startedAt);
+            publish({ key, at: Math.min(startedAt, observedAt), value: status });
           return status;
         } catch (error) {
           // A probe that failed, not one its waiters left or a change ended, is too.
-          if (!physicalSignal.aborted) this.positives.contradict(scope, startedAt);
+          if (!physicalSignal.aborted) publish();
           throw error;
         }
       })

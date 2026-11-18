@@ -2921,6 +2921,8 @@ describe("admission-grade login readiness", () => {
   });
   /** Two physical probes of one key held open; each answers when told to. */
   async function heldProbes(f: Awaited<ReturnType<typeof readinessFixture>>) {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(f.clock.now);
+    removals.push(() => clock.mockRestore());
     const raw = f.probe.getMockImplementation()!;
     const answers: Array<(answer: boolean | "throw") => void> = [];
     f.probe.mockImplementation(
@@ -2942,7 +2944,6 @@ describe("admission-grade login readiness", () => {
     const runStart = f.owner.runStartProbe(f.adapter);
     const older = f.call();
     await vi.waitFor(() => expect(answers).toHaveLength(1));
-    await new Promise((resolve) => setTimeout(resolve, 5));
     const newer = runStart(f.profile, undefined, { pinned: true });
     await vi.waitFor(() => expect(answers).toHaveLength(2));
     return { answers, older, newer, runStart };
@@ -2982,6 +2983,7 @@ describe("admission-grade login readiness", () => {
       answers[1]!(true);
       expect((await newer).availability).toBe("available");
       if (order === "newer first") await refusal();
+      f.probe.mockImplementationOnce(async () => { throw new Error("unexpected third probe"); });
       expect((await runStart(f.profile)).availability).toBe("available");
       expect(f.probe).toHaveBeenCalledTimes(2);
     },
