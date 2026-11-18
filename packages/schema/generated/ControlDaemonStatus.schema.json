@@ -808,6 +808,67 @@
               "maxItems": 32,
               "description": "The 32 longest instrumented synchronous sections since process start, descending by duration, retaining later samples on ties. Labels contain no SQL, paths, IDs or payloads. Scope persistence measures synchronous serialization only; its file writes are asynchronous. The process, run, metrics, file and daemon labels name the synchronous work that deliberately stays on the main thread: a spawned child's identity capture, the run telemetry artifact, the shared harness metrics file, a remaining synchronous text-file write, a chunk of a Git child's output streamed to its capture file and a daemon log line. Sections can overlap; these facts do not attribute a stall to disk or another cause."
             },
+            "work": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "control.handler",
+                      "run.stream",
+                      "journal.append",
+                      "store.commit",
+                      "catalog.read",
+                      "process.launch"
+                    ]
+                  },
+                  "harness": {
+                    "type": "string"
+                  },
+                  "lifetime": {
+                    "type": "object",
+                    "properties": {
+                      "count": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "totalMs": {
+                        "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
+                      },
+                      "maxMs": {
+                        "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
+                      }
+                    },
+                    "required": [
+                      "count",
+                      "totalMs",
+                      "maxMs"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "window": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/work/items/properties/lifetime"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "lifetime",
+                  "window"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 64,
+              "description": "Main-thread time of instrumented synchronous sections by class of work, since process start and in the last completed loop-facts window (null before the first): control API request entry, value loads and response sends; translating a vendor's stdout frames into events, by harness (later harnesses past 64 keys fold into other); appending a run event to its journal and live readers; store COMMIT calls; parsing a vendor model catalog; launching a child process (login probes, Git, vendor CLIs). Each section excludes the sections nested in it, so the classes add up without double counting; work outside these sections is not attributed. Counted in memory only; absent on older engines."
+            },
             "bulk": {
               "type": "array",
               "items": {

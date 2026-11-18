@@ -1,4 +1,4 @@
-import { LatencyHistogram, processTiming } from "@claudexor/util";
+import { LatencyHistogram, processTiming, recordWorkSection } from "@claudexor/util";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
@@ -415,6 +415,7 @@ export class EngineStore {
   private recordCommit(elapsedMs: number, failed: boolean): void {
     this.commitLatency.record(elapsedMs);
     processTiming.recordSync("store.commit", elapsedMs);
+    recordWorkSection("store.commit", elapsedMs);
     this.commits.attempts += 1;
     if (failed) this.commits.failures += 1;
     this.commits.lastMs = elapsedMs;

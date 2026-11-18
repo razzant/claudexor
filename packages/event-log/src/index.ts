@@ -2,7 +2,7 @@ import type { RunEvent, RunEventType } from "@claudexor/schema";
 import { RunEvent as RunEventSchema } from "@claudexor/schema";
 import { existsSync, statSync, truncateSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { appendLine, nowIso, orderedAppender } from "@claudexor/util";
+import { appendLine, measureWork, nowIso, orderedAppender } from "@claudexor/util";
 import { lastSeqInFile, readEventFile, terminalEventInFile, withUnlanded } from "./event-file.js";
 import { activeEventLogs, terminalTypeOf } from "./live-writers.js";
 import type {
@@ -184,7 +184,7 @@ export class EventLog {
 
   /** Append a typed run event. Validates against the schema before writing. */
   emit(type: RunEventType, payload: Record<string, unknown> = {}, publish = true): RunEvent {
-    return this.emitEvent(type, payload, publish);
+    return measureWork("journal.append", () => this.emitEvent(type, payload, publish));
   }
 
   /**

@@ -523,6 +523,7 @@ export const ModelPreparationTiming = z
       .object({
         eventLoopActiveMs: z.number().finite().nonnegative(),
         eventLoopIdleMs: z.number().finite().nonnegative(),
+        eventLoopDelayMs: z.number().finite().nonnegative().nullable().optional(),
         childLaunches: z.number().int().nonnegative(),
         childLaunchMs: z.number().finite().nonnegative(),
       })
@@ -530,7 +531,7 @@ export const ModelPreparationTiming = z
   })
   .strict()
   .describe(
-    "Preparation timings in milliseconds, frozen at dispatch or pre-dispatch failure. totalMs is elapsed time; each step's totalMs is the summed waits of this operation, so concurrent waits can sum above elapsed time and a wait that joined a shared read counts only its remaining part. Steps overlap. loginProbe counts physical login probes this operation launched or joined; loginReady counts reused readiness. Process deltas include concurrent operations, not attributed CPU cost.",
+    "Preparation timings in milliseconds, frozen at dispatch or pre-dispatch failure. totalMs is elapsed time; each step's totalMs is the summed waits of this operation, so concurrent waits can sum above elapsed time and a wait that joined a shared read counts only its remaining part. Steps overlap. loginProbe counts physical login probes this operation launched or joined; loginReady counts reused readiness. Process deltas include concurrent operations, not attributed CPU cost. eventLoopDelayMs is the mean lateness of the daemon's own 10 ms loop-delay ticks during preparation, how long one turn of this operation waited for the main thread; null when no tick fell inside it; older engines omit it.",
   );
 export type ModelPreparationTiming = z.infer<typeof ModelPreparationTiming>;
 

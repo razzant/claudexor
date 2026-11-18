@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
+import { recordWorkSection } from "./process-timing.js";
 
 export type PreparationStep =
   | "payloadRead"
@@ -20,18 +21,27 @@ type Timing = {
   process: {
     eventLoopActiveMs: number;
     eventLoopIdleMs: number;
+    eventLoopDelayMs?: number | null;
     childLaunches: number;
     childLaunchMs: number;
   };
 };
+type LoopDelay = { samples: number; sumMs: number; resolutionMs: number };
 const active = new AsyncLocalStorage<ModelPreparationTiming>();
 let launches = 0;
 let launchMs = 0;
+let loopDelay: (() => LoopDelay) | null = null;
 
 /** Cumulative process counters; no per-child retention, body or identity. */
 export function recordChildLaunch(milliseconds: number): void {
   launches += 1;
   launchMs += Math.max(0, milliseconds);
+  recordWorkSection("process.launch", milliseconds);
+}
+
+/** The daemon's cumulative event-loop delay samples; null when it samples none. */
+export function setLoopDelaySource(source: (() => LoopDelay) | null): void {
+  loopDelay = source;
 }
 
 /** Each step sums this operation's waits: concurrent waits can sum above the
@@ -42,6 +52,7 @@ export class ModelPreparationTiming {
   private readonly loop = performance.eventLoopUtilization();
   private readonly launches = launches;
   private readonly launchMs = launchMs;
+  private readonly delay = loopDelay?.() ?? null;
   private readonly steps: Timing["steps"] = {};
   private finished?: Timing;
 
@@ -58,12 +69,20 @@ export class ModelPreparationTiming {
   finish(): Timing {
     if (!this.finished) {
       const loop = performance.eventLoopUtilization(this.loop);
+      const delay = this.delay && loopDelay?.();
+      const samples = delay ? delay.samples - this.delay!.samples : 0;
       this.finished = {
         totalMs: performance.now() - this.started,
         steps: structuredClone(this.steps),
         process: {
           eventLoopActiveMs: Math.max(0, loop.active),
           eventLoopIdleMs: Math.max(0, loop.idle),
+          // Mean lateness of the loop's own sampling ticks while this operation
+          // prepared: how long one of its turns waited for the main thread.
+          eventLoopDelayMs:
+            delay && samples > 0
+              ? Math.max(0, (delay.sumMs - this.delay!.sumMs) / samples - delay.resolutionMs)
+              : null,
           childLaunches: launches - this.launches,
           childLaunchMs: Math.max(0, launchMs - this.launchMs),
         },

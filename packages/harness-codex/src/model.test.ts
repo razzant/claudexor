@@ -669,9 +669,9 @@ describe("exact-profile Codex model catalog", () => {
     let now = 1900000000000;
     const fixture = setup(undefined, () => now);
     const response = Response.json(catalog);
-    vi.spyOn(response, "json").mockImplementation(async () => {
+    vi.spyOn(response, "text").mockImplementation(async () => {
       now += 1000;
-      return catalog;
+      return JSON.stringify(catalog);
     });
     fixture.fetcher.mockResolvedValueOnce(response);
     const first = await fixture.adapter.catalog(fixture.context);
@@ -1800,7 +1800,7 @@ describe("raw catalog read ownership", () => {
   it("does not consume a late body after abandonment, but consumes a live one", async () => {
     const f = setup(undefined, undefined, knownClient());
     const pendingResponse = deferred<Response>();
-    const json = vi.fn(async () => catalog);
+    const text = vi.fn(async () => JSON.stringify(catalog));
     f.fetcher.mockImplementationOnce(() => pendingResponse.promise);
     const controller = new AbortController();
     const pending = f.adapter
@@ -1809,12 +1809,12 @@ describe("raw catalog read ownership", () => {
     await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(1));
     controller.abort();
     await pending;
-    pendingResponse.resolve({ ok: true, json } as unknown as Response);
+    pendingResponse.resolve({ ok: true, text } as unknown as Response);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(json).not.toHaveBeenCalled();
-    f.fetcher.mockResolvedValueOnce({ ok: true, json } as unknown as Response);
+    expect(text).not.toHaveBeenCalled();
+    f.fetcher.mockResolvedValueOnce({ ok: true, text } as unknown as Response);
     await f.adapter.catalog({ ...f.context, credentialGeneration: 1 });
-    expect(json).toHaveBeenCalledTimes(1);
+    expect(text).toHaveBeenCalledTimes(1);
   });
   it("program maintenance cancels a live read and rejects its late answer", async () => {
     const f = setup(undefined, undefined, knownClient());
@@ -1841,7 +1841,7 @@ describe("raw catalog read ownership", () => {
         f.fetcher.mockImplementationOnce(async () => {
           ready.resolve();
           if (phase === "request") return body.promise;
-          return { ok: true, json: () => new Promise(() => {}) } as Response;
+          return { ok: true, text: () => new Promise(() => {}) } as unknown as Response;
         });
         const pending = f.adapter.catalog(f.context).catch((e) => e);
         await ready.promise;

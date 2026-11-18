@@ -3336,7 +3336,12 @@ probes this operation launched or joined; `loginReady` counts readiness reused
 without a probe. Steps overlap and must not be summed.
 Process `eventLoopActiveMs`/`eventLoopIdleMs` use the same utilization source as
 loop-facts; `childLaunches`/`childLaunchMs` measure launches including synchronous
-leader identity capture. These process deltas include other concurrent work
+leader identity capture. `eventLoopDelayMs` is how long one turn of this operation
+waited for the main thread during preparation: the mean lateness of the loop-facts
+delay sampler's own 10 ms ticks (null when no tick fell inside it). With the
+command's `createdAt` (accepted) and `dispatch.startedAt` (dispatch began), a
+successful operation's receipt dates its acceptance, its dispatch and its loop wait.
+These process deltas include other concurrent work
 and are not per-operation CPU attribution. No body, token or account path is
 recorded. Older receipts omit the optional timing object.
 
@@ -3758,6 +3763,17 @@ so clients can parse status from engines that report those synchronous spans.
 `file.write_text`, `file.capture_write` and `daemon.log_line` name the synchronous
 work that stays on the main thread by design ([Main thread and disk waits](#main-thread-and-disk-waits)).
 Detail and summary report worker queue/projection wall time in `bulk`.
+The `work` array in `timing` attributes main-thread time by class of work, `lifetime`
+and last `window` (`count`, `totalMs`, `maxMs`): `control.handler` (request entry,
+the handlers' value loads and response sends), `run.stream` per `harness` (parsing and
+translating each vendor stdout frame, the shared CLI loop and the Codex app server),
+`journal.append` (a run event's journal append and live publication), `store.commit`,
+`catalog.read` (parsing a vendor model catalog) and `process.launch` (a child's spawn
+and identity capture: login probes, Git, vendor CLIs). Each section excludes the
+sections nested in it, so classes add up without double counting; time outside these
+sections (async continuations of other code, timers, GC) is not attributed. It lives
+in memory only and is written nowhere; it exists to show what occupies the control
+loop, not to admit or delay work.
 Scope persistence measures synchronous serialization, not its asynchronous file writes. These
 samples may overlap and do not identify the cause of a delay. A `store.external_write`
 sample that enters the list is also written to the daemon log with its purpose

@@ -6,7 +6,7 @@ import {
   type ModelAdapterContext,
 } from "@claudexor/core";
 import type { ControlModelCatalogResponse, ModelCatalogEntry } from "@claudexor/schema";
-import { CLAUDEXOR_VERSION, measureModelPreparation } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, measureModelPreparation, measureWork } from "@claudexor/util";
 import type { CodexModelAuth } from "./model-auth.js";
 import { CodexModelError, providerProblem, record, text } from "./responses.js";
 import { codexProcessingCapability } from "./processing.js";
@@ -224,7 +224,8 @@ export function createCodexCatalogReader(
             transport.throwIfAborted();
             let body: unknown = null;
             try {
-              body = await response.json();
+              const text = await response.text();
+              body = measureWork("catalog.read", () => JSON.parse(text));
             } catch {
               transport.throwIfAborted();
               if (response.ok)
@@ -253,7 +254,7 @@ export function createCodexCatalogReader(
               sourceProgram: declared.program ?? null,
               clientVersion: declared.version,
               clientVersionSource: declared.source,
-              models: parseCodexModelCatalog(body),
+              models: measureWork("catalog.read", () => parseCodexModelCatalog(body)),
             };
           };
           const answer = await waitForRead(work(), transport);
