@@ -1,0 +1,195 @@
+name: Daemon diagnostics qualification
+on:
+  push:
+    branches: [qa/daemon-diagnostics-20261118]
+permissions:
+  contents: read
+concurrency:
+  group: qa-daemon-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      BASE_SHA: 4ac8ac03cc50f9261fa4108070ca0e9e8f25df44
+      BASE_TREE: 773970d6341f3f2d989e9d1b8fad05e549c9cfb1
+      PRODUCT_SHA: 178706b5ce8166d196b7aa1638dd3ec7de279db1
+      PRODUCT_TREE: ed763d011d91f4559d98637af6d4b3c2cc100e21
+      TURBO_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove the push, its only parent, and both source trees
+        run: |
+          set -euo pipefail
+          umask 077
+          workflow=.github/workflows/qa-daemon-diagnostics.yml
+          probe=qa/paired-log.mjs
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$PRODUCT_SHA"
+          test "$(git rev-parse "$PRODUCT_SHA^{tree}")" = "$PRODUCT_TREE"
+          test "$(git show -s --format=%P "$PRODUCT_SHA")" = "$BASE_SHA"
+          test "$(git rev-parse "$BASE_SHA^{tree}")" = "$BASE_TREE"
+          git diff --no-renames --name-status "$PRODUCT_SHA" HEAD |
+            diff -u <(printf 'A\t%s\n' "$workflow" "$probe") -
+          for file in "$workflow" "$probe"; do test -f "$file" && test ! -L "$file" || exit 1; done
+          git diff --quiet HEAD -- "$workflow" "$probe"
+          git worktree add --detach "$RUNNER_TEMP/baseline" "$BASE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/candidate" "$PRODUCT_SHA"
+          scratch=$(mktemp -d /tmp/cxq.XXXXXX)
+          reports="$RUNNER_TEMP/validation"
+          raw="$RUNNER_TEMP/private-output"
+          mkdir "$reports" "$raw" "$scratch"/{baseline,candidate,story,gate}
+          mkdir "$scratch"/{story,gate}/home
+          {
+            echo "QA_TMP=$scratch"
+            echo "QA_REPORTS=$reports"
+            echo "QA_RAW=$raw"
+          } >> "$GITHUB_ENV"
+          {
+            git show -s --format='%H tree %T parents %P' HEAD "$PRODUCT_SHA" "$BASE_SHA"
+            sha256sum "$workflow" "$probe"
+          } > "$reports/revisions.txt"
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.22.3
+      - name: Provision the pinned scanner and scan the proposed files
+        run: |
+          set -euo pipefail
+          scanner="$RUNNER_TEMP/scanner/betterleaks"
+          mkdir -m 700 "$RUNNER_TEMP/scanner"
+          rc=0
+          node scripts/provision-betterleaks.mjs --dest "$scanner" >"$QA_RAW/scanner.stdout" 2>"$QA_RAW/scanner.stderr" || rc=$?
+          if ((rc != 0)); then echo "Scanner preparation failed (exit $rc)."; exit "$rc"; fi
+          echo "CLAUDEXOR_BETTERLEAKS_PATH=$scanner" >> "$GITHUB_ENV"
+          CLAUDEXOR_BETTERLEAKS_PATH="$scanner" node scripts/publication-scan.mjs --repo . --range "$BASE_SHA..$GITHUB_SHA" --tree "$GITHUB_SHA"
+
+      # Install from the lockfile on the runner. The namespace used to execute
+      # the product has only loopback. All builds and checks run as the runner user.
+      - name: Prepare loopback for the offline checks
+        id: loopback
+        run: |
+          set -euo pipefail
+          sudo ip netns add cx-qa
+          sudo ip -n cx-qa link set lo up
+
+      - name: Build and measure both revisions independently
+        run: |
+          set -euo pipefail
+          umask 077
+          failed=0
+          offline=(sudo ip netns exec cx-qa runuser -u "$(id -un)" -- env -i)
+          nodebin=$(command -v node)
+          for mode in baseline candidate; do
+            cd "$RUNNER_TEMP/$mode"
+            root="$QA_TMP/$mode"
+            tree=$(git rev-parse 'HEAD^{tree}')
+            build=0
+            (timeout --kill-after=15s 8m pnpm install --frozen-lockfile &&
+              "${offline[@]}" PATH="$PATH" HOME="$root" CI=true TURBO_TELEMETRY_DISABLED=1 \
+                TURBO_CACHE_DIR="$RUNNER_TEMP/turbo-$mode" timeout --kill-after=15s 12m pnpm build) \
+              >"$QA_RAW/$mode.build.stdout" 2>"$QA_RAW/$mode.build.stderr" || build=$?
+            printf '%s\n' "$build" > "$QA_REPORTS/$mode.build.exit"
+            : > "$QA_REPORTS/$mode.stdout"
+            : > "$QA_REPORTS/$mode.stderr"
+            if ((build != 0)); then
+              echo 'not run' > "$QA_REPORTS/$mode.exit"
+              printf 'Build exited %s before measurement.\n' "$build" > "$QA_REPORTS/$mode.stderr"
+              failed=1
+              continue
+            fi
+            fixture=$(mktemp -d "$root/m.XXXXXX")
+            rc=0
+            "${offline[@]}" PATH="$(dirname "$nodebin"):/usr/bin:/bin" HOME="$fixture" TMPDIR="$fixture" LANG=C \
+              timeout --kill-after=15s 5m "$nodebin" "$GITHUB_WORKSPACE/qa/paired-log.mjs" "$mode" "$fixture" "$tree" "$QA_REPORTS" \
+              >"$QA_RAW/$mode.stdout" 2>"$QA_RAW/$mode.stderr" || rc=$?
+            printf '%s\n' "$rc" > "$QA_REPORTS/$mode.exit"
+            if ((rc != 0)) || [[ ! -s "$QA_REPORTS/$mode.stdout" ]]; then
+              if [[ ! -s "$QA_REPORTS/$mode.stderr" ]]; then
+                printf 'Measurement exited %s without a fixture diagnostic.\n' "$rc" > "$QA_REPORTS/$mode.stderr"
+              fi
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      # Run the new story even when typecheck or an earlier contributor gate fails.
+      # Running it first also preserves its result if the full suite times out.
+      - name: Exercise the Stop sender across restart on the built product
+        if: ${{ !cancelled() && steps.loopback.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          rc=0
+          sudo ip netns exec cx-qa runuser -u "$(id -un)" -- env -i PATH="$PATH" CI=true \
+            HOME="$QA_TMP/story/home" TMPDIR="$QA_TMP/story" \
+            timeout --kill-after=15s 5m pnpm exec vitest run --config vitest.canary.config.ts packages/canary/src/continuation-lifecycle.story.ts \
+              -t 'INV-116:daemon-stop-sender' --reporter=json --outputFile="$QA_RAW/story.json" \
+              >"$QA_RAW/story.stdout" 2>"$QA_RAW/story.stderr" || rc=$?
+          printf '%s\n' "$rc" > "$QA_REPORTS/story.exit"
+          # Assertion messages, attachments, configuration and CLI output stay private.
+          jq -ec '[.testResults[].assertionResults[] | select(.title | startswith("[INV-116:daemon-stop-sender]"))]
+            | {matched: length, passed: (map(select(.status == "passed")) | length),
+               failed: (map(select(.status == "failed")) | length)}' "$QA_RAW/story.json" \
+            > "$QA_REPORTS/story.json" 2>"$QA_RAW/story.report.stderr" ||
+            echo '{"matched":null,"passed":null,"failed":null}' > "$QA_REPORTS/story.json"
+          test "$rc" = 0
+          jq -e '.matched == 1 and .passed == 1' "$QA_REPORTS/story.json" >/dev/null
+
+      - name: Run the complete contributor gate on the clean product
+        if: ${{ !cancelled() && steps.loopback.outcome == 'success' }}
+        timeout-minutes: 85
+        run: |
+          set -euo pipefail
+          printf 'not run\n' > "$QA_REPORTS/gate.exit"
+          printf 'Clean product checkout was not confirmed.\n' > "$QA_REPORTS/gate.txt"
+          cd "$RUNNER_TEMP/candidate"
+          test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$PRODUCT_TREE"
+          changes=$(git status --porcelain --untracked-files=all)
+          test -z "$changes"
+          rc=0
+          sudo ip netns exec cx-qa runuser -u "$(id -un)" -- env -i PATH="$PATH" CI=true \
+            HOME="$QA_TMP/gate/home" TMPDIR="$QA_TMP/gate" TURBO_TELEMETRY_DISABLED=1 \
+            TURBO_CACHE_DIR="$RUNNER_TEMP/turbo-candidate" CLAUDEXOR_BETTERLEAKS_PATH="$CLAUDEXOR_BETTERLEAKS_PATH" \
+            timeout --kill-after=20s 80m pnpm release:verify:node >"$QA_RAW/gate.stdout" 2>"$QA_RAW/gate.stderr" || rc=$?
+          printf '%s\n' "$rc" > "$QA_REPORTS/gate.exit"
+          # Keep only the last recognized pnpm stage and up to eight compiler codes.
+          awk '$1 == ">" && $2 ~ /^claudexor-monorepo@[0-9.]+$/ &&
+                 $3 ~ /^(release:verify:node|build|typecheck|typecheck:tests|test|schema:gen|docs:check|staged:check|retired:check|inv:check|sensitive:check|knip|fixtures:swift:check|fixtures:runtime-update:check|release:workflow:check|format:check|canary)$/ {stage=$3}
+               match($0, /error TS[0-9]{4,5}/) && ++codes <= 8 {print substr($0, RSTART, RLENGTH)}
+               END {if (stage) print "Last observed pnpm script: " stage}' \
+            "$QA_RAW/gate.stdout" "$QA_RAW/gate.stderr" > "$QA_REPORTS/gate.txt"
+          exit "$rc"
+
+      - name: Release the temporary loopback namespace
+        if: ${{ always() && steps.loopback.outcome == 'success' }}
+        run: sudo ip netns del cx-qa
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: daemon-diagnostic-checks
+          path: |
+            ${{ runner.temp }}/validation/revisions.txt
+            ${{ runner.temp }}/validation/baseline.build.exit
+            ${{ runner.temp }}/validation/baseline.stdout
+            ${{ runner.temp }}/validation/baseline.stderr
+            ${{ runner.temp }}/validation/baseline.exit
+            ${{ runner.temp }}/validation/candidate.build.exit
+            ${{ runner.temp }}/validation/candidate.stdout
+            ${{ runner.temp }}/validation/candidate.stderr
+            ${{ runner.temp }}/validation/candidate.exit
+            ${{ runner.temp }}/validation/story.exit
+            ${{ runner.temp }}/validation/story.json
+            ${{ runner.temp }}/validation/gate.exit
+            ${{ runner.temp }}/validation/gate.txt
+          if-no-files-found: warn
+          retention-days: 7
