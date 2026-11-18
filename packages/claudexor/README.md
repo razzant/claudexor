@@ -27,6 +27,30 @@ claudexor mcp serve
 This package is the bin wrapper over
 [`@claudexor/cli`](https://www.npmjs.com/package/@claudexor/cli).
 
+## Install in Pi
+
+Pi can delegate a question to Claudexor and show the answer in your session.
+Use [a configured CLI and account](https://github.com/razzant/claudexor#set-up-the-cli-and-account)
+and a Pi version with built-in MCP and `registerMcpServer`, such as 1.5.2.
+Install from a [permanent package checkout](https://github.com/razzant/claudexor#get-a-package-checkout):
+
+```sh
+pi install "$HOME/claudexor-hosts/packages/claudexor"
+```
+
+Keep that directory in place. Start Pi with `node` and `claudexor` on its PATH,
+or use `/reload` in an existing session with that PATH. Enable built-in MCP and
+the extension in `pi config` if needed. In `/mcp`, check that `claudexor` is
+connected and your tool filters permit the first request's tools under
+`mcp__claudexor__`. The extension is the source by default. A manual entry
+named `claudexor` in `~/.pi/agent/mcp.json` or the project's `.pi/mcp.json`
+overrides it even when disabled. Keep an intentional entry for a
+[custom Claudexor store](https://github.com/razzant/claudexor/blob/main/docs/INTEGRATIONS.md#custom-claudexor-configuration-directory).
+To use the packaged server instead, remove or rename the conflicting entry
+and `/reload`. [Check status and get your first answer](https://github.com/razzant/claudexor#first-delegation-from-any-host).
+
+Integration by [Ouroboros](https://github.com/razzant/ouroboros).
+
 [Product overview](https://razzant.github.io/claudexor/) ·
 [documentation and source](https://github.com/razzant/claudexor#readme) ·
 [releases](https://github.com/razzant/claudexor/releases/latest)

@@ -9,8 +9,19 @@
     "claudexord": "./bin/claudexord.js"
   },
   "files": [
-    "bin"
+    "bin",
+    "pi/index.js",
+    "pi/mcp.json",
+    "pi/skills/claudexor/SKILL.md"
   ],
+  "pi": {
+    "extensions": [
+      "./pi/index.js"
+    ],
+    "skills": [
+      "./pi/skills"
+    ]
+  },
   "dependencies": {
     "@claudexor/cli": "workspace:*"
   },
@@ -33,6 +44,7 @@
     "multi-account",
     "multi-agent",
     "opencode",
+    "pi-package",
     "quota-management",
     "subscription-management"
   ],

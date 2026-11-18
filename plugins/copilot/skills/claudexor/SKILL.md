@@ -5,18 +5,27 @@ description: Use the local Claudexor control plane for harness-agnostic coding w
 
 # Claudexor
 
-Use the MCP tools supplied by this plugin. They connect to the user's local
-Claudexor installation; they do not provide accounts or remote model access.
+Use the host's registered Claudexor MCP tools. The names below are server-side
+names: discover the matching tool under the host's Claudexor namespace.
+They connect to the user's local Claudexor installation and configured accounts.
 
 ## Preconditions
 
 - Support macOS and Linux. Do not claim Windows support.
-- Require Node.js 24.15 or newer and a preinstalled `claudexor` command. If the
-  MCP server is missing, ask the user to run `npm install -g claudexor`, then
-  restart the host. Do not download a runtime implicitly.
+- Require Node.js 24.15 or newer and a `claudexor` executable on the host's
+  PATH. If the server is missing, check plugin activation, PATH, and the host's
+  tool policy. If the CLI is missing, ask the user to install it with
+  `npm install -g claudexor` and reload the host. Do not download a runtime implicitly.
 - If a generated Claudexor host integration already owns the current host's
   setup, leave it in place. Do not repair, replace, or uninstall it
   automatically.
+- Before the first delegation, compare the host's `claudexor_status` with
+  `claudexor doctor` for the intended installation. For a named account,
+  check its profile in `claudexor_accounts`. If the user selected a custom
+  `CLAUDEXOR_CONFIG_DIR`, the MCP process needs that absolute path. Compare
+  `claudexor_store_identity` with `claudexor store-identity --json` on the
+  running daemon in that configuration. If the store IDs differ or the
+  selected profile is missing, resolve the connection before submitting work.
 
 ## Choose a route
 
@@ -54,19 +63,50 @@ Start read-only unless the user explicitly asked to change or create files.
    `external_terminal` means the host must provide the supported client
    terminal attach path; it is not itself unreadiness and must not be silently
    treated as `in_app`.
-4. Use `claudexor_ask` for read-only answers and bounded research (where it
-   advertises `noProject`, pass `noProject: true` for a general question that
-   needs no project), or `claudexor_plan` for a read-only implementation plan.
-5. Only for explicit implementation intent, use `claudexor_run`,
-   `claudexor_best_of`, or `claudexor_create`. Pass an absolute `repoPath`
-   whenever the target repository could be ambiguous. Pass
-   `credentialProfileId` to pin the run strictly to one account.
+4. Use `claudexor_ask` for read-only answers and bounded research. Keep the
+   user's selected repository as the absolute `repoPath`, including for a
+   question with quoted text. Use `noProject: true` and omit `repoPath` only
+   for a self-contained question that needs no project and has none selected.
+   If Ask lacks that argument, explain that projectless Ask requires a newer
+   CLI. Use `claudexor_plan` for a read-only project plan.
+5. For project work, confirm the target and pass its absolute `repoPath` to
+   the tool. The MCP server's working directory can be the installed plugin.
+   Only for explicit implementation intent, use `claudexor_run`,
+   `claudexor_best_of`, or `claudexor_create`. Pass `credentialProfileId`
+   to pin the run strictly to one account.
 6. For durable multi-turn work, call `claudexor_thread_create` once and enqueue
    each follow-up with `claudexor_thread_turn`. Pass an `idempotencyKey` and
    retry an unknown outcome with the same key and body. Follow the returned
    `runId` with the same status/result tools as a one-shot run; if only a queued
    `jobId` is returned, pass it as `runId` to the same tools until it binds.
    `claudexor_thread_read` lists earlier turns without starting work.
+
+For example, to delegate an approved edit to a single file, substitute the
+user-selected absolute folder and relative file below. Generate and save a
+fresh request key and the exact arguments before calling `claudexor_run`.
+
+```json
+{
+  "prompt": "Correct the spelling in the introduction of README.md.",
+  "repoPath": "/absolute/path/to/project",
+  "idempotencyKey": "<unique-key-for-this-request>",
+  "access": "workspace_write",
+  "execution": {
+    "isolation": "envelope",
+    "workspaceKind": "directory",
+    "scopePaths": ["README.md"]
+  }
+}
+```
+
+Here `scopePaths` selects what gets copied. The harness's access policy
+controls what its process can reach. Use relative paths in the prompt and
+leave additional write grants unset. A project thread defaults to `in_place`
+and normally writes to the live project. With project `protected_paths`
+configured, the daemon moves the thread into a persistent isolated worktree
+before a write turn. Check the thread's effective workspace. If the host or
+worker lacks a required tool, report the blocked action and keep the requested
+workspace and access.
 
 Read retained answers with `claudexor_thread_history`:
 `{threadId, limit?, cursor?, beforeTurnId?, afterTurnId?, aroundTurnId?, expectedStoreId?}`.
@@ -270,10 +310,15 @@ current revision before each mutation and pass it as
 Never remove or extend a user-mandated stop time without permission. Timer
 controls do not restore a terminal run or a lost daemon/native process.
 
-Use `claudexor_apply_check` to dry-check delivery. MCP does not apply a patch.
-Only when the user explicitly requests delivery and the server-owned
-`applyEligibility.eligible` value is true may the host invoke the ordinary
-Claudexor CLI apply path under its normal command permission.
+Show the complete patch or file changes from the isolated run, including new
+files. `claudexor apply <runId>` delivers the whole result; it cannot select
+individual files or hunks. If the user approves only part, leave the result
+unapplied. For a one-shot run, use `claudexor_apply_check` to check delivery.
+Only when the user explicitly asks to apply the whole result, the server
+reports `applyEligibility.eligible` and the host permits the command, run
+`claudexor apply <runId> --dry-run`, then `claudexor apply <runId>` if the
+check succeeds. For an isolated thread, show the pending changes together
+before the user chooses thread Apply.
 
 For an explicit reviewer panel, pass entries such as
 `{"harness":"cursor","model":"cursor-grok-4.6-high","credentialProfileId":"review-cursor"}`.

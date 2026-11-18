@@ -5,6 +5,12 @@ to use a Claudexor install on this machine. Everything here is derived from
 machine-readable surfaces you can query yourself; when this document and a
 live surface disagree, trust the live surface.
 
+For Hermes, Pi, or OpenClaw, [set up the local CLI and account](../README.md#set-up-the-cli-and-account),
+then follow the [Hermes](../README.md#install-in-hermes), [Pi](../README.md#install-in-pi),
+or [OpenClaw](../README.md#install-in-openclaw) steps and [read your first answer](../README.md#first-delegation-from-any-host).
+Those hosts manage their own packages. The `claudexor plugin` inspection and
+repair steps below apply to managed Claude Code, Codex, Cursor, and OpenCode installs.
+
 ## Install And Login
 
 If you are a third-party agent (Cursor, Claude Code, Codex, OpenCode, a
@@ -203,10 +209,11 @@ entries; do not invent an `@profile` mini-grammar.
   is the one write mode, and its candidates work in isolated envelopes until an
   explicit apply. The old `audit`/`explore`/`orchestrate` verbs are retired and
   hard-error.
-- New project threads (including ACP sessions) default to `in_place`: their
-  turns can change the live project tree. Choose `isolated` explicitly when you
-  want a persistent thread worktree and a later Apply step. Standalone CLI/MCP
-  candidate runs still use external isolated envelopes.
+- New project threads (including ACP sessions) default to `in_place` and
+  normally write to the live project. Configured project `protected_paths`
+  move the thread into an isolated worktree before a write turn. Choose
+  `isolated` explicitly for a persistent thread worktree and a later Apply
+  step. Standalone CLI/MCP candidate runs still use external isolated envelopes.
 - Prompts, instructions, messages and attachments reach the selected harness
   exactly, including credential-shaped test fixtures, and stay in the local
   run records. Claudexor does not refuse or mask them by pattern. Keys that
@@ -221,9 +228,13 @@ entries; do not invent an `@profile` mini-grammar.
 
 Every mutating result carries a `runId`. The decision tree:
 
-1. `status: succeeded` (the daemon-tracked terminal for mutating runs) +
-   `applyEligibility.eligible: true` →
-   `claudexor apply <runId>` (or `--mode commit|branch|pr`).
+1. For an isolated candidate with `status: succeeded` and
+   `applyEligibility.eligible: true`, show the complete patch or file list.
+   The CLI has no file or hunk selector. If the user explicitly approves the
+   whole result, the user or their authorized agent can run
+   `claudexor apply <runId> --dry-run`, then `claudexor apply <runId>` if the
+   check succeeds. Choose `--mode commit|branch|pr` only if the user has
+   authorized that delivery action.
 2. `applyEligibility.eligible: false` → read `requiredAction`. Typical
    verdicts: add a `--test` gate and re-run (`ungated` / `review_not_run`),
    or a typed operator decision for `blocked` runs.

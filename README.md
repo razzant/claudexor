@@ -8,7 +8,7 @@
 [![latest release](https://img.shields.io/github/v/release/razzant/claudexor?label=release)](https://github.com/razzant/claudexor/releases/latest)
 [![license](https://img.shields.io/github/license/razzant/claudexor)](LICENSE)
 
-[Website](https://claudexor.ai/)
+[Website](https://claudexor.ai/) · [CLI and account setup](#set-up-the-cli-and-account) · **[Install in Hermes](#install-in-hermes)** · **[Install in Pi](#install-in-pi)** · **[Install in OpenClaw](#install-in-openclaw)**
 
 Claudexor is a local-first control plane for the AI coding agents you already
 pay for. It runs Codex CLI, Claude Code, Cursor CLI, OpenCode, Antigravity
@@ -935,8 +935,155 @@ Use Claudexor ask --deep-scan on this repository and return the final report wit
 file references. Keep it read-only.
 ```
 
-See [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) for the current integration
-matrix and limitations.
+See the [integration reference](docs/INTEGRATIONS.md) for the full host matrix.
+
+### Agent host packages
+
+From your usual chat, ask a second model a question or have it draft a change
+for review. Your agent calls the local Claudexor CLI over MCP and brings the
+result back to the conversation. Integration by [Ouroboros](https://github.com/razzant/ouroboros).
+
+#### Set up the CLI and account
+
+Install the CLI on the machine running your agent (macOS or Linux, Node.js 24.15+):
+
+```sh
+npm install -g claudexor
+claudexor --version
+```
+
+Use the account you already connected to Claudexor. For a first connection,
+make sure the [vendor CLI is installed](#harness-setup), then sign in through
+Claudexor with `claudexor auth login codex` or `claudexor auth login claude`.
+For Codex, open the sign-in link in a private window or a browser profile
+signed in to no other OpenAI account. Switching accounts during sign-in can
+revoke other sessions.
+Run `claudexor doctor` to check the harness. The host will launch the CLI
+directly. `command -v node` and `command -v claudexor` show the executable
+locations its PATH needs.
+
+If you already use a custom `CLAUDEXOR_CONFIG_DIR`, give the host's Claudexor
+MCP server that same absolute path. The default installation needs no override.
+[Configure the selected store](docs/INTEGRATIONS.md#custom-claudexor-configuration-directory).
+
+Choose [Hermes](#install-in-hermes), [Pi](#install-in-pi), or [OpenClaw](#install-in-openclaw).
+
+#### Install in Hermes
+
+After [CLI and account setup](#set-up-the-cli-and-account), make sure the Hermes
+process can find `node` and `claudexor` on its PATH. Open the
+[Hermes manifest](plugins/hermes/plugin.json) at your chosen Git revision
+(for a release, select its tag). On GitHub press **y** to pin the page, inspect
+the plugin at that commit, and paste the full 40-character SHA from its URL:
+
+```sh
+printf 'Inspected commit SHA: ' && IFS= read -r claudexor_sha &&
+  hermes plugins install razzant/claudexor/plugins/hermes --ref "${claudexor_sha:?Full SHA required}" --enable
+```
+
+The first install needs network access for Hermes' runtime. Confirm the pin
+and enabled state with `hermes plugins list`. If you restrict tools, allow
+the Claudexor MCP tools for that platform in `hermes tools`. Start a new
+session in that profile and ask Hermes to load `claudexor:claudexor`.
+[Get your first answer](#first-delegation-from-any-host).
+
+#### Install in Pi
+
+After [CLI and account setup](#set-up-the-cli-and-account), [get a package checkout](#get-a-package-checkout)
+in a permanent directory. Pi loads the extension from that path on each start.
+Use a Pi version with built-in MCP and `registerMcpServer` (for example, 1.5.2).
+
+```sh
+pi install "$HOME/claudexor-hosts/packages/claudexor"
+```
+
+Start Pi with `node` and `claudexor` on its PATH, or use `/reload` in a running
+session with that PATH. If built-in MCP or the extension is disabled, enable it
+in `pi config` and reload. In `/mcp`, check that `claudexor` is connected.
+The extension is the source by default. A manual `claudexor` entry in
+`~/.pi/agent/mcp.json` or the project's `.pi/mcp.json` takes precedence even
+when disabled. Keep an intentional custom-store entry. To use the packaged
+server instead, remove or rename the conflicting entry and `/reload`. If you
+filter MCP tools, allow the four tools in the example below under
+`mcp__claudexor__`. [Get your first answer](#first-delegation-from-any-host).
+
+#### Install in OpenClaw
+
+After [CLI and account setup](#set-up-the-cli-and-account), [get a package checkout](#get-a-package-checkout)
+on the Gateway machine. Put `claudexor` and `node` on the Gateway **service's**
+PATH. OpenClaw 2026.11.5 needs Node 24.16.0–24.x or 26.1.0+.
+
+```sh
+openclaw plugins install "$HOME/claudexor-hosts/plugins/claude"
+openclaw plugins inspect claudexor
+```
+
+If disabled, run `openclaw plugins enable claudexor`. If you use a plugin
+allowlist, include `claudexor`. [OpenClaw plugin policy](https://docs.openclaw.ai/tools/plugin#configure-plugin-policy).
+The intended embedded agent's tool policy and any sandbox
+allowlist must permit the four tools in the example below with the `claudexor__`
+prefix (for example, `claudexor__claudexor_status`). Restart the Gateway with `openclaw gateway restart`
+if you changed its PATH or the installer requests it. Open a fresh embedded
+agent session. [Get your first answer](#first-delegation-from-any-host).
+
+#### First delegation from any host
+
+Before the first request, compare the host's `claudexor_status` with the
+harness reported by `claudexor doctor`. For a named account, check that
+`claudexor_accounts` lists the expected profile. For a custom store, also use
+`claudexor_store_identity` to [match the store IDs](docs/INTEGRATIONS.md#custom-claudexor-configuration-directory).
+If your host filters tools, allow these additional reads for the checks you need,
+using the same host prefix as for `claudexor_status`.
+
+Try this self-contained question with no repository selected and a CLI whose
+`claudexor_ask` tool offers `noProject`.
+
+```text
+Check Claudexor's status. Use its read-only Ask without a project to answer
+this question. The shop opens at 09:00 and closes at 17:00. When does it
+close? Wait for Claudexor, then show me its answer and the run ID.
+```
+
+The host calls `claudexor_status`, then `claudexor_ask` with `noProject: true`.
+It follows the handle with `claudexor_run_status` and reads the answer from
+`claudexor_run_result`. If only a queued `jobId` is returned, use it as `runId`
+for those reads. You should see **17:00** in the chat.
+
+When a repository is selected or the question depends on its files, pass its
+absolute `repoPath`. This route also works with an older CLI and a harness
+that can read the repository.
+For example, give the agent the repository's absolute path and ask “Check
+Claudexor's status, then use Codex through Claudexor to summarize README.md in
+that repository. Pass my path as `repoPath`, keep it read-only and bring back
+the one-sentence answer.”
+
+For a file edit you want to review first, ask for a one-shot run in an
+isolated copy. Review the complete patch or file list, including new files.
+The CLI applies the whole result. If you want only some files or hunks, leave
+it unapplied. If you approve the whole result and `applyEligibility.eligible`
+is true, you or the agent you authorize can run `claudexor apply <runId> --dry-run`,
+then `claudexor apply <runId>` if the check succeeds.
+
+For multi-turn edits, a project thread defaults to
+`in_place` and normally writes to the working copy. Project `protected_paths`
+move the thread into an isolated worktree before a write turn. Choose
+`workspace: isolated` at creation to keep multi-turn edits in a separate worktree.
+
+#### Get a package checkout
+
+If you already have a checkout containing the package, use its absolute path
+in the install command. For a fresh copy, open the [Pi extension](packages/claudexor/pi/index.js)
+or [OpenClaw manifest](plugins/claude/.claude-plugin/plugin.json) at the GitHub
+revision you want. Press **y** and copy the full 40-character SHA from the
+permalink. Use an unused permanent directory (`~/claudexor-hosts` below).
+
+```sh
+printf 'Inspected commit SHA: ' && IFS= read -r claudexor_sha &&
+  git clone --no-checkout https://github.com/razzant/claudexor.git "$HOME/claudexor-hosts" &&
+  git -C "$HOME/claudexor-hosts" checkout --detach "$claudexor_sha"
+```
+
+Continue with [Pi](#install-in-pi) or [OpenClaw](#install-in-openclaw).
 
 ## Architecture
 
