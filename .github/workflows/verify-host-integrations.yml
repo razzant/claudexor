@@ -1,0 +1,53 @@
+name: Verify agent host integrations
+
+# One disposable Linux runner for the prepared package, not a publishing workflow.
+# Only this QA branch carries the workflow; its parent is the candidate to test.
+on:
+  push:
+    branches: [qa/agent-host-integrations-933041c3]
+
+permissions:
+  contents: read
+
+jobs:
+  node-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select the exact product tree (exclude the QA workflow)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git switch --detach HEAD^
+          test "$(git rev-parse 'HEAD^{tree}')" = '933041c38825752f98c09fdbd3d8922d712f33df'
+          test "$(git rev-parse HEAD^)" = '8210f1880aeffd49352af154db252617b7d34a6f'
+          git rev-parse HEAD 'HEAD^{tree}'
+
+      - name: Install the repository's pinned pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+          package-manager-cache: false
+
+      - name: Prepare the pinned publication scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/provision-betterleaks.mjs --dest "$RUNNER_TEMP/betterleaks/betterleaks"
+          echo "CLAUDEXOR_BETTERLEAKS_PATH=$RUNNER_TEMP/betterleaks/betterleaks" >> "$GITHUB_ENV"
+
+      - name: Scan the candidate and its commit range
+        run: node scripts/publication-scan.mjs --repo . --range HEAD^..HEAD --tree HEAD
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Qualify the package and the portable Node release gate
+        run: pnpm release:verify:node
