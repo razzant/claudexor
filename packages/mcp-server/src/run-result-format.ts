@@ -37,7 +37,11 @@ export function formatRunResult(result: unknown): string {
       trailer.push(
         `result: kept exactly as Git objects (${String(objectResult["digest"])}); no patch view (${String(objectResult["reason"])}, ${String(objectResult["changedFiles"] ?? "?")} changed files) — it can still be applied and reverted`,
       );
-    if (!summary && trailer.length === 0) return JSON.stringify(result);
+    if (!summary && trailer.length === 0) {
+      if (!Object.hasOwn(r, "finalMessages")) return JSON.stringify(result);
+      const { finalMessages: _address, ...primary } = r;
+      return JSON.stringify(primary);
+    }
     return trailer.length > 0 ? `${summary ? `${summary}\n\n` : ""}${trailer.join("\n")}` : summary;
   }
   return result === undefined || result === null ? "" : String(result);

@@ -24,7 +24,6 @@ import {
   type ImageCallRequest,
   type QuotaRequestKind,
   type ModelAccountChoice,
-  type ModelCallResult,
   type ModelRoutingEvidence,
   type JobAdmission,
 } from "@claudexor/schema";
@@ -42,7 +41,12 @@ import { catalogProfiles, enumerateAccountCatalogs } from "./account-catalog.js"
 import { bindModelAccountEvidence, withImageAccountEvidence } from "./model-account-evidence.js";
 import { modelOperationControlServices } from "./model-operation-control.js";
 import { selectModelCatalog } from "./model-catalog-selection.js";
-import { historyBoundTo, modelCapabilityOutcome } from "./model-capability-outcome.js";
+import {
+  contentRefusalOutcome,
+  historyBoundTo,
+  modelCapabilityOutcome,
+  withModelMismatch,
+} from "./model-capability-outcome.js";
 import { admitModelAccount, liveAccountRefusal } from "./model-account-admission.js";
 import { ModelLoginReadiness } from "./model-login-readiness.js";
 import { modelCredentialRead } from "./model-credential-read.js";
@@ -62,14 +66,12 @@ type Dependencies = ModelOperationPersistence &
     config?: () => GlobalConfig;
     registry?: AdapterRegistry;
     sources?: readonly ModelSource[];
-    /** The store graph's ledgers (`createAccountEvidence`); model-substitution
-     * observations are produced and consumed only by model operations. */
+    /** The store graph's account evidence; only raw models observe substitutions. */
     unusable: CredentialUnusableLedger;
     substitutions: ModelSubstitutionLedger;
     capabilities?: ModelCapabilityLedger;
     refusals?: PreProgressRefusalLedger;
-    /** The graph's durable last-served facts: read by the Auto pool choice,
-     * never written here (only Agent and Ask tries serve). */
+    /** Auto reads durable last-served facts. Only Agent and Ask write them. */
     lastService?: Pick<AccountServiceEvidence, "orders"> | null;
     migrationGate?: typeof accountsMigrationGate;
   };
@@ -361,8 +363,7 @@ export function createModelServices(deps: Dependencies) {
             error && typeof error === "object" && "problem" in error ? error.problem : null,
           );
           if (!pool.success || !pool.data.context.poolCause) throw error;
-          // Another operation owns the probe, but a mark never excludes the
-          // last eligible account. Dispatch without acquiring that probe.
+          // Use the last eligible account even if another operation owns its probe.
           selected = { ...selected, reason: "marked_fallback" };
           break;
         }
@@ -375,7 +376,8 @@ export function createModelServices(deps: Dependencies) {
           "The selected account changed after catalog discovery; try a new operation.",
         );
       const { profile, catalog } = selected;
-      const release = () => capabilities.release(binding, operationId);
+      let contentRefused = false;
+      const release = () => capabilities.release(binding, operationId, !contentRefused);
       signal.addEventListener("abort", release, { once: true });
       const routing: ModelRoutingEvidence = {
         selectionReason: selected.reason,
@@ -400,24 +402,23 @@ export function createModelServices(deps: Dependencies) {
                 ...context,
                 signal: readSignal(context.signal),
                 catalog,
+                onContentRefusal: () => {
+                  contentRefused = true;
+                  context.onContentRefusal?.();
+                },
                 onDispatch: async (route) => {
                   await context.onDispatch(route);
                   dispatched = true;
                 },
               });
-              // A typed fact about this generation, never a changed outcome: set
-              // only when a terminal response disclosed a model and its exact id
-              // differs from the requested one. The caller decides what to do.
-              const observed = served.route.model;
-              const result: ModelCallResult =
-                (served.outcome === "completed" || served.outcome === "incomplete") &&
-                observed !== null &&
-                observed !== input.model
-                  ? { ...served, modelMismatch: { requested: input.model, observed } }
-                  : served;
+              const result = withModelMismatch(served, input.model);
+              const refusal = dispatched && contentRefusalOutcome(result, contentRefused, routing);
+              if (refusal) {
+                contentRefused = true;
+                return refusal;
+              }
               // Evidence maintenance must not erase an already-received model result.
               try {
-                // The next Auto selection for this model prefers other accounts.
                 if (result.modelMismatch && evidence.current())
                   substitutions.record({
                     harness_id: source.credentialHarness,

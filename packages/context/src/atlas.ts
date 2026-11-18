@@ -7,10 +7,10 @@ import {
   statSync,
   type Stats,
 } from "node:fs";
-import { extname, join, relative } from "node:path";
+import { extname, isAbsolute, join, relative, sep } from "node:path";
 import type { ContextFileRef, OmissionEntry, ScopeAtlasEntry } from "@claudexor/schema";
 import { runCapture } from "@claudexor/core";
-import { sensitiveResourcePolicy, sha256, type SymlinkTargetKind } from "@claudexor/util";
+import { errorCode, sensitiveResourcePolicy, sha256, type SymlinkTargetKind } from "@claudexor/util";
 import { matchAny } from "./glob.js";
 
 const MANIFEST_ONLY = [
@@ -196,7 +196,6 @@ export async function buildScopeAtlas(
   const files = new Set(opts.files ?? (await listFiles(repoRoot)));
   const atlas: ScopeAtlasEntry[] = [];
   const candidates: { rel: string; bytes: number; mandatory: boolean }[] = [];
-  const missingMandatory: string[] = [];
 
   // Symlink containment at the READ point (not just the fallback walker):
   // `git ls-files` happily lists a TRACKED symlink like `leak.txt ->
@@ -218,8 +217,12 @@ export async function buildScopeAtlas(
     let bytes = 0;
     try {
       bytes = statSync(join(repoRoot, rel)).size;
-    } catch {
-      atlas.push({ path: rel, disposition: "read_error", reason: "stat failed" });
+    } catch (error) {
+      atlas.push({
+        path: rel,
+        disposition: "read_error",
+        reason: errorCode(error) ?? "stat failed",
+      });
       continue;
     }
     const mandatory = mandatorySet.has(rel);
@@ -275,9 +278,13 @@ export async function buildScopeAtlas(
     let content: string;
     try {
       content = readFileSync(join(repoRoot, c.rel), "utf8");
-    } catch {
-      atlas.push({ path: c.rel, disposition: "read_error", bytes: c.bytes, reason: "read failed" });
-      if (c.mandatory) missingMandatory.push(c.rel);
+    } catch (error) {
+      atlas.push({
+        path: c.rel,
+        disposition: "read_error",
+        bytes: c.bytes,
+        reason: errorCode(error) ?? "read failed",
+      });
       continue;
     }
     const hash = sha256(content);
@@ -286,11 +293,7 @@ export async function buildScopeAtlas(
     (c.mandatory ? mandatory : included).push({ path: c.rel, hash });
   }
 
-  // mandatory files that were not found at all
-  for (const m of mandatorySet) {
-    if (!files.has(m)) missingMandatory.push(m);
-  }
-
+  const delivered = new Set(mandatory.map((file) => file.path));
   atlas.sort((a, b) => a.path.localeCompare(b.path));
   return {
     atlas,
@@ -299,7 +302,7 @@ export async function buildScopeAtlas(
     omitted,
     estimatedTokens: used,
     tokenLimit,
-    missingMandatory,
+    missingMandatory: [...mandatorySet].filter((path) => !delivered.has(path)),
   };
 }
 
@@ -316,9 +319,32 @@ export function contextSymlinkDenyReason(
   rel: string,
 ): string | null {
   const full = join(repoRoot, rel);
+  const outside = (root: string, path: string): boolean => {
+    const fromRoot = relative(root, path);
+    return isAbsolute(fromRoot) || fromRoot === ".." || fromRoot.startsWith(`..${sep}`);
+  };
+  const denied = "path resolves outside the allowed root";
+  if (outside(repoRoot, full)) return denied;
+  let link: boolean;
   try {
-    if (!lstatSync(full).isSymbolicLink()) return null;
+    // Check each parent before looking up its child, so a denied directory
+    // has the same diagnostic whether the requested file exists or not.
+    let parent = repoRoot;
+    for (const part of relative(repoRoot, full).split(sep).slice(0, -1)) {
+      parent = realpathSync(join(parent, part));
+      if (outside(canonicalRepoRoot, parent)) return denied;
+    }
+    link = lstatSync(full).isSymbolicLink();
+  } catch (error) {
+    return errorCode(error) ?? "lstat failed";
+  }
+  try {
     const resolved = realpathSync(full);
+    // The complete resolved path, including its parent directories, belongs to this root.
+    if (outside(canonicalRepoRoot, resolved)) {
+      return link ? "symlink resolves outside the allowed root" : denied;
+    }
+    if (!link) return null;
     const stat = statSync(full);
     const decision = sensitiveResourcePolicy.assessSymlink({
       sourceRoot: repoRoot,
@@ -332,7 +358,11 @@ export function contextSymlinkDenyReason(
     return decision.allowed
       ? null
       : (decision.detail ?? "symlink target denied by the containment policy");
-  } catch {
-    return "symlink target cannot be resolved";
+  } catch (error) {
+    const code = errorCode(error);
+    if (!link) return code ?? "path cannot be resolved";
+    return code
+      ? `symlink target cannot be resolved (${code})`
+      : "symlink target cannot be resolved";
   }
 }

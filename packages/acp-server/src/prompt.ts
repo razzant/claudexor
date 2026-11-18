@@ -94,6 +94,10 @@ export function summarizeResult(result: unknown): string {
       const v = r[key];
       if (typeof v === "string" && v.trim()) return v.trim();
     }
+    if (Object.hasOwn(r, "finalMessages")) {
+      const { finalMessages: _address, ...primary } = r;
+      return JSON.stringify(primary);
+    }
     return JSON.stringify(result);
   }
   return result === undefined || result === null ? "" : String(result);

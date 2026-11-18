@@ -176,11 +176,12 @@ describe("processing on the physical Codex model request", () => {
   ] as const)(
     "returns a confirmed $refusal refusal for submitted $native without another send",
     async ({ preference, native, status, vendorCode, refusal }) => {
+      const requestId = "req_00000000000000000000000000000003";
       const fixture = setup((init) => {
         expect(JSON.parse(String(init?.body)).service_tier).toBe(native);
         return Response.json(
           { error: { code: vendorCode, param: "service_tier" } },
-          { status, headers: { "x-request-id": "refusal-fixture", "retry-after": "2" } },
+          { status, headers: { "x-request-id": requestId, "retry-after": "2" } },
         );
       });
       fixture.fetcher.mockResolvedValueOnce(
@@ -202,7 +203,7 @@ describe("processing on the physical Codex model request", () => {
             httpStatus: status,
             vendorCode,
             parameter: "service_tier",
-            requestId: "refusal-fixture",
+            requestId,
             retryAfterMs: 2000,
             generationStarted: false,
             processingFallback: "standard",
@@ -753,6 +754,43 @@ describe("exact-profile Codex model catalog", () => {
 });
 
 describe("single-generation Codex adapter", () => {
+  it.each([false, true])("replays a refusal in the caller's turn (native=%s)", async (useNative) => {
+    const f = setup();
+    const catalog = await f.adapter.catalog(f.context);
+    const route = {
+      source: catalog.source,
+      accountFingerprint: catalog.accountFingerprint,
+      credentialProfileId: catalog.credentialProfileId,
+      model: f.request.model,
+    };
+    const refusal = { type: "refusal", refusal: "No picnic today." };
+    const output = [{ type: "output_text", text: "Menu. " }, refusal];
+    const native = { type: "message", id: "previous", role: "assistant", content: output };
+    const result = await f.adapter.invoke(
+      {
+        ...f.request,
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Menu. " }, refusal],
+            ...(useNative && {
+              nativeContinuation: { route, format: "codex.responses.v1", payload: [native] },
+            }),
+          },
+        ],
+        nativeContinuation: { route, format: "codex.turn.v1", payload: { turnState: "picnic" } },
+      },
+      { ...f.context, catalog, typedRefusals: true },
+    );
+    expect(result.outcome).toBe("completed");
+    const sends = f.fetcher.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(sends).toHaveLength(1);
+    const sent = sends[0]![1]!;
+    expect(new Headers(sent.headers).get("x-codex-turn-state")).toBe("picnic");
+    expect(JSON.parse(String(sent.body)).input).toEqual([
+      useNative ? native : { type: "message", role: "assistant", content: output },
+    ]);
+  });
   it("omits transport state for legacy clients even when the server reports it", async () => {
     const fixture = setup(() => withHeader(terminal(), "first-token"));
     const result = await fixture.adapter.invoke(fixture.request, fixture.context);
@@ -1249,11 +1287,121 @@ describe("single-generation Codex adapter", () => {
     );
     expect(JSON.stringify(result)).not.toContain("DO_NOT_EXPOSE_BODY");
   });
+  it.each([
+    { channel: "response.failed", status: null, legacy: "provider_failed" },
+    { channel: "error", status: null, legacy: "provider_failed" },
+    { channel: "HTTP 403", status: 403, legacy: "provider_refused" },
+    { channel: "HTTP 503", status: 503, legacy: "provider_failed" },
+  ])("keeps a $channel refusal final", async ({ channel, status, legacy }) => {
+    const privateMessage = "The picnic fixture declined to choose a napkin colour. 🧺";
+    const error = { code: "cyber_policy", message: privateMessage };
+    const event =
+      channel === "error"
+        ? { type: "error", ...error }
+        : {
+            type: "response.failed",
+            response: { error, model: "model-one", usage: { input_tokens: 14, output_tokens: 2 } },
+          };
+    const raw = status === null ? `data: ${JSON.stringify(event)}\n\n` : JSON.stringify({ error });
+    const base64 = Buffer.from(raw).toString("base64");
+    for (const typedRefusals of [false, true]) {
+      for (const captureFailureEvidence of [false, true]) {
+        const f = setup(() => new Response(raw, { status: status ?? 200 }));
+        const onContentRefusal = vi.fn();
+        const result = await f.adapter.invoke(f.request, {
+          ...f.context,
+          typedRefusals,
+          onContentRefusal,
+          captureFailureEvidence,
+        });
+        expect(result).toMatchObject({
+          outcome: "failed",
+          message: null,
+          problem: {
+            code: typedRefusals ? "provider_content_refused" : legacy,
+            retryable: false,
+            context: { vendorCode: "cyber_policy" },
+          },
+          usage: {
+            input_tokens: channel === "response.failed" ? 14 : null,
+            output_tokens: channel === "response.failed" ? 2 : null,
+          },
+          cost: { knowledge: "unknown", cashUsd: null },
+        });
+        if (status !== null) expect(result.problem!.context.httpStatus).toBe(status);
+        else {
+          expect(result.problem!.context).not.toHaveProperty("httpStatus");
+          expect(result.problem!.context.terminalStatus).toBe("failed");
+        }
+        expect(result.problem!.context).not.toHaveProperty("generationStarted");
+        expect(result.problem!.context).not.toHaveProperty("vendorMessage");
+        const { failureEvidence, ...visible } = result;
+        expect(JSON.stringify(visible)).not.toContain(privateMessage);
+        expect(JSON.stringify(visible)).not.toContain(base64);
+        if (captureFailureEvidence) {
+          expect(failureEvidence!.bodyBase64).toBe(base64);
+          expect(failureEvidence!.receivedBytes).toBe(Buffer.byteLength(raw));
+          expect(failureEvidence!.bodyComplete).toBe(status !== null);
+        } else expect(result).not.toHaveProperty("failureEvidence");
+        expect(onContentRefusal).toHaveBeenCalledTimes(1);
+        const sends = f.fetcher.mock.calls.filter(([, init]) => init?.method === "POST");
+        expect(sends).toHaveLength(1);
+        expect(String(sends[0]![1]!.body)).not.toMatch(/typedRefusals|captureFailureEvidence/);
+      }
+    }
+  });
+
+  it.each([
+    [503, "server_error", "provider_failed", true],
+    [401, "invalid_token", "auth_required", false],
+    [429, "usage_limit_reached", "subscription_window_exhausted", true],
+    [429, "rate_limit_error", "rate_limited", true],
+    [400, "cyber_policy_other", "invalid_request", false],
+    [403, "provider_policy_refusal", "provider_refused", false],
+  ] as const)("keeps HTTP %i / %s distinct", async (status, code, expected, retryable) => {
+    const body = { error: { code, message: "Fixture note mentioning cyber_policy." } };
+    const f = setup(() => Response.json(body, { status }));
+    const onContentRefusal = vi.fn();
+    const result = await f.adapter.invoke(f.request, {
+      ...f.context,
+      typedRefusals: true,
+      onContentRefusal,
+    });
+    expect(result.problem).toMatchObject({
+      code: expected,
+      retryable,
+      context: { httpStatus: status },
+    });
+    if (code === "cyber_policy_other" || code === "provider_policy_refusal")
+      expect(result.problem?.context).not.toHaveProperty("vendorCode");
+    else expect(result.problem?.context.vendorCode).toBe(code);
+    expect(onContentRefusal).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain("Fixture note");
+  });
+  it("keeps a catalog failure separate from a refusal of the conversation", async () => {
+    const f = setup();
+    const body = { error: { code: "cyber_policy", message: "Catalog fixture." } };
+    f.fetcher.mockImplementation(async () => Response.json(body, { status: 403 }));
+    const onContentRefusal = vi.fn();
+    const result = await f.adapter.invoke(f.request, {
+      ...f.context,
+      typedRefusals: true,
+      onContentRefusal,
+    });
+    expect(result.problem).toMatchObject({
+      code: "provider_refused",
+      context: { vendorCode: "cyber_policy", httpStatus: 403 },
+    });
+    expect(onContentRefusal).not.toHaveBeenCalled();
+    expect(f.onDispatch).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain("Catalog fixture.");
+  });
   it("reads the provider's 408 as a request it did not receive: not delivered, retryable, one POST", async () => {
+    const requestId = "req_00000000000000000000000000000004";
     const fixture = setup(() =>
       Response.json(
         { error: { message: "DO_NOT_EXPOSE_BODY", code: "request_timeout" } },
-        { status: 408, headers: { "x-request-id": "req-408", "retry-after": "2" } },
+        { status: 408, headers: { "x-request-id": requestId, "retry-after": "2" } },
       ),
     );
     const result = await fixture.adapter.invoke(fixture.request, fixture.context);
@@ -1264,7 +1412,7 @@ describe("single-generation Codex adapter", () => {
       context: {
         httpStatus: 408,
         // The refusal's own facts stay beside the delivery fact.
-        requestId: "req-408",
+        requestId,
         vendorCode: "request_timeout",
         retryAfterMs: 2_000,
         generationStarted: false,

@@ -197,6 +197,8 @@ export async function executeModelOperation(
               ? "interrupted"
               : "failed";
     // Freeze the negotiated shape BEFORE publication; GET must keep its digest-bound bytes.
+    if ("failureEvidence" in result && params.captureFailureEvidence !== true)
+      delete result.failureEvidence;
     if ("effortResolution" in result && params.captureEffortEvidence !== true)
       delete result.effortResolution;
     if ("routing" in result && params.captureRoutingEvidence !== true) delete result.routing;
@@ -350,6 +352,7 @@ async function invokeModelOperation(
       signal,
       onDispatch,
       ...(params.captureFailureEvidence ? { captureFailureEvidence: true } : {}),
+      ...(params.typedRefusals ? { typedRefusals: true } : {}),
     }),
   );
 }

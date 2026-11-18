@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ControlModelOperationDetail, ModelUsage } from "@claudexor/schema";
+import { ControlModelOperationDetail, ControlOperationCatalog, ModelUsage } from "@claudexor/schema";
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "./daemon-server.js";
 import { parseCodexModelCatalog } from "../../harness-codex/src/model.js";
 import { OPERATION_CATALOG } from "./operation-catalog.js";
@@ -59,6 +59,48 @@ async function fixture(services: DaemonControlApiOptions["services"], recovery =
 }
 
 describe("raw model operation HTTP surface", () => {
+  it("discovers the typed refusal projection before creating a text operation", async () => {
+    const createModelOperation = vi.fn(async () => detail());
+    const f = await fixture({ createModelOperation });
+    const catalog = ControlOperationCatalog.parse(await (await f.request("/operations")).json());
+    const post = catalog.operations.find(
+      (op) => op.method === "POST" && op.path === "/v2/model-operations",
+    );
+    expect(post?.parameters).toContainEqual(
+      expect.objectContaining({ name: "typedRefusals", location: "query", enum: ["true", "false"] }),
+    );
+    const send = (query: string) =>
+      f.request(`/model-operations${query}`, { request: ref }, { "Idempotency-Key": "display" });
+    for (const query of ["", "?typedRefusals=false"]) {
+      expect((await send(query)).status).toBe(202);
+      expect(createModelOperation).toHaveBeenLastCalledWith(ref, "display");
+    }
+    expect((await send("?typedRefusals=true")).status).toBe(202);
+    expect(createModelOperation).toHaveBeenLastCalledWith(
+      ref,
+      "display",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+    const all = "?typedRefusals=true&captureFailureEvidence=true&captureRoutingEvidence=true";
+    expect((await send(all)).status).toBe(202);
+    expect(createModelOperation).toHaveBeenLastCalledWith(
+      ref,
+      "display",
+      true,
+      undefined,
+      undefined,
+      true,
+      true,
+    );
+    for (const value of ["", "1", "TRUE", "false&typedRefusals=true"])
+      expect((await send(`?typedRefusals=${value}`)).status).toBe(400);
+    expect(createModelOperation).toHaveBeenCalledTimes(4);
+  });
+
   it("negotiates exact failure capture without changing the body or unrelated query compatibility", async () => {
     const createModelOperation = vi.fn(async () => detail());
     const f = await fixture({ createModelOperation });

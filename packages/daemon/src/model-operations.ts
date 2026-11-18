@@ -95,16 +95,16 @@ export class ModelOperations {
     captureEffortEvidence?: boolean,
     requestKind?: ModelOperationRequestKind,
     captureRoutingEvidence?: boolean,
+    typedRefusals?: boolean,
   ): Promise<ControlModelOperationDetail> {
     if (this.closed) throw operationError("daemon_stopping", "Model operations are stopping", 503);
     if (
       requestKind !== undefined &&
-      (captureFailureEvidence || captureEffortEvidence || captureRoutingEvidence)
+      (captureFailureEvidence || captureEffortEvidence || captureRoutingEvidence || typedRefusals)
     ) {
-      // Image results carry no SSE/effort/routing evidence; refusing is honest, ignoring is not.
       throw operationError(
         "unsupported_parameter",
-        "requestKind=image cannot be combined with captureFailureEvidence, captureEffortEvidence or captureRoutingEvidence",
+        "requestKind=image cannot be combined with captureFailureEvidence, captureEffortEvidence, captureRoutingEvidence or typedRefusals",
         400,
       );
     }
@@ -113,6 +113,7 @@ export class ModelOperations {
       ...(captureFailureEvidence === true ? { captureFailureEvidence: true as const } : {}),
       ...(captureEffortEvidence === true ? { captureEffortEvidence: true as const } : {}),
       ...(captureRoutingEvidence === true ? { captureRoutingEvidence: true as const } : {}),
+      ...(typedRefusals === true ? { typedRefusals: true as const } : {}),
       ...(requestKind !== undefined ? { requestKind } : {}),
     };
     const envelope = {

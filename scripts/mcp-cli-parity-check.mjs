@@ -177,6 +177,11 @@ const BOOLEAN_FLAG_MAP = {
     mcp: "execution.isolation",
     reason: "explicit live isolation; omission remains an envelope on public MCP",
   },
+  "include-final-messages": {
+    mcp: "includeFinalMessages",
+    tool: "claudexor_run_result",
+    command: "inspect",
+  },
   json: { mcp: null, reason: "CLI output shaping, not a run control" },
   "json-stream": {
     mcp: null,
@@ -552,6 +557,32 @@ for (const declared of Object.keys(BOOLEAN_FLAG_MAP)) {
     failures.push(
       `BOOLEAN_FLAG_MAP declares '--${declared}' which is not a CLI boolean flag — stale mapping`,
     );
+  }
+}
+
+// Inspect and run_result select the same optional result projection.
+{
+  const flag = "include-final-messages";
+  const { mcp, tool, command } = BOOLEAN_FLAG_MAP[flag];
+  const reader = tools.find((entry) => entry.name === tool);
+  if (
+    reader?.annotations?.readOnlyHint !== true ||
+    reader.inputSchema.properties?.[mcp]?.type !== "boolean" ||
+    reader.inputSchema.required?.includes(mcp)
+  ) {
+    failures.push(`${tool} must accept the optional boolean '${mcp}' on its read`);
+  }
+  const cli = cliRegistry.CLI_COMMANDS.find((entry) => entry.id === command);
+  if (cli?.mutability !== "read" || !cli.flags.includes(flag)) {
+    failures.push(`${tool}.${mcp} requires ${command} --${flag}`);
+  }
+  for (const entry of cliRegistry.CLI_COMMANDS) {
+    if (entry.id !== command && entry.flags.includes(flag))
+      failures.push(`Result read flag '--${flag}' is also declared by '${entry.id}'`);
+  }
+  for (const entry of tools) {
+    if (entry.name !== tool && Object.hasOwn(entry.inputSchema.properties ?? {}, mcp))
+      failures.push(`Result read option '${mcp}' is also declared by '${entry.name}'`);
   }
 }
 

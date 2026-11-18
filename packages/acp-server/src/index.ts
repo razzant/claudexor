@@ -7,7 +7,7 @@ import {
   type Writable as NodeWritableStream,
 } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
-import { acpStopReason, RunOutcomeFacts } from "@claudexor/schema";
+import { acpStopReason, FinalMessagesOutcome, RunOutcomeFacts } from "@claudexor/schema";
 import {
   extractPromptText,
   renderPlanQuestions,
@@ -21,6 +21,7 @@ import { AcpClosedHandoffs, acpToolCallId, acpToolOwner, toolResultUpdate } from
 import { requestInteractionAnswers } from "./interaction-answers.js";
 
 export const ACP_PROTOCOL_VERSION = acp.PROTOCOL_VERSION;
+const finalMessagesResult = FinalMessagesOutcome.nullable();
 
 export interface RunnerHooks {
   onEvent?: (event: any) => void;
@@ -47,6 +48,8 @@ type AcpSessionRecord = {
   turns?: Array<{
     prompt?: string;
     output?: { kind?: string; text?: string; truncated?: boolean } | null;
+    /** #307: a run-backed turn's final-messages address, for a client that asked. */
+    run?: { runId: string; finalMessages: unknown };
   }>;
 };
 
@@ -106,8 +109,9 @@ export class AcpServer {
         };
       })
       .onRequest(acp.methods.agent.session.load, async ({ params, client }) => {
+        const requested = runControlsFromMeta(params._meta)["includeFinalMessages"] === true;
         this.assertProjectRoot(params.cwd);
-        const record = await this.sessionCall("load", params);
+        const record = await this.sessionCall("load", params, requested);
         // ACP loadSession MUST replay the ENTIRE conversation via session/update
         // BEFORE responding (QA-020). Emit the ordered user/agent pair per turn:
         // the stored user prompt as a user_message_chunk, then the run's typed
@@ -122,7 +126,19 @@ export class AcpServer {
             await this.agentMessage(client, record.sessionId, turn.output.text.trim());
           }
         }
-        return {};
+        // #307: typed addresses of the replayed runs, never a transcript line.
+        if (!requested) return {};
+        const turns = (record.turns ?? []).flatMap(({ run }) =>
+          run
+            ? [
+                {
+                  runId: run.runId,
+                  finalMessages: finalMessagesResult.parse(run.finalMessages ?? null),
+                },
+              ]
+            : [],
+        );
+        return { _meta: { claudexor: { turns } } };
       })
       .onRequest(acp.methods.agent.session.resume, async ({ params }) => {
         this.assertProjectRoot(params.cwd);
@@ -151,11 +167,12 @@ export class AcpServer {
         signal.addEventListener("abort", () => controller.abort(), { once: true });
         this.activeRuns.set(params.sessionId, controller);
         try {
-          const { mode: requestedMode, ...runControls } = controls;
+          const { mode: requestedMode, includeFinalMessages, ...runControls } = controls;
           const result = (await this.opts.runner(
             {
               ...runControls,
               mode: "__acp_session_prompt",
+              ...(includeFinalMessages === true ? { includeFinalMessages: true } : {}),
               ...(requestedMode !== undefined ? { runMode: requestedMode } : {}),
               sessionId: params.sessionId,
               prompt: extractPromptText(params.prompt),
@@ -200,6 +217,10 @@ export class AcpServer {
                 failure: result.failure ?? null,
                 applyEligibility: result.applyEligibility ?? null,
                 detailProblem: result.detailProblem ?? null,
+                // #307: only for a client that asked; null when unknown.
+                ...(includeFinalMessages === true
+                  ? { finalMessages: finalMessagesResult.parse(result.finalMessages ?? null) }
+                  : {}),
               },
             },
           };
@@ -221,12 +242,14 @@ export class AcpServer {
   private async sessionCall(
     action: "new" | "load" | "resume",
     params: Record<string, unknown>,
+    includeFinalMessages = false,
   ): Promise<AcpSessionRecord> {
     return (await this.opts.runner({
       mode: `__acp_session_${action}`,
       sessionId: params["sessionId"],
       repoPath: params["cwd"],
       additionalDirectories: params["additionalDirectories"],
+      ...(includeFinalMessages ? { includeFinalMessages: true } : {}),
     })) as AcpSessionRecord;
   }
 

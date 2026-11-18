@@ -43,6 +43,7 @@ import {
   type ModelAdapter,
 } from "@claudexor/core";
 import { createCredentialProfilesService } from "./accounts-services.js";
+import { routingEvidenceLines } from "./account-routing-read.js";
 import { updateGlobalConfig } from "@claudexor/config";
 import { accountObservations } from "./account-observations.js";
 
@@ -190,6 +191,7 @@ async function fixture(
   const socket =
     process.platform === "win32" ? `\\\\.\\pipe\\cx-ms-${randomUUID()}` : join(root, "daemon.sock");
   const client = new DaemonClient(socket, "fixture-control");
+  const warn = vi.fn();
   const services = createModelServices({
     commands,
     resourceQueries: commands.queries,
@@ -201,6 +203,7 @@ async function fixture(
     substitutions,
     capabilities,
     refusals,
+    warn,
     migrationGate: () => null,
     // These provider/readiness stubs read no native program; program-observation tests own that boundary.
     registry: new Map([
@@ -246,6 +249,7 @@ async function fixture(
     account: ModelCallRequest["account"] = { mode: "auto" },
     changes: Partial<ModelCallRequest> = {},
     captureRoutingEvidence = true,
+    typedRefusals?: boolean,
   ) => {
     const ref = resources().publishModel(
       Buffer.from(
@@ -268,6 +272,7 @@ async function fixture(
       undefined,
       undefined,
       captureRoutingEvidence ? true : undefined,
+      typedRefusals,
     );
     // Dispatch waits on the store's durable barrier (one flusher pass, 200 ms cadence);
     // vitest's 1 s default is too tight for that on a contended host.
@@ -306,6 +311,7 @@ async function fixture(
     incomplete,
     clock,
     client,
+    warn,
     agentRunner,
     run,
   };
@@ -1680,6 +1686,205 @@ describe("account/model capability routing", () => {
     f.failureContext.a = refusal;
     return f;
   }
+
+  async function codexFixture(reply: (account: string) => Response) {
+    const posts = vi.fn(reply);
+    const catalogs = vi.fn((_account: string) =>
+      Response.json({ models: [{ slug: "test-model" }] }),
+    );
+    const adapter = createCodexModelAdapter({
+      now: () => 1900000000000,
+      clientVersion: async () => ({ version: "0.156.1", source: "verified_transport" }),
+      readAuthFile: async (path) => {
+        const id = basename(dirname(path));
+        const token = (claims: object) =>
+          `fixture.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
+        return JSON.stringify({
+          tokens: {
+            account_id: id,
+            access_token: token({ exp: 2100000000 }),
+            id_token: token({ sub: id }),
+          },
+        });
+      },
+      fetch: async (_url, init) => {
+        const id = new Headers(init?.headers).get("chatgpt-account-id")!;
+        return init?.method === "POST" ? posts(id) : catalogs(id);
+      },
+      refresh: async () => {
+        throw new Error("No refresh in the synthetic response fixture.");
+      },
+    });
+    const f = await fixture({ adapter });
+    process.env.CLAUDEXOR_CONFIG_DIR = f.root;
+    updateGlobalConfig(() => f.cfg);
+    return { ...f, posts, catalogs };
+  }
+
+  it.each([false, true])(
+    "a content refusal authorizes no retry and creates no account evidence (typedRefusals=%s)",
+    async (typedRefusals) => {
+      const privateWords = "The picnic fixture has a lavender napkin.";
+      const f = await codexFixture(() =>
+        Response.json(
+          { error: { code: "cyber_policy", message: privateWords } },
+          { status: 400, headers: { "retry-after": "17", "x-request-id": privateWords } },
+        ),
+      );
+      const account = { mode: "auto", preferredProfileId: "a" } as const;
+      const first = await f.run(account, {}, true, typedRefusals);
+      expect(first).toMatchObject({
+        state: "failed",
+        dispatch: { state: "response_received", route: { credentialProfileId: "a", model: null } },
+        problem: {
+          code: typedRefusals ? "provider_content_refused" : "invalid_request",
+          retryable: false,
+          context: { vendorCode: "cyber_policy", httpStatus: 400 },
+        },
+      });
+      expect(first.problem!.context).not.toHaveProperty("retryOnOtherAccount");
+      expect(first.problem!.context).not.toHaveProperty("generationStarted");
+      const next = await f.run(account, { retryOfOperationId: first.id }, true, typedRefusals);
+      expect(next).toMatchObject({
+        dispatch: { state: "not_started" },
+        problem: { code: "model_retry_invalid" },
+      });
+      expect(f.posts.mock.calls).toEqual([["a"]]);
+      expect(f.catalogs.mock.calls).toEqual([["a"]]);
+      expect(f.agentRunner).not.toHaveBeenCalled();
+      expect(f.refusals.live()).toEqual([]);
+      expect(f.capabilities.live()).toEqual([]);
+      expect(f.unusable.live()).toEqual([]);
+      expect(f.substitutions.live()).toEqual([]);
+      expect(f.quota.read().snapshots).toEqual([]);
+      const { bytes } = await f.services.routes.readModelResult(first.id);
+      const result = ModelCallResult.parse(JSON.parse(bytes.toString()));
+      expect(result).not.toHaveProperty("failureEvidence");
+      const accounts = await f.routingStatus({ capabilities: true, credentialUnusable: true });
+      const lines = routingEvidenceLines({ routingEvidence: accounts }, "codex", "a");
+      expect(lines).toEqual([]);
+      const visible = JSON.stringify([first, result, accounts, f.warn.mock.calls]);
+      expect(visible).not.toContain(privateWords);
+    },
+  );
+
+  it.each([false, true])(
+    "a completed refusal cannot confirm the first account (typedRefusals=%s)",
+    async (typedRefusals) => {
+      const privateWords = "Only the fixture knows the napkin colour.";
+      const refused = { type: "refusal", refusal: "" };
+      const event = {
+        type: "response.completed",
+        response: {
+          model: "test-model",
+          usage: { input_tokens: 9, output_tokens: 2 },
+          output: [{ type: "message", role: "assistant", content: [refused] }],
+        },
+      };
+      const f = await codexFixture((id) =>
+        id === "a"
+          ? Response.json(
+              { error: { code: "model_not_supported", message: privateWords } },
+              { status: 400 },
+            )
+          : new Response(`data: ${JSON.stringify(event)}\n\n`),
+      );
+      const account = { mode: "auto", preferredProfileId: "a" } as const;
+      const first = await f.run(account, {}, true, typedRefusals);
+      expect(first.problem?.context.retryOnOtherAccount).toBe(true);
+      const before = f.capabilities.live();
+      expect(before).toMatchObject([{ profile_id: "a", state: "provisional" }]);
+      const second = await f.run(account, { retryOfOperationId: first.id }, true, typedRefusals);
+      expect(second).toMatchObject({
+        state: "succeeded",
+        dispatch: { state: "response_received", route: { credentialProfileId: "b" } },
+        routing: { differentialOutcome: "inconclusive" },
+        usage: { input_tokens: 9, output_tokens: 2 },
+        problem: null,
+      });
+      const { bytes } = await f.services.routes.readModelResult(second.id);
+      expect(ModelCallResult.parse(JSON.parse(bytes.toString()))).toMatchObject({
+        outcome: "completed",
+        message: { role: "assistant", content: typedRefusals ? [refused] : "" },
+      });
+      expect(f.capabilities.live()).toEqual(before);
+      expect(f.posts.mock.calls).toEqual([["a"], ["b"]]);
+      const accounts = await f.routingStatus({ capabilities: true });
+      const lines = routingEvidenceLines({ routingEvidence: accounts }, "codex", "a");
+      expect(lines.join(" ")).toContain("model_not_supported");
+      const visible = JSON.stringify([first, second, accounts, lines, f.warn.mock.calls]);
+      expect(visible).not.toContain(privateWords);
+    },
+  );
+  it("protects the factual code in a legacy Codex error without an adapter callback", async () => {
+    const f = await fixture();
+    f.failures.a = "provider_refused";
+    f.failureContext.a = { httpStatus: 403, vendorCode: "cyber_policy", retryAfterMs: 1000 };
+    const invoke = f.invoke.getMockImplementation()!;
+    f.invoke.mockImplementationOnce(async (request, context) => {
+      const result = await invoke(request, context);
+      return { ...result, problem: { ...result.problem!, retryable: true } };
+    });
+    const done = await f.run({ mode: "auto", preferredProfileId: "a" }, {}, false);
+    expect(done.problem).toMatchObject({ code: "provider_refused", retryable: false });
+    expect(done.problem?.context).not.toHaveProperty("retryOnOtherAccount");
+    expect(f.refusals.live()).toEqual([]);
+    expect(f.capabilities.live()).toEqual([]);
+    expect(f.quota.read().snapshots).toEqual([]);
+    expect(f.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("a content refusal leaves a due account probe and substitution history intact", async () => {
+    let probing = false;
+    const f = await codexFixture(() => {
+      if (!probing)
+        return Response.json({ error: { code: "model_not_supported" } }, { status: 400 });
+      const content = [{ type: "refusal", refusal: "" }];
+      const response = {
+        model: "different-model",
+        output: [{ type: "message", role: "assistant", content }],
+      };
+      return new Response(`data: ${JSON.stringify({ type: "response.completed", response })}\n\n`);
+    });
+    f.cfg.credential_profiles[1]!.enabled = false;
+    const first = await f.run();
+    expect(first.problem?.code).toBe("model_capability_refused");
+    f.clock.now += 4 * 60 * 60_000;
+    const before = f.capabilities.live();
+    expect(before).toMatchObject([{ profile_id: "a", state: "probe_due" }]);
+    probing = true;
+    const probe = await f.run(
+      { mode: "auto" },
+      { messages: [{ role: "user", content: "A different picnic question." }] },
+    );
+    expect(probe).toMatchObject({ state: "succeeded", routing: { selectionReason: "probe" } });
+    const { bytes } = await f.services.routes.readModelResult(probe.id);
+    expect(ModelCallResult.parse(JSON.parse(bytes.toString()))).toMatchObject({
+      modelMismatch: { requested: "test-model", observed: "different-model" },
+      message: { role: "assistant", content: "" },
+    });
+    expect(f.capabilities.live()).toEqual(before);
+    expect(f.substitutions.live()).toEqual([]);
+    expect(f.posts.mock.calls).toEqual([["a"], ["a"]]);
+  });
+  it("still records a real availability cooldown when the display option is enabled", async () => {
+    const f = await codexFixture(() =>
+      Response.json(
+        { error: { code: "server_error", message: "The fixture is busy." } },
+        { status: 503, headers: { "retry-after": "60" } },
+      ),
+    );
+    const first = await f.run({ mode: "auto", preferredProfileId: "a" }, {}, true, true);
+    expect(first.problem).toMatchObject({
+      code: "provider_failed",
+      retryable: true,
+      context: { httpStatus: 503, vendorCode: "server_error", retryAfterMs: 60000 },
+    });
+    expect(f.quota.read().snapshots).toMatchObject([{ subject: { subject_id: "a" } }]);
+    expect(f.capabilities.live()).toEqual([]);
+    expect(f.refusals.live()).toEqual([]);
+    expect(f.posts.mock.calls).toEqual([["a"]]);
+  });
   it.each([
     { capabilityKind: "model_not_supported", capabilityEvidence: "provider_text" },
     { capabilityKind: "model_not_found", capabilityEvidence: "provider_text" },

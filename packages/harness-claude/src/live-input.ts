@@ -1,6 +1,7 @@
 import type { ChildStdin, LiveMessageResult } from "@claudexor/core";
 import type { HarnessEvent } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
+import { isClaudeRateLimitRefusal } from "./context-signals.js";
 import { isResultFrame, isSuccessResultFrame, userMessageFrame } from "./interactive.js";
 
 type Json = any;
@@ -39,7 +40,27 @@ type Json = any;
  *   `foreign_result` status, never this run's error, answer or context limit.
  *   A result naming the prompt or a live message keeps its meaning, and so does
  *   one naming no command or arriving once the prompt has ended, which may be
- *   this run's own later work.
+ *   this run's own later work;
+ * - closing stdin ends writing, not the stream: the CLI still drains its queue
+ *   and a background task may still report, so the session stays until the
+ *   run's stream ends (`stream`, which forgets it on every path, cancellation
+ *   and an exception included). Until then a message already written keeps its
+ *   late receipts (acceptance, echo, lifecycle state, a result's uuid list),
+ *   and a result keeps the owner the rules above give it whatever closed
+ *   stdin: another turn's result stays a `foreign_result` (#627);
+ * - the API's quota refusal of a command this session sent closes its input
+ *   once (#627): when the prompt's or a live message's own result is the
+ *   failed request with the typed HTTP status 429 (`is_error`,
+ *   `api_error_status`) and the latest rate-limit frame of that native turn
+ *   refused it (status `rejected|blocked`), no turn of this attempt can answer
+ *   any more, so `closeStdinOn` closes stdin on that result whatever holds it
+ *   (a queued message, a background task, the prompt), and a later message
+ *   finds no live session. Only writing ends: what the CLI already read may
+ *   still run, background work stays in the run's custody, and receipts follow
+ *   until the stream ends. A warning frame, a refusal that a later frame of the
+ *   same turn allows, an earlier turn's refusal, any other failure or success,
+ *   another turn's result and a result naming no command once the prompt ended
+ *   keep every hold.
  *
  * Receipts are typed from the adapter's own state, never from vendor prose
  * (INV-049): `accepted` = the `queued` lifecycle frame for this uuid;
@@ -48,33 +69,40 @@ type Json = any;
  * deadline (`response_timeout`; the message write is fire-and-forget, so a
  * dead pipe surfaces this way) or a session closed with the
  * message still unreceipted (`transport_lost`); `rejected` = a
- * `cancelled|discarded|refused` lifecycle state before consumption. A message
- * never cancels or fails the run.
+ * `cancelled|discarded|refused` lifecycle state before consumption. A request
+ * already answered `delivery_unknown` keeps that answer: a later `queued` frame
+ * is one `live_input_accepted` status (acceptance only, never consumption, and
+ * nothing is written again), later consumption still `live_input_delivered`.
+ * A message never cancels or fails the run.
  */
 export const CLAUDE_LIVE_ACCEPT_DEADLINE_MS = 2_000;
 
 /** The one consumption receipt; the same code Codex emits for its steer echo. */
 export const LIVE_INPUT_DELIVERED = "live_input_delivered";
 export const LIVE_INPUT_REFUSED = "live_input_refused";
+/** The native acceptance of a message whose request was answered `delivery_unknown`. */
+export const LIVE_INPUT_ACCEPTED = "live_input_accepted";
 /** The diagnostic status code of a result that answered another turn. */
 export const FOREIGN_RESULT = "foreign_result";
 
-type PendingState = "sent" | "queued" | "started" | "unknown" | "consumed" | "refused";
-/** Forward-only lifecycle: an echo that beats `queued` must not be downgraded by it.
- * `unknown` = the acceptance deadline passed (the message may still land; a late
- * echo is still receipted) and it no longer holds stdin open. */
+/** The typed HTTP status (`api_error_status`) of a request the API refused for
+ * quota; the orchestrator gives the same status the same reading. */
+const QUOTA_REFUSAL_HTTP_STATUS = 429;
+
+type PendingState = "sent" | "queued" | "started" | "consumed" | "refused";
+/** Native lifecycle only. Settling the request on timeout does not advance it. */
 const RANK: Record<PendingState, number> = {
   sent: 0,
   queued: 1,
   started: 2,
-  unknown: 2,
   consumed: 3,
   refused: 3,
 };
 
 interface Pending {
   state: PendingState;
-  settled: boolean;
+  /** The request settles once. Native evidence can keep arriving on the stream. */
+  requestOutcome: LiveMessageResult["outcome"] | null;
   settle: (result: LiveMessageResult) => void;
   /** The single `live_input_delivered` status event was emitted. */
   announced: boolean;
@@ -92,11 +120,19 @@ interface CurrentPrompt {
 }
 
 interface LiveSession {
+  /** `null` once stdin closed: writing ended, while the stream may go on. */
   io: ChildStdin | null;
   pending: Map<string, Pending>;
   resultsSeen: number;
   openBackgroundTasks: Set<string>;
   prompt: CurrentPrompt | null;
+  /** The latest rate-limit frame of the current native turn refused the
+   * request; reset when the turn's `system/init` or result arrives, so it is
+   * evidence about that turn's own result only. */
+  turnRefusedByRateLimit: boolean;
+  /** A command this session sent ended on the API's quota refusal (#627): its
+   * input closes, whatever would hold it. */
+  quotaRefused: boolean;
 }
 
 /** Lifecycle states after which a stdin command runs no more. */
@@ -116,13 +152,25 @@ export interface ClaudeLiveInput {
    * result that answered another turn come back rebuilt as diagnostics.
    */
   observe(obj: Json, events: HarnessEvent[] | null, sessionId: string): HarnessEvent[] | null;
-  /** runloop `session.closeStdinOn`: true only when nothing keeps the session open. */
+  /** runloop `session.closeStdinOn`: true when nothing keeps the session open,
+   * or once its own command met the API's quota refusal (#627). */
   closeStdinOn(sessionId: string, obj: Json): boolean;
   /** `HarnessAdapter.message` for this adapter. */
   message(
     sessionId: string,
     input: { messageId: string; text: string },
   ): Promise<LiveMessageResult>;
+  /**
+   * The run's whole event stream: the session's correlations last until it
+   * ends (closing stdin ends writing only), and then the session is forgotten,
+   * on completion, cancellation or an exception alike. `promptUuid` names this
+   * run, so a later run's session under the same id is never ended by it.
+   */
+  stream(
+    sessionId: string,
+    promptUuid: string,
+    events: AsyncIterable<HarnessEvent>,
+  ): AsyncIterable<HarnessEvent>;
 }
 
 export interface ClaudeLiveInputOptions {
@@ -136,6 +184,17 @@ function lifecycleUuid(obj: Json): string | null {
 
 function taskId(obj: Json): string | null {
   return typeof obj?.task_id === "string" ? obj.task_id : null;
+}
+
+function commandsNamed(obj: Json): string[] {
+  const uuids: unknown[] = Array.isArray(obj.user_message_uuids) ? obj.user_message_uuids : [];
+  return uuids.filter((uuid): uuid is string => typeof uuid === "string");
+}
+
+/** A result whose API request the vendor refused for quota, read from its
+ * typed fields only, never its prose (INV-049). */
+function isQuotaRefusedResult(obj: Json): boolean {
+  return obj.is_error === true && obj.api_error_status === QUOTA_REFUSAL_HTTP_STATUS;
 }
 
 /** One event of a result that answered another turn: usage stays this run's
@@ -197,10 +256,18 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
     // session's earlier turn) is not its own result.
     if (session.prompt?.reported && !session.prompt.ended) return true;
     for (const pending of session.pending.values()) {
-      if (pending.state === "sent" || pending.state === "queued" || pending.state === "started")
-        return true;
+      if (pending.requestOutcome === null) return true;
+      if (pending.state === "queued" || pending.state === "started") return true;
     }
     return false;
+  };
+
+  /** Nothing more can be written: a message still awaiting its `queued` frame
+   * may have landed (the CLI drains its queue past EOF), so its request is
+   * answered unknown; a late receipt may still follow on the stream. */
+  const loseTransport = (session: LiveSession): void => {
+    for (const pending of session.pending.values())
+      pending.settle({ outcome: "delivery_unknown", reason: "transport_lost" });
   };
 
   return {
@@ -212,18 +279,16 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
           resultsSeen: 0,
           openBackgroundTasks: new Set(),
           prompt: promptUuid ? { uuid: promptUuid, reported: false, ended: false } : null,
+          turnRefusedByRateLimit: false,
+          quotaRefused: false,
         });
         return;
       }
-      // stdin is closed: nothing can be written any more, and the correlations
-      // end with the session — a message still awaiting its `queued` frame may
-      // have landed (the CLI drains its queue past EOF), so it is unknown.
+      // stdin is closed, the stream is not: the session stays until `stream` ends.
       const session = sessions.get(sessionId);
       if (!session) return;
       session.io = null;
-      for (const pending of session.pending.values())
-        pending.settle({ outcome: "delivery_unknown", reason: "transport_lost" });
-      sessions.delete(sessionId);
+      loseTransport(session);
     },
 
     observe(obj, events, sessionId) {
@@ -241,8 +306,18 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
           if (COMMAND_END_STATES.has(state)) prompt.ended = true;
         }
         if (pending && uuid && pending.state !== "refused") {
-          if (state === "queued") {
-            if (advance(pending, "queued")) pending.settle({ outcome: "accepted" });
+          if (state === "queued" && advance(pending, "queued")) {
+            pending.settle({ outcome: "accepted" });
+            // The request was answered unknown: its late acceptance is a status.
+            if (pending.requestOutcome === "delivery_unknown") {
+              receipts.push({
+                type: "status",
+                session_id: sessionId,
+                ts: nowIso(),
+                text: `live message ${uuid} queued by the running session after an unknown delivery`,
+                payload: { code: LIVE_INPUT_ACCEPTED, message_id: uuid },
+              });
+            }
           } else if (state === "started") {
             consumed(session, sessionId, uuid, "started", receipts);
           } else if (state === "completed") {
@@ -271,6 +346,12 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
         // initial prompt's echo (or any foreign uuid) is not ours to receipt.
         if (typeof obj.uuid === "string")
           consumed(session, sessionId, obj.uuid, "started", receipts);
+      } else if (type === "rate_limit_event") {
+        // The turn's latest rate-limit status decides whether it refused.
+        session.turnRefusedByRateLimit = isClaudeRateLimitRefusal(obj);
+      } else if (type === "system" && obj.subtype === "init") {
+        // A native turn starts: an earlier refusal is no evidence about it.
+        session.turnRefusedByRateLimit = false;
       } else if (type === "system" && obj.subtype === "task_started") {
         // A run-owned BACKGROUND task keeps the session open past the result;
         // foreground tools emit the same frame with is_backgrounded:false.
@@ -284,20 +365,31 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
         if (id) session.openBackgroundTasks.delete(id);
       } else if (type === "result") {
         session.resultsSeen += 1;
-        const uuids: unknown[] = Array.isArray(obj.user_message_uuids)
-          ? obj.user_message_uuids
-          : [];
-        const named = uuids.filter((uuid): uuid is string => typeof uuid === "string");
+        const named = commandsNamed(obj);
         const prompt = session.prompt;
+        // The result of a command this session sent: its prompt or a live message.
+        let own =
+          (prompt !== null && named.includes(prompt.uuid)) ||
+          named.some((uuid) => session.pending.has(uuid));
+        // Ownership follows the stream, never whether stdin is still open (#627).
         if (prompt && !prompt.ended) {
           if (named.includes(prompt.uuid)) prompt.ended = true;
           // Only commands this session never sent: another turn's result, so
           // none of them is pending and there is no receipt to add.
-          else if (named.length > 0 && !named.some((uuid) => session.pending.has(uuid))) {
+          else if (named.length > 0 && !own) {
             prompt.reported = true;
             return events && events.map((event) => foreignResultEvent(event, named));
-          } else if (named.length === 0 && !isSuccessResultFrame(obj)) prompt.ended = true;
+          } else if (named.length === 0 && !isSuccessResultFrame(obj)) {
+            // An error naming no command ends the prompt: it is the prompt's own.
+            prompt.ended = true;
+            own = true;
+          }
         }
+        if (session.io && own && session.turnRefusedByRateLimit && isQuotaRefusedResult(obj))
+          session.quotaRefused = true;
+        // An unnamed result can end a native turn unless an identified prompt still awaits its own.
+        if (own || (named.length === 0 && (!prompt?.reported || prompt.ended)))
+          session.turnRefusedByRateLimit = false;
         for (const uuid of named) consumed(session, sessionId, uuid, "consumed", receipts);
       }
       if (receipts.length === 0) return events;
@@ -307,6 +399,9 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
     closeStdinOn(sessionId, obj) {
       const session = sessions.get(sessionId);
       if (!session) return isResultFrame(obj);
+      // The run loop asks right after `observe` parsed this frame, so the
+      // refused result itself closes the input; it cannot be reopened.
+      if (!session.io || session.quotaRefused) return true;
       if (session.resultsSeen === 0) return false;
       return !hasPendingTurnWork(session) && session.openBackgroundTasks.size === 0;
     },
@@ -320,11 +415,11 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
         let timer: NodeJS.Timeout | null = null;
         const pending: Pending = {
           state: "sent",
-          settled: false,
+          requestOutcome: null,
           announced: false,
           settle: (result) => {
-            if (pending.settled) return;
-            pending.settled = true;
+            if (pending.requestOutcome !== null) return;
+            pending.requestOutcome = result.outcome;
             if (timer) clearTimeout(timer);
             resolve(result);
           },
@@ -332,9 +427,7 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
         // Registered BEFORE the write: an echo that beats `queued` still correlates.
         session.pending.set(input.messageId, pending);
         timer = setTimeout(() => {
-          // No `queued` within the bound: unknown (the CLI may still take it), and
-          // the message stops holding stdin; a late echo is still receipted.
-          advance(pending, "unknown");
+          // Release the initial hold. A late native acknowledgement can still hold stdin open.
           pending.settle({ outcome: "delivery_unknown", reason: "response_timeout" });
         }, acceptDeadlineMs);
         try {
@@ -343,6 +436,19 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
           pending.settle({ outcome: "delivery_unknown", reason: "transport_lost" });
         }
       });
+    },
+
+    async *stream(sessionId, promptUuid, events) {
+      try {
+        yield* events;
+      } finally {
+        const session = sessions.get(sessionId);
+        // A later run's session under the same id is not this stream's to end.
+        if (session && (session.prompt === null || session.prompt.uuid === promptUuid)) {
+          loseTransport(session);
+          sessions.delete(sessionId);
+        }
+      }
     },
   };
 }

@@ -46,6 +46,7 @@ export interface ModelRouteServices {
     captureEffortEvidence?: boolean,
     requestKind?: RequestKind,
     captureRoutingEvidence?: boolean,
+    typedRefusals?: boolean,
   ): Promise<unknown>;
   getModelOperation(id: string, includePreparation?: boolean): Promise<unknown>;
   readModelResult(id: string): Promise<{ bytes: Buffer; sha256: string }>;
@@ -155,49 +156,29 @@ export async function handleModelRoute(
       const effort = optionalBooleanQuery(query, "captureEffortEvidence");
       const capture = optionalBooleanQuery(query, "captureFailureEvidence");
       const routing = optionalBooleanQuery(query, "captureRoutingEvidence");
-      // Image results carry neither SSE, effort nor routing evidence: refuse, never ignore.
-      if (requestKind !== undefined && (effort === true || capture === true || routing === true))
+      const typedRefusals = optionalBooleanQuery(query, "typedRefusals");
+      if (requestKind !== undefined && (effort || capture || routing || typedRefusals))
         throw new Error(
-          "requestKind=image cannot be combined with captureEffortEvidence, captureFailureEvidence or captureRoutingEvidence",
+          "requestKind=image cannot be combined with captureEffortEvidence, captureFailureEvidence, captureRoutingEvidence or typedRefusals",
         );
-      return {
-        key: requiredIdempotencyKey(req),
-        body: ControlModelOperationCreateRequest.parse(await ctx.readBody(req)),
-        effort,
-        capture,
-        routing,
+      const key = requiredIdempotencyKey(req);
+      const { request } = ControlModelOperationCreateRequest.parse(await ctx.readBody(req));
+      const args: Parameters<ModelRouteServices["createModelOperation"]> = [
+        request,
+        key,
+        capture || undefined,
+        effort || undefined,
         requestKind,
-      };
+        routing || undefined,
+        typedRefusals || undefined,
+      ];
+      // Preserve the legacy service call when a caller omits or disables an option.
+      while (args.at(-1) === undefined) args.pop();
+      return args;
     });
     if (!input.ok) return true;
     const value = await routeValue(ctx, res, 500, () =>
-      input.value.requestKind !== undefined
-        ? services.createModelOperation!(
-            input.value.body.request,
-            input.value.key,
-            undefined,
-            undefined,
-            input.value.requestKind,
-          )
-        : input.value.routing === true
-          ? services.createModelOperation!(
-              input.value.body.request,
-              input.value.key,
-              input.value.capture === true ? true : undefined,
-              input.value.effort === true ? true : undefined,
-              undefined,
-              true,
-            )
-          : input.value.effort === true
-            ? services.createModelOperation!(
-                input.value.body.request,
-                input.value.key,
-                input.value.capture === true ? true : undefined,
-                true,
-              )
-            : input.value.capture === true
-              ? services.createModelOperation!(input.value.body.request, input.value.key, true)
-              : services.createModelOperation!(input.value.body.request, input.value.key),
+      services.createModelOperation!(...input.value),
     );
     if (!value.ok) return true;
     return serviceResponse(ctx, res, "createModelOperation", () =>
@@ -412,7 +393,7 @@ export const MODEL_OPERATION_DRAFTS: OperationDraft[] = [
         name: "requestKind",
         enum: ["image"],
         description:
-          "Select ImageCallRequest for the uploaded model-purpose JSON payload and ImageCallResult for the result bytes (generated payload schemas, not the query value). Omitted keeps ModelCallRequest/ModelCallResult byte-for-byte. Bound to idempotency; cannot be combined with the evidence-capture flags. Absent from this descriptor means the engine has no image operations.",
+          "Select ImageCallRequest for the uploaded model-purpose JSON payload and ImageCallResult for the result bytes (generated payload schemas, not the query value). Omitted keeps ModelCallRequest/ModelCallResult byte-for-byte. Bound to idempotency. Only text operations support evidence capture and typed refusals. Absent from this descriptor means the engine has no image operations.",
       }),
       queryParam({
         name: "captureEffortEvidence",
@@ -431,6 +412,12 @@ export const MODEL_OPERATION_DRAFTS: OperationDraft[] = [
         enum: ["true", "false"],
         description:
           "Attach account-routing evidence (selection reason, differential outcome, pool events) to the result, receipt and detail. Omitted or false preserves the legacy shapes for strict clients; the choice is bound to idempotency. Capability refusal facts in problem.context are not gated.",
+      }),
+      queryParam({
+        name: "typedRefusals",
+        enum: ["true", "false"],
+        description:
+          "For text operations, report a failed Codex cyber_policy response as provider_content_refused with retryable=false. Assistant content containing a refusal preserves ordered {type:'text',text} and {type:'refusal',refusal} parts. Omitted or false keeps the legacy result shape. Bound to idempotency and independent of captureFailureEvidence.",
       }),
     ],
     idempotency: "key_required",

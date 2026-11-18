@@ -45,39 +45,56 @@ it stays first even when its catalog does not list the model (catalogs can lag).
 A marked account remains usable as a last fallback. Catalog acquisition failure
 does not become an advisory miss.
 
+## Content refusals
+
+Read `GET /v2/operations` before creating the operation. If
+`post:model-operations` advertises `typedRefusals`, the caller can request
+`POST /v2/model-operations?typedRefusals=true` for one text operation. This
+choice is bound to the idempotency key. Omission keeps the legacy error codes
+and plain-text representation.
+
+For a failed Codex inference, `problem.context.vendorCode = cyber_policy`
+from an HTTP error or a stream error (`error` or `response.failed`) produces
+`provider_content_refused` in the typed view, with `retryable: false`.
+End the request even if a fallback account or model is configured. Account
+evidence stays intact. This error does not establish whether generation
+started. Public diagnostics withhold unrecognized provider codes and field
+names. Exact HTTP or stream failure bytes require the separate
+`captureFailureEvidence=true` opt-in and stay in the private result.
+
+A completed assistant message containing a refusal part is still an answer.
+The typed view preserves ordered `{type: "text", text}` and
+`{type: "refusal", refusal}` parts, usage and any `tool_calls`. A plain answer
+stays a string. Either kind of content refusal is inconclusive in an account
+comparison and leaves model marks and probe deadlines intact.
+
 ## Refusals before generation
 
-Two kinds of pre-generation refusal on an auto operation demote the account and
-can grant one correlated retry.
+Two pre-generation failures on Auto can demote the account for the requested
+model and grant one correlated retry. A recognized HTTP 400/404 carries
+`model_capability_refused`. Evidence is a `model_not_found` or
+`model_not_supported` code, the Codex ChatGPT unsupported-model sentence, or
+a recognized missing-model sentence naming the requested model. It records
+both a provisional capability mark and a pre-progress refusal observation.
 
-A recognized capability refusal carries `problem.code = model_capability_refused`.
-Only pre-generation HTTP 400/404 refusals enter this channel. Recognized cases
-are `model_not_found`/`model_not_supported`, the exact Codex ChatGPT-account
-unsupported-model sentence, and narrowly matched missing-model sentences. It
-records a provisional capability mark at once, plus the pre-progress refusal
-observation described below.
+An eligible unclassified provider refusal keeps its error code and
+`retryable` value and adds `capabilityKind=unclassified`. It requires an HTTP
+4xx other than 401, 408, 409 or 429. Content refusals, authentication
+(`auth_*`, `credential_unusable`), quota (`subscription_window_exhausted`),
+rate limits (`rate_limited`), `processing_unavailable` and typed request
+faults (`unsupported_parameter`, `model_request_invalid`,
+`invalid_continuation`, `model_retry_invalid`) are excluded, as are
+`context_length_exceeded` and errors naming a non-model `parameter`. Other
+provider prose has no bearing on classification.
 
-Any other definite provider refusal before generation keeps its own code and
-`retryable`, and gains the same context with `capabilityKind = unclassified`.
-It qualifies when the provider answered HTTP 4xx other than 401, 408, 409 and
-429; the code is not one that sign-in (`auth_*`, `credential_unusable`), quota
-(`subscription_window_exhausted`), rate limits (`rate_limited`) or the processing
-fallback (`processing_unavailable`) own, nor a typed request fault
-(`unsupported_parameter`, `model_request_invalid`, `invalid_continuation`,
-`model_retry_invalid`); the vendor code is not `context_length_exceeded`; and no
-non-model `parameter` is named. Its wording is never read. The account at once
-records the pre-progress refusal observation for that model, shared with Agent
-runs: it orders after accounts with neither an observation nor a capability row
-(and before capability-marked ones) for one hour or until it serves the model, and
-it is not a capability row. A refusal from an older in-flight model operation does
-not undo a newer model operation's service. The correlated retry decides the rest.
-Service on another account proves the first account at fault and turns its
-refusal into an ordinary confirmed mark whose reason is the refusal's structural
-diagnostic (the engine's message and the vendor's typed code). Any refusal there marks
-nothing for the first account, because the request itself may be at fault; the
-second account is treated by its own refusal's kind, and both stay ordered behind
-clean accounts (ahead of capability-marked ones) until their observations expire or
-they serve.
+The unclassified refusal records only the pre-progress observation. For up to
+one hour it orders the account behind clean accounts and ahead of marked
+ones in Agent and model selection. Service on that account clears it, and an
+older failure cannot undo newer service. If the correlated request succeeds
+elsewhere on the requested model, the first account receives a confirmed mark
+with the engine diagnostic and typed vendor code. A second refusal leaves the
+first account with its observation only. The second account's own evidence
+determines its place in selection.
 
 Server failures (5xx), stream errors without an HTTP status, uncertain delivery,
 failures after generation started and pinned operations enter neither channel;
@@ -93,7 +110,7 @@ Read these fields from `problem.context`:
 | `operationId` | Operation that returned this problem |
 | `source`, `requestedModel` | Requested transport and model |
 | `credentialProfileId`, `accountFingerprint` | Refusing account; fingerprint may be null. On a correlated retry refusal they name the first account for `equivalent_refusal` and the retry's own account otherwise: attribute accounts from `accountsTried` and `modelMarks` |
-| `providerReason` | Recognized: provider reason, processed by the shared secret redactor and bounded to 1024 characters; absent for `unclassified` (each account's diagnostic is in `accountsTried`) |
+| `providerReason` | For either recognized message form naming the requested model, the full matching text is redacted and limited to 1,024 characters. A match on vendor code alone exposes only the capability kind. Absent for `unclassified`, whose structural diagnostic is in `accountsTried`. |
 | `capabilityKind` | `model_not_supported`, `model_not_found`, or `unclassified` |
 | `capabilityEvidence` | `provider_code` or `provider_text`; absent for `unclassified` |
 | `accountMode` | `auto` or `pin` |
@@ -113,45 +130,27 @@ catalog, so an account whose window is spent is not counted until it resets.
 The rule never fires while the last unmarked account keeps refusing in words no
 rule recognizes: nothing can confirm such an account.
 
-A recognized refusal sets `problem.retryable=false`: retrying the same route is
-not requested. The separate signal is false for a pin, after the correlated
-retry, when history continuation is bound to the refusing account, or when fresh
-admission cannot find an unmarked eligible alternative. Unmarked means no
-capability row of any state, including `probe_due` and `probing`, and no live
-pre-progress refusal or served-model substitution, after live catalog discovery. Excluded or unusable
-accounts do not qualify. The check scans past marked candidates to find an
-unmarked one; a marked fallback never grants the signal. A catalog only
-establishes eligibility to attempt; it cannot guarantee that the provider will
-serve.
+A recognized capability refusal has `problem.retryable=false`. Only
+`context.retryOnOtherAccount=true` authorizes a separate Auto operation. Older
+engines never emit the signal and their strict schemas reject
+`retryOfOperationId`. A pin, account-bound history and a correlated retry
+cannot grant it. Fresh admission must find an eligible alternative with no
+capability row (including `probe_due` or `probing`), live refusal or live
+served-model substitution. The engine scans past marked fallbacks. Catalog
+eligibility alone cannot promise service. Agent refusals also withhold the
+signal, and model-operation observations affect Agent selection and `next_up`.
 
-The pre-progress refusal ledger is shared with Agent runs: an Agent run's
-pre-progress refusal on an account also withholds this signal for it, and a
-model operation's refusal also orders Agent runs and `next_up` of that model.
+On that signal, upload the same `ModelCallRequest` with `account.mode=auto`
+and `retryOfOperationId` set to the first operation's id. Messages, tools,
+options and native continuation must match. The engine excludes the original
+profile and its known fingerprint. Use a fresh idempotency key and keep it for
+transport resends. An unchanged replay returns its original receipt. Changing
+the body or negotiated flags under the same key returns `409 idempotency_conflict`.
 
-Send `retryOfOperationId` ONLY in response to `context.retryOnOtherAccount=true`.
-Only engines supporting the field emit that signal; older engines with strict
-request schemas must never receive it.
-
-When the signal is true, upload the same `ModelCallRequest` with the optional
-`retryOfOperationId` set to the first operation's id. Keep `account.mode=auto`.
-Use a new operation/idempotency key and keep it for your own transport resends
-of that retry: the claimed correlation refuses a fresh key with
-`model_retry_invalid`, and the old key with a different body or capture flag
-answers 409 `idempotency_conflict`; replaying the old key unchanged returns the
-old receipt. Generation inputs must match, including messages, tools, options and
-native continuation. The engine excludes the original profile and, when known,
-its account fingerprint. The correlation can be claimed once, within four
-hours and in the same daemon lifetime. Invalid, reused, changed-input or expired
-correlation fails before inference with `model_retry_invalid`. A daemon restart
-also forgets the correlation. In every case below, keep the original refusal
-as the owner-facing error and stop; never repeat the retry without correlation:
-
-| `model_retry_invalid` cause | Host action |
-| --- | --- |
-| Daemon restart (or evidence eviction) | Give up with the original error; do not retry uncorrelated |
-| Four-hour expiry or changed account/catalog binding | Give up with the original error; do not retry uncorrelated |
-| Correlation already used | Give up with the original error; do not retry uncorrelated |
-| Changed generation input or pinned account | Give up with the original error; do not retry uncorrelated |
+A correlation can be claimed once, within four hours, for the same live account
+and catalog binding. Reuse with a fresh key, expiry, eviction, daemon restart,
+a changed binding, a pin or changed generation inputs fail before inference
+with `model_retry_invalid`. Stop and present the original refusal.
 
 Account-bound history withholds this retry. A historical assistant turn's
 `messages[].nativeContinuation` (`codex.responses.v1`) replays only on the
@@ -171,9 +170,9 @@ stateless recovery applies. A host that must never leave the account pins it.
 A top-level `codex.turn.v1` transport continuation from another route resets to
 none and is not sent, so it never blocks.
 
-Success confirms the first account's mark; for an unclassified first refusal it
-creates that confirmed mark. A recognized refusal of the same capability kind
-on the other account leaves the first mark provisional and adds a provisional
+Service of the requested model on the other account confirms the first mark,
+creating it for an unclassified first refusal. A recognized refusal of the
+same capability kind on the other account leaves the first mark provisional and adds a provisional
 mark for the second account under its own identity and operation binding. Two
 deficient accounts do not prove the request is invalid: retaining both marks
 lets a later request reach a serving third account. The returned problem keeps
@@ -200,7 +199,7 @@ engine.
 | `capabilities[].harness_id`, `.profile_id` | Account-row join key |
 | `capabilities[].requested_model` | Only model affected |
 | `capabilities[].account_fingerprint` | Account identity, nullable |
-| `capabilities[].provider_reason` | Redacted provider reason |
+| `capabilities[].provider_reason` | Public reason for the capability mark, subject to the same redaction and bounds |
 | `capabilities[].observed_at` | Start of the mark's episode (`since` in `modelMarks`) |
 | `capabilities[].expires_at` | Next probe eligibility time; not a quota reset |
 | `capabilities[].state` | `provisional`, `confirmed`, `probe_due`, or `probing` |
@@ -212,8 +211,9 @@ evidence, not capability marks.
 operation may own the account's probe. A probing account sorts after every
 other eligible candidate, including marked fallbacks. If no alternative remains,
 a concurrent operation may still dispatch there without taking probe ownership;
-marks never exclude the last eligible account. Success clears the mark; refusal
-renews it. Bound outcome ordering prevents an older refusal from undoing newer
+marks never exclude the last eligible account. Service of the model clears the
+mark. A capability refusal renews it. Content refusals leave its deadline
+intact. Bound outcome ordering prevents an older refusal from undoing newer
 service or releasing a newer probe.
 Unknown/cancelled probes postpone the next probe by four hours. Fresh catalog
 content or identity changes clear it early. Codex's opaque catalog capability
@@ -254,7 +254,7 @@ across harnesses, accounts and models; an evicted observation costs one more
 refusal on that account. Other residuals: concurrent first-burst operations each
 pay one refusal before the first one's evidence orders the account; a provider
 overload that arrives as a plain HTTP 400 enters the unrecognized path and costs
-one extra free attempt; a changed catalog clears a mark at once, while the
+one extra attempt; a changed catalog clears a mark at once, while the
 refusal's own observation keeps ordering the account (and keeps a bound history
 off it) for up to its hour. The host must use correlation for deterministic differential
 settlement. An unrelated later success on another account does not confirm a

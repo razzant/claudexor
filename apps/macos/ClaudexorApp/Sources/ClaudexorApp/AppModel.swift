@@ -1413,15 +1413,14 @@ final class AppModel {
                         await openThread(locationID: locationID, id: threadId)
                     }
                 }
-                if refusal.retryable {
+                if refusal.turnRetryable {
                     // The prompt lives on the refused turn and Retry replays
                     // it — report "sent" so the composer clears (no duplicate
                     // unsent draft).
                     applyComposerCompletionStatus(nil, isRelevant: completionIsRelevant)
                     return true
                 }
-                // NOT retryable (no recorded job to replay): keep the draft —
-                // "send a new message" is the remedy the card states.
+                // A new message is required. Keep the prompt in the composer.
                 applyComposerCompletionStatus(
                     userMessage(for: error), isRelevant: completionIsRelevant
                 )

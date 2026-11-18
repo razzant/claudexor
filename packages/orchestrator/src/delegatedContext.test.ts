@@ -40,6 +40,38 @@ function orchestrator(specs: HarnessRunSpec[] = []): Orchestrator {
 }
 
 describe("delegated execution content", () => {
+  it("records a released-reader-compatible failure on a Plan that loses the file after admission", async () => {
+    const repoRoot = await tree();
+    const executionRoot = await tree();
+    config(repoRoot, "context:\n  mandatory_files: [REQUIRED.md]\n");
+    const required = join(executionRoot, "REQUIRED.md");
+    writeFileSync(required, "contents only in this workspace\n");
+    const specs: HarnessRunSpec[] = [];
+    const result = await orchestrator(specs).run({
+      repoRoot,
+      executionRoot,
+      delegated: true,
+      mode: "plan",
+      prompt: "Read the required file",
+      harnesses: ["fake-success"],
+      onRunStart: () => rmSync(required),
+    });
+    expect(result.lifecycle).toBe("failed");
+    expect(specs).toHaveLength(0);
+    const failure = new ArtifactStore(repoRoot).readYaml(
+      join(result.runDir, "final", "failure.yaml"),
+    );
+    expect(failure).toMatchObject({
+      phase: "context",
+      category: "project",
+      // The refusal's open-vocabulary code stays on the HTTP problem surfaces;
+      // the durable RunFailure keeps the released 6.2.0 enum closed so strict
+      // old readers keep the WHOLE record. The safeMessage names the facts.
+      code: null,
+      safeMessage: expect.stringContaining("REQUIRED.md (ENOENT)"),
+    });
+  });
+
   it("builds the Plan atlas from execution bytes with project-owned rules and artifacts", async () => {
     const repoRoot = await tree();
     const executionRoot = await tree();
@@ -96,7 +128,15 @@ describe("delegated execution content", () => {
         prompt: "Read required context",
         harnesses: ["fake-success"],
       };
-      await expect(orch.run(input)).rejects.toThrow(/mandatory context missing\/unreadable/);
+      await expect(orch.run(input)).rejects.toMatchObject({
+        code: "mandatory_context_unavailable",
+        status: 409,
+        retryable: false,
+        context: {
+          executionRoot,
+          unavailableFiles: [{ path: "REQUIRED.md", reason: "ENOENT" }],
+        },
+      });
       expect(specs).toHaveLength(0);
 
       rmSync(join(repoRoot, "REQUIRED.md"));

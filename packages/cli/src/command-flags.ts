@@ -394,6 +394,10 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   { ...booleanFlag("release-tested", null), retired: true },
   booleanFlag("latest", "harness inspect: also read the newest published vendor version"),
   booleanFlag(
+    "include-final-messages",
+    "inspect: include the recorded final-messages document reference",
+  ),
+  booleanFlag(
     "purge-trashed-threads",
     "project remove: also purge the project's threads already in the trash",
   ),

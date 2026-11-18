@@ -392,16 +392,16 @@ export function timelineEvents(
         : {};
     const harnessId = stringOrNull(payload["harness_id"] ?? payload["harness"]);
     const attemptId = stringOrNull(payload["attempt_id"] ?? payload["attemptId"]);
-    // Live-message receipts (message.*) and the adapter's consumption status
-    // (harness.event status live_input_delivered) carry the message id so a
-    // caller can reconcile delivery on the timeline (CONTRACT A26).
+    // A late adapter receipt can establish queueing or consumption after the
+    // original request returned unknown. Keep those observations separate.
     const nested = eventPayload(payload);
     const messageId = stringOrNull(payload["message_id"] ?? nested["message_id"]);
+    const receiptCode = type === "harness.event" && payload["type"] === "status" ? nested["code"] : null;
     const outcome = type.startsWith("message.")
       ? stringOrNull(payload["outcome"])
-      : nested["code"] === "live_input_delivered"
+      : receiptCode === "live_input_delivered"
         ? "delivered"
-        : null;
+        : receiptCode === "live_input_accepted" ? "accepted" : null;
     const partialGitInitialization =
       type === "project.git.initialized" && payload["partial"] === true;
     // Its severity follows the payload: nothing copied or a selected path missing.

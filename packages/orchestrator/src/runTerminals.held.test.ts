@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -14,7 +15,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { BudgetLedger } from "@claudexor/budget";
 import { EventLog, liveRunEventSeq, readRunEvents } from "@claudexor/event-log";
-import { makeOutcomeFacts, type RunEvent, type WorkspaceEnvelope } from "@claudexor/schema";
+import {
+  FINAL_MESSAGES_PATH,
+  FinalMessagesHeader,
+  makeOutcomeFacts,
+  type RunEvent,
+  type WorkspaceEnvelope,
+} from "@claudexor/schema";
 import { orderedAppender } from "@claudexor/util";
 import {
   WorkspaceManager,
@@ -166,6 +173,26 @@ function queuedFixture(runId: string, refuse: (event: RunEvent) => boolean = () 
   };
 }
 
+function expectFinalDocument(
+  f: ReturnType<typeof queuedFixture>,
+  state: "complete" | "partial",
+  finals: readonly RunEvent[],
+): void {
+  const bytes = readFileSync(join(f.paths.root, FINAL_MESSAGES_PATH));
+  const [first, ...records] = bytes.toString("utf8").split("\n");
+  const header = FinalMessagesHeader.parse(JSON.parse(first!));
+  expect(header).toMatchObject({ runId: f.context.runId, state, count: finals.length });
+  expect(records).toEqual([...finals.map((event) => JSON.stringify(event)), ""]);
+  expect(f.terminals()[0]?.payload["final_messages"]).toEqual({
+    path: FINAL_MESSAGES_PATH,
+    state,
+    count: finals.length,
+    throughEventSeq: header.throughEventSeq,
+    bytes: bytes.length,
+    sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+  });
+}
+
 /** A repository with one committed file, `a.txt`. */
 function gitRepo(): string {
   const repo = realpathSync(mkdtempSync(join(tmpdir(), "cx-net-repo-")));
@@ -233,8 +260,14 @@ describe("a landing failure meets the failure net (#704)", () => {
         (event) => event.payload["text"] === "lost",
       );
       const controller = new AbortController();
+      const finals: RunEvent[] = [];
       const result = await guardAnnouncedRun(controller.signal, async (announce) => {
         await f.start(announce);
+        for (const text of ["Review of the note.", "Done."]) {
+          finals.push(
+            await f.log.emitLanded("harness.event", { type: "message", final: true, text }),
+          );
+        }
         f.log.emit("harness.event", { text: "lost" });
         // Its landing failed and nobody awaited it: the run's journal holds it.
         await orderedAppender.drained(f.paths.eventsPath);
@@ -245,6 +278,8 @@ describe("a landing failure meets the failure net (#704)", () => {
       expect(f.terminals()).toHaveLength(1);
       expect(f.terminals()[0]?.payload["lifecycle"]).toBe(lifecycle);
       expect(f.sinkTerminals()).toEqual(["run.failed"]);
+      expect(f.log.readAll().malformed).toBe(0);
+      expectFinalDocument(f, "partial", finals);
       const statement = "Run events did not reach the journal: journal refused harness.event";
       expect(f.summary()).toContain(statement);
       expect(result.summary).toContain(statement);
@@ -273,8 +308,46 @@ describe("a landing failure meets the failure net (#704)", () => {
     expect(String(f.terminals()[0]?.payload["error"])).toContain(
       "Run events did not reach the journal: EIO: transient",
     );
+    expectFinalDocument(f, "complete", []);
     expect(liveRunEventSeq(f.paths.eventsPath)).toBeNull();
   });
+
+  it.each(["final", "loss"])(
+    "publishes the document after a late %s during terminal staging",
+    async (change) => {
+      const f = queuedFixture(`run-net-staged-${change}`, (e) => e.type === "control.requested");
+      const finals: RunEvent[] = [];
+      const recordFinal = async (text: string) => {
+        const event = await f.log.emitLanded("harness.event", {
+          type: "message",
+          final: true,
+          text,
+        });
+        finals.push(event);
+      };
+      let staged: unknown;
+      let deliveryFailure: unknown;
+      f.log.setTerminalStaging(async (event) => {
+        staged = event.payload["final_messages"];
+        if (change === "final") return recordFinal("Done.");
+        try {
+          await f.log.emitLanded("control.requested", { kind: "status" });
+        } catch (error) {
+          deliveryFailure = error;
+        }
+      });
+      const result = await guardAnnouncedRun(undefined, async (announce) => {
+        await f.start(announce);
+        await recordFinal("A note.");
+        throw new Error("report interrupted");
+      });
+      expect(result.lifecycle).toBe("failed");
+      expect(staged).toMatchObject({ state: "complete", count: 1 });
+      if (change === "loss") expect(String(deliveryFailure)).toContain("journal refused");
+      else expect(finals).toHaveLength(2);
+      expectFinalDocument(f, change === "loss" ? "partial" : "complete", finals);
+    },
+  );
 
   it("commits the net's terminal when a landing failure interrupts its first commit", async () => {
     let refusals = 1;

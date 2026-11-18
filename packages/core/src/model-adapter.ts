@@ -22,6 +22,10 @@ export interface ModelAdapterContext {
   catalog?: ControlModelCatalogResponse;
   /** Keep exact failed-response evidence in the existing private result resource. */
   captureFailureEvidence?: boolean;
+  /** Preserve provider content refusals in the caller's error and assistant message. */
+  typedRefusals?: boolean;
+  /** Account evidence must ignore a provider content refusal even for legacy callers. */
+  onContentRefusal?: () => void;
   /** Durably mark dispatch immediately before the single inference POST. */
   onDispatch: (route: ModelRoute) => Promise<void>;
 }
@@ -33,7 +37,7 @@ export interface ModelImageFacet {
   readonly capability: ImageGenerationCapability;
   invoke(
     request: ImageCallRequest,
-    context: Omit<ModelAdapterContext, "catalog"> & {
+    context: Omit<ModelAdapterContext, "catalog" | "typedRefusals" | "onContentRefusal"> & {
       imageTurnId: string;
       onQuota?: (snapshot: QuotaSnapshot) => void;
     },
@@ -45,7 +49,9 @@ export interface ModelAdapter {
   readonly id: string;
   /** What a valid catalog miss proves; omitted keeps authoritative admission. */
   readonly inventoryAbsence?: ModelInventoryAbsence;
-  catalog(context: Omit<ModelAdapterContext, "onDispatch">): Promise<ControlModelCatalogResponse>;
+  catalog(
+    context: Omit<ModelAdapterContext, "onDispatch" | "typedRefusals" | "onContentRefusal">,
+  ): Promise<ControlModelCatalogResponse>;
   invoke(request: ModelCallRequest, context: ModelAdapterContext): Promise<ModelCallResult>;
   readonly image?: ModelImageFacet;
 }

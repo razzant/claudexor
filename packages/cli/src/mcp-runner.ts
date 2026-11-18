@@ -28,6 +28,7 @@ import {
 } from "./mcp-launch-handle.js";
 import { answerInteraction, projectRunInteractions } from "./mcp-run-interactions.js";
 import { readRunDetailResponse } from "./run-detail-response.js";
+import { runDetailPath } from "./run-detail-path.js";
 import { catalogQuery } from "./mcp-catalog-query.js";
 import { threadQuery } from "./mcp-thread-query.js";
 import { runTimeLimitQuery } from "./mcp-run-time-limit.js";
@@ -356,14 +357,20 @@ async function recoveryQuery(
         ? (input["delegatedFromRunId"] as string)
         : undefined;
     const scopedRecovery = context.beltContext || parent !== undefined;
+    const read = {
+      includeFinalMessages: mode === "__run_result" && input["includeFinalMessages"] === true,
+    };
     try {
-      const detail = await get(`/runs/${encodeURIComponent(runId)}`, true);
-      return projectRecoveryRunDetail(mode, runId, detail, parent);
+      const detail = await get(
+        await runDetailPath(addr, runId, read.includeFinalMessages, conn.engine),
+        true,
+      );
+      return projectRecoveryRunDetail(mode, runId, detail, parent, read);
     } catch (error) {
       if (scopedRecovery || !isRecoverableRunDetailIntegrityProblem(error)) {
         throw error;
       }
-      return projectDegradedRecoveryRunDetail(runId, error);
+      return projectDegradedRecoveryRunDetail(runId, error, read);
     }
   }
   if (mode === "__run_cancel") {

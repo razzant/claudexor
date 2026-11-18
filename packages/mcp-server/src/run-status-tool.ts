@@ -1,4 +1,4 @@
-import { formatRunResult } from "./run-result-format.js";
+import { resultReadOutput } from "./run-result-tool.js";
 import type { McpTool, RunnerFn } from "./index.js";
 
 /** Existing snapshot read, extracted to keep registration below its size ratchet. */
@@ -15,10 +15,7 @@ export function runStatusTool(
     annotations: { readOnlyHint: true },
     handler: async (args) => {
       const result = await runner({ mode: "__run_status", runId: String(args?.runId ?? "") });
-      return {
-        text: formatRunResult(result),
-        structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
-      };
+      return resultReadOutput(result);
     },
   };
 }

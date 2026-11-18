@@ -12,14 +12,14 @@ export const ControlTimelineEvent = z
       .nullable()
       .default(null)
       .describe(
-        "Live-message id on message.* receipt rows and on the adapter's live_input_delivered status row, when any.",
+        "Live-message id on message.* receipts and on the adapter's live-input status rows, when any.",
       ),
     outcome: z
       .string()
       .nullable()
       .default(null)
       .describe(
-        "Typed live-message outcome on message.* rows (delivered | accepted | rejected | not_active | unsupported | delivery_unknown); `delivered` on the adapter's consumption status row; null elsewhere.",
+        "Typed live-message outcome on message.* rows (delivered | accepted | rejected | not_active | unsupported | delivery_unknown). An adapter's late queue receipt is accepted; its consumption receipt is delivered. Null elsewhere.",
       ),
     title: z.string().describe("Human-readable event title."),
     detail: z

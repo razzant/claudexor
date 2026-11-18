@@ -5861,6 +5861,7 @@ export class Orchestrator {
       writeFailure(store, paths, {
         phase: "context",
         category: "project",
+        code: declaredFailure(err).code,
         safeMessage: message,
         runDir: paths.root,
       });

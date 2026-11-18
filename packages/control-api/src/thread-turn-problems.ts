@@ -70,6 +70,8 @@ export function recordTurnEnqueueFailure(
 
 export function problemFromError(err: unknown, retryable: boolean): TurnEnqueueProblem {
   const source = err && typeof err === "object" ? (err as Record<string, unknown>) : {};
+  // Only settlement of an accepted job can attest replay after workspace repair.
+  const { turnRetryable: _reserved, ...context } = safeProblemContext(source["context"]);
   return {
     // This exact object feeds BOTH setTurnEnqueueError and the HTTP response.
     // Sanitize once here so the durable and wire views cannot diverge.
@@ -77,7 +79,7 @@ export function problemFromError(err: unknown, retryable: boolean): TurnEnqueueP
     code: errCode(err),
     retryable,
     required_actions: safeProblemRequiredActions(source["requiredActions"]),
-    context: safeProblemContext(source["context"]),
+    context,
   };
 }
 
@@ -90,13 +92,15 @@ export function problemFromError(err: unknown, retryable: boolean): TurnEnqueueP
 export function turnEnqueueProblemResponse(
   problem: TurnEnqueueProblem,
   identifiers: { threadId?: string; turnId?: string },
+  requestRetryable = problem.retryable,
 ): Record<string, unknown> {
   return {
     error: problem.message,
     ...(problem.code ? { code: problem.code } : {}),
-    retryable: problem.retryable,
+    retryable: requestRetryable,
     requiredActions: problem.required_actions,
     context: {
+      ...(requestRetryable !== problem.retryable ? { turnRetryable: problem.retryable } : {}),
       ...problem.context,
       ...(identifiers.threadId ? { threadId: identifiers.threadId } : {}),
       ...(identifiers.turnId ? { turnId: identifiers.turnId } : {}),

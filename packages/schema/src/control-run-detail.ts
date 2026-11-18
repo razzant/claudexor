@@ -7,6 +7,7 @@ import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
 import { RunFacts } from "./run-facts.js";
+import { FinalMessagesOutcome } from "./final-messages.js";
 import { AttemptExecutionEvidence } from "./attempt-execution.js";
 import {
   ControlArtifactInfo,
@@ -219,6 +220,11 @@ export const ControlRunDetail = z
     primaryOutput: ControlPrimaryOutput.nullable()
       .default(null)
       .describe("The run's primary user-facing output; null while pending."),
+    finalMessages: FinalMessagesOutcome.nullable()
+      .optional()
+      .describe(
+        "Present on GET /v2/runs/:id with includeFinalMessages=true. Address of the run's ordered typed finals or a recorded gap. Null when no outcome is known.",
+      ),
     timeline: z
       .array(ControlTimelineEvent)
       .default([])

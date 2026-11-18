@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { TaskContract } from "@claudexor/schema";
 import { discoverAgentsFiles, loadAgentsInstructions } from "./agents.js";
-import { buildScopeAtlas } from "./atlas.js";
+import { buildScopeAtlas, contextSymlinkDenyReason } from "./atlas.js";
 import { assertMandatoryContext, buildContextPack } from "./contextpack.js";
 import {
   FROZEN_REVIEW_EVIDENCE_FILES,
@@ -133,6 +133,35 @@ describe("ContextPack", () => {
     expect(pack.atlas.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("reports what the pack actually observed for an explicit mandatory path", async () => {
+    const repo = tmp();
+    writeFileSync(join(repo, "unlisted.md"), "contents must stay private");
+    const contract = TaskContract.parse({
+      schema_version: 2,
+      task_id: "t",
+      created_at: "2026-01-01T00:00:00Z",
+      repo: { root: repo, base_ref: "HEAD" },
+      mode: { kind: "plan" },
+      user_intent: { raw: "x" },
+    });
+    const opts = { files: ["removed.md"], mandatory: ["removed.md", "unlisted.md"] };
+    await expect(buildContextPack(repo, contract, opts)).rejects.toMatchObject({
+      code: "mandatory_context_unavailable",
+      status: 409,
+      retryable: false,
+      context: {
+        executionRoot: repo,
+        unavailableFiles: [
+          { path: "removed.md", reason: "ENOENT" },
+          { path: "unlisted.md", reason: "not present in the context inventory" },
+        ],
+      },
+    });
+    await expect(
+      buildContextPack(repo, contract, { ...opts, failOnMissingMandatory: false }),
+    ).resolves.toMatchObject({ files: { mandatory: [] } });
+  });
+
   it("uses public repo docs, not local AGENTS.md, as default mandatory context", async () => {
     const repo = tmp();
     mkdirSync(join(repo, "docs"));
@@ -167,16 +196,68 @@ describe("assertMandatoryContext (uniform preflight)", () => {
     expect(() => assertMandatoryContext(repo, ["README.md"])).not.toThrow();
   });
 
-  it("fails closed when an explicitly-configured mandatory file is missing", () => {
-    expect(() => assertMandatoryContext(tmp(), ["README.md", "docs/ARCHITECTURE.md"])).toThrow(
-      /mandatory context missing\/unreadable/,
+  it("checks the selected canonical root for ordinary files before admitting their contents", () => {
+    const repo = realpathSync(tmp());
+    const selected = join(repo, "selected");
+    mkdirSync(selected);
+    writeFileSync(join(selected, "menu.md"), "Lunch\n");
+    expect(contextSymlinkDenyReason(repo, repo, "selected/menu.md")).toBeNull();
+    for (const name of ["selected/menu.md", "selected/missing.md"]) {
+      expect(contextSymlinkDenyReason(repo, join(repo, "other"), name)).toBe(
+        "path resolves outside the allowed root",
+      );
+    }
+  });
+
+  it("names each unavailable file and its observed cause in an ordinary directory", () => {
+    const repo = tmp();
+    writeFileSync(join(repo, "present.md"), "private fixture contents");
+    mkdirSync(join(repo, "directory"));
+    expect(() =>
+      assertMandatoryContext(repo, ["present.md", "missing.md", "present.md/child", "directory"]),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "mandatory_context_unavailable",
+        status: 409,
+        retryable: false,
+        turnRetryable: true,
+        message: expect.not.stringContaining("private fixture contents"),
+        context: {
+          executionRoot: repo,
+          unavailableFiles: [
+            { path: "missing.md", reason: "ENOENT" },
+            {
+              path: "present.md/child",
+              reason:
+                process.platform === "win32" ? expect.stringMatching(/^(ENOTDIR|ENOENT)$/) : "ENOTDIR",
+            },
+            { path: "directory", reason: "EISDIR" },
+          ],
+        },
+      }),
     );
   });
 
-  it("rejects a mandatory path that escapes the repo (absolute or ..)", () => {
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "retains EACCES from reading an existing mandatory file",
+    () => {
+      const repo = tmp();
+      writeFileSync(join(repo, "private.md"), "private fixture contents", { mode: 0 });
+      expect(() => assertMandatoryContext(repo, ["private.md"])).toThrow(
+        expect.objectContaining({
+          context: {
+            executionRoot: repo,
+            unavailableFiles: [{ path: "private.md", reason: "EACCES" }],
+          },
+        }),
+      );
+    },
+  );
+
+  it("rejects traversal and absolute paths, including an absolute path inside the repo", () => {
     const repo = tmp();
     expect(() => assertMandatoryContext(repo, ["../escape.md"])).toThrow(/escapes the repo/);
-    expect(() => assertMandatoryContext(repo, ["/etc/hosts"])).toThrow(/escapes the repo/);
+    expect(() => assertMandatoryContext(repo, [join(repo, "inside.md")])).toThrow(/absolute paths/);
   });
 
   it("admits credential-shaped mandatory context and still refuses an escaping symlink", () => {
@@ -187,10 +268,27 @@ describe("assertMandatoryContext (uniform preflight)", () => {
     writeFileSync(join(repo, "notes.txt"), jwt);
     writeFileSync(join(outside, "outside.txt"), "outside\n");
     symlinkSync(join(outside, "outside.txt"), join(repo, "link.txt"));
+    symlinkSync("notes.txt", join(repo, "inside.txt"));
+    symlinkSync("absent.txt", join(repo, "dangling.txt"));
 
     expect(() => assertMandatoryContext(repo, [".env"])).not.toThrow();
     expect(() => assertMandatoryContext(repo, ["notes.txt"])).not.toThrow();
-    expect(() => assertMandatoryContext(repo, ["link.txt"])).toThrow(/trust boundary/);
+    expect(() => assertMandatoryContext(repo, ["inside.txt"])).not.toThrow();
+    expect(() =>
+      assertMandatoryContext(repo, ["link.txt", "dangling.txt", "../outside.txt"]),
+    ).toThrow(
+      expect.objectContaining({
+        code: "mandatory_context_unavailable",
+        context: {
+          executionRoot: repo,
+          unavailableFiles: [
+            { path: "link.txt", reason: "symlink resolves outside the allowed root" },
+            { path: "dangling.txt", reason: "symlink target cannot be resolved (ENOENT)" },
+            { path: "../outside.txt", reason: "path escapes the repo" },
+          ],
+        },
+      }),
+    );
   });
 });
 

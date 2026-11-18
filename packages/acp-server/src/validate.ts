@@ -14,8 +14,18 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function runControlsFromMeta(meta: unknown): Record<string, unknown> {
-  if (!isPlainRecord(meta)) return {};
-  return isPlainRecord(meta.claudexor) ? meta.claudexor : {};
+  if (meta === undefined || meta === null) return {};
+  if (!isPlainRecord(meta)) throw new Error("_meta must be an object");
+  const controls = meta.claudexor;
+  if (controls === undefined) return {};
+  if (!isPlainRecord(controls)) throw new Error("_meta.claudexor must be an object");
+  if (
+    controls.includeFinalMessages !== undefined &&
+    typeof controls.includeFinalMessages !== "boolean"
+  ) {
+    throw new Error("includeFinalMessages must be a boolean");
+  }
+  return controls;
 }
 
 /** Typed validation verdict: message for humans, optional machine code. */
@@ -57,6 +67,8 @@ export function validateRunControls(params: unknown): RunControlError | null {
     "reviewerPanel",
     "reviewerModels",
     "reviewerEfforts",
+    // #307: a read opt-in for the turn result, never forwarded as a run control.
+    "includeFinalMessages",
   ]);
   for (const key of Object.keys(params)) {
     // `_meta` is the PROTOCOL's forward-compat envelope (other parties'
@@ -76,7 +88,14 @@ export function validateRunControls(params: unknown): RunControlError | null {
   }
   const harnessError = validateOptionalNonEmptyString(params.harness, "harness");
   if (harnessError) return msg(harnessError);
-  for (const flag of ["race", "untilClean", "deepScan", "create", "council"] as const) {
+  for (const flag of [
+    "race",
+    "untilClean",
+    "deepScan",
+    "create",
+    "council",
+    "includeFinalMessages",
+  ] as const) {
     if (params[flag] !== undefined && typeof params[flag] !== "boolean") {
       return msg(`${flag} must be a boolean`);
     }

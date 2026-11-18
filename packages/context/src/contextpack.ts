@@ -1,9 +1,9 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import type { ContextPack, TaskContract } from "@claudexor/schema";
 import { ContextPack as ContextPackSchema } from "@claudexor/schema";
-import { ContextOverflowError } from "@claudexor/core";
-import { hashJson, readTextSafe } from "@claudexor/util";
+import { MandatoryContextUnavailableError } from "@claudexor/core";
+import { errorCode, hashJson } from "@claudexor/util";
 import { loadAgentsInstructions } from "./agents.js";
 import { type AtlasOptions, buildScopeAtlas, contextSymlinkDenyReason } from "./atlas.js";
 
@@ -26,8 +26,7 @@ export const DEFAULT_MANDATORY_CONTEXT = ["README.md", "docs/ARCHITECTURE.md"];
 export function assertMandatoryContext(repoRoot: string, mandatoryFiles: readonly string[]): void {
   if (mandatoryFiles.length === 0) return;
   const base = resolve(repoRoot);
-  const missing: string[] = [];
-  const refused: string[] = [];
+  const unavailableFiles: { path: string; reason: string }[] = [];
   let canonicalBase = base;
   try {
     canonicalBase = realpathSync(base);
@@ -39,28 +38,27 @@ export function assertMandatoryContext(repoRoot: string, mandatoryFiles: readonl
     // (absolute paths or `..` traversal): fail closed rather than read host files
     // (versioned config never self-grants powers).
     const abs = resolve(base, rel);
-    if (isAbsolute(rel) || (abs !== base && !abs.startsWith(base + sep))) {
-      throw new ContextOverflowError(`mandatory context path escapes the repo: ${rel}`);
+    if (isAbsolute(rel)) {
+      unavailableFiles.push({ path: rel, reason: "absolute paths are not allowed" });
+      continue;
+    }
+    if (abs !== base && !abs.startsWith(base + sep)) {
+      unavailableFiles.push({ path: rel, reason: "path escapes the repo" });
+      continue;
+    }
+    const denied = contextSymlinkDenyReason(base, canonicalBase, rel);
+    if (denied) {
+      unavailableFiles.push({ path: rel, reason: denied });
+      continue;
     }
     try {
-      lstatSync(abs);
-    } catch {
-      missing.push(rel);
-      continue;
+      readFileSync(abs, "utf8");
+    } catch (error) {
+      unavailableFiles.push({ path: rel, reason: errorCode(error) ?? "read failed" });
     }
-    if (contextSymlinkDenyReason(base, canonicalBase, rel)) {
-      refused.push(rel);
-      continue;
-    }
-    if (readTextSafe(abs) === null) missing.push(rel);
   }
-  if (refused.length > 0) {
-    throw new ContextOverflowError(
-      `mandatory context escapes its trust boundary: ${refused.join(", ")}`,
-    );
-  }
-  if (missing.length > 0) {
-    throw new ContextOverflowError(`mandatory context missing/unreadable: ${missing.join(", ")}`);
+  if (unavailableFiles.length > 0) {
+    throw new MandatoryContextUnavailableError({ executionRoot: base, unavailableFiles });
   }
 }
 
@@ -83,9 +81,14 @@ export async function buildContextPack(
     (opts.failOnMissingMandatory ?? true) &&
     atlas.missingMandatory.length > 0
   ) {
-    throw new ContextOverflowError(
-      `mandatory context missing/unreadable: ${atlas.missingMandatory.join(", ")}`,
-    );
+    const reasons = new Map(atlas.atlas.map((entry) => [entry.path, entry.reason]));
+    throw new MandatoryContextUnavailableError({
+      executionRoot: resolve(repoRoot),
+      unavailableFiles: atlas.missingMandatory.map((path) => ({
+        path,
+        reason: reasons.get(path) ?? "not present in the context inventory",
+      })),
+    });
   }
 
   const agents = loadAgentsInstructions(repoRoot);

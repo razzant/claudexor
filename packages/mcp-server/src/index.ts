@@ -29,6 +29,7 @@ import { threadTools } from "./thread-tools.js";
 import { runControlTools } from "./run-control-tools.js";
 import { runObservationTools } from "./run-observation-tools.js";
 import { runStatusTool } from "./run-status-tool.js";
+import { resultReadOutput, runResultTool } from "./run-result-tool.js";
 import { inlineJsonSchemaRefs } from "./inline-json-schema-refs.js";
 import { processingPreferenceSchema } from "./reviewer-panel-schema.js";
 import {
@@ -414,34 +415,11 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       annotations: { readOnlyHint: true },
       handler: async (args) => {
         const result = await runner({ mode: "__run_inspect", runId: String(args?.runId ?? "") });
-        return {
-          text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<
-            string,
-            unknown
-          >,
-        };
+        return resultReadOutput(result);
       },
     },
     runStatusTool(runner, runIdSchema, mcpRunHandleResultSchema),
-    {
-      name: "claudexor_run_result",
-      description:
-        "Read a durable run's terminal result and apply eligibility; non-terminal runs report their current state without pretending to be complete.",
-      inputSchema: runIdSchema,
-      outputSchema: mcpRunHandleResultSchema,
-      annotations: { readOnlyHint: true },
-      handler: async (args) => {
-        const result = await runner({ mode: "__run_result", runId: String(args?.runId ?? "") });
-        return {
-          text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<
-            string,
-            unknown
-          >,
-        };
-      },
-    },
+    runResultTool(runner, runIdSchema),
     {
       name: "claudexor_run_cancel",
       description:

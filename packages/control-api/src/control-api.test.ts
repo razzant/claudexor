@@ -3534,20 +3534,29 @@ describe("DaemonControlApiServer", () => {
       ],
     ]);
     const enqueued: unknown[] = [];
-    // The FIRST replay is refused again (trust still missing — a typed
-    // throw); the second succeeds. This is the exact "second refusal must be
-    // persisted" scenario.
-    let refuseNextEnqueue = true;
+    let replayAttempts = 0;
     const retryDaemon: DaemonFacadeClient = {
       async enqueue(params: unknown) {
-        if (refuseNextEnqueue) {
-          refuseNextEnqueue = false;
+        replayAttempts += 1;
+        if (replayAttempts === 1) {
           throw Object.assign(
             new Error("access profile 'full' requires allow_full_access: true (still)"),
             {
               code: "trust_full_access_required",
             },
           );
+        }
+        if (replayAttempts === 2) {
+          throw Object.assign(new Error("README.md (ENOENT)"), {
+            code: "mandatory_context_unavailable",
+            status: 409,
+            retryable: false,
+            turnRetryable: true,
+            context: {
+              executionRoot: repo,
+              unavailableFiles: [{ path: "README.md", reason: "ENOENT" }],
+            },
+          });
         }
         enqueued.push(params);
         const rec: DaemonRunRecord = {
@@ -3613,8 +3622,20 @@ describe("DaemonControlApiServer", () => {
         const freshError = turn1?.["enqueue_error"] as { message: string; code: string | null };
         expect(freshError.message).toContain("(still)");
         expect(freshError.code).toBe("trust_full_access_required");
-        // Second replay succeeds: replays the recorded params verbatim onto
-        // the SAME turn (no duplicate bubble).
+        // The replay enqueue can itself refuse before recording a new job.
+        // The original params are still available for manual replay after repair.
+        const unavailable = await retry("tn-1");
+        expect(unavailable.status).toBe(409);
+        expect(await unavailable.json()).toMatchObject({
+          code: "mandatory_context_unavailable",
+          retryable: false,
+          context: { executionRoot: repo, turnId: "tn-1", turnRetryable: true },
+        });
+        expect(turn1?.["enqueue_error"]).toMatchObject({
+          code: "mandatory_context_unavailable",
+          retryable: true,
+        });
+        // The successfully replayed params bind to the same turn.
         const ok = await retry("tn-1");
         expect(ok.status).toBe(200);
         const body = (await ok.json()) as { runId: string; turnId: string; threadId: string };
@@ -3622,7 +3643,7 @@ describe("DaemonControlApiServer", () => {
         expect(body.turnId).toBe("tn-1");
         expect(body.threadId).toBe("th-x");
         expect(enqueued).toEqual([refusedParams]);
-        // After the run bound, a third retry is refused (turn has a run now).
+        // After the run bound, a new retry is refused (turn has a run now).
         expect((await retry("tn-1")).status).toBe(409);
         // A LATEST runless turn with NO recorded refusal (the queued-bind
         // window) is not retryable either — its job may still be starting.
@@ -3648,7 +3669,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   // QA-045: Implementing a plan with unresolved owner questions must produce a
-  // DURABLE, idempotent, replayable refused turn — the readiness gate rides the
+  // DURABLE, idempotent refused turn with a frozen plan — the readiness gate rides the
   // SAME pre-start mechanism as the trust gate, never a bespoke early return
   // that leaves no turn and ignores the idempotency key.
   describe("threads: plan_not_ready implement is a durable refused turn (QA-045)", () => {

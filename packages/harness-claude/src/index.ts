@@ -654,7 +654,7 @@ async function* runClaude(
               initialStdin: initialSessionFrames(spec.prompt, attachmentBlocks, promptUuid),
               matches: isControlRequestFrame,
               handle: (obj, io) => handleControlRequestFrame(obj, io, spec.session_id, channel),
-              // Hold stdin while live messages or background work remain.
+              // Hold stdin for live messages and background work, never past a quota refusal.
               closeStdinOn: (obj) => live.closeStdinOn(spec.session_id, obj),
               onIo: (io, sessionId) => {
                 inputOpen = io !== null;
@@ -665,6 +665,6 @@ async function* runClaude(
         : { input: spec.prompt }),
     }),
   );
-  yield* withClaudeVendorFailure(events);
+  yield* live.stream(spec.session_id, promptUuid, withClaudeVendorFailure(events));
 }
 export { claudeResourceReason, claudeResetDescription } from "./account-resources.js";
