@@ -240,7 +240,7 @@ export class EventLog {
       const event = this.stamp(type, payload);
       if (this.unlanded) {
         orderedAppender.append(this.path, `${JSON.stringify(event)}\n`, {
-          landed: () => this.landed(event, publish),
+          landed: () => measureWork("journal.append", () => this.landed(event, publish)),
           lost: () => this.lost(),
           ...(landing
             ? {

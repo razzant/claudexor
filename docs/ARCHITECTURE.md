@@ -3773,7 +3773,8 @@ section for each class, over the process lifetime and the last completed window.
 handler value loads and response sends. `run.stream` records vendor frame parsing
 and translation by harness, including ACP updates and raw API completion handling.
 `journal.append` covers synchronous event appends through the regular, landed
-and aside interfaces. `store.commit` measures store commits, `catalog.read`
+and aside interfaces. A queued append counts a second section when the durable write
+lands and its persistence and live-reader callbacks run. `store.commit` measures store commits, `catalog.read`
 measures catalog parsing and `process.launch` measures child launch and identity
 capture, plus parsing the output of a Codex login probe. Each section subtracts
 the time spent in nested sections. Work resuming after an `await` counts only

@@ -15,7 +15,7 @@
 section by class in `timing.work`, since startup and in the last completed ten-second
 window. The counters cover control requests including body decoding and parsing,
 vendor frame translation and raw API completion handling by harness, synchronous
-run journal appends, store commits, vendor catalog parsing, child launch and Codex
+run journal appends and their queued publication callbacks, store commits, vendor catalog parsing, child launch and Codex
 login output parsing. Each section excludes the time spent in nested sections.
 Async continuations count when they enter a measured section. The counters live
 in memory.

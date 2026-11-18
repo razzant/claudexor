@@ -26,7 +26,7 @@ __afterAllReap(() => {
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("EventLog seq stamping", () => {
-  it.each([false, true])("counts every append interface once (queued=%s)", async (queued) => {
+  it.each([false, true])("counts each synchronous append section, including queued landing (queued=%s)", async (queued) => {
     const log = new EventLog(
       join(reapMk(join(tmpdir(), "cx-append-count-")), "events.jsonl"),
       "run-1",
@@ -45,9 +45,10 @@ describe("EventLog seq stamping", () => {
       log.emitAside("harness.event", {}, { resolve: () => resolve(), reject }),
     );
     expect(log.lastSeq()).toBe(3);
-    expect(count() - before).toBe(3);
+    const sections = queued ? 6 : 3;
+    expect(count() - before).toBe(sections);
     log.readAll();
-    expect(count() - before).toBe(3);
+    expect(count() - before).toBe(sections);
     log.dispose();
   });
 
