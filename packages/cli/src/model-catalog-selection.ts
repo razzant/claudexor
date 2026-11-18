@@ -33,6 +33,7 @@ export interface ModelCatalogSelection {
  * neither. Preference orders within a tier. A pin keeps exact admission. */
 export async function selectModelCatalog(args: {
   adapter: ModelAdapter;
+  reuseCatalog?: boolean;
   harnessId: string;
   account: ModelAccountChoice;
   model: string | null;
@@ -197,7 +198,12 @@ async function readCatalog(
           evidence.finish();
           evidence = bind();
         }
-        return args.adapter.catalog({ profile, signal, credentialGeneration });
+        return args.adapter.catalog({
+          profile,
+          signal,
+          credentialGeneration,
+          reuseCatalog: args.reuseCatalog,
+        });
       },
     );
     const catalog = ControlModelCatalogResponse.parse(value);

@@ -1291,7 +1291,8 @@ invariant or operator decision before proceeding.
   harness, declared client version and route, and run start may reuse a dated
   positive login probe under this rule too; a failed or refused read, an
   unknown identity, a changed credential generation or program, and a definite
-  vendor refusal of a generation on that account drop the remembered fact, and
+  vendor refusal of a generation on that account that contradicts the observed
+  fact drop the remembered fact, and
   a hit never renews its date. Rationale: on one install over 19 hours catalog
   reads took 7.6 h, 95 % of them repeating the same account within 90 seconds
   (a replay of that window: 81.9 % hits, 4.9 h saved), and run-start login

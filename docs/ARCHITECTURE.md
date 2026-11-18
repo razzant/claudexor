@@ -3294,27 +3294,31 @@ at shutdown) runs once more under the new identity (any login lifecycle moves
 every row's generation), so its caller still gets an answer; nothing from the
 ended read is used, a read that ended with its own answer keeps that answer,
 and a second change during the repeated read still fails its operation
-`auth_changed`. A successful Codex catalog read is remembered the same way
-(`model-catalog.ts`, owner decision 2026-11-18): under the catalog key above plus
-the stat versions of the owned `auth.json` and `config.toml`, from the read's own
-start for the doctor positive TTL; a hit never renews it and records no
-`catalogTransport` step. A failed or refused read, an unknown identity and any
-key change drop it, and so does a generation the provider refused with a definite
-HTTP 4xx other than 408 or 429. A pin and its run-start probe keep the pin's own
+`auth_changed`. A successful Codex catalog read may answer later raw-model selections
+under the same catalog key and the stat versions of the owned `auth.json` and
+`config.toml` for the doctor positive TTL from the start of the physical read
+(`model-catalog.ts`, owner decision 2026-11-18). A hit keeps the original
+observation date and records no `catalogTransport` step. A failed catalog read,
+failed account authorization, unknown or changed identity, or program replacement
+invalidates the fact. An HTTP or terminal stream refusal of a listed model or its
+account also invalidates it. A request fault, rate limit or server failure on a
+generation leaves the catalog available. An earlier read cannot publish over
+contrary evidence. A pin and its run-start probe keep the pin's own
 wait and never join an ordinary probe. After each wait a consumer judges again only the
 account it waited for (`liveAccountRefusal`: enablement, a revoked or unusable
 credential, and live usage against the headroom threshold read at admission, as
 a strict pin of that account is judged; refusals, substitutions and capability
-marks are re-read by the catalog stage). It keeps its fresh catalogs and
+marks are re-read by the catalog stage). It keeps the catalogs it selected and its
 exclusions: a change about another
 account neither restarts the selection nor re-reads a catalog, and an account
 whose read failed is not tried again. A pool refusal reports the causes of its
 own decision, so an account blocked now reports that block rather than an
 earlier refusal of the same selection. Each consumer then performs its own
 bind/reserve/changed and release.
-The selected-account catalog GET has an HTTP-disconnect lifetime; the account
-display view also cancels abandoned acquisition while retaining its existing
-display observation policy. Accepted durable model operations retain their own
+The public catalog GET acquires a physical observation and cancels on HTTP
+disconnect. Accounts retains its display observation until invalidation. Its first
+catalog read after Refresh acquires physically. Either read can join identical
+physical I/O already in progress. Accepted durable model operations retain their own
 lifetime, independent of the connection that created them. The Codex `/models`
 request and response body share a 60-second transport limit; expiry yields
 `catalog_unavailable`, never an empty successful inventory, and Auto continues
@@ -3347,7 +3351,7 @@ These process deltas include other concurrent work
 and are not per-operation CPU attribution. No body, token or account path is
 recorded. Older receipts omit the optional timing object.
 
-Auto model operations now examine fresh per-account catalogs in selection order:
+Auto model operations examine per-account catalogs in selection order:
 listed accounts precede advisory misses; a soft observation (a live pre-progress
 refusal, or a served-model substitution of a non-preferred account) moves that
 account/model behind both groups, and a temporary capability mark behind the soft
@@ -3357,8 +3361,8 @@ a refusal or a listed alternative. History is the one exception: an unmarked,
 unrefused preferred account to which a message's native continuation is bound
 stays first even when its catalog omits the model, because that history replays
 only there. A marked or refusing one yields, and the selected account rejects
-the history locally with `invalid_continuation`. The resolver retains only
-catalog hashes for invalidation, never catalogs for admission across operations.
+the history locally with `invalid_continuation`. The resolver retains catalog hashes for invalidation. The adapter owns the dated
+catalogs used by later raw-model selections.
 
 A Codex inference HTTP 400/404 with an explicit model-not-found code or a narrowly
 recognized model refusal becomes `model_capability_refused`. Explicit vendor

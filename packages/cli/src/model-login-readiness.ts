@@ -55,7 +55,7 @@ export class ModelLoginReadiness {
     if (!adapter.credentialProfileIdentity) return adapter.probeCredentialProfile!.bind(adapter);
     const unbounded = new AbortController().signal;
     return (profile, signal = unbounded, options) =>
-      this.probe(profile, adapter, signal, undefined, true, options);
+      this.probe(profile, adapter, signal, { options });
   }
 
   close(): void {
@@ -72,9 +72,17 @@ export class ModelLoginReadiness {
     profile: CredentialProfile,
     adapter: HarnessAdapter,
     signal: AbortSignal,
-    observed?: Promise<ProgramObservation>,
-    retry = true,
-    options?: CredentialProfileProbeOptions,
+    {
+      observed,
+      options,
+      reuse = true,
+      retry = true,
+    }: {
+      observed?: Promise<ProgramObservation>;
+      options?: CredentialProfileProbeOptions;
+      reuse?: boolean;
+      retry?: boolean;
+    } = {},
   ): Promise<CredentialProfileStatus> {
     signal.throwIfAborted();
     const finish = startModelPreparation();
@@ -94,7 +102,7 @@ export class ModelLoginReadiness {
         : null;
     };
     const key = await waitForRead(identity(observed), signal);
-    const hit = this.positives.get(scope, key);
+    const hit = this.positives.get(scope, key, reuse);
     if (hit) {
       finish("loginReady");
       return hit;
@@ -125,8 +133,7 @@ export class ModelLoginReadiness {
           // A refused, unknown or stale answer is evidence against the remembered
           // login; an older success answering later cannot restore it.
           if (!positive) publish();
-          else if (unchanged)
-            publish({ key, at: Math.min(startedAt, observedAt), value: status });
+          else if (unchanged) publish({ key, at: Math.min(startedAt, observedAt), value: status });
           return status;
         } catch (error) {
           // A probe that failed, not one its waiters left or a change ended, is too.
@@ -140,7 +147,7 @@ export class ModelLoginReadiness {
         // probe: ask once more under the new identity. Nothing aborted is kept.
         if (!retry || signal.aborted || this.closed || !(error instanceof ReadInvalidated))
           throw error;
-        return this.probe(profile, adapter, signal, undefined, false, options);
+        return this.probe(profile, adapter, signal, { options, reuse, retry: false });
       });
     signal.throwIfAborted();
     return structuredClone(result);

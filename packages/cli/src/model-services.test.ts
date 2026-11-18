@@ -2983,7 +2983,9 @@ describe("admission-grade login readiness", () => {
       answers[1]!(true);
       expect((await newer).availability).toBe("available");
       if (order === "newer first") await refusal();
-      f.probe.mockImplementationOnce(async () => { throw new Error("unexpected third probe"); });
+      f.probe.mockImplementationOnce(async () => {
+        throw new Error("unexpected third probe");
+      });
       expect((await runStart(f.profile)).availability).toBe("available");
       expect(f.probe).toHaveBeenCalledTimes(2);
     },
@@ -3087,14 +3089,29 @@ describe("admission-grade login readiness", () => {
     await f.call();
     expect(f.probe).toHaveBeenCalledTimes(2);
   });
-  it("uses readiness on repeated selection, reads the catalog each time, and overlays vendor revocation without probing", async () => {
+  it("reserves dated admission facts for operations and reacquires diagnostic catalogs", async () => {
     const ready = await readinessFixture();
-    const f = await fixture({ lazy: true, nativeAdapter: ready.adapter });
+    const f = await fixture({ nativeAdapter: ready.adapter });
     f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
-    await f.services.routes.modelCatalog("codex", "a");
-    await f.services.routes.modelCatalog("codex", "a");
+    expect((await f.run({ mode: "pin", profileId: "a" })).state).toBe("succeeded");
+    expect((await f.run({ mode: "pin", profileId: "a" })).state).toBe("succeeded");
     expect(ready.probe).toHaveBeenCalledTimes(1);
-    expect(f.catalog).toHaveBeenCalledTimes(2);
+    expect(f.catalog.mock.calls.map(([ctx]) => ctx.reuseCatalog)).toEqual([true, true]);
+    await f.services.routes.modelCatalog("codex", "a");
+    await f.services.routes.modelCatalog("codex", "a");
+    expect(ready.probe).toHaveBeenCalledTimes(3);
+    await f.services.routes.modelAccountCatalog("codex", "a");
+    await f.services.routes.modelAccountCatalog("codex", "a");
+    expect(f.catalog).toHaveBeenCalledTimes(5);
+    accountObservations.invalidateCatalogs();
+    await f.services.routes.modelAccountCatalog("codex", "a");
+    expect(f.catalog.mock.calls.slice(2).map(([ctx]) => !!ctx.reuseCatalog)).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ]);
+    const probes = ready.probe.mock.calls.length;
     const beforeRevocation = f.quota.read();
     vi.spyOn(f.quota, "read").mockReturnValue({
       ...beforeRevocation,
@@ -3110,22 +3127,22 @@ describe("admission-grade login readiness", () => {
     await expect(f.services.routes.modelCatalog("codex", "a")).rejects.toMatchObject({
       code: "auth_required",
     });
-    expect(ready.probe).toHaveBeenCalledTimes(1);
-    expect(f.catalog).toHaveBeenCalledTimes(2);
+    expect(ready.probe).toHaveBeenCalledTimes(probes);
+    expect(f.catalog).toHaveBeenCalledTimes(6);
   });
   it.each(["unchanged", "changed"])(
     "a pin admits a probe answer whose login identity was %s during the probe",
     async (identity) => {
       const ready = await readinessFixture();
-      const f = await fixture({ lazy: true, nativeAdapter: ready.adapter });
+      const f = await fixture({ nativeAdapter: ready.adapter });
       f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
       const raw = ready.probe.getMockImplementation()!;
       ready.probe.mockImplementationOnce(async (profile, signal) => {
         if (identity === "changed") writeFileSync(join(ready.home, "auth.json"), "refreshed");
         return raw(profile, signal);
       });
-      expect((await f.services.routes.modelCatalog("codex", "a")).credentialProfileId).toBe("a");
-      await f.services.routes.modelCatalog("codex", "a");
+      expect((await f.run({ mode: "pin", profileId: "a" })).state).toBe("succeeded");
+      await f.run({ mode: "pin", profileId: "a" });
       // Only an answer under one unchanged identity is reused.
       expect(ready.probe).toHaveBeenCalledTimes(identity === "changed" ? 2 : 1);
     },

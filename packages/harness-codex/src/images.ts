@@ -302,7 +302,10 @@ export function parseImageResponse(body: unknown): {
 
 /** One image POST per operation through the existing Codex managed-auth, header,
  * exact-body delivery and typed-problem owners. No retry, no text catalog read. */
-export function createCodexImageFacet(deps: CodexImageDeps = {}): ModelImageFacet {
+export function createCodexImageFacet(
+  deps: CodexImageDeps = {},
+  authorize = prepareCodexModelAuth,
+): ModelImageFacet {
   const fetcher = deps.fetch ?? globalThis.fetch;
   const now = deps.now ?? Date.now;
   return {
@@ -343,7 +346,7 @@ export function createCodexImageFacet(deps: CodexImageDeps = {}): ModelImageFace
             "invalid_request",
             "The image request exceeded its byte limit.",
           );
-        const auth = await prepareCodexModelAuth(context.profile, context.signal, deps);
+        const auth = await authorize(context.profile, context.signal, deps);
         route = { ...route, accountFingerprint: auth.accountFingerprint };
         delivery = new RequestDelivery(Buffer.from(payload, "utf8"));
         const requestHeaders = imageHeaders(auth, context.imageTurnId, delivery.bytes.length);

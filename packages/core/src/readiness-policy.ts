@@ -9,12 +9,12 @@ export class DatedPositives<T> {
   private readonly scopes = new Map<string, { latest: number; fact?: Positive<T> }>();
   private sequence = 0;
 
-  get(scope: string, key: string | null): T | undefined {
+  get(scope: string, key: string | null, reuse = true): T | undefined {
     const entry = this.scopes.get(scope);
     const fact = entry?.fact;
     if (fact && fact.key === key) {
       const age = Date.now() - fact.at;
-      if (age >= 0 && age < DOCTOR_TTL_MS) return structuredClone(fact.value);
+      if (age >= 0 && age < DOCTOR_TTL_MS) return reuse ? structuredClone(fact.value) : undefined;
     }
     if (entry) delete entry.fact;
     return undefined;
@@ -33,7 +33,11 @@ export class DatedPositives<T> {
   }
 
   /** Detaching the entry also fences observations still holding it. */
-  drop(matches: (scope: string) => boolean = () => true): void {
-    for (const scope of this.scopes.keys()) if (matches(scope)) this.scopes.delete(scope);
+  drop(matches: (scope: string) => boolean = () => true, keep?: (value: T) => boolean): void {
+    for (const [scope, entry] of this.scopes) {
+      if (!matches(scope)) continue;
+      if (entry.fact && keep?.(entry.fact.value)) entry.latest = ++this.sequence;
+      else this.scopes.delete(scope);
+    }
   }
 }

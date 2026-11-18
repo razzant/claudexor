@@ -162,16 +162,26 @@ export function createCodexCatalogReader(
 ) {
   const reads = new SharedRead<ControlModelCatalogResponse>();
   const positives = new DatedPositives<ControlModelCatalogResponse>();
+  const close = onProgramObservationChange((harness) => {
+    if (harness && harness !== "codex") return;
+    positives.drop();
+    reads.invalidate(
+      undefined,
+      new CodexModelError("auth_changed", "The Codex program changed during catalog discovery."),
+    );
+  });
   const read = async (
-    auth: CodexModelAuth,
+    prepared: CodexModelAuth | Promise<CodexModelAuth>,
     context: Omit<ModelAdapterContext, "onDispatch">,
   ): Promise<ControlModelCatalogResponse> => {
+    const scope = context.profile.profile_id;
+    const publish = positives.observe(scope);
+    const auth = await prepared;
     context.signal.throwIfAborted();
     const [declared, files] = await waitForRead(
       Promise.all([clientVersion(), fileIdentity(context.profile)]),
       context.signal,
     );
-    const scope = context.profile.profile_id;
     const key =
       Number.isFinite(context.credentialGeneration) &&
       files !== null &&
@@ -192,26 +202,15 @@ export function createCodexCatalogReader(
             declared.source,
           ])
         : null;
-    const remembered = positives.get(scope, key);
+    const remembered = positives.get(scope, key, context.reuseCatalog === true);
     if (remembered) return remembered;
     const catalog = await measureModelPreparation("catalogTransport", () =>
       reads.read(scope, key, context.signal, async (signal) => {
-        const publish = positives.observe(scope);
         const startedAt = Date.now();
-        const replaced = new AbortController();
-        const unsubscribe = onProgramObservationChange((harness) => {
-          if (!harness || harness === "codex")
-            replaced.abort(
-              new CodexModelError(
-                "auth_changed",
-                "The Codex program changed during catalog discovery.",
-              ),
-            );
-        });
         const deadline = new AbortController();
         const timer = setTimeout(() => deadline.abort(), CODEX_CATALOG_TRANSPORT_MS);
         timer.unref?.();
-        const transport = AbortSignal.any([signal, replaced.signal, deadline.signal]);
+        const transport = AbortSignal.any([signal, deadline.signal]);
         try {
           const work = async () => {
             const response = await fetcher(
@@ -262,9 +261,8 @@ export function createCodexCatalogReader(
           if (key !== null) publish({ key, at: startedAt, value: answer });
           return answer;
         } catch (error) {
-          publish();
           signal.throwIfAborted();
-          replaced.signal.throwIfAborted();
+          publish();
           if (error instanceof CodexModelError) throw error;
           const network = deadline.signal.aborted ? null : unreachableCode(error);
           throw new CodexModelError(
@@ -279,7 +277,6 @@ export function createCodexCatalogReader(
           );
         } finally {
           clearTimeout(timer);
-          unsubscribe();
         }
       }),
     );
@@ -287,7 +284,10 @@ export function createCodexCatalogReader(
     // labelled with the client version it was read for.
     return structuredClone(catalog);
   };
-  /** A vendor refusal that contradicts the remembered catalog drops it. */
-  const forget = (profileId: string) => positives.drop((scope) => scope === profileId);
-  return Object.assign(read, { forget });
+  const forget = (profileId: string, model?: string) =>
+    positives.drop(
+      (id) => id === profileId,
+      (catalog) => model !== undefined && !catalog.models.some((row) => row.id === model),
+    );
+  return Object.assign(read, { forget, close });
 }

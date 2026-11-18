@@ -14,8 +14,13 @@ as long as nothing that identifies it has changed: the account's credential gene
 its `auth.json` and `config.toml` versions, its tokens, the installed Codex program and
 the client version the read declared. Using the remembered catalog does not extend those
 90 seconds. A failed or refused catalog read is never remembered and never counts as an
-empty catalog; it also drops what was remembered for that account, and so does a model
-call that the provider refused with an HTTP 4xx status other than 408 or 429.
+empty catalog; it also drops what was remembered for that account, and so do a failed
+authorization of that account, a change of the installed Codex program, and a model call
+whose outcome says the account cannot serve a listed model (a refused or unknown model, a
+refused or signed-out account), on the HTTP status or in the response stream. A malformed
+request, a rate limit or a server failure keeps it, and a read that was in flight when such
+evidence arrived is not remembered. The public catalog GET and the Accounts catalog
+acquisition after Refresh read the provider even within those 90 seconds.
 
 Starting an Agent run, and resolving a reviewer seat, now reuses a confirmed login under the
 same rule: one login readiness owner per engine store serves both raw model operations and

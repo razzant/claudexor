@@ -37,6 +37,7 @@ export async function admitModelAccount(args: {
   config: () => GlobalConfig;
   registry: AdapterRegistry;
   readiness: ModelLoginReadiness;
+  reuse: boolean;
   quotaEvidence: () => VendorQuotaObservations;
   unusable: CredentialUnusableLedger;
 }) {
@@ -65,7 +66,7 @@ export async function admitModelAccount(args: {
         if (credentialRefusal(source.adapter.id, profile, quotaEvidence(), unusable.live(), model))
           return probeCredentialProfileStatus(profile, undefined);
         program ??= observeHarnessProgram(adapter.program);
-        return readiness.probe(profile, adapter, signal, program);
+        return readiness.probe(profile, adapter, signal, { observed: program, reuse: args.reuse });
       }
     : undefined;
   if (pinnedProfile) {
