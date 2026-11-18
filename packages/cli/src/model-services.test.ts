@@ -2919,6 +2919,86 @@ describe("admission-grade login readiness", () => {
     await runStart(f.profile);
     expect(f.probe).toHaveBeenCalledTimes(2);
   });
+  /** Two physical probes of one key held open; each answers when told to. */
+  async function heldProbes(f: Awaited<ReturnType<typeof readinessFixture>>) {
+    const raw = f.probe.getMockImplementation()!;
+    const answers: Array<(answer: boolean | "throw") => void> = [];
+    f.probe.mockImplementation(
+      (profile, signal) =>
+        new Promise((resolve, reject) => {
+          answers.push((answer) =>
+            answer === "throw"
+              ? reject(new Error("probe process failed"))
+              : void raw(profile, signal).then((status) =>
+                  resolve(
+                    answer
+                      ? status
+                      : { ...status, availability: "unavailable", verification: "not_run" },
+                  ),
+                ),
+          );
+        }),
+    );
+    const runStart = f.owner.runStartProbe(f.adapter);
+    const older = f.call();
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const newer = runStart(f.profile, undefined, { pinned: true });
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    return { answers, older, newer, runStart };
+  }
+  it.each(["older first", "newer first"])(
+    "a newer physical sign-out outranks an older success answering %s",
+    async (order) => {
+      const f = await readinessFixture();
+      const { answers, older, newer, runStart } = await heldProbes(f);
+      if (order === "older first") {
+        answers[0]!(true);
+        expect((await older).availability).toBe("available");
+      }
+      answers[1]!(false);
+      expect((await newer).availability).toBe("unavailable");
+      if (order === "newer first") {
+        answers[0]!(true);
+        expect((await older).availability).toBe("available");
+      }
+      const again = runStart(f.profile, undefined, { pinned: true });
+      await vi.waitFor(() => expect(answers).toHaveLength(3));
+      answers[2]!(false);
+      expect((await again).availability).toBe("unavailable");
+      expect(f.probe).toHaveBeenCalledTimes(3);
+    },
+  );
+  it.each(["older first", "newer first"])(
+    "a newer success after an older physical refusal answering %s is remembered",
+    async (order) => {
+      const f = await readinessFixture();
+      const { answers, older, newer, runStart } = await heldProbes(f);
+      const refusal = async () => {
+        answers[0]!(false);
+        expect((await older).availability).toBe("unavailable");
+      };
+      if (order === "older first") await refusal();
+      answers[1]!(true);
+      expect((await newer).availability).toBe("available");
+      if (order === "newer first") await refusal();
+      expect((await runStart(f.profile)).availability).toBe("available");
+      expect(f.probe).toHaveBeenCalledTimes(2);
+    },
+  );
+  it("a newer probe that throws drops an older remembered success", async () => {
+    const f = await readinessFixture();
+    const { answers, older, newer, runStart } = await heldProbes(f);
+    answers[0]!(true);
+    expect((await older).availability).toBe("available");
+    answers[1]!("throw");
+    await expect(newer).rejects.toThrow("probe process failed");
+    const again = runStart(f.profile);
+    await vi.waitFor(() => expect(answers).toHaveLength(3));
+    answers[2]!(true);
+    expect((await again).availability).toBe("available");
+    expect(f.probe).toHaveBeenCalledTimes(3);
+  });
   it("run start keeps the own probe of an adapter that versions no login files", async () => {
     const f = await readinessFixture();
     const adapter = { ...f.adapter, credentialProfileIdentity: undefined };

@@ -32,4 +32,21 @@ describe("dated positive admission facts (INV-135)", () => {
     expect(facts.get("a", "key-1")).toBeUndefined();
     expect(facts.get("b", "key-1")).toBe(2);
   });
+
+  it("lets newer contrary evidence win, whichever answer arrives last", () => {
+    const facts = new DatedPositives<string>();
+    const now = Date.now();
+    facts.set("a", "key", now - 30, "older success", now - 30);
+    facts.contradict("a", now - 20);
+    expect(facts.get("a", "key")).toBeUndefined();
+    facts.set("a", "key", now - 30, "older success, late", now - 30);
+    expect(facts.get("a", "key")).toBeUndefined();
+    facts.set("a", "key", now - 10, "newer success", now - 10);
+    facts.contradict("a", now - 15);
+    expect(facts.get("a", "key")).toBe("newer success");
+    facts.contradict(null, now);
+    expect(facts.get("a", "key")).toBeUndefined();
+    facts.set("b", "key", now - 5, "started before the floor", now - 5);
+    expect(facts.get("b", "key")).toBeUndefined();
+  });
 });

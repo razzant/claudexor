@@ -103,28 +103,35 @@ export class ModelLoginReadiness {
     const result = await this.reads
       .read(scope, joinKey, signal, async (physicalSignal) => {
         const startedAt = Date.now();
-        const status = CredentialProfileStatus.parse(
-          await adapter.probeCredentialProfile!(profile, physicalSignal, options),
-        );
-        physicalSignal.throwIfAborted();
-        if (status.profile_id !== profile.profile_id || status.harness_id !== profile.harness_id)
-          throw new Error("Login probe returned another profile");
-        // A login or program change during the probe still answers this probe;
-        // only an answer under one unchanged identity is retained for reuse.
-        const unchanged = key !== null && (await identity()) === key;
-        physicalSignal.throwIfAborted();
-        const observedAt = Date.parse(status.last_verified_at ?? "");
-        if (
-          unchanged &&
-          status.availability === "available" &&
-          status.verification === "passed" &&
-          status.stale !== true &&
-          Number.isFinite(observedAt) &&
-          observedAt <= Date.now()
-        ) {
-          this.positives.set(scope, key, Math.min(startedAt, observedAt), status);
+        try {
+          const status = CredentialProfileStatus.parse(
+            await adapter.probeCredentialProfile!(profile, physicalSignal, options),
+          );
+          physicalSignal.throwIfAborted();
+          if (status.profile_id !== profile.profile_id || status.harness_id !== profile.harness_id)
+            throw new Error("Login probe returned another profile");
+          // A login or program change during the probe still answers this probe;
+          // only an answer under one unchanged identity is retained for reuse.
+          const unchanged = key !== null && (await identity()) === key;
+          physicalSignal.throwIfAborted();
+          const observedAt = Date.parse(status.last_verified_at ?? "");
+          const positive =
+            status.availability === "available" &&
+            status.verification === "passed" &&
+            status.stale !== true &&
+            Number.isFinite(observedAt) &&
+            observedAt <= Date.now();
+          // A refused, unknown or stale answer is evidence against the remembered
+          // login; an older success answering later cannot restore it.
+          if (!positive) this.positives.contradict(scope, startedAt);
+          else if (unchanged)
+            this.positives.set(scope, key, Math.min(startedAt, observedAt), status, startedAt);
+          return status;
+        } catch (error) {
+          // A probe that failed, not one its waiters left or a change ended, is too.
+          if (!physicalSignal.aborted) this.positives.contradict(scope, startedAt);
+          throw error;
         }
-        return status;
       })
       .finally(() => finish("loginProbe"))
       .catch((error: unknown) => {

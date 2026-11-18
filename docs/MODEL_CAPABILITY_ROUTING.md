@@ -9,7 +9,8 @@ positive probe for the same profile, `auth.json` and `config.toml` file versions
 and observed program identity. Its age starts at the physical probe, uses the
 positive doctor TTL (`CLAUDEXOR_DOCTOR_TTL_MS`, default 90 seconds), and never
 renews on a hit. Negative, unknown, failed, undated or stale results always
-probe again. This admission owner is separate from the display cache; quota
+probe again, drop the remembered positive, and outrank a success from an
+older probe that answers after them. This admission owner is separate from the display cache; quota
 and revocation overlays remain live, including on a hit. The existing strict
 pin and `last_positive_after_timeout` distinction is unchanged.
 
