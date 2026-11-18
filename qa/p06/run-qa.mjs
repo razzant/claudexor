@@ -57,10 +57,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { caseFiles, prepareRunDir, readJsonReport, runEmitTests, SCENARIOS, selectPassedCases, separateDirectories } from "./run-emit.mjs";
 
 const ROOT = process.env.GITHUB_WORKSPACE ?? process.cwd();
 const { QA_OUT: OUT, QA_RUN: RUN, QA_STORE: STORE } = process.env;
+const generatedWorktree = RUN && join(RUN, "gen-wt");
 
 const GENERATED_DIR = "packages/schema/generated";
 const SCHEMA_RE = /^packages\/schema\/generated\/[A-Za-z0-9_-]+\.schema\.json$/;
@@ -161,24 +163,84 @@ const RELEASE_SCRIPTS = [
   "fixtures:swift:check", "fixtures:runtime-update:check", "release:workflow:check", "format:check", "canary",
 ];
 
+function publicTreePaths(ref, paths = []) {
+  return new Set(git(["ls-tree", "-r", "--name-only", "-z", ref, "--", ...paths]).split("\0").filter(Boolean));
+}
+
+function checkoutPath(name, cwd) {
+  if (typeof name !== "string") return null;
+  const path = name.replace(/^file:\/\/(?=\/)/, "");
+  return path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path.replace(/^\.\//, "");
+}
+
+// Accept only a stack frame in the already identified test file.
+function testFrame(line, file, cwd) {
+  if (line.length > 2048) return null;
+  const m = /^\s*(?:❯\s+(?:\S+\s+)?|at\s+(?:async\s+)?(?:[^()\r\n]+\s+\()?)(\S+?):([1-9]\d{0,6})(?::([1-9]\d{0,6}))?\)?\s*$/.exec(line);
+  if (!m || checkoutPath(m[1], cwd) !== file) return null;
+  return m[3] ? { line: Number(m[2]), column: Number(m[3]) } : { line: Number(m[2]) };
+}
+
+function releaseTestFailures(text, cwd, tracked) {
+  const files = new Map();
+  let lastObservedScript = null;
+  let inFailures = false;
+  let current = null;
+  let unidentified = false;
+  for (const line of text.split(/\r?\n/)) {
+    const script = /^> claudexor-monorepo@[\w.+-]+ ([a-z][a-z0-9:-]*)(?: |$)/.exec(line)?.[1];
+    if (script) {
+      // Failures printed during an earlier checkpoint cannot explain a later exit.
+      lastObservedScript = RELEASE_SCRIPTS.includes(script) ? script : null;
+      files.clear();
+      unidentified = false;
+      inFailures = false;
+      current = null;
+    } else if (/^\s*⎯+\s+Failed\s+(?:Tests?|Suites?)\s+\d+\s+⎯+\s*$/.test(line)) {
+      inFailures = true;
+      current = null;
+    } else if (/^\s*(?:Test Files\b|⎯+\s+Unhandled\b)/.test(line)) {
+      inFailures = false;
+      current = null;
+    } else if (inFailures && /^\s*FAIL(?:\s|$)/.test(line)) {
+      const m = /^\s*FAIL\s+(?:\|[^|]+\|\s+)?(\S+)(?=\s+(?:>|\[)|\s*$)/.exec(line);
+      const path = checkoutPath(m?.[1], cwd);
+      current = tracked.has(path) && /^[A-Za-z0-9_@.+/-]+\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path) ? path : null;
+      if (!current) unidentified = true;
+      else if (!files.has(current)) files.set(current, null);
+    } else if (/^\s*⎯/.test(line)) {
+      current = null;
+    } else if (current && !files.get(current)) {
+      const frame = testFrame(line, current, cwd);
+      if (frame) files.set(current, frame.line);
+    }
+  }
+  const failedSuites = Array.from(files, ([file, line]) => line ? { file, line } : { file });
+  return { lastObservedScript, failedSuites, unknownSuite: unidentified || !files.size };
+}
+
 function commandDiagnostics(name, cwd, logPath, observation) {
+  // The targeted lane reports exclusively from the prescribed files' Vitest results.
+  if (name === "targeted" || name === "targeted-build") return;
+  const release = name === "release-verify";
+  const unknown = release ? " failed_suite=unknown" : "";
   try {
     if (lstatSync(logPath).size > (16 << 20)) {
-      console.error(`[p06] stage=${name} diagnostics=log_limit`);
+      console.error(`[p06] stage=${name} diagnostics=log_limit${unknown}`);
       return;
     }
-    const text = readFileSync(logPath, "utf8");
-    // Only literal paths from the already public QA-tip tree can be emitted,
-    // never arbitrary paths (or file contents) from the failure transcript.
-    const tracked = new Set(git(["ls-tree", "-r", "--name-only", "-z", "HEAD"]).split("\0"));
-    const locations = new Set();
-    const publicPaths = new Set();
-    for (const m of text.matchAll(/(?<![\w.@/-])([\w.@/-]{1,512}\.(?:[mc]?[jt]sx?|md|json))(?:\((\d{1,7}),\d{1,7}\): error TS\d{3,6}\b|:(\d{1,7}):\d{1,7}\b|\b)/g)) {
-      const path = m[1].startsWith(`${cwd}/`) ? m[1].slice(cwd.length + 1) : m[1];
-      if (path.length > 180 || !/^[A-Za-z0-9_./@-]+$/.test(path) || !tracked.has(path)) continue;
-      const line = m[2] ?? m[3];
-      locations.add(line ? `${path}:${Number(line)}` : path);
-      publicPaths.add(path);
+    const text = stripVTControlCharacters(readFileSync(logPath, "utf8"));
+    // Qualify release suites against the bound public product tree.
+    const tracked = publicTreePaths(release ? process.env.PRODUCT_HEAD_SHA : "HEAD");
+    if (release) {
+      const result = releaseTestFailures(text, cwd, tracked);
+      console.error(`[p06] stage=${name} last_observed_script=${result.lastObservedScript ?? "unknown"}`);
+      for (const { file, line } of result.failedSuites) {
+        console.error(`[p06] stage=${name} failed_suite=${file}${line ? ` line=${line}` : ""}`);
+      }
+      if (result.unknownSuite) console.error(`[p06] stage=${name} failed_suite=unknown`);
+      writeJson(join(OUT, `${name}.locations.json`), { step: name, ...observation, ...result });
+      if (result.failedSuites.length || !["build", "typecheck", "typecheck:tests"].includes(result.lastObservedScript)) return;
     }
     // turbo runs tsc inside packages/<dir> and prefixes its lines with
     // "<package>:<task>: ", so a package-relative path is resolved through the
@@ -190,24 +252,23 @@ function commandDiagnostics(name, cwd, logPath, observation) {
       if (typeof pkgName === "string") packageDirs.set(pkgName, dir);
     }
     const tsErrors = new Set();
-    for (const m of text.matchAll(/(?:^|\s)(?:(@[\w.-]+\/[\w.-]+):[\w:-]+:\s+)?([A-Za-z0-9_./@-]{1,512})\((\d{1,7}),(\d{1,7})\): error (TS\d{3,6})\b/gm)) {
+    for (const m of text.matchAll(/(?:^|\s)(?:((?:@[\w.-]+\/)?[\w.-]+):[\w:-]+:\s+)?([A-Za-z0-9_./@-]{1,512})\((\d{1,7}),(\d{1,7})\): error (TS\d{3,6})\b/gm)) {
       let path = m[2].startsWith(`${cwd}/`) ? m[2].slice(cwd.length + 1) : m[2];
       if (!tracked.has(path) && m[1] && packageDirs.has(m[1])) path = `${packageDirs.get(m[1])}/${path}`;
       if (tracked.has(path)) tsErrors.add(`${path}:${Number(m[3])}:${Number(m[4])} ${m[5]}`);
     }
     for (const loc of [...tsErrors].slice(0, 24)) console.error(`[p06] stage=${name} compiler=${loc}`);
-    let lastObservedScript = null;
-    if (name === "release-verify") {
-      for (const m of text.matchAll(/^> claudexor-monorepo@[\w.+-]+ ([a-z][a-z0-9:-]*)(?: [^\r\n]*)?\r?$/gm)) {
-        const known = RELEASE_SCRIPTS.find((script) => script === m[1]);
-        if (known) lastObservedScript = known;
-      }
-      console.error(`[p06] stage=${name} last_observed_script=${lastObservedScript ?? "none"}`);
-      for (const path of [...publicPaths].slice(-8)) console.error(`[p06] stage=${name} public_source=${path}`);
+    if (release) return;
+    const locations = new Set();
+    for (const m of text.matchAll(/(?<![\w.@/-])([\w.@/-]{1,512}\.(?:[mc]?[jt]sx?|md|json))(?:\((\d{1,7}),\d{1,7}\): error TS\d{3,6}\b|:(\d{1,7}):\d{1,7}\b|\b)/g)) {
+      const path = m[1].startsWith(`${cwd}/`) ? m[1].slice(cwd.length + 1) : m[1];
+      if (path.length > 180 || !/^[A-Za-z0-9_./@-]+$/.test(path) || !tracked.has(path)) continue;
+      const line = m[2] ?? m[3];
+      locations.add(line ? `${path}:${Number(line)}` : path);
     }
-    writeJson(join(OUT, `${name}.locations.json`), { step: name, ...observation, lastObservedScript, sourceLocations: [...locations].slice(-80), total: locations.size });
+    writeJson(join(OUT, `${name}.locations.json`), { step: name, ...observation, lastObservedScript: null, sourceLocations: [...locations].slice(-80), total: locations.size });
   } catch {
-    console.error(`[p06] stage=${name} diagnostics=unavailable`);
+    console.error(`[p06] stage=${name} diagnostics=unavailable${unknown}`);
   }
 }
 
@@ -229,6 +290,8 @@ function step(name, argv, { cwd = ROOT, env = {}, log } = {}) {
     });
   } catch (error) {
     observation = processObservation(error.status, error.signal);
+    // Preserve the full gate's exit even if writing its diagnostics or receipt fails.
+    if (name === "release-verify") process.exitCode = observation.exit ?? 1;
   } finally {
     closeSync(fd);
   }
@@ -300,23 +363,10 @@ function assertValidPath(name) {
   }
 }
 
-function hashGeneratedDir(root) {
-  const listed = [
-    ...git(["-C", root, "ls-files", "-z", GENERATED_DIR]).split("\0"),
-    ...git(["-C", root, "ls-files", "--others", "--exclude-standard", "-z", GENERATED_DIR]).split("\0"),
-  ].filter(Boolean);
-  const map = {};
-  for (const name of [...new Set(listed)].sort()) {
-    const f = join(root, name);
-    if (existsSync(f) && statSync(f).isFile()) map[name] = sha256File(f);
-  }
-  return map;
-}
-
 function readChange() {
   const changePath = join(OUT, "export", "change.json");
   if (!existsSync(changePath)) throw new Error("export lane output missing; run export first");
-  return JSON.parse(readFileSync(changePath, "utf8"));
+  return { ...JSON.parse(readFileSync(changePath, "utf8")), genWt: generatedWorktree };
 }
 
 function buildFixturePackages(cwd, prefix) {
@@ -397,27 +447,15 @@ async function laneExport() {
     .split("\0")
     .filter(Boolean);
 
-  // Preserve raw generated-schema SHAs before/after regeneration.
-  const before = hashGeneratedDir(productWt);
   step("export-build-schema", ["pnpm", "exec", "turbo", "run", "build", "--filter=@claudexor/schema", "--concurrency=2"], { cwd: productWt });
   step("export-schema-gen", ["pnpm", "schema:gen"], { cwd: productWt });
   step("export-build-control-api", ["pnpm", "exec", "turbo", "run", "build", "--filter=@claudexor/control-api", "--concurrency=2"], { cwd: productWt });
   step("export-gen-endpoints-doc", ["node", "scripts/gen-endpoints-doc.mjs"], { cwd: productWt });
-  const after = hashGeneratedDir(productWt);
   for (const expected of EXPECTED_GENERATED_SCHEMAS) {
-    if (!(expected in after)) throw new Error(`expected generated schema missing after schema:gen: ${expected}`);
+    if (!lstatSync(join(productWt, expected), { throwIfNoEntry: false })?.isFile()) {
+      throw new Error(`expected regular generated schema after schema:gen: ${expected}`);
+    }
   }
-  const added = Object.keys(after).filter((k) => !(k in before));
-  const removed = Object.keys(before).filter((k) => !(k in after));
-  const rehashed = Object.keys(after).filter((k) => k in before && after[k] !== before[k]);
-  writeJson(join(out, "generated-shas.json"), {
-    before,
-    after,
-    added,
-    removed,
-    changed: rehashed,
-    expectedPresent: EXPECTED_GENERATED_SCHEMAS,
-  });
 
   // Everything the generators touched in the tracked generated/doc outputs.
   // Deletions (git status D) are KEPT: the generator removes stale schemas and
@@ -438,7 +476,6 @@ async function laneExport() {
   for (const name of paths) assertValidPath(name);
 
   const generated = paths.filter((p) => SCHEMA_RE.test(p));
-  const endpointsPair = paths.filter((p) => p === ENDPOINTS_JSON || p === ARCH_DOC);
   const formatted = paths.filter((p) => !SCHEMA_RE.test(p) && p !== ENDPOINTS_JSON && p !== ARCH_DOC);
   if (formatted.length) {
     step("export-prettier", ["pnpm", "exec", "prettier", "--write", "--ignore-unknown", "--", ...formatted], { cwd: productWt });
@@ -462,6 +499,7 @@ async function laneExport() {
     }).trimEnd();
   g(["read-tree", productTree]);
   g(["add", "-A", "--", ...paths]);
+  g(["ls-files", "--error-unmatch", "--", ...EXPECTED_GENERATED_SCHEMAS]);
   const generatedTree = g(["write-tree"]);
   const changedAfter = g(["diff", "--cached", "--no-renames", "--name-only", "-z", productTree])
     .split("\0")
@@ -497,8 +535,7 @@ async function laneExport() {
       "-m", "qa-p06: exact generated tree (test-only, never published)"],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   ).trim();
-  const genWt = join(RUN, "gen-wt");
-  step("worktree-add-generated", ["git", "worktree", "add", "--detach", genWt, generatedCommit]);
+  step("worktree-add-generated", ["git", "worktree", "add", "--detach", generatedWorktree, generatedCommit]);
   writeJson(join(out, "change.json"), {
     lane: "export",
     head,
@@ -507,12 +544,6 @@ async function laneExport() {
     productTree,
     generatedTree,
     generatedCommit,
-    genWt,
-    paths,
-    changed: changedAfter,
-    generated,
-    endpointsPair,
-    formatted,
   });
 }
 
@@ -771,51 +802,79 @@ const TARGETED_TESTS = [
 ];
 const SUITE_STATUSES = new Set(["passed", "failed", "skipped", "pending", "todo"]);
 
+function failedAssertionFrame(assertion, file, cwd) {
+  if (!Array.isArray(assertion.failureMessages)) return null;
+  for (const message of assertion.failureMessages) {
+    if (typeof message !== "string") continue;
+    for (const line of stripVTControlCharacters(message).split(/\r?\n/)) {
+      const frame = testFrame(line, file, cwd);
+      if (frame) return frame;
+    }
+  }
+  return null;
+}
+
+function targetedResults(report, cwd, tracked) {
+  const results = report.state === "ok" && Array.isArray(report.value?.testResults) ? report.value.testResults : null;
+  const files = {};
+  for (const file of TARGETED_TESTS) {
+    if (!tracked.has(file)) continue;
+    const suites = results?.filter((r) => checkoutPath(r?.name, cwd) === file) ?? [];
+    if (suites.length !== 1) {
+      let status = suites.length ? "ambiguous" : "not_reported";
+      if (!results) status = report.state === "not_run" ? "not_run" : "unknown";
+      files[file] = { reported: results ? suites.length : null, status };
+      continue;
+    }
+    const suite = suites[0];
+    if (!Array.isArray(suite.assertionResults)) {
+      files[file] = { reported: 1, status: "invalid_shape" };
+      continue;
+    }
+    const assertions = suite.assertionResults;
+    const failedAssertions = assertions.flatMap((a, index) => a?.status === "failed"
+      ? [{ ordinal: index + 1, ...failedAssertionFrame(a, file, cwd) }] : []);
+    const passed = assertions.filter((a) => a?.status === "passed").length;
+    const skipped = assertions.filter((a) => ["skipped", "pending", "todo"].includes(a?.status)).length;
+    let status = SUITE_STATUSES.has(suite.status) ? suite.status : "unrecognized";
+    if (failedAssertions.length) status = "failed";
+    else if (status === "passed" && passed + skipped !== assertions.length) status = "unrecognized";
+    else if (status === "passed" && skipped === assertions.length) status = "not_run";
+    files[file] = { reported: 1, status, assertions: assertions.length, passed, skipped, failed: failedAssertions.length, failedAssertions };
+  }
+  // passWithNoTests is enabled. Each requested file must report its own passing assertions.
+  const allPassed = TARGETED_TESTS.every((file) => files[file]?.status === "passed" && files[file].failed === 0 && files[file].passed > 0);
+  return { report: report.state === "ok" && !results ? "invalid_shape" : report.state, allPassed, files };
+}
+
 async function laneTargeted() {
-  const { genWt } = readChange();
+  const { genWt, productHead } = readChange();
   const out = join(OUT, "targeted");
   mkdirSync(out, { recursive: true });
   // The CLI tests load every harness through its built dist. Build the CLI's
   // whole dependency closure here instead of relying on the full gate's build.
-  step("targeted-build", ["pnpm", "exec", "turbo", "run", "build", "--concurrency=2", "--filter=@claudexor/cli..."], { cwd: genWt });
-  const reportPath = join(mkdtempSync(join(RUN, "targeted-")), "vitest.json");
+  let reportPath;
   let failure = null;
   try {
+    step("targeted-build", ["pnpm", "exec", "turbo", "run", "build", "--concurrency=2", "--filter=@claudexor/cli..."], { cwd: genWt });
+    reportPath = join(mkdtempSync(join(RUN, "targeted-")), "vitest.json");
     step("targeted", ["pnpm", "exec", "vitest", "run", "--maxWorkers=2", "--reporter=json", `--outputFile=${reportPath}`,
       ...TARGETED_TESTS], { cwd: genWt });
   } catch (error) {
     if (!(error instanceof CommandFailure)) throw error;
     failure = error;
   }
-  // vitest.config.ts sets passWithNoTests, so exit 0 alone does not prove that
-  // a requested file ran: each file must report its own passing assertions.
-  const report = readJsonReport(reportPath, 64 << 20);
-  const results = report.state === "ok" && Array.isArray(report.value?.testResults) ? report.value.testResults : null;
-  const files = {};
-  for (const rel of TARGETED_TESTS) {
-    const suites = results?.filter((r) => typeof r?.name === "string" && r.name.replaceAll("\\", "/").endsWith(`/${rel}`)) ?? [];
-    const suite = suites.length === 1 ? suites[0] : null;
-    const assertions = Array.isArray(suite?.assertionResults) ? suite.assertionResults : [];
-    const count = (status) => assertions.filter((a) => a?.status === status).length;
-    files[rel] = {
-      reported: suites.length,
-      status: SUITE_STATUSES.has(suite?.status) ? suite.status : suite ? "unrecognized" : "not_reported",
-      passed: count("passed"),
-      failed: count("failed"),
-      assertions: assertions.length,
-    };
+  const report = reportPath ? readJsonReport(reportPath, 64 << 20) : { state: "not_run" };
+  const summary = targetedResults(report, genWt, publicTreePaths(productHead, TARGETED_TESTS));
+  const stage = reportPath ? "vitest" : "build";
+  const allPassed = !failure && summary.allPassed;
+  if (!allPassed) {
+    console.error(`[p06] stage=targeted phase=${stage} report=${summary.report}`);
+    for (const [file, result] of Object.entries(summary.files)) {
+      console.error(`[p06] stage=targeted file=${file} ${JSON.stringify(result)}`);
+    }
   }
-  const allPassed = Boolean(results) && TARGETED_TESTS.every((rel) => {
-    const f = files[rel];
-    return f.reported === 1 && f.status === "passed" && f.failed === 0 && f.passed > 0;
-  });
-  writeJson(join(out, "targeted.json"), {
-    lane: "targeted",
-    report: results ? "ok" : report.state === "ok" ? "invalid_shape" : report.state,
-    exit: failure ? failure.observation.exit : 0,
-    allPassed,
-    files,
-  });
+  writeJson(join(out, "targeted.json"), { lane: "targeted", stage, ...(failure?.observation ?? processObservation(0)), ...summary, allPassed });
   if (failure) throw failure;
   if (!allPassed) throw new Error("a targeted test file did not report passing tests");
 }
@@ -861,8 +920,9 @@ try {
   if (receiptLane) receipt(lane, true);
   console.log(`[p06] stage=${lane} phase=end exit=0`);
 } catch (error) {
-  console.error(`[p06] stage=${lane} phase=end exit=1`);
-  process.exitCode = 1;
+  const exit = lane === "release" ? process.exitCode || 1 : 1;
+  console.error(`[p06] stage=${lane} phase=end exit=${exit}`);
+  process.exitCode = exit;
   if (lane !== "scan") {
     // Recording the failure must not let a second, raw filesystem or parser
     // exception escape to GitHub's log. Only OUT's fixed lane marker is public.

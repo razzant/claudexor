@@ -342,7 +342,10 @@ function main() {
     process.exit(2);
   }
   const use = issues.length ? issues : ["307", "697"];
-  if (runDir === null) mkdirSync(dirs.run, { mode: 0o700 });
+  if (runDir === null) {
+    mkdirSync(dirname(dirs.run), { recursive: true, mode: 0o700 });
+    mkdirSync(dirs.run, { mode: 0o700 });
+  }
   const dir = prepareRunDir(root, dirs.run);
   const raw = join(dir, "unchecked");
   const report = join(dir, "vitest.json");
