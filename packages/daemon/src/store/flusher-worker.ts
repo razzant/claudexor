@@ -169,8 +169,9 @@ export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerDat
     }, delay);
   };
 
-  // An idle slot allows one extra early barrier. Followers share the original
-  // periodic deadline. Under continuous demand the timer serves every waiter.
+  // Steadily spaced waiters can each find an idle slot and trigger one early barrier.
+  // Followers after that pass wait for the original deadline. A timer that serves
+  // waiters leaves the next slot on the timer too.
   const wake = (): void => {
     waiting = true;
     if (advanceableDue === null) return;
