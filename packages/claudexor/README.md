@@ -24,8 +24,44 @@ claudexor best-of "review this patch" --harness codex,claude --n 2
 claudexor mcp serve
 ```
 
+The example Ask uses Auto. To use a named account, add `--harness <harness-id> --profile <profile-id>`
+with the IDs from its row in `claudexor accounts --json`.
+
 This package is the bin wrapper over
 [`@claudexor/cli`](https://www.npmjs.com/package/@claudexor/cli).
+
+## Install in Pi
+
+Pi can delegate a question to Claudexor and show the answer in your session.
+Use [a configured CLI and account](https://github.com/razzant/claudexor#set-up-the-cli-and-account)
+and a Pi version with built-in MCP and `registerMcpServer`, such as 1.5.2.
+Pi integration by [Ouroboros](https://github.com/razzant/ouroboros).
+
+If `npm view claudexor@latest pi.extensions --json` lists `./pi/index.js`,
+install the published package in Pi.
+
+```sh
+pi install npm:claudexor
+```
+
+If the entry is missing, as it is in `claudexor@6.2.0` on npm,
+[get a Git checkout containing the extension](https://github.com/razzant/claudexor#get-a-package-checkout)
+and keep it in place. Pi loads the local package from that directory.
+
+```sh
+pi install "$HOME/claudexor-hosts/packages/claudexor"
+```
+
+Start Pi with `node` and `claudexor` on its PATH, or use `/reload` in an
+existing session with that PATH. Enable built-in MCP and
+the extension in `pi config` if needed. In `/mcp`, check that `claudexor` is
+connected and your tool filters permit the first request's tools under
+`mcp__claudexor__`. The extension is the source by default. A manual entry
+named `claudexor` in `~/.pi/agent/mcp.json` or the project's `.pi/mcp.json`
+overrides it even when disabled. Keep an intentional entry for a
+[custom Claudexor store](https://github.com/razzant/claudexor/blob/main/docs/INTEGRATIONS.md#custom-claudexor-configuration-directory).
+To use the packaged server instead, remove or rename the conflicting entry
+and `/reload`. [Check status and get your first answer](https://github.com/razzant/claudexor#first-delegation-from-any-host).
 
 [Product overview](https://razzant.github.io/claudexor/) ·
 [documentation and source](https://github.com/razzant/claudexor#readme) ·
