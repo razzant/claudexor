@@ -3316,7 +3316,10 @@ display observation policy. Accepted durable model operations retain their own
 lifetime, independent of the connection that created them. The Codex `/models`
 request and response body share a 60-second transport limit; expiry yields
 `catalog_unavailable`, never an empty successful inventory, and Auto continues
-its normal candidate search. A failed read is never remembered and never becomes
+its normal candidate search. A fetch that never reached the provider (the socket or
+DNS code it reports in its causes: name not resolved, no route, refused or connect
+timeout) is `catalog_unavailable` with `context.cause: network` and that
+`errorCode`. A failed read is never remembered and never becomes
 an empty catalog; only a successful read answers later selections, as above.
 
 Operation receipts carry optional `preparation`; HTTP GET exposes it only with
@@ -3604,7 +3607,10 @@ from typed per-account causes: an all-quota pool is
 `subscription_window_exhausted`, an all-authentication pool is `auth_required`,
 and a mixed, unknown, empty or disabled pool stays unavailable with compact
 `poolCause` evidence; `credential_pool_exhausted` alone does not prove quota
-exhaustion. Legacy selected-account catalog reads obey the same current quota admission
+exhaustion. A selection in which every account it tried failed to connect to the
+provider is a network outage, not an exhausted pool: retryable
+`catalog_unavailable` with `poolCause: network`, the connection `errorCode`, and the
+causes of the accounts it could not try in `poolCauses`. Legacy selected-account catalog reads obey the same current quota admission
 without starting a generation. The opt-in account view enumerates enabled
 inventories separately, as described [above](#processing-and-account-catalogs).
 

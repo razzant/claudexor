@@ -1983,3 +1983,43 @@ describe("remembered catalog (INV-135, owner decision 2026-11-18)", () => {
     },
   );
 });
+
+describe("a catalog read that never reached the provider", () => {
+  const failed = (cause: unknown) => Object.assign(new TypeError("fetch failed"), { cause });
+  it.each([
+    ["ENOTFOUND", failed(Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" }))],
+    [
+      "UND_ERR_CONNECT_TIMEOUT",
+      failed(Object.assign(new Error("Connect Timeout"), { code: "UND_ERR_CONNECT_TIMEOUT" })),
+    ],
+    [
+      "ECONNREFUSED",
+      failed(
+        new AggregateError([Object.assign(new Error("connect"), { code: "ECONNREFUSED" })], ""),
+      ),
+    ],
+  ])("says so with its connection code %s", async (code, error) => {
+    const f = setup();
+    f.fetcher.mockRejectedValueOnce(error);
+    await expect(f.adapter.catalog(f.context)).rejects.toMatchObject({
+      problem: {
+        code: "catalog_unavailable",
+        retryable: true,
+        message: `The model provider could not be reached from this machine (${code}).`,
+        context: { cause: "network", errorCode: code },
+      },
+    });
+  });
+
+  it("claims nothing about the network for a failure after a connection or without a code", async () => {
+    const f = setup();
+    for (const error of [
+      failed(Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" })),
+      new TypeError("fetch failed"),
+    ]) {
+      f.fetcher.mockRejectedValueOnce(error);
+      const refusal = await f.adapter.catalog(f.context).catch((caught: unknown) => caught);
+      expect(refusal).toMatchObject({ problem: { code: "catalog_unavailable", context: {} } });
+    }
+  });
+});

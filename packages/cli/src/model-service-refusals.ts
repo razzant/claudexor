@@ -10,6 +10,21 @@ export const refusalProblem = (error: Error & { code?: string; problem?: unknown
   ControlProblem.safeParse(error.problem).data ??
   ControlProblem.parse({ code: error.code, message: error.message, retryable: false });
 
+/** Every account a selection tried failed to connect to the provider: the network,
+ * not the accounts, stopped it. `poolCauses` keeps the causes of accounts not tried. */
+const unreachable = (sourceId: string, tried: ControlProblem[], poolCauses: unknown[]): Error => {
+  const errorCode = tried[0]!.context.errorCode;
+  const message = `The model provider could not be reached from this machine (${String(errorCode)}); every account tried failed to connect`;
+  return Object.assign(modelError("catalog_unavailable", message), {
+    problem: ControlProblem.parse({
+      code: "catalog_unavailable",
+      message,
+      retryable: true,
+      context: { source: sourceId, poolCause: "network", cause: "network", errorCode, poolCauses },
+    }),
+  });
+};
+
 export const poolExhausted = (
   sourceId: string,
   error: unknown,
@@ -19,6 +34,9 @@ export const poolExhausted = (
     error && typeof error === "object" && "problem" in error ? error.problem : null,
   );
   const recordedCauses = provided.success ? provided.data.context.poolCauses : null;
+  const tried = [...catalogRefusals.values()];
+  if (tried.length > 0 && tried.every((refusal) => refusal.context.cause === "network"))
+    return unreachable(sourceId, tried, Array.isArray(recordedCauses) ? recordedCauses : []);
   const causes = new Set(Array.isArray(recordedCauses) ? recordedCauses : []);
   const resets: Array<string | null> = causes.has("quota")
     ? [

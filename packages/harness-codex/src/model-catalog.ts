@@ -18,6 +18,37 @@ import { codexProfileLoginIdentity } from "./profile-login-identity.js";
  * Never shorter than the host's 60-second catalog read timeout. */
 export const CODEX_CATALOG_TRANSPORT_MS = 60_000;
 
+/** Socket and DNS codes proving that no connection to the provider was made: the
+ * name did not resolve, there was no route, the peer refused, or connecting timed out. */
+const UNREACHABLE = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "EHOSTDOWN",
+  "EADDRNOTAVAIL",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/** The typed code of a fetch failure that never reached the provider, read from the
+ * error and its causes (undici keeps the socket error in `cause`), never from text. */
+export function unreachableCode(error: unknown, seen = new Set<unknown>()): string | null {
+  if (!error || typeof error !== "object" || seen.has(error)) return null;
+  seen.add(error);
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && UNREACHABLE.has(code)) return code;
+  const inner = [(error as { cause?: unknown }).cause];
+  if (error instanceof AggregateError) inner.push(...error.errors);
+  for (const nested of inner) {
+    const found = unreachableCode(nested, seen);
+    if (found) return found;
+  }
+  return null;
+}
+
 export function codexModelHeaders(auth: CodexModelAuth): Record<string, string> {
   return {
     Authorization: `Bearer ${auth.accessToken}`,
@@ -233,12 +264,15 @@ export function createCodexCatalogReader(
           signal.throwIfAborted();
           replaced.signal.throwIfAborted();
           if (error instanceof CodexModelError) throw error;
+          const network = deadline.signal.aborted ? null : unreachableCode(error);
           throw new CodexModelError(
             "catalog_unavailable",
             deadline.signal.aborted
               ? "The selected Codex account's catalog exceeded its transport limit."
-              : "The selected Codex account's catalog could not be reached.",
-            {},
+              : network
+                ? `The model provider could not be reached from this machine (${network}).`
+                : "The selected Codex account's catalog could not be reached.",
+            network ? { cause: "network", errorCode: network } : {},
             true,
           );
         } finally {

@@ -1219,11 +1219,50 @@ describe("production model service composition", () => {
     },
   );
 
-  it("tells the owner the pool is unavailable, without a reset, when the network dies", async () => {
+  const unreachable = () =>
+    // The live adapter's refusal when the catalog fetch never reached the provider.
+    Object.assign(new Error("fetch failed"), {
+      problem: ControlProblem.parse({
+        code: "catalog_unavailable",
+        message: "The model provider could not be reached from this machine (ENOTFOUND).",
+        retryable: true,
+        context: { cause: "network", errorCode: "ENOTFOUND" },
+      }),
+    });
+  it("names a network outage as an unreachable provider, never as an exhausted pool", async () => {
+    const f = await fixture();
+    f.catalog.mockRejectedValue(unreachable());
+    const done = await f.run();
+    expect(done.problem).toMatchObject({
+      code: "catalog_unavailable",
+      message: expect.stringContaining("could not be reached from this machine (ENOTFOUND)"),
+      retryable: true,
+      context: { poolCause: "network", cause: "network", errorCode: "ENOTFOUND", poolCauses: [] },
+    });
+    expect(f.catalog).toHaveBeenCalledTimes(2);
+    expect(f.invoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps the network as the reason when the accounts it could not try are quota-blocked", async () => {
+    const f = await fixture();
+    f.failures.b = "subscription_window_exhausted";
+    await f.run({ mode: "pin", profileId: "b" });
+    f.invoke.mockClear();
+    f.catalog.mockReset();
+    f.catalog.mockRejectedValue(unreachable());
+    const done = await f.run();
+    expect(done.problem).toMatchObject({
+      code: "catalog_unavailable",
+      context: { poolCause: "network", poolCauses: ["quota"] },
+    });
+    expect(f.catalog).toHaveBeenCalledTimes(1);
+    expect(f.invoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unproven catalog failure as an unavailable pool, without a reset", async () => {
     const f = await fixture();
     f.catalog.mockRejectedValue(
-      // The shape the live adapter throws when the catalog fetch itself fails:
-      // a retryable catalog_unavailable carrying no vendor context at all.
+      // A retryable catalog_unavailable carrying no connection evidence at all.
       Object.assign(new Error("network is unreachable"), {
         problem: ControlProblem.parse({
           code: "catalog_unavailable",
