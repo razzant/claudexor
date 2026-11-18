@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
-import type { ChildStdin, LiveMessageResult } from "@claudexor/core";
-import { HarnessEvent } from "@claudexor/schema";
+import { describe, expect, it, vi } from "vitest";
+import { runCliHarness, type ChildStdin, type LiveMessageResult } from "@claudexor/core";
+import { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
+import { createClaudeAdapter } from "./index.js";
 import {
+  CLAUDE_LIVE_ACCEPT_DEADLINE_MS,
   FOREIGN_RESULT,
   LIVE_INPUT_ACCEPTED,
   LIVE_INPUT_DELIVERED,
@@ -268,16 +270,97 @@ describe("claude live input: closeStdinOn (the hold)", () => {
     );
   });
 
-  it("ignores a cancelled lifecycle frame that arrives AFTER the message was consumed", async () => {
-    const { live, observe } = openSession();
-    const receipt = live.message(SESSION, { messageId: MSG, text: "x" });
-    observe(lifecycle(MSG, "queued"));
-    await receipt;
-    observe(lifecycle(MSG, "started"));
-    const after = observe(lifecycle(MSG, "cancelled"));
-    expect((after ?? []).filter((e) => e.payload?.["code"] === "live_input_refused")).toHaveLength(
-      0,
-    );
+  it.each(["cancelled", "discarded", "refused"])(
+    "releases the started command on %s and keeps its earlier acceptance",
+    async (state) => {
+      const { live, observe } = openSession();
+      const receipt = live.message(SESSION, { messageId: MSG, text: "x" });
+      observe(lifecycle(MSG, "queued"));
+      observe(lifecycle(MSG, "started"));
+      observe(result([]));
+      const terminal = lifecycle(MSG, state);
+      expect(observe(terminal)).toEqual([]);
+      expect(live.closeStdinOn(SESSION, terminal)).toBe(true);
+      await expect(receipt).resolves.toEqual({ outcome: "accepted" });
+    },
+  );
+});
+
+describe("Claude live input through the adapter and CLI run loop", () => {
+  it.each([
+    { active: false, closesOn: "the unacknowledged write's deadline" },
+    { active: true, closesOn: "cancellation of the remaining started command" },
+  ])("after the prompt result, closes stdin on $closesOn", async ({ active }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { io, written } = fakeIo();
+      const end = vi.fn();
+      const stdout = (frame: unknown) => ({ type: "stdout" as const, line: JSON.stringify(frame) });
+      let openAfterResult: boolean | undefined;
+      let openAfterDeadline: boolean | undefined;
+      let unacknowledged: Promise<LiveMessageResult> | undefined;
+      let started: Promise<LiveMessageResult> | undefined;
+      let afterClose: Promise<LiveMessageResult> | undefined;
+      const adapter = createClaudeAdapter({
+        anthropicApiKey: () => "fixture",
+        probeEffortLevels: async () => ({ levels: [], live: true }),
+        runCliHarness: (loop) =>
+          runCliHarness({
+            ...loop,
+            program: undefined,
+            spawn: async function* (_bin, _args, options) {
+              options?.onSpawn?.({ ...io, end });
+              const prompt = JSON.parse(written[0]!.trimEnd().split("\n")[1]!);
+              yield stdout({ type: "system", subtype: "init", session_id: SESSION });
+              if (active) yield stdout(lifecycle("active", "started"));
+              yield stdout(result([prompt.uuid]));
+              // The loop is waiting for stdout again. No frame wakes it at the deadline.
+              openAfterResult = end.mock.calls.length === 0;
+              vi.advanceTimersByTime(CLAUDE_LIVE_ACCEPT_DEADLINE_MS);
+              openAfterDeadline = end.mock.calls.length === 0;
+              if (active) yield stdout(lifecycle("active", "cancelled"));
+              // Only EOF allows a clean exit. This also checks the adapter before loop cleanup.
+              afterClose = adapter.message!(SESSION, { messageId: "after-eof", text: "Any notes?" });
+              yield { type: "exit", code: end.mock.calls.length === 1 ? 0 : 1, signal: null };
+            },
+          }),
+      });
+      const spec = HarnessRunSpec.parse({
+        session_id: SESSION,
+        intent: "implement",
+        prompt: "Review the note.",
+        cwd: process.cwd(),
+        access: "full",
+        auth_preference: "api_key",
+        processing_preference: "standard",
+        extra: { interactionChannel: { request: async () => null } },
+      });
+      const events: HarnessEvent[] = [];
+      for await (const event of adapter.run(spec)) {
+        events.push(event);
+        if (event.type === "started") {
+          unacknowledged = adapter.message!(SESSION, { messageId: MSG, text: "Check the title." });
+          if (active)
+            started = adapter.message!(SESSION, { messageId: "active", text: "Read the summary." });
+        }
+      }
+      expect(openAfterResult).toBe(true);
+      expect(openAfterDeadline).toBe(active);
+      expect(await unacknowledged).toEqual({
+        outcome: "delivery_unknown",
+        reason: "response_timeout",
+      });
+      expect(await started).toEqual(active ? { outcome: "delivered" } : undefined);
+      expect(await afterClose).toEqual({ outcome: "not_active", reason: "no_live_session" });
+      expect(
+        events.filter((event) => event.payload?.["message_id"]).map((event) => event.payload),
+      ).toEqual(active ? [{ code: LIVE_INPUT_DELIVERED, message_id: "active" }] : []);
+      expect(writtenUuids(written.slice(1))).toEqual(active ? [MSG, "active"] : [MSG]);
+      expect(end).toHaveBeenCalledTimes(1);
+      expect(events.at(-1)).toMatchObject({ type: "completed", payload: { exit_code: 0 } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

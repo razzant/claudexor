@@ -1,4 +1,4 @@
-import type { ChildStdin, LiveMessageResult } from "@claudexor/core";
+import type { ChildStdin, CloseStdinIf, LiveMessageResult } from "@claudexor/core";
 import type { HarnessEvent } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { isClaudeRateLimitRefusal } from "./context-signals.js";
@@ -122,6 +122,7 @@ interface CurrentPrompt {
 interface LiveSession {
   /** `null` once stdin closed: writing ended, while the stream may go on. */
   io: ChildStdin | null;
+  closeStdinIf?: CloseStdinIf;
   pending: Map<string, Pending>;
   resultsSeen: number;
   openBackgroundTasks: Set<string>;
@@ -144,7 +145,12 @@ export interface ClaudeLiveInput {
    * frames are written by then; `promptUuid` is the uuid of that prompt frame),
    * `null` once stdin closed.
    */
-  onIo(io: ChildStdin | null, sessionId: string, promptUuid?: string): void;
+  onIo(
+    io: ChildStdin | null,
+    sessionId: string,
+    promptUuid?: string,
+    closeStdinIf?: CloseStdinIf,
+  ): void;
   /**
    * Stream observer (runs inside the adapter's parseEvent): correlates the
    * receipts and lifecycle facts of this session and appends the typed
@@ -262,6 +268,12 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
     return false;
   };
 
+  const shouldCloseStdin = (session: LiveSession): boolean => {
+    if (!session.io || session.quotaRefused) return true;
+    if (session.resultsSeen === 0) return false;
+    return !hasPendingTurnWork(session) && session.openBackgroundTasks.size === 0;
+  };
+
   /** Nothing more can be written: a message still awaiting its `queued` frame
    * may have landed (the CLI drains its queue past EOF), so its request is
    * answered unknown; a late receipt may still follow on the stream. */
@@ -271,10 +283,11 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
   };
 
   return {
-    onIo(io, sessionId, promptUuid) {
+    onIo(io, sessionId, promptUuid, closeStdinIf) {
       if (io) {
         sessions.set(sessionId, {
           io,
+          closeStdinIf,
           pending: new Map(),
           resultsSeen: 0,
           openBackgroundTasks: new Set(),
@@ -324,13 +337,12 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
             consumed(session, sessionId, uuid, "consumed", receipts);
           } else if (
             (state === "cancelled" || state === "discarded" || state === "refused") &&
-            !pending.announced
+            advance(pending, "refused")
           ) {
-            pending.state = "refused";
+            // The command no longer holds stdin. Its earlier delivery still stands.
+            if (pending.announced) return events;
             // An explicit vendor refusal of THIS submission; a promise already
             // settled as accepted keeps its receipt (the refusal is the status).
-            // Once consumption was announced, a later lifecycle refusal is
-            // ordering noise: the model already acted on the text.
             pending.settle({ outcome: "rejected", reason: "rpc_refused" });
             receipts.push({
               type: "status",
@@ -398,12 +410,7 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
 
     closeStdinOn(sessionId, obj) {
       const session = sessions.get(sessionId);
-      if (!session) return isResultFrame(obj);
-      // The run loop asks right after `observe` parsed this frame, so the
-      // refused result itself closes the input; it cannot be reopened.
-      if (!session.io || session.quotaRefused) return true;
-      if (session.resultsSeen === 0) return false;
-      return !hasPendingTurnWork(session) && session.openBackgroundTasks.size === 0;
+      return session ? shouldCloseStdin(session) : isResultFrame(obj);
     },
 
     message(sessionId, input) {
@@ -427,8 +434,13 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
         // Registered BEFORE the write: an echo that beats `queued` still correlates.
         session.pending.set(input.messageId, pending);
         timer = setTimeout(() => {
-          // Release the initial hold. A late native acknowledgement can still hold stdin open.
           pending.settle({ outcome: "delivery_unknown", reason: "response_timeout" });
+          // The loop may already have read a result and be waiting for stdout
+          // while the CLI waits for EOF. Recheck this run's remaining holds.
+          if (session.resultsSeen > 0)
+            session.closeStdinIf?.(
+              () => sessions.get(sessionId) === session && shouldCloseStdin(session),
+            );
         }, acceptDeadlineMs);
         try {
           io.write(userMessageFrame(input.text, input.messageId));

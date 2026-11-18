@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, expect } from "vitest";
+import { fixtureCheckpoint } from "./fixture.config.mjs";
 import { sqlFixture } from "./src/packages/daemon/src/store/test-support/sql-fixture.ts";
 import { requestBodyText } from "./src/packages/harness-codex/src/test-support/request-body.ts";
 import { DaemonClient, DaemonServer, ModelOperations } from "./src/packages/daemon/dist/index.js";
@@ -52,6 +53,8 @@ const cases = control ? [
 
 for (const sample of cases) {
   it("emits model HTTP bytes / " + sample.name, async () => {
+    const mark = (checkpoint) => fixtureCheckpoint("697", sample.name, checkpoint);
+    mark("setup");
     const root = mkdtempSync(join(tmpdir(), "m6-"));
     const sql = await sqlFixture(root);
     const socket = join(root, "s");
@@ -103,6 +106,7 @@ for (const sample of cases) {
       await daemon.start();
       const { host, port } = await api.start();
       expect(host).toBe("127.0.0.1");
+      mark("operation-admission");
       const endpoint = "http://" + host + ":" + port + "/v2/model-operations";
       const headers = { Authorization: "Bearer fixture-control", "X-Claudexor-Protocol-Major": String(CONTROL_PROTOCOL_MAJOR),
         "Idempotency-Key": "picnic-" + sample.name, "Content-Type": "application/json" };
@@ -117,6 +121,7 @@ for (const sample of cases) {
       const accepted = await create();
       expect(accepted.status).toBe(202);
       const { id } = ControlModelOperationDetail.parse(await accepted.json());
+      mark("operation-detail");
       const url = endpoint + "/" + id;
       const deadline = Date.now() + 20000;
       let detail, detailBytes;
@@ -133,15 +138,18 @@ for (const sample of cases) {
       const save = (name, value) => writeFileSync(join(dir, name), value, { flag: "wx" });
       save("detail.json", detailBytes);
       if (sample.name === "failed") {
+        mark("operations");
         const operations = await fetch(`http://${host}:${port}/v2/operations`, { headers });
         expect(operations.status).toBe(200);
         const catalog = Buffer.from(await operations.arrayBuffer());
         const op = JSON.parse(catalog).operations.find(entry => entry.path === "/v2/model-operations" && entry.method === "POST");
         expect(op.parameters.find(p => p.name === "typedRefusals")).toMatchObject({location:"query", required:false, enum:["true", "false"]});
         save("operations.json", catalog);
+        mark("operation-detail");
       }
       expect(detail).toMatchObject({ id, state: sample.code ? "failed" : "succeeded",
         dispatch: { state: "response_received" }, response: { state: "ready" } });
+      mark("result-receipt");
       const r = await fetch(url + "/result", { headers });
       expect(r.status).toBe(200);
       const bytes = Buffer.from(await r.arrayBuffer());
@@ -151,25 +159,31 @@ for (const sample of cases) {
       expect(r.headers.get("content-length")).toBe(String(bytes.length));
       expect(detail.response.ref).toMatchObject({ sha256, sizeBytes: bytes.length });
       expect(ops.readResult(id).bytes.equals(bytes)).toBe(true);
+      mark("result-shape");
       const result = ModelCallResult.parse(JSON.parse(bytes));
       expect(detail.problem).toEqual(result.problem);
       if (sample.code) {
         expect(result).toMatchObject({ outcome: "failed", problem: { code: sample.code } });
+        mark("retryability");
         if (control) expect(result.problem.retryable).toBe(control === "base");
         else if (sample.event === refusal || sample.http) expect(result.problem.retryable).toBe(false);
+        mark("detail-privacy");
         expect(detailBytes.toString()).not.toContain(privateNote);
       } else {
         expect(result).toMatchObject({ outcome: "completed", message: { role: "assistant", content: sample.content }, problem: null });
       }
+      mark("failure-evidence");
       if (sample.capture) {
         expect(Buffer.from(result.failureEvidence.bodyBase64, "base64").equals(wire)).toBe(true);
       } else expect(result).not.toHaveProperty("failureEvidence");
       // A repeated create with the same idempotency key must return the same
       // operation id without a second native POST to the provider.
+      mark("idempotent-replay");
       const replay = await create();
       expect(replay.status).toBe(202);
       expect((await replay.json()).id).toBe(id);
       expect(posts).toBe(1);
+      mark("native-request");
       expect(nativePath).toMatch(/\/responses$/);
       expect(JSON.parse(nativeRequest)).toMatchObject({ model: "test-model",
         input: [{ role: "user", content: [{ type: "input_text", text: question }] }] });
@@ -185,6 +199,7 @@ for (const sample of cases) {
         // Hash of the raw response wire bytes the fake provider returned.
         nativeResponseSha256: createHash("sha256").update(wire).digest("hex"),
         etag: r.headers.get("etag"), contentLength: bytes.length }, null, 2) + "\n");
+      mark("teardown");
     } finally {
       try { await api.stop(); } finally {
         try { await daemon.stop(); } finally { ops.close(); await sql.close(); }

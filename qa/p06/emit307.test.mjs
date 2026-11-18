@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
+import { fixtureCheckpoint } from "./fixture.config.mjs";
 import { run } from "./src/packages/orchestrator/src/inrun-continuity.test-support.ts";
 import { DaemonControlApiServer } from "./src/packages/control-api/dist/index.js";
 import * as schema from "./src/packages/schema/dist/index.js";
@@ -29,6 +30,8 @@ const readAs620 = ajv.compile(JSON.parse(execFileSync("git", ["show", "v6.2.0:pa
 const control = process.env.P06_CONTROL;
 for (const scenario of control ? ["same-finals"] : ["complete", "partial", "gap"]) {
   it("emits terminal HTTP bytes / " + scenario, async () => {
+    const mark = (checkpoint) => fixtureCheckpoint("307", scenario, checkpoint);
+    mark("scripted-run");
     const { result, root, spawns } = await run({
       mode: "ask", profiles: ["a"],
       input: { prompt, onRunStart({ runDir }) {
@@ -61,6 +64,7 @@ for (const scenario of control ? ["same-finals"] : ["complete", "partial", "gap"
     };
     const api = new DaemonControlApiServer({ token: "picnic-control", daemon });
     try {
+      mark("operations");
       const { host, port } = await api.start();
       expect(host).toBe("127.0.0.1");
       const url = "http://" + host + ":" + port + "/v2/runs/" + result.runId;
@@ -78,6 +82,7 @@ for (const scenario of control ? ["same-finals"] : ["complete", "partial", "gap"
       // Default GET and ?includeFinalMessages=false must satisfy the released
       // 6.2.0 STRICT schema, carry no finalMessages, and keep the last short
       // final as the primary output.
+      mark("legacy-detail");
       const readPlain620 = (bytes) => {
         const plain = JSON.parse(bytes);
         expect(readAs620(plain), "plain detail must satisfy the released 6.2.0 strict schema").toBe(true);
@@ -88,6 +93,7 @@ for (const scenario of control ? ["same-finals"] : ["complete", "partial", "gap"
       const defaultBytes = await get(url);
       readPlain620(defaultBytes);
       if (supported) readPlain620(await get(url + "?includeFinalMessages=false"));
+      mark("served-detail");
       const detailBytes = supported ? await get(url + "?includeFinalMessages=true") : defaultBytes;
       const dir = join(process.env.P06_OUT, "307", scenario);
       mkdirSync(dir, { recursive: true });
@@ -99,6 +105,7 @@ for (const scenario of control ? ["same-finals"] : ["complete", "partial", "gap"
       }
       const detail = schema.ControlRunDetail.parse(JSON.parse(detailBytes));
       const pointer = detail.finalMessages;
+      mark("event-journal");
       const rawLines = readFileSync(join(result.runDir, "events.jsonl"), "utf8").trimEnd().split("\n");
       expect(rawLines.filter(line => line === malformed)).toHaveLength(scenario === "partial" ? 1 : 0);
       const lines = rawLines.filter(line => line !== malformed);
@@ -114,11 +121,13 @@ for (const scenario of control ? ["same-finals"] : ["complete", "partial", "gap"
         const intervening = rows.find(e => e.type === "harness.event" && e.payload.type === "status" && e.payload.text === "background task finished" && e.seq > finals[0].seq && e.seq < finals[1].seq);
         expect(intervening).toBeDefined();
         expect(finals[1].payload.payload.native_turn_id).toBe("turn-2");
+        mark("primary-artifact");
         const primary = await fetch(url + "/artifacts/final/answer.md", { headers });
         expect(primary.status).toBe(200);
         const answer = Buffer.from(await primary.arrayBuffer());
         expect(answer.toString()).toBe("# Answer\n\n" + messages[1] + "\n");
         save("primary.md", answer);
+        mark(control === "base" ? "baseline-artifact" : "enriched-artifact");
         const artifact = await fetch(url + "/artifacts/" + documentPath, { headers });
         const bytes = Buffer.from(await artifact.arrayBuffer());
         if (control === "base") {
@@ -138,11 +147,14 @@ for (const scenario of control ? ["same-finals"] : ["complete", "partial", "gap"
         save("observation.json", JSON.stringify({ finals: finals.map(e => e.payload.text),
           backgroundEventBetweenFinals: true,
           spawns: spawns.length, artifactStatus: artifact.status, primaryStatus: primary.status }, null, 2) + "\n");
+        mark("teardown");
         return;
       }
       if (scenario === "gap") {
+        mark("artifact-gap");
         expect(pointer).toEqual({ state: "unavailable", reason: "publication_failed" });
       } else {
+        mark("enriched-artifact");
         expect(pointer).toMatchObject({ state: scenario, count: 2, path: documentPath });
         const artifact = await fetch(url + "/artifacts/" + pointer.path, { headers });
         expect(artifact.status).toBe(200);
@@ -162,6 +174,7 @@ for (const scenario of control ? ["same-finals"] : ["complete", "partial", "gap"
       }
       // This is an extracted JSON value. detail.json above is the unmodified wire body.
       save("pointer.json", JSON.stringify(pointer, null, 2) + "\n");
+      mark("teardown");
     } finally {
       await api.stop();
     }

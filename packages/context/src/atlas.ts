@@ -325,44 +325,42 @@ export function contextSymlinkDenyReason(
   };
   const denied = "path resolves outside the allowed root";
   if (outside(repoRoot, full)) return denied;
-  let link: boolean;
+  const unresolved = "symlink target is unavailable within the allowed root";
+  // Check components from the canonical root. Only report filesystem errors
+  // for entries whose containing directory has been admitted.
+  let current = canonicalRepoRoot;
   try {
-    // Check each parent before looking up its child, so a denied directory
-    // has the same diagnostic whether the requested file exists or not.
-    let parent = repoRoot;
-    for (const part of relative(repoRoot, full).split(sep).slice(0, -1)) {
-      parent = realpathSync(join(parent, part));
-      if (outside(canonicalRepoRoot, parent)) return denied;
-    }
-    link = lstatSync(full).isSymbolicLink();
-  } catch (error) {
-    return errorCode(error) ?? "lstat failed";
+    if (relative(repoRoot, current) && relative(realpathSync(repoRoot), current)) return denied;
+  } catch {
+    return denied;
   }
-  try {
-    const resolved = realpathSync(full);
-    // The complete resolved path, including its parent directories, belongs to this root.
-    if (outside(canonicalRepoRoot, resolved)) {
-      return link ? "symlink resolves outside the allowed root" : denied;
+  const parts = relative(repoRoot, full).split(sep);
+  for (const [i, part] of parts.entries()) {
+    current = join(current, part);
+    try {
+      if (!lstatSync(current).isSymbolicLink()) continue;
+    } catch (error) {
+      return errorCode(error) ?? "lstat failed";
     }
-    if (!link) return null;
-    const stat = statSync(full);
-    const decision = sensitiveResourcePolicy.assessSymlink({
-      sourceRoot: repoRoot,
-      canonicalSourceRoot: canonicalRepoRoot,
-      sourcePath: full,
-      linkTarget: readlinkSync(full),
-      resolvedTargetPath: resolved,
-      targetKind: statKind(stat),
-      allowedTargetKinds: ["file"],
-    });
-    return decision.allowed
-      ? null
-      : (decision.detail ?? "symlink target denied by the containment policy");
-  } catch (error) {
-    const code = errorCode(error);
-    if (!link) return code ?? "path cannot be resolved";
-    return code
-      ? `symlink target cannot be resolved (${code})`
-      : "symlink target cannot be resolved";
+    const source = current;
+    try {
+      current = realpathSync(source);
+      if (outside(canonicalRepoRoot, current)) return unresolved;
+      if (i === parts.length - 1) {
+        const decision = sensitiveResourcePolicy.assessSymlink({
+          sourceRoot: repoRoot,
+          canonicalSourceRoot: canonicalRepoRoot,
+          sourcePath: full,
+          linkTarget: readlinkSync(source),
+          resolvedTargetPath: current,
+          targetKind: statKind(statSync(current)),
+          allowedTargetKinds: ["file"],
+        });
+        if (!decision.allowed) return decision.detail ?? unresolved;
+      }
+    } catch {
+      return unresolved;
+    }
   }
+  return null;
 }

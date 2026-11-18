@@ -18,7 +18,8 @@
  *   <out>/697/<case>/...                   (or 697/same-http-503 with --control)
  *
  * Both --out and --run-dir must be FRESH (nonexistent or empty): existing
- * files are never overwritten or merged into; pass new directories.
+ * files are never overwritten or merged into. The two directories must be
+ * separate and neither may contain the other.
  *
  * Exact prerequisites, in build order, from the claudexor repository root:
  *   1. Node.js from .node-version (24.22.3) and pnpm from `packageManager`
@@ -30,6 +31,7 @@
  *   5. node /absolute/path/to/qa/p06/run-emit.mjs --out <fresh-dir> [307] [697]
  */
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -41,12 +43,14 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   statSync,
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { CHECKPOINTS } from "./fixture.config.mjs";
 
 export const KIT_DIR = dirname(fileURLToPath(import.meta.url));
 const KIT_FILES = ["emit307.test.mjs", "emit697.test.mjs", "fixture.config.mjs"];
@@ -59,7 +63,7 @@ HTTP only: emitters bind 127.0.0.1 and inject the Codex adapter fetch, so no
 external, network or model calls happen.
 
 Both --out and --run-dir must be fresh (nonexistent or empty); existing files
-are never overwritten.
+are never overwritten. They must be separate and neither may contain the other.
 
 Exact prerequisites, in build order, from the claudexor repository root:
   1. Node.js from .node-version (24.22.3) and pnpm from packageManager (pnpm@10.34.5), e.g. corepack.
@@ -99,10 +103,13 @@ export function prepareRunDir(root, dir) {
 export function runEmitTests({ root, runDir, outDir, control, issues, logPath, reportPath }) {
   mkdirSync(outDir, { recursive: true });
   const cfg = mkdtempSync(join(tmpdir(), "qa-p06-cfg-"));
+  const checkpoints = join(runDir, "checkpoints");
+  mkdirSync(checkpoints, { mode: 0o700 });
   const env = {
     ...process.env,
     P06_CONTROL: control ?? "",
     P06_OUT: resolve(outDir),
+    P06_CHECKPOINT_DIR: checkpoints,
     CLAUDEXOR_CONFIG_DIR: cfg,
   };
   const files = issues.map((i) => `emit${i}.test.mjs`);
@@ -140,27 +147,81 @@ export function caseFiles(issue, scenario, control) {
     ...(scenario === "complete" ? ["default-detail.json", "operations.json"] : [])];
 }
 
-// Copy only the known artifacts of scenarios the test runner actually passed.
+// Never forward a parser or filesystem exception from a private report.
+export function readJsonReport(path, maxBytes) {
+  let text;
+  try {
+    const info = lstatSync(path, { throwIfNoEntry: false });
+    if (!info) return { state: "missing" };
+    if (!info.isFile()) return { state: "not_regular" };
+    if (info.size > maxBytes) return { state: "too_large" };
+    text = readFileSync(path, "utf8");
+  } catch {
+    return { state: "unreadable" };
+  }
+  try {
+    return { state: "ok", value: JSON.parse(text) };
+  } catch {
+    return { state: "invalid_json" };
+  }
+}
+
+function lastCheckpoint(dir, issue, name) {
+  const path = join(dir, "checkpoints", `${issue}-${name}.check`);
+  try {
+    const info = lstatSync(path, { throwIfNoEntry: false });
+    if (!info?.isFile() || info.size > 64) return null;
+    const id = readFileSync(path, "utf8");
+    return CHECKPOINTS[issue].find((allowed) => id === allowed) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Match only the case table and Vitest's structured assertion status. A
+// checkpoint is an observation, never permission to export a failed case.
 export function selectPassedCases(report, raw, out, control, issues) {
-  const results = existsSync(report) ? JSON.parse(readFileSync(report, "utf8")).testResults : [];
+  const parsed = readJsonReport(report, 16 << 20);
+  const results = Array.isArray(parsed.value?.testResults) ? parsed.value.testResults : null;
+  const reportState = parsed.state === "ok" && !results ? "invalid_shape" : parsed.state;
   const cases = [];
   for (const [issue, names] of Object.entries(control ? CONTROLS : SCENARIOS)) {
     if (!issues.includes(issue)) continue;
-    const suite = results.find((r) => r.name?.endsWith(`/emit${issue}.test.mjs`));
+    const suites = results?.filter((r) => typeof r?.name === "string" && r.name.replaceAll("\\", "/").endsWith(`/emit${issue}.test.mjs`)) ?? [];
+    const suite = suites.length === 1 ? suites[0] : null;
     for (const name of names) {
       const title = (issue === "307" ? "emits terminal HTTP bytes / " : "emits model HTTP bytes / ") + name;
-      const assertion = suite?.assertionResults?.find((a) => a.title === title);
+      const assertions = Array.isArray(suite?.assertionResults) ? suite.assertionResults.filter((a) => a?.title === title) : [];
+      const status = assertions.length === 1 ? assertions[0].status : null;
       const files = caseFiles(issue, name, control);
       const source = join(raw, issue, name);
       const target = join(out, issue, name);
-      const ok = assertion?.status === "passed" && files.every((f) => lstatSync(join(source, f), { throwIfNoEntry: false })?.isFile());
-      cases.push({ issue, case: name, outcome: ok ? "passed" : assertion?.status === "failed" ? "failed" : "unverified" });
-      if (!ok) continue;
-      mkdirSync(target, { recursive: true });
-      for (const f of files) copyFileSync(join(source, f), join(target, f), constants.COPYFILE_EXCL);
+      let reason;
+      if (!results) reason = "no_usable_report";
+      else if (suites.length !== 1) reason = "suite_missing_or_ambiguous";
+      else if (status === "failed") reason = "assertion_failed";
+      else if (status !== "passed") reason = suite.status === "failed" && !assertions.length ? "suite_failed" : "assertion_not_verified";
+      else {
+        try {
+          if (!files.every((f) => lstatSync(join(source, f), { throwIfNoEntry: false })?.isFile())) {
+            reason = "fixture_file_missing_or_not_regular";
+          } else {
+            mkdirSync(target, { recursive: true });
+            for (const f of files) copyFileSync(join(source, f), join(target, f), constants.COPYFILE_EXCL);
+            reason = "passed";
+          }
+        } catch {
+          reason = "fixture_export_failed";
+        }
+      }
+      cases.push({
+        issue, case: name, reason,
+        outcome: reason === "passed" ? "passed" : reason === "assertion_failed" ? "failed" : "unverified",
+        checkpoint: lastCheckpoint(dirname(report), issue, name),
+      });
     }
   }
-  return cases;
+  return { report: reportState, cases };
 }
 
 function summarize(outDir) {
@@ -187,6 +248,35 @@ function assertFreshDir(label, dir) {
   }
 }
 
+// Resolve symlinks in the closest existing ancestor even for a fresh path.
+// This is a read-only preflight: neither caller directory has been created.
+function canonicalFutureDir(value) {
+  const abs = resolve(value);
+  if (lstatSync(abs, { throwIfNoEntry: false })) {
+    const real = realpathSync.native(abs);
+    if (!statSync(real).isDirectory()) throw new Error("expected a directory");
+    return real;
+  }
+  const parent = dirname(abs);
+  if (parent === abs) throw new Error("cannot resolve directory");
+  return join(canonicalFutureDir(parent), basename(abs));
+}
+
+export function separateDirectories(out, run) {
+  const dirs = { out: canonicalFutureDir(out), run: canonicalFutureDir(run) };
+  // Be conservative about case/normalization aliases on macOS, including
+  // leaf names that do not yet exist and therefore cannot be compared by inode.
+  const comparison = (p) => process.platform === "darwin" ? p.normalize("NFC").toLowerCase() : p;
+  const contains = (parent, child) => {
+    const rel = relative(comparison(parent), comparison(child));
+    return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
+  };
+  if (contains(dirs.out, dirs.run) || contains(dirs.run, dirs.out)) {
+    throw new Error("output and scratch must be separate non-nested directories");
+  }
+  return dirs;
+}
+
 function main() {
   const args = process.argv.slice(2);
   let outDir = null;
@@ -196,8 +286,13 @@ function main() {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--out") outDir = args[++i];
-    else if (a === "--run-dir") runDir = args[++i];
-    else if (a === "--control") control = args[++i];
+    else if (a === "--run-dir") {
+      runDir = args[++i];
+      if (!runDir || runDir.startsWith("--")) {
+        console.error("--run-dir requires a directory");
+        process.exit(2);
+      }
+    } else if (a === "--control") control = args[++i];
     else if (a === "--help" || a === "-h") {
       console.log(HELP);
       return;
@@ -215,11 +310,19 @@ function main() {
     console.error(`--control must be base or candidate\n\n${HELP}`);
     process.exit(2);
   }
-  assertFreshDir("--out", outDir);
-  if (runDir) assertFreshDir("--run-dir", runDir);
+  const scratch = runDir ?? join(tmpdir(), `qa-p06-run-${randomUUID()}`);
+  let dirs;
+  try {
+    dirs = separateDirectories(outDir, scratch);
+    assertFreshDir("--out", dirs.out);
+    assertFreshDir("--run-dir", dirs.run);
+  } catch {
+    console.error("--out and --run-dir must resolve to separate, fresh, non-nested directories");
+    process.exit(2);
+  }
   const root = process.cwd();
   const pkgPath = join(root, "package.json");
-  if (!existsSync(pkgPath) || JSON.parse(readFileSync(pkgPath, "utf8")).name !== "claudexor-monorepo") {
+  if (readJsonReport(pkgPath, 1 << 20).value?.name !== "claudexor-monorepo") {
     console.error("run from the claudexor repository root (package.json name claudexor-monorepo)");
     process.exit(2);
   }
@@ -228,19 +331,17 @@ function main() {
     process.exit(2);
   }
   const use = issues.length ? issues : ["307", "697"];
-  const dir = prepareRunDir(root, runDir ?? mkdtempSync(join(tmpdir(), "qa-p06-run-")));
+  if (runDir === null) mkdirSync(dirs.run, { mode: 0o700 });
+  const dir = prepareRunDir(root, dirs.run);
   const raw = join(dir, "unchecked");
   const report = join(dir, "vitest.json");
-  if (resolve(outDir) === resolve(dir) || resolve(outDir) === resolve(raw)) {
-    throw new Error("choose separate output and scratch directories");
-  }
   let exit = 0;
   try {
     runEmitTests({ root, runDir: dir, outDir: raw, control, issues: use, reportPath: report, logPath: join(dir, "vitest.log") });
   } catch (error) { exit = error.status || 1; }
-  mkdirSync(outDir, { recursive: true });
-  const cases = selectPassedCases(report, raw, outDir, control, use);
-  summarize(outDir);
+  mkdirSync(dirs.out, { recursive: true });
+  const { cases } = selectPassedCases(report, raw, dirs.out, control, use);
+  summarize(dirs.out);
   if (exit || cases.some((c) => c.outcome !== "passed")) {
     console.error("Some cases were not verified; see the local scratch report at", dir);
     process.exitCode = exit || 1;

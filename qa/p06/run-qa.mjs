@@ -25,6 +25,8 @@
  *                    worktree (its HEAD tree IS the generated tree)
  *   manifest         write the one immutable final-manifest.json over QA_OUT,
  *                    with per-lane ran/failed/not_run status (if: always())
+ *   scan             scan the entire final QA_OUT with the original scanner
+ *                    flags; diagnostics and all scanner output stay separate
  *
  * Evidence policy: QA_OUT receives only selected evidence (identity JSON, the
  * reviewed generated patch, synthetic fixtures, control hashes, release
@@ -34,12 +36,15 @@
  * hash it; the final manifest covers its final bytes.
  */
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
+  accessSync,
   closeSync,
+  constants,
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -48,11 +53,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { caseFiles, prepareRunDir, runEmitTests, SCENARIOS, selectPassedCases } from "./run-emit.mjs";
+import { caseFiles, prepareRunDir, readJsonReport, runEmitTests, SCENARIOS, selectPassedCases, separateDirectories } from "./run-emit.mjs";
 
 const ROOT = process.env.GITHUB_WORKSPACE ?? process.cwd();
 const { QA_OUT: OUT, QA_RUN: RUN, QA_STORE: STORE } = process.env;
-if (!OUT || !RUN || !STORE) throw new Error("this CI harness requires explicit output, scratch and store directories");
 
 const GENERATED_DIR = "packages/schema/generated";
 const SCHEMA_RE = /^packages\/schema\/generated\/[A-Za-z0-9_-]+\.schema\.json$/;
@@ -82,8 +86,7 @@ const EXPECTED_GENERATED_SCHEMAS = ["FinalMessagesHeader", "FinalMessagesOutcome
   .sort();
 const LANE_ORDER = ["identity", "export", "install", "fixture-build", "emit", "verify-fixtures", "control-base", "control-candidate", "release"];
 
-const stepsPath = join(OUT, "steps.json");
-const STEPS = existsSync(stepsPath) ? JSON.parse(readFileSync(stepsPath, "utf8")) : [];
+let STEPS = [];
 
 function git(args, opts = {}) {
   return execFileSync("git", ["-C", ROOT, ...args], {
@@ -116,20 +119,75 @@ function writeSteps() {
 }
 
 /** Time a function-valued lane sub-step; records and rethrows on failure. */
-function stepFn(name, fn, log) {
+function stepFn(name, fn) {
   const t0 = Date.now();
   try {
     fn();
-    STEPS.push({ step: name, exit: 0, seconds: +((Date.now() - t0) / 1000).toFixed(2) });
-    writeSteps();
-    console.log(`${name} -> exit 0`);
   } catch (error) {
+    console.error(`[p06] stage=${name} exit=1`);
     STEPS.push({ step: name, exit: 1, seconds: +((Date.now() - t0) / 1000).toFixed(2) });
     writeSteps();
-    console.log(`${name} -> exit 1`);
     throw error;
-  } finally {
-    void log;
+  }
+  console.log(`[p06] stage=${name} exit=0`);
+  STEPS.push({ step: name, exit: 0, seconds: +((Date.now() - t0) / 1000).toFixed(2) });
+  writeSteps();
+}
+
+function processObservation(status, signal) {
+  return {
+    exit: Number.isInteger(status) ? status : null,
+    process: Number.isInteger(status) ? "exited" : signal ? "signaled" : "no_exit_observed",
+  };
+}
+
+class CommandFailure extends Error {
+  constructor(stage, observation) {
+    super(`${stage} command did not succeed`);
+    this.observation = observation;
+  }
+}
+
+// The composite release command cannot be broken up or replaced. pnpm's
+// monorepo script headers tell us which named checkpoint was seen, not which
+// child failed (several shell checks have no header of their own).
+const RELEASE_SCRIPTS = [
+  "release:verify:node", "build", "typecheck", "typecheck:tests", "test", "schema:gen",
+  "docs:check", "staged:check", "retired:check", "inv:check", "sensitive:check", "knip",
+  "fixtures:swift:check", "fixtures:runtime-update:check", "release:workflow:check", "format:check", "canary",
+];
+
+function commandDiagnostics(name, cwd, logPath, observation) {
+  try {
+    if (lstatSync(logPath).size > (16 << 20)) {
+      console.error(`[p06] stage=${name} diagnostics=log_limit`);
+      return;
+    }
+    const text = readFileSync(logPath, "utf8");
+    // Only literal paths from the already public QA-tip tree can be emitted,
+    // never arbitrary paths (or file contents) from the failure transcript.
+    const tracked = new Set(git(["ls-tree", "-r", "--name-only", "-z", "HEAD"]).split("\0"));
+    const locations = new Set();
+    const publicPaths = new Set();
+    for (const m of text.matchAll(/(?<![\w.@/-])([\w.@/-]{1,512}\.(?:[mc]?[jt]sx?|md|json))(?:\((\d{1,7}),\d{1,7}\): error TS\d{3,6}\b|:(\d{1,7}):\d{1,7}\b|\b)/g)) {
+      const path = m[1].startsWith(`${cwd}/`) ? m[1].slice(cwd.length + 1) : m[1];
+      if (path.length > 180 || !/^[A-Za-z0-9_./@-]+$/.test(path) || !tracked.has(path)) continue;
+      const line = m[2] ?? m[3];
+      locations.add(line ? `${path}:${Number(line)}` : path);
+      publicPaths.add(path);
+    }
+    let lastObservedScript = null;
+    if (name === "release-verify") {
+      for (const m of text.matchAll(/^> claudexor-monorepo@[\w.+-]+ ([a-z][a-z0-9:-]*)(?: [^\r\n]*)?\r?$/gm)) {
+        const known = RELEASE_SCRIPTS.find((script) => script === m[1]);
+        if (known) lastObservedScript = known;
+      }
+      console.error(`[p06] stage=${name} last_observed_script=${lastObservedScript ?? "none"}`);
+      for (const path of [...publicPaths].slice(-8)) console.error(`[p06] stage=${name} public_source=${path}`);
+    }
+    writeJson(join(OUT, `${name}.locations.json`), { step: name, ...observation, lastObservedScript, sourceLocations: [...locations].slice(-80), total: locations.size });
+  } catch {
+    console.error(`[p06] stage=${name} diagnostics=unavailable`);
   }
 }
 
@@ -138,9 +196,10 @@ function stepFn(name, fn, log) {
 function step(name, argv, { cwd = ROOT, env = {}, log } = {}) {
   const t0 = Date.now();
   const logPath = log ?? join(RUN, "logs", `${name}.log`);
+  console.log(`[p06] stage=${name} phase=prepare`);
   mkdirSync(dirname(logPath), { recursive: true });
   const fd = openSync(logPath, "a");
-  let code = 0;
+  let observation = processObservation(0);
   try {
     execFileSync(argv[0], argv.slice(1), {
       cwd,
@@ -149,31 +208,23 @@ function step(name, argv, { cwd = ROOT, env = {}, log } = {}) {
       maxBuffer: 1 << 28,
     });
   } catch (error) {
-    code = typeof error.status === "number" ? error.status : 1;
+    observation = processObservation(error.status, error.signal);
   } finally {
     closeSync(fd);
   }
+  console.log(`[p06] stage=${name} exit=${observation.exit ?? "unknown"} process=${observation.process}`);
   STEPS.push({
     step: name,
     argv: argv.map((a) => a.replaceAll(OUT, "$QA_OUT").replaceAll(ROOT, "$GITHUB_WORKSPACE").replaceAll(RUN, "$QA_RUN")),
-    exit: code,
+    ...observation,
     seconds: +((Date.now() - t0) / 1000).toFixed(2),
   });
-  writeSteps();
-  console.log(`${name} -> exit ${code}`);
-  if (code !== 0) {
-    // Publish only recognized tracked source locations and compiler codes, never raw output.
-    const tracked = new Set(execFileSync("git", ["-C", cwd, "ls-files", "-z"], { encoding: "utf8" }).split("\0"));
-    const locations = new Set();
-    for (const line of readFileSync(logPath, "utf8").split("\n")) {
-      for (const m of line.matchAll(/([\w.@/-]+\.(?:[mc]?[jt]sx?|md|json))(?:\((\d+),(\d+)\): error (TS\d{3,6})\b|:(\d+):(\d+)\b|\b)/g)) {
-        const path = m[1];
-        if (tracked.has(path)) locations.add(m[4] ? `${path}:${m[2]}:${m[3]} ${m[4]}` : path);
-      }
-    }
-    writeJson(join(OUT, `${name}.locations.json`), { step: name, exit: code, sourceLocations: [...locations].slice(-80), total: locations.size });
-    throw new Error(`${name} exited ${code}`);
+  if (observation.exit !== 0) {
+    commandDiagnostics(name, cwd, logPath, observation);
+    writeSteps();
+    throw new CommandFailure(name, observation);
   }
+  writeSteps();
 }
 
 /** Per-lane receipt over the selected evidence. steps.json is excluded: later
@@ -231,8 +282,8 @@ function assertValidPath(name) {
 
 function hashGeneratedDir(root) {
   const listed = [
-    ...execFileSync("git", ["-C", root, "ls-files", "-z", GENERATED_DIR], { encoding: "utf8" }).split("\0"),
-    ...execFileSync("git", ["-C", root, "ls-files", "--others", "--exclude-standard", "-z", GENERATED_DIR], { encoding: "utf8" }).split("\0"),
+    ...git(["-C", root, "ls-files", "-z", GENERATED_DIR]).split("\0"),
+    ...git(["-C", root, "ls-files", "--others", "--exclude-standard", "-z", GENERATED_DIR]).split("\0"),
   ].filter(Boolean);
   const map = {};
   for (const name of [...new Set(listed)].sort()) {
@@ -294,8 +345,8 @@ async function laneIdentity() {
     origin: git(["remote", "get-url", "origin"]),
     nearestReleaseTag: { product: describe(productHead), base: describe(base) },
     toolchain: {
-      node: execFileSync("node", ["--version"], { encoding: "utf8" }).trim(),
-      pnpm: execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim(),
+      node: execFileSync("node", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(),
+      pnpm: execFileSync("pnpm", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(),
     },
   });
 }
@@ -406,7 +457,7 @@ async function laneExport() {
       ["-C", productWt, "--literal-pathspecs", "diff", "--cached", "--binary", "--full-index",
         "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/",
         productTree, "--", ...paths],
-      { env: idxEnv, stdio: ["ignore", fd, "inherit"] },
+      { env: idxEnv, stdio: ["ignore", fd, "pipe"] },
     );
   } finally {
     closeSync(fd);
@@ -420,7 +471,7 @@ async function laneExport() {
     ["-C", ROOT, "-c", "user.name=qa-p06", "-c", "user.email=qa-p06@invalid",
       "commit-tree", generatedTree, "-p", productHead,
       "-m", "qa-p06: exact generated tree (test-only, never published)"],
-    { encoding: "utf8" },
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   ).trim();
   const genWt = join(RUN, "gen-wt");
   step("worktree-add-generated", ["git", "worktree", "add", "--detach", genWt, generatedCommit]);
@@ -444,17 +495,25 @@ async function laneExport() {
 // Vitest's full JSON and all unchecked response bytes stay in private scratch.
 // Even when one case fails we can export the allowlisted files of a passed sibling.
 function runCases(tree, lane, control = null) {
+  console.log(`[p06] stage=${lane} phase=prepare_emitters`);
   const dir = prepareRunDir(tree, join(RUN, `${lane}-run`));
   const raw = join(RUN, `${lane}-raw`);
   const report = join(dir, "vitest.json");
   const out = control ? join(OUT, "control", control) : join(OUT, "emit", "fixtures");
-  let exit = 0;
+  let observation = processObservation(0);
   try {
     runEmitTests({ root: tree, runDir: dir, outDir: raw, control, issues: ["307", "697"], logPath: join(RUN, "logs", `${lane}.log`), reportPath: report });
-  } catch (error) { exit = error.status || 1; }
-  const cases = selectPassedCases(report, raw, out, control, ["307", "697"]);
-  writeJson(join(OUT, `${lane}-cases.json`), { exit, cases });
-  if (exit || cases.some((c) => c.outcome !== "passed")) throw new Error(`${lane}: one or more cases failed or were not verified`);
+  } catch (error) {
+    observation = processObservation(error.status, error.signal);
+  }
+  console.log(`[p06] stage=${lane} phase=collect_fixtures exit=${observation.exit ?? "unknown"} process=${observation.process}`);
+  const selected = selectPassedCases(report, raw, out, control, ["307", "697"]);
+  console.log(`[p06] stage=${lane} report=${selected.report}`);
+  for (const c of selected.cases) {
+    console.log(`[p06] stage=${lane} case=${c.issue}/${c.case} outcome=${c.outcome} reason=${c.reason} last_checkpoint=${c.checkpoint ?? "none"}`);
+  }
+  writeJson(join(OUT, `${lane}-cases.json`), { ...observation, ...selected });
+  if (observation.exit !== 0 || selected.cases.some((c) => c.outcome !== "passed")) throw new Error(`${lane}: one or more cases failed or were not verified`);
 }
 
 async function laneEmit() {
@@ -468,7 +527,15 @@ async function laneVerifyFixtures() {
     for (const name of scenarios) {
       for (const file of caseFiles(issue, name, null)) {
         const path = join(root, issue, name, file);
-        files[`${issue}/${name}/${file}`] = { size: lstatSync(path).size, sha256: sha256File(path) };
+        const id = `${issue}/${name}/${file}`;
+        try {
+          const info = lstatSync(path);
+          if (!info.isFile()) throw new Error("fixture is not a regular file");
+          files[id] = { size: info.size, sha256: sha256File(path) };
+        } catch (error) {
+          console.error(`[p06] stage=verify-fixtures check=${id} outcome=missing_or_unreadable`);
+          throw error;
+        }
       }
     }
   }
@@ -496,21 +563,22 @@ async function laneRelease() {
   // against the worktree HEAD — which here IS the post-generation tree, so
   // the gate compares the committed generated files to themselves and never
   // lets changed generated files slip past a pre-generation HEAD.
-  let code = 0;
+  let observation = processObservation(0);
   try {
     step("release-verify", ["pnpm", "release:verify:node"], { cwd: genWt });
-  } catch {
-    code = 1;
+  } catch (error) {
+    if (!(error instanceof CommandFailure)) throw error;
+    observation = error.observation;
   }
   writeJson(join(out, "release.json"), {
     lane: "release",
     productHead,
     generatedTree,
     generatedCommit,
-    exit: code,
+    ...observation,
     note: "pnpm release:verify:node unmodified, run in a worktree whose HEAD tree is the exact generated tree",
   });
-  if (code !== 0) throw new Error("release:verify:node failed on the exact generated tree (log stays in QA_RUN/logs)");
+  if (observation.exit !== 0) throw new CommandFailure("release-verify", observation);
 }
 
 async function laneManifest() {
@@ -541,6 +609,74 @@ async function laneManifest() {
   writeJson(manifestPath, { lane: "manifest", generatedAt: new Date().toISOString(), lanes, files });
 }
 
+function checkScanTree(dir) {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    const info = lstatSync(path);
+    if (info.isDirectory()) checkScanTree(path);
+    else if (!info.isFile()) throw new Error("output includes a non-regular entry");
+  }
+}
+
+function scanReportState(reportPath) {
+  const report = readJsonReport(reportPath, 16 << 20);
+  if (report.state !== "ok") return report.state;
+  if (!Array.isArray(report.value)) return "invalid_shape";
+  if (!report.value.length) return "empty";
+  // Only classify a structured findings list; report fields never leave scratch.
+  return report.value.every((entry) => typeof entry?.RuleID === "string" && entry.RuleID.length)
+    ? "findings_reported" : "invalid_finding_shape";
+}
+
+/** Same pinned binary, flags and complete target as v5. The fresh scanner
+ * report and both process streams live outside OUT. This final step is a
+ * read-only consumer of OUT; no later step changes the upload tree. */
+function laneScan() {
+  const scanner = process.env.CLAUDEXOR_BETTERLEAKS_PATH;
+  let stage = "scan-paths";
+  let child, reportPath;
+  try {
+    separateDirectories(OUT, RUN);
+    if (!lstatSync(OUT).isDirectory() || !lstatSync(RUN).isDirectory()) throw new Error("missing ordinary output or scratch root");
+    stage = "scan-inventory";
+    checkScanTree(OUT);
+    stage = "scan-binary";
+    if (!scanner || !statSync(scanner).isFile()) throw new Error("pinned scanner unavailable");
+    accessSync(scanner, constants.X_OK);
+    stage = "scan-scratch";
+    const scratch = mkdtempSync(join(RUN, "scan-"));
+    const config = join(scratch, "scan.toml");
+    const ignore = join(scratch, "empty.ignore");
+    reportPath = join(scratch, "scan.json");
+    writeFileSync(config, "[extend]\nuseDefault = true\n", { flag: "wx", mode: 0o600 });
+    writeFileSync(ignore, "", { flag: "wx", mode: 0o600 });
+    const fd = openSync(join(scratch, "scan.log"), "wx", 0o600);
+    stage = "scan-invoke";
+    try {
+      child = spawnSync(scanner, [
+        "dir", OUT, "--config", config, "--gitleaks-ignore-path", ignore,
+        "--ignore-gitleaks-allow", "--validation=false", "--redact=100", "--exit-code=1",
+        "--report-format", "json", "--report-path", reportPath, "--no-banner", "--no-color", "--log-level", "error",
+      ], { cwd: ROOT, stdio: ["ignore", fd, fd] });
+    } finally {
+      closeSync(fd);
+    }
+  } catch (error) {
+    console.error(`[p06] stage=${stage} exit=1 scan_exit=${child?.status ?? "unknown"} result=not_verified`);
+    throw error;
+  }
+  const observed = processObservation(child.status, child.signal);
+  const report = scanReportState(reportPath);
+  let result;
+  if (child.error) result = "scanner_process_error";
+  else if (observed.exit === null) result = observed.process;
+  else if (observed.exit === 0) result = report === "empty" ? "clean" : "report_not_clean";
+  else if (observed.exit === 1 && report === "findings_reported") result = "findings_reported";
+  else result = "scanner_failed";
+  console.log(`[p06] stage=publication-scan exit=${observed.exit ?? "unknown"} process=${observed.process} report=${report} result=${result}`);
+  if (result !== "clean") throw new Error("publication scan not clean");
+}
+
 const LANES = {
   identity: laneIdentity,
   export: laneExport,
@@ -552,24 +688,51 @@ const LANES = {
   "control-candidate": laneControlCandidate,
   release: laneRelease,
   manifest: laneManifest,
+  scan: laneScan,
 };
 
 const lane = process.argv[2];
-if (!LANES[lane]) {
-  console.error("usage: node qa/p06/run-qa.mjs <identity|export|install|fixture-build|emit|verify-fixtures|control-base|control-candidate|release|manifest>");
+if (!Object.hasOwn(LANES, lane)) {
+  console.error("usage: node qa/p06/run-qa.mjs <identity|export|install|fixture-build|emit|verify-fixtures|control-base|control-candidate|release|manifest|scan>");
   process.exit(2);
 }
-mkdirSync(OUT, { recursive: true });
+if (!OUT || !RUN || (lane !== "scan" && !STORE)) {
+  console.error(`[p06] stage=${lane} exit=2 reason=missing_runner_environment`);
+  process.exit(2);
+}
+const receiptLane = lane !== "manifest" && lane !== "scan";
+console.log(`[p06] stage=${lane} phase=start`);
 try {
+  if (lane !== "scan") {
+    const steps = readJsonReport(join(OUT, "steps.json"), 16 << 20);
+    if (steps.state !== "missing" && (steps.state !== "ok" || !Array.isArray(steps.value))) {
+      console.error(`[p06] stage=${lane} phase=read_step_receipts reason=unusable_receipts`);
+      throw new Error("step receipts unavailable");
+    }
+    STEPS = steps.value ?? [];
+    mkdirSync(OUT, { recursive: true });
+  }
   await LANES[lane]();
-  // The manifest is the last published file; it cannot also hash a later receipt for itself.
-  if (lane !== "manifest") receipt(lane, true);
+  // The manifest is the last published file. The scan never writes to OUT.
+  if (receiptLane) receipt(lane, true);
+  console.log(`[p06] stage=${lane} phase=end exit=0`);
 } catch (error) {
-  // exec/File and assertion errors can contain their raw inputs. Keep them in scratch.
-  mkdirSync(join(RUN, "logs"), { recursive: true });
-  writeFileSync(join(RUN, "logs", `${lane}.error.txt`), `${error.stack ?? error}\n`);
-  writeFileSync(join(OUT, `${lane}.error.txt`), `The ${lane} lane failed.\n`);
-  if (lane !== "manifest") receipt(lane, false);
-  console.error(`The ${lane} lane failed; see steps.json for the failing command.`);
-  process.exit(1);
+  console.error(`[p06] stage=${lane} phase=end exit=1`);
+  process.exitCode = 1;
+  if (lane !== "scan") {
+    // Recording the failure must not let a second, raw filesystem or parser
+    // exception escape to GitHub's log. Only OUT's fixed lane marker is public.
+    try {
+      mkdirSync(join(RUN, "logs"), { recursive: true });
+      writeFileSync(join(RUN, "logs", `${lane}.error.txt`), `${error.stack ?? error}\n`);
+    } catch {
+      console.error(`[p06] stage=${lane} reason=private_error_receipt_failed`);
+    }
+    try {
+      writeFileSync(join(OUT, `${lane}.error.txt`), `The ${lane} lane failed.\n`);
+      if (receiptLane) receipt(lane, false);
+    } catch {
+      console.error(`[p06] stage=${lane} reason=lane_receipt_failed`);
+    }
+  }
 }
