@@ -176,8 +176,10 @@ final class HistoryURLProtocol: URLProtocol {
             do {
                 guard let handler = Self.handler else { throw URLError(.badURL) }
                 let (status, data) = try await handler(request)
+                let contentType = request.value(forHTTPHeaderField: "Accept") == "text/event-stream"
+                    ? "text/event-stream" : "application/json"
                 let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
-                    headerFields: ["Content-Type": "application/json"])!
+                    headerFields: ["Content-Type": contentType])!
                 owner.value.client?.urlProtocol(owner.value, didReceive: response, cacheStoragePolicy: .notAllowed)
                 owner.value.client?.urlProtocol(owner.value, didLoad: data)
                 owner.value.client?.urlProtocolDidFinishLoading(owner.value)

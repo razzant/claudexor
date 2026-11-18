@@ -4460,12 +4460,11 @@ and returns liveness only.
 
 ### Bounded thread history
 
-`GET /v2/threads/:id/history` is the addressed feed read. Its strict contract is
-`packages/schema/src/thread-history.ts`; the operation catalog, generated JSON
-Schemas, CLI/MCP and Swift Kit share that contract. The legacy thread-detail
-route keeps its full `turns`, `sessions` and `thread.runIds`: ACP replay accounting
-and explicit workspace inspection still depend on it. History does not call the
-legacy detail projector, enumerate the run archive, or hydrate run detail per turn.
+`GET /v2/threads/:id/history` pages turns by address. Its strict contract in
+`packages/schema/src/thread-history.ts` serves the catalog, JSON Schemas,
+CLI/MCP and Swift Kit. ACP replay accounting and explicit workspace inspection
+still use legacy detail’s full `turns`, `sessions` and `thread.runIds`. History
+reads neither the archive nor the legacy projector and skips per-turn detail loads.
 
 The query accepts `limit` (1–20, default 20), optional `expectedStoreId`, and at
 most one of `cursor`, `beforeTurnId`, `afterTurnId`, `aroundTurnId`. No selector
@@ -4527,9 +4526,14 @@ physically reclaimed. With a retained command, canonical answer/tombstone reads
 remain unchanged. Indexed plan-answer relations and full prompt parts remain
 readable independently of command retention. Store read errors still propagate.
 
-Retained run rows also carry `runDir` and the canonical `authRoute` projection,
-so reopened file links and failure route captions use recorded facts without a
-per-card detail read. Missing route telemetry remains null.
+Retained rows carry `runDir` and `authRoute` for file links and route captions.
+Opt in with `X-Claudexor-Claude-Turn-Replies: 1` to include up to four Claude
+reply previews from the bounded journal tail. The default history shape stays
+compatible with strict clients. Only LF-terminated rows have stream addresses.
+The same header on an addressed event-part read selects reply text with its
+attempt, session, Stop timing and checksum. Older engines return raw JSON.
+Each part scans to its event. Full copy verifies a single replay against the
+addressed part or reads the remaining parts of that event to its pinned checksum.
 
 The row contract includes `answeredByTurnId`, a bounded `answeredByPrompt` and
 `planAnswerComplete`. Schema v5's `turn_plan_answer` expression index addresses
@@ -5047,15 +5051,14 @@ the strategy returned, threw or was cancelled
 failure is dropped, a control audit and the run's best-effort lines, and the lines a
 terminal does not restate); progress outside that set
 does not enter the SQL sink.
-`GET /v2/runs/:id` returns `lastSeq`, a conservative event fence captured
-BEFORE pending interactions and projection reads. It does not claim an atomic
-snapshot of files and live state: later events may already be reflected in the
-response. Subscribe to `GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>`;
-there is no gap across the fence, but replay is allowed. Consumers deduplicate
-by event identity and replace/acknowledge questions by their interaction identity.
-The live writer supplies its counter, the last landed `seq`, without I/O. When no
-live writer is registered, cursor lookup runs in the bulk executor, including the legacy or
-oversized last-line fallback. Never stamp a later cursor onto earlier projection bytes.
+`GET /v2/runs/:id` captures `lastSeq` before reading pending interactions and
+projections. Those reads can already reflect later events. Apply stream updates
+to snapshot fields above that fence. For journal-only text, resume
+`GET /v2/runs/:id/events` from the last delivered SSE ID. Deduplicate events
+by sequence and resolve questions by interaction ID. The live writer supplies
+its last landed sequence from memory. Other cursor lookups, including legacy
+and oversized last lines, run in the bulk executor. Never attach a later
+cursor to earlier projection bytes.
 The per-run stream replays from `events.jsonl`, the complete per-run event record;
 the SQL ledger holds only the lifecycle subset above and cannot rebuild full
 progress. Resume seeks backward to the cursor in finite byte batches, without

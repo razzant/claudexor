@@ -100,9 +100,7 @@ final class AppModel {
 
     var liveTasks: [TaskRun] = []
     var remoteTasks: [ExecutionLocationID: [TaskRun]] = [:]
-    /// Located run ids the user has successfully cancelled. Daemon ids are not
-    /// globally unique, so cancellation memory must never leak between local and
-    /// remote engines (or between two cloned remote homes).
+    /// Composer receipts for accepted Stop requests, scoped to their engine and run.
     var cancelledRunIds: Set<String> = []
     /// A turn POST is in flight (composerSend: from the click until the thread detail
     /// reflects the accepted turn). The head-turn busy-gate is detail-derived and
@@ -751,6 +749,7 @@ final class AppModel {
                         routeProof: .unverified, attentionNote: nil,
                         plan: [], activity: prev.activity, candidates: [], findings: [], diff: [],
                         isLive: true)
+                    started.resolvedRunId = info.runId
                     started.runDir = info.runDir
                     started.repoRoot = prev.repoRoot
                     started.tests = prev.tests
@@ -799,28 +798,42 @@ final class AppModel {
         }
     }
 
-    func cancel(_ id: String) async {
-        let locationID = selectedExecutionLocation
-        guard let requestClient = gateway(for: locationID) else { return }
+    func cancel(_ id: String, at locationID: ExecutionLocationID, threadId: String?) async {
+        let history = selectedHistory.flatMap { $0.locationID == locationID && $0.threadID == threadId ? $0 : nil }
+        guard let requestClient = gateway(for: locationID) else {
+            guard selectedExecutionLocation == locationID, selectedThreadId == threadId else { return }
+            threadStatus = "Engine offline — reconnect to stop the run."
+            return
+        }
+        if selectedExecutionLocation == locationID, selectedThreadId == threadId { threadStatus = nil }
         do {
             try await requestClient.cancel(runId: id)
-            // Record the cancel authoritatively. When the live row already exists we
-            // flip it; but in the bound-but-NOT-yet-hydrated window there is no row to
-            // flip, and the head turn's EMBEDDED card still reads "running" — so the
-            // composer would stay stuck on Stop after a successful cancel. Remember the
-            // cancelled located id so `composerTurnState` reports it inactive
-            // immediately until the owning daemon's row hydrates.
+            guard isCurrentGateway(requestClient, at: locationID) else { return }
+            // The composer can release a bound head before the card observes cancellation.
             rememberRunCancelled(id, at: locationID)
-            mutateTask(id, at: locationID) {
-                $0.phase = .cancelled
-                $0.updatedAt = .now
-            }
-            if locationID != .local, let threadId = selectedThreadId {
+            if history?.stopHoldRetry?.runID == id { history?.stopHoldRetry = nil }
+            if locationID != .local, let threadId {
                 await refreshRemoteThreads(locationID)
-                await openThread(locationID: locationID, id: threadId)
+                guard isCurrentGateway(requestClient, at: locationID) else { return }
+                await refreshOpenThread(locationID: locationID, id: threadId)
             }
         } catch {
-            // leave the row's status untouched if the server did not confirm the cancel
+            guard isCurrentGateway(requestClient, at: locationID) else { return }
+            if let failure = error as? GatewayError, case .http(503, _) = failure,
+               let problem = failure.controlProblem, problem.code == "next_message_hold_failed" {
+                rememberRunCancelled(id, at: locationID)
+                let message = ([problem.message] + problem.requiredActions).joined(separator: " ")
+                if let history, problem.retryable {
+                    history.stopHoldRetry = (id, requestClient, message)
+                } else if selectedExecutionLocation == locationID, selectedThreadId == threadId {
+                    threadStatus = message
+                }
+            } else if selectedExecutionLocation == locationID, selectedThreadId == threadId {
+                if case GatewayError.http(409, _) = error, history?.stopHoldRetry?.runID == id {
+                    history?.stopHoldRetry = nil
+                }
+                threadStatus = userMessage(for: error)
+            }
         }
     }
 

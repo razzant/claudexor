@@ -117,11 +117,9 @@ extension AppModel {
         return box
     }
 
-    /// The snapshot's engine receipts (`workspace.prepared`) into the visible
-    /// transcript: a restored or re-attached run resumes its stream after the
-    /// snapshot's last seq, so the SSE fold never sees them. Same block id as
-    /// the live fold, so a receipt seen both ways shows once; a generic row
-    /// (the server could not read the payload) adds nothing.
+    /// Restore the snapshot's workspace preparation receipts while the stream
+    /// catches up. Replayed receipts share the live block id and appear once.
+    /// A timeline row without the original payload adds nothing.
     /// A remote run folds into its own location-keyed reducer, never the local maps.
     func foldTimelineNotices(_ runId: String, _ timeline: [TimelineEvent], at location: ExecutionLocationID = .local) {
         let notices = timeline.compactMap { row -> (id: String, notice: TranscriptNotice)? in
@@ -219,7 +217,7 @@ extension AppModel {
             }
             liveTasks[idx] = t
         }
-        if !box.transcript.blocks.isEmpty {
+        if !box.transcript.blocks.isEmpty || !box.transcript.claudeTurnReplies.rows.isEmpty {
             transcripts[runId] = box.transcript
         }
         liveBoxes[runId] = nil

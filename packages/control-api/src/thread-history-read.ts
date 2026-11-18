@@ -102,7 +102,7 @@ export function createThreadHistoryRead(source: () => ThreadHistorySource) {
     return host.storeId;
   };
   return {
-    threadHistory(raw: ThreadHistoryInput): ThreadHistoryPage {
+    threadHistory(raw: ThreadHistoryInput, includeClaudeReplies = false): ThreadHistoryPage {
       const input = ThreadHistoryInput.parse(raw);
       const host = source();
       const revision = begin(host);
@@ -149,7 +149,8 @@ export function createThreadHistoryRead(source: () => ThreadHistorySource) {
         // Command retention removes the addressed run directory as well as its
         // receipt. The turn/prompt survive; absence is not a failed store read.
         if (!record) return null;
-        if (!runCache.has(id)) runCache.set(id, projectHistoryRun(record, host.runInput(record)));
+        if (!runCache.has(id))
+          runCache.set(id, projectHistoryRun(record, host.runInput(record), includeClaudeReplies));
         return runCache.get(id)!;
       };
       const head = run(headId);
@@ -250,7 +251,12 @@ export function createThreadHistoryRead(source: () => ThreadHistorySource) {
                 : "none",
           ...relation,
         });
-        const rowBytes = bytes(row);
+        let rowBytes = bytes(row);
+        // Preview text yields to the existing receipt and its hard row budget.
+        if (rowBytes > THREAD_HISTORY_ROW_BYTES && row.run?.claudeTurnReplies?.rows.length) {
+          row.run.claudeTurnReplies = { rows: [], partial: true };
+          rowBytes = bytes(row);
+        }
         if (rowBytes > THREAD_HISTORY_ROW_BYTES)
           throw threadHistoryProblem(
             "thread_history_metadata_too_large",

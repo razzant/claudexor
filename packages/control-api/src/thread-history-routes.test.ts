@@ -1,21 +1,24 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { describe, expect, it, vi } from "vitest";
+import { CLAUDE_TURN_REPLIES_HEADER } from "@claudexor/schema";
 import { handleThreadHistoryRoute } from "./thread-history-routes.js";
 
 function fixture(available = true) {
   const services = { threadHistory: vi.fn(), threadPromptPart: vi.fn() };
+  const setHeader = vi.fn();
   const ctx = {
     threadHistoryReads: available ? services : undefined,
     json: vi.fn(),
     requestError: vi.fn(),
   };
-  const read = async (url: string) => {
-    const req = { url, aborted: false, socket: { destroyed: false } } as IncomingMessage;
+  const read = async (url: string, headers = {}) => {
+    const req = { url, headers, aborted: false, socket: { destroyed: false } } as IncomingMessage;
     await handleThreadHistoryRoute(ctx, "GET", url.split("?")[0]!, req, {
       destroyed: false,
+      setHeader,
     } as ServerResponse);
   };
-  return { ctx, services, read };
+  return { ctx, services, read, setHeader };
 }
 
 describe("history HTTP boundary", () => {
@@ -38,12 +41,23 @@ describe("history HTTP boundary", () => {
     expect(f.services.threadHistory).not.toHaveBeenCalled();
     expect(f.ctx.json).not.toHaveBeenCalled();
     await f.read("/threads/t/history?limit=1&beforeTurnId=mounted");
-    expect(f.services.threadHistory).toHaveBeenCalledWith({
-      threadId: "t",
-      limit: 1,
-      beforeTurnId: "mounted",
-    });
+    expect(f.services.threadHistory).toHaveBeenCalledWith(
+      { threadId: "t", limit: 1, beforeTurnId: "mounted" },
+      false,
+    );
     expect(f.ctx.json).toHaveBeenCalledWith(expect.anything(), 200, undefined);
+  });
+
+  it("negotiates reply previews per request without changing history selectors", async () => {
+    const f = fixture();
+    for (const value of ["1", "0", "true"]) {
+      await f.read("/threads/t/history", { [CLAUDE_TURN_REPLIES_HEADER]: value });
+      expect(f.setHeader).toHaveBeenLastCalledWith("Vary", CLAUDE_TURN_REPLIES_HEADER);
+      expect(f.services.threadHistory).toHaveBeenLastCalledWith(
+        { threadId: "t", limit: 20 },
+        value === "1",
+      );
+    }
   });
 
   it("distinguishes unavailable service from successful empty history and bounds explicit prompt reads", async () => {

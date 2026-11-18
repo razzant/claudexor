@@ -272,6 +272,14 @@ describe("Events read after Stop are exact evidence with masked diagnostics (INV
       expect(out.callbacks.some((c) => !c.aborted && c.event.text === TRIGGER)).toBe(true);
       // Nothing read after Stop reaches the live callback or an ACP client.
       expect(out.callbacks.filter((c) => c.aborted)).toEqual([]);
+      expect(out.stored.find((p) => p.text === TRIGGER)).toMatchObject({
+        final: true,
+        after_stop: false,
+      });
+      expect(out.stored.find((p) => p.text === DRAINED_WORKING)).toMatchObject({
+        final: true,
+        after_stop: true,
+      });
       expect(JSON.stringify(out.acp)).not.toContain(inJson(DRAINED_WORKING));
       const files = readdirSync(out.result.runDir, { recursive: true, withFileTypes: true })
         .filter((entry) => entry.isFile())

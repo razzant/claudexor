@@ -6,6 +6,7 @@ import Foundation
 /// of that `use_id` (id-less: its try's one open id-less call of that name), else stands alone.
 public struct TranscriptReducer: Sendable {
     public private(set) var blocks: [TranscriptBlock] = []
+    public private(set) var claudeTurnReplies = ClaudeTurnReplies()
     /// Number of oldest blocks dropped to stay under `cap` (shown as "N earlier…").
     public private(set) var trimmed: Int = 0
     /// Characters cut from OVERLONG single blocks (the per-block byte bound) —
@@ -125,8 +126,11 @@ public struct TranscriptReducer: Sendable {
     /// `type` field inside `event`, never on `kind` (review #11). Idempotency is by
     /// monotonic `seq` (SSE replays in order), so there is no unbounded seen-set.
     @discardableResult
-    public mutating func apply(_ env: BusEnvelope) -> Bool {
-        if env.seq <= lastSeq { return false }   // already folded (replay)
+    public mutating func apply(_ env: BusEnvelope, replyRunID: String? = nil) -> Bool {
+        if env.seq <= lastSeq {
+            // Hydration may have resolved a job alias since the first fold.
+            return claudeTurnReplies.observe(env, runID: replyRunID)
+        }
         if env.event["type"]?.stringValue == "workspace.prepared" {
             lastSeq = env.seq
             guard let prepared = TranscriptNotice.prepared(env.event["payload"]) else { return false }
@@ -176,6 +180,7 @@ public struct TranscriptReducer: Sendable {
             }
             return true
         case "message":
+            if payload["after_stop"]?.boolValue == true { return false }
             // Buffered snapshots remain in the evidence artifact, not a second
             // complete message in the visible transcript (live or replayed).
             if payload["buffered"]?.boolValue == true || payload["payload"]?["buffered"]?.boolValue == true { return false }
@@ -189,6 +194,7 @@ public struct TranscriptReducer: Sendable {
             // the answer is final. Checked BEFORE the non-empty guard so an
             // EMPTY final still seals (review confirm #2).
             if payload["final"]?.boolValue == true {
+                claudeTurnReplies.observe(env, runID: replyRunID)
                 stream.streamingMessageId = nil
                 stream.pendingFlushId = nil
                 stream.speechKeys = []

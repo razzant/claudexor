@@ -308,7 +308,7 @@ export async function runDeepScanReducer(
   const observeEvent = (event: HarnessEvent, acceptDeliverable: boolean): void => {
     log.emit(
       "harness.event",
-      harnessEventPayload(adapter.id, attemptId, event),
+      harnessEventPayload(adapter.id, attemptId, event, !acceptDeliverable),
       event.payload?.["buffered"] !== true,
     );
     appendHarnessEvent(attemptEventsPath, event);

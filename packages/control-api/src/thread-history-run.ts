@@ -9,6 +9,9 @@ import {
   THREAD_HISTORY_FAILURE_BYTES,
   THREAD_HISTORY_FACT_BYTES,
   THREAD_HISTORY_EVENT_BYTES,
+  THREAD_HISTORY_CLAUDE_REPLIES,
+  THREAD_HISTORY_REPLY_BYTES,
+  claudeTurnReply,
   outcomeBanner,
   requiredActionsFor,
 } from "@claudexor/schema";
@@ -42,6 +45,7 @@ export function projectHistoryRun(
     operator: ControlOperatorDecisionRecord | null;
     childRunIds: string[];
   },
+  includeClaudeReplies = false,
 ) {
   const coverageState = { apply: "complete" as "complete" | "unavailable" };
   let operatorDecisionCoverage: "complete" | "unavailable" = "complete";
@@ -113,7 +117,8 @@ export function projectHistoryRun(
     patchReferenceOnly: true,
     metadataMaxBytes: THREAD_HISTORY_FACT_BYTES,
   });
-  const { events, integrity } = readRunEventsWithIntegrity(record, THREAD_HISTORY_EVENT_BYTES);
+  const journal = readRunEventsWithIntegrity(record, THREAD_HISTORY_EVENT_BYTES);
+  const { events, integrity } = journal;
   const budget = budgetSnapshot(record, decision, events, integrity, THREAD_HISTORY_FACT_BYTES);
   const coverage =
     integrity.absent || integrity.unreadable
@@ -121,12 +126,42 @@ export function projectHistoryRun(
       : integrity.tailTruncated || integrity.malformedLines || integrity.nonObjectLines
         ? "partial"
         : "complete";
+  const replies: NonNullable<ThreadHistoryRun["claudeTurnReplies"]>["rows"] = [];
+  let partialReplies =
+    coverage === "partial" ||
+    integrity.unreadable ||
+    (record.state !== "queued" && (!record.runDir || integrity.absent));
   let tools = 0,
     files = 0;
   const seen = new Set<string>();
-  for (const event of events) {
+  for (const [index, event] of events.entries()) {
     const payload = eventPayload(event);
-    if (event.type !== "harness.event" || payload.type !== "tool_call") continue;
+    if (event.type !== "harness.event") continue;
+    const reply = includeClaudeReplies ? claudeTurnReply(payload) : null;
+    if (reply && reply.source.afterStop !== true) {
+      const seq = event.seq ?? journal.legacySequences?.get(index);
+      if (
+        index === journal.unterminatedEventIndex ||
+        event.run_id !== (record.runId ?? record.id) ||
+        typeof seq !== "number" ||
+        !Number.isSafeInteger(seq) ||
+        seq <= 0
+      ) {
+        partialReplies = true;
+        continue;
+      }
+      // Legacy rows provide an address. Their Stop timing cannot qualify an answer.
+      const text =
+        reply.source.afterStop === false
+          ? truncateUtf8(reply.text, THREAD_HISTORY_REPLY_BYTES)
+          : "";
+      replies.push({ seq, source: reply.source, text, truncated: text !== reply.text });
+      if (replies.length > THREAD_HISTORY_CLAUDE_REPLIES) {
+        replies.shift();
+        partialReplies = true;
+      }
+    }
+    if (payload.type !== "tool_call") continue;
     const tool = payload.tool as { kind?: string; use_id?: string } | undefined;
     const key =
       typeof tool?.use_id === "string"
@@ -192,6 +227,9 @@ export function projectHistoryRun(
           verified: finalAttempt.observed_model !== null,
         }
       : null,
+    ...(includeClaudeReplies
+      ? { claudeTurnReplies: { rows: replies, partial: partialReplies } }
+      : {}),
     toolCount: { value: coverage === "unavailable" ? null : tools, coverage },
     fileCount: { value: coverage === "unavailable" ? null : files, coverage },
     applyEligibilityCoverage: coverageState.apply,

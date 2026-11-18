@@ -527,6 +527,7 @@ frequency and volume are. The contracts:
   disables Apply with a reason; an unverified recorded decision never waives
   required actions. Truncated failure messages link their full recorded detail.
   Composer and Stop read the compact header, independent of the mounted range.
+  If Stop cannot save a next-message hold, Retry Stop addresses the original run.
   Plan-answer relations come from the engine even when the answer is off page.
 - **Presentation and workspace ownership.** Drafts, expansions and transcript
   pins outlive rows in the selected located thread's presentation store. Interaction
@@ -964,8 +965,7 @@ views in the shared design-system files; screens compose them.
 - **Turn card — the receipt layout (D42).** The card reads top-down as a
   conversation and grows strictly downward; live and terminal are ONE shape:
   1. the user's right-aligned bubble (item e contrast);
-  2. the FINAL ANSWER bubble (loudest element, W22 markdown Show-more clamp),
-     when terminal;
+  2. Claude turn replies in journal order, labelled by attempt, session and active run state. “Earlier” relates replies from the same known attempt and session. A clipped preview opens its event and copies the full reply on demand. For omitted replies the card locates `events.jsonl` in Finder or opens its folder in SSH. The terminal FINAL ANSWER bubble (loudest element, W22 markdown Show-more clamp) keeps its own reading position even when its words match a reply.
   3. ONE persistent RECEIPT row — status glyph · harness identity · quiet state
      word · outcome/attention chip when present · live elapsed · cash-$ · the
      tool/file counter «9 tools · 3 files» · an expand chevron. Attention states

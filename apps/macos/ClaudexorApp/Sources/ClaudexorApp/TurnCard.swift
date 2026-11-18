@@ -140,10 +140,17 @@ struct TurnCard: View {
             if let run, let runId = turn.runId {
                 // The FINAL answer is the loudest element — its own accent-edged
                 // bubble above the quiet receipt (W22 Show-more clamp preserved).
+                let replies = ClaudeTurnReplies.forCard(history: historyRow?.run?.claudeTurnReplies,
+                    live: model.transcript(runId, at: target.locationID)?.claudeTurnReplies)
+                ClaudeTurnRepliesView(replies: replies, run: run, runID: run.resolvedRunId ?? runId,
+                    location: target.locationID, executionRoot: executionRoot)
                 if run.hasRetainedOutput {
                     RetainedOutputView(task: run, locationID: target.locationID)
                         .padding(Theme.Spacing.md)
                 } else {
+                    if replies.rows.contains(where: \.isTurnReply), run.phase.isTerminal, let answer = run.answerText, !answer.isEmpty {
+                        Text("Run output").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    }
                     answerBubble(run)
                 }
                 // ONE persistent receipt row: the whole row toggles inline activity.
@@ -451,7 +458,7 @@ struct TurnCard: View {
     private func failureReason(_ run: TaskRun) -> String {
         let reason = (run.engineError ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return reason.isEmpty
-            ? "This turn ended without producing an answer, diff, or transcript."
+            ? "No final run output is available."
             : reason
     }
 
