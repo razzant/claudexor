@@ -82,8 +82,7 @@ describe("delayed loop windows (#707)", () => {
   const facts = (windowMs: number, maxMs: number | null): DaemonLoopFacts => ({
     windowMs,
     windowEndedAt: "2026-11-17T12:00:00.000Z",
-    delay:
-      maxMs === null ? null : { resolutionMs: 10, samples: 3, p50Ms: 10, p99Ms: maxMs, maxMs },
+    delay: maxMs === null ? null : { resolutionMs: 10, samples: 3, p50Ms: 10, p99Ms: maxMs, maxMs },
     utilization: null,
     gc: { count: 0, totalMs: 0, maxMs: 0 },
   });

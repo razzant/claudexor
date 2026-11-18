@@ -141,7 +141,7 @@ function validateOpenedPath(path: string, fd: number, options: SafeFileOptions) 
 
 function openSafeFile(path: string, options: SafeFileOptions): number {
   validatePrivateParent(path, options.platform, options.uid);
-  const access = options.access ?? (constants.O_RDWR | constants.O_APPEND);
+  const access = options.access ?? constants.O_RDWR | constants.O_APPEND;
   const create = options.create ? constants.O_CREAT : 0;
   const creation = options.exclusiveCreate;
   const flags = access | create | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0);

@@ -107,8 +107,8 @@ describe("quota observation diagnostics", () => {
         diagnostic: log.logQuotaObservation,
       });
       expect(result.snapshots).toHaveLength(1);
-      const receipts = readDaemonDiagnosticTail({ path }).text
-        .split("\n")
+      const receipts = readDaemonDiagnosticTail({ path })
+        .text.split("\n")
         .filter((line) => line.includes("quota.observation"))
         .map((line) => JSON.parse(/^\[[^\]]+\] quota\.observation (\{.*\})$/.exec(line)![1]!));
       expect(receipts).toHaveLength(2);

@@ -7,8 +7,7 @@ const pid = z.number().int().positive().max(0x7fffffff).optional().catch(undefin
 const name = z
   .string()
   .refine(
-    (label) =>
-      /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(label) && redactSecrets(label) === label,
+    (label) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(label) && redactSecrets(label) === label,
   )
   .optional()
   .catch(undefined);

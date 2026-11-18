@@ -80,8 +80,9 @@ describe("daemon log writer and rare history (#688, #707)", () => {
     const record = observation("op-full");
     handle.logQuotaObservation(record);
 
-    const lines = startupDiagnostics.readDaemonDiagnosticTail({ path }).text
-      .split("\n")
+    const lines = startupDiagnostics
+      .readDaemonDiagnosticTail({ path })
+      .text.split("\n")
       .filter((line) => line.includes("quota.observation"));
     expect(lines).toHaveLength(1); // no duplicate JSON record of the same message
     const match = /^\[[^\]]+\] quota\.observation (\{.*\})$/.exec(lines[0]!);
