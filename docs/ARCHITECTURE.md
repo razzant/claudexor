@@ -6244,7 +6244,8 @@ kept only for cold import and an independent frozen copy kept for tests.
   committed and durable across an engine process crash or kill, not power loss
   or kernel panic: recent commits can be lost until a completed flusher barrier.
   Provider generation and native account-reset I/O await `flushed()` before the
-  external effect.
+  external effect; that waiter wakes the flusher rather than waiting for its
+  next periodic pass (below).
   Bodies up to 64 KiB live inline in the `blob` table; larger bodies are
   content-addressed files under the resource store, present in the same tick
   as the owning transaction. Where the bytes are known at an asynchronous
@@ -6404,7 +6405,14 @@ kept only for cold import and an independent frozen copy kept for tests.
   generations; a pass acknowledges every generation it received before it
   started, a dead worker rejects its earlier waiters typed
   (`store_flush_unavailable`, retryable) and is restarted with its
-  unacknowledged registrations replayed.
+  unacknowledged registrations replayed. A `flushed()` waiter wakes the worker:
+  the pass that was scheduled runs at once, covering every waiter and
+  registration already received (waiters that arrive together share it), and
+  the next periodic pass keeps the schedule's time, so waking adds no pass.
+  Such a woken pass proves the same directory syncs and WAL barrier but leaves
+  the PASSIVE checkpoint to the periodic passes unless none ran it for two
+  intervals, so a waiter usually waits for one full flush; `mark()`,
+  registrations and obligations keep the periodic schedule.
 - Obligations (`effect_obligation`) are rows created in the same transaction
   as the decision whose file effects they protect (terminal files, blob
   publication, archive/purge/quarantine steps). The row stays `pending` until

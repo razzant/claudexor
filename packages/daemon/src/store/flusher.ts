@@ -122,12 +122,13 @@ export class FlusherController {
     return g;
   }
 
-  /** Resolves once a pass that started after this call proved its barrier. */
+  /** Resolves once a pass that started after this call proved its barrier. The
+   * waiter wakes the worker instead of waiting for its periodic pass. */
   flushed(): Promise<void> {
     const g = this.nextGeneration();
     return new Promise<void>((resolve, reject) => {
       this.addWaiter(g, { resolve, reject, since: performance.now() });
-      this.send({ g, since: performance.now(), command: { type: "flush", g } });
+      this.send({ g, since: performance.now(), command: { type: "flush", g, wake: true } });
     });
   }
 
