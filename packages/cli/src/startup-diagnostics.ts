@@ -241,6 +241,7 @@ function diagnosticLine(
   now: () => Date,
   maxRecordBytes: number,
 ): Buffer {
+  if (!SAFE_LABEL.test(input.stage)) throw new Error("invalid diagnostic stage");
   const error = input.error;
   const failureClass =
     error instanceof Error
@@ -346,21 +347,17 @@ export function openDaemonStartupDiagnosticsAfterAuthority(
   let closed = false;
   let failure: string | null = null;
   let openWith: SafeFileOptions = { ...existingFile, create: true };
-  let partial: { start: number; bytes: Buffer; cause: string } | undefined;
-  function boundLegacyGeneration(file: number): void {
+  let repairPartial: (() => void) | undefined;
+  const encodeRecord = (input: DaemonStartupDiagnosticRecord) =>
+    diagnosticLine(context, input, now, maxRecordBytes);
+  function boundLegacyGeneration(file: number, generation: string): void {
     if (fstatSync(file).size <= maxCurrentBytes) return;
-    const receipt = diagnosticLine(
-      context,
-      {
-        stage: "diagnostic_legacy_log_discarded",
-        message:
-          "an oversized legacy diagnostic generation was discarded without copying its bytes",
-      },
-      now,
-      maxRecordBytes,
-    );
+    const receipt = encodeRecord({
+      stage: "diagnostic_legacy_log_discarded",
+      message: "an oversized legacy diagnostic generation was discarded without copying its bytes",
+    });
     ftruncateSync(file, 0);
-    writeAll(file, receipt);
+    appendRecord(file, generation, 0, receipt);
     fsyncSync(file);
   }
   // A new event resumes at the last completed rename and proves both generations.
@@ -370,8 +367,8 @@ export function openDaemonStartupDiagnosticsAfterAuthority(
     let rotated: number | undefined;
     try {
       rotated = openExistingSafe(rotatedPath, existingFile);
-      if (rotated !== undefined) boundLegacyGeneration(rotated);
-      boundLegacyGeneration(current);
+      if (rotated !== undefined) boundLegacyGeneration(rotated, rotatedPath);
+      boundLegacyGeneration(current, path);
       fd = current;
     } finally {
       closeQuietly(rotated);
@@ -393,21 +390,34 @@ export function openDaemonStartupDiagnosticsAfterAuthority(
     return fd;
   };
 
-  function discardPartial(file: number): void {
-    if (!partial) return;
-    validatePrivateParent(path, platform, uid);
-    const { start, bytes } = partial;
-    const length = validateOpenedPath(path, file, existingFile).size - start;
-    if (length < 0 || length > bytes.length) throw diagnosticError("append size changed");
-    if (!readAt(file, start, length).equals(bytes.subarray(0, length))) {
-      throw diagnosticError("file changed after an incomplete append");
+  function appendRecord(file: number, generation: string, start: number, bytes: Buffer): void {
+    try {
+      writeAll(file, bytes);
+    } catch (error) {
+      const cause = safeProblemMessage(error);
+      const repair = () => {
+        try {
+          validatePrivateParent(generation, platform, uid);
+          const length = validateOpenedPath(generation, file, existingFile).size - start;
+          if (length < 0 || length > bytes.length) throw diagnosticError("append size changed");
+          if (!readAt(file, start, length).equals(bytes.subarray(0, length))) {
+            throw diagnosticError("file changed after an incomplete append");
+          }
+          if (length > 0) ftruncateSync(file, start);
+          repairPartial = undefined;
+        } catch (repairError) {
+          throw new Error(`${cause}. Partial line may remain: ${safeProblemMessage(repairError)}`);
+        }
+      };
+      // Only the live writer keeps this descriptor for a later repair attempt.
+      if (file === fd) repairPartial = repair;
+      repair();
+      throw error;
     }
-    if (length > 0) ftruncateSync(file, start);
-    partial = undefined;
   }
 
-  /** Every byte this process appends to `path` passes here, so a generation never
-   * exceeds `maxCurrentBytes`: one line is at most `maxRecordBytes`. */
+  /** Limit each event to `maxRecordBytes` and rotate before appending an event
+   * that would take the current generation over `maxCurrentBytes`. */
   const writeBounded = (line: () => Buffer): boolean => {
     if (closed) {
       failure = "diagnostic writer is closed";
@@ -417,22 +427,16 @@ export function openDaemonStartupDiagnosticsAfterAuthority(
       const bytes = line();
       if (bytes.length > maxRecordBytes) throw new Error("diagnostic line exceeds its byte limit");
       let current = currentFile();
-      discardPartial(current);
+      repairPartial?.();
       let start = fstatSync(current).size;
       if (start + bytes.length > maxCurrentBytes) {
         current = rotate(current);
         start = 0;
       }
-      try {
-        writeAll(current, bytes);
-      } catch (error) {
-        partial = { start, bytes, cause: safeProblemMessage(error) };
-        discardPartial(current);
-        throw error;
-      }
+      appendRecord(current, path, start, bytes);
       return true;
     } catch (error) {
-      failure = safeProblemMessage(partial ? `${partial.cause}. ${String(error)}` : error);
+      failure = safeProblemMessage(error);
       return false;
     }
   };
@@ -493,11 +497,7 @@ export function openDaemonStartupDiagnosticsAfterAuthority(
   const writer: DaemonStartupDiagnostics = {
     path,
     rotatedPath,
-    record: (input) =>
-      writeBounded(() => {
-        if (!SAFE_LABEL.test(input.stage)) throw new Error("invalid diagnostic stage");
-        return diagnosticLine(context, input, now, maxRecordBytes);
-      }),
+    record: (input) => writeBounded(() => encodeRecord(input)),
     appendLine: (message) => writeBounded(() => plainLine(message, now, maxRecordBytes)),
     appendQuotaObservation: (record) =>
       writeBounded(() => {
@@ -508,7 +508,7 @@ export function openDaemonStartupDiagnosticsAfterAuthority(
     close(reserveExit) {
       if (closed) return;
       try {
-        if (fd !== undefined) discardPartial(fd);
+        repairPartial?.();
         if (reserveExit) return reserveForcedExitLine();
       } catch (error) {
         failure = safeProblemMessage(error);

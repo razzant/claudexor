@@ -94,6 +94,22 @@ function records(path: string): Record<string, unknown>[] {
   return text ? text.split("\n").map((line) => JSON.parse(line) as Record<string, unknown>) : [];
 }
 
+async function failAfterShortWrite(unwrittenBytes = 1): Promise<void> {
+  const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+  const shortWrite = (
+    fd: number,
+    bytes: Buffer,
+    offset: number,
+    length: number,
+    at: number | null,
+  ) => fs.writeSync(fd, bytes, offset, length - unwrittenBytes, at);
+  vi.mocked(writeSync)
+    .mockImplementationOnce(shortWrite as typeof writeSync)
+    .mockImplementationOnce(() => {
+      throw Object.assign(new Error("ENOSPC: fixture full"), { code: "ENOSPC" });
+    });
+}
+
 function maximumBoundarySecrets(): Array<{ label: string; value: string }> {
   const budget = DIAGNOSTIC_TAIL_LIMIT_BYTES - 192;
   const dashes = "-----";
@@ -253,6 +269,55 @@ describe("post-authority daemon startup diagnostics", () => {
     },
   );
 
+  it.each(["current", "rotated"])(
+    "keeps the first record on a fresh open after a short %s discard marker",
+    async (generation) => {
+      const dataRoot = root();
+      const path = join(dataRoot, "claudexord.log");
+      const rotated = `${path}.1`;
+      const legacy = generation === "current" ? path : rotated;
+      const healthy = generation === "current" ? rotated : path;
+      const saved = '{"stage":"earlier"}\n';
+      const limits = { path, maxCurrentBytes: 1024, maxRecordBytes: 512 };
+      writeFileSync(legacy, "x".repeat(1025), { mode: 0o600 });
+      writeFileSync(healthy, saved, { mode: 0o600 });
+      const { dev, ino, mode } = lstatSync(legacy);
+      await failAfterShortWrite(2);
+
+      expect(() => open(dataRoot, limits)).toThrow("ENOSPC: fixture full");
+      expect(lstatSync(legacy)).toMatchObject({ dev, ino, mode, size: 0 });
+      expect(readFileSync(healthy, "utf8")).toBe(saved);
+
+      const writer = open(dataRoot, limits);
+      const first = { stage: "reopened", message: "first" };
+      expect(writer.record(first)).toBe(true);
+      const earlier = healthy === path ? [{ stage: "earlier" }] : [];
+      expect(records(path)).toEqual([...earlier, expect.objectContaining(first)]);
+      expect(readFileSync(path, "utf8").endsWith("\n")).toBe(true);
+      expect(readFileSync(rotated, "utf8")).toBe(healthy === rotated ? saved : "");
+    },
+  );
+
+  it("reports both I/O failures when a partial discard marker remains", async () => {
+    const dataRoot = root();
+    const path = join(dataRoot, "claudexord.log");
+    writeFileSync(path, "x".repeat(1025), { mode: 0o600 });
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(ftruncateSync)
+      .mockImplementationOnce(fs.ftruncateSync)
+      .mockImplementationOnce(() => {
+        throw new Error("fixture truncate refused");
+      });
+    await failAfterShortWrite(2);
+
+    expect(() => open(dataRoot, { path, maxCurrentBytes: 1024, maxRecordBytes: 512 })).toThrow(
+      /ENOSPC: fixture full.*Partial line may remain.*fixture truncate refused/,
+    );
+    const fragment = readFileSync(path, "utf8");
+    expect(fragment).toContain("diagnostic_legacy_log_discarded");
+    expect(() => JSON.parse(fragment)).toThrow(SyntaxError);
+  });
+
   it.each(["rename", "reopen"])("recovers on a new quota event after a failed %s", async (step) => {
     const dataRoot = root();
     const path = join(dataRoot, "claudexord.log");
@@ -352,19 +417,7 @@ describe("post-authority daemon startup diagnostics", () => {
       writeFileSync(path, saved, { mode: 0o600 });
       writeFileSync(`${path}.1`, "older\n", { mode: 0o600 });
       const writer = open(dataRoot, { path, maxCurrentBytes: 1024, maxRecordBytes: 512 });
-      const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
-      const shortWrite = (
-        fd: number,
-        bytes: Buffer,
-        offset: number,
-        length: number,
-        at: number | null,
-      ) => fs.writeSync(fd, bytes, offset, length - 1, at);
-      vi.mocked(writeSync)
-        .mockImplementationOnce(shortWrite as typeof writeSync)
-        .mockImplementationOnce(() => {
-          throw Object.assign(new Error("ENOSPC: fixture full"), { code: "ENOSPC" });
-        });
+      await failAfterShortWrite();
       const truncateFails = scenario === "truncate retry" || scenario === "changed tail";
       if (truncateFails) {
         vi.mocked(ftruncateSync).mockImplementationOnce(() => {
