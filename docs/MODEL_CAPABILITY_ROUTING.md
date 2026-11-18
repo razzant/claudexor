@@ -36,8 +36,9 @@ Codex program change drops the fact. A provider refusal of a listed model or
 its account on HTTP or the terminal stream also drops it. A request fault,
 rate limit or server failure on a generation leaves it available. Earlier reads
 cannot publish over contrary evidence. The public catalog GET and Accounts
-catalog acquisition each require a physical read. They may join identical
-in-flight I/O and report that read's completion time as `observedAt`.
+catalog acquisition each require a physical catalog read. They may join identical
+in-flight I/O and report that read's completion time as `observedAt`. The GET may
+reuse a dated positive login probe. Accounts Refresh checks the login physically.
 
 Auto selection uses each account’s physical or dated catalog. It prefers a listed model,
 then an advisory miss, then an account with a soft observation for the model (a

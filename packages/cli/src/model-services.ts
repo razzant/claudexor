@@ -118,7 +118,7 @@ export function createModelServices(deps: Dependencies) {
     signal = readSignal(signal);
     return measureModelPreparation("selection", async () => {
       const admitted = await measureModelPreparation("admission", () =>
-        admitAccount(source, account, model, signal, options.reuseCatalog === true),
+        admitAccount(source, account, model, signal),
       );
       return selectModelCatalog({
         adapter: source.adapter,
@@ -154,7 +154,6 @@ export function createModelServices(deps: Dependencies) {
     account: ModelAccountChoice,
     model: string | null,
     signal: AbortSignal,
-    reuse: boolean,
   ) =>
     admitModelAccount({
       source,
@@ -164,7 +163,6 @@ export function createModelServices(deps: Dependencies) {
       config,
       registry,
       readiness,
-      reuse,
       quotaEvidence,
       unusable,
     });
@@ -283,7 +281,7 @@ export function createModelServices(deps: Dependencies) {
         "This model source declares no image operations",
         404,
       );
-    const admitted = await admitAccount(source, request.account, request.model, signal, true);
+    const admitted = await admitAccount(source, request.account, request.model, signal);
     const profile = await pickAccount(
       source,
       request.account,

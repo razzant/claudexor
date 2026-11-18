@@ -20,7 +20,8 @@ whose outcome says the account cannot serve a listed model (a refused or unknown
 refused or signed-out account), on the HTTP status or in the response stream. A malformed
 request, a rate limit or a server failure keeps it, and a read that was in flight when such
 evidence arrived is not remembered. The public catalog GET and the Accounts catalog
-acquisition after Refresh read the provider even within those 90 seconds.
+acquisition after Refresh read the provider even within those 90 seconds. The GET can
+reuse a confirmed login within its lifetime. Accounts Refresh checks the login again.
 
 Starting an Agent run, and resolving a reviewer seat, now reuses a confirmed login under the
 same rule: one login readiness owner per engine store serves both raw model operations and

@@ -44,7 +44,7 @@ import {
 } from "@claudexor/core";
 import { createCredentialProfilesService } from "./accounts-services.js";
 import { updateGlobalConfig } from "@claudexor/config";
-import { accountObservations } from "./account-observations.js";
+import { accountObservations, displayAccountObservation } from "./account-observations.js";
 
 beforeEach(() => accountObservations.invalidate());
 
@@ -3089,7 +3089,7 @@ describe("admission-grade login readiness", () => {
     await f.call();
     expect(f.probe).toHaveBeenCalledTimes(2);
   });
-  it("reserves dated admission facts for operations and reacquires diagnostic catalogs", async () => {
+  it("reuses a dated login for public catalog reads and refreshes both facts for Accounts", async () => {
     const ready = await readinessFixture();
     const f = await fixture({ nativeAdapter: ready.adapter });
     f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
@@ -3099,12 +3099,16 @@ describe("admission-grade login readiness", () => {
     expect(f.catalog.mock.calls.map(([ctx]) => ctx.reuseCatalog)).toEqual([true, true]);
     await f.services.routes.modelCatalog("codex", "a");
     await f.services.routes.modelCatalog("codex", "a");
-    expect(ready.probe).toHaveBeenCalledTimes(3);
+    expect(ready.probe).toHaveBeenCalledTimes(1);
+    expect(f.catalog).toHaveBeenCalledTimes(4);
     await f.services.routes.modelAccountCatalog("codex", "a");
     await f.services.routes.modelAccountCatalog("codex", "a");
     expect(f.catalog).toHaveBeenCalledTimes(5);
+    expect(ready.probe).toHaveBeenCalledTimes(2);
     accountObservations.invalidateCatalogs();
+    await displayAccountObservation(f.cfg.credential_profiles[0]!, ready.adapter, true);
     await f.services.routes.modelAccountCatalog("codex", "a");
+    expect(ready.probe).toHaveBeenCalledTimes(3);
     expect(f.catalog.mock.calls.slice(2).map(([ctx]) => !!ctx.reuseCatalog)).toEqual([
       false,
       false,

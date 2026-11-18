@@ -3315,9 +3315,10 @@ whose read failed is not tried again. A pool refusal reports the causes of its
 own decision, so an account blocked now reports that block rather than an
 earlier refusal of the same selection. Each consumer then performs its own
 bind/reserve/changed and release.
-The public catalog GET acquires a physical observation and cancels on HTTP
-disconnect. Accounts retains its display observation until invalidation. Its first
-catalog read after Refresh acquires physically. Either read can join identical
+The public catalog GET may reuse a dated positive login probe. It reads the catalog
+physically and cancels on HTTP disconnect. Accounts retains its display observation
+until invalidation. Refresh checks the login physically, and the first catalog read
+after Refresh also acquires physically. Either read can join identical
 physical I/O already in progress. Accepted durable model operations retain their own
 lifetime, independent of the connection that created them. The Codex `/models`
 request and response body share a 60-second transport limit; expiry yields
