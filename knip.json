@@ -20,8 +20,8 @@
       "project": ["src/**/*.ts"]
     },
     "packages/claudexor": {
-      "entry": ["bin/*.js"],
-      "project": ["bin/*.js"]
+      "entry": ["bin/*.js", "pi/index.js"],
+      "project": ["bin/*.js", "pi/*.js"]
     },
     "packages/*": {
       "project": ["src/**/*.ts"]

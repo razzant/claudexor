@@ -1,7 +1,7 @@
 {
   "name": "claudexor",
   "version": "6.2.0",
-  "description": "Local-first multi-harness control plane for Claude Code, Codex, Cursor, and OpenCode with quota-aware rotation across multiple Claude Code and Codex subscriptions.",
+  "description": "Local-first control plane for Claude Code, Codex, Cursor, and OpenCode with quota-aware rotation across Claude Code and Codex subscriptions. Pi integration by Ouroboros.",
   "mcpName": "io.github.razzant/claudexor",
   "type": "module",
   "bin": {
@@ -9,8 +9,19 @@
     "claudexord": "./bin/claudexord.js"
   },
   "files": [
-    "bin"
+    "bin",
+    "pi/index.js",
+    "pi/mcp.json",
+    "pi/skills/claudexor/SKILL.md"
   ],
+  "pi": {
+    "extensions": [
+      "./pi/index.js"
+    ],
+    "skills": [
+      "./pi/skills"
+    ]
+  },
   "dependencies": {
     "@claudexor/cli": "workspace:*"
   },
@@ -33,6 +44,7 @@
     "multi-account",
     "multi-agent",
     "opencode",
+    "pi-package",
     "quota-management",
     "subscription-management"
   ],

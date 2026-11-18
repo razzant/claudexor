@@ -213,13 +213,15 @@ at every wire boundary.
   retention, migration and recovery semantics.
 - `packages/cli`: thin command surface plus local host-integration lifecycle
   (`claudexor plugin`) for generated Claude Code/Codex/Cursor/OpenCode
-  skill/MCP artifacts and commands; portable distributions live under `plugins/`. Plugin
-  lifecycle state is user-level local setup state, not a control-api
-  contract.
+  skill/MCP artifacts and commands. Portable bundles live under `plugins/`,
+  with the canonical Skill and stdio descriptor in `plugins/copilot`.
+  The CLI owns this user-level setup outside the control API.
 - `packages/claudexor`: the bare-name npm bin wrapper — `claudexor` and
   `claudexord` bins that import `@claudexor/cli`'s explicit entry exports;
   the published global install (`npm install -g claudexor`) and the ONE owner
-  of the global bin names.
+  of the global bin names. Its Pi declarations in `package.json` and the
+  extension that registers the server (`pi/index.js`) are hand-written.
+  `gen:version` copies the portable MCP descriptor and Skill into `pi/`.
 - `packages/mcp-server`, `packages/acp-server`: thin protocol surfaces. The
   MCP server rides the official TypeScript SDK v2 (concurrent dispatch, era
   negotiation down to 2024-10-07, schema-validated arguments, elicitation);

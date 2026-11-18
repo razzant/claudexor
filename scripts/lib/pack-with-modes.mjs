@@ -41,7 +41,7 @@ function* walk(dir) {
 }
 
 /** Pack `packageDir` into `destinationDir`; returns the tarball path. */
-export function packWithSourceModes(packageDir, destinationDir) {
+export function packWithSourceModes(packageDir, destinationDir, { omitMacMetadata = false } = {}) {
   const pkgDir = resolve(packageDir);
   const out = resolve(destinationDir);
   const before = new Set(readdirSync(out));
@@ -70,7 +70,12 @@ export function packWithSourceModes(packageDir, destinationDir) {
         restored += 1;
       }
     }
-    run("tar", ["-czf", tarball, "-C", work, "package"]);
+    const createArgs = ["-czf", tarball, "-C", work, "package"];
+    if (omitMacMetadata && process.platform === "darwin") {
+      run("/usr/bin/tar", ["--no-mac-metadata", "--no-xattrs", ...createArgs]);
+    } else {
+      run("tar", createArgs);
+    }
     process.stderr.write(
       `pack-with-modes: ${created[0]} — restored exec bit on ${restored} file(s)\n`,
     );
