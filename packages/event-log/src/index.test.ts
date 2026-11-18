@@ -10,7 +10,7 @@ import {
   liveRunEventSeq,
   readRunEvents,
 } from "./index.js";
-import { orderedAppender } from "@claudexor/util";
+import { orderedAppender, processTiming } from "@claudexor/util";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -26,6 +26,31 @@ __afterAllReap(() => {
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("EventLog seq stamping", () => {
+  it.each([false, true])("counts every append interface once (queued=%s)", async (queued) => {
+    const log = new EventLog(
+      join(reapMk(join(tmpdir(), "cx-append-count-")), "events.jsonl"),
+      "run-1",
+      "task-1",
+      undefined,
+      undefined,
+      undefined,
+      { queued },
+    );
+    const count = () =>
+      processTiming.facts().work.find((row) => row.kind === "journal.append")?.lifetime.count ?? 0;
+    const before = count();
+    log.emit("run.created");
+    await log.emitLanded("harness.event");
+    await new Promise<void>((resolve, reject) =>
+      log.emitAside("harness.event", {}, { resolve: () => resolve(), reject }),
+    );
+    expect(log.lastSeq()).toBe(3);
+    expect(count() - before).toBe(3);
+    log.readAll();
+    expect(count() - before).toBe(3);
+    log.dispose();
+  });
+
   it("prepares output before terminal sequencing, only when a deferred terminal is flushed", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-output-order-"));
     const log = new EventLog(join(dir, "events.jsonl"), "run-1", "task-1");

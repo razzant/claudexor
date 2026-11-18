@@ -134,7 +134,7 @@ export const DaemonTimingFacts = z.object({
     .max(64)
     .optional()
     .describe(
-      "Main-thread time of instrumented synchronous sections by class of work, since process start and in the last completed loop-facts window (null before the first): control API request entry, value loads and response sends; translating a vendor's stdout frames into events, by harness (later harnesses past 64 keys fold into other); appending a run event to its journal and live readers; store COMMIT calls; parsing a vendor model catalog; launching a child process (login probes, Git, vendor CLIs). Each section excludes the sections nested in it, so the classes add up without double counting; work outside these sections is not attributed. Counted in memory only; absent on older engines.",
+      "Main-thread time of instrumented synchronous sections by class of work, since process start and in the last completed loop-facts window (null before the first): control request entry, body decoding and parsing, value loads and response sends; parsing and translating vendor frames and handling raw API completions, by harness (later harnesses past 64 keys fold into other); appending a run event to its journal and live readers; store COMMIT calls; parsing a vendor model catalog; child process launch and Codex login output parsing. Each section excludes nested sections. Work that resumes after an await and work outside the measured sections are not attributed unless a new section measures them. Counted in memory only; absent on older engines.",
     ),
   bulk: z
     .array(

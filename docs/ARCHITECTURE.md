@@ -3765,17 +3765,18 @@ so clients can parse status from engines that report those synchronous spans.
 `file.write_text`, `file.capture_write` and `daemon.log_line` name the synchronous
 work that stays on the main thread by design ([Main thread and disk waits](#main-thread-and-disk-waits)).
 Detail and summary report worker queue/projection wall time in `bulk`.
-The `work` array in `timing` attributes main-thread time by class of work, `lifetime`
-and last `window` (`count`, `totalMs`, `maxMs`): `control.handler` (request entry,
-the handlers' value loads and response sends), `run.stream` per `harness` (parsing and
-translating each vendor stdout frame, the shared CLI loop and the Codex app server),
-`journal.append` (a run event's journal append and live publication), `store.commit`,
-`catalog.read` (parsing a vendor model catalog) and `process.launch` (a child's spawn
-and identity capture: login probes, Git, vendor CLIs). Each section excludes the
-sections nested in it, so classes add up without double counting; time outside these
-sections (async continuations of other code, timers, GC) is not attributed. It lives
-in memory only and is written nowhere; it exists to show what occupies the control
-loop, not to admit or delay work.
+The `work` array in `timing` records count, total milliseconds and the longest
+section for each class, over the process lifetime and the last completed window.
+`control.handler` includes request entry, synchronous body decoding and parsing,
+handler value loads and response sends. `run.stream` records vendor frame parsing
+and translation by harness, including ACP updates and raw API completion handling.
+`journal.append` covers synchronous event appends through the regular, landed
+and aside interfaces. `store.commit` measures store commits, `catalog.read`
+measures catalog parsing and `process.launch` measures child launch and identity
+capture, plus parsing the output of a Codex login probe. Each section subtracts
+the time spent in nested sections. Work resuming after an `await` counts only
+when another measured section starts. Work outside the sections is unattributed.
+The counters live in memory.
 Scope persistence measures synchronous serialization, not its asynchronous file writes. These
 samples may overlap and do not identify the cause of a delay. A `store.external_write`
 sample that enters the list is also written to the daemon log with its purpose

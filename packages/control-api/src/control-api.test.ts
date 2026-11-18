@@ -31,8 +31,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runRetentionPass } from "./retention.js";
 import { connect } from "node:net";
+import { Readable } from "node:stream";
+import type { IncomingMessage } from "node:http";
+import { readControlRequestBody } from "./request-body.js";
 import { execFileSync } from "node:child_process";
-import { projectRuntimeDir, sha256 } from "@claudexor/util";
+import { processTiming, projectRuntimeDir, sha256 } from "@claudexor/util";
 import { createRevertAnchorFromPatchOrNull } from "@claudexor/workspace";
 import {
   requiredActionsFor,
@@ -1004,6 +1007,23 @@ describe("DaemonControlApiServer", () => {
         },
       },
     );
+  });
+
+  it("counts synchronous request-body decoding and parsing after the stream yields", async () => {
+    const count = () =>
+      processTiming.facts().work.find((row) => row.kind === "control.handler")?.lifetime.count ?? 0;
+    const read = (...chunks: Buffer[]) =>
+      readControlRequestBody(Readable.from(chunks) as IncomingMessage);
+    const before = count();
+    expect(await read()).toEqual({});
+    expect(count()).toBe(before);
+    expect(await read(Buffer.from('{"ok":true}'))).toEqual({ ok: true });
+    expect(count()).toBe(before + 1);
+    const parsed = count();
+    await expect(read(Buffer.from([0xff]))).rejects.toMatchObject({ code: "invalid_encoding" });
+    expect(count()).toBe(parsed + 1);
+    await expect(read(Buffer.from("!"))).rejects.toThrow("invalid JSON body");
+    expect(count()).toBe(parsed + 2);
   });
 
   it("rejects invalid UTF-8 request bytes with a typed 400 before parsing (QA-056)", async () => {
