@@ -28,10 +28,10 @@ concurrency:
 env:
   # Public main sha the product branch started from (pinned independently;
   # never derived from HEAD~1 or any moving ref).
-  PRODUCT_BASE_SHA: 4ac8ac03cc50f9261fa4108070ca0e9e8f25df44
+  PRODUCT_BASE_SHA: 0ff3df717c2e807fdbd3a233487e35d81993fdea
   # Never defaults to HEAD~1: with repeated QA carrier commits HEAD~1 can
   # already be a previous carrier revision, not the product.
-  PRODUCT_HEAD_SHA: "88a91d9968e334b9fae46799e596cedc85178b0c"
+  PRODUCT_HEAD_SHA: "167c787ee552ec304ad84c743537cc8eef276240"
 
 jobs:
   qualify:
@@ -106,6 +106,12 @@ jobs:
       - name: Observe the candidate independently of the baseline
         if: ${{ !cancelled() && steps.fixture_build.outcome == 'success' }}
         run: node qa/p06/run-qa.mjs control-candidate
+
+      - name: Check affected user paths before the full gate
+        # Builds the packages these tests import, so its result never depends
+        # on how far release:verify:node gets.
+        if: ${{ !cancelled() && steps.gen_install.outcome == 'success' }}
+        run: node qa/p06/run-qa.mjs targeted
 
       - name: release:verify:node unmodified on the exact generated tree
         # Runs whenever export bound the product SHA and produced the generated

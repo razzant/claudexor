@@ -16,7 +16,7 @@ vi.mock("@claudexor/secrets", async (importOriginal) => ({
 
 import { appendHarnessEvent } from "@claudexor/core";
 import { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
-import { orderedAppender, redactSecrets } from "@claudexor/util";
+import { orderedAppender, processTiming, redactSecrets } from "@claudexor/util";
 import { createRawApiAdapter } from "./index.js";
 import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 import { rmSync as __rmSyncReap } from "node:fs";
@@ -257,7 +257,14 @@ describe("raw-api provider cost receipts", () => {
   });
 
   it("keeps the same provider extension untrusted on a generic instance", async () => {
+    const count = () =>
+      processTiming
+        .facts()
+        .work.find((row) => row.kind === "run.stream" && row.harness === "raw-api")?.lifetime
+        .count ?? 0;
+    const before = count();
     const events = await runWithProviderCost(0.25);
+    expect(count() - before).toBe(1);
     const usageEvent = events.find((event) => event.type === "usage");
 
     expect(usageEvent).toStrictEqual({

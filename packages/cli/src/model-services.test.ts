@@ -45,7 +45,11 @@ import {
 import { createCredentialProfilesService } from "./accounts-services.js";
 import { routingEvidenceLines } from "./account-routing-read.js";
 import { updateGlobalConfig } from "@claudexor/config";
-import { accountObservations } from "./account-observations.js";
+import {
+  accountObservations,
+  displayAccountObservation,
+  retainAccountProbeObservations,
+} from "./account-observations.js";
 
 beforeEach(() => accountObservations.invalidate());
 
@@ -1225,11 +1229,50 @@ describe("production model service composition", () => {
     },
   );
 
-  it("tells the owner the pool is unavailable, without a reset, when the network dies", async () => {
+  const unreachable = () =>
+    // The live adapter's refusal when the catalog fetch never reached the provider.
+    Object.assign(new Error("fetch failed"), {
+      problem: ControlProblem.parse({
+        code: "catalog_unavailable",
+        message: "The model provider could not be reached from this machine (ENOTFOUND).",
+        retryable: true,
+        context: { cause: "network", errorCode: "ENOTFOUND" },
+      }),
+    });
+  it("names a network outage as an unreachable provider, never as an exhausted pool", async () => {
+    const f = await fixture();
+    f.catalog.mockRejectedValue(unreachable());
+    const done = await f.run();
+    expect(done.problem).toMatchObject({
+      code: "catalog_unavailable",
+      message: expect.stringContaining("could not be reached from this machine (ENOTFOUND)"),
+      retryable: true,
+      context: { poolCause: "network", cause: "network", errorCode: "ENOTFOUND", poolCauses: [] },
+    });
+    expect(f.catalog).toHaveBeenCalledTimes(2);
+    expect(f.invoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps the network as the reason when the accounts it could not try are quota-blocked", async () => {
+    const f = await fixture();
+    f.failures.b = "subscription_window_exhausted";
+    await f.run({ mode: "pin", profileId: "b" });
+    f.invoke.mockClear();
+    f.catalog.mockReset();
+    f.catalog.mockRejectedValue(unreachable());
+    const done = await f.run();
+    expect(done.problem).toMatchObject({
+      code: "catalog_unavailable",
+      context: { poolCause: "network", poolCauses: ["quota"] },
+    });
+    expect(f.catalog).toHaveBeenCalledTimes(1);
+    expect(f.invoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unproven catalog failure as an unavailable pool, without a reset", async () => {
     const f = await fixture();
     f.catalog.mockRejectedValue(
-      // The shape the live adapter throws when the catalog fetch itself fails:
-      // a retryable catalog_unavailable carrying no vendor context at all.
+      // A retryable catalog_unavailable carrying no connection evidence at all.
       Object.assign(new Error("network is unreachable"), {
         problem: ControlProblem.parse({
           code: "catalog_unavailable",
@@ -3074,6 +3117,135 @@ describe("admission-grade login readiness", () => {
       date.mockRestore();
     }
   });
+  it("run start and raw-model selection share one dated positive (owner decision 2026-11-18)", async () => {
+    const f = await readinessFixture();
+    const runStart = f.owner.runStartProbe(f.adapter);
+    const first = await runStart(f.profile);
+    expect(await f.call()).toEqual(first);
+    expect(await runStart(f.profile)).toEqual(first);
+    expect(f.probe).toHaveBeenCalledTimes(1);
+    f.credentials.clearSubject("codex", f.profile.profile_id);
+    await runStart(f.profile);
+    expect(f.probe).toHaveBeenCalledTimes(2);
+  });
+  /** Two physical probes of one key held open; each answers when told to. */
+  async function heldProbes(f: Awaited<ReturnType<typeof readinessFixture>>) {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(f.clock.now);
+    removals.push(() => clock.mockRestore());
+    const raw = f.probe.getMockImplementation()!;
+    const answers: Array<(answer: boolean | "throw") => void> = [];
+    f.probe.mockImplementation(
+      (profile, signal) =>
+        new Promise((resolve, reject) => {
+          answers.push((answer) =>
+            answer === "throw"
+              ? reject(new Error("probe process failed"))
+              : void raw(profile, signal).then((status) =>
+                  resolve(
+                    answer
+                      ? status
+                      : { ...status, availability: "unavailable", verification: "not_run" },
+                  ),
+                ),
+          );
+        }),
+    );
+    const runStart = f.owner.runStartProbe(f.adapter);
+    const older = f.call();
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    const newer = runStart(f.profile, undefined, { pinned: true });
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    return { answers, older, newer, runStart };
+  }
+  it.each(["older first", "newer first"])(
+    "a newer physical sign-out outranks an older success answering %s",
+    async (order) => {
+      const f = await readinessFixture();
+      const { answers, older, newer, runStart } = await heldProbes(f);
+      if (order === "older first") {
+        answers[0]!(true);
+        expect((await older).availability).toBe("available");
+      }
+      answers[1]!(false);
+      expect((await newer).availability).toBe("unavailable");
+      if (order === "newer first") {
+        answers[0]!(true);
+        expect((await older).availability).toBe("available");
+      }
+      const again = runStart(f.profile, undefined, { pinned: true });
+      await vi.waitFor(() => expect(answers).toHaveLength(3));
+      answers[2]!(false);
+      expect((await again).availability).toBe("unavailable");
+      expect(f.probe).toHaveBeenCalledTimes(3);
+    },
+  );
+  it.each(["older first", "newer first"])(
+    "a newer success after an older physical refusal answering %s is remembered",
+    async (order) => {
+      const f = await readinessFixture();
+      const { answers, older, newer, runStart } = await heldProbes(f);
+      const refusal = async () => {
+        answers[0]!(false);
+        expect((await older).availability).toBe("unavailable");
+      };
+      if (order === "older first") await refusal();
+      answers[1]!(true);
+      expect((await newer).availability).toBe("available");
+      if (order === "newer first") await refusal();
+      f.probe.mockImplementationOnce(async () => {
+        throw new Error("unexpected third probe");
+      });
+      expect((await runStart(f.profile)).availability).toBe("available");
+      expect(f.probe).toHaveBeenCalledTimes(2);
+    },
+  );
+  it("a newer probe that throws drops an older remembered success", async () => {
+    const f = await readinessFixture();
+    const { answers, older, newer, runStart } = await heldProbes(f);
+    answers[0]!(true);
+    expect((await older).availability).toBe("available");
+    answers[1]!("throw");
+    await expect(newer).rejects.toThrow("probe process failed");
+    const again = runStart(f.profile);
+    await vi.waitFor(() => expect(answers).toHaveLength(3));
+    answers[2]!(true);
+    expect((await again).availability).toBe("available");
+    expect(f.probe).toHaveBeenCalledTimes(3);
+  });
+  it("run start keeps the own probe of an adapter that versions no login files", async () => {
+    const f = await readinessFixture();
+    const adapter = { ...f.adapter, credentialProfileIdentity: undefined };
+    const runStart = f.owner.runStartProbe(adapter);
+    await runStart(f.profile, undefined, { pinned: true });
+    await runStart(f.profile);
+    expect(f.probe).toHaveBeenCalledTimes(2);
+    expect(f.probe.mock.calls.map((call) => (call as unknown[])[2])).toEqual([
+      { pinned: true },
+      undefined,
+    ]);
+  });
+  it("a run-start pin's physical probe keeps the pin fact and never joins an ordinary one", async () => {
+    const f = await readinessFixture();
+    const raw = f.probe.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.probe.mockImplementation(async (profile, signal) => {
+      await gate;
+      return raw(profile, signal);
+    });
+    const runStart = f.owner.runStartProbe(f.adapter);
+    const ordinary = runStart(f.profile);
+    const pinned = runStart(f.profile, undefined, { pinned: true });
+    await vi.waitFor(() => expect(f.probe).toHaveBeenCalledTimes(2));
+    expect(f.probe.mock.calls.map((call) => (call as unknown[])[2])).toEqual([
+      undefined,
+      { pinned: true },
+    ]);
+    release();
+    await Promise.all([ordinary, pinned]);
+  });
   it("shares a raw probe, keeps the remaining reader, and cancels when all leave", async () => {
     const f = await readinessFixture();
     const raw = f.probe.getMockImplementation()!;
@@ -3126,14 +3298,96 @@ describe("admission-grade login readiness", () => {
     await f.call();
     expect(f.probe).toHaveBeenCalledTimes(2);
   });
-  it("uses readiness on repeated selection, reads the catalog each time, and overlays vendor revocation without probing", async () => {
+  it("a physical Accounts refusal retires a pinned login, while display reads cannot admit or revoke", async () => {
+    const f = await readinessFixture();
+    const adapter = retainAccountProbeObservations(f.adapter);
+    const pin = () => f.owner.runStartProbe(adapter)(f.profile, undefined, { pinned: true });
+    const display = async (fresh: boolean) =>
+      (await displayAccountObservation(f.profile, adapter, fresh, undefined, f.owner)).status;
+    const raw = f.probe.getMockImplementation()!;
+    const logout = async () => ({
+      ...(await raw(f.profile)),
+      availability: "unavailable" as const,
+      verification: "failed" as const,
+    });
+
+    expect((await display(true)).availability).toBe("available");
+    f.probe.mockImplementationOnce(logout);
+    expect((await pin()).availability).toBe("unavailable");
+    expect((await pin()).availability).toBe("available");
+    f.probe.mockImplementationOnce(logout);
+    expect((await display(true)).availability).toBe("unavailable");
+    f.probe.mockImplementationOnce(logout);
+    expect((await pin()).availability).toBe("unavailable");
+    expect(f.probe).toHaveBeenCalledTimes(5);
+
+    // A new physical success can admit even while an old display refusal is retained.
+    expect((await f.call()).availability).toBe("available");
+    expect((await display(false)).availability).toBe("unavailable");
+    expect((await pin()).availability).toBe("available");
+    expect(f.probe).toHaveBeenCalledTimes(6);
+  });
+
+  it.each([false, true])(
+    "orders a physical Accounts refusal and an admission success by probe start (display first=%s)",
+    async (displayFirst) => {
+      const f = await readinessFixture();
+      const adapter = retainAccountProbeObservations(f.adapter);
+      const display = () => displayAccountObservation(f.profile, adapter, true, undefined, f.owner);
+      const success = await f.call();
+      const refusal = {
+        ...success,
+        availability: "unavailable" as const,
+        verification: "failed" as const,
+      };
+      let release!: () => void;
+      const hold = new Promise<void>((done) => {
+        release = done;
+      });
+      f.probe.mockImplementationOnce(async () => {
+        await hold;
+        return displayFirst ? refusal : success;
+      });
+      const physical = () =>
+        f.owner.probe(f.profile, adapter, new AbortController().signal, { reuse: false });
+      const first = displayFirst ? display() : physical();
+      await vi.waitFor(() => expect(f.probe).toHaveBeenCalledTimes(2));
+      f.probe.mockResolvedValueOnce(displayFirst ? success : refusal);
+      await (displayFirst ? physical() : display());
+      release();
+      await first;
+      await f.call();
+      expect(f.probe).toHaveBeenCalledTimes(displayFirst ? 3 : 4);
+    },
+  );
+
+  it("reuses a dated login for public catalog reads and refreshes both facts for Accounts", async () => {
     const ready = await readinessFixture();
-    const f = await fixture({ lazy: true, nativeAdapter: ready.adapter });
+    const f = await fixture({ nativeAdapter: ready.adapter });
     f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
+    expect((await f.run({ mode: "pin", profileId: "a" })).state).toBe("succeeded");
+    expect((await f.run({ mode: "pin", profileId: "a" })).state).toBe("succeeded");
+    expect(ready.probe).toHaveBeenCalledTimes(1);
+    expect(f.catalog.mock.calls.map(([ctx]) => ctx.reuseCatalog)).toEqual([true, true]);
     await f.services.routes.modelCatalog("codex", "a");
     await f.services.routes.modelCatalog("codex", "a");
     expect(ready.probe).toHaveBeenCalledTimes(1);
-    expect(f.catalog).toHaveBeenCalledTimes(2);
+    expect(f.catalog).toHaveBeenCalledTimes(4);
+    await f.services.routes.modelAccountCatalog("codex", "a");
+    await f.services.routes.modelAccountCatalog("codex", "a");
+    expect(f.catalog).toHaveBeenCalledTimes(5);
+    expect(ready.probe).toHaveBeenCalledTimes(2);
+    accountObservations.invalidateCatalogs();
+    await displayAccountObservation(f.cfg.credential_profiles[0]!, ready.adapter, true);
+    await f.services.routes.modelAccountCatalog("codex", "a");
+    expect(ready.probe).toHaveBeenCalledTimes(3);
+    expect(f.catalog.mock.calls.slice(2).map(([ctx]) => !!ctx.reuseCatalog)).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ]);
+    const probes = ready.probe.mock.calls.length;
     const beforeRevocation = f.quota.read();
     vi.spyOn(f.quota, "read").mockReturnValue({
       ...beforeRevocation,
@@ -3149,22 +3403,22 @@ describe("admission-grade login readiness", () => {
     await expect(f.services.routes.modelCatalog("codex", "a")).rejects.toMatchObject({
       code: "auth_required",
     });
-    expect(ready.probe).toHaveBeenCalledTimes(1);
-    expect(f.catalog).toHaveBeenCalledTimes(2);
+    expect(ready.probe).toHaveBeenCalledTimes(probes);
+    expect(f.catalog).toHaveBeenCalledTimes(6);
   });
   it.each(["unchanged", "changed"])(
     "a pin admits a probe answer whose login identity was %s during the probe",
     async (identity) => {
       const ready = await readinessFixture();
-      const f = await fixture({ lazy: true, nativeAdapter: ready.adapter });
+      const f = await fixture({ nativeAdapter: ready.adapter });
       f.cfg.credential_profiles[0]!.isolation_locator = ready.home;
       const raw = ready.probe.getMockImplementation()!;
       ready.probe.mockImplementationOnce(async (profile, signal) => {
         if (identity === "changed") writeFileSync(join(ready.home, "auth.json"), "refreshed");
         return raw(profile, signal);
       });
-      expect((await f.services.routes.modelCatalog("codex", "a")).credentialProfileId).toBe("a");
-      await f.services.routes.modelCatalog("codex", "a");
+      expect((await f.run({ mode: "pin", profileId: "a" })).state).toBe("succeeded");
+      await f.run({ mode: "pin", profileId: "a" });
       // Only an answer under one unchanged identity is reused.
       expect(ready.probe).toHaveBeenCalledTimes(identity === "changed" ? 2 : 1);
     },

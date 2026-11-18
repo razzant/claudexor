@@ -5,7 +5,7 @@ import { join } from "node:path";
 // Closed labels for the last checkpoint reached, not assertion outcomes.
 // The runner may display only members of this vocabulary from the scratch files.
 export const CHECKPOINTS = {
-  307: ["scripted-run", "operations", "legacy-detail", "served-detail", "event-journal", "primary-artifact", "baseline-artifact", "enriched-artifact", "artifact-gap", "teardown"],
+  307: ["scripted-run", "operations", "legacy-detail", "served-detail", "event-journal", "primary-artifact", "baseline-artifact", "baseline-artifact-fetch", "baseline-artifact-status", "baseline-artifact-body", "enriched-artifact", "artifact-gap", "teardown"],
   697: ["setup", "operation-admission", "operation-detail", "operations", "result-receipt", "result-shape", "retryability", "detail-privacy", "failure-evidence", "idempotent-replay", "native-request", "teardown"],
 };
 

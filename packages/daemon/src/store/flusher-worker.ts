@@ -13,14 +13,16 @@ import {
 } from "./flusher-protocol.js";
 
 /**
- * The flusher pass (SYNTHESIS_R5 §4.2), every 200 ms:
+ * The flusher runs periodic passes. The first waiter in an idle slot can trigger
+ * one extra early pass.
  *   1. g_target := the highest generation received so far (FIFO: every
  *      registration or flush request handled before this tick is covered);
  *   2. one F_FULLFSYNC per directory touched by a covered registration;
  *   3. `PRAGMA data_version` → dirty := anything committed since the last
  *      PROVEN barrier (the first pass of a worker life is always dirty);
  *   4. `PRAGMA wal_checkpoint(PASSIVE)` — space reclamation only; its result
- *      is reported as a fact and NEVER decides whether to sync;
+ *      is reported as a fact and NEVER decides whether to sync. Only a periodic
+ *      pass attempts the checkpoint. The pass following a wake runs on the timer.
  *   5. if dirty: the explicit `fsyncSync(walFd)` — the barrier: it fixes the
  *      WAL frames and, as a device-wide barrier on macOS, the O_DSYNC file
  *      data already handed to the drive. Database pages become durable
@@ -34,6 +36,7 @@ import {
  */
 export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerData): Promise<void> {
   const hooks = data.hooks ?? {};
+  const interval = hooks.intervalMs ?? FLUSH_INTERVAL_MS;
   const walPath = `${data.dbPath}-wal`;
   const { sqlite } = await loadEngineRuntime();
   const db = new sqlite.DatabaseSync(data.dbPath, { timeout: 0 });
@@ -52,6 +55,9 @@ export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerDat
   let lastProvenDataVersion: number | null = null;
   let walFd: number | null = null;
   let timer: NodeJS.Timeout | null = null;
+  let advanceableDue: number | null = null;
+  let waiting = false;
+  let woken: NodeJS.Immediate | null = null;
   let stopped = false;
 
   const post = (event: FlusherEvent): void => port.postMessage(event);
@@ -74,7 +80,7 @@ export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerDat
     return walFd;
   };
 
-  const pass = (): void => {
+  const pass = (reclaim = true): void => {
     if (stopped) return;
     const started = performance.now();
     const gTarget = gMax;
@@ -97,7 +103,7 @@ export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerDat
     counters.dirSyncs += dirsSynced.length;
     const observed = Number((dataVersion.get() as { data_version: number | bigint }).data_version);
     const dirty = lastProvenDataVersion === null || observed !== lastProvenDataVersion;
-    const checkpointRow = passive.get() as
+    const checkpointRow = (reclaim ? passive.get() : undefined) as
       { busy: number | bigint; log: number | bigint; checkpointed: number | bigint } | undefined;
     const checkpoint = checkpointRow
       ? {
@@ -144,6 +150,7 @@ export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerDat
   const stop = (): void => {
     stopped = true;
     if (timer) clearTimeout(timer);
+    if (woken) clearImmediate(woken);
     timer = null;
     closeWal();
     db.close();
@@ -151,12 +158,33 @@ export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerDat
     port.close();
   };
 
-  const schedule = (): void => {
+  const schedule = (delay = interval, canAdvance = true): void => {
     if (stopped || hooks.manualTick) return;
+    advanceableDue = canAdvance ? performance.now() + delay : null;
     timer = setTimeout(() => {
+      const hadWaiters = waiting;
+      waiting = false;
       pass();
-      schedule();
-    }, FLUSH_INTERVAL_MS);
+      schedule(interval, !hadWaiters);
+    }, delay);
+  };
+
+  // Steadily spaced waiters can each find an idle slot and trigger one early barrier.
+  // Followers after that pass wait for the original deadline. A timer that serves
+  // waiters leaves the next slot on the timer too.
+  const wake = (): void => {
+    waiting = true;
+    if (advanceableDue === null) return;
+    const due = advanceableDue;
+    advanceableDue = null;
+    clearTimeout(timer!);
+    woken = setImmediate(() => {
+      woken = null;
+      waiting = false;
+      pass(false);
+      const remaining = Math.max(0, due - performance.now());
+      schedule(remaining, false);
+    });
   };
 
   port.on("message", (command: FlusherCommand) => {
@@ -167,6 +195,7 @@ export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerDat
         return;
       case "flush":
         gMax = Math.max(gMax, command.g);
+        if (command.wake) wake();
         return;
       case "tick":
         if (hooks.manualTick) pass();

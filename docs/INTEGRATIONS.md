@@ -14,7 +14,7 @@ changing Claudexor.
 | Daemon and control API | Local durable queue, Agent runs, caller-owned model and image operations, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Stable contract: endpoints and DTOs per `docs/reference/endpoints.json` + generated schemas (add-only fields). Loopback + bearer token only. |
 | MCP server | Exposes Claudexor tools to MCP clients. `claudexor_runs_wait` projects the same read-only observation with `targets: [{runId, seen?}]` and optional `waitMs`. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
-| Host plugins | User-global Claude Code, Codex, Cursor, and OpenCode integrations managed by `claudexor plugin`. | Experimental file layout (regenerate with `claudexor plugin repair all`). Installs owned local files/config only; host enablement can still require reload/manual action. |
+| Host plugins | `claudexor plugin` manages Claude Code, Codex, Cursor, and OpenCode installs. Claude Code, Cursor, Copilot, Hermes, Pi, and OpenClaw can also load [portable packages](#portable-agent-skill-and-host-packages). | Experimental file layout. Use `claudexor plugin repair <host>` for a managed install and the host's package manager for a portable install. |
 | Engine runtime closure | Node-free release artifact containing reviewed daemon and CLI entrypoints for a host that owns its daemon lifecycle, such as [Ouroboros](https://github.com/razzant/ouroboros). | Exact-pin contract: one link-free archive and the existing signed runtime manifest; the host supplies the tested Node runtime and verifies archive plus `--probe` identity. |
 
 Browser requests on ordinary single-candidate Auto Agent runs use the engine's
@@ -982,12 +982,15 @@ Create a thread once, enqueue follow-ups with `claudexor_thread_turn`, then
 follow each returned `runId` with the ordinary status/result tools. A turn that
 returns only a queued `jobId` is followed the same way: pass the `jobId` as
 `runId`, and the reads report the canonical `runId` once it binds.
-Creation starts no model. The default `workspace: in_place` lets write turns edit
-the project directory directly. Choose `workspace: isolated` for a persistent
-thread worktree created on the first write turn, then use thread Apply to merge
-its changes into the project. `workspace: delegated` with `workspaceRoot` binds
-every turn to that caller-owned directory under delegated authority (see the
-Control API section above and SECURITY.md); it is never applied to the project.
+Creation starts no model. The default `workspace: in_place` normally lets write
+turns edit the project directly. With project `protected_paths` configured,
+the daemon moves the thread into a persistent isolated worktree before a
+mutating turn. Choose `workspace: isolated` for a persistent thread worktree
+created on the first write turn. Show all pending changes together and use
+thread Apply only if the user explicitly approves the entire set.
+`workspace: delegated` with `workspaceRoot` binds every turn to that
+caller-owned directory under delegated authority. Thread Apply is unavailable
+for delegated workspaces (see the Control API section above and SECURITY.md).
 The create result discloses the daemon's current `workspaceMode`,
 `workspaceRoot` and anchored `repoRoot`, including where write turns change
 files.
@@ -2026,8 +2029,9 @@ keep their existing exact-version skew check.
 ### Portable Agent Skill and host packages
 
 `plugins/copilot` owns the canonical portable `skills/claudexor/SKILL.md` and
-`.mcp.json` descriptor. `plugins/cursor` and `plugins/claude` contain generated
-copies of those same assets in their host-native layouts. Each invokes
+`.mcp.json` descriptor. `plugins/cursor`, `plugins/claude`, `plugins/hermes`,
+and `packages/claudexor/pi` carry the same Skill and the MCP descriptor in the
+format their host reads. Each invokes
 the preinstalled `claudexor mcp serve` command. It intentionally carries no
 absolute runtime path, frozen config root, plugin-version environment marker,
 credential, hook, command alias, or host-local business logic.
@@ -2047,10 +2051,17 @@ replaced automatically by the portable plugin.
 The bundled Skill starts with the aggregate/default doctor projection, the
 Accounts snapshot, and read-only tools. It may request mutating run tools only
 for explicit implementation intent, and MCP does not expose patch application.
-A host may use the ordinary CLI delivery path only after an explicit user
-request and a server-owned eligible apply verdict. Credentials remain in the
-existing `claudexor auth login` and `claudexor secrets set` flows; risk
-acceptance and overrides remain human decisions.
+For an isolated run, show the complete change, including every hunk and the full
+contents of added and deleted files. The CLI requests all eligible changes.
+If the user sees or approves only part, leave the run unapplied. Delivery
+requires `applyEligibility.eligible: true` and host permission to run the CLI.
+After the user explicitly approves the full result, run
+`claudexor apply <runId> --dry-run --json`. If it succeeds, run
+`claudexor apply <runId> --json`. For directory results, `appliedPaths` lists
+what this call wrote. Read `detail` for files skipped because their original
+contents were unknown. Use the existing `claudexor auth login` and
+`claudexor secrets set` flows for credentials. Risk acceptance and overrides
+remain human decisions.
 
 The public MCP Registry descriptor is `server.json`. It points to the executable
 `claudexor` npm package and supplies fixed `mcp serve` package arguments for the
@@ -2075,15 +2086,13 @@ either vendor's hosted catalog. Enable only one Claudexor integration per host
 to avoid duplicate MCP servers and Skills. The portable Claude package has no
 status-line collector and does not replace the managed installer described above.
 
-Before enabling either package, the host must see the preinstalled `claudexor`
-command on PATH and the intended existing daemon/account configuration. For an
-operator-selected non-default root, launch the host with that installation's
-`CLAUDEXOR_CONFIG_DIR`; portable manifests neither set nor discover it. They do
-not change daemon ownership, install a runtime, or initiate authentication.
-Manifest/asset checks do not certify installation, tool discovery, or a real
-agent turn in the host. Those acceptance checks remain explicitly unrun in the
-feature ledger. `pnpm gen:version` refreshes portable asset copies and versions;
-the source Skill and MCP descriptor remain under `plugins/copilot`.
+The host needs the preinstalled `claudexor` command on PATH and access to the
+intended daemon and accounts. Runtime installation, daemon ownership and login
+stay with the existing Claudexor setup. Portable manifests leave the configuration
+directory to the host. For a non-default store, configure the MCP process
+itself if the host filters its environment. [Custom Claudexor configuration directory](#custom-claudexor-configuration-directory).
+See the [feature ledger](FEATURES.md) for host validation and the
+[developer guide](DEVELOPMENT.md#development-commands) for generated assets.
 
 Harness readiness is route/context-specific. `auth_sources` / `authSources`
 separates credential availability (`available | unavailable | unknown`) from
@@ -2111,6 +2120,69 @@ in the profile's scoped `CURSOR_CONFIG_DIR`/`CURSOR_DATA_DIR`. The host Cursor
 OS-Keychain login is retired and is never probed, bridged, or claimed as a
 route. Claudexor's API-key store and Claude setup-token source are separate
 routes with their own typed readiness and route-specific injection.
+
+### Hermes, Pi, and OpenClaw host packages
+
+Each host starts `claudexor mcp serve` over stdio using its own PATH. The
+host owns the conversation and tool permissions. The local engine selects a
+harness and retains the run and its result. [Set up the CLI and account](../README.md#set-up-the-cli-and-account).
+
+- **Hermes** reads `plugin.json`, `mcp.json`, and the `claudexor:claudexor`
+  skill from `plugins/hermes`. Its Git installer pins the plugin by full commit
+  SHA in the selected profile. [Install in Hermes](../README.md#install-in-hermes) · [Hermes plugin management](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins).
+- **Pi** can install the `claudexor` npm package when its published manifest lists
+  the extension at `./pi/index.js`, or load `packages/claudexor` from a Git checkout
+  containing it. The extension registers the server through `pi.registerMcpServer`
+  on each load. A user or project `mcp.json` entry of the same name takes precedence,
+  including when disabled.
+  [Install in Pi](../README.md#install-in-pi) · [Pi MCP configuration](https://docs.pi.dev/latest/mcp).
+- **OpenClaw** loads the Claude-format `plugins/claude` bundle. Its embedded
+  agent exposes tools as `claudexor__<tool>` if the Gateway and the agent's
+  tool policy allow them. [Install in OpenClaw](../README.md#install-in-openclaw) · [OpenClaw bundle MCP](https://docs.openclaw.ai/plugins/bundles).
+
+Use one Claudexor connection per host. Keep the selected project's absolute
+`repoPath` on the machine running MCP. The server's working directory can be
+the installed plugin directory. Use `noProject: true` only for a self-contained
+Ask with no project selected. In either scope, if the user chose a named account,
+pass its `harness_id` as `harness` and its `profile_id` as `credentialProfileId`
+on the first `claudexor_ask`. Use the values from its `claudexor_accounts` row.
+For Auto, omit the profile pin and pass a harness only if the user chose one.
+[First request and result](../README.md#first-delegation-from-any-host) · [Validation status](FEATURES.md).
+
+#### Custom Claudexor configuration directory
+
+When the CLI and the host run as the same OS user, the default store
+(`~/.claudexor/v3`) needs no override. If your CLI already uses
+`CLAUDEXOR_CONFIG_DIR`, pass its literal absolute path to the host's
+`claudexor` stdio server. The host may filter its environment before starting
+MCP. Keep the command, arguments and any other restrictions on that server,
+and add only this directory to its environment.
+
+| Host | Where to configure the `claudexor` server |
+| --- | --- |
+| Hermes | Under `mcp_servers` in the selected Hermes profile's `config.yaml`. A complete `claudexor` entry there takes precedence over the plugin's entry of the same name. |
+| Pi | Under `mcpServers` in the trusted project's `.pi/mcp.json` if you need an override. After `/reload`, `/mcp` shows that file as the source. [Pi MCP configuration](https://docs.pi.dev/latest/mcp#configure-servers) |
+| OpenClaw | Under `mcp` → `servers` in the intended OpenClaw configuration. Check any workspace settings that override the bundle's server. [OpenClaw embedded MCP](https://docs.openclaw.ai/plugins/bundles#mcp-for-embedded-openclaw) |
+
+The Hermes merge order was verified against the [0.23.1 release source](https://github.com/NousResearch/hermes-agent/blob/v0.23.1/tools/mcp_tool_config.py#L672-L736).
+
+Merge these fields into the `claudexor` entry, substituting your existing path.
+The mapping is valid in JSON and YAML.
+
+```json
+{
+  "command": "claudexor",
+  "args": ["mcp", "serve"],
+  "env": { "CLAUDEXOR_CONFIG_DIR": "/absolute/path/to/your/existing/store" }
+}
+```
+
+Before delegating, compare the host's `claudexor_status` with `claudexor doctor`
+in the intended CLI configuration. For a named account, check the profile in
+`claudexor_accounts`. With the daemon running, compare the `storeId` from
+`claudexor store-identity --json` with the host's `claudexor_store_identity`.
+If they differ or the expected profile is missing, correct the connection
+and check again.
 
 ## ACP
 

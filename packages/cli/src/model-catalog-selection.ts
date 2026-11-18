@@ -16,7 +16,7 @@ import {
 import { describeCodexClientVersion } from "@claudexor/harness-codex";
 import { redactSecrets } from "@claudexor/util";
 import { bindModelAccountEvidence } from "./model-account-evidence.js";
-import { modelError, refusalProblem } from "./model-service-refusals.js";
+import { modelError, modelRefusal, refusalProblem } from "./model-service-refusals.js";
 
 type SoftObservation = Pick<
   PreProgressRefusalObservation,
@@ -33,6 +33,7 @@ export interface ModelCatalogSelection {
  * neither. Preference orders within a tier. A pin keeps exact admission. */
 export async function selectModelCatalog(args: {
   adapter: ModelAdapter;
+  reuseCatalog?: boolean;
   harnessId: string;
   account: ModelAccountChoice;
   model: string | null;
@@ -108,8 +109,7 @@ export async function selectModelCatalog(args: {
           clientVersionSource: catalog.clientVersionSource,
         },
       });
-      if (args.account.mode === "pin")
-        throw Object.assign(modelError(refusal.code, refusal.message), { problem: refusal });
+      if (args.account.mode === "pin") throw modelRefusal(refusal);
       refusals.set(profile.profile_id, refusal);
       continue;
     }
@@ -197,7 +197,12 @@ async function readCatalog(
           evidence.finish();
           evidence = bind();
         }
-        return args.adapter.catalog({ profile, signal, credentialGeneration });
+        return args.adapter.catalog({
+          profile,
+          signal,
+          credentialGeneration,
+          reuseCatalog: args.reuseCatalog,
+        });
       },
     );
     const catalog = ControlModelCatalogResponse.parse(value);
@@ -229,8 +234,7 @@ async function readCatalog(
     } catch (error) {
       args.warn?.(`Model quota evidence was not recorded: ${redactSecrets(String(error))}`);
     }
-    if (args.account.mode === "pin")
-      throw Object.assign(modelError(refusal.code, refusal.message), { problem: refusal });
+    if (args.account.mode === "pin") throw modelRefusal(refusal);
     return null;
   } finally {
     try {

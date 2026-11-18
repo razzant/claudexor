@@ -1,5 +1,96 @@
 # claudexor
 
+## 6.3.0
+
+### Minor Changes
+
+- e70e5d1: Connect Hermes Agent, Pi, and OpenClaw to the local Claudexor MCP server and delegation skill. Install the Hermes plugin by Git commit or load the OpenClaw bundle from a checkout.
+
+  The shared skill uses MCP Ask's `noProject` option from [#730](https://github.com/razzant/claudexor/pull/730) for self-contained questions with no project selected. It carries a named account into the first Ask and shows the full isolated change before asking for approval to apply it.
+
+  Pi integration by [Ouroboros](https://github.com/razzant/ouroboros). The `claudexor` npm package adds the Pi extension, MCP descriptor, skill, and `pi-package` keyword for gallery discovery. Use `pi install npm:claudexor` with a release that includes the extension. For older releases, load `packages/claudexor` from a Git checkout containing it.
+
+### Patch Changes
+
+- c475738: A raw model operation no longer reads the Codex model catalog from the provider every
+  time it chooses an account. A successful catalog read now answers later choices of the
+  same account for 90 seconds from the moment that read started
+  (`CLAUDEXOR_DOCTOR_TTL_MS`, the same limit that already let a confirmed login be reused),
+  as long as nothing that identifies it has changed: the account's credential generation,
+  its `auth.json` and `config.toml` versions, its tokens, the installed Codex program and
+  the client version the read declared. Using the remembered catalog does not extend those
+  90 seconds. A failed or refused catalog read is never remembered and never counts as an
+  empty catalog; it also drops what was remembered for that account, and so do a failed
+  authorization of that account, a change of the installed Codex program, and a model call
+  whose outcome says the account cannot serve a listed model (a refused or unknown model, a
+  refused or signed-out account), on the HTTP status or in the response stream. A read
+  already in flight when the catalog is dropped cannot restore it. A malformed request
+  (HTTP 400), a rate limit or a server failure during generation leaves the catalog
+  available. The public catalog GET and the Accounts catalog
+  acquisition after Refresh read the provider even within those 90 seconds. The GET can
+  reuse a confirmed login within its lifetime. Accounts Refresh checks the login again.
+  An account-wide image authentication refusal also drops that account’s text catalog.
+  Image quota and model-specific image entitlement leave the text catalog available.
+
+  Starting an Agent run, and resolving a reviewer seat, now reuses a confirmed login under the
+  same rule: one login readiness owner per engine store serves both raw model operations and
+  run starts, so neither repeats the other's login check within those 90 seconds. Only
+  harnesses that declare the versions of their own login files take part, which today is
+  Codex; other harnesses still check their login at every run start, and switching to the
+  next account during a run still checks it again. A pinned account's check keeps waiting
+  for its own sign-in answer and never shares an unpinned one.
+
+  On one install over 19 hours, catalog reads took 7.6 hours, 95 % of them repeating the
+  same account within 90 seconds, and run-start login checks took 1.4 hours. The cost is
+  that a model the provider adds to or removes from an account can show up to 90 seconds
+  late; a call to a removed model is still refused by the provider. This is an owner-approved
+  change of INV-135 (2026-11-18).
+
+- 095300e: The macOS run card shows Claude's completed turn reply while the run is still active. Later replies appear in order, and the saved conversation keeps them alongside the run's final outcome.
+- 57aa887: Before a model or image call is sent, the engine store waits for proof that its
+  dispatch record reached disk. A waiter arriving in an idle slot can trigger
+  one extra early pass. It proves the directory and WAL barriers and leaves the
+  periodic pass at its original deadline for followers. Steadily spaced callers can
+  each trigger an early barrier if each finds an idle slot. At most one early barrier
+  runs per slot. The periodic pass serves waiters arriving after the early pass and,
+  if it served waiters, the next slot also waits for the timer. Each periodic pass attempts a
+  space-reclaiming checkpoint. A clean pass skips the explicit WAL barrier.
+
+  Account reset, startup and shutdown use the same barrier. Writes with no waiter
+  keep the regular schedule.
+
+- cdcd850: `GET /v2/daemon/status` reports main-thread milliseconds, section count and the longest
+  section by class in `timing.work`, since startup and in the last completed ten-second
+  window. The counters cover control requests including body decoding and parsing,
+  vendor frame translation and raw API completion handling by harness, synchronous
+  run journal appends and their queued publication callbacks, store commits, vendor catalog parsing, child launch and Codex
+  login output parsing. Each section excludes the time spent in nested sections.
+  Async continuations count when they enter a measured section. The counters live
+  in memory.
+- 462510a: When the network is down, a raw model operation no longer reports that every account is
+  used up. If the model provider could not be reached at all while reading an account's
+  model list (the name did not resolve, there was no route, the connection was refused or
+  timed out), that refusal now says so: `catalog_unavailable`, retryable, with
+  `context.cause: "network"` and the connection's own error code such as `ENOTFOUND`. When
+  every account the operation tried failed this way, the operation ends with the same
+  retryable `catalog_unavailable` and `poolCause: "network"` instead of
+  `credential_pool_exhausted`; accounts it did not try because of quota or sign-in keep
+  those causes in `poolCauses`. The public catalog GET returns the same problem fields as the
+  operation receipt, including retryability and the connection code. A socket timeout
+  requires connect-phase evidence. The catalog deadline preserves a connection error
+  reported as the transport aborts. A failure after the provider answered, or one without such
+  a code, is reported as before.
+- 7d523c3: An uploaded file is now written to disk in blocks of up to 1 MiB instead of one
+  write per network chunk. A 3.8 MB model request used to take about sixty disk writes,
+  each needing a turn of the daemon's main thread to continue; it now takes four, so
+  uploads slow down far less when the daemon is busy. The bytes are still on the drive
+  before the upload reports `uploaded` (the same write-through files), every chunk is
+  still checked against the declared size before it is accepted, and the digest still
+  covers every byte. An upload keeps at most one block of unwritten bytes in memory.
+- Updated dependencies [c475738]
+- Updated dependencies [462510a]
+  - @claudexor/cli@6.3.0
+
 ## 6.2.0
 
 ### Patch Changes

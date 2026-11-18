@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { updateGlobalConfig, updateTrustConfig } from "@claudexor/config";
-import { ControlProblem } from "@claudexor/schema";
+import { ControlProblem, Id } from "@claudexor/schema";
 import { controlProblemError, renderCliFailure } from "./cli-error.js";
 import {
   ingress,
@@ -119,17 +119,17 @@ describe("requirements admission through the production Control API, queue and r
     try {
       expect(renderCliFailure(true, cliError)).toBe(1);
       expect(stdout).toHaveBeenCalledTimes(1);
-      const envelope = JSON.parse(String(stdout.mock.calls[0]![0]));
+      const envelope: unknown = JSON.parse(String(stdout.mock.calls[0]![0]));
       expect(envelope).toMatchObject({
         ok: false,
         exitCode: 1,
         code,
-        message: single.body.message,
+        message: single.body["message"],
         retryable: false,
-        requiredActions: single.body.requiredActions,
+        requiredActions: single.body["requiredActions"],
         context: { ...facts, jobId: expect.any(String) },
       });
-      expect(envelope.context.turnRetryable).toBeUndefined();
+      expect(envelope).not.toHaveProperty("context.turnRetryable");
     } finally {
       stdout.mockRestore();
     }
@@ -144,7 +144,7 @@ describe("requirements admission through the production Control API, queue and r
       eligibleHarnesses: ["codex"],
     });
     expect(thread.status).toBe(200);
-    const threadId = String(thread.body.id);
+    const threadId = Id.parse(thread.body["id"]);
     const turns = `/threads/${threadId}/turns`;
     const post = (key: string) => http(daemon, "POST", turns, request, key);
     const first = await post("first");
@@ -152,7 +152,8 @@ describe("requirements admission through the production Control API, queue and r
     expect(first.status).toBe(409);
     expect(refused.status).toBe(409);
     const problem = ControlProblem.parse(refused.body);
-    const { jobId, turnId } = problem.context;
+    const jobId = Id.parse(problem.context["jobId"]);
+    const turnId = Id.parse(problem.context["turnId"]);
     expect(problem).toMatchObject({
       code,
       retryable: false,
@@ -161,7 +162,7 @@ describe("requirements admission through the production Control API, queue and r
     expect(problem.message).toContain(executionRoot);
     expect(problem.message).toContain("README.md (ENOENT)");
     expect(problem.requiredActions.length).toBeGreaterThan(0);
-    expect(daemon.graph.commands.findById(String(jobId))?.get(String(jobId))).toMatchObject({
+    expect(daemon.graph.commands.findById(jobId)?.get(jobId)).toMatchObject({
       id: jobId,
       state: "failed",
       error: problem.message,
@@ -172,7 +173,7 @@ describe("requirements admission through the production Control API, queue and r
       errorContext: { ...facts, turnRetryable: true },
     });
     const detail = await http(daemon, "GET", `/threads/${threadId}`);
-    expect(detail.body.turns).toMatchObject([
+    expect(detail.body["turns"]).toMatchObject([
       { runId: null },
       {
         id: turnId,
@@ -189,22 +190,22 @@ describe("requirements admission through the production Control API, queue and r
     // The stored problem keeps EXACTLY the workspace facts: the manual-replay
     // verdict rides `retryable` alone — the settlement recorder strips the
     // receipt-only `turnRetryable`, matching the route-recorded shape.
-    expect(detail.body.turns[1].enqueueError.context).toEqual(facts);
+    expect(detail.body).toHaveProperty(["turns", 1, "enqueueError", "context"], facts);
     expect(recorder.spawns).toHaveLength(0);
 
     writeFileSync(join(executionRoot, "README.md"), "workspace file is ready\n");
     // Resolving the original create key reads the refusal even after repair.
     expect((await post("second")).body).toEqual(refused.body);
-    const oldTurnId = ControlProblem.parse(first.body).context.turnId;
+    const oldTurnId = Id.parse(ControlProblem.parse(first.body).context["turnId"]);
     expect((await http(daemon, "POST", `${turns}/${oldTurnId}/retry`, {})).status).toBe(409);
     const retry = () => http(daemon, "POST", `${turns}/${turnId}/retry`, {}, "repaired");
     const started = await retry();
     await succeeded(daemon, started);
-    expect(started.body.turnId).toBe(turnId);
-    expect(started.body.jobId).not.toBe(jobId);
+    expect(started.body["turnId"]).toBe(turnId);
+    expect(started.body["jobId"]).not.toBe(jobId);
     expect((await retry()).body).toMatchObject({
-      jobId: started.body.jobId,
-      runId: started.body.runId,
+      jobId: started.body["jobId"],
+      runId: started.body["runId"],
     });
     expect(daemon.graph.threads.turnsFor(threadId)).toHaveLength(2);
     expect(recorder.spawns).toHaveLength(1);
@@ -326,19 +327,15 @@ describe("requirements admission through the production Control API, queue and r
     expect(stickyPdf.body["code"]).toBe("attachment_pool_unsupported");
     const preEnqueue = ControlProblem.parse(stickyPdf.body);
     expect(preEnqueue.retryable).toBe(false);
-    expect(preEnqueue.context.turnRetryable).toBeUndefined();
-    expect(preEnqueue.context.jobId).toBeUndefined();
+    expect(preEnqueue.context["turnRetryable"]).toBeUndefined();
+    expect(preEnqueue.context["jobId"]).toBeUndefined();
     expect(recorder.enqueues).toHaveLength(before + 1);
     expect(daemon.graph.threads.turnsFor(threadId).at(-1)?.enqueue_error).toMatchObject({
       code: "attachment_pool_unsupported",
       retryable: false,
     });
-    const retry = await http(
-      daemon,
-      "POST",
-      `/threads/${threadId}/turns/${preEnqueue.context.turnId}/retry`,
-      {},
-    );
+    const turnId = Id.parse(preEnqueue.context["turnId"]);
+    const retry = await http(daemon, "POST", `/threads/${threadId}/turns/${turnId}/retry`, {});
     expect(retry.status).toBe(409);
     expect(recorder.enqueues).toHaveLength(before + 1);
     expect(sum(ingress(), /\.probe$/)).toBe(0);

@@ -694,8 +694,11 @@ describe("AcpServer official SDK projection", () => {
         return { summary: "Note read.", status: "succeeded", runId: "run-1", finalMessages: gap };
       },
       async (agent, updates) => {
-        const load = { cwd, sessionId, mcpServers: [] };
-        const prompt = { sessionId, prompt: [{ type: "text" as const, text: "Read the note." }] };
+        const load: acp.LoadSessionRequest = { cwd, sessionId, mcpServers: [] };
+        const prompt: acp.PromptRequest = {
+          sessionId,
+          prompt: [{ type: "text", text: "Read the note." }],
+        };
         const editor = { "example.test/editor": { includeFinalMessages: true } };
         for (const [option, meta] of [
           [undefined, {}],
@@ -716,7 +719,7 @@ describe("AcpServer official SDK projection", () => {
               ],
             });
             expect(turn._meta?.["claudexor"]).toMatchObject({ runId: "run-1", finalMessages: gap });
-            for (const call of calls.slice(-2)) expect(call.includeFinalMessages).toBe(true);
+            for (const call of calls.slice(-2)) expect(call["includeFinalMessages"]).toBe(true);
           } else {
             expect(replay).toEqual({});
             expect(turn._meta?.["claudexor"]).not.toHaveProperty("finalMessages");

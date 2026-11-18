@@ -1,5 +1,25 @@
 # @claudexor/harness-raw-api
 
+## 6.3.0
+
+### Patch Changes
+
+- cdcd850: `GET /v2/daemon/status` reports main-thread milliseconds, section count and the longest
+  section by class in `timing.work`, since startup and in the last completed ten-second
+  window. The counters cover control requests including body decoding and parsing,
+  vendor frame translation and raw API completion handling by harness, synchronous
+  run journal appends and their queued publication callbacks, store commits, vendor catalog parsing, child launch and Codex
+  login output parsing. Each section excludes the time spent in nested sections.
+  Async continuations count when they enter a measured section. The counters live
+  in memory.
+- Updated dependencies [c475738]
+- Updated dependencies [095300e]
+- Updated dependencies [cdcd850]
+  - @claudexor/core@6.3.0
+  - @claudexor/schema@6.3.0
+  - @claudexor/util@6.3.0
+  - @claudexor/secrets@6.3.0
+
 ## 6.2.0
 
 ### Patch Changes

@@ -22,6 +22,7 @@ import {
   defaultAgyModelProbe,
   probeAgyCredentialProfile,
   resolveAgyProfileRoute,
+  type AgyModelProbe,
 } from "./profile.js";
 import {
   agyPrintSpawnOptions,
@@ -124,7 +125,7 @@ describe("agy profile route and vendor probe", () => {
     async (modelId) => {
       const { home } = fixture("#!/bin/sh\nexit 0\n");
       const status = await probeAgyCredentialProfile(profile(home), {
-        runModelProbe: async () => ({ kind: "authenticated", modelId }),
+        runModelProbe: async (): Promise<AgyModelProbe> => ({ kind: "authenticated", modelId }),
         prepareProfileKeychain: () => undefined,
       });
       expect(status).toMatchObject({ availability: "available", verification: "passed" });
@@ -612,7 +613,7 @@ describe("agy print command failure diagnostics", () => {
       stdin: new PassThrough(),
       stdout: new PassThrough(),
       stderr: new PassThrough(),
-      kill: () => true,
+      kill: (): boolean => true,
     });
     const run = runAgyPrintCommand(
       "agy",

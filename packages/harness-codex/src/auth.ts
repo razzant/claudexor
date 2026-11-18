@@ -6,6 +6,7 @@ import { resolveSecret } from "@claudexor/secrets";
 import {
   claudexorOwnedRoot,
   ensureDir,
+  measureWork,
   nativeHarnessStateRoot,
   redactSecrets,
 } from "@claudexor/util";
@@ -124,14 +125,8 @@ export interface CodexLoginProbeOptions {
   runCapture?: typeof runCapture;
 }
 
-/**
- * Native-session probe with a distinct PROBE-FAILURE state. `codex login
- * status` exits non-zero both when logged out AND when the CLI cannot even
- * load `~/.codex/config.toml` (e.g. the config uses a newer option enum than
- * the resolved binary understands — the stale-shim case). Collapsing those
- * into "not logged in" hid a real subscription behind a config error; doctor
- * must fail loudly with the CLI's own message instead.
- */
+/** Both sign-out and an unreadable config can produce a nonzero exit. Preserve
+ * the CLI's diagnostic unless its output explicitly reports a login state. */
 export async function probeLogin(
   bin: string = resolveCodexBin(),
   options: CodexLoginProbeOptions = {},
@@ -155,43 +150,33 @@ export async function probeLogin(
         cancelKillDelayMs: 0,
       },
     );
-    const text = `${r.stdout}\n${r.stderr}`;
-    const statusLines = text
-      .replaceAll("\r", "")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    // "Not logged in" is codex's NORMAL logged-out answer (exit 1, no error
-    // prefix). Anything else on a failing probe is a probe error, not an auth
-    // verdict (adapter-local knowledge of the native CLI's output is allowed).
-    if (statusLines.some((line) => /^not logged in[.!]?$/i.test(line))) {
-      return { authed: false, method: "logged_out", probeError: null };
-    }
-    if (r.code === 0 && statusLines.some((line) => /^logged in using chatgpt[.!]?$/i.test(line))) {
-      return { authed: true, method: "chatgpt", probeError: null };
-    }
-    if (
-      r.code === 0 &&
-      statusLines.some((line) => /^logged in using (?:an? )?api key[.!]?$/i.test(line))
-    ) {
-      return { authed: true, method: "api_key", probeError: null };
-    }
-    if (
-      r.code === 0 &&
-      statusLines.some((line) => /^logged in using (?:an? )?access token[.!]?$/i.test(line))
-    ) {
-      return { authed: true, method: "access_token", probeError: null };
-    }
-    // Redact BEFORE labelStreams truncates: truncation could split a token
-    // into a prefix the redactor no longer recognizes.
-    const detail = labelStreams(r.stderr, r.stdout, { transform: redactSecrets });
-    const reason =
-      detail ?? `codex login status exited with ${r.code ?? r.signal ?? "unknown result"}`;
-    return {
-      authed: false,
-      method: "unknown",
-      probeError: r.code === 0 ? `unrecognized login status: ${reason}` : reason,
-    };
+    return measureWork("process.launch", (): CodexLoginProbe => {
+      const lines = `${r.stdout}\n${r.stderr}`
+        .replaceAll("\r", "")
+        .split("\n")
+        .map((line) => line.trim());
+      const reports = (pattern: RegExp) => lines.some((line) => pattern.test(line));
+      if (reports(/^not logged in[.!]?$/i))
+        return { authed: false, method: "logged_out", probeError: null };
+      if (r.code === 0) {
+        if (reports(/^logged in using chatgpt[.!]?$/i))
+          return { authed: true, method: "chatgpt", probeError: null };
+        if (reports(/^logged in using (?:an? )?api key[.!]?$/i))
+          return { authed: true, method: "api_key", probeError: null };
+        if (reports(/^logged in using (?:an? )?access token[.!]?$/i))
+          return { authed: true, method: "access_token", probeError: null };
+      }
+      // Redact BEFORE labelStreams truncates: truncation could split a token
+      // into a prefix the redactor no longer recognizes.
+      const detail = labelStreams(r.stderr, r.stdout, { transform: redactSecrets });
+      const reason =
+        detail ?? `codex login status exited with ${r.code ?? r.signal ?? "unknown result"}`;
+      return {
+        authed: false,
+        method: "unknown",
+        probeError: r.code === 0 ? `unrecognized login status: ${reason}` : reason,
+      };
+    });
   } catch (err) {
     return {
       authed: false,

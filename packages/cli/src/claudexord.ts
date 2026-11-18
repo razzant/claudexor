@@ -183,7 +183,7 @@ export async function main(): Promise<void> {
         readiness,
         () => value.resources,
         () => value.quota,
-        value.accounts,
+        { ...value.accounts, loginReadiness: executors.models.loginReadiness },
         () => sqlReads.sqlActivityRecords(value.store),
         caps,
         value.purgeFiles,

@@ -107,6 +107,7 @@ export function createModelServices(deps: Dependencies) {
     model: string | null,
     signal: AbortSignal,
     options: {
+      reuseCatalog?: boolean;
       excluded?: Set<string>;
       excludedFingerprint?: string | null;
       correlatedRetry?: boolean;
@@ -121,7 +122,32 @@ export function createModelServices(deps: Dependencies) {
       const admitted = await measureModelPreparation("admission", () =>
         admitAccount(source, account, model, signal),
       );
-      return resolveCatalog(source, account, model, signal, admitted, options);
+      return selectModelCatalog({
+        adapter: source.adapter,
+        harnessId: source.credentialHarness,
+        account,
+        model,
+        signal,
+        capabilities,
+        unusable,
+        quota: deps.quota,
+        warn: deps.warn,
+        refusals: () => deps.refusals?.live(),
+        substitutions: () => substitutions.live(),
+        recheck: (profile) => recheck(admitted, model, "text", profile.profile_id),
+        ...options,
+        pick: (excluded, refusals) =>
+          pickAccount(
+            source,
+            account,
+            model,
+            admitted,
+            excluded,
+            refusals,
+            "text",
+            options.poolEvents,
+          ),
+      });
     });
   };
 
@@ -242,49 +268,6 @@ export function createModelServices(deps: Dependencies) {
     }
   };
 
-  const resolveCatalog = async (
-    source: ModelSource,
-    account: ModelAccountChoice,
-    model: string | null,
-    signal: AbortSignal,
-    admitted: Awaited<ReturnType<typeof admitAccount>>,
-    options: {
-      excluded?: Set<string>;
-      excludedFingerprint?: string | null;
-      correlatedRetry?: boolean;
-      unmarkedOnly?: boolean;
-      seen?: { capable: boolean };
-      poolEvents?: ModelRoutingEvidence["poolEvents"];
-      boundHistory?: (profileId: string, fingerprint: string | null) => boolean;
-    } = {},
-  ) =>
-    selectModelCatalog({
-      adapter: source.adapter,
-      harnessId: source.credentialHarness,
-      account,
-      model,
-      signal,
-      capabilities,
-      unusable,
-      quota: deps.quota,
-      warn: deps.warn,
-      refusals: () => deps.refusals?.live(),
-      substitutions: () => substitutions.live(),
-      recheck: (profile) => recheck(admitted, model, "text", profile.profile_id),
-      ...options,
-      pick: (excluded, refusals) =>
-        pickAccount(
-          source,
-          account,
-          model,
-          admitted,
-          excluded,
-          refusals,
-          "text",
-          options.poolEvents,
-        ),
-    });
-
   /** Images share readiness, quota and credential generations, with explicit
    * request-kind scope and no text catalog membership requirement. */
   const resolveImage = async (
@@ -341,6 +324,7 @@ export function createModelServices(deps: Dependencies) {
       const poolEvents: ModelRoutingEvidence["poolEvents"] = [];
       const select = () =>
         resolve(source, request.account, request.model, signal, {
+          reuseCatalog: true,
           excluded,
           excludedFingerprint: retry?.binding.fingerprint,
           correlatedRetry: retry !== null,
@@ -455,6 +439,7 @@ export function createModelServices(deps: Dependencies) {
                     const seen = { capable: false };
                     try {
                       await resolve(source, { mode: "auto" }, input.model, signal, {
+                        reuseCatalog: true,
                         excluded: new Set([profile.profile_id]),
                         excludedFingerprint: binding.fingerprint,
                         unmarkedOnly: true,
@@ -490,6 +475,7 @@ export function createModelServices(deps: Dependencies) {
   });
   return {
     operations,
+    loginReadiness: readiness,
     routes: {
       modelSources: async (view?: "accounts") => ({
         sources: sources.map(({ adapter, label, credentialHarness }) => ({
@@ -551,7 +537,7 @@ export function createModelServices(deps: Dependencies) {
             ? {
                 ...adapter,
                 probeCredentialProfile: (profile, signal) =>
-                  readiness.probe(profile, adapter, signal ?? lifetime.signal),
+                  readiness.probe(profile, adapter, signal ?? lifetime.signal, { reuse: false }),
               }
             : adapter,
           profiles: catalogProfiles(context, source.credentialHarness, credentialProfileId, true),
@@ -592,6 +578,7 @@ export function createModelServices(deps: Dependencies) {
       }),
     close: () => {
       lifetime.abort("host_cancelled");
+      for (const { adapter } of sources) adapter.close?.();
       readiness.close();
       operations.close();
     },

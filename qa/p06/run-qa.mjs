@@ -21,6 +21,9 @@
  *   control          paired baseline control: the same emitters with
  *                    P06_CONTROL=base on a base worktree and
  *                    P06_CONTROL=candidate on the generated worktree
+ *   targeted         build the CLI's dependency closure, then run the ten test
+ *                    files this change touches; every file must report its own
+ *                    passing tests in Vitest's JSON report (passWithNoTests is on)
  *   release          pnpm release:verify:node, unmodified, in the generated
  *                    worktree (its HEAD tree IS the generated tree)
  *   manifest         write the one immutable final-manifest.json over QA_OUT,
@@ -49,6 +52,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  renameSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -84,7 +88,7 @@ const PRODUCT_HEAD_PLACEHOLDER = "__P06_PRODUCT_HEAD_SHA__";
 const EXPECTED_GENERATED_SCHEMAS = ["FinalMessagesHeader", "FinalMessagesOutcome", "McpRunResultRead"]
   .map((n) => `${GENERATED_DIR}/${n}.schema.json`)
   .sort();
-const LANE_ORDER = ["identity", "export", "install", "fixture-build", "emit", "verify-fixtures", "control-base", "control-candidate", "release"];
+const LANE_ORDER = ["identity", "export", "install", "fixture-build", "emit", "verify-fixtures", "control-base", "control-candidate", "targeted", "release"];
 
 let STEPS = [];
 
@@ -176,6 +180,22 @@ function commandDiagnostics(name, cwd, logPath, observation) {
       locations.add(line ? `${path}:${Number(line)}` : path);
       publicPaths.add(path);
     }
+    // turbo runs tsc inside packages/<dir> and prefixes its lines with
+    // "<package>:<task>: ", so a package-relative path is resolved through the
+    // tracked package manifests before the same tracked-path check.
+    const packageDirs = new Map();
+    for (const p of tracked) {
+      const dir = /^(packages\/[A-Za-z0-9_.-]+)\/package\.json$/.exec(p)?.[1];
+      const pkgName = dir ? readJsonReport(join(cwd, p), 1 << 20).value?.name : null;
+      if (typeof pkgName === "string") packageDirs.set(pkgName, dir);
+    }
+    const tsErrors = new Set();
+    for (const m of text.matchAll(/(?:^|\s)(?:(@[\w.-]+\/[\w.-]+):[\w:-]+:\s+)?([A-Za-z0-9_./@-]{1,512})\((\d{1,7}),(\d{1,7})\): error (TS\d{3,6})\b/gm)) {
+      let path = m[2].startsWith(`${cwd}/`) ? m[2].slice(cwd.length + 1) : m[2];
+      if (!tracked.has(path) && m[1] && packageDirs.has(m[1])) path = `${packageDirs.get(m[1])}/${path}`;
+      if (tracked.has(path)) tsErrors.add(`${path}:${Number(m[3])}:${Number(m[4])} ${m[5]}`);
+    }
+    for (const loc of [...tsErrors].slice(0, 24)) console.error(`[p06] stage=${name} compiler=${loc}`);
     let lastObservedScript = null;
     if (name === "release-verify") {
       for (const m of text.matchAll(/^> claudexor-monorepo@[\w.+-]+ ([a-z][a-z0-9:-]*)(?: [^\r\n]*)?\r?$/gm)) {
@@ -450,7 +470,10 @@ async function laneExport() {
     throw new Error("patch would include an unselected file");
   }
   const patchPath = join(out, "selected.patch");
-  const fd = openSync(patchPath, "w");
+  // git writes into scratch; only a patch it finished is moved into QA_OUT, so
+  // an interrupted diff can never be listed by the manifest and scanned clean.
+  const patchStage = join(RUN, "selected.patch.partial");
+  const fd = openSync(patchStage, "wx", 0o600);
   try {
     execFileSync(
       "git",
@@ -462,6 +485,7 @@ async function laneExport() {
   } finally {
     closeSync(fd);
   }
+  renameSync(patchStage, patchPath);
 
   // Materialize the exact generated tree as a test-only commit and a worktree;
   // emit, candidate control and release:verify:node all run on THIS tree, so
@@ -628,9 +652,51 @@ function scanReportState(reportPath) {
     ? "findings_reported" : "invalid_finding_shape";
 }
 
+/** Closed vocabulary of scanner finding classes that diagnostics may NAME.
+ *  Only aggregate counts and these class labels ever leave the scratch report:
+ *  never a value, matched fragment, path, raw message or the report itself.
+ *  RuleIDs outside this dictionary are counted under the fixed bucket "other". */
+const SCAN_FINDING_CLASSES = new Set([
+  "generic-api-key",
+  "private-key",
+  "bearer-token",
+  "jwt",
+  "github-pat",
+  "slack-webhook",
+  "anthropic-api-key",
+  "openai-api-key",
+  "aws-access-token",
+  "aws-secret-access-key",
+  "mailchimp",
+  "sendgrid",
+  "twilio",
+]);
+
+/** Safe scan diagnostics over the structured findings list: total count plus
+ *  per-class counts for closed-dictionary RuleIDs only. */
+function scanFindingDiagnostics(reportPath) {
+  const report = readJsonReport(reportPath, 16 << 20);
+  if (report.state !== "ok" || !Array.isArray(report.value)) return null;
+  const byClass = { other: 0 };
+  const byGroup = {};
+  let total = 0;
+  for (const entry of report.value) {
+    total += 1;
+    const rule = typeof entry?.RuleID === "string" ? entry.RuleID : null;
+    if (rule && SCAN_FINDING_CLASSES.has(rule)) byClass[rule] = (byClass[rule] ?? 0) + 1;
+    else byClass.other += 1;
+    // Report which producer owns the output, never the scanner's path or text.
+    const file = typeof entry?.File === "string" ? entry.File : "";
+    const rel = file.startsWith(`${OUT}/`) ? file.slice(OUT.length + 1) : file.replace(/^\.\//, "");
+    const group = rel.startsWith("emit/fixtures/") ? "response_fixtures" : rel.startsWith("control/") ? "paired_control" : rel === "export/selected.patch" ? "generated_diff" : rel.startsWith("export/") ? "generation_inventory" : rel.startsWith("identity/") ? "checkout_metadata" : rel === "final-manifest.json" || rel.startsWith("receipt-") || rel === "steps.json" || rel === "emit/fixtures-manifest.json" ? "verification_inventory" : "other";
+    byGroup[group] = (byGroup[group] ?? 0) + 1;
+  }
+  return { total, byClass, byGroup };
+}
+
 /** Same pinned binary, flags and complete target as v5. The fresh scanner
- * report and both process streams live outside OUT. This final step is a
- * read-only consumer of OUT; no later step changes the upload tree. */
+ * report and both process streams live outside OUT. This step does not write
+ * to OUT. Upload still requires an empty report and a successful scan. */
 function laneScan() {
   const scanner = process.env.CLAUDEXOR_BETTERLEAKS_PATH;
   let stage = "scan-paths";
@@ -674,7 +740,84 @@ function laneScan() {
   else if (observed.exit === 1 && report === "findings_reported") result = "findings_reported";
   else result = "scanner_failed";
   console.log(`[p06] stage=publication-scan exit=${observed.exit ?? "unknown"} process=${observed.process} report=${report} result=${result}`);
+  if (result === "findings_reported") {
+    const diag = scanFindingDiagnostics(reportPath);
+    if (diag) {
+      for (const [label, count] of Object.entries(diag.byClass).sort()) {
+        if (count > 0) console.error(`[p06] stage=publication-scan finding_class=${label} count=${count}`);
+      }
+      console.error(`[p06] stage=publication-scan findings_total=${diag.total}`);
+      for (const [label, count] of Object.entries(diag.byGroup).sort()) {
+        console.error(`[p06] stage=publication-scan output_group=${label} count=${count}`);
+      }
+    }
+  }
   if (result !== "clean") throw new Error("publication scan not clean");
+}
+
+/** The test files this change touches. The lane builds what they import and
+ *  counts a file only from its own entry in Vitest's JSON report. */
+const TARGETED_TESTS = [
+  "packages/orchestrator/src/final-messages.integration.test.ts",
+  "packages/control-api/src/final-messages-projection.test.ts",
+  "packages/cli/src/profile-admission.integration.test.ts",
+  "packages/orchestrator/src/account-resolution.test.ts",
+  "packages/harness-agy/src/profile.test.ts",
+  "packages/harness-claude/src/live-input-fixtures.test.ts",
+  "packages/harness-claude/src/live-input.test.ts",
+  "packages/harness-codex/src/model.test.ts",
+  "packages/cli/src/model-services.test.ts",
+  "packages/acp-server/src/acp.test.ts",
+];
+const SUITE_STATUSES = new Set(["passed", "failed", "skipped", "pending", "todo"]);
+
+async function laneTargeted() {
+  const { genWt } = readChange();
+  const out = join(OUT, "targeted");
+  mkdirSync(out, { recursive: true });
+  // The CLI tests load every harness through its built dist. Build the CLI's
+  // whole dependency closure here instead of relying on the full gate's build.
+  step("targeted-build", ["pnpm", "exec", "turbo", "run", "build", "--concurrency=2", "--filter=@claudexor/cli..."], { cwd: genWt });
+  const reportPath = join(mkdtempSync(join(RUN, "targeted-")), "vitest.json");
+  let failure = null;
+  try {
+    step("targeted", ["pnpm", "exec", "vitest", "run", "--maxWorkers=2", "--reporter=json", `--outputFile=${reportPath}`,
+      ...TARGETED_TESTS], { cwd: genWt });
+  } catch (error) {
+    if (!(error instanceof CommandFailure)) throw error;
+    failure = error;
+  }
+  // vitest.config.ts sets passWithNoTests, so exit 0 alone does not prove that
+  // a requested file ran: each file must report its own passing assertions.
+  const report = readJsonReport(reportPath, 64 << 20);
+  const results = report.state === "ok" && Array.isArray(report.value?.testResults) ? report.value.testResults : null;
+  const files = {};
+  for (const rel of TARGETED_TESTS) {
+    const suites = results?.filter((r) => typeof r?.name === "string" && r.name.replaceAll("\\", "/").endsWith(`/${rel}`)) ?? [];
+    const suite = suites.length === 1 ? suites[0] : null;
+    const assertions = Array.isArray(suite?.assertionResults) ? suite.assertionResults : [];
+    const count = (status) => assertions.filter((a) => a?.status === status).length;
+    files[rel] = {
+      reported: suites.length,
+      status: SUITE_STATUSES.has(suite?.status) ? suite.status : suite ? "unrecognized" : "not_reported",
+      passed: count("passed"),
+      failed: count("failed"),
+      assertions: assertions.length,
+    };
+  }
+  const allPassed = Boolean(results) && TARGETED_TESTS.every((rel) => {
+    const f = files[rel];
+    return f.reported === 1 && f.status === "passed" && f.failed === 0 && f.passed > 0;
+  });
+  writeJson(join(out, "targeted.json"), {
+    lane: "targeted",
+    report: results ? "ok" : report.state === "ok" ? "invalid_shape" : report.state,
+    exit: failure ? failure.observation.exit : 0,
+    allPassed,
+    files,
+  });
+  if (failure) throw failure;
+  if (!allPassed) throw new Error("a targeted test file did not report passing tests");
 }
 
 const LANES = {
@@ -687,13 +830,14 @@ const LANES = {
   "control-base": laneControlBase,
   "control-candidate": laneControlCandidate,
   release: laneRelease,
+  targeted: laneTargeted,
   manifest: laneManifest,
   scan: laneScan,
 };
 
 const lane = process.argv[2];
 if (!Object.hasOwn(LANES, lane)) {
-  console.error("usage: node qa/p06/run-qa.mjs <identity|export|install|fixture-build|emit|verify-fixtures|control-base|control-candidate|release|manifest|scan>");
+  console.error("usage: node qa/p06/run-qa.mjs <identity|export|install|fixture-build|emit|verify-fixtures|control-base|control-candidate|targeted|release|manifest|scan>");
   process.exit(2);
 }
 if (!OUT || !RUN || (lane !== "scan" && !STORE)) {

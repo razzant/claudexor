@@ -44,6 +44,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   statSync,
   symlinkSync,
 } from "node:fs";
@@ -63,7 +64,9 @@ HTTP only: emitters bind 127.0.0.1 and inject the Codex adapter fetch, so no
 external, network or model calls happen.
 
 Both --out and --run-dir must be fresh (nonexistent or empty); existing files
-are never overwritten. They must be separate and neither may contain the other.
+are never overwritten. Use separate directories on the same filesystem so each
+complete fixture set can be moved atomically; neither may contain the other.
+Without --run-dir, a fresh scratch directory is created beside --out.
 
 Exact prerequisites, in build order, from the claudexor repository root:
   1. Node.js from .node-version (24.22.3) and pnpm from packageManager (pnpm@10.34.5), e.g. corepack.
@@ -202,12 +205,19 @@ export function selectPassedCases(report, raw, out, control, issues) {
       else if (status === "failed") reason = "assertion_failed";
       else if (status !== "passed") reason = suite.status === "failed" && !assertions.length ? "suite_failed" : "assertion_not_verified";
       else {
+        // Only a complete case may enter the selected output. Keep staging in
+        // private scratch: even a failed cleanup leaves no unaccepted upload.
+        // A cross-filesystem rename is an export failure, not a partial copy.
+        const stage = join(dirname(report), `.p06-stage-${randomUUID()}`);
         try {
           if (!files.every((f) => lstatSync(join(source, f), { throwIfNoEntry: false })?.isFile())) {
             reason = "fixture_file_missing_or_not_regular";
           } else {
-            mkdirSync(target, { recursive: true });
-            for (const f of files) copyFileSync(join(source, f), join(target, f), constants.COPYFILE_EXCL);
+            mkdirSync(dirname(target), { recursive: true });
+            if (lstatSync(target, { throwIfNoEntry: false })) throw new Error("case already exists");
+            mkdirSync(stage, { mode: 0o700 });
+            for (const f of files) copyFileSync(join(source, f), join(stage, f), constants.COPYFILE_EXCL);
+            renameSync(stage, target);
             reason = "passed";
           }
         } catch {
@@ -310,7 +320,8 @@ function main() {
     console.error(`--control must be base or candidate\n\n${HELP}`);
     process.exit(2);
   }
-  const scratch = runDir ?? join(tmpdir(), `qa-p06-run-${randomUUID()}`);
+  // Default scratch beside --out keeps the final per-case rename on one filesystem.
+  const scratch = runDir ?? join(dirname(resolve(outDir)), `.qa-p06-run-${randomUUID()}`);
   let dirs;
   try {
     dirs = separateDirectories(outDir, scratch);

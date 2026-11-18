@@ -1,9 +1,16 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ControlModelOperationDetail, ControlOperationCatalog, ModelUsage } from "@claudexor/schema";
+import {
+  ControlModelOperationDetail,
+  ControlOperationCatalog,
+  ControlProblem,
+  ModelUsage,
+} from "@claudexor/schema";
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "./daemon-server.js";
 import { parseCodexModelCatalog } from "../../harness-codex/src/model.js";
 import { OPERATION_CATALOG } from "./operation-catalog.js";
+
+import { poolExhausted, refusalProblem } from "../../cli/src/model-service-refusals.js";
 
 const servers: DaemonControlApiServer[] = [];
 afterEach(async () => {
@@ -354,6 +361,30 @@ describe("raw model operation HTTP surface", () => {
     expect(cancelModelOperation).toHaveBeenCalledWith("job-model", "user_cancelled");
     expect(f.daemon.enqueue).not.toHaveBeenCalled();
   });
+
+  it.each([true, false])(
+    "projects the catalog service problem onto the wire, retryable %s",
+    async (retryable) => {
+      const cause = ControlProblem.parse({
+        code: retryable ? "catalog_unavailable" : "auth_required",
+        message: "fixture refusal",
+        retryable,
+        context: retryable ? { cause: "network", errorCode: "ENOTFOUND" } : {},
+      });
+      const error = poolExhausted("codex", new Error("exhausted"), new Map([["work", cause]]));
+      const problem = refusalProblem(error);
+      expect(problem.retryable).toBe(retryable);
+      expect(problem.context.poolCause).toBe(retryable ? "network" : "auth");
+      const f = await fixture({
+        modelCatalog: async () => {
+          throw error;
+        },
+      });
+      const response = await f.request("/model-sources/codex/models");
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject(problem);
+    },
+  );
 
   it("keeps raw catalogs account-scoped and leaves omitted profile selection to the engine", async () => {
     let provenance = "fixture";

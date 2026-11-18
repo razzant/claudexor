@@ -18,6 +18,7 @@ import { buildRegistry } from "./registry.js";
 import type { RuntimeConcurrencyCaps, CapturedRunStart } from "@claudexor/schema";
 import { logLine } from "./log-line.js";
 import { daemonRunScopeIndex } from "./run-scope-index.js";
+import type { ModelLoginReadiness } from "./model-login-readiness.js";
 
 type OrchestratorDeps = ConstructorParameters<typeof Orchestrator>[0];
 
@@ -45,7 +46,10 @@ export function buildRunOrchestrator(args: {
    * incomplete (a crash between phases) — other harnesses keep working. */
   accountsMigrationGate?: OrchestratorDeps["accountsMigrationGate"];
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
+  /** The store graph's dated positive login owner, shared with raw-model selection. */
+  loginReadiness?: ModelLoginReadiness;
 }): Orchestrator {
+  const readiness = args.loginReadiness;
   const { p, quotaStore } = args;
   const credentialUnusableLedger = args.accounts.unusable;
   return new Orchestrator({
@@ -103,6 +107,7 @@ export function buildRunOrchestrator(args: {
     credentialUnusable: () => credentialUnusableLedger.live(),
     credentialEvidence: credentialUnusableLedger,
     preProgressRefusals: refusalMemory(args.accounts),
+    runStartProbe: readiness && ((adapter) => readiness.runStartProbe(adapter)),
     reviewerPanel: p.reviewerPanel,
     reviewerModels:
       p.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined,

@@ -166,6 +166,7 @@ import { RefusedBodies, readControlRequestBody } from "./request-body.js";
 import { withControlHttpTimeouts } from "./http-server-options.js";
 import {
   errorCode,
+  measureWork,
   redactSecrets,
   safeProblemContext,
   safeProblemRequiredActions,
@@ -637,12 +638,14 @@ export class DaemonControlApiServer {
       const error = controlProblemError(status, body);
       return this.problem(res, status, error, error.code, false, error.message);
     }
-    const text = JSON.stringify(body);
-    res.writeHead(status, {
-      "content-type": contentType,
-      "content-length": Buffer.byteLength(text),
+    measureWork("control.handler", () => {
+      const text = JSON.stringify(body);
+      res.writeHead(status, {
+        "content-type": contentType,
+        "content-length": Buffer.byteLength(text),
+      });
+      res.end(text);
     });
-    res.end(text);
   }
 
   private problem(
@@ -665,7 +668,8 @@ export class DaemonControlApiServer {
 
   private onRequest(req: IncomingMessage, res: ServerResponse): void {
     trackRequest(req, res);
-    const tracked: Promise<void> = this.handle(req, res)
+    // Routing and the handler's first synchronous stretch run inside this call.
+    const tracked: Promise<void> = measureWork("control.handler", () => this.handle(req, res))
       .catch((err) => {
         if (requestGone(req, res)) return;
         try {
@@ -787,17 +791,7 @@ export class DaemonControlApiServer {
       return;
 
     if (method === "GET" && path === "/runs") {
-      return serveRunList(
-        {
-          daemon: this.opts.daemon,
-          summarize: (record) => this.summarizeRunOrDiagnostic(record),
-          requestError: (response, error) => this.requestError(response, error),
-          json: (response, status, body) => this.json(response, status, body),
-        },
-        url,
-        req,
-        res,
-      );
+      return serveRunList(dataRoutes, url, req, res);
     }
 
     if (

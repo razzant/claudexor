@@ -131,9 +131,19 @@ for (const scenario of control ? ["same-finals"] : ["complete", "partial", "gap"
         const artifact = await fetch(url + "/artifacts/" + documentPath, { headers });
         const bytes = Buffer.from(await artifact.arrayBuffer());
         if (control === "base") {
+          mark("baseline-artifact-fetch");
           expect(JSON.parse(detailBytes)).not.toHaveProperty("finalMessages");
           expect(artifact.status).toBe(404);
-          expect(JSON.parse(bytes)).toHaveProperty("error");
+          mark("baseline-artifact-status");
+          // The inner readArtifactFile 404 {error:'no such artifact'} never
+          // reaches the wire as-is: the v2 json() layer projects every >=400
+          // JSON error into application/problem+json, the same form the
+          // existing same-route 404 tests pin as {code:'http_404', ...}.
+          expect(artifact.headers.get("content-type") ?? "").toContain("application/problem+json");
+          const problem = JSON.parse(bytes);
+          expect(problem).toMatchObject({ code: "http_404", message: "no such artifact" });
+          expect(problem).not.toHaveProperty("error");
+          mark("baseline-artifact-body");
           save("artifact-error.json", bytes);
         } else {
           expect(pointer).toMatchObject({ state: "complete", path: documentPath, count: 2, bytes: bytes.length });

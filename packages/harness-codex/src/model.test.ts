@@ -1,12 +1,13 @@
 import { CODEX_CATALOG_TRANSPORT_MS } from "./model-catalog.js";
-import { invalidateProgramObservations } from "@claudexor/core";
+import { DOCTOR_TTL_MS, invalidateProgramObservations } from "@claudexor/core";
 import { join } from "node:path";
 import * as zlib from "node:zlib";
 import { zstdDecompressSync } from "node:zlib";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getGlobalDispatcher, setGlobalDispatcher, type Dispatcher } from "undici";
 import {
   CredentialProfile,
+  ImageCallRequest,
   ModelCallRequest,
   ModelCallResult,
   ModelCatalogEntry,
@@ -109,23 +110,26 @@ function setup(
     }
     return Response.json(catalog);
   });
+  // The owned login/settings file versions a remembered catalog is keyed by.
+  const files = { identity: "auth-1 settings-1" as string | null };
+  const adapter = createCodexModelAdapter({
+    profileIdentity: async () => files.identity,
+    fetch: async (url, init) =>
+      fetcher(url, init?.method === "POST" ? { ...init, body: await requestBodyText(init) } : init),
+    readAuthFile,
+    now,
+    clientVersion: async () => clientVersion,
+    ...(requestCompression ? { requestCompression } : {}),
+  });
+  onTestFinished(() => adapter.close?.());
   return {
     profile,
     onDispatch,
     readAuthFile,
     fetcher,
+    files,
     token,
-    adapter: createCodexModelAdapter({
-      fetch: async (url, init) =>
-        fetcher(
-          url,
-          init?.method === "POST" ? { ...init, body: await requestBodyText(init) } : init,
-        ),
-      readAuthFile,
-      now,
-      clientVersion: async () => clientVersion,
-      ...(requestCompression ? { requestCompression } : {}),
-    }),
+    adapter,
     context: { profile, onDispatch, signal: new AbortController().signal },
     request: ModelCallRequest.parse({
       source: "codex",
@@ -666,9 +670,9 @@ describe("exact-profile Codex model catalog", () => {
     let now = 1900000000000;
     const fixture = setup(undefined, () => now);
     const response = Response.json(catalog);
-    vi.spyOn(response, "json").mockImplementation(async () => {
+    vi.spyOn(response, "text").mockImplementation(async () => {
       now += 1000;
-      return catalog;
+      return JSON.stringify(catalog);
     });
     fixture.fetcher.mockResolvedValueOnce(response);
     const first = await fixture.adapter.catalog(fixture.context);
@@ -1824,7 +1828,7 @@ describe("raw catalog read ownership", () => {
     });
     return { promise, resolve };
   };
-  it("joins identical concurrent reads, detaches one reader, and retains no completed answer", async () => {
+  it("joins identical concurrent reads, detaches one reader, and remembers the completed answer", async () => {
     const f = setup(undefined, undefined, knownClient());
     const body = deferred<Response>();
     f.fetcher.mockImplementationOnce(() => body.promise);
@@ -1841,7 +1845,11 @@ describe("raw catalog read ownership", () => {
     expect(physical.aborted).toBe(false);
     body.resolve(Response.json(catalog));
     expect((await b).models[0]!.id).toBe("model-one");
-    await f.adapter.catalog({ ...f.context, credentialGeneration: 1 });
+    // INV-135 (owner decision 2026-11-18): the same full key within the doctor
+    // TTL answers from the completed read; another key reads again.
+    await f.adapter.catalog({ ...f.context, reuseCatalog: true, credentialGeneration: 1 });
+    expect(f.fetcher).toHaveBeenCalledTimes(1);
+    await f.adapter.catalog({ ...f.context, reuseCatalog: true, credentialGeneration: 2 });
     expect(f.fetcher).toHaveBeenCalledTimes(2);
   });
   it("cancels physical work when every waiter leaves and permits a new read", async () => {
@@ -1940,7 +1948,7 @@ describe("raw catalog read ownership", () => {
   it("does not consume a late body after abandonment, but consumes a live one", async () => {
     const f = setup(undefined, undefined, knownClient());
     const pendingResponse = deferred<Response>();
-    const json = vi.fn(async () => catalog);
+    const text = vi.fn(async () => JSON.stringify(catalog));
     f.fetcher.mockImplementationOnce(() => pendingResponse.promise);
     const controller = new AbortController();
     const pending = f.adapter
@@ -1949,12 +1957,12 @@ describe("raw catalog read ownership", () => {
     await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(1));
     controller.abort();
     await pending;
-    pendingResponse.resolve({ ok: true, json } as unknown as Response);
+    pendingResponse.resolve({ ok: true, text } as unknown as Response);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(json).not.toHaveBeenCalled();
-    f.fetcher.mockResolvedValueOnce({ ok: true, json } as unknown as Response);
+    expect(text).not.toHaveBeenCalled();
+    f.fetcher.mockResolvedValueOnce({ ok: true, text } as unknown as Response);
     await f.adapter.catalog({ ...f.context, credentialGeneration: 1 });
-    expect(json).toHaveBeenCalledTimes(1);
+    expect(text).toHaveBeenCalledTimes(1);
   });
   it("program maintenance cancels a live read and rejects its late answer", async () => {
     const f = setup(undefined, undefined, knownClient());
@@ -1981,11 +1989,11 @@ describe("raw catalog read ownership", () => {
         f.fetcher.mockImplementationOnce(async () => {
           ready.resolve();
           if (phase === "request") return body.promise;
-          return { ok: true, json: () => new Promise(() => {}) } as Response;
+          return { ok: true, text: () => new Promise(() => {}) } as unknown as Response;
         });
         const pending = f.adapter.catalog(f.context).catch((e) => e);
         await ready.promise;
-        await vi.advanceTimersByTimeAsync(CODEX_CATALOG_TRANSPORT_MS);
+        await vi.advanceTimersByTimeAsync(CODEX_CATALOG_TRANSPORT_MS + 1);
         expect(await pending).toMatchObject({
           problem: { code: "catalog_unavailable", retryable: true },
         });
@@ -2017,6 +2025,360 @@ describe("raw catalog read ownership", () => {
       expect((await pending).models).toHaveLength(1);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe("remembered catalog (INV-135, owner decision 2026-11-18)", () => {
+  const known = (): CodexCatalogClientVersion => ({
+    ...VERIFIED_CLIENT,
+    program: { path: "/fixture/codex", version: "0.156.1" },
+    programKey: "program-1",
+  });
+  const gets = (f: ReturnType<typeof setup>) =>
+    f.fetcher.mock.calls.filter(([, init]) => init?.method !== "POST").length;
+  const clock = { now: Date.now() };
+  beforeEach(() => {
+    clock.now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("answers the same full key within the doctor TTL of the read's start; a hit never renews it", async () => {
+    const f = setup(undefined, undefined, known());
+    const context = { ...f.context, reuseCatalog: true, credentialGeneration: 1 };
+    const first = await f.adapter.catalog(context);
+    clock.now += DOCTOR_TTL_MS - 1;
+    expect(await f.adapter.catalog(context)).toEqual(first);
+    expect(gets(f)).toBe(1);
+    clock.now += 1;
+    await f.adapter.catalog(context);
+    expect(gets(f)).toBe(2);
+  });
+
+  it("diagnostic acquisition observes recovery physically and selection can reuse that observation", async () => {
+    const f = setup(undefined, () => clock.now, known());
+    const physical = { ...f.context, credentialGeneration: 1 };
+    const selection = { ...physical, reuseCatalog: true };
+    const old = await f.adapter.catalog(selection);
+    clock.now += 4_000;
+    const outage = clock.now;
+    clock.now += 1_000;
+    const recovered = await f.adapter.catalog(physical);
+    expect(Date.parse(old.observedAt!)).toBeLessThan(outage);
+    expect(Date.parse(recovered.observedAt!)).toBeGreaterThan(outage);
+    expect(await f.adapter.catalog(selection)).toEqual(recovered);
+    expect(gets(f)).toBe(2);
+  });
+
+  it.each(["generation", "files", "version", "program", "account", "profile"])(
+    "a changed %s reads again",
+    async (change) => {
+      const client = known();
+      const f = setup(undefined, undefined, client);
+      const context = { ...f.context, reuseCatalog: true, credentialGeneration: 1 };
+      await f.adapter.catalog(context);
+      if (change === "generation") context.credentialGeneration = 2;
+      if (change === "files") f.files.identity = "auth-2 settings-1";
+      if (change === "version") client.version = "0.157.0";
+      if (change === "program") client.programKey = "program-2";
+      if (change === "profile") context.profile = { ...context.profile, display_name: "Renamed" };
+      if (change === "account") {
+        const auth = JSON.parse(await f.readAuthFile());
+        auth.tokens.account_id = "account-two";
+        f.readAuthFile.mockResolvedValue(JSON.stringify(auth));
+      }
+      await f.adapter.catalog(context);
+      expect(gets(f)).toBe(2);
+    },
+  );
+
+  it.each(["files", "generation", "program"])(
+    "an unknown %s identity is never remembered",
+    async (unknown) => {
+      const client = known();
+      if (unknown === "program") delete (client as CodexCatalogClientVersion).programKey;
+      const f = setup(undefined, undefined, client);
+      if (unknown === "files") f.files.identity = null;
+      const context = {
+        ...f.context,
+        reuseCatalog: true,
+        credentialGeneration: unknown === "generation" ? Number.NaN : 1,
+      };
+      await f.adapter.catalog(context);
+      await f.adapter.catalog(context);
+      expect(gets(f)).toBe(2);
+    },
+  );
+
+  it("a failed read drops the account's remembered catalog and is never an empty catalog", async () => {
+    const f = setup(undefined, undefined, known());
+    await f.adapter.catalog({ ...f.context, reuseCatalog: true, credentialGeneration: 1 });
+    f.fetcher.mockRejectedValueOnce(new TypeError("fetch failed"));
+    await expect(
+      f.adapter.catalog({ ...f.context, credentialGeneration: 1 }),
+    ).rejects.toMatchObject({ problem: { code: "catalog_unavailable" } });
+    expect(
+      (await f.adapter.catalog({ ...f.context, reuseCatalog: true, credentialGeneration: 1 }))
+        .models,
+    ).toHaveLength(1);
+    expect(gets(f)).toBe(3);
+  });
+
+  it.each([
+    [
+      "the model is not found (404)",
+      404,
+      { error: { code: "model_not_found", message: "no" } },
+      true,
+    ],
+    ["the account is not signed in (401)", 401, { error: { code: "fixture" } }, true],
+    ["the account is refused (403)", 403, { error: { code: "fixture" } }, true],
+    [
+      "the request is malformed (400)",
+      400,
+      { error: { code: "invalid_request", param: "input" } },
+      false,
+    ],
+    ["a rate limit (429)", 429, { error: { code: "fixture" } }, false],
+    ["a server failure (500)", 500, { error: { code: "fixture" } }, false],
+  ])(
+    "a generation refusal saying %s drops the remembered catalog: %s",
+    async (_label, status, body, drops) => {
+      const f = setup(() => Response.json(body, { status }), undefined, known());
+      const context = { ...f.context, reuseCatalog: true, credentialGeneration: 1 };
+      await f.adapter.catalog(context);
+      const result = await f.adapter.invoke(f.request, context);
+      expect(result.outcome).toBe("failed");
+      expect(gets(f)).toBe(1);
+      await f.adapter.catalog(context);
+      expect(gets(f)).toBe(drops ? 2 : 1);
+    },
+  );
+
+  it.each([false, true])(
+    "keeps the profile catalog after an HTTP 403 content refusal (typedRefusals=%s)",
+    async (typedRefusals) => {
+      const error = { code: "cyber_policy", message: "The picnic menu is undecided." };
+      const f = setup(() => Response.json({ error }, { status: 403 }), undefined, known());
+      const context = { ...f.context, credentialGeneration: 1, reuseCatalog: true };
+      const catalog = await f.adapter.catalog(context);
+      const result = await f.adapter.invoke(f.request, { ...context, catalog, typedRefusals });
+      expect(result).toMatchObject({
+        outcome: "failed",
+        problem: {
+          code: typedRefusals ? "provider_content_refused" : "provider_refused",
+          retryable: false,
+          context: { vendorCode: error.code, httpStatus: 403 },
+        },
+      });
+      expect(await f.adapter.catalog(context)).toEqual(catalog);
+      const methods = f.fetcher.mock.calls.map(([, init]) => init?.method ?? "GET");
+      expect(methods).toEqual(["GET", "POST"]);
+    },
+  );
+
+  it.each([
+    [401, "invalid_token", "auth_required", true],
+    [401, "invalid_token", "auth_refresh_failed", true],
+    [403, "image_model_not_entitled", "provider_refused", false],
+    [429, "quota_exceeded", "image_generation_limit_reached", false],
+  ] as const)(
+    "an image refusal classified as %s/%s/%s invalidates only a contradicted text catalog",
+    async (status, code, problem, drops) => {
+      const f = setup(() => Response.json({ error: { code } }, { status }), undefined, known());
+      if (problem === "auth_refresh_failed")
+        f.readAuthFile.mockResolvedValue(
+          (await f.readAuthFile()).replace(f.token, "opaque-fixture"),
+        );
+      const context = { ...f.context, credentialGeneration: 1, reuseCatalog: true };
+      const other = { ...context, profile: { ...f.profile, profile_id: "other" } };
+      await f.adapter.catalog(context);
+      const sibling = await f.adapter.catalog(other);
+      const request = ImageCallRequest.parse({
+        source: "codex",
+        account: f.request.account,
+        model: "gpt-image-1.5",
+        prompt: "fixture",
+      });
+      const result = await f.adapter.image!.invoke(request, { ...context, imageTurnId: "fixture" });
+      expect(result.problem?.code).toBe(problem);
+      expect(await f.adapter.catalog(other)).toEqual(sibling);
+      expect(gets(f)).toBe(2);
+      await f.adapter.catalog(context);
+      expect(gets(f)).toBe(drops ? 3 : 2);
+    },
+  );
+
+  it("keeps a catalog that already omits the refused model", async () => {
+    const f = setup(
+      () => Response.json({ error: { code: "model_not_found" } }, { status: 404 }),
+      undefined,
+      known(),
+    );
+    const context = { ...f.context, credentialGeneration: 1, reuseCatalog: true };
+    const catalog = await f.adapter.catalog(context);
+    const result = await f.adapter.invoke(
+      { ...f.request, model: "unlisted" },
+      { ...context, catalog },
+    );
+    expect(result.problem?.code).toBe("model_capability_refused");
+    expect(await f.adapter.catalog(context)).toEqual(catalog);
+    expect(gets(f)).toBe(1);
+  });
+
+  it("a terminal stream refusal of the model drops the remembered catalog", async () => {
+    const f = setup(
+      () =>
+        new Response(
+          `data: ${JSON.stringify({
+            type: "response.failed",
+            response: { status: "failed", error: { code: "model_not_found", message: "gone" } },
+          })}\n\n`,
+        ),
+      undefined,
+      known(),
+    );
+    const context = { ...f.context, reuseCatalog: true, credentialGeneration: 1 };
+    await f.adapter.catalog(context);
+    expect((await f.adapter.invoke(f.request, context)).problem?.code).toBe("model_unavailable");
+    await f.adapter.catalog(context);
+    expect(gets(f)).toBe(2);
+  });
+
+  it("a changed program drops it, even with no read in flight and the same program again", async () => {
+    const f = setup(undefined, undefined, known());
+    const context = { ...f.context, reuseCatalog: true, credentialGeneration: 1 };
+    await f.adapter.catalog(context);
+    await f.adapter.catalog(context);
+    expect(gets(f)).toBe(1);
+    invalidateProgramObservations("claude");
+    await f.adapter.catalog(context);
+    expect(gets(f)).toBe(1);
+    invalidateProgramObservations("codex");
+    await f.adapter.catalog(context);
+    expect(gets(f)).toBe(2);
+  });
+
+  it("a failed authorization of the account drops it", async () => {
+    const f = setup(undefined, undefined, known());
+    const context = { ...f.context, reuseCatalog: true, credentialGeneration: 1 };
+    await f.adapter.catalog(context);
+    f.readAuthFile.mockRejectedValueOnce(new Error("unreadable"));
+    await expect(f.adapter.catalog(context)).rejects.toMatchObject({
+      problem: { code: "auth_unavailable" },
+    });
+    await f.adapter.catalog(context);
+    expect(gets(f)).toBe(2);
+  });
+
+  it.each([
+    [404, "model_not_found", "model_capability_refused", 3],
+    [400, "invalid_request", "invalid_request", 2],
+  ] as const)(
+    "an in-flight catalog read publishes only without contrary evidence (%i)",
+    async (status, code, problem, expectedGets) => {
+      const f = setup(() => Response.json({ error: { code } }, { status }), undefined, known());
+      const context = { ...f.context, reuseCatalog: true, credentialGeneration: 1 };
+      const handedOff = await f.adapter.catalog(context);
+      let release!: (response: Response) => void;
+      f.fetcher.mockImplementationOnce(
+        () => new Promise<Response>((resolve) => (release = resolve)),
+      );
+      const pending = f.adapter.catalog({ ...context, reuseCatalog: false });
+      await vi.waitFor(() => expect(gets(f)).toBe(2));
+      const refused = await f.adapter.invoke(f.request, { ...context, catalog: handedOff });
+      expect(refused.problem?.code).toBe(problem);
+      release(Response.json({ models: [] }));
+      await pending;
+      const next = await f.adapter.catalog(context);
+      expect(gets(f)).toBe(expectedGets);
+      expect(next.models).toHaveLength(status === 404 ? 1 : 0);
+    },
+  );
+});
+
+describe("a catalog read that never reached the provider", () => {
+  const failed = (cause: unknown) => Object.assign(new TypeError("fetch failed"), { cause });
+  it.each([
+    ["ENOTFOUND", failed(Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" }))],
+    [
+      "UND_ERR_CONNECT_TIMEOUT",
+      failed(Object.assign(new Error("Connect Timeout"), { code: "UND_ERR_CONNECT_TIMEOUT" })),
+    ],
+    [
+      "ECONNREFUSED",
+      failed(
+        new AggregateError([Object.assign(new Error("connect"), { code: "ECONNREFUSED" })], ""),
+      ),
+    ],
+  ])("says so with its connection code %s", async (code, error) => {
+    const f = setup();
+    f.fetcher.mockRejectedValueOnce(error);
+    await expect(f.adapter.catalog(f.context)).rejects.toMatchObject({
+      problem: {
+        code: "catalog_unavailable",
+        retryable: true,
+        message: `The model provider could not be reached from this machine (${code}).`,
+        context: { cause: "network", errorCode: code },
+      },
+    });
+  });
+
+  it.each([
+    ["connect", true],
+    ["read", false],
+    [undefined, false],
+  ])("requires connect-phase evidence for ETIMEDOUT (%s)", async (syscall, network) => {
+    const f = setup();
+    f.fetcher.mockRejectedValueOnce(failed({ code: "ETIMEDOUT", syscall }));
+    const refusal = await f.adapter.catalog(f.context).catch((error) => error);
+    expect(refusal.problem.context).toEqual(
+      network ? { cause: "network", errorCode: "ETIMEDOUT" } : {},
+    );
+  });
+
+  it.each(["ENOTFOUND", "UND_ERR_CONNECT_TIMEOUT", undefined])(
+    "keeps the transport's typed cause when the deadline aborts (%s)",
+    async (code) => {
+      vi.useFakeTimers();
+      try {
+        const f = setup();
+        let start!: () => void;
+        const started = new Promise<void>((resolve) => {
+          start = resolve;
+        });
+        f.fetcher.mockImplementationOnce(
+          (_url, init) =>
+            new Promise((_resolve, reject) => {
+              init!.signal!.addEventListener("abort", () => reject(failed({ code })), {
+                once: true,
+              });
+              start();
+            }),
+        );
+        const pending = f.adapter.catalog(f.context).catch((error) => error);
+        await started;
+        await vi.advanceTimersByTimeAsync(CODEX_CATALOG_TRANSPORT_MS + 1);
+        const { problem } = await pending;
+        expect(problem.code).toBe("catalog_unavailable");
+        expect(problem.context).toEqual(code ? { cause: "network", errorCode: code } : {});
+        expect(problem.message).toContain(code ?? "transport limit");
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("claims nothing about the network for a failure after a connection or without a code", async () => {
+    const f = setup();
+    for (const error of [
+      failed(Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" })),
+      new TypeError("fetch failed"),
+    ]) {
+      f.fetcher.mockRejectedValueOnce(error);
+      const refusal = await f.adapter.catalog(f.context).catch((caught: unknown) => caught);
+      expect(refusal).toMatchObject({ problem: { code: "catalog_unavailable", context: {} } });
     }
   });
 });

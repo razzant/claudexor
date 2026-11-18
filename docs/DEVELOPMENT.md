@@ -44,8 +44,9 @@ Read these together before changing shared behavior:
   named control-plane subsystems.
 - `packages/artifact-store` and `packages/event-log` own run artifact trees and
   the append-only event log.
-- `packages/claudexor` is the bare-name bin wrapper over `@claudexor/cli`
-  (the only package that installs the global `claudexor`/`claudexord` bins).
+- `packages/claudexor` owns the global `claudexor`/`claudexord` bins over
+  `@claudexor/cli` and the Pi package: its manifest declares the resources,
+  and `pi/index.js` registers the MCP server.
 - `packages/cli`, `packages/daemon`, `packages/control-api`,
   `packages/mcp-server`, `packages/acp-server`, and `apps/macos` are surfaces.
   Keep them thin.
@@ -76,7 +77,7 @@ pnpm typecheck
 pnpm typecheck:tests   # type-checks *.test.ts, schema scripts, and canary sources
 pnpm test
 pnpm schema:gen
-pnpm gen:version  # root-version projections and canonical portable plugin asset copies
+pnpm gen:version  # project the root version and refresh the portable plugin assets
 git diff --exit-code packages/schema/generated
 node scripts/validate-generated-schemas.mjs   # ajv-compiles every generated schema (draft-07)
 pnpm docs:check    # docs-truth gate (endpoints / mode ids / CLI flags vs source)
@@ -89,6 +90,9 @@ node scripts/complexity-ratchet.mjs   # readability ratchet: tracked files may o
 node scripts/model-hints-freshness.mjs # manifest known_models vs installed vendor CLIs (release: --strict)
 pnpm canary        # canary golden stories (offline fake harnesses; needs pnpm build first)
 ```
+
+To change the shared Skill or stdio descriptor, edit `plugins/copilot` and run
+`pnpm gen:version` to refresh the host copies, including `packages/claudexor/pi`.
 
 Control-api tests load the built worker (`dist/bulk-worker.js`); run `pnpm --filter @claudexor/control-api build` before its focused tests.
 
@@ -460,11 +464,11 @@ Tests and local smokes must never touch real user state:
   In `afterAll` the removal hook is registered first, with a flag the close hook
   sets (`daemon/projects.test.ts`). `scripts/lib/vitest-reaper-hooks.test.mjs` pins
   these cases under the default `sequence.hooks: "stack"`, which they rely on.
-- A test waiting for work behind the store's dispatch barrier (a model or image
-  send, an account-reset consume) waits for that work, not Vitest's 1 s
-  `waitFor` default: the barrier needs a flusher pass (200 ms cadence, much
-  slower under disk contention). The bound stays below the test timeout, the
-  failure names the phase, and callers assert the terminal state they expect.
+- A test of a model send, image send or account-reset consume waits for the
+  covering flusher pass. An idle slot permits one extra early barrier. Followers
+  share the original periodic deadline, and disk contention can delay completion.
+  Give `waitFor` a bound below the test timeout, name the phase on failure and
+  assert the expected terminal state.
 - Managed secrets always use the daemon-owned v2 0600 file store, so a
   disposable `CLAUDEXOR_CONFIG_DIR` fully contains test secret I/O. The public
   CLI cannot select a storage backend.

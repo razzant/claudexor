@@ -19,6 +19,7 @@ import {
 import { accountPoolsProjection, profileAccountProjection } from "./accounts-projection.js";
 import { buildGateway, buildRegistry, checkHarnessModel } from "./registry.js";
 import { delegationCapabilityFor } from "./delegation-capability.js";
+import type { ModelLoginReadiness } from "./model-login-readiness.js";
 import { accountObservations } from "./account-observations.js";
 import { effectiveSetupLoginCapability } from "./setup-login-capability.js";
 
@@ -71,13 +72,19 @@ export async function projectHarnessStatuses(statuses: readonly HarnessStatus[])
  * additive model-scoped routing-evidence read. */
 export function createCredentialProfilesService(
   quotaRegistry: () => QuotaRegistry,
-  accounts: AccountEvidence,
+  accounts: AccountEvidence & { loginReadiness?: ModelLoginReadiness },
 ) {
   const projectProfiles = (fresh = false) => {
     const profiles = loadConfig(NO_PROJECT_ROOT).global.credential_profiles;
     return Promise.all(
       profiles.map((profile) =>
-        profileAccountProjection(profile, profiles, process.platform, fresh),
+        profileAccountProjection(
+          profile,
+          profiles,
+          process.platform,
+          fresh,
+          accounts.loginReadiness,
+        ),
       ),
     );
   };

@@ -1,5 +1,15 @@
 # @claudexor/policy
 
+## 6.3.0
+
+### Patch Changes
+
+- Updated dependencies [095300e]
+- Updated dependencies [cdcd850]
+  - @claudexor/schema@6.3.0
+  - @claudexor/util@6.3.0
+  - @claudexor/context@6.3.0
+
 ## 6.2.0
 
 ### Patch Changes

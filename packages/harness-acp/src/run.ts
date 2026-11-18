@@ -148,6 +148,7 @@ export function acpRunner(entry: AcpEntry) {
           );
           await emit(events.event("status", { text: ACP_DISCLOSURE }));
           transport = connectAcp({
+            harnessId: entry.id,
             binary: program.bin,
             args,
             env: prepared.env,

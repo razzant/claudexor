@@ -4,6 +4,7 @@ import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
+import { processTiming } from "@claudexor/util";
 import { runCliHarness, type CloseStdinIf } from "./runloop.js";
 import { spawnProcess, type ChildStdin, type SpawnOptions } from "./proc.js";
 
@@ -129,6 +130,28 @@ describe("runCliHarness Windows console policy", () => {
       for await (const event of run) void event;
     }
     expect(seen.map((options) => options?.windowsConsole)).toEqual(["none", undefined]);
+  });
+});
+
+describe("main-thread work of a run stream", () => {
+  it("counts translating each stdout frame under the harness name, never a path", async () => {
+    const work = (harness: string) =>
+      processTiming
+        .facts()
+        .work.find((entry) => entry.kind === "run.stream" && entry.harness === harness)?.lifetime
+        .count ?? 0;
+    const before = work("fake-stream");
+    const run = runCliHarness({
+      bin: process.execPath,
+      args: ["-e", "for (let i = 0; i < 3; i++) console.log(JSON.stringify({ n: i }))"],
+      spec: spec(),
+      label: "fake-stream",
+      parseEvent: () => [],
+    });
+    for await (const event of run) void event;
+    // Three frames, each parsed and translated: two sections per frame.
+    expect(work("fake-stream") - before).toBe(6);
+    expect(work(process.execPath)).toBe(0);
   });
 });
 

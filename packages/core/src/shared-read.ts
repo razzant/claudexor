@@ -65,12 +65,14 @@ export class SharedRead<T> {
     }
   }
 
-  invalidate(matches: (scope: string) => boolean = () => true): void {
+  invalidate(
+    matches: (scope: string) => boolean = () => true,
+    reason: Error = new ReadInvalidated("Read epoch invalidated"),
+  ): void {
     for (const [id, group] of this.entries) {
       if (!matches(id)) continue;
       this.entries.delete(id);
-      for (const entry of group)
-        entry.controller.abort(new ReadInvalidated("Read epoch invalidated"));
+      for (const entry of group) entry.controller.abort(reason);
     }
   }
 

@@ -16,12 +16,14 @@ import {
   type GlobalConfig,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
+import type { ModelLoginReadiness } from "./model-login-readiness.js";
 import { accountObservations, displayAccountObservation } from "./account-observations.js";
 
 export interface AccountCatalogContext {
   config: GlobalConfig;
   quota: VendorQuotaObservations;
   unusable?: readonly CredentialUnusableObservation[];
+  loginReadiness?: ModelLoginReadiness;
 }
 
 function catalogProblem(code: string, message: string, context = {}): ControlProblem {
@@ -93,7 +95,8 @@ async function accountAvailability(
         : ("vendor_native" as const),
   };
   const status = composeCredentialProfileEvidence(
-    (await displayAccountObservation(profile, adapter, false, signal)).status,
+    (await displayAccountObservation(profile, adapter, false, signal, context.loginReadiness))
+      .status,
     evidence,
   );
   if (!profileStatusAdmits(profile, status)) {

@@ -211,6 +211,7 @@ export class SqlUploads {
       row.status = { ...row.status, state: "uploading", receivedBytes: 0 };
       this.save(row);
       const received = await writeExternalIncremental(this.partPath(id), chunks, {
+        expectedBytes: row.status.expectedBytes,
         cancelled: () => this.rejectIfCancelled(id),
         accept: (chunk, soFar) => {
           this.rejectIfCancelled(id);

@@ -4,12 +4,13 @@ An account that cannot serve a requested Codex model is demoted for that model.
 Other models, account enablement, quota and authentication retain their existing
 rules. Each model operation still sends inference at most once.
 
-Selection's raw login readiness may reuse a dated positive probe for the same
-profile, `auth.json` and `config.toml` file versions, known credential generation
+Selection's raw login readiness, which run start shares, may reuse a dated
+positive probe for the same profile, `auth.json` and `config.toml` file versions, known credential generation
 and observed program identity. Its age starts at the physical probe, uses the
 positive doctor TTL (`CLAUDEXOR_DOCTOR_TTL_MS`, default 90 seconds), and never
 renews on a hit. Negative, unknown, failed, undated or stale results always
-probe again. This admission owner is separate from the display cache; quota
+probe again, drop the remembered positive, and outrank a success from an
+older probe that answers after them. This admission owner is separate from the display cache; quota
 and revocation overlays remain live, including on a hit. The existing strict
 pin and `last_positive_after_timeout` distinction is unchanged.
 
@@ -25,14 +26,21 @@ capability binding/reservation and release remain its own work. The last
 departed reader, shutdown, or a change of that read's own credential generation
 or program cancels pending I/O and fences late results. Catalog fetch and body
 together have a 60-second transport limit; expiry is typed
-`catalog_unavailable`, so Auto can try the next account. A completed catalog is
-never retained for admission: the next selection and selected-account catalog
-GET read again. A GET that arrives while an identical read is in flight joins
-it: its `observedAt` is that read's completion time, and the vendor request may
-have been sent before the GET arrived. The account display view keeps its
-separate explicit-refresh observation policy.
+`catalog_unavailable`, so Auto can try the next account. A successful catalog
+read is remembered for admission under the same rule as a login probe (its key
+adds the account and capability fingerprints, an authorization digest and the
+declared client version) and answers later raw-model selections of that key for
+the doctor positive TTL from its physical start (owner decision 2026-11-18). A failed
+catalog read, failed account authorization, unknown or changed identity, or a
+Codex program change drops the fact. A provider refusal of a listed model or
+its account on HTTP or the terminal stream also drops it. A request fault,
+rate limit or server failure on a generation leaves it available. Earlier reads
+cannot publish over contrary evidence. The public catalog GET and Accounts
+catalog acquisition each require a physical catalog read. They may join identical
+in-flight I/O and report that read's completion time as `observedAt`. The GET may
+reuse a dated positive login probe. Accounts Refresh checks the login physically.
 
-Auto selection reads live per-account catalogs. It prefers a listed model,
+Auto selection uses each account’s physical or dated catalog. It prefers a listed model,
 then an advisory miss, then an account with a soft observation for the model (a
 live refusal, or a served-model substitution unless it is the preferred account),
 then a capability-marked one: a soft observation may belong to one request, a
@@ -56,8 +64,8 @@ and plain-text representation.
 For a failed Codex inference, `problem.context.vendorCode = cyber_policy`
 from an HTTP error or a stream error (`error` or `response.failed`) produces
 `provider_content_refused` in the typed view, with `retryable: false`.
-End the request even if a fallback account or model is configured. Account
-evidence stays intact. This error does not establish whether generation
+End the request even with a fallback account or model. Both views retain the
+cached catalog and account evidence. It remains unknown whether generation
 started. For all Codex text failures, public diagnostics report only recognized
 codes, field names, event types, incomplete reasons and error classes, plus
 request IDs in known formats. Unrecognized values are omitted or masked.
@@ -225,11 +233,9 @@ public catalog response carries it. Managed credential changes also invalidate
 outstanding bindings. While a login holds the credential-mutation window,
 generations are unknown rather than changed: operations proceed, nothing is
 recorded, cleared or confirmed, and existing marks keep ordering selection.
-External capability changes are recognized on the next execution discovery or
-uncached account-catalog read. Accounts Refresh refreshes readiness and quota;
-for model catalogs it only invalidates the display cache, preparing it for the
-next uncached read. Ordinary cached catalog and read-only status responses do
-not acquire new evidence.
+Accounts Refresh refreshes readiness and quota and invalidates the display
+catalog. The next Accounts catalog acquisition reads the provider. Ordinary
+display reads keep the original observation until invalidation.
 
 An operation created with `captureRoutingEvidence=true` (advertised on
 `post:model-operations`, bound to its idempotency key, refused with

@@ -1,7 +1,7 @@
 import type { FinalMessagesOutcome, RunEvent, RunEventType } from "@claudexor/schema";
 import { RunEvent as RunEventSchema } from "@claudexor/schema";
 import { dirname, resolve } from "node:path";
-import { appendLine, nowIso, orderedAppender } from "@claudexor/util";
+import { appendLine, measureWork, nowIso, orderedAppender } from "@claudexor/util";
 import {
   lastSeqInFile,
   readEventFile,
@@ -232,46 +232,47 @@ export class EventLog {
     publish: boolean,
     landing?: Landing & { aside?: boolean },
   ): RunEvent {
-    this.assertEmittable();
-    const terminalType = terminalTypeOf(type);
-    if (terminalType && this.terminalStaged) {
-      throw new Error("run terminal event commit is already in progress");
-    }
-    // A queued line's failure that nobody awaited is reported here, once, to
-    // the run's own producers.
-    if (this.unlanded && !landing?.aside) {
-      try {
-        orderedAppender.throwHeld(this.path);
-      } catch (error) {
-        if (!terminalType) this.recordEventLoss();
-        throw error;
+    return measureWork("journal.append", () => {
+      this.assertEmittable();
+      const terminalType = terminalTypeOf(type);
+      if (terminalType && this.terminalStaged) {
+        throw new Error("run terminal event commit is already in progress");
       }
-    }
-    if (this.deferTerminalEvents && terminalType) {
-      if (this.deferredTerminal) throw new Error("run terminal event was emitted more than once");
-      this.deferredTerminal = { type, payload };
-      return this.stamp(type, payload);
-    }
-    if (terminalType) return this.commitNow(terminalType, payload, publish);
-    const event = this.stamp(type, payload);
-    if (this.unlanded) {
-      try {
-        orderedAppender.append(this.path, `${JSON.stringify(event)}\n`, {
-          landed: () => this.persistEvent(event, publish),
-          lost: () => this.lost(),
-          aside: landing?.aside === true,
-          waiter: landing && { resolve: () => landing.resolve(event), reject: landing.reject },
-        });
-      } catch (error) {
-        this.recordEventLoss();
-        throw error;
+      // Report any unobserved queued failure once to this run’s producer.
+      if (this.unlanded && !landing?.aside) {
+        try {
+          orderedAppender.throwHeld(this.path);
+        } catch (error) {
+          if (!terminalType) this.recordEventLoss();
+          throw error;
+        }
       }
-      this.nextSeq += 1;
-      this.unlanded.push(event);
+      if (this.deferTerminalEvents && terminalType) {
+        if (this.deferredTerminal) throw new Error("run terminal event was emitted more than once");
+        this.deferredTerminal = { type, payload };
+        return this.stamp(type, payload);
+      }
+      if (terminalType) return this.commitNow(terminalType, payload, publish);
+      const event = this.stamp(type, payload);
+      if (this.unlanded) {
+        try {
+          orderedAppender.append(this.path, `${JSON.stringify(event)}\n`, {
+            landed: () => measureWork("journal.append", () => this.persistEvent(event, publish)),
+            lost: () => this.lost(),
+            aside: landing?.aside === true,
+            waiter: landing && { resolve: () => landing.resolve(event), reject: landing.reject },
+          });
+        } catch (error) {
+          this.recordEventLoss();
+          throw error;
+        }
+        this.nextSeq += 1;
+        this.unlanded.push(event);
+        return event;
+      }
+      this.persistEvent(event, publish);
       return event;
-    }
-    this.persistEvent(event, publish);
-    return event;
+    });
   }
 
   /** The file and its durable sink establish a landing; live observers are best effort. */
