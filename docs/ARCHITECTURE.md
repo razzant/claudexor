@@ -5967,19 +5967,22 @@ files and their `.zst` forms. For group age and the pre-unlink file check,
 a dated rollout with another UUID in its prefix still belongs to the group
 of its final hyphen-delimited UUID. Native `<thread>_<rollout>` pairs and
 imported names outside that pattern supply no age evidence for either ID.
-With candidates and budget, GC reads bounded headers in `sessions` and flat or
-dated `archived_sessions`. Continuity can locate parts by UUID below three
-session directories with arbitrary names. Those parts also supply headers. Codex 0.169.0's
+With candidates and budget, GC reads bounded headers from rollout-prefixed
+files in the dated session layout and from UUID-bearing `.jsonl` or `.jsonl.zst`
+files three directories below `sessions`, as found by continuity. In
+`archived_sessions` it checks both name forms at the root and up to three
+plain directories below it, including imported paths used by export. Codex 0.169.0's
 first newline-terminated JSON record identifies the session and may name a base
 by its filename ID in `session_meta.payload.history_base.thread_id`.
 Named bases survive the pass even if their forks retire. The receipt counts each
 old candidate file once when a readable header first names its group as a base,
-even if a later header is unreadable. Directly referenced and recent files keep
+regardless of where unreadable headers occur in the scan. Directly referenced and recent files keep
 their original counts.
 A sole unreadable file may retire alone if it meets the usual age and ownership
 rules and no readable header names it as a base. Its retirement marks the pass
 truncated if another eligible file must wait. Unreadable headers hold the home
-only when they defer eligible files. File I/O and identity-check failures still
+only when they defer eligible files. Persistent damage can keep cleanup on hold
+for that home until the affected headers are repaired. File I/O and identity-check failures still
 appear as errors. A linked rollout path vetoes pruning.
 These deferrals appear in `native_home_veto` with their reason. A changed file
 or directory marks the pass truncated.

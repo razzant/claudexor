@@ -61,6 +61,7 @@ export class RolloutInventory {
   }
 
   async scan(home: string, store: "sessions" | "archived_sessions", cancelled: () => boolean) {
+    const archived = store === "archived_sessions";
     const visit = async (dir: string, depth: number, datedPath: boolean): Promise<void> => {
       if (cancelled()) return;
       const before =
@@ -74,9 +75,10 @@ export class RolloutInventory {
         if (cancelled()) return;
         const path = join(dir, entry.name);
         const dated = depth > 0 && DATE_DIR[depth - 1]!.test(entry.name);
-        // Continuity walks three directories under sessions, regardless of their names.
-        const directoryInLookup = depth > 0 && (store === "sessions" || dated);
-        if (directoryInLookup && entry.isDirectory()) {
+        // Export searches the archive root and three directory levels. Keep
+        // treating a rollout-shaped archive directory as an unsafe file.
+        const rolloutName = ROLLOUT.test(entry.name);
+        if (depth > 0 && entry.isDirectory() && !(archived && rolloutName)) {
           await visit(path, depth - 1, datedPath && dated);
           continue;
         }
@@ -84,16 +86,15 @@ export class RolloutInventory {
         const match = datedPath ? NAME.exec(entry.name) : null;
         const ids = entry.name.match(IDS_IN_NAME) ?? [];
         const locatedPart =
-          store === "sessions" &&
-          depth === 0 &&
+          (archived || depth === 0) &&
           ids.length > 0 &&
           (entry.name.endsWith(".jsonl") || entry.name.endsWith(".jsonl.zst"));
         // A final hyphen + UUID grouped dated parts even if the prefix contained
         // another UUID. An underscore-separated thread/rollout pair never did.
         const grouped = store === "sessions" && depth === 0 && entry.isFile() && match && !match[2];
         const candidate = grouped && ids.length === 1;
-        const rollout = (datedPath && ROLLOUT.test(entry.name)) || locatedPart;
-        const linkedBranch = directoryInLookup && entry.isSymbolicLink();
+        const rollout = ((datedPath || archived) && rolloutName) || locatedPart;
+        const linkedBranch = depth > 0 && entry.isSymbolicLink();
         const unsafe = linkedBranch || (rollout && !entry.isFile());
         if (store === "sessions" && !candidate)
           this.unknownSessions.set(path, unsafe ? "veto" : "informational");
@@ -132,7 +133,8 @@ export class RolloutInventory {
   /** A partial unlink may leave either representation. Both headers contribute edges. */
   async lineage(cancelled: () => boolean, keepReferenced: (id: string) => void) {
     if (this.unreadable) throw new Error(this.unreadable);
-    let unreadable: { part: RolloutPart; reason: string } | undefined;
+    const examples: string[] = [];
+    let soleUnreadable: RolloutPart | null = null;
     let storageFailure: string | undefined;
     for (const part of this.parts) {
       if (cancelled()) break;
@@ -146,14 +148,16 @@ export class RolloutInventory {
         const reason = `unreadable rollout header (${String(error)}): ${path}`;
         if (error instanceof RolloutIdentityChanged || (error as NodeJS.ErrnoException)?.syscall)
           storageFailure ??= reason;
-        if (unreadable)
-          return { part: null, reason: `${unreadable.reason}; ${reason}`, storageFailure };
-        unreadable = { part, reason };
+        soleUnreadable = examples.length ? null : part;
+        if (examples.length < 2) examples.push(reason);
         continue;
       }
       if (base) keepReferenced(base);
     }
-    return unreadable && { ...unreadable, storageFailure };
+    if (!examples.length) return;
+    // Keep a later I/O failure visible even if the first two headers were malformed.
+    if (storageFailure && !examples.includes(storageFailure)) examples.push(storageFailure);
+    return { part: soleUnreadable, reason: examples.join("; "), storageFailure };
   }
 
   /** Check the listed directories by metadata. No file enumeration or header reads here. */

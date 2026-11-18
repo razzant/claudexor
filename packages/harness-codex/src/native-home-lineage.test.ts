@@ -64,6 +64,7 @@ interface Rollout {
 }
 interface PassOptions {
   refs?: Set<string>;
+  dryRun?: boolean;
   maxDeletions?: number;
   canPrune?: () => boolean;
   signal?: AbortSignal;
@@ -94,7 +95,7 @@ function codexHome() {
       home,
       protectedSessionIds: o.refs ?? new Set(),
       olderThan: Date.now() - 30 * 86400000,
-      dryRun: false,
+      dryRun: o.dryRun ?? false,
       maxDeletions: o.maxDeletions ?? 500,
       canPrune: o.canPrune ?? (() => true),
       ...(o.signal ? { signal: o.signal } : {}),
@@ -122,6 +123,41 @@ it.each<[string, Rollout]>([
   expect(result.errors).toEqual([]);
   expect(result.deleted_files).toEqual([unrelated]);
   for (const file of chain) expect(existsSync(file)).toBe(true);
+});
+
+it.each([
+  `copy-${id(2)}.jsonl`,
+  `backup/rollout-copy-${id(2)}.jsonl`,
+  `backup/older/copy-${id(2)}.jsonl.zst`,
+  `backup/older/parts/copy-${id(2)}.jsonl`,
+])("keeps the base of archived_sessions/%s in preview and cleanup", async (relative) => {
+  const h = codexHome();
+  const base = h.write(id(1));
+  const other = h.write(id(3));
+  const archive = join(h.home, "archived_sessions");
+  const fork = join(archive, relative);
+  mkdirSync(dirname(fork), { recursive: true });
+  renameSync(h.write(id(2), { base: id(1), zst: relative.endsWith(".zst") }), fork);
+  const forkTime = new Date("2020-01-02");
+  utimesSync(fork, forkTime, forkTime);
+  const deeper = join(archive, "backup", "older", "parts", "extra");
+  mkdirSync(deeper, { recursive: true });
+  writeFileSync(join(deeper, `copy-${id(4)}.jsonl`), header(id(4)));
+  writeFileSync(join(dirname(fork), "notes.jsonl"), "unrelated text");
+  writeFileSync(join(dirname(fork), `copy-${id(5)}.txt`), "unrelated text");
+  for (const dryRun of [true, false]) {
+    resetRolloutReadStatsForTests();
+    expect(await h.prune({ dryRun })).toMatchObject({
+      errors: [],
+      deleted_files: [other],
+      kept_referenced: 1,
+      kept_unknown: 0,
+      truncated: false,
+    });
+    expect(rolloutReadStatsForTests().headReads).toBe(3);
+    expect([base, fork].every(existsSync)).toBe(true);
+    expect(existsSync(other)).toBe(dryRun);
+  }
 });
 
 it("retires an old chain one generation per pass, a base only after its fork", async () => {
@@ -407,31 +443,35 @@ it("holds two unreadable rollouts through a cap and a late reference until both 
   expect([a, b].every(existsSync)).toBe(true);
 });
 
-it.each([false, true])(
-  "counts the known base once across two torn archived headers (unrelated cold file: %s)",
-  async (deferred) => {
+it.each([true, false])(
+  "counts the base once across two torn headers (readable forks scanned first: %s)",
+  async (forksFirst) => {
     const h = codexHome();
     const base = h.write(id(1));
-    const forks = [false, true].map((zst) => h.write(id(2), { recent: true, base: id(1), zst }));
-    const archived = [3, 4].map((n) => h.write(id(n), { where: "archived", raw: "torn" }));
-    const other = deferred ? h.write(id(5)) : undefined;
-    const result = await h.prune();
-    expect(result).toMatchObject({
+    // The session store is always scanned before the archive, on every filesystem.
+    const recent = { recent: true };
+    const archive = { where: "archived" } as const;
+    const forks = [false, true].map((zst) =>
+      h.write(id(2), { ...(forksFirst ? recent : archive), base: id(1), zst }),
+    );
+    const torn = [3, 4].map((n) => h.write(id(n), { ...(forksFirst ? archive : recent), raw: "" }));
+    const counts = {
       deleted_files: [],
       freed_bytes: 0,
       kept_referenced: 1,
       kept_recent: 2,
+      kept_unknown: 0,
       truncated: false,
-    });
-    if (other) {
-      for (const file of archived) expect(result.holdReason).toContain(file);
-      expect(result.errors).toEqual([result.holdReason]);
-      expect(existsSync(other)).toBe(true);
-    } else {
-      expect(result.holdReason).toBeUndefined();
-      expect(result.errors).toEqual([]);
-    }
-    expect([base, ...forks, ...archived].every(existsSync)).toBe(true);
+    };
+    const complete = await h.prune();
+    expect(complete).toMatchObject({ ...counts, errors: [] });
+    expect(complete.holdReason).toBeUndefined();
+
+    const other = h.write(id(5));
+    const held = await h.prune();
+    expect(held).toMatchObject({ ...counts, errors: [held.holdReason] });
+    for (const file of torn) expect(held.holdReason).toContain(file);
+    expect([other, base, ...forks, ...torn].every(existsSync)).toBe(true);
   },
 );
 
@@ -511,6 +551,27 @@ it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)(
       expect([base, fork].every(existsSync)).toBe(true);
     } finally {
       chmodSync(base, 0o600);
+    }
+  },
+);
+
+it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)(
+  "keeps a later archive I/O error among bounded examples of unreadable headers",
+  async () => {
+    const h = codexHome();
+    const other = h.write(id(1));
+    for (let n = 3; n < 11; n++) h.write(id(n), { recent: true, raw: "torn" });
+    const archive = h.write(id(11), { where: "archived" });
+    chmodSync(archive, 0);
+    try {
+      const held = await h.prune();
+      expect(held).toMatchObject({ deleted_files: [], errors: [held.holdReason] });
+      expect(held.holdReason).toContain("EACCES");
+      expect(held.holdReason).toContain(archive);
+      expect(held.holdReason?.match(/unreadable rollout header/g)).toHaveLength(3);
+      expect(existsSync(other)).toBe(true);
+    } finally {
+      chmodSync(archive, 0o600);
     }
   },
 );
