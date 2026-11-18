@@ -78,7 +78,13 @@ export function createCredentialProfilesService(
     const profiles = loadConfig(NO_PROJECT_ROOT).global.credential_profiles;
     return Promise.all(
       profiles.map((profile) =>
-        profileAccountProjection(profile, profiles, process.platform, fresh, accounts.loginReadiness),
+        profileAccountProjection(
+          profile,
+          profiles,
+          process.platform,
+          fresh,
+          accounts.loginReadiness,
+        ),
       ),
     );
   };

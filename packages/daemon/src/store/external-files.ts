@@ -239,6 +239,7 @@ export async function writeExternalIncremental(
     cancelled?: () => void;
   },
 ): Promise<number> {
+  const blockBytes = Math.min(EXTERNAL_WRITE_BLOCK_BYTES, hooks?.expectedBytes || Infinity);
   const handle = await withPoolWriteSlot(hooks?.cancelled, async () => {
     const opened = await open(path, externalWriteFlags(constants.O_RDWR));
     try {
@@ -276,7 +277,7 @@ export async function writeExternalIncremental(
     for await (const chunk of chunks) {
       hooks?.accept?.(chunk, received + filled);
       for (let taken = 0; taken < chunk.byteLength;) {
-        block ??= Buffer.allocUnsafe(Math.min(EXTERNAL_WRITE_BLOCK_BYTES, hooks?.expectedBytes || Infinity));
+        block ??= Buffer.allocUnsafe(blockBytes);
         const part = chunk.subarray(taken, taken + block.byteLength - filled);
         block.set(part, filled);
         filled += part.byteLength;

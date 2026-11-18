@@ -26,7 +26,7 @@ __afterAllReap(() => {
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("EventLog seq stamping", () => {
-  it.each([false, true])("counts each synchronous append section, including queued landing (queued=%s)", async (queued) => {
+  it.each([false, true])("counts appends and queued landings (queued=%s)", async (queued) => {
     const log = new EventLog(
       join(reapMk(join(tmpdir(), "cx-append-count-")), "events.jsonl"),
       "run-1",
