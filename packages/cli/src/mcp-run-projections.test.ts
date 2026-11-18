@@ -19,6 +19,7 @@ import {
   presentRunPrimaryOutput,
   projectRunPrimaryOutput,
 } from "./run-detail-projections.js";
+import { releasedRunReader } from "../../schema/fixtures/run-results-6.2.0.js";
 
 const failure = {
   phase: "execute",
@@ -428,5 +429,58 @@ describe("MCP run detail projections", () => {
       /identity does not match/,
     );
     expect(() => canonicalRunId("run-1", undefined)).toThrow(/identity does not match/);
+  });
+});
+
+describe("late mandatory-context failure on the released MCP wire", () => {
+  // What the orchestrator's context terminal leaves in failure.yaml when a
+  // Plan loses a required file after admission: truthful category, closed
+  // enum, facts in the redacted message.
+  const latePlanFailure = {
+    phase: "context",
+    category: "project",
+    code: null,
+    harnessId: null,
+    attemptId: null,
+    safeMessage: "mandatory context missing/unreadable in /execution/root: REQUIRED.md (ENOENT)",
+    rawDetailRef: null,
+    resetsAt: null,
+    vendorFailure: null,
+    logRefs: [],
+    eventRefs: [],
+    runDir: "/tmp/run-plan",
+    nextActions: ["Open diagnostics", "Retry the run"],
+  };
+  const detail = (failureRecord: Record<string, unknown>) => ({
+    summary: { runId: "run-plan", state: "failed", runDir: "/tmp/run-plan", mode: "plan" },
+    failure: failureRecord,
+    finalSummary: "# Run run-plan (plan)\n\n- Lifecycle: failed\n- Phase: context\n",
+  });
+
+  it("keeps the failed Plan's failure on the old-wire handle in every read mode", () => {
+    const readAs620 = releasedRunReader("McpRunHandleResult");
+    for (const mode of ["__run_status", "__run_result", "__run_inspect"]) {
+      const projected = projectRecoveryRunDetail(mode, "run-plan", detail(latePlanFailure));
+      expect(McpRunHandleResult.parse(projected).failure).toMatchObject({
+        phase: "context",
+        category: "project",
+        code: null,
+      });
+      const wire = JSON.parse(JSON.stringify(projected));
+      expect(readAs620(wire), JSON.stringify(readAs620.errors)).toBe(true);
+      expect(wire.failure.safeMessage).toContain("REQUIRED.md (ENOENT)");
+    }
+  });
+
+  it("drops the whole failure record on an unknown code (why RunFailureCode stays frozen)", () => {
+    // parse-or-null: even the CURRENT projection loses the failure entirely...
+    const widened = detail({ ...latePlanFailure, code: "mandatory_context_unavailable" });
+    expect(projectRecoveryRunDetail("__run_status", "run-plan", widened)["failure"]).toBeNull();
+    // ...and the released 6.2.0 reader rejects the record outright.
+    const readAs620 = releasedRunReader("McpRunHandleResult");
+    const wire = JSON.parse(JSON.stringify(projectRecoveryRunDetail("__run_status", "run-plan", detail(latePlanFailure))));
+    expect(readAs620(wire)).toBe(true);
+    wire.failure.code = "mandatory_context_unavailable";
+    expect(readAs620(wire)).toBe(false);
   });
 });

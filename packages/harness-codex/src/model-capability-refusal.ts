@@ -1,5 +1,5 @@
 import type { ControlProblem } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
+import { recognizedProviderSentence } from "./response-diagnostics.js";
 
 /** Only a non-success inference HTTP response can certify no generation. Stream
  * errors, malformed parameters and transport uncertainty never enter this lane. */
@@ -67,9 +67,10 @@ export function codexCapabilityRefusal(
       retryOnOtherAccount: false,
       capabilityKind: kind,
       capabilityEvidence: explicit ? "provider_code" : "provider_text",
-      providerReason: redactSecrets(reason || vendorCode || kind)
-        .replace(/[\x00-\x1f\x7f]/g, " ")
-        .slice(0, 1024),
+      // Keep recognized explanations for the requested model. A recognized
+      // code alone does not make the provider's free-form message public.
+      providerReason:
+        exact || missing?.[1] === requestedModel ? recognizedProviderSentence(reason) : kind,
     },
   };
 }

@@ -55,6 +55,18 @@ function mixedEvents(count: number, bufferedEvery: number): Record<string, unkno
 afterEach(() => vi.restoreAllMocks());
 
 describe("tail-first eligible timeline projection", () => {
+  it("keeps an unknown send, late queue acceptance and consumption as distinct observations", () => {
+    const status = (code: string) => ({ type: "harness.event", payload: { type: "status", payload: { code, message_id: "m1" } } });
+    const events = [
+      { type: "message.refused", payload: { message_id: "m1", outcome: "delivery_unknown" } },
+      status("live_input_accepted"),
+      status("live_input_delivered"),
+    ];
+    expect(timelineEvents({}, events).map(({ messageId, outcome }) => [messageId, outcome])).toEqual([
+      ["m1", "delivery_unknown"], ["m1", "accepted"], ["m1", "delivered"],
+    ]);
+  });
+
   const cases = [0, 1, 499, 500, 501, 750, 1200].flatMap((count) =>
     [0, 1, 2, 17].flatMap((bufferedEvery) =>
       [false, true].map((incomplete) => ({ count, bufferedEvery, incomplete })),

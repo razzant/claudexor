@@ -484,7 +484,7 @@ describe("acpSessionQuery terminal RunFacts binding", () => {
 
       expect(terminalStatus).toHaveBeenCalledWith("job-failed");
       expect(detailSpy).toHaveBeenCalledTimes(1);
-      expect(detailSpy).toHaveBeenCalledWith(addr, "run-failed");
+      expect(detailSpy).toHaveBeenCalledWith(addr, "run-failed", false, undefined);
       expect(result).toMatchObject({
         runId: "run-failed",
         status: "failed",

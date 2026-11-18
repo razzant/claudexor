@@ -1,6 +1,7 @@
 import {
   ControlPrimaryOutput,
   CouncilProjection,
+  FinalMessagesOutcome,
   RunFailure,
   type ControlPrimaryOutput as ControlPrimaryOutputType,
   type DecisionRecord,
@@ -17,6 +18,14 @@ export function projectRunPrimaryOutput(
   detail: Record<string, unknown> | null,
 ): ControlPrimaryOutputType | null {
   const parsed = ControlPrimaryOutput.safeParse(detail?.["primaryOutput"]);
+  return parsed.success ? parsed.data : null;
+}
+
+/** #307: the detail's final-messages outcome (address or gap); null if unknown or malformed. */
+export function projectRunFinalMessages(
+  detail: Record<string, unknown> | null,
+): FinalMessagesOutcome | null {
+  const parsed = FinalMessagesOutcome.safeParse(detail?.["finalMessages"]);
   return parsed.success ? parsed.data : null;
 }
 

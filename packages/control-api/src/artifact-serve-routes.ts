@@ -12,6 +12,7 @@ import type { ArtifactReadRequest, ArtifactReadResult } from "./artifact-read.js
 export { expiredRunBody, listArtifacts } from "./artifact-read.js";
 import type { DaemonRunRecord } from "./daemon-server.js";
 import { streamFilesArtifact } from "./files-artifact-stream.js";
+import { finalMessagesUnavailable } from "./final-messages-projection.js";
 import { runExecutionWorkspaceRoot } from "./run-execution-root.js";
 import { PreparationCleanupFailed, PreparationHeld } from "@claudexor/workspace";
 
@@ -167,7 +168,14 @@ async function serveArtifactRead(
     if (result.kind === "error") {
       ctx.json(res, result.status, result.body);
     } else if (result.kind === "files") {
-      await streamFilesArtifact(result.transfer, res, abort.signal);
+      try {
+        await streamFilesArtifact(result.transfer, res, abort.signal);
+      } catch (error) {
+        if (result.transfer.kind !== "final_messages" || res.headersSent || abort.signal.aborted)
+          throw error;
+        const gap = finalMessagesUnavailable("artifact_unavailable");
+        ctx.json(res, gap.status, gap.body);
+      }
     } else {
       res.writeHead(200, {
         "content-type": result.contentType,

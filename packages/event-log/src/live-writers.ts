@@ -2,13 +2,15 @@ import type { RunEvent, RunEventType } from "@claudexor/schema";
 import { RunEvent as RunEventSchema } from "@claudexor/schema";
 import { resolve } from "node:path";
 import { appendLine, nowIso } from "@claudexor/util";
-import { lastSeqInFile, readEventFile, terminalEventInFile, withUnlanded } from "./event-file.js";
+import {
+  lastSeqInFile,
+  readEventFile,
+  terminalEventInFile,
+  terminalTypeOf,
+  withUnlanded,
+} from "./event-file.js";
 import type { EventLog } from "./index.js";
 import type { TerminalRunEventType } from "./types.js";
-
-export function terminalTypeOf(type: RunEventType): TerminalRunEventType | null {
-  return type === "run.completed" || type === "run.failed" || type === "run.blocked" ? type : null;
-}
 
 /**
  * Live writers by events.jsonl path (one daemon process hosts the

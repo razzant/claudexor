@@ -788,6 +788,7 @@ final/work_product.yaml
 final/summary.md
 final/failure.yaml?
 final/answer.md?
+final/final-messages.jsonl?
 final/explore.md?
 final/explore-findings.yaml?
 final/omissions.md?
@@ -796,12 +797,10 @@ final/plan.md?
 context/context_error.md?
 ```
 
-Files are the source of truth. Terminal output and UI rows are projections. The
-macOS thread workspace surfaces Changes, Artifacts, and Evidence (with each
-run's Outcome facts on top when a receipt is selected, and a remote-only
-Terminal tab on remote threads) directly from these
-artifacts/events, so successful answers and failed runs are inspectable instead
-of disappearing into logs.
+The macOS thread workspace shows the selected run's outcome in Changes,
+Artifacts and Evidence. Remote threads also have a Terminal tab.
+`claudexor inspect <run_id> --include-final-messages` reports whether the run's
+[ordered final messages](docs/ARCHITECTURE.md#final-messages) are available and where to read them.
 
 Standalone Agent runs use isolated envelopes by default, and Best-of candidates
 always use isolated envelopes. They live under the same external project

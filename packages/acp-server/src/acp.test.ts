@@ -610,6 +610,133 @@ describe("AcpServer official SDK projection", () => {
     });
   });
 
+  it("refuses malformed final-message metadata on the wire before calling the runner", async () => {
+    const cwd = project();
+    const calls: unknown[] = [];
+    await withRawClient(
+      async (params) => {
+        calls.push(params);
+        return { sessionId: "notes", cwd, turns: [] };
+      },
+      async (exchange) => {
+        let id = 1;
+        const handshake = await exchange({
+          jsonrpc: "2.0",
+          id,
+          method: "initialize",
+          params: { protocolVersion: 1, clientCapabilities: {} },
+        });
+        expect(handshake).toMatchObject({ id, result: { protocolVersion: 1 } });
+        for (const method of ["session/load", "session/prompt"]) {
+          const params =
+            method === "session/load"
+              ? { cwd, mcpServers: [] }
+              : { prompt: [{ type: "text", text: "Read the note." }] };
+          for (const _meta of [
+            "notes",
+            [],
+            { claudexor: null },
+            { claudexor: [] },
+            { claudexor: { includeFinalMessages: "true" } },
+            { claudexor: { includeFinalMessages: null } },
+          ]) {
+            const reply = await exchange({
+              jsonrpc: "2.0",
+              id: ++id,
+              method,
+              params: { ...params, sessionId: "notes", _meta },
+            });
+            expect(reply.id).toBe(id);
+            expect(reply.error).toBeDefined();
+            expect(reply).not.toHaveProperty("result");
+          }
+        }
+        expect(calls).toEqual([]);
+        const ordinary = await exchange({
+          jsonrpc: "2.0",
+          id: ++id,
+          method: "session/load",
+          params: {
+            cwd,
+            sessionId: "notes",
+            mcpServers: [],
+            _meta: { claudexor: { includeFinalMessages: false } },
+          },
+        });
+        expect(ordinary).toMatchObject({ id, result: {} });
+        expect(calls).toHaveLength(1);
+      },
+    );
+  });
+
+  it("returns final-message addresses only on a requested prompt or replay", async () => {
+    const cwd = project();
+    const sessionId = "notes";
+    const gap = { state: "unavailable", reason: "source_unreadable" };
+    const calls: Record<string, unknown>[] = [];
+    await withClient(
+      async (params) => {
+        calls.push(params);
+        if (params.mode === "__acp_session_load")
+          return {
+            sessionId,
+            cwd,
+            turns: [
+              {
+                prompt: "Read the note.",
+                output: { text: "Note read." },
+                run: { runId: "run-1", finalMessages: gap, summary: "Internal note." },
+              },
+              { prompt: "Earlier note.", run: { runId: "run-2", finalMessages: null } },
+              { prompt: "Draft note." },
+            ],
+          };
+        return { summary: "Note read.", status: "succeeded", runId: "run-1", finalMessages: gap };
+      },
+      async (agent, updates) => {
+        const load: acp.LoadSessionRequest = { cwd, sessionId, mcpServers: [] };
+        const prompt: acp.PromptRequest = {
+          sessionId,
+          prompt: [{ type: "text", text: "Read the note." }],
+        };
+        const editor = { "example.test/editor": { includeFinalMessages: true } };
+        for (const [option, meta] of [
+          [undefined, {}],
+          [undefined, { _meta: editor }],
+          [false, { _meta: { ...editor, claudexor: { includeFinalMessages: false } } }],
+          [true, { _meta: { ...editor, claudexor: { includeFinalMessages: true } } }],
+        ] as const) {
+          const replay = await agent.request(acp.methods.agent.session.load, { ...load, ...meta });
+          const turn = await agent.request(acp.methods.agent.session.prompt, {
+            ...prompt,
+            ...meta,
+          });
+          if (option) {
+            expect(replay._meta?.["claudexor"]).toEqual({
+              turns: [
+                { runId: "run-1", finalMessages: gap },
+                { runId: "run-2", finalMessages: null },
+              ],
+            });
+            expect(turn._meta?.["claudexor"]).toMatchObject({ runId: "run-1", finalMessages: gap });
+            for (const call of calls.slice(-2)) expect(call["includeFinalMessages"]).toBe(true);
+          } else {
+            expect(replay).toEqual({});
+            expect(turn._meta?.["claudexor"]).not.toHaveProperty("finalMessages");
+            for (const call of calls.slice(-2))
+              expect(call).not.toHaveProperty("includeFinalMessages");
+          }
+          expect(turn.stopReason).toBe("end_turn");
+          expect(JSON.stringify(updates)).not.toContain("finalMessages");
+          for (const call of calls.slice(-2)) {
+            expect(call).not.toHaveProperty("_meta");
+            expect(call).not.toHaveProperty(["example.test/editor"]);
+          }
+        }
+      },
+    );
+  });
+
   it("renders a plan turn's open questions as TURN TEXT when readiness is needs_answers (D14/D17)", async () => {
     const cwd = project();
     await withClient(

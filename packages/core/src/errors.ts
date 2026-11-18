@@ -52,6 +52,33 @@ export class EffortPreferenceRejectedError extends ClaudexorError {
 }
 export class ContextOverflowError extends ClaudexorError {}
 
+/** An explicitly configured mandatory file is missing, unreadable or out of
+ * bounds in the execution root. `code` is an OPEN-vocabulary refusal term for
+ * the HTTP problem surfaces (ControlProblem/TurnEnqueueProblem). It is
+ * deliberately NOT a `RunFailureCode`: a late Plan failure records category
+ * `project` with `code: null`, because released strict readers parse the whole
+ * RunFailure or drop it (precedent: `vendor_limit_rejected`). */
+export class MandatoryContextUnavailableError extends ClaudexorError {
+  readonly code = "mandatory_context_unavailable";
+  readonly category = "project";
+  readonly status = 409;
+  readonly retryable = false;
+  // A recorded turn can replay its params once the workspace has been repaired.
+  readonly turnRetryable = true;
+  readonly requiredActions = [
+    "Check the required paths in project configuration and make the files readable inside the execution root before retrying.",
+  ];
+  constructor(
+    readonly context: {
+      executionRoot: string;
+      unavailableFiles: { path: string; reason: string }[];
+    },
+  ) {
+    const files = context.unavailableFiles.map(({ path, reason }) => `${path} (${reason})`);
+    super(`mandatory context missing/unreadable in ${context.executionRoot}: ${files.join(", ")}`);
+  }
+}
+
 /** A raw-api RawContextPacket that cannot be delivered as the project requires
  * (#147). It is refused before any request is sent; a retry cannot repair it.
  * An over-window refusal carries its typed sizes for the failure record. */

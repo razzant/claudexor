@@ -29,6 +29,7 @@ import {
 import { DELEGATION_ENV, redactSecrets } from "@claudexor/util";
 import type { McpTool, McpToolAnnotations, McpToolOutput, RunnerFn } from "./index.js";
 import { attachmentRefsSchema } from "./attachment-ref-schema.js";
+import { resultReadInput, resultReadOutput } from "./run-result-tool.js";
 
 /** Runtime policy the belt enforces, derived from the injected delegation env. */
 export interface DelegationPolicy {
@@ -402,25 +403,27 @@ export function beltClaudexorTools(
       ledger.committedUsd += typeof spendUsd === "number" ? Math.max(0, spendUsd) : reservedUsd;
       const terminalFailure = failedChildTerminal(result);
       if (terminalFailure) throw terminalFailure;
-      return formatBeltResult(result);
+      return resultReadOutput(result, false, formatBeltResult);
     },
   });
 
   const readTool = (name: string, description: string, mode: string): McpTool => ({
     name,
     description,
-    inputSchema: runIdSchema,
+    inputSchema: mode === "__run_result" ? resultReadInput(runIdSchema) : runIdSchema,
     annotations: readOnly,
     handler: async (args) => {
       if (!policy.parentRunId) {
         return "delegation refused: delegation parent run id is missing; refusing unscoped read";
       }
+      const requested = mode === "__run_result" && args.includeFinalMessages === true;
       const result = await runner({
         mode,
         runId: String((args as { runId?: unknown }).runId ?? ""),
         delegatedFromRunId: policy.parentRunId,
+        ...(requested ? { includeFinalMessages: true } : {}),
       });
-      return formatBeltResult(result);
+      return resultReadOutput(result, requested, formatBeltResult);
     },
   });
 

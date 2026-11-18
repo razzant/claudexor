@@ -385,6 +385,24 @@ fixtures:
       tool_error_results: 0
       typed_rate_limit: false
 
+  # SCRIPTED, not a vendor recording (#627): the prompt's turn makes an edit,
+  # takes a live message into the queue and starts a background command, then
+  # the API refuses its next request for quota: a typed `rejected` rate-limit
+  # frame, the CLI's own error notice and a result with api_error_status 429
+  # that names the prompt. The CLI then runs the queued message and the
+  # background report as turns of their own, refused the same way. Frame shapes
+  # come from the recordings above; whether a real refusal's result names the
+  # prompt is not recorded.
+  stream-json/scripted-quota-refusal.jsonl:
+    source: synthetic
+    expectations:
+      final_messages: 0
+      thinking_events: 0
+      started_events: 1
+      delta_messages: 0
+      tool_error_results: 0
+      typed_rate_limit: true
+
   # CONTROLLED ENDPOINT: the same local HTTP 400 body declares
   # error.details.error_code=claude_code_version_too_old. The current CLI
   # retains api_error_code; the older CLI keeps the sentence but drops the code.

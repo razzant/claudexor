@@ -3,6 +3,7 @@ import { noProjectRepoRoot } from "@claudexor/util";
 import {
   TERMINAL_LIFECYCLES,
   type ControlPrimaryOutput,
+  type FinalMessagesOutcome,
   type ModeKind,
   type RunFacts,
   type RunFailure,
@@ -11,12 +12,15 @@ import {
 import { daemonOutcomeSummary, ensureDaemon, fetchRunDetail } from "./daemon-run.js";
 import { controlProblemError } from "./cli-error.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
+import { runDetailPath } from "./run-detail-path.js";
+import type { EngineIdentity } from "./engine-skew.js";
 import { primaryOutputForCli } from "./primary-output.js";
 import {
   describeRunDetailProblem,
   presentRunPrimaryOutput,
   projectApplyEligibility,
   projectOutcomeBanner,
+  projectRunFinalMessages,
   projectRunPrimaryOutput,
   projectRunFailure,
   type RunDetailProblem,
@@ -58,6 +62,8 @@ export async function projectTerminalTurnDetail(
   addr: ControlApiAddress,
   runId: string,
   lifecycle: RunOutcomeFacts["lifecycle"],
+  includeFinalMessages = false,
+  engine?: EngineIdentity,
 ): Promise<{
   applyEligibility: unknown;
   planReadiness: unknown;
@@ -67,6 +73,7 @@ export async function projectTerminalTurnDetail(
   outcomeFacts: RunOutcomeFacts | null;
   outcomeBanner: string | null;
   runFacts: RunFacts | null;
+  finalMessages?: FinalMessagesOutcome | null;
   detailProblem?: RunDetailProblem;
 }> {
   const empty = {
@@ -78,10 +85,11 @@ export async function projectTerminalTurnDetail(
     outcomeFacts: null,
     outcomeBanner: null,
     runFacts: null,
+    ...(includeFinalMessages ? { finalMessages: null } : {}),
   };
   if (!runId) return empty;
   try {
-    const detail = await fetchRunDetail(addr, runId);
+    const detail = await fetchRunDetail(addr, runId, includeFinalMessages, engine);
     const runFacts = projectRunFacts(detail, { runId, lifecycle });
     return {
       applyEligibility: projectApplyEligibility(detail),
@@ -97,6 +105,7 @@ export async function projectTerminalTurnDetail(
       outcomeFacts: projectRunOutcomeFacts(detail),
       outcomeBanner: projectOutcomeBanner(detail),
       runFacts,
+      ...(includeFinalMessages ? { finalMessages: projectRunFinalMessages(detail) } : {}),
     };
   } catch (error) {
     return { ...empty, detailProblem: describeRunDetailProblem(error) };
@@ -172,7 +181,15 @@ export function projectAcpRunControls(input: Record<string, unknown>): Record<st
   const controls = Object.fromEntries(
     Object.entries(input).filter(
       ([key]) =>
-        !["mode", "sessionId", "repoPath", "prompt", "attachments", "deferred"].includes(key),
+        ![
+          "mode",
+          "sessionId",
+          "repoPath",
+          "prompt",
+          "attachments",
+          "deferred",
+          "includeFinalMessages",
+        ].includes(key),
     ),
   );
   if (controls["runMode"] !== undefined) {
@@ -213,7 +230,8 @@ export async function acpSessionQuery(
   hooks: Hooks | undefined,
   bridges: Bridges,
 ): Promise<unknown> {
-  const { client, addr } = await ensureDaemon();
+  const { client, addr, engine } = await ensureDaemon();
+  const includeFinalMessages = p.includeFinalMessages === true;
   const request = async (
     path: string,
     init: RequestInit = {},
@@ -291,6 +309,8 @@ export async function acpSessionQuery(
     const turns: Array<{
       prompt: string;
       output: { kind: string; text: string; truncated: boolean } | null;
+      /** #307: a run-backed turn's outcome, shown only to a client that asked. */
+      run?: { runId: string; finalMessages: FinalMessagesOutcome | null };
     }> = [];
     // Disclose the cap so the reopened conversation never silently starts
     // mid-stream as if the earlier turns never existed.
@@ -309,9 +329,11 @@ export async function acpSessionQuery(
       const prompt = typeof value["prompt"] === "string" ? value["prompt"] : "";
       const runId = typeof value["runId"] === "string" ? value["runId"] : "";
       let output: { kind: string; text: string; truncated: boolean } | null = null;
+      let finalMessages: FinalMessagesOutcome | null = null;
       if (runId) {
         try {
-          const run = await request(`/runs/${encodeURIComponent(runId)}`);
+          const run = await request(await runDetailPath(addr, runId, includeFinalMessages, engine));
+          if (includeFinalMessages) finalMessages = projectRunFinalMessages(run);
           const primary = run["primaryOutput"] as Record<string, unknown> | null | undefined;
           const text = typeof primary?.["text"] === "string" ? primary["text"].trim() : "";
           if (text) {
@@ -337,7 +359,11 @@ export async function acpSessionQuery(
           typeof enqueueError?.["message"] === "string" ? enqueueError["message"].trim() : "";
         if (message) output = { kind: "diagnostic", text: message, truncated: false };
       }
-      turns.push({ prompt, output });
+      turns.push({
+        prompt,
+        output,
+        ...(includeFinalMessages && runId ? { run: { runId, finalMessages } } : {}),
+      });
     }
     return { ...session, turns };
   }
@@ -381,6 +407,8 @@ export async function acpSessionQuery(
           addr,
           runId,
           record.state as RunOutcomeFacts["lifecycle"],
+          includeFinalMessages,
+          engine,
         );
         const summary = acpTerminalSummary({ runId, runDir, record, detail });
         const { primaryOutput: _primaryOutput, ...terminalProjection } = detail;

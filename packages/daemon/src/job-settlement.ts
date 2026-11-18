@@ -41,8 +41,13 @@ export function settleJobError({
   const code = thrownField(thrown, "code");
   const status = thrownField(thrown, "status");
   const retryable = thrownField(thrown, "retryable");
+  const turnRetryable = thrownField(thrown, "turnRetryable");
+  const turnId = (record.params as { turnId?: unknown } | null)?.turnId;
+  const refusedTurn = !aborted && !record.runId && typeof turnId === "string" && turnId.length > 0;
   const requiredActions = safeProblemRequiredActions(thrownField(thrown, "requiredActions"));
-  const context = safeProblemContext(thrownField(thrown, "context"));
+  const { turnRetryable: _reserved, ...context } = safeProblemContext(
+    thrownField(thrown, "context"),
+  );
   const typedStatus =
     typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
       ? status
@@ -80,7 +85,16 @@ export function settleJobError({
     // untyped refusal must preserve the refused-turn recorder's default.
     ...(typeof retryable === "boolean" ? { errorRetryable: retryable } : {}),
     errorRequiredActions: requiredActions,
-    errorContext: context,
+    // Only a confirmed job that failed to start its turn can carry this claim.
+    // Keeping it in bounded problem context also preserves it on receipt lookup.
+    // The turn recorder in server.ts reads it back into the stored problem's own
+    // `retryable` and keeps it out of the stored context — the same shape the
+    // route recorder persists via problemFromError, so one refused turn stores
+    // one identical TurnEnqueueProblem whichever path recorded it.
+    errorContext:
+      refusedTurn && typeof turnRetryable === "boolean"
+        ? { turnRetryable, ...context }
+        : context,
     finishedAt: nowIso(),
   });
 }
