@@ -6263,8 +6263,13 @@ kept only for cold import and an independent frozen copy kept for tests.
   An upload part is that same write-through file, written incrementally on the
   libuv pool under the process's pool write gate
   ([Main thread and disk waits](#main-thread-and-disk-waits)), which concurrent
-  uploads share with the engine's other pool writes. Each pool operation of a
-  transfer (the open, every chunk write, the close) takes one slot and releases
+  uploads share with the engine's other pool writes. The network chunks of a
+  PUT are gathered into blocks of at least 1 MiB (the last one may be shorter),
+  each written once with the same flags, so a 3.8 MB body takes four pool
+  writes and four request-thread callbacks instead of about sixty; each chunk is
+  still checked against the declared size before it is accepted, and the sha256
+  covers every written byte. Each pool operation of a
+  transfer (the open, every block write, the close) takes one slot and releases
   it when the operation returns, so a PUT waiting for its next bytes from the
   network, however long, holds no slot and cannot hold up other uploads.
   Cancellation wakes a transfer's wait for a slot, and the close still runs
