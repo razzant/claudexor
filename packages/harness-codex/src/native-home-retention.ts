@@ -94,9 +94,9 @@ async function prune(input: NativeHomeRetentionInput) {
   }
   const archiveChanged = await inventory.scan(home, "archived_sessions", cancelled);
   if (archiveChanged) return hold(archiveChanged, true);
-  let lineage;
+  let unreadable;
   try {
-    lineage = await inventory.lineage(cancelled);
+    unreadable = await inventory.lineage(cancelled, keepReferenced);
   } catch (error) {
     result.kept_unknown = inventory.keptUnknown("lineageHold");
     if (rolloutPathDisappeared(error))
@@ -104,14 +104,13 @@ async function prune(input: NativeHomeRetentionInput) {
     return hold(String(error));
   }
   if (cancelled()) return result;
-  const { bases, unreadable } = lineage;
-  for (const id of bases) keepReferenced(id);
   const late = refreshProtections();
   if (late) return late;
   // A sole unknown outgoing edge can point anywhere. Only its own unreferenced
   // file can go, and only after every other header has ruled out an incoming edge.
   groupsLoop: for (const [id, { candidates, companions }] of pending) {
     if (cancelled()) return result;
+    if (unreadable?.part === null) break; // Multiple unreadable headers rule out every unlink.
     if (unreadable && !candidates.has(unreadable.part)) continue;
     await yieldToAdmission();
     if (cancelled()) return result;
@@ -126,8 +125,11 @@ async function prune(input: NativeHomeRetentionInput) {
         const currentProof = input.canPrune();
         const late = refreshProtections();
         if (late) return late;
-        if (!pending.has(id)) continue groupsLoop;
-        if (!currentProof) return hold(`native references or setup state changed: ${home}`);
+        const retained = !pending.has(id);
+        if (retained && !unreadable) continue groupsLoop;
+        if (!currentProof)
+          return cancelled() ? result : hold(`native references or setup state changed: ${home}`);
+        if (retained) break groupsLoop; // The sole file we could unlink just gained a reference.
       } catch (error) {
         return hold(`native retention proof unreadable (${String(error)}): ${home}`);
       }
@@ -170,21 +172,22 @@ async function prune(input: NativeHomeRetentionInput) {
           const replaced = inventory.didUnlink(part.path);
           if (replaced) return hold(replaced, true);
         }
-        if (unreadable) {
-          if (pending.size) {
-            result.holdReason = `pass limited to the sole ${unreadable.reason}`;
-            result.truncated = true;
-          }
-          return result;
-        }
+        if (unreadable) break groupsLoop;
       } catch (error) {
         return hold(String(error), rolloutPathDisappeared(error));
       }
     }
   }
-  if (unreadable) {
-    result.kept_unknown = inventory.keptUnknown("lineageHold");
-    return hold(unreadable.reason);
+  if (!cancelled() && unreadable) {
+    if (pending.size) {
+      if (!result.deleted_files.length) {
+        result.kept_unknown = inventory.keptUnknown("lineageHold");
+        return hold(unreadable.reason);
+      }
+      result.holdReason = `pass limited to the sole ${unreadable.reason}`;
+      result.truncated = true;
+    }
+    if (unreadable.storageFailure) result.errors.push(unreadable.storageFailure);
   }
   return result;
 }

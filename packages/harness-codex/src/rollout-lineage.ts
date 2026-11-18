@@ -2,7 +2,7 @@ import { lstatSync, type BigIntStats, type Stats } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { record } from "./responses.js";
-import { readCodexRolloutHead } from "./rollout-file.js";
+import { readCodexRolloutHead, RolloutIdentityChanged } from "./rollout-file.js";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 export const CODEX_SESSION_ID = new RegExp(`^${UUID}$`, "i");
@@ -130,25 +130,30 @@ export class RolloutInventory {
   }
 
   /** A partial unlink may leave either representation. Both headers contribute edges. */
-  async lineage(cancelled: () => boolean) {
+  async lineage(cancelled: () => boolean, keepReferenced: (id: string) => void) {
     if (this.unreadable) throw new Error(this.unreadable);
-    const bases = new Set<string>();
     let unreadable: { part: RolloutPart; reason: string } | undefined;
+    let storageFailure: string | undefined;
     for (const part of this.parts) {
       if (cancelled()) break;
       const { path, stat } = part;
+      let base;
       try {
-        const id = historyBase(await readCodexRolloutHead(path, stat));
-        if (id) bases.add(id);
+        base = historyBase(await readCodexRolloutHead(path, stat));
       } catch (error) {
         if (this.unknownSessions.has(path)) this.unknownSessions.set(path, "veto");
         if (rolloutPathDisappeared(error)) throw error;
         const reason = `unreadable rollout header (${String(error)}): ${path}`;
-        if (unreadable) throw new Error(`${unreadable.reason}; ${reason}`);
+        if (error instanceof RolloutIdentityChanged || (error as NodeJS.ErrnoException)?.syscall)
+          storageFailure ??= reason;
+        if (unreadable)
+          return { part: null, reason: `${unreadable.reason}; ${reason}`, storageFailure };
         unreadable = { part, reason };
+        continue;
       }
+      if (base) keepReferenced(base);
     }
-    return { bases, unreadable };
+    return unreadable && { ...unreadable, storageFailure };
   }
 
   /** Check the listed directories by metadata. No file enumeration or header reads here. */

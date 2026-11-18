@@ -395,6 +395,42 @@ it("records an unreadable retained header as a home veto until the header is com
 });
 
 it.each([false, true])(
+  "records a referenced fork and its unreadable base (unrelated cold file: %s)",
+  async (deferred) => {
+    const base = seed(1);
+    writeFileSync(base, "torn");
+    utimesSync(base, old, old);
+    const fork = seed(2);
+    const payload = { id: id(2), history_base: { thread_id: id(1) } };
+    writeFileSync(fork, JSON.stringify({ type: "session_meta", payload }) + "\n");
+    const thread = sql.graph.threads.createThread({ title: "Fork", workspace: "in_place" });
+    sql.graph.threads.recordSession(thread.id, "codex", id(2), null, "disabled");
+    const other = deferred ? seed(3) : undefined;
+    const receipt = await recordedNative(native())({ dry_run: false, native_home_report: true });
+    const report = receipt.native_homes!.find((home) => home.profile_id === "disabled")!;
+    expect(report).toMatchObject({
+      deleted_files: [],
+      kept_referenced: 2,
+      freed_bytes: 0,
+      truncated: false,
+      errors: deferred ? [expect.stringContaining(base)] : [],
+    });
+    expect(readLastRetention(sql.store)).toMatchObject({
+      outcome: deferred ? "held" : "completed",
+      held: { native_homes: deferred ? 1 : 0 },
+    });
+    expect(receipt.holds).toEqual(
+      deferred ? [{ class: "native_home_veto", count: 1, example: report.reason }] : [],
+    );
+    if (other) {
+      expect(report.reason).toContain(base);
+      expect(existsSync(other)).toBe(true);
+    }
+    expect([base, fork].every(existsSync)).toBe(true);
+  },
+);
+
+it.each([false, true])(
   "records the sole unreadable candidate's bytes and outcome (another candidate deferred: %s)",
   async (deferred) => {
     const bad = seed(1);

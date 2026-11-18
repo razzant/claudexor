@@ -8,6 +8,7 @@
 import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -406,31 +407,111 @@ it("holds two unreadable rollouts through a cap and a late reference until both 
   expect([a, b].every(existsSync)).toBe(true);
 });
 
+it.each([false, true])(
+  "counts the known base once across two torn archived headers (unrelated cold file: %s)",
+  async (deferred) => {
+    const h = codexHome();
+    const base = h.write(id(1));
+    const forks = [false, true].map((zst) => h.write(id(2), { recent: true, base: id(1), zst }));
+    const archived = [3, 4].map((n) => h.write(id(n), { where: "archived", raw: "torn" }));
+    const other = deferred ? h.write(id(5)) : undefined;
+    const result = await h.prune();
+    expect(result).toMatchObject({
+      deleted_files: [],
+      freed_bytes: 0,
+      kept_referenced: 1,
+      kept_recent: 2,
+      truncated: false,
+    });
+    if (other) {
+      for (const file of archived) expect(result.holdReason).toContain(file);
+      expect(result.errors).toEqual([result.holdReason]);
+      expect(existsSync(other)).toBe(true);
+    } else {
+      expect(result.holdReason).toBeUndefined();
+      expect(result.errors).toEqual([]);
+    }
+    expect([base, ...forks, ...archived].every(existsSync)).toBe(true);
+  },
+);
+
 it.each([true, false])(
   "counts both surviving siblings after a late reference (unreadable zstd: %s)",
   async (zst) => {
     const h = codexHome();
     const parts = [h.write(id(1)), h.write(id(1), { zst: true })];
-    const bad = h.write(id(1), { zst, raw: "bad\n" });
+    h.write(id(1), { zst, raw: "bad\n" });
     const base = h.write(id(2));
     const recent = h.write(id(3), { recent: true, base: id(2) });
     const refs = new Set([id(2)]);
-    const held = await h.prune({
+    const result = await h.prune({
       refs,
       canPrune: () => {
         refs.add(id(1));
         return true;
       },
     });
-    expect(held).toMatchObject({
+    expect(result).toMatchObject({
       deleted_files: [],
       freed_bytes: 0,
       kept_referenced: 3,
       kept_recent: 1,
       truncated: false,
+      errors: [],
     });
-    expect(held.holdReason).toContain(bad);
+    expect(result.holdReason).toBeUndefined();
     expect([...parts, base, recent].every(existsSync)).toBe(true);
+  },
+);
+
+it.each(["Stop", "failed proof"])(
+  "reports %s when a late reference protects the sole unreadable candidate",
+  async (stop) => {
+    const h = codexHome();
+    const bad = h.write(id(1), { raw: "torn" });
+    const refs = new Set<string>();
+    const cancel = new AbortController();
+    const result = await h.prune({
+      refs,
+      signal: cancel.signal,
+      canPrune: () => {
+        refs.add(id(1));
+        if (stop === "Stop") cancel.abort();
+        return false;
+      },
+    });
+    expect(result).toMatchObject({
+      deleted_files: [],
+      kept_referenced: 1,
+      truncated: stop === "Stop",
+    });
+    if (stop === "Stop") {
+      expect(result.errors.join()).toContain("cancelled");
+      expect(result.holdReason).toBeUndefined();
+    } else {
+      expect(result.holdReason).toContain("native references or setup state changed");
+      expect(result.errors).toEqual([result.holdReason]);
+    }
+    expect(existsSync(bad)).toBe(true);
+  },
+);
+
+it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)(
+  "reports a storage error when the protected fork retains the only cold file",
+  async () => {
+    const h = codexHome();
+    const base = h.write(id(1));
+    const fork = h.write(id(2), { base: id(1) });
+    chmodSync(base, 0);
+    try {
+      const result = await h.prune({ refs: new Set([id(2)]) });
+      expect(result).toMatchObject({ deleted_files: [], kept_referenced: 2, truncated: false });
+      expect(result.holdReason).toBeUndefined();
+      expect(result.errors).toEqual([expect.stringContaining("EACCES")]);
+      expect([base, fork].every(existsSync)).toBe(true);
+    } finally {
+      chmodSync(base, 0o600);
+    }
   },
 );
 
@@ -478,8 +559,14 @@ it.each([true, false])("a recent sibling retains an unreadable file (zstd: %s)",
   const good = h.write(id(2), { zst: !zst, base: id(1), recent: true });
   const bad = h.write(id(2), { zst, raw: "bad\n" });
   const result = await h.prune();
-  expect(result.deleted_files).toEqual([]);
-  expect(result.errors.join()).toContain(bad);
+  expect(result).toMatchObject({
+    deleted_files: [],
+    kept_recent: 2,
+    kept_referenced: 1,
+    errors: [],
+    truncated: false,
+  });
+  expect(result.holdReason).toBeUndefined();
   expect([base, good, bad].every(existsSync)).toBe(true);
 });
 

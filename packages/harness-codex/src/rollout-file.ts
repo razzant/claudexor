@@ -259,6 +259,8 @@ export function copyCodexRolloutPart(home: string, source: string, dest: string)
   }
 }
 
+export class RolloutIdentityChanged extends Error {}
+
 /**
  * Read the first complete JSON record of one inventoried rollout. Bound both
  * the input (including zstd frames that produce no output) and the decoded
@@ -282,7 +284,7 @@ export async function readCodexRolloutHead(
       file.ino !== identity.ino ||
       realpathSync(path) !== path
     )
-      throw new Error("not the inventoried plain file");
+      throw new RolloutIdentityChanged("not the inventoried plain file");
     if (!file.size) throw new Error("empty rollout");
     const { maxLineBytes, chunkBytes } = limits;
     const highWaterMark = Math.min(16 << 10, chunkBytes);

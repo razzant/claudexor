@@ -5972,15 +5972,17 @@ dated `archived_sessions`. Continuity can locate parts by UUID below three
 session directories with arbitrary names. Those parts also supply headers. Codex 0.169.0's
 first newline-terminated JSON record identifies the session and may name a base
 by its filename ID in `session_meta.payload.history_base.thread_id`.
-Named bases survive the pass even if their forks retire. After reading the
-headers, the receipt counts old candidate files in those groups as referenced,
-including on early exit. Directly referenced and recent files keep their
-original counts. A sole unreadable file may retire alone if it meets the usual
-age and ownership rules and no readable header names it as a base. Its retirement
-holds the home and marks the pass truncated only if it defers another eligible file. Multiple
-unreadable headers, an unreadable retained or archived file, or a linked rollout
-path hold the home until readable or removed. These deferrals appear in
-`native_home_veto` with their reason. A changed file or directory marks the pass truncated.
+Named bases survive the pass even if their forks retire. The receipt counts each
+old candidate file once when a readable header first names its group as a base,
+even if a later header is unreadable. Directly referenced and recent files keep
+their original counts.
+A sole unreadable file may retire alone if it meets the usual age and ownership
+rules and no readable header names it as a base. Its retirement marks the pass
+truncated if another eligible file must wait. Unreadable headers hold the home
+only when they defer eligible files. File I/O and identity-check failures still
+appear as errors. A linked rollout path vetoes pruning.
+These deferrals appear in `native_home_veto` with their reason. A changed file
+or directory marks the pass truncated.
 Before each unlink the adapter checks inventoried directory metadata and every
 surviving part in the candidate's age group. Native appends preserve a completed
 header. In-place header rewrites, changes with indistinguishable directory metadata, and forks
