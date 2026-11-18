@@ -44,7 +44,11 @@ import {
 } from "@claudexor/core";
 import { createCredentialProfilesService } from "./accounts-services.js";
 import { updateGlobalConfig } from "@claudexor/config";
-import { accountObservations, displayAccountObservation } from "./account-observations.js";
+import {
+  accountObservations,
+  displayAccountObservation,
+  retainAccountProbeObservations,
+} from "./account-observations.js";
 
 beforeEach(() => accountObservations.invalidate());
 
@@ -3089,6 +3093,69 @@ describe("admission-grade login readiness", () => {
     await f.call();
     expect(f.probe).toHaveBeenCalledTimes(2);
   });
+  it("a physical Accounts refusal retires a pinned login, while display reads cannot admit or revoke", async () => {
+    const f = await readinessFixture();
+    const adapter = retainAccountProbeObservations(f.adapter);
+    const pin = () => f.owner.runStartProbe(adapter)(f.profile, undefined, { pinned: true });
+    const display = async (fresh: boolean) =>
+      (await displayAccountObservation(f.profile, adapter, fresh, undefined, f.owner)).status;
+    const raw = f.probe.getMockImplementation()!;
+    const logout = async () => ({
+      ...(await raw(f.profile)),
+      availability: "unavailable" as const,
+      verification: "failed" as const,
+    });
+
+    expect((await display(true)).availability).toBe("available");
+    f.probe.mockImplementationOnce(logout);
+    expect((await pin()).availability).toBe("unavailable");
+    expect((await pin()).availability).toBe("available");
+    f.probe.mockImplementationOnce(logout);
+    expect((await display(true)).availability).toBe("unavailable");
+    f.probe.mockImplementationOnce(logout);
+    expect((await pin()).availability).toBe("unavailable");
+    expect(f.probe).toHaveBeenCalledTimes(5);
+
+    // A new physical success can admit even while an old display refusal is retained.
+    expect((await f.call()).availability).toBe("available");
+    expect((await display(false)).availability).toBe("unavailable");
+    expect((await pin()).availability).toBe("available");
+    expect(f.probe).toHaveBeenCalledTimes(6);
+  });
+
+  it.each([false, true])(
+    "orders a physical Accounts refusal and an admission success by probe start (display first=%s)",
+    async (displayFirst) => {
+      const f = await readinessFixture();
+      const adapter = retainAccountProbeObservations(f.adapter);
+      const display = () => displayAccountObservation(f.profile, adapter, true, undefined, f.owner);
+      const success = await f.call();
+      const refusal = {
+        ...success,
+        availability: "unavailable" as const,
+        verification: "failed" as const,
+      };
+      let release!: () => void;
+      const hold = new Promise<void>((done) => {
+        release = done;
+      });
+      f.probe.mockImplementationOnce(async () => {
+        await hold;
+        return displayFirst ? refusal : success;
+      });
+      const physical = () =>
+        f.owner.probe(f.profile, adapter, new AbortController().signal, { reuse: false });
+      const first = displayFirst ? display() : physical();
+      await vi.waitFor(() => expect(f.probe).toHaveBeenCalledTimes(2));
+      f.probe.mockResolvedValueOnce(displayFirst ? success : refusal);
+      await (displayFirst ? physical() : display());
+      release();
+      await first;
+      await f.call();
+      expect(f.probe).toHaveBeenCalledTimes(displayFirst ? 3 : 4);
+    },
+  );
+
   it("reuses a dated login for public catalog reads and refreshes both facts for Accounts", async () => {
     const ready = await readinessFixture();
     const f = await fixture({ nativeAdapter: ready.adapter });

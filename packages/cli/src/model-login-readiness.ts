@@ -15,6 +15,16 @@ import { startModelPreparation } from "@claudexor/util";
 
 const scopeOf = (harnessId: string, profileId: string) => `${harnessId}\0${profileId}`;
 
+function positiveLoginTime(status: CredentialProfileStatus): number | undefined {
+  const at = Date.parse(status.last_verified_at ?? "");
+  return status.availability === "available" &&
+    status.verification === "passed" &&
+    !status.stale &&
+    at <= Date.now()
+    ? at
+    : undefined;
+}
+
 /** Admission-grade raw observations, separate from accountObservations display
  * projections, shared by raw-model selection and run start. Quota, revocation,
  * policy and selection never enter this owner. */
@@ -56,6 +66,14 @@ export class ModelLoginReadiness {
     const unbounded = new AbortController().signal;
     return (profile, signal = unbounded, options) =>
       this.probe(profile, adapter, signal, { options });
+  }
+
+  /** Order a physical Accounts probe with admission probes. Its refusal can retire a login. */
+  observeDisplayProbe(profile: CredentialProfile) {
+    const publish = this.positives.observe(scopeOf(profile.harness_id, profile.profile_id));
+    return (status: CredentialProfileStatus) => {
+      if (positiveLoginTime(status) === undefined) publish();
+    };
   }
 
   close(): void {
@@ -123,16 +141,10 @@ export class ModelLoginReadiness {
           // only an answer under one unchanged identity is retained for reuse.
           const unchanged = key !== null && (await identity()) === key;
           physicalSignal.throwIfAborted();
-          const observedAt = Date.parse(status.last_verified_at ?? "");
-          const positive =
-            status.availability === "available" &&
-            status.verification === "passed" &&
-            status.stale !== true &&
-            Number.isFinite(observedAt) &&
-            observedAt <= Date.now();
+          const observedAt = positiveLoginTime(status);
           // A refused, unknown or stale answer is evidence against the remembered
           // login; an older success answering later cannot restore it.
-          if (!positive) publish();
+          if (observedAt === undefined) publish();
           else if (unchanged) publish({ key, at: Math.min(startedAt, observedAt), value: status });
           return status;
         } catch (error) {

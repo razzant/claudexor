@@ -3272,9 +3272,9 @@ Unknown identity never authorizes reuse. Positive, dated, non-stale probes
 expire from their physical start/date under the shared doctor positive policy
 (`CLAUDEXOR_DOCTOR_TTL_MS`, default 90 seconds); hits never extend that date.
 Display projections, negative/unknown results, eligible sets and winners are
-never reused for admission. A physical probe that refuses, cannot confirm or
-fails drops the remembered positive, and a success from a probe that started
-before that evidence is not kept when it answers later. Live quota and unusable-credential evidence can
+never reused for admission. A physical login probe, including one acquired by the
+Accounts view, drops the remembered positive if it refuses, cannot confirm the login,
+or fails. A success from a probe that started before that evidence cannot restore it. Live quota and unusable-credential evidence can
 exclude a locally ready account without launching another probe. A hit runs no
 CLI: a program replaced behind an unchanged wrapper, or a `config.toml` the CLI
 can no longer load while its file identity is unchanged, is seen only when the
