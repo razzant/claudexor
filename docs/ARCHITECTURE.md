@@ -3343,12 +3343,7 @@ probes this operation launched or joined; `loginReady` counts readiness reused
 without a probe. Steps overlap and must not be summed.
 Process `eventLoopActiveMs`/`eventLoopIdleMs` use the same utilization source as
 loop-facts; `childLaunches`/`childLaunchMs` measure launches including synchronous
-leader identity capture. `eventLoopDelayMs` is how long one turn of this operation
-waited for the main thread during preparation: the mean lateness of the loop-facts
-delay sampler's own 10 ms ticks (null when no tick fell inside it). With the
-command's `createdAt` (accepted) and `dispatch.startedAt` (dispatch began), a
-successful operation's receipt dates its acceptance, its dispatch and its loop wait.
-These process deltas include other concurrent work
+leader identity capture. These process deltas include other concurrent work
 and are not per-operation CPU attribution. No body, token or account path is
 recorded. Older receipts omit the optional timing object.
 

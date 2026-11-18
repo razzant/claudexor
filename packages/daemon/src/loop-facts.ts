@@ -1,4 +1,4 @@
-import { processTiming, setLoopDelaySource } from "@claudexor/util";
+import { processTiming } from "@claudexor/util";
 import {
   type EventLoopUtilization,
   type IntervalHistogram,
@@ -37,8 +37,6 @@ export class LoopFactsWindow {
   });
   private startedAt = performance.now();
   private utilization: EventLoopUtilization = performance.eventLoopUtilization();
-  /** Samples of closed windows, for the operation receipt's loop wait. */
-  private readonly closed = { samples: 0, sumMs: 0 };
 
   constructor() {
     this.delay.enable();
@@ -72,25 +70,11 @@ export class LoopFactsWindow {
         maxMs: Math.round(this.gc.maxMs * 1_000) / 1_000,
       },
     };
-    if (samples > 0) {
-      this.closed.samples += samples;
-      this.closed.sumMs += (this.delay.mean * samples) / 1e6;
-    }
     this.delay.reset();
     Object.assign(this.gc, { count: 0, totalMs: 0, maxMs: 0 });
     this.startedAt = now;
     this.utilization = utilization;
     return facts;
-  }
-
-  /** Every delay sample since this window owner started, closed windows included. */
-  delayTotals(): { samples: number; sumMs: number; resolutionMs: number } {
-    const open = this.delay.count;
-    return {
-      samples: this.closed.samples + open,
-      sumMs: this.closed.sumMs + (open > 0 ? (this.delay.mean * open) / 1e6 : 0),
-      resolutionMs: RESOLUTION_MS,
-    };
   }
 
   close(): void {
@@ -122,11 +106,9 @@ export function startLoopFacts(windowMs: number = LOOP_FACTS_WINDOW_MS): () => v
   };
   state.timer.unref?.();
   running = state;
-  setLoopDelaySource(() => window.delayTotals());
   return () => {
     if (running !== state) return;
     clearInterval(state.timer);
-    setLoopDelaySource(null);
     window.close();
     running = null;
   };

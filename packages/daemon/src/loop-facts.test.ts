@@ -19,24 +19,6 @@ function blockLoop(ms: number): void {
   }
 }
 
-describe("the loop wait an operation receipt reads", () => {
-  it("keeps every delay sample across window rolls, so an operation can span them", async () => {
-    const window = new LoopFactsWindow();
-    stops.push(() => window.close());
-    await turn(50);
-    const first = window.delayTotals();
-    expect(first.resolutionMs).toBe(10);
-    window.roll();
-    blockLoop(60);
-    await turn(30);
-    const later = window.delayTotals();
-    expect(later.samples).toBeGreaterThan(first.samples);
-    // The stall made the mean of the new samples late by much more than nothing.
-    const lateness = (later.sumMs - first.sumMs) / (later.samples - first.samples) - 10;
-    expect(lateness).toBeGreaterThan(0);
-  });
-});
-
 describe("LoopFactsWindow", () => {
   it("reports a stall in the window it happened in, then starts the next window from zero", async () => {
     const window = new LoopFactsWindow();

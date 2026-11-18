@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   ProcessTiming,
   measureWork,
@@ -6,7 +6,7 @@ import {
   recordWorkSection,
   type WorkClass,
 } from "./process-timing.js";
-import { ModelPreparationTiming, setLoopDelaySource } from "./model-preparation-timing.js";
+import { ModelPreparationTiming } from "./model-preparation-timing.js";
 
 /** Busy-wait: a synchronous section of at least `ms`. */
 const spin = (ms: number) => {
@@ -95,21 +95,14 @@ describe("main-thread work by class (timing.work)", () => {
   });
 });
 
-describe("the operation receipt's loop wait", () => {
-  afterEach(() => setLoopDelaySource(null));
-
-  it("is the mean lateness of the loop's own ticks while the operation prepared", () => {
-    const ticks = { samples: 100, sumMs: 1_000, resolutionMs: 10 };
-    setLoopDelaySource(() => ({ ...ticks }));
-    const preparation = new ModelPreparationTiming();
-    ticks.samples += 4;
-    ticks.sumMs += 4 * 10 + 30; // four ticks, 30 ms late in total
-    expect(preparation.finish().process.eventLoopDelayMs).toBeCloseTo(7.5, 6);
-  });
-
-  it("is null without a sampler or without a tick inside preparation", () => {
-    expect(new ModelPreparationTiming().finish().process.eventLoopDelayMs).toBeNull();
-    setLoopDelaySource(() => ({ samples: 5, sumMs: 50, resolutionMs: 10 }));
-    expect(new ModelPreparationTiming().finish().process.eventLoopDelayMs).toBeNull();
+describe("preparation process deltas", () => {
+  it("attributes only the measured process deltas to preparation", () => {
+    const receipt = new ModelPreparationTiming().finish().process;
+    expect(Object.keys(receipt).sort()).toEqual([
+      "childLaunchMs",
+      "childLaunches",
+      "eventLoopActiveMs",
+      "eventLoopIdleMs",
+    ]);
   });
 });
