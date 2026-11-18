@@ -29,6 +29,7 @@ import {
 import type { HarnessStatus } from "@claudexor/gateway";
 import type { AccountEvidence } from "@claudexor/daemon";
 import { credentialProfilePolicyState } from "@claudexor/core";
+import type { ModelLoginReadiness } from "./model-login-readiness.js";
 import { displayAccountObservation, profileAccountIdentity } from "./account-observations.js";
 import { buildGateway, buildRegistry } from "./registry.js";
 
@@ -81,6 +82,7 @@ export async function profileAccountProjection(
   registry: readonly CredentialProfile[] = [profile],
   platform: NodeJS.Platform = process.platform,
   fresh = false,
+  readiness?: ModelLoginReadiness,
 ): Promise<{
   profile: CredentialProfile;
   status: CredentialProfileStatus;
@@ -105,7 +107,10 @@ export async function profileAccountProjection(
       identity: profileAccountIdentity(profile),
     };
   }
-  return { profile, ...(await displayAccountObservation(profile, adapter, fresh)) };
+  return {
+    profile,
+    ...(await displayAccountObservation(profile, adapter, fresh, undefined, readiness)),
+  };
 }
 
 /**

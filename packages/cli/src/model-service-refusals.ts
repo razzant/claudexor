@@ -10,23 +10,37 @@ export const refusalProblem = (error: Error & { code?: string; problem?: unknown
   ControlProblem.safeParse(error.problem).data ??
   ControlProblem.parse({ code: error.code, message: error.message, retryable: false });
 
+/** The HTTP serializer reads the error fields, the operation receipt reads `problem`. */
+export function modelRefusal(
+  input: Pick<ControlProblem, "code" | "message" | "retryable" | "context">,
+): Error {
+  const problem = ControlProblem.parse(input);
+  return Object.assign(new Error(problem.message), problem, { status: 409, problem });
+}
+
 export const poolExhausted = (
   sourceId: string,
   error: unknown,
   catalogRefusals: Map<string, ControlProblem>,
 ): Error => {
-  const provided = ControlProblem.safeParse(
+  const context = ControlProblem.safeParse(
     error && typeof error === "object" && "problem" in error ? error.problem : null,
-  );
-  const recordedCauses = provided.success ? provided.data.context.poolCauses : null;
-  const causes = new Set(Array.isArray(recordedCauses) ? recordedCauses : []);
-  const resets: Array<string | null> = causes.has("quota")
-    ? [
-        provided.success && typeof provided.data.context.resetsAt === "string"
-          ? provided.data.context.resetsAt
-          : null,
-      ]
-    : [];
+  ).data?.context;
+  const poolCauses = Array.isArray(context?.poolCauses) ? context.poolCauses : [];
+  const tried = [...catalogRefusals.values()];
+  if (tried.length && tried.every((refusal) => refusal.context.cause === "network")) {
+    const errorCode = tried[0]!.context.errorCode;
+    return modelRefusal({
+      code: "catalog_unavailable",
+      message: `The model provider could not be reached from this machine (${String(errorCode)}); every account tried failed to connect`,
+      retryable: true,
+      context: { source: sourceId, poolCause: "network", cause: "network", errorCode, poolCauses },
+    });
+  }
+  const causes = new Set(poolCauses);
+  const resets: Array<string | null> = [];
+  if (causes.has("quota"))
+    resets.push(typeof context?.resetsAt === "string" ? context.resetsAt : null);
   for (const refusal of catalogRefusals.values()) {
     // A disabled or removed account cannot become usable by quota or login.
     if (refusal.code === "model_account_unavailable") continue;
@@ -70,12 +84,10 @@ export const poolExhausted = (
     resets.every((at): at is string => at !== null && Number.isFinite(Date.parse(at)))
       ? resets.reduce((earliest, at) => (Date.parse(at) < Date.parse(earliest) ? at : earliest))
       : null;
-  return Object.assign(modelError(code, message), {
-    problem: ControlProblem.parse({
-      code,
-      message,
-      retryable: false,
-      context: { source: sourceId, poolCause, resetsAt },
-    }),
+  return modelRefusal({
+    code,
+    message,
+    retryable: false,
+    context: { source: sourceId, poolCause, resetsAt },
   });
 };

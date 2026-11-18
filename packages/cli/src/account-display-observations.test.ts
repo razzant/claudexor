@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { updateGlobalConfig } from "@claudexor/config";
 import type { HarnessAdapter } from "@claudexor/core";
-import { createAccountEvidence, type QuotaRegistry } from "@claudexor/daemon";
+import { createAccountEvidence, CredentialGeneration, type QuotaRegistry } from "@claudexor/daemon";
 import { createFakeHarness } from "@claudexor/harness-fake";
 import { probeCredentialProfileStatus, profileStatusAdmits } from "@claudexor/orchestrator";
 import {
@@ -17,6 +17,7 @@ import {
   displayAccountObservation,
   retainAccountProbeObservations,
 } from "./account-observations.js";
+import { ModelLoginReadiness } from "./model-login-readiness.js";
 import { createCredentialProfilesService } from "./accounts-services.js";
 import { harnessAccountModels } from "./registry.js";
 import {
@@ -48,7 +49,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function fixture() {
+function fixture(readiness?: ModelLoginReadiness) {
   const harnessId = "fake-success";
   const profile = CredentialProfile.parse({
     profile_id: "display-account",
@@ -94,7 +95,7 @@ function fixture() {
   const accounts = createAccountEvidence();
   const service = createCredentialProfilesService(
     () => ({ read, readAdmission, refreshWithCursor: refresh }) as unknown as QuotaRegistry,
-    accounts,
+    { ...accounts, loginReadiness: readiness },
   );
   const catalog = () =>
     harnessAccountModels({
@@ -244,6 +245,29 @@ describe("Accounts display acquisition", () => {
     await Promise.all([f.service.credentialProfiles(), f.catalog()]);
     expect(f.probe).toHaveBeenCalledTimes(2);
     expect(f.models).toHaveBeenCalledTimes(2);
+  });
+
+  it("delivers a physical snapshot logout to the store once across later display polls", async () => {
+    const owner = new ModelLoginReadiness(new CredentialGeneration());
+    try {
+      const finish = vi.fn();
+      const start = vi.spyOn(owner, "observeDisplayProbe").mockReturnValue(finish);
+      const f = fixture(owner);
+      f.adapter.credentialProfileIdentity = async () => "fixture-identity";
+      const logout = {
+        ...f.passed,
+        availability: "unavailable" as const,
+        verification: "failed" as const,
+      };
+      f.probe.mockResolvedValue(logout);
+      await f.service.credentialProfiles({ snapshot: true });
+      await f.service.credentialProfiles();
+      expect(start.mock.calls).toEqual([[f.profile]]);
+      expect(finish.mock.calls).toEqual([[logout]]);
+      expect(f.probe).toHaveBeenCalledTimes(1);
+    } finally {
+      owner.close();
+    }
   });
 
   it("current quota changes affect a display read inside the TTL without another acquisition", async () => {

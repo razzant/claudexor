@@ -17,6 +17,29 @@ describe("daemon timing contract", () => {
     expect(DaemonTimingFacts.parse(facts)).toEqual(facts);
   });
 
+  it("accepts main-thread work by class and harness, and no unknown class", () => {
+    const totals = { count: 2, totalMs: 3.5, maxMs: 2 };
+    const facts = {
+      ...timing,
+      work: [
+        { kind: "control.handler", lifetime: totals, window: null },
+        { kind: "run.stream", harness: "codex", lifetime: totals, window: totals },
+        ...["journal.append", "store.commit", "catalog.read", "process.launch"].map((kind) => ({
+          kind,
+          lifetime: totals,
+          window: totals,
+        })),
+      ],
+    };
+    expect(DaemonTimingFacts.parse(facts)).toEqual(facts);
+    expect(
+      DaemonTimingFacts.safeParse({
+        ...timing,
+        work: [{ kind: "gc", lifetime: totals, window: null }],
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects the unshipped attention bulk kind", () => {
     expect(
       DaemonTimingFacts.safeParse({

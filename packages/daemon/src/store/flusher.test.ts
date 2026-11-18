@@ -10,11 +10,17 @@ import {
   writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { MessageChannel } from "node:worker_threads";
 import { join, resolve } from "node:path";
 import { ControlAccountResetResponse, ModelDispatch } from "@claudexor/schema";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreFlushUnavailableError } from "./errors.js";
-import type { FlusherPassReport } from "./flusher-protocol.js";
+import {
+  STORE_WORKER_DATA_KEY,
+  type FlusherEvent,
+  type FlusherPassReport,
+} from "./flusher-protocol.js";
+import { runFlusherWorker } from "./flusher-worker.js";
 import { EngineStore } from "./store.js";
 import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
@@ -47,6 +53,8 @@ afterEachClosed(async () => {
 async function openStore(hooks: {
   manualTick?: boolean;
   allowExit?: boolean;
+  intervalMs?: number;
+  passDelayMs?: number;
 }): Promise<EngineStore> {
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
@@ -269,5 +277,128 @@ describeStore("flusher protocol", () => {
     });
     expect(receipt.outcome).toBe("unavailable");
     expect(receipt.detail).toBe("store_flush_unavailable");
+  });
+});
+
+describeStore("a waiting flushed() wakes the flusher", () => {
+  it("keeps the original deadline after an early barrier and adds no early pass under sustained demand", async () => {
+    const store = await openStore({ manualTick: true });
+    const { port1, port2 } = new MessageChannel();
+    const seen: Array<[at: number, generation: number, barrier: boolean, checkpoint: boolean]> = [];
+    vi.useFakeTimers({
+      toFake: ["performance", "setTimeout", "clearTimeout", "setImmediate", "clearImmediate"],
+    });
+    const until = (time: number) => vi.advanceTimersByTime(time - performance.now());
+    const wake = (g: number) => port1.emit("message", { type: "flush", g, wake: true });
+    const post = vi.spyOn(port1, "postMessage").mockImplementation((event: FlusherEvent) => {
+      if (event.type !== "synced") return;
+      const { g, barrier, checkpoint } = event.report;
+      seen.push([performance.now(), g, barrier, checkpoint !== null]);
+      // Account for 40 ms of synchronous work inside the first pass.
+      if (seen.length === 1) vi.advanceTimersByTime(40);
+    });
+    try {
+      await runFlusherWorker(port1, {
+        [STORE_WORKER_DATA_KEY]: "flusher",
+        dbPath: store.paths.database,
+        hooks: { intervalMs: 200 },
+      });
+      until(50);
+      wake(1);
+      until(50);
+      expect(seen).toEqual([[50, 1, true, false]]);
+      wake(2);
+      until(150);
+      wake(3);
+      until(199);
+      expect(seen).toHaveLength(1);
+      until(200);
+      expect(seen.at(-1)).toEqual([200, 3, false, true]);
+
+      commitRows(store, 1);
+      wake(4);
+      until(350);
+      wake(5);
+      until(400);
+      expect(seen).toEqual([
+        [50, 1, true, false],
+        [200, 3, false, true],
+        [400, 5, true, true],
+      ]);
+      until(600); // Idle periodic pass.
+      until(610);
+      wake(6);
+      until(610);
+      expect(seen.slice(3)).toEqual([
+        [600, 5, false, true],
+        [610, 6, false, false],
+      ]);
+    } finally {
+      port1.emit("message", { type: "stop" });
+      port1.close();
+      port2.close();
+      post.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("runs the pass now, while a mark without a waiter keeps the periodic schedule", async () => {
+    const store = await openStore({ intervalMs: 60_000 });
+    const seen = reports(store);
+    commitRows(store, 1);
+    const marked = store.mark();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(store.acknowledgedGeneration).toBeLessThan(marked);
+    const started = performance.now();
+    await store.flushed();
+    expect(performance.now() - started).toBeLessThan(10_000);
+    expect(store.acknowledgedGeneration).toBeGreaterThan(marked);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ dirty: true, barrier: true });
+  });
+
+  it("waiters that arrive while a pass runs share the next pass and its barrier", async () => {
+    // Each pass covers every waiter whose command arrived before it started:
+    // hold the worker inside a woken pass, then post three more waiters.
+    const store = await openStore({ intervalMs: 750, passDelayMs: 500 });
+    const seen = reports(store);
+    const held = store.flushed();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    commitRows(store, 1);
+    await Promise.all([held, store.flushed(), store.flushed(), store.flushed()]);
+    // Four waiters, at most two passes; the last one proved the new commit.
+    expect(seen.length).toBeLessThanOrEqual(2);
+    expect(seen.at(-1)).toMatchObject({ dirty: true, barrier: true });
+  });
+
+  it("groups followers at the periodic barrier and allows another early pass after an idle period", async () => {
+    const store = await openStore({ intervalMs: 1000 });
+    const seen = reports(store);
+    commitRows(store, 1);
+    await store.flushed();
+    const afterEarly = store.acknowledgedGeneration;
+    commitRows(store, 1);
+    const first = store.flushed();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    commitRows(store, 1);
+    const second = store.flushed();
+    await Promise.all([first, second]);
+    expect(seen.map((r) => [r.g, r.barrier, r.checkpoint !== null])).toEqual([
+      [afterEarly, true, false],
+      [afterEarly + 2, true, true],
+    ]);
+    commitRows(store, 1);
+    await store.flushed();
+    expect(seen.at(-1)?.checkpoint).not.toBeNull();
+    // Once a periodic pass has no waiters, the next burst can get an early barrier.
+    await new Promise<void>((resolve) => {
+      const off = store.onSynced(() => {
+        off();
+        resolve();
+      });
+    });
+    commitRows(store, 1);
+    await store.flushed();
+    expect(seen.at(-1)).toMatchObject({ barrier: true, checkpoint: null });
   });
 });

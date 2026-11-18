@@ -1,6 +1,6 @@
 {
   "name": "claudexor",
-  "version": "6.2.0",
+  "version": "6.3.0",
   "description": "Local-first control plane for Claude Code, Codex, Cursor, and OpenCode with quota-aware rotation across Claude Code and Codex subscriptions. Pi integration by Ouroboros.",
   "mcpName": "io.github.razzant/claudexor",
   "type": "module",

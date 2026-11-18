@@ -1,3 +1,4 @@
+import { measureWork } from "@claudexor/util";
 import { prepareNativeProgram, type NativeProgramRun } from "./native-program.js";
 import type { HarnessEvent, HarnessRunSpec, HarnessProgram } from "@claudexor/schema";
 import { spawnProcess, type ChildStdin } from "./proc.js";
@@ -132,6 +133,8 @@ async function* runCliHarnessObserved(
   }
   const { spec } = opts;
   const label = opts.label ?? opts.bin;
+  // A harness name for the main-thread work counters, never a path.
+  const harness = opts.program?.id ?? opts.label ?? null;
   const redact = opts.redact ?? ((text: string): string => text);
   const ts = (): string => new Date().toISOString();
   const stderrRing: string[] = [];
@@ -231,7 +234,7 @@ async function* runCliHarnessObserved(
       }
       let obj: unknown;
       try {
-        obj = JSON.parse(ev.line);
+        obj = measureWork("run.stream", () => JSON.parse(ev.line), harness);
       } catch {
         droppedUnparsedLines += 1;
         continue;
@@ -248,7 +251,11 @@ async function* runCliHarnessObserved(
         }
         continue;
       }
-      const events = opts.parseEvent(obj, spec.session_id);
+      const events = measureWork(
+        "run.stream",
+        () => opts.parseEvent(obj, spec.session_id),
+        harness,
+      );
       if (opts.session && session.io && opts.session.closeStdinOn?.(obj)) {
         // The native terminal frame arrived; close stdin so the streaming
         // session ends cooperatively instead of waiting for more input.

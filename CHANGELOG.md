@@ -4,6 +4,37 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v6.3.0** (2026-11-18) — **Fewer checks before a Codex call.** Raw model
+  calls can reuse an account's model list for up to 90 seconds by default
+  while its credentials and the Codex installation stay the same.
+  Changes to the provider's list may take that long to show up in model
+  selection. Raw model calls, Agent runs and reviewer seats can also share a
+  recent successful Codex login check. The public catalog GET fetches the
+  current list. Accounts Refresh rechecks the login, and the next catalog read
+  fetches the list again. If every account tried fails to connect to the
+  provider during model discovery, clients receive a retryable
+  `catalog_unavailable` with the network cause (#733).
+
+  The first model or image call in an idle interval can trigger an early disk flush.
+  Its dispatch record reaches disk before the call is sent, and the regular
+  flush stays on schedule for later callers. File uploads group incoming bytes
+  into writes of up to 1 MiB, reducing disk writes for large files. The
+  `timing.work` field in `GET /v2/daemon/status` helps diagnose delays by
+  showing main-thread time spent on tasks such as parsing requests, processing
+  harness output and writing the run journal (#733).
+
+  **Delegate from Hermes Agent, Pi and OpenClaw.** All three hosts can call
+  your local Claudexor over MCP. Install the Hermes plugin at a pinned Git
+  commit, install the Pi extension with `pi install npm:claudexor`, or point
+  OpenClaw at the `plugins/claude` bundle in a checkout. The shared skill can
+  ask a self-contained question without a project, carries your chosen account
+  into the first Ask, and shows the full proposed change before asking for
+  approval to apply it (#735).
+
+  **Read Claude's replies before the run finishes.** The macOS run card shows
+  each completed Claude turn reply in order. The saved conversation keeps
+  those replies alongside the run's final outcome (#732).
+
 - **v6.2.0** (2026-11-16) — **Continue past an account verification refusal.** Claude's
   `verification_required` result is recognized as an account refusal, with the
   vendor's reason retained, instead of a retryable transport failure. The account

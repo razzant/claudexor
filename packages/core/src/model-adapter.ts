@@ -17,6 +17,8 @@ export interface ModelAdapterContext {
   signal: AbortSignal;
   /** Known credential epoch supplied by the engine; absent/NaN never joins raw I/O. */
   credentialGeneration?: number;
+  /** Only raw-model selection may use a completed catalog observation. */
+  reuseCatalog?: boolean;
   /** Operation-local discovery only. Revalidate against current adapter-owned
    * credentials before reuse; never a cross-operation/account catalog cache. */
   catalog?: ControlModelCatalogResponse;
@@ -43,6 +45,7 @@ export interface ModelImageFacet {
 /** One generation, not a harness session: no tools, retries, or conversation ownership. */
 export interface ModelAdapter {
   readonly id: string;
+  close?(): void;
   /** What a valid catalog miss proves; omitted keeps authoritative admission. */
   readonly inventoryAbsence?: ModelInventoryAbsence;
   catalog(context: Omit<ModelAdapterContext, "onDispatch">): Promise<ControlModelCatalogResponse>;

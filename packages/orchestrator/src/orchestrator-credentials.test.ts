@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessAdapter } from "@claudexor/core";
 import type { CredentialUnusableObservation, HarnessRunSpec } from "@claudexor/schema";
+import type { RunInput } from "./orchestrator.js";
 import {
   OrchestratorCredentials,
   reviewerProfileResolver,
@@ -255,7 +256,7 @@ describe("reviewer seat account preflight (#532)", () => {
     enabled: true,
     created_at: null,
   });
-  function seats(ready: boolean) {
+  function seats(ready: boolean, runStartProbe?: CredentialResolutionHost["runStartProbe"]) {
     const probes: Array<{ profileId: string; signal: AbortSignal | undefined; options: unknown }> =
       [];
     const adapter = {
@@ -286,6 +287,7 @@ describe("reviewer seat account preflight (#532)", () => {
       recordCredentialUnusable: () => {},
       preProgressRefusals: () => undefined,
       authPreferenceForHarness: () => "auto",
+      ...(runStartProbe ? { runStartProbe } : {}),
     } as unknown as CredentialResolutionHost;
     return { probes, credentials: new OrchestratorCredentials(host) };
   }
@@ -311,6 +313,22 @@ describe("reviewer seat account preflight (#532)", () => {
     ).rejects.toThrow(
       'reviewer credential profile "a" (stub) is not ready: Cursor did not confirm sign-in within 120s',
     );
+  });
+
+  it("run start asks the host's dated positive owner; mid-run rotation keeps the physical probe", async () => {
+    const owner: Array<{ profileId: string; options: unknown }> = [];
+    const { probes, credentials } = seats(true, (adapter) => (profile, signal, options) => {
+      owner.push({ profileId: profile.profile_id, options });
+      return adapter.probeCredentialProfile!(profile, signal, options);
+    });
+    const input = { repoRoot: "/repo" } as RunInput;
+    expect(await credentials.preflightProfile(input, "stub", null, undefined, null)).not.toBeNull();
+    await reviewerProfileResolver(credentials, "/repo", new AbortController().signal)(seat("a"));
+    expect(owner).toContainEqual({ profileId: "a", options: { pinned: true } });
+    expect(owner.map((call) => call.profileId)).toEqual(expect.arrayContaining(["a", "b"]));
+    expect(probes).toHaveLength(owner.length);
+    await credentials.readyProfileIdsForRotation(input, "stub", null);
+    expect(probes.length).toBeGreaterThan(owner.length);
   });
 
   it("an automatic seat keeps the ordinary probe, without the pin fact", async () => {

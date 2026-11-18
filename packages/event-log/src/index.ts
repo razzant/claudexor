@@ -2,7 +2,7 @@ import type { RunEvent, RunEventType } from "@claudexor/schema";
 import { RunEvent as RunEventSchema } from "@claudexor/schema";
 import { existsSync, statSync, truncateSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { appendLine, nowIso, orderedAppender } from "@claudexor/util";
+import { appendLine, measureWork, nowIso, orderedAppender } from "@claudexor/util";
 import { lastSeqInFile, readEventFile, terminalEventInFile, withUnlanded } from "./event-file.js";
 import { activeEventLogs, terminalTypeOf } from "./live-writers.js";
 import type {
@@ -223,45 +223,46 @@ export class EventLog {
     publish: boolean,
     landing?: Landing & { aside?: boolean },
   ): RunEvent {
-    this.assertEmittable();
-    const terminalType = terminalTypeOf(type);
-    if (terminalType && this.terminalStaged) {
-      throw new Error("run terminal event commit is already in progress");
-    }
-    // A queued line's failure that nobody awaited is reported here, once, to
-    // the run's own producers.
-    if (this.unlanded && !landing?.aside) orderedAppender.throwHeld(this.path);
-    if (this.deferTerminalEvents && terminalType) {
-      if (this.deferredTerminal) throw new Error("run terminal event was emitted more than once");
-      this.deferredTerminal = { type, payload };
-      return this.stamp(type, payload);
-    }
-    if (terminalType) return this.commitNow(terminalType, payload, publish);
-    const event = this.stamp(type, payload);
-    if (this.unlanded) {
-      orderedAppender.append(this.path, `${JSON.stringify(event)}\n`, {
-        landed: () => this.landed(event, publish),
-        lost: () => this.lost(),
-        ...(landing
-          ? {
-              aside: landing.aside === true,
-              waiter: { resolve: () => landing.resolve(event), reject: landing.reject },
-            }
-          : {}),
-      });
+    return measureWork("journal.append", () => {
+      this.assertEmittable();
+      const terminalType = terminalTypeOf(type);
+      if (terminalType && this.terminalStaged) {
+        throw new Error("run terminal event commit is already in progress");
+      }
+      // Report any unobserved queued failure once to this run’s producer.
+      if (this.unlanded && !landing?.aside) orderedAppender.throwHeld(this.path);
+      if (this.deferTerminalEvents && terminalType) {
+        if (this.deferredTerminal) throw new Error("run terminal event was emitted more than once");
+        this.deferredTerminal = { type, payload };
+        return this.stamp(type, payload);
+      }
+      if (terminalType) return this.commitNow(terminalType, payload, publish);
+      const event = this.stamp(type, payload);
+      if (this.unlanded) {
+        orderedAppender.append(this.path, `${JSON.stringify(event)}\n`, {
+          landed: () => measureWork("journal.append", () => this.landed(event, publish)),
+          lost: () => this.lost(),
+          ...(landing
+            ? {
+                aside: landing.aside === true,
+                waiter: { resolve: () => landing.resolve(event), reject: landing.reject },
+              }
+            : {}),
+        });
+        this.nextSeq += 1;
+        this.unlanded.push(event);
+        return event;
+      }
+      appendLine(this.path, JSON.stringify(event));
       this.nextSeq += 1;
-      this.unlanded.push(event);
+      this.onPersist?.(event);
+      try {
+        if (publish) this.onPublish?.(event);
+      } catch {
+        /* best-effort live observer */
+      }
       return event;
-    }
-    appendLine(this.path, JSON.stringify(event));
-    this.nextSeq += 1;
-    this.onPersist?.(event);
-    try {
-      if (publish) this.onPublish?.(event);
-    } catch {
-      /* best-effort live observer */
-    }
-    return event;
+    });
   }
 
   /** A queued line landed: it counts, `onPersist` takes it, then `onPublish`

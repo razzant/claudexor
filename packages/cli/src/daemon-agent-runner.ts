@@ -38,6 +38,7 @@ import { daemonRunScopeIndex } from "./run-scope-index.js";
 import { threadPreparationScope } from "./thread-preparation-scope.js";
 import { exactRetryProcessingIntent } from "./retry-processing.js";
 import { oneShotRunInput } from "./one-shot-run-input.js";
+import type { ModelLoginReadiness } from "./model-login-readiness.js";
 
 /** Agent commands alone own projects, tool execution, and conversation continuity.
  * Model commands are dispatched before entering this run-normalization boundary. */
@@ -53,6 +54,7 @@ export function createDaemonAgentRunner(deps: {
   resources: () => ResourceStorePort;
   bus: RunEventBus;
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
+  loginReadiness?: ModelLoginReadiness;
   terminalPersistence?: (
     jobId: string,
   ) => NonNullable<
@@ -102,6 +104,7 @@ export function createDaemonAgentRunner(deps: {
       // incomplete (a crash between phases) — other harnesses keep working.
       accountsMigrationGate,
       runtimeConcurrencyCaps,
+      loginReadiness: deps.loginReadiness,
     });
     const { threadId, turnId } = threads.assertKnownIds(p.threadId, p.turnId);
     assertThreadExecutionBinding(threadId ? threads.getThread(threadId) : undefined, p);

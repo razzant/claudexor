@@ -208,11 +208,20 @@ export async function writeStagedTemp(
   }
 }
 
+/** Network chunks are gathered into blocks of at most this size before one
+ * `O_DSYNC` pool write, so a body costs one write and one callback per block. */
+export const EXTERNAL_WRITE_BLOCK_BYTES = 1 << 20;
+
 /**
  * Incremental `O_DSYNC` write of an existing file on the libuv pool, using the
  * same flags as `writeStagedTemp`. The caller owns the path (an upload part).
- * `accept` runs on the request thread before each chunk is submitted and may
- * throw to stop the transfer; `committed` runs after that chunk's write returns.
+ * `accept` runs on the request thread for each network chunk, with the bytes
+ * accepted before it, and may throw to stop the transfer before that chunk is
+ * written. Accepted bytes are copied into one owned block bounded by the declared
+ * total and `EXTERNAL_WRITE_BLOCK_BYTES` (a producer may reuse its buffer
+ * once asked for the next chunk), written when it fills and at the end;
+ * `committed` runs after each write returns, with a view of the written bytes
+ * valid only during the call and the bytes written so far.
  * A write already sitting in the pool finishes before the next `accept`.
  * Each pool operation (the open with its truncate, every write, the close)
  * holds one slot of the upload gate until it returns, so a transfer waiting for
@@ -224,11 +233,13 @@ export async function writeExternalIncremental(
   path: string,
   chunks: AsyncIterable<Uint8Array>,
   hooks?: {
+    expectedBytes?: number;
     accept?: (chunk: Uint8Array, received: number) => void;
     committed?: (chunk: Uint8Array, received: number) => void;
     cancelled?: () => void;
   },
 ): Promise<number> {
+  const blockBytes = Math.min(EXTERNAL_WRITE_BLOCK_BYTES, hooks?.expectedBytes || Infinity);
   const handle = await withPoolWriteSlot(hooks?.cancelled, async () => {
     const opened = await open(path, externalWriteFlags(constants.O_RDWR));
     try {
@@ -246,20 +257,35 @@ export async function writeExternalIncremental(
     closed = true;
     await withPoolWriteSlot(undefined, () => handle.close());
   };
+  let block: Buffer | null = null;
+  let filled = 0;
+  const write = async (): Promise<void> => {
+    const bytes = block!.subarray(0, filled);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const { bytesWritten } = await withPoolWriteSlot(hooks?.cancelled, () =>
+        handle.write(bytes, offset, bytes.byteLength - offset, received + offset),
+      );
+      if (bytesWritten <= 0) throw new Error(`short write of ${path}`);
+      offset += bytesWritten;
+    }
+    received += bytes.byteLength;
+    hooks?.committed?.(bytes, received);
+    filled = 0;
+  };
   try {
     for await (const chunk of chunks) {
-      hooks?.accept?.(chunk, received);
-      let offset = 0;
-      while (offset < chunk.byteLength) {
-        const { bytesWritten } = await withPoolWriteSlot(hooks?.cancelled, () =>
-          handle.write(chunk, offset, chunk.byteLength - offset, received + offset),
-        );
-        if (bytesWritten <= 0) throw new Error(`short write of ${path}`);
-        offset += bytesWritten;
+      hooks?.accept?.(chunk, received + filled);
+      for (let taken = 0; taken < chunk.byteLength;) {
+        block ??= Buffer.allocUnsafe(blockBytes);
+        const part = chunk.subarray(taken, taken + block.byteLength - filled);
+        block.set(part, filled);
+        filled += part.byteLength;
+        taken += part.byteLength;
+        if (filled === block.byteLength) await write();
       }
-      received += chunk.byteLength;
-      hooks?.committed?.(chunk, received);
     }
+    if (filled > 0) await write();
     await close();
     return received;
   } catch (error) {
