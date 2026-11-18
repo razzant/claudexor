@@ -2069,24 +2069,30 @@ describe("remembered catalog (INV-135, owner decision 2026-11-18)", () => {
     expect(gets(f)).toBe(2);
   });
 
-  it("a read in flight when contrary evidence arrives does not publish afterwards", async () => {
-    let release!: (response: Response) => void;
-    const f = setup(
-      () => Response.json({ error: { code: "model_not_found", message: "no" } }, { status: 404 }),
-      undefined,
-      known(),
-    );
-    const context = { ...f.context, reuseCatalog: true, credentialGeneration: 1 };
-    f.fetcher.mockImplementationOnce(() => new Promise<Response>((resolve) => (release = resolve)));
-    const pending = f.adapter.catalog(context);
-    await vi.waitFor(() => expect(gets(f)).toBe(1));
-    const handedOff = { ...(await f.adapter.catalog({ ...context, credentialGeneration: 2 })) };
-    await f.adapter.invoke(f.request, { ...context, catalog: handedOff });
-    release(Response.json(catalog));
-    await pending;
-    await f.adapter.catalog(context);
-    expect(gets(f)).toBe(3);
-  });
+  it.each([
+    [404, "model_not_found", "model_capability_refused", 3],
+    [400, "invalid_request", "invalid_request", 2],
+  ] as const)(
+    "an in-flight catalog read publishes only without contrary evidence (%i)",
+    async (status, code, problem, expectedGets) => {
+      const f = setup(() => Response.json({ error: { code } }, { status }), undefined, known());
+      const context = { ...f.context, reuseCatalog: true, credentialGeneration: 1 };
+      const handedOff = await f.adapter.catalog(context);
+      let release!: (response: Response) => void;
+      f.fetcher.mockImplementationOnce(
+        () => new Promise<Response>((resolve) => (release = resolve)),
+      );
+      const pending = f.adapter.catalog({ ...context, reuseCatalog: false });
+      await vi.waitFor(() => expect(gets(f)).toBe(2));
+      const refused = await f.adapter.invoke(f.request, { ...context, catalog: handedOff });
+      expect(refused.problem?.code).toBe(problem);
+      release(Response.json({ models: [] }));
+      await pending;
+      const next = await f.adapter.catalog(context);
+      expect(gets(f)).toBe(expectedGets);
+      expect(next.models).toHaveLength(status === 404 ? 1 : 0);
+    },
+  );
 });
 
 describe("a catalog read that never reached the provider", () => {
