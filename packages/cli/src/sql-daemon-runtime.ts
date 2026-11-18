@@ -151,6 +151,7 @@ export function createSqlDaemonExecutors(
     resources: () => graph.resources,
     bus: options.bus,
     runtimeConcurrencyCaps: options.runtimeConcurrencyCaps,
+    loginReadiness: models.loginReadiness,
     terminalPersistence: (jobId) => (event, telemetry) =>
       graph.threads.persistTerminal(jobId, event, telemetry),
     terminalStaging: (jobId) => (event, telemetry) =>
@@ -177,6 +178,7 @@ export function createSqlDaemonExecutors(
       authority: options.authority,
       quota: () => graph.quota,
       runtimeConcurrencyCaps: options.runtimeConcurrencyCaps,
+      loginReadiness: models.loginReadiness,
     }),
     models,
     // Keep the bounded-pass signal through model cleanup and upload pruning.

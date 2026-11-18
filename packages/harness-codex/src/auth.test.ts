@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
+import { processTiming } from "@claudexor/util";
 import type { CliRunLoopOptions } from "@claudexor/core";
 import {
   CODEX_FILE_AUTH_OVERRIDE,
@@ -457,6 +458,9 @@ describe("probeLogin (native-session probe vs probe failure)", () => {
     const controller = new AbortController();
     let captured: Record<string, unknown> | undefined;
     let capturedArgs: string[] = [];
+    const count = () =>
+      processTiming.facts().work.find((row) => row.kind === "process.launch")?.lifetime.count ?? 0;
+    const before = count();
     const result = await probeLogin("/fake/codex", {
       env: { HOME: "/scoped/home", CODEX_HOME: "/must/not/win", OPENAI_API_KEY: "secret" },
       abortSignal: controller.signal,
@@ -466,6 +470,7 @@ describe("probeLogin (native-session probe vs probe failure)", () => {
         return { code: 0, signal: null, stdout: "Logged in using ChatGPT\n", stderr: "" };
       },
     });
+    expect(count() - before).toBe(1);
     expect(result.method).toBe("chatgpt");
     expect((captured?.env as Record<string, unknown>).HOME).toBe("/scoped/home");
     expect((captured?.env as Record<string, unknown>).CODEX_HOME).toBe(defaultNativeCodexHome());

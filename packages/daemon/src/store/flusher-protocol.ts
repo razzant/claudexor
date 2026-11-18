@@ -18,6 +18,8 @@ export interface FlusherHooks {
   allowExit?: boolean;
   /** Sleep inside the pass, between checkpoint and barrier (kill-during-pass tests). */
   passDelayMs?: number;
+  /** A longer pass interval, so a test can tell a woken pass from a periodic one. */
+  intervalMs?: number;
 }
 
 export interface FlusherWorkerData {
@@ -28,7 +30,8 @@ export interface FlusherWorkerData {
 
 export type FlusherCommand =
   | { type: "register"; g: number; dir: string }
-  | { type: "flush"; g: number }
+  /** An idle slot allows one extra early pass. The periodic deadline stays in place. */
+  | { type: "flush"; g: number; wake?: true }
   | { type: "tick" }
   | { type: "exit"; code: number }
   | { type: "stop" };

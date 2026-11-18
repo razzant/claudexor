@@ -1,5 +1,44 @@
 # @claudexor/daemon
 
+## 6.3.0
+
+### Patch Changes
+
+- 57aa887: Before a model or image call is sent, the engine store waits for proof that its
+  dispatch record reached disk. A waiter arriving in an idle slot can trigger
+  one extra early pass. It proves the directory and WAL barriers and leaves the
+  periodic pass at its original deadline for followers. Steadily spaced callers can
+  each trigger an early barrier if each finds an idle slot. At most one early barrier
+  runs per slot. The periodic pass serves waiters arriving after the early pass and,
+  if it served waiters, the next slot also waits for the timer. Each periodic pass attempts a
+  space-reclaiming checkpoint. A clean pass skips the explicit WAL barrier.
+
+  Account reset, startup and shutdown use the same barrier. Writes with no waiter
+  keep the regular schedule.
+
+- cdcd850: `GET /v2/daemon/status` reports main-thread milliseconds, section count and the longest
+  section by class in `timing.work`, since startup and in the last completed ten-second
+  window. The counters cover control requests including body decoding and parsing,
+  vendor frame translation and raw API completion handling by harness, synchronous
+  run journal appends and their queued publication callbacks, store commits, vendor catalog parsing, child launch and Codex
+  login output parsing. Each section excludes the time spent in nested sections.
+  Async continuations count when they enter a measured section. The counters live
+  in memory.
+- 7d523c3: An uploaded file is now written to disk in blocks of up to 1 MiB instead of one
+  write per network chunk. A 3.8 MB model request used to take about sixty disk writes,
+  each needing a turn of the daemon's main thread to continue; it now takes four, so
+  uploads slow down far less when the daemon is busy. The bytes are still on the drive
+  before the upload reports `uploaded` (the same write-through files), every chunk is
+  still checked against the declared size before it is accepted, and the digest still
+  covers every byte. An upload keeps at most one block of unwritten bytes in memory.
+- Updated dependencies [c475738]
+- Updated dependencies [095300e]
+- Updated dependencies [cdcd850]
+  - @claudexor/core@6.3.0
+  - @claudexor/schema@6.3.0
+  - @claudexor/util@6.3.0
+  - @claudexor/workspace@6.3.0
+
 ## 6.2.0
 
 ### Patch Changes

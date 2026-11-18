@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
+import { recordWorkSection } from "./process-timing.js";
 
 export type PreparationStep =
   | "payloadRead"
@@ -32,6 +33,7 @@ let launchMs = 0;
 export function recordChildLaunch(milliseconds: number): void {
   launches += 1;
   launchMs += Math.max(0, milliseconds);
+  recordWorkSection("process.launch", milliseconds);
 }
 
 /** Each step sums this operation's waits: concurrent waits can sum above the

@@ -1736,7 +1736,8 @@ invalidation, a harness install or update through the daemon (that harness's
 observations and the Accounts harness statuses) and an explicit atomic Refresh
 request new evidence. Catalog payloads retain original timestamps, including null
 when the adapter supplies none. This
-cache is display-only: real run and model admission retain their fresh route checks.
+cache is display-only: real run and model admission keep their own admission-grade checks
+(at most a dated positive under its exact key, see [caller-owned model operations](#caller-owned-model-operations)).
 The ordinary response does not claim fenced `next_up` authority. Display-only
 `GET /v2/quota` owns shown quota values. Explicit Refresh/Retry and exact post-login
 verification use `GET /v2/credential-profiles` with `snapshot=true`: one epoch contains
@@ -3260,18 +3261,22 @@ constant moves with a recorded catalog fixture pair (`fixtures/models-http-*.jso
 whose shared rows must stay identical. Refresh work is serialized per canonical
 managed home; a cancelled caller cannot release another past a still-live
 refresh, and each caller rereads current authorization. Selection hands its
-exact-profile catalog to the invocation, which rechecks the account fingerprint; no catalog or credentials are cached across operations, and an
+exact-profile catalog to the invocation, which rechecks the account fingerprint; credentials are never cached across operations, a catalog only as a dated positive below, and an
 unknown fingerprint keeps fresh discovery and cannot authorize native
 continuation reuse.
-Raw model selection owns a separate admission-grade positive login observation
-(`model-login-readiness.ts`), keyed by the whole profile and locator, the stat
+Raw model selection and run start (the admission pass, the account preflight,
+billing verification and reviewer seats; mid-run rotation still probes
+physically) share one admission-grade positive login observation per store
+graph (`model-login-readiness.ts`), keyed by the whole profile and locator, the stat
 versions of its owned `auth.json` and `config.toml` (including missing settings),
 known credential generation, and `observeHarnessProgram` identity/version.
 Unknown identity never authorizes reuse. Positive, dated, non-stale probes
 expire from their physical start/date under the shared doctor positive policy
 (`CLAUDEXOR_DOCTOR_TTL_MS`, default 90 seconds); hits never extend that date.
 Display projections, negative/unknown results, eligible sets and winners are
-never reused for admission. Live quota and unusable-credential evidence can
+never reused for admission. A physical login probe, including one acquired by the
+Accounts view, drops the remembered positive if it refuses, cannot confirm the login,
+or fails. A success from a probe that started before that evidence cannot restore it. Live quota and unusable-credential evidence can
 exclude a locally ready account without launching another probe. A hit runs no
 CLI: a program replaced behind an unchanged wrapper, or a `config.toml` the CLI
 can no longer load while its file identity is unchanged, is seen only when the
@@ -3291,25 +3296,51 @@ at shutdown) runs once more under the new identity (any login lifecycle moves
 every row's generation), so its caller still gets an answer; nothing from the
 ended read is used, a read that ended with its own answer keeps that answer,
 and a second change during the repeated read still fails its operation
-`auth_changed`. After each wait a consumer judges again only the
+`auth_changed`. A successful Codex catalog read may answer later raw-model selections
+under the same catalog key and the stat versions of the owned `auth.json` and
+`config.toml` for the doctor positive TTL from the start of the physical read
+(`model-catalog.ts`, owner decision 2026-11-18). A hit keeps the original
+observation date and records no `catalogTransport` step. A failed catalog read,
+failed account authorization, unknown or changed identity, or program replacement
+invalidates the fact. An HTTP or terminal stream refusal of a listed model or its
+account also invalidates it. An account-wide authentication refusal on an image request
+drops the text catalog. Image quota and image-model entitlement leave it available.
+A malformed request (HTTP 400), rate limit or server failure on a generation leaves
+the catalog available. Dropping the fact fences publication by reads already in flight.
+
+Within the 90-second default TTL, a caller can join a GET begun before a refusal.
+Concurrent GETs publish in preparation order, which can differ from wire order and
+leave an earlier success reusable after a refusal. A late refusal for a replaced
+principal or an input-specific HTTP 403 can discard a usable catalog and cost another
+GET. A program change during preparation can return one obsolete, uncached answer.
+
+A pin and its run-start probe keep the pin's own
+wait and never join an ordinary probe. After each wait a consumer judges again only the
 account it waited for (`liveAccountRefusal`: enablement, a revoked or unusable
 credential, and live usage against the headroom threshold read at admission, as
 a strict pin of that account is judged; refusals, substitutions and capability
-marks are re-read by the catalog stage). It keeps its fresh catalogs and
+marks are re-read by the catalog stage). It keeps the catalogs it selected and its
 exclusions: a change about another
 account neither restarts the selection nor re-reads a catalog, and an account
 whose read failed is not tried again. A pool refusal reports the causes of its
 own decision, so an account blocked now reports that block rather than an
 earlier refusal of the same selection. Each consumer then performs its own
 bind/reserve/changed and release.
-The selected-account catalog GET has an HTTP-disconnect lifetime; the account
-display view also cancels abandoned acquisition while retaining its existing
-display observation policy. Accepted durable model operations retain their own
+The public catalog GET may reuse a dated positive login probe. It reads the catalog
+physically and cancels on HTTP disconnect. Accounts retains its display observation
+until invalidation. Refresh checks the login physically, and the first catalog read
+after Refresh also acquires physically. Either read can join identical
+physical I/O already in progress. Accepted durable model operations retain their own
 lifetime, independent of the connection that created them. The Codex `/models`
 request and response body share a 60-second transport limit; expiry yields
 `catalog_unavailable`, never an empty successful inventory, and Auto continues
-its normal candidate search. Catalog admission remains NEVER cached: completed
-catalogs are not retained across selections.
+its normal candidate search. A DNS failure, missing route, connection refusal or
+connect timeout produces `catalog_unavailable` with `context.cause: network` and the
+connection's `errorCode`. A socket `ETIMEDOUT` qualifies only when the failing syscall
+was `connect`. A deadline that aborts the read preserves any such connection error the
+transport reports as it settles. The public catalog GET returns the same retryability
+and problem context as the operation receipt, including `poolCause` on pool exhaustion.
+Only a successful read can answer a later selection.
 
 Operation receipts carry optional `preparation`; HTTP GET exposes it only with
 `includePreparation=true`, so strict earlier clients keep their DTO. It contains `totalMs`, `steps`
@@ -3329,7 +3360,7 @@ leader identity capture. These process deltas include other concurrent work
 and are not per-operation CPU attribution. No body, token or account path is
 recorded. Older receipts omit the optional timing object.
 
-Auto model operations now examine fresh per-account catalogs in selection order:
+Auto model operations examine per-account catalogs in selection order:
 listed accounts precede advisory misses; a soft observation (a live pre-progress
 refusal, or a served-model substitution of a non-preferred account) moves that
 account/model behind both groups, and a temporary capability mark behind the soft
@@ -3339,8 +3370,8 @@ a refusal or a listed alternative. History is the one exception: an unmarked,
 unrefused preferred account to which a message's native continuation is bound
 stays first even when its catalog omits the model, because that history replays
 only there. A marked or refusing one yields, and the selected account rejects
-the history locally with `invalid_continuation`. The resolver retains only
-catalog hashes for invalidation, never catalogs for admission across operations.
+the history locally with `invalid_continuation`. The resolver retains catalog hashes for invalidation. The adapter owns the dated
+catalogs used by later raw-model selections.
 
 A Codex inference HTTP 400/404 with an explicit model-not-found code or a narrowly
 recognized model refusal becomes `model_capability_refused`. Explicit vendor
@@ -3596,7 +3627,10 @@ from typed per-account causes: an all-quota pool is
 `subscription_window_exhausted`, an all-authentication pool is `auth_required`,
 and a mixed, unknown, empty or disabled pool stays unavailable with compact
 `poolCause` evidence; `credential_pool_exhausted` alone does not prove quota
-exhaustion. Legacy selected-account catalog reads obey the same current quota admission
+exhaustion. A selection in which every account it tried failed to connect to the
+provider is a network outage, not an exhausted pool: retryable
+`catalog_unavailable` with `poolCause: network`, the connection `errorCode`, and the
+causes of the accounts it could not try in `poolCauses`. Legacy selected-account catalog reads obey the same current quota admission
 without starting a generation. The opt-in account view enumerates enabled
 inventories separately, as described [above](#processing-and-account-catalogs).
 
@@ -3753,6 +3787,19 @@ so clients can parse status from engines that report those synchronous spans.
 `file.write_text`, `file.capture_write` and `daemon.log_line` name the synchronous
 work that stays on the main thread by design ([Main thread and disk waits](#main-thread-and-disk-waits)).
 Detail and summary report worker queue/projection wall time in `bulk`.
+The `work` array in `timing` records count, total milliseconds and the longest
+section for each class, over the process lifetime and the last completed window.
+`control.handler` includes request entry, synchronous body decoding and parsing,
+handler value loads and response sends. `run.stream` records vendor frame parsing
+and translation by harness, including ACP updates and raw API completion handling.
+`journal.append` covers synchronous event appends through the regular, landed
+and aside interfaces. A queued append counts a second section when the durable write
+lands and its persistence and live-reader callbacks run. `store.commit` measures store commits, `catalog.read`
+measures catalog parsing and `process.launch` measures child launch and identity
+capture, plus parsing the output of a Codex login probe. Each section subtracts
+the time spent in nested sections. Work resuming after an `await` counts only
+when another measured section starts. Work outside the sections is unattributed.
+The counters live in memory.
 Scope persistence measures synchronous serialization, not its asynchronous file writes. These
 samples may overlap and do not identify the cause of a delay. A `store.external_write`
 sample that enters the list is also written to the daemon log with its purpose
@@ -5303,7 +5350,7 @@ writes below share one gate per process, from `@claudexor/util`: the libuv pool 
 minus two threads, never below one, which leaves pool threads for DNS and other
 filesystem work. A slot is held around one leaf filesystem operation and released
 when it returns: an upload takes one for each of its pool operations (the open,
-every chunk write, the close), the ordered appender one for a batch's open, writes
+every block write, the close), the ordered appender one for a batch's open, writes
 and close, and a lifecycle write one for each call (a write, a rename, a link, an
 unlink, a removal). No slot is held across an await of anything else, so slots never
 nest, and an upload waiting for its next bytes from the network holds none. A writer
@@ -6243,7 +6290,7 @@ kept only for cold import and an independent frozen copy kept for tests.
   committed and durable across an engine process crash or kill, not power loss
   or kernel panic: recent commits can be lost until a completed flusher barrier.
   Provider generation and native account-reset I/O await `flushed()` before the
-  external effect.
+  external effect. A waiter in an idle slot can trigger an extra early barrier (below).
   Bodies up to 64 KiB live inline in the `blob` table; larger bodies are
   content-addressed files under the resource store, present in the same tick
   as the owning transaction. Where the bytes are known at an asynchronous
@@ -6268,8 +6315,14 @@ kept only for cold import and an independent frozen copy kept for tests.
   An upload part is that same write-through file, written incrementally on the
   libuv pool under the process's pool write gate
   ([Main thread and disk waits](#main-thread-and-disk-waits)), which concurrent
-  uploads share with the engine's other pool writes. Each pool operation of a
-  transfer (the open, every chunk write, the close) takes one slot and releases
+  uploads share with the engine's other pool writes. The bytes of each network
+  chunk of a PUT are copied, as they are accepted, into one 1 MiB block the
+  transfer owns (a producer may reuse its buffer for the next chunk), and the
+  block is written with the same flags when it fills and at the end, so a 3.8 MB
+  body takes four pool writes and four request-thread callbacks instead of about
+  sixty; each chunk is still checked against the declared size before it is
+  accepted, and the sha256 covers every written byte. Each pool operation of a
+  transfer (the open, every block write, the close) takes one slot and releases
   it when the operation returns, so a PUT waiting for its next bytes from the
   network, however long, holds no slot and cannot hold up other uploads.
   Cancellation wakes a transfer's wait for a slot, and the close still runs
@@ -6368,9 +6421,9 @@ kept only for cold import and an independent frozen copy kept for tests.
   resources have no managed lifetime. Fresh DDL and
   the migrated file run the same statements. Older readers refuse the upgraded
   file.
-- The flusher worker owns the power-loss barrier. Every 200 ms it fsyncs each
-  directory registered since the previous pass, reads `data_version`, runs a
-  PASSIVE checkpoint for space, and — whenever anything was committed since
+- The flusher worker owns the power-loss barrier. It schedules passes at 200 ms intervals. Each pass
+  fsyncs directories registered since the preceding pass, reads `data_version`
+  and — whenever anything was committed since
   its last proven barrier — issues one explicit fsync of the WAL file (an
   F_FULLFSYNC on macOS, also a device-wide barrier for `O_DSYNC` file data
   handed to the drive before it). The barrier is never derived from a
@@ -6398,7 +6451,16 @@ kept only for cold import and an independent frozen copy kept for tests.
   generations; a pass acknowledges every generation it received before it
   started, a dead worker rejects its earlier waiters typed
   (`store_flush_unavailable`, retryable) and is restarted with its
-  unacknowledged registrations replayed.
+  unacknowledged registrations replayed. The first `flushed()` waiter in an idle slot may trigger
+  one extra early pass. It covers the generations received before it starts and
+  performs the WAL barrier when dirty. The periodic pass keeps its original
+  deadline. If the early pass is still running then, the worker finishes it
+  before serving followers. Periodic passes that serve waiters keep subsequent
+  waiters on the timer. A periodic pass with no waiters permits another early
+  pass in the following slot. Every periodic pass attempts a PASSIVE checkpoint
+  for space. A pass whose data version matches the last proven barrier skips the
+  explicit WAL fsync.
+  Pass cost, worker delays and pinned readers affect when space is reclaimed.
 - Obligations (`effect_obligation`) are rows created in the same transaction
   as the decision whose file effects they protect (terminal files, blob
   publication, archive/purge/quarantine steps). The row stays `pending` until

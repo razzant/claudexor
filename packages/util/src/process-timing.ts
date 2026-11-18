@@ -45,6 +45,21 @@ export type SyncOperation =
   | "file.write_text"
   | "file.capture_write"
   | "daemon.log_line";
+/** Classes of main-thread work the daemon attributes (`timing.work`). */
+export type WorkClass =
+  | "control.handler"
+  | "run.stream"
+  | "journal.append"
+  | "store.commit"
+  | "catalog.read"
+  | "process.launch";
+type WorkTotals = { count: number; totalMs: number; maxMs: number };
+const noWork = (): WorkTotals => ({ count: 0, totalMs: 0, maxMs: 0 });
+const roundedWork = (totals: WorkTotals): WorkTotals => ({
+  count: totals.count,
+  totalMs: roundedMs(totals.totalMs),
+  maxMs: roundedMs(totals.maxMs),
+});
 type LatencyFacts = ReturnType<LatencyHistogram["facts"]>;
 type SyncSample = { operation: SyncOperation; durationMs: number; at: string };
 export type RequestOutcome =
@@ -72,8 +87,39 @@ export class ProcessTiming {
     string,
     { queue: LatencyHistogram; projection: LatencyHistogram }
   >();
+  private readonly work = new Map<
+    string,
+    {
+      kind: WorkClass;
+      harness: string | null;
+      lifetime: WorkTotals;
+      current: WorkTotals;
+      window: WorkTotals | null;
+    }
+  >();
   private windowMs: number | null = null;
   private windowEndedAt: string | null = null;
+
+  /** Main-thread time of one section of `kind`, by harness for run streams. Past
+   * 57 keys a new harness folds into `other`, so with the six classes the facts
+   * never exceed 64 keys. In memory only. */
+  recordWork(kind: WorkClass, durationMs: number, harness: string | null = null): void {
+    if (!Number.isFinite(durationMs) || durationMs < 0) return;
+    if (harness !== null && this.work.size >= 57 && !this.work.has(`${kind}\0${harness}`))
+      harness = "other";
+    const key = `${kind}\0${harness ?? ""}`;
+    let entry = this.work.get(key);
+    if (!entry) {
+      const window = this.windowEndedAt === null ? null : noWork();
+      entry = { kind, harness, lifetime: noWork(), current: noWork(), window };
+      this.work.set(key, entry);
+    }
+    for (const totals of [entry.lifetime, entry.current]) {
+      totals.count += 1;
+      totals.totalMs += durationMs;
+      totals.maxMs = Math.max(totals.maxMs, durationMs);
+    }
+  }
 
   recordRequest(method: string, route: string, durationMs: number, outcome?: RequestOutcome): void {
     let key = `${method} ${route}`;
@@ -152,6 +198,10 @@ export class ProcessTiming {
         split.current.reset();
       }
     }
+    for (const entry of this.work.values()) {
+      entry.window = entry.current;
+      entry.current = noWork();
+    }
     this.windowMs = windowMs;
     this.windowEndedAt = windowEndedAt;
   }
@@ -180,6 +230,12 @@ export class ProcessTiming {
         window: entry.window && { ...entry.window },
       })),
       worstSync: this.worstSync(),
+      work: [...this.work.values()].map(({ kind, harness, lifetime, window }) => ({
+        kind,
+        ...(harness === null ? {} : { harness }),
+        lifetime: roundedWork(lifetime),
+        window: window && roundedWork(window),
+      })),
       bulk: [...this.bulk].map(([kind, entry]) => ({
         kind,
         queue: entry.queue.facts(),
@@ -190,6 +246,35 @@ export class ProcessTiming {
 }
 
 export const processTiming = new ProcessTiming();
+
+/** Open work sections, innermost last: each excludes the sections nested in it. */
+const openWork: Array<{ nestedMs: number }> = [];
+
+/** Attribute a synchronous section measured elsewhere (a store commit, a child
+ * launch) to `kind`, excluding it from the section it ran inside. */
+export function recordWorkSection(kind: WorkClass, durationMs: number, harness?: string): void {
+  processTiming.recordWork(kind, durationMs, harness ?? null);
+  const parent = openWork.at(-1);
+  if (parent && Number.isFinite(durationMs) && durationMs > 0) parent.nestedMs += durationMs;
+}
+
+/** Time a synchronous section as main-thread work of `kind`, net of nested
+ * sections, so the classes add up without double counting. Never wrap an await:
+ * a returned promise ends the section (its continuations are not counted). */
+export function measureWork<T>(kind: WorkClass, body: () => T, harness?: string | null): T {
+  const frame = { nestedMs: 0 };
+  openWork.push(frame);
+  const started = performance.now();
+  try {
+    return body();
+  } finally {
+    openWork.pop();
+    const elapsed = performance.now() - started;
+    processTiming.recordWork(kind, Math.max(0, elapsed - frame.nestedMs), harness ?? null);
+    const parent = openWork.at(-1);
+    if (parent) parent.nestedMs += elapsed;
+  }
+}
 
 /** Only wrap synchronous work: including an await would mislabel wall time. */
 export function measureSync<T>(operation: SyncOperation, body: () => T): T {

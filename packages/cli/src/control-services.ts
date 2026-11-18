@@ -9,7 +9,6 @@ import {
   ProjectStorePort,
   ResourceStorePort,
   QuotaRegistry,
-  AccountEvidence,
 } from "@claudexor/daemon";
 import { loadConfig } from "@claudexor/config";
 import { listTrustService, updateTrustService } from "./trust-services.js";
@@ -86,7 +85,7 @@ export function controlServices(
   resources: () => ResourceStorePort,
   quotaRegistry: () => QuotaRegistry,
   /** The store's account evidence graph: invalidation and Accounts reads share it. */
-  accounts: AccountEvidence,
+  accounts: Parameters<typeof createCredentialProfilesService>[1],
   daemonJobs: () => Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>,
   effectiveConcurrencyCaps?: RuntimeConcurrencyCaps,
   purgeDurability?: ThreadPurgeDurability,
@@ -296,6 +295,7 @@ export function controlServices(
             config: loadConfig(NO_PROJECT_ROOT).global,
             quota: { ...quotaRegistry().read(), honored: accounts.unusable.honored() },
             unusable: accounts.unusable.live(),
+            loginReadiness: accounts.loginReadiness,
           })
         : harnessModels(input.harnessId, NO_PROJECT_ROOT, true, input.route),
     authReadiness: async (input: { harnessId: string; request: unknown }) =>

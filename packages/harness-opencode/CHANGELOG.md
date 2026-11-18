@@ -1,5 +1,17 @@
 # @claudexor/harness-opencode
 
+## 6.3.0
+
+### Patch Changes
+
+- Updated dependencies [c475738]
+- Updated dependencies [095300e]
+- Updated dependencies [cdcd850]
+  - @claudexor/core@6.3.0
+  - @claudexor/schema@6.3.0
+  - @claudexor/util@6.3.0
+  - @claudexor/secrets@6.3.0
+
 ## 6.2.0
 
 ### Patch Changes

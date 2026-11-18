@@ -26,6 +26,7 @@ import {
 import {
   CLAUDEXOR_VERSION,
   normalizeRetryDelayMs,
+  measureWork,
   nowIso,
   redactSecrets,
   sha256,
@@ -450,7 +451,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           return;
         }
         const json = await res.json();
-        const parsed = parseChatCompletion(json);
+        const parsed = measureWork("run.stream", () => parseChatCompletion(json), id);
         const usage = {
           input_tokens: parsed.usage.input_tokens,
           output_tokens: parsed.usage.output_tokens,

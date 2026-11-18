@@ -13,7 +13,12 @@ import {
 } from "./processing.js";
 import type { ProcessingReceipt, EffortResolution } from "@claudexor/schema";
 import type { ModelAdapter } from "@claudexor/core";
-import type { ModelCallResult, ModelNativeContinuation, ModelRoute } from "@claudexor/schema";
+import type {
+  CredentialProfile,
+  ModelCallResult,
+  ModelNativeContinuation,
+  ModelRoute,
+} from "@claudexor/schema";
 import { prepareCodexModelAuth, type CodexModelAuthDeps } from "./model-auth.js";
 import {
   buildResponsesRequest,
@@ -76,6 +81,8 @@ export interface CodexModelAdapterDeps extends CodexModelAuthDeps {
   requestCompression?: () => boolean;
   /** The client version the catalog read declares (see http-client-version.ts). */
   clientVersion?: () => Promise<CodexCatalogClientVersion>;
+  /** Owned login/settings file versions keying a remembered catalog (null: unknown). */
+  profileIdentity?: (profile: CredentialProfile) => Promise<string | null>;
 }
 
 /** One adapter-owned generation, with the official CLI owning token refresh. */
@@ -83,19 +90,22 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
   const fetcher = deps.fetch ?? globalThis.fetch;
   const now = deps.now ?? Date.now;
   const clientVersion = deps.clientVersion ?? (() => codexCatalogClientVersion());
-  const catalogFor = createCodexCatalogReader(fetcher, now, clientVersion);
+  const catalogFor = createCodexCatalogReader(fetcher, now, clientVersion, deps.profileIdentity);
+  const authorize = (profile: CredentialProfile, signal: AbortSignal) =>
+    measureModelPreparation("adapterAuth", () =>
+      prepareCodexModelAuth(profile, signal, deps),
+    ).catch((error: unknown) => {
+      if (!signal.aborted) catalogFor.forget(profile.profile_id);
+      throw error;
+    });
   const requestCompression = deps.requestCompression ?? codexRequestCompression;
   return {
     id: "codex",
     // Same managed account, auth and delivery owners; a different wire.
-    image: createCodexImageFacet(deps),
+    image: createCodexImageFacet(deps, authorize, catalogFor.forget),
+    close: catalogFor.close,
     inventoryAbsence: "advisory",
-    async catalog(context) {
-      const auth = await measureModelPreparation("adapterAuth", () =>
-        prepareCodexModelAuth(context.profile, context.signal, deps),
-      );
-      return catalogFor(auth, context);
-    },
+    catalog: (context) => catalogFor(authorize(context.profile, context.signal), context),
     async invoke(request, context) {
       let route: ModelRoute = {
         source: "codex",
@@ -111,6 +121,19 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
       let nativeContinuation: ModelNativeContinuation | null | undefined =
         request.nativeContinuation === undefined ? undefined : null;
       const withTurnState = (result: ModelCallResult): ModelCallResult => {
+        const problem = result.problem;
+        if (dispatched && problem) {
+          if (
+            ["model_capability_refused", "model_unavailable"].includes(problem.code) ||
+            (problem.code === "provider_failed" &&
+              problem.context.vendorCode === "model_not_supported")
+          )
+            catalogFor.forget(context.profile.profile_id, request.model);
+          else if (
+            ["auth_required", "auth_refresh_failed", "provider_refused"].includes(problem.code)
+          )
+            catalogFor.forget(context.profile.profile_id);
+        }
         const optIn = request.options.processingPreference !== undefined;
         const observed =
           optIn && processing
@@ -164,9 +187,7 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
         }
         // Refuse unsupported explicit options before auth helpers, catalog I/O, or dispatch.
         validateCodexModelOptions(request.options);
-        const auth = await measureModelPreparation("adapterAuth", () =>
-          prepareCodexModelAuth(context.profile, context.signal, deps),
-        );
+        const auth = await authorize(context.profile, context.signal);
         route = { ...route, accountFingerprint: auth.accountFingerprint };
         nativeContinuation = prepareTurnContinuation(request.nativeContinuation, route);
         const discovered = context.catalog;

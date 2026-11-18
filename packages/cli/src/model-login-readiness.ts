@@ -1,10 +1,11 @@
 import {
-  DOCTOR_TTL_MS,
+  DatedPositives,
   ReadInvalidated,
   SharedRead,
   observeHarnessProgram,
   onProgramObservationChange,
   waitForRead,
+  type CredentialProfileProbeOptions,
   type HarnessAdapter,
   type ProgramObservation,
 } from "@claudexor/core";
@@ -14,14 +15,22 @@ import { startModelPreparation } from "@claudexor/util";
 
 const scopeOf = (harnessId: string, profileId: string) => `${harnessId}\0${profileId}`;
 
+function positiveLoginTime(status: CredentialProfileStatus): number | undefined {
+  const at = Date.parse(status.last_verified_at ?? "");
+  return status.availability === "available" &&
+    status.verification === "passed" &&
+    !status.stale &&
+    at <= Date.now()
+    ? at
+    : undefined;
+}
+
 /** Admission-grade raw observations, separate from accountObservations display
- * projections. Quota, revocation, policy and selection never enter this owner. */
+ * projections, shared by raw-model selection and run start. Quota, revocation,
+ * policy and selection never enter this owner. */
 export class ModelLoginReadiness {
   private readonly reads = new SharedRead<CredentialProfileStatus>();
-  private readonly positives = new Map<
-    string,
-    { key: string; at: number; status: CredentialProfileStatus }
-  >();
+  private readonly positives = new DatedPositives<CredentialProfileStatus>();
   private readonly unsubscribe: () => void;
   private readonly programUnsubscribe: () => void;
   private closed = false;
@@ -40,12 +49,31 @@ export class ModelLoginReadiness {
 
   prune(profiles: readonly CredentialProfile[]): void {
     const live = new Set(profiles.map((row) => scopeOf(row.harness_id, row.profile_id)));
-    for (const scope of this.positives.keys()) if (!live.has(scope)) this.positives.delete(scope);
+    this.positives.drop((scope) => !live.has(scope));
   }
 
   private invalidate(matches: (scope: string) => boolean = () => true): void {
     this.reads.invalidate(matches);
-    for (const scope of this.positives.keys()) if (matches(scope)) this.positives.delete(scope);
+    this.positives.drop(matches);
+  }
+
+  /** Run start's login probe for one adapter, under the rule raw-model selection
+   * uses (INV-135, owner decision 2026-11-18): the same owner, key and positives.
+   * An adapter that versions no login files can never reuse one: it keeps its own
+   * probe, without this owner's program observation. */
+  runStartProbe(adapter: HarnessAdapter): NonNullable<HarnessAdapter["probeCredentialProfile"]> {
+    if (!adapter.credentialProfileIdentity) return adapter.probeCredentialProfile!.bind(adapter);
+    const unbounded = new AbortController().signal;
+    return (profile, signal = unbounded, options) =>
+      this.probe(profile, adapter, signal, { options });
+  }
+
+  /** Order a physical Accounts probe with admission probes. Its refusal can retire a login. */
+  observeDisplayProbe(profile: CredentialProfile) {
+    const publish = this.positives.observe(scopeOf(profile.harness_id, profile.profile_id));
+    return (status: CredentialProfileStatus) => {
+      if (positiveLoginTime(status) === undefined) publish();
+    };
   }
 
   close(): void {
@@ -56,13 +84,23 @@ export class ModelLoginReadiness {
   }
 
   /** `observed` may be one program observation shared by a selection's profiles;
-   * the check after a physical probe and a retry always observe again. */
+   * the check after a physical probe and a retry always observe again. A pin's
+   * physical probe keeps its own wait and never joins an ordinary one. */
   async probe(
     profile: CredentialProfile,
     adapter: HarnessAdapter,
     signal: AbortSignal,
-    observed?: Promise<ProgramObservation>,
-    retry = true,
+    {
+      observed,
+      options,
+      reuse = true,
+      retry = true,
+    }: {
+      observed?: Promise<ProgramObservation>;
+      options?: CredentialProfileProbeOptions;
+      reuse?: boolean;
+      retry?: boolean;
+    } = {},
   ): Promise<CredentialProfileStatus> {
     signal.throwIfAborted();
     const finish = startModelPreparation();
@@ -82,42 +120,38 @@ export class ModelLoginReadiness {
         : null;
     };
     const key = await waitForRead(identity(observed), signal);
-    const hit = this.positives.get(scope);
-    const age = hit ? Date.now() - hit.at : -1;
-    if (key !== null && hit?.key === key && age >= 0 && age < DOCTOR_TTL_MS) {
+    const hit = this.positives.get(scope, key, reuse);
+    if (hit) {
       finish("loginReady");
-      return structuredClone(hit.status);
+      return hit;
     }
-    this.positives.delete(scope);
+    const joinKey = key !== null && options?.pinned ? `${key}\0pinned` : key;
     const result = await this.reads
-      .read(scope, key, signal, async (physicalSignal) => {
+      .read(scope, joinKey, signal, async (physicalSignal) => {
+        const publish = this.positives.observe(scope);
         const startedAt = Date.now();
-        const status = CredentialProfileStatus.parse(
-          await adapter.probeCredentialProfile!(profile, physicalSignal),
-        );
-        physicalSignal.throwIfAborted();
-        if (status.profile_id !== profile.profile_id || status.harness_id !== profile.harness_id)
-          throw new Error("Login probe returned another profile");
-        // A login or program change during the probe still answers this probe;
-        // only an answer under one unchanged identity is retained for reuse.
-        const unchanged = key !== null && (await identity()) === key;
-        physicalSignal.throwIfAborted();
-        const observedAt = Date.parse(status.last_verified_at ?? "");
-        if (
-          unchanged &&
-          status.availability === "available" &&
-          status.verification === "passed" &&
-          status.stale !== true &&
-          Number.isFinite(observedAt) &&
-          observedAt <= Date.now()
-        ) {
-          this.positives.set(scope, {
-            key,
-            at: Math.min(startedAt, observedAt),
-            status: structuredClone(status),
-          });
+        try {
+          const status = CredentialProfileStatus.parse(
+            await adapter.probeCredentialProfile!(profile, physicalSignal, options),
+          );
+          physicalSignal.throwIfAborted();
+          if (status.profile_id !== profile.profile_id || status.harness_id !== profile.harness_id)
+            throw new Error("Login probe returned another profile");
+          // A login or program change during the probe still answers this probe;
+          // only an answer under one unchanged identity is retained for reuse.
+          const unchanged = key !== null && (await identity()) === key;
+          physicalSignal.throwIfAborted();
+          const observedAt = positiveLoginTime(status);
+          // A refused, unknown or stale answer is evidence against the remembered
+          // login; an older success answering later cannot restore it.
+          if (observedAt === undefined) publish();
+          else if (unchanged) publish({ key, at: Math.min(startedAt, observedAt), value: status });
+          return status;
+        } catch (error) {
+          // A probe that failed, not one its waiters left or a change ended, is too.
+          if (!physicalSignal.aborted) publish();
+          throw error;
         }
-        return status;
       })
       .finally(() => finish("loginProbe"))
       .catch((error: unknown) => {
@@ -125,7 +159,7 @@ export class ModelLoginReadiness {
         // probe: ask once more under the new identity. Nothing aborted is kept.
         if (!retry || signal.aborted || this.closed || !(error instanceof ReadInvalidated))
           throw error;
-        return this.probe(profile, adapter, signal, undefined, false);
+        return this.probe(profile, adapter, signal, { options, reuse, retry: false });
       });
     signal.throwIfAborted();
     return structuredClone(result);

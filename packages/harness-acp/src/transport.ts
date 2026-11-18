@@ -1,6 +1,7 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { spawnProcess, type ChildStdin } from "@claudexor/core";
 import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
+import { measureWork } from "@claudexor/util";
 import { AcpEvents, AcpFailure, record } from "./events.js";
 import { decidePermission, denyPermission } from "./policy.js";
 
@@ -13,6 +14,7 @@ export interface AcpObservation {
 
 /** SDK owns RPC correlation/validation; our byte-bounded stream owns transcript order. */
 export function connectAcp(input: {
+  harnessId: string;
   binary: string;
   args: string[];
   env: Record<string, string | null>;
@@ -90,7 +92,11 @@ export function connectAcp(input: {
                 await emit(events.event("status", { payload: { stderr: event.line } }));
               } else if (event.type === "stdout") {
                 await wire("agent", event.wire ?? `${event.line}\n`);
-                const message: unknown = JSON.parse(event.line);
+                const message: unknown = measureWork(
+                  "run.stream",
+                  () => JSON.parse(event.line),
+                  input.harnessId,
+                );
                 const envelope = record(message);
                 if (envelope["jsonrpc"] !== "2.0")
                   throw new AcpFailure("invalid_frame", "ACP frame is not JSON-RPC 2.0");
@@ -105,7 +111,11 @@ export function connectAcp(input: {
                         "wrong_session",
                         "ACP update is outside the active session",
                       );
-                    for (const translated of events.update(params["update"]))
+                    for (const translated of measureWork(
+                      "run.stream",
+                      () => events.update(params["update"]),
+                      input.harnessId,
+                    ))
                       await emit(translated);
                   }
                   // Preserve unknown updates/notifications without SDK filtering or console logging.

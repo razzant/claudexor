@@ -3,7 +3,7 @@ import { CODEX_PROGRAM } from "./program.js";
 import { spawnProcess, type ChildStdin, type SpawnOptions } from "@claudexor/core";
 import { verifyCodexAttachments } from "./attachments.js";
 import type { HarnessEvent } from "@claudexor/schema";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { measureWork, nowIso, redactSecrets } from "@claudexor/util";
 import {
   asObject,
   CodexServerRequestRefusal,
@@ -216,7 +216,7 @@ export async function* runCodexAppServer(
       for await (const event of run(input.bin, [...input.args, "app-server", "--stdio"], options)) {
         if (event.type === "stdout") {
           try {
-            onMessage(JSON.parse(event.line));
+            measureWork("run.stream", () => onMessage(JSON.parse(event.line)), "codex");
           } catch (error) {
             if (error instanceof CodexServerRequestRefusal) throw error;
             throw new Error(`Invalid Codex app-server frame: ${errorText(error)}`);

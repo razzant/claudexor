@@ -464,11 +464,11 @@ Tests and local smokes must never touch real user state:
   In `afterAll` the removal hook is registered first, with a flag the close hook
   sets (`daemon/projects.test.ts`). `scripts/lib/vitest-reaper-hooks.test.mjs` pins
   these cases under the default `sequence.hooks: "stack"`, which they rely on.
-- A test waiting for work behind the store's dispatch barrier (a model or image
-  send, an account-reset consume) waits for that work, not Vitest's 1 s
-  `waitFor` default: the barrier needs a flusher pass (200 ms cadence, much
-  slower under disk contention). The bound stays below the test timeout, the
-  failure names the phase, and callers assert the terminal state they expect.
+- A test of a model send, image send or account-reset consume waits for the
+  covering flusher pass. An idle slot permits one extra early barrier. Followers
+  share the original periodic deadline, and disk contention can delay completion.
+  Give `waitFor` a bound below the test timeout, name the phase on failure and
+  assert the expected terminal state.
 - Managed secrets always use the daemon-owned v2 0600 file store, so a
   disposable `CLAUDEXOR_CONFIG_DIR` fully contains test secret I/O. The public
   CLI cannot select a storage backend.

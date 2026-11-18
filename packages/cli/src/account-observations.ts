@@ -16,6 +16,7 @@ import {
 import { claudeAccountIdentity } from "@claudexor/harness-claude";
 import { codexAccountIdentity } from "@claudexor/harness-codex";
 import { registerStatusProjection, STATUS_PROJECTION_TTL_MS } from "./status-projection-cache.js";
+import type { ModelLoginReadiness } from "./model-login-readiness.js";
 
 interface Observation<T> {
   value: T;
@@ -209,12 +210,18 @@ export async function displayAccountObservation(
   adapter?: HarnessAdapter,
   fresh = false,
   signal?: AbortSignal,
+  readiness?: ModelLoginReadiness,
 ): Promise<CredentialAccountProbeReceipt> {
   const observed = await accountObservations.read(
     "profile",
     profile,
     async (physicalSignal) => {
       let identity = profileAccountIdentity(profile);
+      const finishProbe =
+        adapter?.credentialProfileIdentity &&
+        (adapter.probeCredentialAccount || adapter.probeCredentialProfile)
+          ? readiness?.observeDisplayProbe(profile)
+          : undefined;
       const status = await probeCredentialProfileStatus(
         profile,
         adapter?.probeCredentialAccount
@@ -234,6 +241,7 @@ export async function displayAccountObservation(
             : undefined,
       );
       physicalSignal.throwIfAborted();
+      finishProbe?.(status);
       return { status, identity };
     },
     fresh,

@@ -12,6 +12,7 @@ import {
   validateTypedStream,
 } from "@claudexor/core";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
+import { processTiming } from "@claudexor/util";
 import { createAcpAdapter, copilot } from "./index.js";
 
 const secrets = vi.hoisted(() => ({ token: "fixture-managed-token" as string | null }));
@@ -68,12 +69,26 @@ describe("ACP adapter over stdio", () => {
   it.each(Object.entries(manifest.fixtures))(
     "replays %s with declared stream semantics",
     async (name, evidence) => {
+      const count = () =>
+        processTiming
+          .facts()
+          .work.find((row) => row.kind === "run.stream" && row.harness === copilot.id)?.lifetime
+          .count ?? 0;
+      const before = count();
       const peer = adapter("replay", join(fixtures, name));
       const events = await collect(peer.adapter.run(spec()));
       expect(validateTypedStream(events).completed).toBe(1);
       expect(streamExpectationViolations(events, evidence.expectations)).toEqual([]);
       expect(commands(peer.log).filter((c) => c["method"] === "session/prompt")).toHaveLength(1);
       if (name === "recorded-basic.jsonl") {
+        const incoming = events.flatMap((event) => {
+          const frame = event.payload?.["acp_frame"] as
+            { direction: string; line: string } | undefined;
+          return frame?.direction === "agent" ? [JSON.parse(frame.line)] : [];
+        });
+        const updates = incoming.filter((frame) => frame.method === "session/update");
+        expect(updates.length).toBeGreaterThan(0);
+        expect(count() - before).toBe(incoming.length + updates.length);
         const raw = readFileSync(basic, "utf8")
           .split("\n")
           .find((line) => line.startsWith(" {"))!;

@@ -1,20 +1,53 @@
 import {
+  DatedPositives,
   SharedRead,
   waitForRead,
   onProgramObservationChange,
   type ModelAdapterContext,
 } from "@claudexor/core";
 import type { ControlModelCatalogResponse, ModelCatalogEntry } from "@claudexor/schema";
-import { CLAUDEXOR_VERSION, measureModelPreparation } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, measureModelPreparation, measureWork } from "@claudexor/util";
 import type { CodexModelAuth } from "./model-auth.js";
 import { CodexModelError, providerProblem, record, text } from "./responses.js";
 import { codexProcessingCapability } from "./processing.js";
 import { codexModelEfforts } from "./model-effort.js";
 import type { CodexCatalogClientVersion } from "./http-client-version.js";
+import { codexProfileLoginIdentity } from "./profile-login-identity.js";
 
 /** Transport limit for the entire /models request and body, not a selection budget.
  * Never shorter than the host's 60-second catalog read timeout. */
 export const CODEX_CATALOG_TRANSPORT_MS = 60_000;
+
+/** Socket and DNS codes proving that no connection to the provider was made: the
+ * name did not resolve, there was no route, the peer refused, or connecting timed out. */
+const UNREACHABLE = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "EHOSTDOWN",
+  "EADDRNOTAVAIL",
+  "ECONNREFUSED",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/** The typed code of a fetch failure that never reached the provider, read from the
+ * error and its causes (undici keeps the socket error in `cause`), never from text. */
+export function unreachableCode(error: unknown, seen = new Set<unknown>()): string | null {
+  if (!error || typeof error !== "object" || seen.has(error)) return null;
+  seen.add(error);
+  const { code, syscall } = error as NodeJS.ErrnoException;
+  if (code && (UNREACHABLE.has(code) || (code === "ETIMEDOUT" && syscall === "connect")))
+    return code;
+  const inner = [(error as { cause?: unknown }).cause];
+  if (error instanceof AggregateError) inner.push(...error.errors);
+  for (const nested of inner) {
+    const found = unreachableCode(nested, seen);
+    if (found) return found;
+  }
+  return null;
+}
 
 export function codexModelHeaders(auth: CodexModelAuth): Record<string, string> {
   return {
@@ -118,22 +151,40 @@ export function parseCodexModelCatalog(value: unknown): ModelCatalogEntry[] {
   });
 }
 
-/** One adapter instance owns raw in-flight reads, never completed catalogs. */
+/** One adapter instance owns raw in-flight reads and the dated positives of its
+ * completed reads (INV-135, owner decision 2026-11-18): a successful read answers
+ * the same full key within the doctor TTL of its start; a hit never renews it. */
 export function createCodexCatalogReader(
   fetcher: typeof fetch,
   now: () => number,
   clientVersion: () => Promise<CodexCatalogClientVersion>,
+  fileIdentity: typeof codexProfileLoginIdentity = codexProfileLoginIdentity,
 ) {
   const reads = new SharedRead<ControlModelCatalogResponse>();
-  return async (
-    auth: CodexModelAuth,
+  const positives = new DatedPositives<ControlModelCatalogResponse>();
+  const close = onProgramObservationChange((harness) => {
+    if (harness && harness !== "codex") return;
+    positives.drop();
+    reads.invalidate(
+      undefined,
+      new CodexModelError("auth_changed", "The Codex program changed during catalog discovery."),
+    );
+  });
+  const read = async (
+    prepared: CodexModelAuth | Promise<CodexModelAuth>,
     context: Omit<ModelAdapterContext, "onDispatch">,
   ): Promise<ControlModelCatalogResponse> => {
-    context.signal.throwIfAborted();
-    const declared = await waitForRead(clientVersion(), context.signal);
     const scope = context.profile.profile_id;
+    const publish = positives.observe(scope);
+    const auth = await prepared;
+    context.signal.throwIfAborted();
+    const [declared, files] = await waitForRead(
+      Promise.all([clientVersion(), fileIdentity(context.profile)]),
+      context.signal,
+    );
     const key =
       Number.isFinite(context.credentialGeneration) &&
+      files !== null &&
       auth.accountFingerprint &&
       auth.capabilityFingerprint &&
       declared.programKey &&
@@ -142,6 +193,7 @@ export function createCodexCatalogReader(
             "codex",
             context.profile,
             context.credentialGeneration,
+            files,
             auth.credentialFingerprint,
             auth.accountFingerprint,
             auth.capabilityFingerprint,
@@ -150,22 +202,20 @@ export function createCodexCatalogReader(
             declared.source,
           ])
         : null;
+    const remembered = positives.get(scope, key, context.reuseCatalog === true);
+    if (remembered) return remembered;
     const catalog = await measureModelPreparation("catalogTransport", () =>
       reads.read(scope, key, context.signal, async (signal) => {
-        const replaced = new AbortController();
-        const unsubscribe = onProgramObservationChange((harness) => {
-          if (!harness || harness === "codex")
-            replaced.abort(
-              new CodexModelError(
-                "auth_changed",
-                "The Codex program changed during catalog discovery.",
-              ),
-            );
-        });
+        const startedAt = Date.now();
         const deadline = new AbortController();
-        const timer = setTimeout(() => deadline.abort(), CODEX_CATALOG_TRANSPORT_MS);
+        const fallback = new AbortController();
+        const timer = setTimeout(() => {
+          deadline.abort();
+          // Let the aborted transport settle with its socket error before bounding an unresponsive one.
+          setImmediate(() => fallback.abort(deadline.signal.reason));
+        }, CODEX_CATALOG_TRANSPORT_MS);
         timer.unref?.();
-        const transport = AbortSignal.any([signal, replaced.signal, deadline.signal]);
+        const transport = AbortSignal.any([signal, deadline.signal]);
         try {
           const work = async () => {
             const response = await fetcher(
@@ -179,7 +229,8 @@ export function createCodexCatalogReader(
             transport.throwIfAborted();
             let body: unknown = null;
             try {
-              body = await response.json();
+              const text = await response.text();
+              body = measureWork("catalog.read", () => JSON.parse(text));
             } catch {
               transport.throwIfAborted();
               if (response.ok)
@@ -208,25 +259,29 @@ export function createCodexCatalogReader(
               sourceProgram: declared.program ?? null,
               clientVersion: declared.version,
               clientVersionSource: declared.source,
-              models: parseCodexModelCatalog(body),
+              models: measureWork("catalog.read", () => parseCodexModelCatalog(body)),
             };
           };
-          return await waitForRead(work(), transport);
+          const answer = await waitForRead(work(), AbortSignal.any([signal, fallback.signal]));
+          if (key !== null) publish({ key, at: startedAt, value: answer });
+          return answer;
         } catch (error) {
           signal.throwIfAborted();
-          replaced.signal.throwIfAborted();
+          publish();
           if (error instanceof CodexModelError) throw error;
+          const network = unreachableCode(error);
           throw new CodexModelError(
             "catalog_unavailable",
-            deadline.signal.aborted
-              ? "The selected Codex account's catalog exceeded its transport limit."
-              : "The selected Codex account's catalog could not be reached.",
-            {},
+            network
+              ? `The model provider could not be reached from this machine (${network}).`
+              : deadline.signal.aborted
+                ? "The selected Codex account's catalog exceeded its transport limit."
+                : "The selected Codex account's catalog could not be reached.",
+            network ? { cause: "network", errorCode: network } : {},
             true,
           );
         } finally {
           clearTimeout(timer);
-          unsubscribe();
         }
       }),
     );
@@ -234,4 +289,10 @@ export function createCodexCatalogReader(
     // labelled with the client version it was read for.
     return structuredClone(catalog);
   };
+  const forget = (profileId: string, model?: string) =>
+    positives.drop(
+      (id) => id === profileId,
+      (catalog) => model !== undefined && !catalog.models.some((row) => row.id === model),
+    );
+  return Object.assign(read, { forget, close });
 }
