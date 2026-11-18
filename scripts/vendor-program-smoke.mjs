@@ -327,11 +327,13 @@ if (JSON.stringify(declared) !== JSON.stringify(expected)) {
   console.log(`FAILED acceptance set on ${platform}: declared ${declared.join(", ")}`);
 }
 
-const user = environment(machineHome ?? join(root, "home"));
+// Log the chosen local folder, not a value read back from the child environment.
+const installationHome = machineHome ?? join(root, "home");
+const user = environment(installationHome);
 console.log(
   JSON.stringify({
     platform,
-    installationHome: user.HOME,
+    installationHome,
     windowsFolders: win ? "actual ephemeral runner profile; all phases share it" : null,
   }),
 );

@@ -6,6 +6,7 @@
 import { join } from "node:path";
 import {
   type CancelReasonCode,
+  describeStopSender,
   makeOutcomeFacts,
   needsOperatorAttention,
   normalizeCancelReasonCode,
@@ -150,6 +151,25 @@ export function commitCancellation(
       ...(attempts ? { pool_attempts: statement.poolAttempts } : {}),
     },
   };
+}
+
+/** Preserve the existing timeline detail when the daemon Stop also explains
+ * this terminal. Nothing here selects the verdict or writes an artifact. */
+export function withStopSender(
+  payload: Record<string, unknown>,
+  readSender: AnnouncedRunContext["stopSender"],
+): Record<string, unknown> {
+  try {
+    const sender = readSender?.();
+    if (!sender) return payload;
+    const prior = payload["detail"] ?? payload["text"] ?? payload["error"];
+    const source = `Daemon Stop requested (${describeStopSender(sender)})`;
+    const detail = typeof prior === "string" && prior ? `${prior}\n${source}` : source;
+    return { ...payload, detail };
+  } catch {
+    // An unavailable in-process diagnostic must not turn a cancel into a failure.
+    return payload;
+  }
 }
 
 export function terminalEventTypeFor(

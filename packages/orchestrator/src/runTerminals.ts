@@ -32,6 +32,7 @@ import {
   terminalEventTypeFor,
   terminalFactsFailure,
   terminalOutcomeFromPayload,
+  withStopSender,
 } from "./runTerminalHelpers.js";
 import { reconcileDecisionTerminal } from "./decisionTerminalReconciliation.js";
 import type { OrchestratorResult } from "./orchestrator.js";
@@ -293,10 +294,16 @@ export async function guardAnnouncedRun(
                 prepared.facts.outcome.lifecycle === "cancelled"
                   ? commitCancellation(a, signal, payload)
                   : null;
+              const eventPayload = committedCancel?.payload ?? payload;
+              const stoppedByDaemon =
+                canonicalOutcome.lifecycle === "cancelled" &&
+                canonicalOutcome.reason === "host_cancelled" &&
+                signal?.reason === "host_cancelled" &&
+                (cancellationDecided() || ownsDelegateDrain(a));
               return {
                 type: terminalEventTypeFor(originalType, prepared.facts.outcome),
                 payload: {
-                  ...(committedCancel?.payload ?? payload),
+                  ...(stoppedByDaemon ? withStopSender(eventPayload, a.stopSender) : eventPayload),
                   // Preparation may fail without a Stop. Keep the termination
                   // fact and observe its held paths after the scope's release.
                   ...preparationStopsOf(preparation),

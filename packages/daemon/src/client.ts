@@ -1,6 +1,7 @@
 import { DaemonTransportError } from "./client-errors.js";
 import type {
   CancelReasonCode,
+  DaemonStopSender,
   CommandListQuery,
   RunTimeLimitRequest,
   RunTimeLimitSnapshot,
@@ -215,8 +216,8 @@ export class DaemonClient extends DaemonRpcMethods {
     });
   }
 
-  shutdown() {
-    return this.call("claudexor.shutdown");
+  shutdown(sender?: DaemonStopSender) {
+    return this.call("claudexor.shutdown", sender ? { sender } : undefined);
   }
   shutdownForRuntimeReplacement(expectedTarget: RuntimeReplacementTarget) {
     return this.call<{ ok: true; fenced: true; targetBound: true }>(

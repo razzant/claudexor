@@ -168,6 +168,27 @@ describe("DaemonRuntimeShutdown", () => {
     ]);
   });
 
+  it("starts the abort and fences admission before even a failing diagnostic sink", async () => {
+    const controller = new AbortController();
+    let fenced = false;
+    const observations: boolean[][] = [];
+    const { runtime } = machine({
+      setup: {
+        hasActiveWork: () => true,
+        beginDrain: () => void (fenced = true),
+        shutdown: async () => {},
+      },
+      daemon: { stop: async () => controller.abort("host_cancelled") },
+      log: () => {
+        observations.push([fenced, controller.signal.aborted]);
+        throw new Error("diagnostic sink unavailable");
+      },
+    });
+    await runtime.beginShutdown("socket-rpc stop", { pid: 101 });
+    expect(observations[0]).toEqual([true, true]);
+    expect(controller.signal.reason).toBe("host_cancelled");
+  });
+
   it("keeps the journal open when any writer fails to stop", async () => {
     let journalClosed = false;
     const { runtime } = machine({
@@ -193,21 +214,27 @@ describe("DaemonRuntimeShutdown", () => {
 
     // The socket-RPC trigger, not an OS signal — the ladder is trigger-agnostic.
     void runtime.beginShutdown("socket-rpc stop");
+    expect(log.join("\n")).toContain("shutdown requested (socket-rpc stop)");
+    expect(log.join("\n")).toContain("force-exit deadline 20ms");
+    expect(log.join("\n")).not.toContain("forcing exit");
     await new Promise<void>((resolve) => setTimeout(resolve, 60));
     expect(exits).toEqual([1]);
-    expect(log.join("\n")).toContain("shutdown requested (socket-rpc stop)");
-    expect(log.join("\n")).toContain("graceful stop exceeded 20ms; forcing exit");
+    expect(log).toContain("graceful stop exceeded 20ms; forcing exit");
   });
 
   it("sweeps a leaked handle after a CLEAN stop with a disclosed drain-grace exit", async () => {
     const { runtime, exits, log } = machine({ stopDeadlineMs: 5_000, drainGraceMs: 20 });
 
     await runtime.beginShutdown("test");
+    expect(log.join("\n")).toContain("leaked-handle grace after a clean stop 20ms");
+    expect(log.join("\n")).not.toContain("forcing exit");
     await new Promise<void>((resolve) => setTimeout(resolve, 60));
     // In-process the loop is naturally alive (the test runner holds it), so
     // the sweep fires: a real clean daemon exits first and never reaches it.
     expect(exits).toEqual([0]);
-    expect(log.join("\n")).toContain("leaked handle");
+    expect(log).toContain(
+      "event loop still alive 20ms after a clean stop (leaked handle); forcing exit",
+    );
   });
 
   it("the drain sweep reads the exit code at FIRE time, not arm time (sol #17)", async () => {
@@ -247,6 +274,9 @@ describe("DaemonRuntimeShutdown", () => {
 
   it("a failed stop keeps the deadline armed and reports through onStopFailure", async () => {
     let observed: unknown = null;
+    const logForcedExit = vi.fn(() => {
+      throw new Error("unwritable log");
+    });
     const { runtime, exits, log } = machine({
       daemon: {
         stop: async () => {
@@ -256,6 +286,7 @@ describe("DaemonRuntimeShutdown", () => {
       onStopFailure: (error) => {
         observed = error;
       },
+      logForcedExit,
       stopDeadlineMs: 20,
     });
 
@@ -264,6 +295,9 @@ describe("DaemonRuntimeShutdown", () => {
     expect(log.join("\n")).toContain("shutdown FAILED");
     await new Promise<void>((resolve) => setTimeout(resolve, 60));
     expect(exits).toEqual([1]); // the deadline still guarantees termination
+    expect(logForcedExit).toHaveBeenCalledExactlyOnceWith(
+      "graceful stop exceeded 20ms; forcing exit",
+    );
   });
 
   it("coalesced triggers are disclosed and share one completion", async () => {
@@ -443,6 +477,7 @@ afterEachClosed(async () => {
 async function composition(
   options: {
     setupActivity?: () => boolean;
+    afterAbort?: Promise<void>;
     failDrain?: { armed: boolean };
     stopDeadlineMs?: number;
   } = {},
@@ -479,7 +514,7 @@ async function composition(
     commands,
     runtimeIdentity: IDENTITY,
     runtimeLeaseOwner: LEASE,
-    onShutdownRequested: () => runtime.beginShutdown("socket-rpc stop"),
+    onShutdownRequested: (sender) => runtime.beginShutdown("socket-rpc stop", sender),
     onRuntimeReplacementRequested: () => runtime.beginRuntimeReplacement(),
     runner: async (params, ctx) => {
       if ((params as { prompt?: string }).prompt !== "hold") return { lifecycle: "succeeded" };
@@ -487,6 +522,7 @@ async function composition(
       await new Promise<void>((resolve) =>
         ctx.signal.addEventListener("abort", () => resolve(), { once: true }),
       );
+      await options.afterAbort;
       return { lifecycle: "cancelled" };
     },
   });
@@ -644,6 +680,65 @@ describe("the production stop while a real retention pass is held (#603)", () =>
     },
   );
 
+  it.each([
+    { label: "older client", sender: undefined, detail: "sender unknown" },
+    {
+      label: "CLI",
+      sender: { name: "claudexor-cli", version: "6.2.0", pid: 101, ppid: 91 } as const,
+      detail: "client-reported: claudexor-cli version=6.2.0 pid=101 ppid=91",
+    },
+    {
+      label: "third-party client",
+      sender: { name: "Acme.runner-2", version: "1.2.3", ppid: 91 },
+      detail: "client-reported: Acme.runner-2 version=1.2.3 ppid=91",
+    },
+  ])("preserves the winning $label Stop across two socket requests", async ({ sender, detail }) => {
+    const drain = barrier();
+    const f = await composition({ afterAbort: drain.promise });
+    try {
+      const { id } = await f.local.enqueue(ask("hold"));
+      const other = await f.local.enqueue(ask("hold"));
+      await vi.waitFor(() => expect(f.running.size).toBe(2));
+      const contexts = [f.running.get(id)!, f.running.get(other.id)!];
+      await expect(f.socket.shutdown(sender)).resolves.toEqual({ ok: true });
+      for (const ctx of contexts) {
+        await vi.waitFor(() => expect(ctx.signal.aborted).toBe(true));
+        expect(ctx.signal.reason).toBe("host_cancelled");
+        expect(ctx.stopSender?.()).toEqual(sender ?? {});
+      }
+
+      await expect(f.socket.shutdown({ pid: 202 })).resolves.toEqual({ ok: true });
+      const coalesced = "coalesced) (client-reported: pid=202)";
+      await vi.waitFor(() => expect(f.log).toContainEqual(expect.stringContaining(coalesced)));
+      for (const ctx of contexts) expect(ctx.stopSender?.()).toEqual(sender ?? {});
+      expect(f.log).toContainEqual(
+        expect.stringContaining(`shutdown requested (socket-rpc stop) (${detail})`),
+      );
+    } finally {
+      drain.release();
+      f.pass.release();
+    }
+    await f.runtime.wait();
+  });
+
+  it("keeps an earlier host cancel distinct from the daemon Stop", async () => {
+    const drain = barrier();
+    const f = await composition({ afterAbort: drain.promise });
+    try {
+      const { id } = await f.local.enqueue(ask("hold"));
+      await vi.waitFor(() => expect(f.running.has(id)).toBe(true));
+      const ctx = f.running.get(id)!;
+      await f.local.cancel(id, "host_cancelled");
+      void f.runtime.beginShutdown("socket-rpc stop", { pid: 101 });
+      expect(ctx.signal.reason).toBe("host_cancelled");
+      expect(ctx.stopSender?.()).toBeUndefined();
+    } finally {
+      drain.release();
+      f.pass.release();
+    }
+    await f.runtime.wait();
+  });
+
   it("an ordinary stop aborts running work at once, coalesces triggers, then waits for the pass", async () => {
     const f = await composition();
     const job = await f.local.enqueue(ask("hold"), { idempotencyKey: "work" });
@@ -654,6 +749,7 @@ describe("the production stop while a real retention pass is held (#603)", () =>
     expect(ctx.signal.aborted).toBe(true);
     expect(ctx.signal.reason).toBe("host_cancelled");
     expect(f.runtime.beginShutdown("socket-rpc stop")).toBe(stopping);
+    await Promise.resolve();
     expect(f.log.join("\n")).toContain("shutdown already in progress (socket-rpc stop coalesced)");
     await f.settled(job.id);
     await expect(f.local.enqueue(ask("late"), { idempotencyKey: "late" })).rejects.toMatchObject({

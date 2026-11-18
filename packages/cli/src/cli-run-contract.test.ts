@@ -1,11 +1,11 @@
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
+import { runCaptureRaw, type CaptureResult } from "@claudexor/core";
 import {
   RunFailure,
   RunTelemetry,
@@ -17,23 +17,73 @@ import {
 } from "@claudexor/schema";
 
 const require = createRequire(import.meta.url);
-const tsxCli = require.resolve("tsx/cli");
+const tsxLoader = pathToFileURL(require.resolve("tsx")).href;
 const cliSource = fileURLToPath(new URL("./cli.ts", import.meta.url));
 const tempRoots: string[] = [];
+const cliTimeoutMs = 30_000;
+// The longest cases run five children serially. Leave time to report the last child's stop.
+vi.setConfig({ testTimeout: 5 * cliTimeoutMs + 30_000 });
+
+function checkedCliResult(
+  args: string[],
+  result: CaptureResult,
+  elapsedMs: number,
+  pid: number | undefined,
+  directExit: string,
+) {
+  if (result.termination || result.drain || elapsedMs >= cliTimeoutMs) {
+    const stop = result.termination;
+    const outcome = stop?.status === "unconfirmed" ? stop.reason : stop?.proof;
+    const drain = outcome === "direct_child_alive" ? "abandoned" : (result.drain ?? "complete");
+    throw new Error(
+      [
+        `claudexor ${args.join(" ")} exceeded ${cliTimeoutMs}ms (elapsed ${Math.round(elapsedMs)}ms)`,
+        `pid=${pid} direct exit=${directExit} drain=${drain} stop=${outcome ?? "none"}`,
+        `stdout tail: ${result.stdout.slice(-2048)}`,
+        `stderr tail: ${result.stderr.slice(-2048)}`,
+      ].join("\n"),
+    );
+  }
+  return result;
+}
+
+async function runCli(args: string[], cwd = process.cwd(), config?: string) {
+  let pid: number | undefined;
+  let directExit = "not observed";
+  const started = performance.now();
+  const argv = ["--import", tsxLoader, cliSource, ...args];
+  const result = await runCaptureRaw(process.execPath, argv, {
+    cwd,
+    env: config ? { CLAUDEXOR_CONFIG_DIR: config } : {},
+    timeoutMs: cliTimeoutMs,
+    cancelDeadlineMs: 2_000,
+    exitDrainMs: 500,
+    exitDrainMaxMs: 2_000,
+    onCaptured: (childPid) => {
+      pid = childPid;
+    },
+    onExit: (code, signal) => {
+      directExit = `code=${code} signal=${signal}`;
+    },
+  });
+  return checkedCliResult(args, result, performance.now() - started, pid, directExit);
+}
 
 afterEach(() => {
   for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("run-command pre-daemon machine contract", () => {
-  it("renders missing prompts for all five run verbs as exactly one NDJSON failure", () => {
+  it("rejects a late successful exit even when its JSON is complete", () => {
+    const result: CaptureResult = { code: 0, signal: null, stdout: "{}\n", stderr: "" };
+    const read = () => checkedCliResult(["inspect"], result, cliTimeoutMs, 7, "code=0 signal=null");
+    expect(read).toThrow(/inspect exceeded.*\n.*direct exit=code=0 signal=null/);
+  });
+
+  it("renders missing prompts for all five run verbs as exactly one NDJSON failure", async () => {
     for (const verb of ["agent", "ask", "best-of", "plan", "create"]) {
-      const result = spawnSync(process.execPath, [tsxCli, cliSource, verb, "--json-stream"], {
-        cwd: process.cwd(),
-        encoding: "utf8",
-        env: process.env,
-      });
-      expect(result.status, `${verb}: ${result.stderr}`).toBe(2);
+      const result = await runCli([verb, "--json-stream"]);
+      expect(result.code, `${verb}: ${result.stderr}`).toBe(2);
       expect(result.stderr, verb).toBe("");
       expect(result.stdout.endsWith("\n"), verb).toBe(true);
       const lines = result.stdout.split("\n");
@@ -49,7 +99,7 @@ describe("run-command pre-daemon machine contract", () => {
     }
   });
 
-  it("advertises only mode-applicable controls in dedicated Ask/Plan help", () => {
+  it("advertises only mode-applicable controls in dedicated Ask/Plan help", async () => {
     const cases = [
       {
         verb: "ask",
@@ -83,39 +133,25 @@ describe("run-command pre-daemon machine contract", () => {
       },
     ];
     for (const fixture of cases) {
-      const result = spawnSync(process.execPath, [tsxCli, cliSource, fixture.verb, "--help"], {
-        cwd: process.cwd(),
-        encoding: "utf8",
-        env: process.env,
-      });
-      expect(result.status, `${fixture.verb}: ${result.stderr}`).toBe(0);
+      const result = await runCli([fixture.verb, "--help"]);
+      expect(result.code, `${fixture.verb}: ${result.stderr}`).toBe(0);
       expect(result.stderr, fixture.verb).toBe("");
       for (const flag of fixture.present) expect(result.stdout, fixture.verb).toContain(flag);
       for (const flag of fixture.absent) expect(result.stdout, fixture.verb).not.toContain(flag);
     }
   });
 
-  it("rejects Agent controls before daemon startup on agent --mode plan", () => {
-    const result = spawnSync(
-      process.execPath,
-      [
-        tsxCli,
-        cliSource,
-        "agent",
-        "plan it",
-        "--mode",
-        "plan",
-        "--reviewer-model",
-        "openai=gpt-test",
-        "--json",
-      ],
-      {
-        cwd: process.cwd(),
-        encoding: "utf8",
-        env: process.env,
-      },
-    );
-    expect(result.status, result.stderr).toBe(2);
+  it("rejects Agent controls before daemon startup on agent --mode plan", async () => {
+    const result = await runCli([
+      "agent",
+      "plan it",
+      "--mode",
+      "plan",
+      "--reviewer-model",
+      "openai=gpt-test",
+      "--json",
+    ]);
+    expect(result.code, result.stderr).toBe(2);
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: false,
@@ -125,7 +161,7 @@ describe("run-command pre-daemon machine contract", () => {
     });
   });
 
-  it("inspect drains a large failed run projection before exiting", () => {
+  it("inspect drains a large failed run projection before exiting", async () => {
     const root = mkdtempSync(join(tmpdir(), "claudexor-cli-inspect-terminal-"));
     tempRoots.push(root);
     const project = join(root, "project");
@@ -188,13 +224,8 @@ describe("run-command pre-daemon machine contract", () => {
       }),
     );
 
-    const env = { ...process.env, CLAUDEXOR_CONFIG_DIR: config };
-    const json = spawnSync(
-      process.execPath,
-      [tsxCli, cliSource, "inspect", "run-failed-inspect", "--json"],
-      { cwd: project, encoding: "utf8", env },
-    );
-    expect(json.status, json.stderr).toBe(0);
+    const json = await runCli(["inspect", "run-failed-inspect", "--json"], project, config);
+    expect(json.code, json.stderr).toBe(0);
     expect(json.stderr).toBe("");
     expect(Buffer.byteLength(json.stdout, "utf8")).toBeGreaterThan(64 * 1024);
     expect(JSON.parse(json.stdout)).toMatchObject({
@@ -213,12 +244,8 @@ describe("run-command pre-daemon machine contract", () => {
       runFacts: { outcome: { lifecycle: "failed", reason: "harness_failed" } },
     });
 
-    const human = spawnSync(
-      process.execPath,
-      [tsxCli, cliSource, "inspect", "run-failed-inspect"],
-      { cwd: project, encoding: "utf8", env },
-    );
-    expect(human.status, human.stderr).toBe(0);
+    const human = await runCli(["inspect", "run-failed-inspect"], project, config);
+    expect(human.code, human.stderr).toBe(0);
     expect(human.stdout).toContain("lifecycle: failed (harness_failed)");
     expect(human.stdout).toContain("failure: harness_unavailable phase=harness");
     expect(human.stdout).toContain("next action: Choose another harness and retry.");
@@ -237,21 +264,13 @@ describe("run-command pre-daemon machine contract", () => {
       join(paths.finalDir, "failure.yaml"),
       RunFailure.parse({ ...failure, harnessId: "codex", vendorFailure }),
     );
-    const humanVendor = spawnSync(
-      process.execPath,
-      [tsxCli, cliSource, "inspect", "run-failed-inspect"],
-      { cwd: project, encoding: "utf8", env },
-    );
-    expect(humanVendor.status, humanVendor.stderr).toBe(0);
+    const humanVendor = await runCli(["inspect", "run-failed-inspect"], project, config);
+    expect(humanVendor.code, humanVendor.stderr).toBe(0);
     expect(humanVendor.stdout).toContain(
       "failure: harness_unavailable phase=harness harness=codex vendor_code=server_overloaded (codex_rollout)",
     );
-    const jsonVendor = spawnSync(
-      process.execPath,
-      [tsxCli, cliSource, "inspect", "run-failed-inspect", "--json"],
-      { cwd: project, encoding: "utf8", env },
-    );
-    expect(jsonVendor.status, jsonVendor.stderr).toBe(0);
+    const jsonVendor = await runCli(["inspect", "run-failed-inspect", "--json"], project, config);
+    expect(jsonVendor.code, jsonVendor.stderr).toBe(0);
     expect(JSON.parse(jsonVendor.stdout).failure.vendorFailure).toEqual(vendorFailure);
 
     // A refused capture's bounded inventory is printed as such: not exact, not a patch.
@@ -275,12 +294,8 @@ describe("run-command pre-daemon machine contract", () => {
         },
       }),
     );
-    const humanInventory = spawnSync(
-      process.execPath,
-      [tsxCli, cliSource, "inspect", "run-failed-inspect"],
-      { cwd: project, encoding: "utf8", env },
-    );
-    expect(humanInventory.status, humanInventory.stderr).toBe(0);
+    const humanInventory = await runCli(["inspect", "run-failed-inspect"], project, config);
+    expect(humanInventory.code, humanInventory.stderr).toBe(0);
     expect(humanInventory.stdout).toContain(
       [
         "Largest changed files (inventory, not exact, not a patch): 3 changed, 1 not listed",
@@ -290,7 +305,7 @@ describe("run-command pre-daemon machine contract", () => {
     );
   });
 
-  it("inspect classifies unrecovered tools by attempt outcome instead of web kind", () => {
+  it("inspect classifies unrecovered tools by attempt outcome instead of web kind", async () => {
     const root = mkdtempSync(join(tmpdir(), "claudexor-cli-inspect-tool-outcomes-"));
     tempRoots.push(root);
     const project = join(root, "project");
@@ -423,16 +438,8 @@ describe("run-command pre-daemon machine contract", () => {
     );
     store.writeText(join(paths.finalDir, "summary.md"), "Tool outcome summary.\n");
 
-    const result = spawnSync(
-      process.execPath,
-      [tsxCli, cliSource, "inspect", "run-tool-outcomes", "--json"],
-      {
-        cwd: project,
-        encoding: "utf8",
-        env: { ...process.env, CLAUDEXOR_CONFIG_DIR: config },
-      },
-    );
-    expect(result.status, result.stderr).toBe(0);
+    const result = await runCli(["inspect", "run-tool-outcomes", "--json"], project, config);
+    expect(result.code, result.stderr).toBe(0);
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toMatchObject({
       toolWarnings: [{ attemptId: "a-web", tool: "WebFetch", summary: "web denied" }],
@@ -456,12 +463,8 @@ describe("run-command pre-daemon machine contract", () => {
       ],
     });
 
-    const human = spawnSync(process.execPath, [tsxCli, cliSource, "inspect", "run-tool-outcomes"], {
-      cwd: project,
-      encoding: "utf8",
-      env: { ...process.env, CLAUDEXOR_CONFIG_DIR: config },
-    });
-    expect(human.status, human.stderr).toBe(0);
+    const human = await runCli(["inspect", "run-tool-outcomes"], project, config);
+    expect(human.code, human.stderr).toBe(0);
     expect(human.stdout).toContain("tool warnings (non-blocking):");
     expect(human.stdout).toContain("a-web WebFetch: web denied");
     expect(human.stdout).toContain("tool errors (unrecovered):");
@@ -474,7 +477,7 @@ describe("run-command pre-daemon machine contract", () => {
   });
 
   // C2: the human list shows the last eight reports; it says how many it hides.
-  it("inspect says how many reported command outcomes its human list does not show", () => {
+  it("inspect says how many reported command outcomes its human list does not show", async () => {
     const root = mkdtempSync(join(tmpdir(), "claudexor-cli-inspect-many-reports-"));
     tempRoots.push(root);
     const project = join(root, "project");
@@ -533,12 +536,8 @@ describe("run-command pre-daemon machine contract", () => {
     );
     store.writeText(join(paths.finalDir, "summary.md"), "Many reports.\n");
 
-    const human = spawnSync(process.execPath, [tsxCli, cliSource, "inspect", "run-many-reports"], {
-      cwd: project,
-      encoding: "utf8",
-      env: { ...process.env, CLAUDEXOR_CONFIG_DIR: config },
-    });
-    expect(human.status, human.stderr).toBe(0);
+    const human = await runCli(["inspect", "run-many-reports"], project, config);
+    expect(human.code, human.stderr).toBe(0);
     expect(human.stdout).toContain("reported command outcomes (not tool errors; showing 8 of 23):");
     const listed = human.stdout.split("\n").filter((line) => line.startsWith("  - a-many shell: "));
     expect(listed).toEqual(

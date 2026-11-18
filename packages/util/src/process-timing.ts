@@ -156,6 +156,10 @@ export class ProcessTiming {
     this.windowEndedAt = windowEndedAt;
   }
 
+  worstSync(): SyncSample[] {
+    return this.worst.map((sample) => ({ ...sample }));
+  }
+
   facts() {
     return {
       windowMs: this.windowMs,
@@ -175,7 +179,7 @@ export class ProcessTiming {
         lifetime: entry.lifetime.facts(),
         window: entry.window && { ...entry.window },
       })),
-      worstSync: this.worst.map((sample) => ({ ...sample })),
+      worstSync: this.worstSync(),
       bulk: [...this.bulk].map(([kind, entry]) => ({
         kind,
         queue: entry.queue.facts(),

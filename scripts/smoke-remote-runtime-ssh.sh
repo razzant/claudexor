@@ -26,8 +26,12 @@ ssh-keygen -q -t ed25519 -N '' -f "$key"
 docker run --detach --rm --name "$container" -p 127.0.0.1::22 mcr.microsoft.com/mirror/docker/library/ubuntu@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b sleep infinity >/dev/null
 docker exec "$container" bash -ceu '
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq --no-install-recommends openssh-server ca-certificates curl python3
+  # Allow a temporary mirror failure to clear; never continue with stale indexes.
+  acquire=(-o Acquire::Retries=5)
+  echo "SSH smoke: updating Ubuntu package indexes" >&2
+  apt-get "${acquire[@]}" --error-on=any update -qq
+  echo "SSH smoke: installing OpenSSH prerequisites" >&2
+  apt-get "${acquire[@]}" install -y -qq --no-install-recommends openssh-server ca-certificates curl python3
   useradd --create-home --shell /bin/bash remote
   install -d -m 0700 -o remote -g remote /home/remote/.ssh
   install -d -m 0755 /run/sshd

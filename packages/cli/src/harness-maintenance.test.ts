@@ -1456,6 +1456,106 @@ echo 2.0.0
       problem: { message: "store unavailable" },
     });
   });
+  it.each(["none", "removes", "fails"] as const)(
+    "reads the selection again before the vendor command only after recovery cleanup started (%s)",
+    async (recovery) => {
+      const w = world(),
+        log = join(w.home, "asked.log"),
+        hidden = join(w.home, "hidden-profile-copy");
+      writeFileSync(hidden, "fixture");
+      mkdirSync(dirname(w.installed), { recursive: true });
+      writeFileSync(w.installed, `#!/bin/sh\necho ask >> '${log}'\necho 1.0.0\n`, {
+        mode: 0o755,
+      });
+      const asksAtCommand: number[] = [];
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        asksAtCommand.push(asked(log).length);
+        return result("Updated");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, {
+        ...w.options,
+        credentialProfiles: [],
+        planProfileProgramCleanup: (_profiles, _selected, mode) => ({
+          paths: mode?.recoverOnly && recovery !== "none" ? [hidden] : [],
+          limitations: [],
+          execute: () => {
+            rmSync(hidden);
+            if (recovery === "fails") throw new Error("restore stopped part-way");
+            return { removed: [hidden], limitations: [] };
+          },
+        }),
+      });
+      // One answered reading; a second only when removal may have moved the selection.
+      expect(asksAtCommand).toEqual([recovery === "none" ? 1 : 2]);
+      // The authoritative after-reading is unchanged.
+      expect(asked(log).length).toBeGreaterThan(asksAtCommand[0]!);
+      expect(receipt).toMatchObject({ ok: true, after: { version: "1.0.0" }, problem: null });
+      expect(receipt.limitations.some((line) => line.includes("part-way"))).toBe(
+        recovery === "fails",
+      );
+    },
+  );
+  it.each([
+    { after: "2.0.1", supported: false },
+    { after: "1.4.0", supported: true },
+  ])(
+    "ends a plain Update that leaves another declared major non-OK, keeping its change: %j",
+    async ({ after, supported }) => {
+      const w = world();
+      w.program.majorVersion = OPENCODE_PROGRAM.majorVersion;
+      w.program.versionScheme = OPENCODE_PROGRAM.versionScheme;
+      executable(w.installed, "1.3.0");
+      const commands: string[][] = [];
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        commands.push([...args]);
+        executable(w.installed, after);
+        return result("Upgraded");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      // No second command: the receipt reports, it never rolls back.
+      expect(commands).toEqual([["update"]]);
+      expect(receipt).toMatchObject({
+        ok: supported,
+        exitCode: 0,
+        outcome: "changed",
+        mutation: "applied",
+        before: { version: "1.3.0" },
+        after: { path: w.installed, version: after },
+        problem: supported ? null : { code: "program_unsupported_major", retryable: false },
+      });
+      if (!supported) {
+        expect(receipt.problem?.message).toContain("reports 2.0.1");
+        expect(receipt.problem?.message).toContain("only 1.x");
+      }
+    },
+  );
+  it("falls back to the owning code for an empty thrown code and still releases the lease", async () => {
+    const w = world();
+    executable(w.installed);
+    const receipt = await runHarnessUpdate("fixture", undefined, {
+      ...w.options,
+      beforeMutation: async () => {
+        throw Object.assign(new Error("store unavailable"), { code: "" });
+      },
+    });
+    expect(receipt).toMatchObject({
+      ok: false,
+      phase: "settled",
+      mutation: "none",
+      problem: { code: "maintenance_failed", message: "store unavailable" },
+    });
+    expect(existsSync(join(w.home, ".claudexor/harness-install.lock"))).toBe(false);
+  });
   it("only a declared exact-version command can select an explicit target", async () => {
     const w = world();
     executable(w.installed);

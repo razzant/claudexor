@@ -204,7 +204,9 @@ Package-manager copies whose own verb only advises retain that sentence in the
 result; the host must not invent a package-manager action. Windows routes cover
 Claude, Codex, Antigravity, Grok and Copilot. Cursor Windows (#667), OpenCode's
 second line and unattended Windows installation (#668) remain unsupported.
-OpenCode commands and conversion replacements stay on 1.x. Copilot's Windows MSI
+OpenCode commands and conversion replacements stay on 1.x; an Update that leaves
+another major selected returns `program_unsupported_major` with its change kept.
+Copilot's Windows MSI
 folder is declared for runs, probes and inventory, so it is found without
 restarting the engine. Copilot Update can return GitHub's unauthenticated
 rate-limit refusal; that vendor sentence is the result. Vendor programs live in vendor directories and
@@ -305,11 +307,14 @@ gate's explicit exemptions):
   are kept as diagnostics. Consumers must use both
   facts: the process lifecycle is cancelled, while user-facing presentation is
   "Time limit reached" and ACP reports a refusal; an explicit Stop remains
-  `user_cancelled` / cancelled. A control may additionally carry the typed
-  `reason_code` (`user_cancelled` | `host_cancelled` | `owner_task_gone`), so
-  a host-initiated stop (daemon shutdown, MCP host teardown, an integrating
-  host whose owning task died) records its real provenance instead of
-  coercing to user intent; an absent code keeps the historical coercion.
+  `user_cancelled` / cancelled. A control's optional `reason_code`
+  (`user_cancelled` | `host_cancelled` | `owner_task_gone`) defaults to
+  `user_cancelled`. Ordinary authenticated `claudexor.shutdown` accepts optional
+  `params.sender` fields `name` (`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`), `version`
+  (three dot-separated groups of 1–10 digits), `pid` and `ppid` (positive int32).
+  The CLI sends `claudexor-cli`. Invalid fields and recognized secret formats
+  are dropped. The log and retained run timelines mark the sender as client-reported
+  or unknown. These fields do not affect Stop authorization.
 - Live timers: `GET /v2/runs/:id/time-limit` reads the current snapshot;
   `PATCH` accepts `set`, `extend`, or `disable`. MCP exposes the same controls
   through `claudexor_run_time_limit`. Mutations require `expectedRevision` from
@@ -2243,15 +2248,22 @@ receipt is never a model-read receipt.
   if it retains the ownership marker. Creation, `open(wx)`, and CLI display are
   file-operation evidence only; they do not prove that a model read the file.
 
-The envelope bridge covers only isolated Git envelopes. In-place, thread,
-directory and read-only runs get no generated bridge. If a Claude route must
-follow an `AGENTS.md`-only project, commit your own `CLAUDE.md` that imports
-it (`@AGENTS.md`) where that route loads project instructions, or put the
-required instructions in the prompt. Claude read-only routes pass
-`--setting-sources ""`. In a November 2026 check with Claude Code 2.1.322, such a
-route did not return an initial-context canary from either an `AGENTS.md`-only
-project or a `CLAUDE.md` importing it, so automatic loading was not confirmed.
-A `CLAUDE.md` you keep is never touched. Claudexor does not build a second instruction resolver.
+The envelope bridge covers only the isolated Git envelopes of writing runs: each
+candidate of a race (a multi-candidate thread turn included), synthesis, and a
+single candidate or convergence loop under the default `envelope` isolation. A
+single candidate that runs directly in the project or in a thread's worktree
+(`isolation: live`, which a single-candidate Agent thread turn uses), directory
+workspaces and read-only runs get no generated bridge; a thread's persistent
+worktree never receives one.
+For a writing Claude route there that must follow an `AGENTS.md`-only project,
+commit your own `CLAUDE.md` that imports it (`@AGENTS.md`) or put the required
+instructions in the prompt. For read-only runs, put required instructions in the
+prompt: Claude read-only routes pass `--setting-sources ""`, and in a November
+2026 check with Claude Code 2.1.322 such a route returned no initial-context
+canary from either an `AGENTS.md`-only project or a `CLAUDE.md` importing it.
+Claude's writing route was not probed live with the bridge either, so no route
+is promised to read the file. A `CLAUDE.md` you keep is never touched. Claudexor
+does not build a second instruction resolver.
 
 ## External Harness Adapters
 

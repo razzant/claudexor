@@ -634,10 +634,13 @@ verification or organization subscription refusal from the current attempt's
 own hop target, only if that try did no work of its own. These refusals still
 stop a same-account resume or the first try of a new `continue_from` successor.
 Ordinary network errors do not rotate, and an explicit pin never moves; the run
-record keeps full provenance. Downgrading to an older engine is supported through
-the engine's own rollback (`claudexor profiles rollback-migration`) run BEFORE the
-downgrade. See
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5 for the complete contract.
+record keeps full provenance. Before installing an older engine that cannot read
+migrated account rows, `claudexor profiles rollback-migration` reverses the
+account-registration migration. It does not undo the SQL engine-store
+migration or lower its serving floor, and an engine below that floor is refused
+at startup; returning to one needs a complete pre-upgrade backup
+([Upgrade backup and restore](docs/ARCHITECTURE.md#upgrade-backup-and-restore)).
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5 for the complete contract.
 
 ## Web, Budgets, And Gates
 
@@ -841,11 +844,15 @@ reusable `--attach-resource` refs and the MCP upload tools are specified in
 Keep ONE `AGENTS.md` at your project root as the source of truth for
 project-specific instructions. Claudexor keeps vendor-native instruction
 semantics explicit and may create a thin generated `CLAUDE.md` only inside a
-disposable Git envelope; it never mutates the durable project root just to
-bridge a route. In-place, thread, directory and read-only runs get no bridge;
-keep your own `CLAUDE.md` importing `@AGENTS.md` or state required instructions
-in the prompt. File creation is not proof that a model read the
-instructions. Full behavior is in docs/INTEGRATIONS.md "Project Instruction Files".
+disposable Git envelope of a writing run, such as each candidate of a race,
+including a race in a thread turn; it never mutates the durable project root just
+to bridge a route. Direct runs in the project or a thread's worktree (in place,
+or a single-candidate thread turn), directory workspaces and read-only runs get
+no bridge. For a writing run there, keep your own `CLAUDE.md` importing
+`@AGENTS.md` or state required instructions in the prompt; for a read-only run,
+put required instructions in the prompt. File creation is not proof that a model
+read the instructions. Full behavior is in docs/INTEGRATIONS.md "Project
+Instruction Files".
 
 Host integrations are managed by `claudexor plugin
 install|status|doctor|repair|uninstall <cursor|claude|codex|opencode|all>`.
