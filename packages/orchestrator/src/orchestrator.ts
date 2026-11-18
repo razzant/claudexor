@@ -1324,8 +1324,7 @@ export class Orchestrator {
         unusable: liveUnusable,
         probe: profileProbe,
       });
-      const profileAdmitted = rows.admitted;
-      if (profileAdmitted) {
+      if (rows.admitted) {
         // A valid account row restores manifest intent truth when the default store failed.
         if (status.status !== "ok") {
           status = {
@@ -1349,12 +1348,12 @@ export class Orchestrator {
         dropLane(id, "credential", rows.unreadyRows);
         continue;
       }
-      if (status.status === "unavailable" && !profileAdmitted) {
+      if (status.status === "unavailable" && !rows.admitted) {
         const why = `${id} is unavailable${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`;
         dropLane(id, "doctor", why);
         continue;
       }
-      if (status.status !== "ok" && !explicitPool && !profileAdmitted) {
+      if (status.status !== "ok" && !explicitPool && !rows.admitted) {
         dropLane(
           id,
           "doctor",
