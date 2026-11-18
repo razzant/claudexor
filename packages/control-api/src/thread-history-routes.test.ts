@@ -1,24 +1,25 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { IncomingMessage, ServerResponse } from "node:http";
+import { Socket } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { CLAUDE_TURN_REPLIES_HEADER } from "@claudexor/schema";
 import { handleThreadHistoryRoute } from "./thread-history-routes.js";
 
 function fixture(available = true) {
   const services = { threadHistory: vi.fn(), threadPromptPart: vi.fn() };
-  const setHeader = vi.fn();
   const ctx = {
     threadHistoryReads: available ? services : undefined,
     json: vi.fn(),
     requestError: vi.fn(),
   };
   const read = async (url: string, headers = {}) => {
-    const req = { url, headers, aborted: false, socket: { destroyed: false } } as IncomingMessage;
-    await handleThreadHistoryRoute(ctx, "GET", url.split("?")[0]!, req, {
-      destroyed: false,
-      setHeader,
-    } as ServerResponse);
+    const req = new IncomingMessage(new Socket());
+    req.url = url;
+    req.headers = headers;
+    const res = new ServerResponse(req);
+    await handleThreadHistoryRoute(ctx, "GET", url.split("?")[0]!, req, res);
+    return res;
   };
-  return { ctx, services, read, setHeader };
+  return { ctx, services, read };
 }
 
 describe("history HTTP boundary", () => {
@@ -51,8 +52,8 @@ describe("history HTTP boundary", () => {
   it("negotiates reply previews per request without changing history selectors", async () => {
     const f = fixture();
     for (const value of ["1", "0", "true"]) {
-      await f.read("/threads/t/history", { [CLAUDE_TURN_REPLIES_HEADER]: value });
-      expect(f.setHeader).toHaveBeenLastCalledWith("Vary", CLAUDE_TURN_REPLIES_HEADER);
+      const res = await f.read("/threads/t/history", { [CLAUDE_TURN_REPLIES_HEADER]: value });
+      expect(res.getHeader("Vary")).toBe(CLAUDE_TURN_REPLIES_HEADER);
       expect(f.services.threadHistory).toHaveBeenLastCalledWith(
         { threadId: "t", limit: 20 },
         value === "1",
