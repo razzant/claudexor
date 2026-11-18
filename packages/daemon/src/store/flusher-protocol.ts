@@ -4,18 +4,6 @@ import { fileURLToPath } from "node:url";
 /** Flusher pass interval (SYNTHESIS_R5 §4.2): a code constant, not a knob. */
 export const FLUSH_INTERVAL_MS = 200;
 
-/** The delay from a woken pass's end to the next periodic pass. The woken pass
- * takes the place of the periodic pass due at `replacedDue` (worker clock), so
- * the next one comes when it would have after that slot, one to two intervals
- * away: waking adds no pass to the schedule, it runs a scheduled one earlier. */
-export function periodicDelayAfterWake(
-  replacedDue: number,
-  wokenStart: number,
-  interval = FLUSH_INTERVAL_MS,
-): number {
-  return Math.min(Math.max(replacedDue - wokenStart, 0), interval) + interval;
-}
-
 /** The `workerData` discriminator every store worker is spawned with. The
  * worker modules self-start on it, so the same module graph serves the dev
  * `dist/` layout (adjacent worker file) and the single-file daemon bundle
@@ -42,7 +30,7 @@ export interface FlusherWorkerData {
 
 export type FlusherCommand =
   | { type: "register"; g: number; dir: string }
-  /** `wake`: a caller waits for this barrier, so a pass runs now (see the worker). */
+  /** A waiter may advance the scheduled pass once. Waking adds no pass. */
   | { type: "flush"; g: number; wake?: true }
   | { type: "tick" }
   | { type: "exit"; code: number }

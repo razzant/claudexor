@@ -462,8 +462,8 @@ Tests and local smokes must never touch real user state:
   these cases under the default `sequence.hooks: "stack"`, which they rely on.
 - A test waiting for work behind the store's dispatch barrier (a model or image
   send, an account-reset consume) waits for that work, not Vitest's 1 s
-  `waitFor` default: the barrier needs a flusher pass (a waiting `flushed()`
-  wakes it, but a pass takes much longer under disk contention). The bound stays below the test timeout, the
+  `waitFor` default: the barrier needs a covering flusher pass, which can be delayed
+  by other waiters or disk contention. The bound stays below the test timeout, the
   failure names the phase, and callers assert the terminal state they expect.
 - Managed secrets always use the daemon-owned v2 0600 file store, so a
   disposable `CLAUDEXOR_CONFIG_DIR` fully contains test secret I/O. The public

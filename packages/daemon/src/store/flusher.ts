@@ -123,7 +123,7 @@ export class FlusherController {
   }
 
   /** Resolves once a pass that started after this call proved its barrier. The
-   * waiter wakes the worker instead of waiting for its periodic pass. */
+   * waiter may advance an idle periodic slot. */
   flushed(): Promise<void> {
     const g = this.nextGeneration();
     return new Promise<void>((resolve, reject) => {

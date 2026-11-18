@@ -6266,8 +6266,7 @@ kept only for cold import and an independent frozen copy kept for tests.
   committed and durable across an engine process crash or kill, not power loss
   or kernel panic: recent commits can be lost until a completed flusher barrier.
   Provider generation and native account-reset I/O await `flushed()` before the
-  external effect; that waiter wakes the flusher rather than waiting for its
-  next periodic pass (below).
+  external effect; that waiter may advance a scheduled flusher pass (below).
   Bodies up to 64 KiB live inline in the `blob` table; larger bodies are
   content-addressed files under the resource store, present in the same tick
   as the owning transaction. Where the bytes are known at an asynchronous
@@ -6398,9 +6397,9 @@ kept only for cold import and an independent frozen copy kept for tests.
   resources have no managed lifetime. Fresh DDL and
   the migrated file run the same statements. Older readers refuse the upgraded
   file.
-- The flusher worker owns the power-loss barrier. Every 200 ms it fsyncs each
-  directory registered since the previous pass, reads `data_version`, runs a
-  PASSIVE checkpoint for space, and — whenever anything was committed since
+- The flusher worker owns the power-loss barrier. It schedules passes at 200 ms intervals. Each pass
+  fsyncs directories registered since the preceding pass, reads `data_version`
+  and — whenever anything was committed since
   its last proven barrier — issues one explicit fsync of the WAL file (an
   F_FULLFSYNC on macOS, also a device-wide barrier for `O_DSYNC` file data
   handed to the drive before it). The barrier is never derived from a
@@ -6428,14 +6427,14 @@ kept only for cold import and an independent frozen copy kept for tests.
   generations; a pass acknowledges every generation it received before it
   started, a dead worker rejects its earlier waiters typed
   (`store_flush_unavailable`, retryable) and is restarted with its
-  unacknowledged registrations replayed. A `flushed()` waiter wakes the worker:
-  the pass that was scheduled runs at once, covering every waiter and
-  registration already received (waiters that arrive together share it), and
-  the next periodic pass keeps the schedule's time, so waking adds no pass.
-  Such a woken pass proves the same directory syncs and WAL barrier but leaves
-  the PASSIVE checkpoint to the periodic passes unless none ran it for two
-  intervals, so a waiter usually waits for one full flush; `mark()`,
-  registrations and obligations keep the periodic schedule.
+  unacknowledged registrations replayed. A `flushed()` waiter may run the scheduled pass early.
+  It covers all generations the worker has received by the time it starts.
+  The wake consumes that slot, so waking adds no pass. Later waiters share the
+  next periodic pass. While each periodic pass serves waiters, the worker
+  keeps that schedule. A periodic pass with no waiters makes the next slot
+  available to advance again. Every periodic pass attempts a PASSIVE checkpoint
+  for space. An early pass leaves the checkpoint to the next periodic pass.
+  Pass cost, worker delays and pinned readers affect when space is reclaimed.
 - Obligations (`effect_obligation`) are rows created in the same transaction
   as the decision whose file effects they protect (terminal files, blob
   publication, archive/purge/quarantine steps). The row stays `pending` until

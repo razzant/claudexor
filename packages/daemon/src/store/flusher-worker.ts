@@ -6,7 +6,6 @@ import { loadEngineRuntime } from "./runtime.js";
 import {
   FLUSH_INTERVAL_MS,
   STORE_WORKER_DATA_KEY,
-  periodicDelayAfterWake,
   type FlusherCommand,
   type FlusherCounters,
   type FlusherEvent,
@@ -14,18 +13,15 @@ import {
 } from "./flusher-protocol.js";
 
 /**
- * The flusher pass (SYNTHESIS_R5 §4.2), every 200 ms, or at once when a waiting
- * `flushed()` wakes the worker (that pass replaces the scheduled one):
+ * The periodic flusher pass can run early for a waiting `flushed()`:
  *   1. g_target := the highest generation received so far (FIFO: every
  *      registration or flush request handled before this tick is covered);
  *   2. one F_FULLFSYNC per directory touched by a covered registration;
  *   3. `PRAGMA data_version` → dirty := anything committed since the last
  *      PROVEN barrier (the first pass of a worker life is always dirty);
  *   4. `PRAGMA wal_checkpoint(PASSIVE)` — space reclamation only; its result
- *      is reported as a fact and NEVER decides whether to sync. A woken pass
- *      leaves it to the periodic passes unless none ran it for two intervals,
- *      so a waiter usually waits for its barrier alone while the WAL is still
- *      reclaimed at least that often, whatever the wake rate;
+ *      is reported as a fact and NEVER decides whether to sync. Only a periodic
+ *      pass attempts the checkpoint. The pass following a wake runs on the timer.
  *   5. if dirty: the explicit `fsyncSync(walFd)` — the barrier: it fixes the
  *      WAL frames and, as a device-wide barrier on macOS, the O_DSYNC file
  *      data already handed to the drive. Database pages become durable
@@ -58,8 +54,8 @@ export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerDat
   let lastProvenDataVersion: number | null = null;
   let walFd: number | null = null;
   let timer: NodeJS.Timeout | null = null;
-  let due = 0;
-  let reclaimedAt = Number.NEGATIVE_INFINITY;
+  let advanceableDue: number | null = null;
+  let waiting = false;
   let woken: NodeJS.Immediate | null = null;
   let stopped = false;
 
@@ -106,7 +102,6 @@ export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerDat
     counters.dirSyncs += dirsSynced.length;
     const observed = Number((dataVersion.get() as { data_version: number | bigint }).data_version);
     const dirty = lastProvenDataVersion === null || observed !== lastProvenDataVersion;
-    if (reclaim) reclaimedAt = started;
     const checkpointRow = (reclaim ? passive.get() : undefined) as
       { busy: number | bigint; log: number | bigint; checkpointed: number | bigint } | undefined;
     const checkpoint = checkpointRow
@@ -162,26 +157,31 @@ export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerDat
     port.close();
   };
 
-  const schedule = (delay = interval): void => {
+  const schedule = (delay = interval, canAdvance = true): void => {
     if (stopped || hooks.manualTick) return;
-    due = performance.now() + delay;
+    advanceableDue = canAdvance ? performance.now() + delay : null;
     timer = setTimeout(() => {
+      const hadWaiters = waiting;
+      waiting = false;
       pass();
-      schedule();
+      schedule(interval, !hadWaiters);
     }, delay);
   };
 
-  // A waiter runs the scheduled pass now. Every command already received is
-  // covered by it, so concurrent waiters share one pass and one barrier.
+  // Borrow an idle slot once. Later commands collect at the next periodic
+  // barrier. Under continuous demand the timer already serves the waiters.
   const wake = (): void => {
-    if (woken || stopped || hooks.manualTick) return;
+    waiting = true;
+    if (advanceableDue === null) return;
+    const replaced = advanceableDue;
+    advanceableDue = null;
+    clearTimeout(timer!);
     woken = setImmediate(() => {
       woken = null;
-      if (timer) clearTimeout(timer);
-      const replaced = due;
-      const started = performance.now();
-      pass(started - reclaimedAt >= 2 * interval);
-      schedule(periodicDelayAfterWake(replaced, started, interval));
+      waiting = false;
+      const remaining = Math.max(0, replaced - performance.now());
+      pass(false);
+      schedule(remaining + interval, false);
     });
   };
 

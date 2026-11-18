@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { ControlAccountResetResponse, ModelDispatch } from "@claudexor/schema";
 import { beforeEach, describe, expect, it } from "vitest";
 import { StoreFlushUnavailableError } from "./errors.js";
-import { periodicDelayAfterWake, type FlusherPassReport } from "./flusher-protocol.js";
+import type { FlusherPassReport } from "./flusher-protocol.js";
 import { EngineStore } from "./store.js";
 import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
@@ -293,7 +293,7 @@ describeStore("a waiting flushed() wakes the flusher", () => {
   it("waiters that arrive while a pass runs share the next pass and its barrier", async () => {
     // Each pass covers every waiter whose command arrived before it started:
     // hold the worker inside a woken pass, then post three more waiters.
-    const store = await openStore({ intervalMs: 60_000, passDelayMs: 500 });
+    const store = await openStore({ intervalMs: 750, passDelayMs: 500 });
     const seen = reports(store);
     const held = store.flushed();
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -304,25 +304,34 @@ describeStore("a waiting flushed() wakes the flusher", () => {
     expect(seen.at(-1)).toMatchObject({ dirty: true, barrier: true });
   });
 
-  it("proves the barrier but leaves a recent checkpoint to the periodic passes", async () => {
-    const store = await openStore({ intervalMs: 60_000 });
+  it("charges one early pass to its slot and groups subsequent arrivals at the next periodic barrier", async () => {
+    const store = await openStore({ intervalMs: 1000 });
     const seen = reports(store);
     commitRows(store, 1);
     await store.flushed();
+    const afterEarly = store.acknowledgedGeneration;
+    commitRows(store, 1);
+    const first = store.flushed();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    commitRows(store, 1);
+    const second = store.flushed();
+    await Promise.all([first, second]);
+    expect(seen.map((r) => [r.g, r.barrier, r.checkpoint !== null])).toEqual([
+      [afterEarly, true, false],
+      [afterEarly + 2, true, true],
+    ]);
     commitRows(store, 1);
     await store.flushed();
-    // The worker life's first pass reclaims; the next woken one only proves.
-    expect(seen.map((report) => [report.barrier, report.checkpoint !== null])).toEqual([
-      [true, true],
-      [true, false],
-    ]);
-  });
-
-  it("takes the scheduled pass's place, so the next periodic pass keeps its rhythm", () => {
-    // The replaced pass was due in 150 ms: the next one comes an interval after it.
-    expect(periodicDelayAfterWake(150, 0)).toBe(350);
-    // An overdue slot leaves an ordinary interval; a borrowed one at most two.
-    expect(periodicDelayAfterWake(-5, 0)).toBe(200);
-    expect(periodicDelayAfterWake(380, 0)).toBe(400);
+    expect(seen.at(-1)?.checkpoint).not.toBeNull();
+    // An idle periodic pass makes the following slot available again.
+    await new Promise<void>((resolve) => {
+      const off = store.onSynced(() => {
+        off();
+        resolve();
+      });
+    });
+    commitRows(store, 1);
+    await store.flushed();
+    expect(seen.at(-1)).toMatchObject({ barrier: true, checkpoint: null });
   });
 });
