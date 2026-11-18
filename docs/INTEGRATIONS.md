@@ -1522,9 +1522,10 @@ sequence, byte offsets and whole `sha256`. Set `afterSeq` to `seq` only after
 `run_event_not_found` or `run_event_invalid`.
 
 **Reading a Claude reply before the run finishes.** A zero wait reads available
-events. In this example `call` returns structured content and `saveTurnReply`
-stores each reply under its journal address. Use the bound `runId` from
-start/status and begin with `afterSeq = 0`.
+events. The example expects two functions from your controller: one calls an
+MCP tool and returns its structured content; the other saves a reply at its
+journal address. Use the bound `runId` from start/status and begin with
+`afterSeq = 0`.
 
 ```js
 async function readEvent(runId, seq, event) {
