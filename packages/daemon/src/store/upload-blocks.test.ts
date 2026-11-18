@@ -80,6 +80,27 @@ describeStore("an upload is accepted in large blocks", () => {
     expect(finalized).toMatchObject({ sha256 });
   });
 
+  it("stores the bytes each chunk had when it was supplied, though the producer reuses its buffer", async () => {
+    const f = await fixture();
+    const reused = Buffer.alloc(64 * 1024);
+    async function* producer(): AsyncIterable<Uint8Array> {
+      for (let i = 0; i < 4096; i += 1) yield new Uint8Array(0);
+      for (const byte of [1, 2, 3]) {
+        reused.fill(byte);
+        yield reused;
+      }
+    }
+    const supplied = Buffer.concat([1, 2, 3].map((byte) => Buffer.alloc(64 * 1024, byte)));
+    const sha256 = `sha256:${createHash("sha256").update(supplied).digest("hex")}`;
+    const status = f.resources.create({ ...uploadRequest, sizeBytes: supplied.length }, "reused");
+    await f.resources.write(status.uploadId, producer());
+    expect(readFileSync(join(f.store.paths.uploads, `${status.uploadId}.part`))).toEqual(supplied);
+    expect(parts.writes).toEqual([supplied.length]);
+    expect(await f.resources.finalize(status.uploadId, sha256, "reused-final")).toMatchObject({
+      sha256,
+    });
+  });
+
   it("refuses the chunk that exceeds the declared size before writing it, and a wrong total", async () => {
     const f = await fixture();
     const body = randomBytes(EXTERNAL_WRITE_BLOCK_BYTES / 2);

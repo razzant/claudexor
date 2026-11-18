@@ -217,9 +217,11 @@ export const EXTERNAL_WRITE_BLOCK_BYTES = 1 << 20;
  * same flags as `writeStagedTemp`. The caller owns the path (an upload part).
  * `accept` runs on the request thread for each network chunk, with the bytes
  * accepted before it, and may throw to stop the transfer before that chunk is
- * written; accepted chunks are written in blocks of at least
- * `EXTERNAL_WRITE_BLOCK_BYTES` (the last may be shorter), and `committed` runs
- * after each block's write returns, with the bytes written so far.
+ * written. Accepted bytes are copied into one owned block of
+ * `EXTERNAL_WRITE_BLOCK_BYTES` as they arrive (a producer may reuse its buffer
+ * once asked for the next chunk), written when it fills and at the end;
+ * `committed` runs after each write returns, with a view of the written bytes
+ * valid only during the call and the bytes written so far.
  * A write already sitting in the pool finishes before the next `accept`.
  * Each pool operation (the open with its truncate, every write, the close)
  * holds one slot of the upload gate until it returns, so a transfer waiting for
@@ -253,31 +255,35 @@ export async function writeExternalIncremental(
     closed = true;
     await withPoolWriteSlot(undefined, () => handle.close());
   };
-  let pending: Uint8Array[] = [];
-  let pendingBytes = 0;
+  let block: Buffer | null = null;
+  let filled = 0;
   const write = async (): Promise<void> => {
-    const block = pending.length === 1 ? pending[0]! : Buffer.concat(pending, pendingBytes);
-    pending = [];
-    pendingBytes = 0;
+    const bytes = block!.subarray(0, filled);
     let offset = 0;
-    while (offset < block.byteLength) {
+    while (offset < bytes.byteLength) {
       const { bytesWritten } = await withPoolWriteSlot(hooks?.cancelled, () =>
-        handle.write(block, offset, block.byteLength - offset, received + offset),
+        handle.write(bytes, offset, bytes.byteLength - offset, received + offset),
       );
       if (bytesWritten <= 0) throw new Error(`short write of ${path}`);
       offset += bytesWritten;
     }
-    received += block.byteLength;
-    hooks?.committed?.(block, received);
+    received += bytes.byteLength;
+    hooks?.committed?.(bytes, received);
+    filled = 0;
   };
   try {
     for await (const chunk of chunks) {
-      hooks?.accept?.(chunk, received + pendingBytes);
-      pending.push(chunk);
-      pendingBytes += chunk.byteLength;
-      if (pendingBytes >= EXTERNAL_WRITE_BLOCK_BYTES) await write();
+      hooks?.accept?.(chunk, received + filled);
+      for (let taken = 0; taken < chunk.byteLength;) {
+        block ??= Buffer.allocUnsafe(EXTERNAL_WRITE_BLOCK_BYTES);
+        const part = chunk.subarray(taken, taken + block.byteLength - filled);
+        block.set(part, filled);
+        filled += part.byteLength;
+        taken += part.byteLength;
+        if (filled === block.byteLength) await write();
+      }
     }
-    if (pendingBytes > 0) await write();
+    if (filled > 0) await write();
     await close();
     return received;
   } catch (error) {

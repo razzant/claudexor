@@ -5321,7 +5321,7 @@ writes below share one gate per process, from `@claudexor/util`: the libuv pool 
 minus two threads, never below one, which leaves pool threads for DNS and other
 filesystem work. A slot is held around one leaf filesystem operation and released
 when it returns: an upload takes one for each of its pool operations (the open,
-every chunk write, the close), the ordered appender one for a batch's open, writes
+every block write, the close), the ordered appender one for a batch's open, writes
 and close, and a lifecycle write one for each call (a write, a rename, a link, an
 unlink, a removal). No slot is held across an await of anything else, so slots never
 nest, and an upload waiting for its next bytes from the network holds none. A writer
@@ -6286,12 +6286,13 @@ kept only for cold import and an independent frozen copy kept for tests.
   An upload part is that same write-through file, written incrementally on the
   libuv pool under the process's pool write gate
   ([Main thread and disk waits](#main-thread-and-disk-waits)), which concurrent
-  uploads share with the engine's other pool writes. The network chunks of a
-  PUT are gathered into blocks of at least 1 MiB (the last one may be shorter),
-  each written once with the same flags, so a 3.8 MB body takes four pool
-  writes and four request-thread callbacks instead of about sixty; each chunk is
-  still checked against the declared size before it is accepted, and the sha256
-  covers every written byte. Each pool operation of a
+  uploads share with the engine's other pool writes. The bytes of each network
+  chunk of a PUT are copied, as they are accepted, into one 1 MiB block the
+  transfer owns (a producer may reuse its buffer for the next chunk), and the
+  block is written with the same flags when it fills and at the end, so a 3.8 MB
+  body takes four pool writes and four request-thread callbacks instead of about
+  sixty; each chunk is still checked against the declared size before it is
+  accepted, and the sha256 covers every written byte. Each pool operation of a
   transfer (the open, every block write, the close) takes one slot and releases
   it when the operation returns, so a PUT waiting for its next bytes from the
   network, however long, holds no slot and cannot hold up other uploads.
