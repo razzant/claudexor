@@ -1,0 +1,90 @@
+name: Verify agent host integrations
+
+# One disposable Linux runner for the prepared package, not a publishing workflow.
+# Only this QA branch carries the workflow; its parent is the candidate to test.
+on:
+  push:
+    branches: [qa/agent-host-integrations-173142b0]
+
+permissions:
+  contents: read
+
+jobs:
+  node-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select the exact product tree (exclude the QA workflow)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git switch --detach HEAD^
+          test "$(git rev-parse 'HEAD^{tree}')" = '173142b09a8a56985b783b29e53f3065698c6e6a'
+          test "$(git rev-parse HEAD^)" = '4ac8ac03cc50f9261fa4108070ca0e9e8f25df44'
+          git rev-parse HEAD 'HEAD^{tree}'
+
+      - name: Install the repository's pinned pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+          package-manager-cache: false
+
+      - name: Prepare the pinned publication scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/provision-betterleaks.mjs --dest "$RUNNER_TEMP/betterleaks/betterleaks"
+          echo "CLAUDEXOR_BETTERLEAKS_PATH=$RUNNER_TEMP/betterleaks/betterleaks" >> "$GITHUB_ENV"
+
+      - name: Scan the candidate and its commit range
+        run: node scripts/publication-scan.mjs --repo . --range HEAD^..HEAD --tree HEAD
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run the portable release gates before vendor freshness
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm build
+          pnpm typecheck
+          pnpm typecheck:tests
+          pnpm test
+          pnpm schema:gen
+          git diff --exit-code packages/schema/generated
+          test -z "$(git ls-files --others --exclude-standard packages/schema/generated)"
+          node scripts/validate-generated-schemas.mjs
+          pnpm docs:check
+          node scripts/concept-gate.mjs --since-last-tag
+          pnpm staged:check
+          pnpm retired:check
+          pnpm inv:check
+          pnpm sensitive:check
+          pnpm knip
+          node scripts/complexity-ratchet.mjs
+          node scripts/model-hints-freshness.mjs
+
+      - name: Check vendor program freshness
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/harness-program-freshness.mjs
+
+      - name: Run the remaining portable release gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/mcp-cli-parity-check.mjs
+          node scripts/artifact-text-parity-check.mjs
+          node scripts/fixture-freshness-check.mjs
+          pnpm fixtures:swift:check
+          pnpm fixtures:runtime-update:check
+          pnpm release:workflow:check
+          pnpm format:check
+          pnpm canary
