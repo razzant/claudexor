@@ -3303,9 +3303,16 @@ failed account authorization, unknown or changed identity, or program replacemen
 invalidates the fact. An HTTP or terminal stream refusal of a listed model or its
 account also invalidates it. An account-wide authentication refusal on an image request
 drops the text catalog. Image quota and image-model entitlement leave it available.
-A request fault, rate limit or server failure on a
-generation leaves the catalog available. An earlier read cannot publish over
-contrary evidence. A pin and its run-start probe keep the pin's own
+A malformed request (HTTP 400), rate limit or server failure on a generation leaves
+the catalog available. Dropping the fact fences publication by reads already in flight.
+
+Within the 90-second default TTL, a caller can join a GET begun before a refusal.
+Concurrent GETs publish in preparation order, which can differ from wire order and
+leave an earlier success reusable after a refusal. A late refusal for a replaced
+principal or an input-specific HTTP 403 can discard a usable catalog and cost another
+GET. A program change during preparation can return one obsolete, uncached answer.
+
+A pin and its run-start probe keep the pin's own
 wait and never join an ordinary probe. After each wait a consumer judges again only the
 account it waited for (`liveAccountRefusal`: enablement, a revoked or unusable
 credential, and live usage against the headroom threshold read at admission, as
