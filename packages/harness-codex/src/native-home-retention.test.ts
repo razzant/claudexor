@@ -4,11 +4,13 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { zstdCompressSync } from "node:zlib";
 import { afterEach, expect, it } from "vitest";
 import { CONTINUITY_PROFILE_LOCATOR_ENV } from "@claudexor/core";
 import { createCodexAdapter } from "./index.js";
@@ -18,6 +20,9 @@ afterEach(() => {
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const old = new Date("2020-01-01");
 const id = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+/** A synthetic session header for an independent rollout; retention reads its first line. */
+const header = (n: number) =>
+  `${JSON.stringify({ type: "session_meta", payload: { id: id(n) } })}\n`;
 function fixture() {
   const path = join(process.env.CLAUDEXOR_CONFIG_DIR!, "profiles", `retention-${roots.length}`);
   mkdirSync(path, { recursive: true });
@@ -30,7 +35,8 @@ function fixture() {
     const day = join(home, "sessions", "2020", "01", "01");
     mkdirSync(day, { recursive: true });
     const file = join(day, `rollout-2020-01-01T00-00-00-${id(n)}${ext}`);
-    writeFileSync(file, `session ${n}`);
+    const text = header(n);
+    writeFileSync(file, ext.endsWith(".zst") ? zstdCompressSync(Buffer.from(text)) : text);
     utimesSync(file, date, date);
     return file;
   };
@@ -68,9 +74,10 @@ it("deletes old unreferenced parts and preserves resume, recent groups, credenti
   const preview = await f.prune([id(2)], true);
   expect(preview.deleted_files.sort()).toEqual([discard, compressed].sort());
   expect(existsSync(discard)).toBe(true);
+  const discardedBytes = statSync(discard).size + statSync(compressed).size;
   const result = await f.prune([id(2)]);
   expect(result.deleted_files.sort()).toEqual(preview.deleted_files);
-  expect(result.freed_bytes).toBe(18);
+  expect(result.freed_bytes).toBe(discardedBytes);
   expect(existsSync(discard)).toBe(false);
   expect(existsSync(held)).toBe(true);
   expect(existsSync(recentSibling)).toBe(true);
@@ -134,7 +141,7 @@ it.each(["changed", "unreadable"])(
       },
     });
     expect(result.deleted_files).toHaveLength(1);
-    expect(result.freed_bytes).toBe(9);
+    expect(result.freed_bytes).toBe(Buffer.byteLength(header(1)));
     expect(result.errors.join()).toContain(kind);
     expect(files.filter((file) => existsSync(file))).toHaveLength(1);
     const resumed = await f.prune();

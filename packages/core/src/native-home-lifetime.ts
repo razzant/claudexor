@@ -21,7 +21,7 @@ export type NativeHomeRetentionResult = Pick<
   | "kept_recent"
   | "kept_unknown"
   | "truncated"
->;
+> & { holdReason?: string };
 /** Inventory yields to admission. Each retirement rechecks its proof and file
  * identity synchronously. Unknown formats are never guessed. */
 export type NativeHomeLifetime =

@@ -51,7 +51,7 @@ function profile() {
     enabled: false,
   });
 }
-function seed(n: number) {
+function seed(n: number, base?: number) {
   const file = join(
     profile().isolation_locator!,
     "sessions",
@@ -61,7 +61,9 @@ function seed(n: number) {
     `rollout-2020-01-01T00-00-00-${id(n)}.jsonl`,
   );
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `rollout ${n}`);
+  const payload =
+    base === undefined ? { id: id(n) } : { id: id(n), history_base: { thread_id: id(base) } };
+  writeFileSync(file, `${JSON.stringify({ type: "session_meta", payload })}\n`);
   utimesSync(file, old, old);
   return file;
 }
@@ -158,10 +160,11 @@ it("prunes unrelated cold rollouts while active output and a queued continuation
   for (const file of [...held, recent]) expect(existsSync(file)).toBe(true);
 });
 it.each(["active capsule", "completed command", "SQL session"] as const)(
-  "rechecks a late %s without keeping its unrelated neighbor",
+  "rechecks a late %s and keeps the fork and its history while reclaiming its neighbor",
   async (kind) => {
-    const held = seed(4),
-      cold = seed(5);
+    const base = seed(3);
+    const held = seed(4, 3);
+    const cold = seed(5);
     if (kind === "active capsule") command(4, "running");
     let wrote = false;
     const gc = native(() => {
@@ -180,7 +183,7 @@ it.each(["active capsule", "completed command", "SQL session"] as const)(
     const receipt = await gc(request());
     expect(wrote).toBe(true);
     expect(receipt.errors).toEqual([]);
-    expect(existsSync(held)).toBe(true);
+    expect([held, base].every(existsSync)).toBe(true);
     expect(existsSync(cold)).toBe(false);
   },
 );

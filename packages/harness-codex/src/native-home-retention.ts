@@ -1,26 +1,31 @@
-import { lstatSync, unlinkSync, type Stats } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
+import { lstatSync, unlinkSync } from "node:fs";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
-import { join } from "node:path";
-import type { NativeHomeLifetime, NativeHomeRetentionInput } from "@claudexor/core";
+import type {
+  NativeHomeLifetime,
+  NativeHomeRetentionInput,
+  NativeHomeRetentionResult,
+} from "@claudexor/core";
 import { canonicalIsolationLocator } from "@claudexor/core";
 import { codexContinuity, codexStoreHome } from "./continuity.js";
+import { CODEX_SESSION_ID, RolloutInventory, rolloutPathDisappeared } from "./rollout-lineage.js";
 
-const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-const ROLLOUT = new RegExp(`^rollout-.+-(${UUID})\\.jsonl(?:\\.zst)?$`, "i");
-const SESSION_ID = new RegExp(`^${UUID}$`, "i");
-
-/** The same filename/part contract as codexContinuity. SQLite logs and indexes
- * have no proven independent deletion contract and are deliberately untouched. */
+/** Retire cold dated rollout files only after the inventory has accounted for
+ * every part that can supply a history base or affect the group's age. */
 async function prune(input: NativeHomeRetentionInput) {
-  const result = {
-    deleted_files: [] as string[],
-    errors: [] as string[],
+  const result: NativeHomeRetentionResult = {
+    deleted_files: [],
+    errors: [],
     freed_bytes: 0,
     kept_referenced: 0,
     kept_recent: 0,
     kept_unknown: 0,
     truncated: false,
+  };
+  const hold = (reason: string, retry = false) => {
+    result.holdReason = reason;
+    result.errors.push(reason);
+    result.truncated = retry;
+    return result;
   };
   const cancelled = () => {
     if (!input.signal?.aborted) return false;
@@ -30,125 +35,159 @@ async function prune(input: NativeHomeRetentionInput) {
     return true;
   };
   if (cancelled()) return result;
-  let normalizedSize = -1;
-  let normalized = new Set<string>();
-  const protectedIds = () => {
-    // The proof only adds protections within a pass. Keep membership checks
-    // cheap across large homes, but validate every newly published reference.
-    if (input.protectedSessionIds.size !== normalizedSize) {
-      normalized = new Set(
-        [...input.protectedSessionIds].map((id) => {
-          if (!SESSION_ID.test(id))
-            throw new Error(`unrecognized Codex session reference ${id}; home ${input.home} kept`);
-          return id.toLowerCase();
-        }),
-      );
-      normalizedSize = input.protectedSessionIds.size;
+  const inventory = new RolloutInventory();
+  // The scan fills this map. A retained group leaves it as soon as it is counted.
+  const pending = inventory.groups;
+  const keepReferenced = (id: string) => {
+    const group = pending.get(id);
+    if (group) {
+      result.kept_referenced += group.candidates.size;
+      pending.delete(id);
     }
-    return normalized;
   };
-  protectedIds(); // Reject unreadable ownership before scanning any files.
+  const protectedIds = new Set<string>();
+  let protectedSize = -1;
+  const refreshProtections = () => {
+    // SQL and producer rechecks only add references. An imported rollout may
+    // supply a header without its filename establishing the referenced ID.
+    if (protectedSize === input.protectedSessionIds.size) return;
+    let veto: NativeHomeRetentionResult | undefined;
+    for (const ref of input.protectedSessionIds) {
+      if (!CODEX_SESSION_ID.test(ref)) {
+        const reason = `unrecognized Codex session reference ${ref}; home ${input.home} kept`;
+        if (protectedSize < 0) throw new Error(reason);
+        veto ??= hold(`native retention proof unreadable (Error: ${reason}): ${input.home}`);
+        continue;
+      }
+      const id = ref.toLowerCase();
+      if (protectedIds.has(id)) continue;
+      if (protectedSize >= 0) {
+        if (!inventory.knownIds.has(id))
+          veto ??= hold(
+            `new Codex session reference ${ref} has no recognized filename ID in inventory: ${input.home}`,
+            true,
+          );
+        keepReferenced(id);
+      }
+      protectedIds.add(id);
+    }
+    protectedSize = input.protectedSessionIds.size;
+    return veto;
+  };
+  refreshProtections();
   const home = canonicalIsolationLocator(input.home, "Codex retention home");
-  const sessions = join(home, "sessions");
-  const sessionsStat = await lstat(sessions).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
-  if (!sessionsStat) return result;
-  if (!sessionsStat.isDirectory())
-    throw new Error(`Codex sessions ${sessions} is not a plain directory; home kept`);
-  const groups = new Map<string, Array<{ path: string; stat: Stats }>>();
-  const scan = async (dir: string, depth: number): Promise<void> => {
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-      if (cancelled()) return;
-      const path = join(dir, entry.name);
-      if (
-        depth > 0 &&
-        entry.isDirectory() &&
-        (depth === 3 ? /^\d{4}$/ : /^\d{2}$/).test(entry.name)
-      )
-        await scan(path, depth - 1);
-      else if (depth === 0 && entry.isFile()) {
-        const match = ROLLOUT.exec(entry.name);
-        if (!match) {
-          result.kept_unknown += 1;
-          continue;
-        }
-        const id = match[1]!.toLowerCase();
-        const parts = groups.get(id) ?? [];
-        parts.push({ path, stat: await lstat(path) });
-        groups.set(id, parts);
-      } else result.kept_unknown += 1;
+  const sessionsChanged = await inventory.scan(home, "sessions", cancelled);
+  if (sessionsChanged) return hold(sessionsChanged, true);
+  result.kept_unknown = inventory.keptUnknown("inventory");
+  for (const [id, { candidates, companions }] of pending) {
+    if (!candidates.size) pending.delete(id);
+    else if (protectedIds.has(id)) keepReferenced(id);
+    else if ([...candidates, ...companions].some((part) => part.stat.mtimeMs >= input.olderThan)) {
+      result.kept_recent += candidates.size;
+      pending.delete(id);
     }
-  };
-  // Complete inventory before the first unlink; a failed read deletes nothing.
-  await scan(sessions, 3);
-  groupsLoop: for (const [id, parts] of groups) {
+  }
+  if (cancelled() || !pending.size) return result;
+  if (input.maxDeletions <= 0) {
+    result.truncated = true;
+    return result;
+  }
+  const archiveChanged = await inventory.scan(home, "archived_sessions", cancelled);
+  if (archiveChanged) return hold(archiveChanged, true);
+  let unreadable;
+  try {
+    unreadable = await inventory.lineage(cancelled, keepReferenced);
+  } catch (error) {
+    result.kept_unknown = inventory.keptUnknown("lineageHold");
+    if (rolloutPathDisappeared(error))
+      return hold(`rollout inventory changed: ${String(error)}`, true);
+    return hold(String(error));
+  }
+  if (cancelled()) return result;
+  const late = refreshProtections();
+  if (late) return late;
+  // A sole unknown outgoing edge can point anywhere. Only its own unreferenced
+  // file can go, and only after every other header has ruled out an incoming edge.
+  groupsLoop: for (const [id, { candidates, companions }] of pending) {
     if (cancelled()) return result;
-    if (protectedIds().has(id)) {
-      result.kept_referenced += parts.length;
-      continue;
-    }
-    if (parts.some((part) => part.stat.mtimeMs >= input.olderThan)) {
-      result.kept_recent += parts.length;
-      continue;
-    }
+    if (unreadable?.part === null) break; // Multiple unreadable headers rule out every unlink.
+    if (unreadable && !candidates.has(unreadable.part)) continue;
     await yieldToAdmission();
     if (cancelled()) return result;
-    for (const [i, part] of parts.entries()) {
+    for (const part of candidates) {
+      if (unreadable && part !== unreadable.part) continue;
       if (cancelled()) return result;
       if (result.deleted_files.length >= input.maxDeletions) {
         result.truncated = true;
         return result;
       }
-      let currentProof: boolean;
       try {
-        currentProof = input.canPrune();
-        if (protectedIds().has(id)) {
-          result.kept_referenced += parts.length - i;
-          continue groupsLoop;
-        }
+        const currentProof = input.canPrune();
+        const late = refreshProtections();
+        if (late) return late;
+        const retained = !pending.has(id);
+        if (retained && !unreadable) continue groupsLoop;
+        if (!currentProof)
+          return cancelled() ? result : hold(`native references or setup state changed: ${home}`);
+        if (retained) break groupsLoop; // The sole file we could unlink just gained a reference.
       } catch (error) {
-        result.errors.push(
-          `native retention proof unreadable; remaining files kept: ${String(error)}`,
-        );
-        return result;
-      }
-      if (!currentProof) {
-        result.errors.push(
-          "native retention references or setup state changed; remaining files kept",
-        );
-        return result;
+        return hold(`native retention proof unreadable (${String(error)}): ${home}`);
       }
       try {
-        // Recheck remaining inventoried parts after the fresh proof. A changed
-        // part protects the group. No await from proof to unlink.
-        const remaining = parts.slice(i);
-        const current = remaining.map((entry) => lstatSync(entry.path));
-        if (
-          current.some((stat, index) => {
-            const before = remaining[index]!.stat;
-            return (
-              !stat.isFile() ||
-              stat.dev !== before.dev ||
-              stat.ino !== before.ino ||
-              stat.mtimeMs !== before.mtimeMs ||
-              stat.size !== before.size
-            );
-          })
-        ) {
-          result.kept_unknown += remaining.length;
-          continue groupsLoop;
+        const directoryChanged = inventory.checkDirectories();
+        if (directoryChanged) return hold(directoryChanged, true);
+        // Every surviving member still participates in the age proof.
+        let freedBytes = 0;
+        for (const entry of [...candidates, ...companions]) {
+          const before = entry.stat;
+          const stat = lstatSync(entry.path, { throwIfNoEntry: false });
+          if (
+            !stat?.isFile() ||
+            stat.dev !== before.dev ||
+            stat.ino !== before.ino ||
+            stat.mtimeMs !== before.mtimeMs ||
+            stat.size !== before.size
+          ) {
+            // The receipt now names this companion as the cause of a hold.
+            if (!candidates.has(entry)) result.kept_unknown--;
+            return hold(`rollout changed: ${entry.path}`, true);
+          }
+          if (entry === part && stat.nlink === 1) freedBytes = stat.size;
         }
-        if (!input.dryRun) unlinkSync(part.path);
+        if (!input.dryRun) {
+          try {
+            unlinkSync(part.path);
+          } catch (error) {
+            if (rolloutPathDisappeared(error)) return hold(`rollout changed: ${part.path}`, true);
+            if (unreadable) return hold(`unlink failed for ${part.path}: ${String(error)}`);
+            result.errors.push(`${part.path}: ${String(error)}`);
+            continue;
+          }
+        }
         result.deleted_files.push(part.path);
-        if (current[0]!.nlink === 1) result.freed_bytes += current[0]!.size;
+        candidates.delete(part);
+        if (!candidates.size) pending.delete(id);
+        result.freed_bytes += freedBytes;
+        if (!input.dryRun) {
+          const replaced = inventory.didUnlink(part.path);
+          if (replaced) return hold(replaced, true);
+        }
+        if (unreadable) break groupsLoop;
       } catch (error) {
-        result.errors.push(
-          `${part.path}: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        return hold(String(error), rolloutPathDisappeared(error));
       }
     }
+  }
+  if (!cancelled() && unreadable) {
+    if (pending.size) {
+      if (!result.deleted_files.length) {
+        result.kept_unknown = inventory.keptUnknown("lineageHold");
+        return hold(unreadable.reason);
+      }
+      result.holdReason = `pass limited to the sole ${unreadable.reason}`;
+      result.truncated = true;
+    }
+    if (unreadable.storageFailure) result.errors.push(unreadable.storageFailure);
   }
   return result;
 }
@@ -156,7 +195,7 @@ async function prune(input: NativeHomeRetentionInput) {
 const codexNativeHomeLifetime: NativeHomeLifetime = {
   status: "managed",
   preserves:
-    "Credentials, configuration, SQLite logs/indexes, archived sessions and unknown layouts; referenced or recently updated rollout parts.",
+    "Credentials, configuration, SQLite logs/indexes, archived sessions, unknown layouts, referenced or recent rollout groups, and all rollouts named as history bases during this pass.",
   home: (env) => canonicalIsolationLocator(codexStoreHome(env), "Codex retention home"),
   prune,
 };

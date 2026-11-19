@@ -5961,20 +5961,49 @@ holding unrelated cold sessions. The pass rereads changed SQL owners and each ac
 or newly changed command's output files before unlink; this includes a capsule
 published without another SQL update, or work that starts and finishes during the
 scan. Durable continuation addresses include sources outside the hashed run layout.
-Native references accumulate in a live set; the adapter normalizes session IDs initially and again only when that set grows. Already read terminal ancestry is shared
-within the pass; active output files are reread. A late reference keeps its entire
-session and allows unrelated groups to progress. Each unlink rechecks setup state,
-references and current file identity synchronously, without a yield between proof
-and deletion. An unreadable owner keeps the remaining files and preserves any
-completed deletions in the receipt. Retaining a run can retain its session even if
-that run no longer needs resume.
+Native references accumulate in a live set. The adapter normalizes IDs initially
+and whenever the set grows. The pass reuses terminal ancestry and rereads active
+output files. A late reference protects the inventoried group. References span
+all homes of the harness. If no recognized filename in this home's inventory
+identifies a new reference, the pass is truncated. An imported file may already
+have supplied its header under another name. The next pass takes the ID as an
+initial reference. Each unlink synchronously rechecks setup, references and file
+identity. An unreadable owner keeps the remaining files and the receipt includes
+completed deletions. A retained run can retain its session even after it no longer
+needs resume.
 
-Codex owns only the recognized `sessions/YYYY/MM/DD/rollout-…-<uuid>.jsonl`
-and `.jsonl.zst` candidates. All parts of a referenced session survive; a recent
-part protects the whole group. File identity and modification facts are rechecked
-before deletion. Each pass removes at most 500 native files and promptly continues
-when capped. Credentials, configuration, SQLite logs/indexes, archived sessions,
-unknown filenames/layouts and symlinks remain untouched. Codex SQLite reclamation
+Codex can unlink only one-ID `sessions/YYYY/MM/DD/rollout-…-<uuid>.jsonl`
+files and their `.zst` forms. For group age and the pre-unlink file check,
+a dated rollout with another UUID in its prefix still belongs to the group
+of its final hyphen-delimited UUID. Native `<thread>_<rollout>` pairs and
+imported names outside that pattern supply no age evidence for either ID.
+With candidates and budget, GC reads bounded headers from rollout-prefixed
+files in the dated session layout and from UUID-bearing `.jsonl` or `.jsonl.zst`
+files three directories below `sessions`, as found by continuity. In
+`archived_sessions` it checks both name forms at the root and up to three
+plain directories below it, including imported paths used by export. Codex 0.169.0's
+first newline-terminated JSON record identifies the session and may name a base
+by its filename ID in `session_meta.payload.history_base.thread_id`.
+Named bases survive the pass even if their forks retire. The receipt counts each
+old candidate file once when a readable header first names its group as a base,
+regardless of where unreadable headers occur in the scan. Directly referenced and recent files keep
+their original counts.
+A sole unreadable file may retire alone if it meets the usual age and ownership
+rules and no readable header names it as a base. Its retirement marks the pass
+truncated if another eligible file must wait. Unreadable headers hold the home
+only when they defer eligible files. Persistent damage can keep cleanup on hold
+for that home until the affected headers are repaired. File I/O and identity-check failures still
+appear as errors. A linked rollout path vetoes pruning.
+These deferrals appear in `native_home_veto` with their reason. A changed file
+or directory marks the pass truncated.
+Before each unlink the adapter checks inventoried directory metadata and every
+surviving part in the candidate's age group. Native appends preserve a completed
+header. In-place header rewrites, changes with indistinguishable directory metadata, and forks
+published between their directory check and unlink can escape detection. The
+same race applies while recording the parent directory's metadata after unlink.
+Each pass removes at most 500 native files and promptly continues when capped.
+Credentials, configuration, SQLite logs/indexes, archived sessions, unknown
+filenames/layouts and symlinks remain untouched. Codex SQLite reclamation
 is **not pruned: no proven independent row/file lifetime contract**. Claude is
 **not pruned: its CLI owns transcript expiry and the engine has no independent
 sidecar deletion proof**. Cursor, Agy and OpenCode are **not pruned: their native

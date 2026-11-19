@@ -2706,14 +2706,19 @@ When the rollout yields no record, the root turn's own wire record
 (`codexErrorInfo` and its words) stays as `vendor_failure` with
 `source: "codex_app_server"`; a readable rollout record replaces it.
 
-Every rollout reader (observed model, rollout quota, vendor failure, continuity
-locate and move) goes through one boundary in `rollout-file.ts`. `X.jsonl` and
+The Codex adapter uses `rollout-file.ts` for observed model, rollout quota, vendor
+failure, continuity locate and move, and retention's `readCodexRolloutHead`. `X.jsonl` and
 `X.jsonl.zst` are two representations of one logical part. The transcript
 readers read the thread's newest part through its plain `.jsonl`; when that part
 exists only compressed, or only as or below a link, the model, quota and vendor
 failure stay unknown and no older part is read in its place. Each lookup stops
 after the first day with a matching part, visits no older days and remembers no
-absence, so a plain copy written later is read by the next lookup. Nothing is decompressed. Locate names that
+absence, so a plain copy written later is read by the next lookup. Transcript
+readers do not decompress rollouts. Retention reads the first newline-terminated
+JSON record from each plain or zstd representation in the session and archive
+inventories. It limits the decoded header to 8 MiB and input to 8 MiB plus 16 KiB,
+even for compressed frames that produce no output. Vendor-native export has a
+separate zstd decoder in the control API. Locate names that
 newest part as the holder, and a move copies every part, compressed history
 included. The run's selected `CODEX_HOME` is canonicalized first, so a home
 that is a link or sits
@@ -2724,7 +2729,7 @@ inode it was opened as. A move compares the two homes by directory identity, so
 two spellings of one store (the default home through a link and a profile
 registered at its real path) are the same home and nothing is copied; the copy
 also refuses a destination that is its own source before truncating anything.
-Reads go in fixed 1 MiB chunks up to the size captured
+Transcript scans go in fixed 1 MiB chunks up to the size captured
 at open and carry at most one 8 MiB line. A longer line is never parsed; when it
 carries a reader's marker it counts as an unreadable record (the scanned model is
 unknown, a vendor failure is absent, the quota keeps its previous reading), the
