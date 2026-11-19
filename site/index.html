@@ -58,374 +58,1389 @@
       document.documentElement.classList.add("js");
     </script>
     <style>
+      :root {
+        --black: #050608;
+        --ice: #e8f0f8;
+        --steel: #93a0b2;
+        --dim: #7e8b9c;
+        --warm: #ffc2ab;
+        --line: rgba(232, 240, 248, 0.14);
+        --sans: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", sans-serif;
+        --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      html {
+        background: var(--black);
+        color: var(--ice);
+        font-family: var(--sans);
+        -webkit-font-smoothing: antialiased;
+      }
+      body {
+        overflow-x: hidden;
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+        border: 0;
+        background: none;
+        padding: 0;
+      }
+      /* Each part of the page that has a picture carries its own canvas, so the picture scrolls with the words exactly. */
+      .stage {
+        position: relative;
+      }
+      .stage > .gl {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 0;
+        pointer-events: none;
+        display: block;
+      }
+      .stage > :not(.gl):not(.drops) {
+        position: relative;
+        z-index: 1;
+      }
+      .wrap {
+        width: min(1240px, calc(100vw - 40px));
+        margin: 0 auto;
+      }
+      .mark {
+        width: 1em;
+        height: 1em;
+        flex: none;
+      }
 
-:root { --black: #050608; --ice: #e8f0f8; --steel: #93a0b2; --dim: #7e8b9c; --warm: #ffc2ab;
-  --line: rgba(232, 240, 248, .14);
-  --sans: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", sans-serif; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-* { box-sizing: border-box; margin: 0; }
-html { background: var(--black); color: var(--ice); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
-body { overflow-x: hidden; }
-a { color: inherit; text-decoration: none; }
-button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; padding: 0; }
-/* Each part of the page that has a picture carries its own canvas, so the picture scrolls with the words exactly. */
-.stage { position: relative; }
-.stage > .gl { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; display: block; }
-.stage > :not(.gl):not(.drops) { position: relative; z-index: 1; }
-.wrap { width: min(1240px, calc(100vw - 40px)); margin: 0 auto; }
-.mark { width: 1em; height: 1em; flex: none; }
+      .nav .wrap {
+        display: flex;
+        align-items: center;
+        gap: 30px;
+        height: 76px;
+      }
+      .brand {
+        margin-right: auto;
+        font-weight: 650;
+        font-size: 19px;
+        letter-spacing: -0.01em;
+      }
+      .links {
+        display: flex;
+        gap: 30px;
+        font-size: 15px;
+        color: var(--steel);
+      }
+      .links a:hover {
+        color: var(--ice);
+      }
 
-.nav .wrap { display: flex; align-items: center; gap: 30px; height: 76px; }
-.brand { margin-right: auto; font-weight: 650; font-size: 19px; letter-spacing: -.01em; }
-.links { display: flex; gap: 30px; font-size: 15px; color: var(--steel); }
-.links a:hover { color: var(--ice); }
+      h1,
+      h2 {
+        font-weight: 700;
+        font-stretch: 112%;
+        letter-spacing: -0.035em;
+      }
+      h1 {
+        font-size: clamp(38px, 4.4vw, 64px);
+        line-height: 1.04;
+      }
+      h1 span {
+        display: block;
+      }
+      h2 {
+        max-width: 17ch;
+        font-size: clamp(32px, 4vw, 56px);
+        line-height: 1.04;
+        text-wrap: balance;
+      }
+      .sub {
+        max-width: 58ch;
+        margin-top: 18px;
+        font-size: 17.5px;
+        line-height: 1.5;
+        color: var(--steel);
+        text-wrap: pretty;
+      }
 
-h1, h2 { font-weight: 700; font-stretch: 112%; letter-spacing: -.035em; }
-h1 { font-size: clamp(38px, 4.4vw, 64px); line-height: 1.04; }
-h1 span { display: block; }
-h2 { max-width: 17ch; font-size: clamp(32px, 4vw, 56px); line-height: 1.04; text-wrap: balance; }
-.sub { max-width: 58ch; margin-top: 18px; font-size: 17.5px; line-height: 1.5; color: var(--steel); text-wrap: pretty; }
+      /* the first screen: one face for everything but the one line of code */
+      .hero .wrap {
+        display: grid;
+        grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
+        gap: 0 40px;
+        align-items: center;
+        min-height: calc(100vh - 76px);
+        padding-bottom: 46px;
+      }
+      .motto {
+        margin-top: 24px;
+        font-size: 21px;
+        font-weight: 600;
+        letter-spacing: -0.012em;
+      }
+      .lede {
+        margin-top: 12px;
+        max-width: 44ch;
+        font-size: 17.5px;
+        line-height: 1.5;
+        color: var(--steel);
+        text-wrap: pretty;
+      }
+      .spot {
+        aspect-ratio: 1;
+        width: min(100%, 78vh);
+        justify-self: center;
+      }
+      .acts {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 14px;
+        margin-top: 34px;
+      }
+      .get {
+        --n: 4px;
+        display: inline-flex;
+        align-items: center;
+        height: 52px;
+        padding: 0 24px;
+        background: var(--ice);
+        color: var(--black);
+        font-weight: 650;
+        font-size: 16px;
+        letter-spacing: -0.005em;
+        clip-path: polygon(
+          0 var(--n),
+          var(--n) var(--n),
+          var(--n) 0,
+          calc(100% - var(--n)) 0,
+          calc(100% - var(--n)) var(--n),
+          100% var(--n),
+          100% calc(100% - var(--n)),
+          calc(100% - var(--n)) calc(100% - var(--n)),
+          calc(100% - var(--n)) 100%,
+          var(--n) 100%,
+          var(--n) calc(100% - var(--n)),
+          0 calc(100% - var(--n))
+        );
+      }
+      .get:hover {
+        background: #fff;
+      }
+      .get:focus-visible {
+        clip-path: none;
+        outline: 2px solid var(--ice);
+        outline-offset: 4px;
+      }
+      .cmd {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 52px;
+        padding: 0 6px 0 18px;
+        border: 1px solid rgba(232, 240, 248, 0.24);
+        font-size: 14px;
+      }
+      .cmd code {
+        font-family: var(--mono);
+        font-size: 14px;
+      }
+      .cmd span {
+        padding: 7px 10px;
+        color: var(--steel);
+      }
+      html:not(.js) .cmd span {
+        display: none;
+      }
+      .note code {
+        font-family: var(--mono);
+        font-size: 0.92em;
+        color: var(--ice);
+      }
+      .cmd:hover {
+        border-color: rgba(232, 240, 248, 0.55);
+      }
+      .cmd:hover span {
+        color: var(--ice);
+      }
+      .cmd:focus-visible {
+        outline: 2px solid var(--ice);
+        outline-offset: 4px;
+      }
+      .fact {
+        margin-top: 30px;
+        min-height: 3em;
+        max-width: 46ch;
+        font-size: 15px;
+        line-height: 1.5;
+        color: #c9d4e0;
+      }
+      .fact::before {
+        content: "";
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        margin-right: 10px;
+        vertical-align: 0.08em;
+        background: var(--ice);
+        animation: blink 1.1s steps(2, start) infinite;
+      }
+      @keyframes blink {
+        to {
+          visibility: hidden;
+        }
+      }
 
-/* the first screen: one face for everything but the one line of code */
-.hero .wrap { display: grid; grid-template-columns: minmax(0, 520px) minmax(0, 1fr); gap: 0 40px; align-items: center; min-height: calc(100vh - 76px); padding-bottom: 46px; }
-.motto { margin-top: 24px; font-size: 21px; font-weight: 600; letter-spacing: -.012em; }
-.lede { margin-top: 12px; max-width: 44ch; font-size: 17.5px; line-height: 1.5; color: var(--steel); text-wrap: pretty; }
-.spot { aspect-ratio: 1; width: min(100%, 78vh); justify-self: center; }
-.acts { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 34px; }
-.get { --n: 4px; display: inline-flex; align-items: center; height: 52px; padding: 0 24px; background: var(--ice); color: var(--black); font-weight: 650; font-size: 16px; letter-spacing: -.005em;
-  clip-path: polygon(0 var(--n), var(--n) var(--n), var(--n) 0, calc(100% - var(--n)) 0, calc(100% - var(--n)) var(--n), 100% var(--n), 100% calc(100% - var(--n)), calc(100% - var(--n)) calc(100% - var(--n)), calc(100% - var(--n)) 100%, var(--n) 100%, var(--n) calc(100% - var(--n)), 0 calc(100% - var(--n))); }
-.get:hover { background: #fff; }
-.get:focus-visible { clip-path: none; outline: 2px solid var(--ice); outline-offset: 4px; }
-.cmd { display: inline-flex; align-items: center; gap: 8px; height: 52px; padding: 0 6px 0 18px; border: 1px solid rgba(232, 240, 248, .24); font-size: 14px; }
-.cmd code { font-family: var(--mono); font-size: 14px; }
-.cmd span { padding: 7px 10px; color: var(--steel); }
-html:not(.js) .cmd span { display: none; }
-.note code { font-family: var(--mono); font-size: .92em; color: var(--ice); }
-.cmd:hover { border-color: rgba(232, 240, 248, .55); }
-.cmd:hover span { color: var(--ice); }
-.cmd:focus-visible { outline: 2px solid var(--ice); outline-offset: 4px; }
-.fact { margin-top: 30px; min-height: 3em; max-width: 46ch; font-size: 15px; line-height: 1.5; color: #c9d4e0; }
-.fact::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 10px; vertical-align: .08em; background: var(--ice); animation: blink 1.1s steps(2, start) infinite; }
-@keyframes blink { to { visibility: hidden; } }
+      /* what each glass on the first screen holds; it hangs under its glass and moves with the page */
+      .drops {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        overflow: hidden;
+      }
+      .drop {
+        position: absolute;
+        left: 0;
+        top: 0;
+        display: grid;
+        justify-items: center;
+        gap: 2px;
+        opacity: 0;
+        transition: opacity 0.4s;
+        text-align: center;
+      }
+      .drop b {
+        padding: 1px 7px;
+        background: var(--black);
+        font-weight: 650;
+        font-size: clamp(14px, calc(var(--r, 60) * 0.24px), 21px);
+        line-height: 1.2;
+        letter-spacing: -0.01em;
+        font-variant-numeric: tabular-nums;
+      }
+      .drop small {
+        padding: 1px 6px;
+        background: var(--black);
+        font-size: 12.5px;
+        color: #c9d4e0;
+        white-space: nowrap;
+      }
+      .drop.spent b,
+      .drop.spent small {
+        color: var(--warm);
+      }
 
-/* what each glass on the first screen holds; it hangs under its glass and moves with the page */
-.drops { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
-.drop { position: absolute; left: 0; top: 0; display: grid; justify-items: center; gap: 2px; opacity: 0; transition: opacity .4s; text-align: center; }
-.drop b { padding: 1px 7px; background: var(--black); font-weight: 650; font-size: clamp(14px, calc(var(--r, 60) * .24px), 21px); line-height: 1.2; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
-.drop small { padding: 1px 6px; background: var(--black); font-size: 12.5px; color: #c9d4e0; white-space: nowrap; }
-.drop.spent b, .drop.spent small { color: var(--warm); }
+      section.band {
+        padding: 120px 0;
+      }
+      .aside {
+        margin-top: 26px;
+        font-size: 21px;
+        font-weight: 600;
+        letter-spacing: -0.012em;
+      }
+      .lanes {
+        display: grid;
+        gap: 26px;
+        margin-top: 60px;
+      }
+      .lane {
+        display: grid;
+        grid-template-columns: 270px minmax(0, 1fr) 300px;
+        gap: 0 30px;
+        align-items: center;
+      }
+      .lane .who {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        font-weight: 700;
+        font-stretch: 112%;
+        font-size: 30px;
+        letter-spacing: -0.03em;
+      }
+      .lane .who .mark {
+        font-size: 28px;
+      }
+      .lane .bar {
+        height: 60px;
+      }
+      .stage:not(.lit) .lane .bar {
+        height: 2px;
+        border-bottom: 2px dotted var(--dim);
+      }
+      .lane .say {
+        font-size: 15px;
+        line-height: 1.4;
+        color: var(--steel);
+        font-variant-numeric: tabular-nums;
+      }
+      .lane.win .say {
+        color: var(--ice);
+      }
 
-section.band { padding: 120px 0; }
-.aside { margin-top: 26px; font-size: 21px; font-weight: 600; letter-spacing: -.012em; }
-.lanes { display: grid; gap: 26px; margin-top: 60px; }
-.lane { display: grid; grid-template-columns: 270px minmax(0, 1fr) 300px; gap: 0 30px; align-items: center; }
-.lane .who { display: flex; align-items: center; gap: 14px; font-weight: 700; font-stretch: 112%; font-size: 30px; letter-spacing: -.03em; }
-.lane .who .mark { font-size: 28px; }
-.lane .bar { height: 60px; }
-.stage:not(.lit) .lane .bar { height: 2px; border-bottom: 2px dotted var(--dim); }
-.lane .say { font-size: 15px; line-height: 1.4; color: var(--steel); font-variant-numeric: tabular-nums; }
-.lane.win .say { color: var(--ice); }
+      .sums {
+        display: grid;
+        gap: 54px;
+        margin-top: 64px;
+      }
+      .sums > div {
+        display: grid;
+        grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
+        gap: 0 60px;
+        align-items: center;
+      }
+      .sums p {
+        max-width: 46ch;
+        font-size: 17px;
+        line-height: 1.5;
+        color: var(--steel);
+      }
+      .pxword {
+        display: block;
+        font-weight: 800;
+        font-size: clamp(40px, 11vw, 64px);
+        line-height: 1;
+        white-space: nowrap;
+      }
+      .lit .pxword {
+        overflow: hidden;
+        color: transparent;
+      }
+      .stage:not(.lit) .spot {
+        display: none;
+      }
+      .host-name {
+        display: none;
+      }
+      html:not(.js) .tabs {
+        display: none;
+      }
+      html:not(.js) .host-name {
+        display: block;
+        margin-top: 18px;
+        font-size: 16px;
+        font-weight: 650;
+      }
 
-.sums { display: grid; gap: 54px; margin-top: 64px; }
-.sums > div { display: grid; grid-template-columns: minmax(0, 560px) minmax(0, 1fr); gap: 0 60px; align-items: center; }
-.sums p { max-width: 46ch; font-size: 17px; line-height: 1.5; color: var(--steel); }
-.pxword { display: block; font-weight: 800; font-size: clamp(40px, 11vw, 64px); line-height: 1; white-space: nowrap; }
-.lit .pxword { overflow: hidden; color: transparent; }
-.stage:not(.lit) .spot { display: none; }
-.host-name { display: none; }
-html:not(.js) .tabs { display: none; }
-html:not(.js) .host-name { display: block; margin-top: 18px; font-size: 16px; font-weight: 650; }
+      .start {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 620px);
+        gap: 40px 70px;
+        align-items: start;
+        margin-top: 60px;
+      }
+      .start .for {
+        margin-top: 14px;
+        font-size: 15px;
+        color: var(--steel);
+      }
+      .term {
+        padding: 26px 30px;
+        border: 1px solid rgba(232, 240, 248, 0.24);
+        font-family: var(--mono);
+        font-size: 15px;
+        line-height: 2;
+        white-space: nowrap;
+        overflow-x: auto;
+      }
+      .term i {
+        font-style: normal;
+        color: var(--dim);
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      .acts .more {
+        flex-basis: 100%;
+        margin-top: 4px;
+        font-size: 15px;
+        color: var(--steel);
+        text-decoration: underline;
+        text-decoration-color: rgba(147, 160, 178, 0.4);
+        text-underline-offset: 4px;
+      }
+      .acts .more:hover {
+        color: var(--ice);
+        text-decoration-color: var(--ice);
+      }
+      #agent-hosts h3 {
+        font-size: 19px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+      }
+      #agent-hosts p {
+        max-width: 52ch;
+        margin-top: 10px;
+        font-size: 16px;
+        line-height: 1.55;
+        color: var(--steel);
+      }
+      #agent-hosts p a,
+      .credit a {
+        color: var(--ice);
+        text-decoration: underline;
+        text-decoration-color: rgba(232, 240, 248, 0.35);
+        text-underline-offset: 3px;
+      }
+      #agent-hosts code {
+        font-family: var(--mono);
+        font-size: 0.9em;
+        color: var(--ice);
+        overflow-wrap: anywhere;
+      }
+      #agent-hosts [id] {
+        scroll-margin-top: 24px;
+      }
+      .hosts {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 40px 70px;
+        align-items: start;
+        margin-top: 60px;
+      }
+      .hosts .term {
+        margin-top: 22px;
+        font-size: 14px;
+      }
+      .tabs {
+        display: flex;
+        gap: 26px;
+        margin-top: 14px;
+        border-bottom: 1px solid rgba(232, 240, 248, 0.14);
+      }
+      .tabs button {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 10px 2px 12px;
+        margin-bottom: -1px;
+        border-bottom: 2px solid transparent;
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--steel);
+      }
+      .tabs button[aria-selected="true"] {
+        color: var(--ice);
+        border-bottom-color: var(--ice);
+      }
+      .tabs button:hover {
+        color: var(--ice);
+      }
+      .tabs button:focus-visible {
+        outline: 2px solid var(--ice);
+        outline-offset: 4px;
+      }
+      .js .pane:not(.on) {
+        display: none;
+      }
+      .pane + .pane {
+        margin-top: 34px;
+      }
+      .js .pane + .pane {
+        margin-top: 0;
+      }
+      .credit {
+        margin-top: 50px;
+        font-size: 14.5px;
+        color: var(--steel);
+      }
+      .skip {
+        position: absolute;
+        left: 16px;
+        top: -64px;
+        z-index: 10;
+        padding: 10px 14px;
+        background: var(--ice);
+        color: var(--black);
+        font-weight: 600;
+      }
+      .skip:focus {
+        top: 12px;
+      }
+      .brand:focus-visible,
+      .links a:focus-visible,
+      .more:focus-visible,
+      #agent-hosts a:focus-visible,
+      footer a:focus-visible,
+      .note a:focus-visible {
+        outline: 2px solid var(--ice);
+        outline-offset: 3px;
+      }
+      .agents {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0 40px;
+        margin-top: 56px;
+        padding: 0;
+        list-style: none;
+      }
+      .agents li {
+        display: grid;
+        align-content: start;
+        gap: 6px;
+        padding: 22px 0 24px;
+        border-top: 1px solid var(--line);
+      }
+      .agents b {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 21px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+      }
+      .agents span,
+      .facts dd,
+      .steps li > span:last-child,
+      .chain span,
+      .defs dd {
+        font-size: 16px;
+        line-height: 1.55;
+        color: var(--steel);
+      }
+      .facts {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 24px 40px;
+        margin-top: 44px;
+      }
+      .facts dt {
+        font-size: 17px;
+        font-weight: 650;
+      }
+      .facts dd {
+        margin-top: 6px;
+      }
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 30px;
+        margin-top: 56px;
+        padding: 0;
+        list-style: none;
+        counter-reset: step;
+      }
+      .steps li {
+        display: grid;
+        align-content: start;
+        gap: 8px;
+        padding-top: 16px;
+        border-top: 2px solid var(--ice);
+        counter-increment: step;
+      }
+      .steps li::before {
+        content: counter(step);
+        font-size: 15px;
+        font-weight: 650;
+        color: var(--steel);
+        font-variant-numeric: tabular-nums;
+      }
+      .steps .who {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 15px;
+        color: var(--steel);
+      }
+      .steps b {
+        font-size: 26px;
+        font-weight: 700;
+        font-stretch: 112%;
+        letter-spacing: -0.03em;
+      }
+      .chain {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 30px 40px;
+        margin-top: 48px;
+        padding: 0;
+        list-style: none;
+      }
+      .chain li {
+        display: grid;
+        align-content: start;
+        gap: 6px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+      }
+      .chain b {
+        font-size: 21px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 34px;
+      }
+      .ghost {
+        display: inline-flex;
+        align-items: center;
+        height: 52px;
+        padding: 0 22px;
+        border: 1px solid rgba(232, 240, 248, 0.32);
+        font-weight: 600;
+        font-size: 16px;
+      }
+      .ghost:hover {
+        border-color: var(--ice);
+      }
+      .ghost:focus-visible {
+        outline: 2px solid var(--ice);
+        outline-offset: 4px;
+      }
+      .defs {
+        margin-top: 48px;
+      }
+      .defs > div {
+        display: grid;
+        grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+        gap: 8px 40px;
+        padding: 22px 0;
+        border-top: 1px solid var(--line);
+      }
+      .defs > div:last-child {
+        border-bottom: 1px solid var(--line);
+      }
+      .defs dt {
+        font-size: 18px;
+        font-weight: 650;
+      }
+      .defs dd {
+        max-width: 62ch;
+      }
+      .start .sub {
+        margin-top: 0;
+      }
+      .note {
+        max-width: 56ch;
+        margin-top: 24px;
+        font-size: 15px;
+        line-height: 1.55;
+        color: var(--steel);
+      }
+      @media (max-width: 1100px) {
+        .agents,
+        .facts,
+        .chain {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .steps {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      footer {
+        padding: 40px 0 60px;
+        font-size: 14.5px;
+        line-height: 1.6;
+        color: var(--steel);
+      }
+      footer .wrap {
+        display: grid;
+        gap: 14px;
+      }
+      footer nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 26px;
+        color: var(--ice);
+      }
+      footer small {
+        max-width: 90ch;
+        font-size: 12.5px;
+        color: var(--dim);
+      }
 
-.start { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 620px); gap: 40px 70px; align-items: start; margin-top: 60px; }
-.start .for { margin-top: 14px; font-size: 15px; color: var(--steel); }
-.term { padding: 26px 30px; border: 1px solid rgba(232, 240, 248, .24); font-family: var(--mono); font-size: 15px; line-height: 2; white-space: nowrap; overflow-x: auto; }
-.term i { font-style: normal; color: var(--dim); -webkit-user-select: none; user-select: none; }
-.acts .more { flex-basis: 100%; margin-top: 4px; font-size: 15px; color: var(--steel); text-decoration: underline; text-decoration-color: rgba(147, 160, 178, .4); text-underline-offset: 4px; }
-.acts .more:hover { color: var(--ice); text-decoration-color: var(--ice); }
-#agent-hosts h3 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
-#agent-hosts p { max-width: 52ch; margin-top: 10px; font-size: 16px; line-height: 1.55; color: var(--steel); }
-#agent-hosts p a, .credit a { color: var(--ice); text-decoration: underline; text-decoration-color: rgba(232, 240, 248, .35); text-underline-offset: 3px; }
-#agent-hosts code { font-family: var(--mono); font-size: .9em; color: var(--ice); overflow-wrap: anywhere; }
-#agent-hosts [id] { scroll-margin-top: 24px; }
-.hosts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 40px 70px; align-items: start; margin-top: 60px; }
-.hosts .term { margin-top: 22px; font-size: 14px; }
-.tabs { display: flex; gap: 26px; margin-top: 14px; border-bottom: 1px solid rgba(232, 240, 248, .14); }
-.tabs button { min-height: 44px; min-width: 44px; padding: 10px 2px 12px; margin-bottom: -1px; border-bottom: 2px solid transparent; font-size: 16px; font-weight: 600; color: var(--steel); }
-.tabs button[aria-selected="true"] { color: var(--ice); border-bottom-color: var(--ice); }
-.tabs button:hover { color: var(--ice); }
-.tabs button:focus-visible { outline: 2px solid var(--ice); outline-offset: 4px; }
-.js .pane:not(.on) { display: none; }
-.pane + .pane { margin-top: 34px; }
-.js .pane + .pane { margin-top: 0; }
-.credit { margin-top: 50px; font-size: 14.5px; color: var(--steel); }
-.skip { position: absolute; left: 16px; top: -64px; z-index: 10; padding: 10px 14px; background: var(--ice); color: var(--black); font-weight: 600; }
-.skip:focus { top: 12px; }
-.brand:focus-visible, .links a:focus-visible, .more:focus-visible, #agent-hosts a:focus-visible, footer a:focus-visible, .note a:focus-visible { outline: 2px solid var(--ice); outline-offset: 3px; }
-.agents { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 40px; margin-top: 56px; padding: 0; list-style: none; }
-.agents li { display: grid; align-content: start; gap: 6px; padding: 22px 0 24px; border-top: 1px solid var(--line); }
-.agents b { display: flex; align-items: center; gap: 10px; font-size: 21px; font-weight: 650; letter-spacing: -.015em; }
-.agents span, .facts dd, .steps li > span:last-child, .chain span, .defs dd { font-size: 16px; line-height: 1.55; color: var(--steel); }
-.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px 40px; margin-top: 44px; }
-.facts dt { font-size: 17px; font-weight: 650; }
-.facts dd { margin-top: 6px; }
-.steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 30px; margin-top: 56px; padding: 0; list-style: none; counter-reset: step; }
-.steps li { display: grid; align-content: start; gap: 8px; padding-top: 16px; border-top: 2px solid var(--ice); counter-increment: step; }
-.steps li::before { content: counter(step); font-size: 15px; font-weight: 650; color: var(--steel); font-variant-numeric: tabular-nums; }
-.steps .who { display: flex; align-items: center; gap: 8px; font-size: 15px; color: var(--steel); }
-.steps b { font-size: 26px; font-weight: 700; font-stretch: 112%; letter-spacing: -.03em; }
-.chain { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 30px 40px; margin-top: 48px; padding: 0; list-style: none; }
-.chain li { display: grid; align-content: start; gap: 6px; padding-top: 18px; border-top: 1px solid var(--line); }
-.chain b { font-size: 21px; font-weight: 650; letter-spacing: -.015em; }
-.row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
-.ghost { display: inline-flex; align-items: center; height: 52px; padding: 0 22px; border: 1px solid rgba(232, 240, 248, .32); font-weight: 600; font-size: 16px; }
-.ghost:hover { border-color: var(--ice); }
-.ghost:focus-visible { outline: 2px solid var(--ice); outline-offset: 4px; }
-.defs { margin-top: 48px; }
-.defs > div { display: grid; grid-template-columns: minmax(0, 320px) minmax(0, 1fr); gap: 8px 40px; padding: 22px 0; border-top: 1px solid var(--line); }
-.defs > div:last-child { border-bottom: 1px solid var(--line); }
-.defs dt { font-size: 18px; font-weight: 650; }
-.defs dd { max-width: 62ch; }
-.start .sub { margin-top: 0; }
-.note { max-width: 56ch; margin-top: 24px; font-size: 15px; line-height: 1.55; color: var(--steel); }
-@media (max-width: 1100px) { .agents, .facts, .chain { grid-template-columns: repeat(2, minmax(0, 1fr)); } .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-footer { padding: 40px 0 60px; font-size: 14.5px; line-height: 1.6; color: var(--steel); }
-footer .wrap { display: grid; gap: 14px; }
-footer nav { display: flex; flex-wrap: wrap; gap: 8px 26px; color: var(--ice); }
-footer small { max-width: 90ch; font-size: 12.5px; color: var(--dim); }
-
-@media (max-width: 860px) {
-  .links a:not(.keep) { display: none; }
-  .links { gap: 22px; }
-  .hero .wrap { grid-template-columns: minmax(0, 1fr); min-height: 0; padding-top: 10px; }
-  .hero .copy { display: contents; }
-  h1 { order: 1; } .spot { order: 2; width: 100%; aspect-ratio: 1.12; max-height: 70vh; margin: 6px 0 2px; } .motto { order: 3; margin-top: 8px; } .lede { order: 4; } .acts { order: 5; } .fact { order: 6; }
-  .drops { display: none; }
-  .get, .cmd { height: 48px; }
-  section.band { padding: 76px 0; }
-  .lane { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .lane .who { font-size: 24px; } .lane .bar { height: 44px; }
-  .sums > div { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .start { grid-template-columns: minmax(0, 1fr); }
-  .term { font-size: 12.5px; padding: 18px 16px; }
-  .hosts { grid-template-columns: minmax(0, 1fr); }
-  .agents, .facts, .steps, .chain, .defs > div { grid-template-columns: minmax(0, 1fr); }
-  .row .get, .row .ghost { height: 48px; }
-  .hosts .term { font-size: 12px; }
-}
-@media (prefers-reduced-motion: reduce) { .fact::before { animation: none; } }
-</style>
+      @media (max-width: 860px) {
+        .links a:not(.keep) {
+          display: none;
+        }
+        .links {
+          gap: 22px;
+        }
+        .hero .wrap {
+          grid-template-columns: minmax(0, 1fr);
+          min-height: 0;
+          padding-top: 10px;
+        }
+        .hero .copy {
+          display: contents;
+        }
+        h1 {
+          order: 1;
+        }
+        .spot {
+          order: 2;
+          width: 100%;
+          aspect-ratio: 1.12;
+          max-height: 70vh;
+          margin: 6px 0 2px;
+        }
+        .motto {
+          order: 3;
+          margin-top: 8px;
+        }
+        .lede {
+          order: 4;
+        }
+        .acts {
+          order: 5;
+        }
+        .fact {
+          order: 6;
+        }
+        .drops {
+          display: none;
+        }
+        .get,
+        .cmd {
+          height: 48px;
+        }
+        section.band {
+          padding: 76px 0;
+        }
+        .lane {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 8px;
+        }
+        .lane .who {
+          font-size: 24px;
+        }
+        .lane .bar {
+          height: 44px;
+        }
+        .sums > div {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 16px;
+        }
+        .start {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .term {
+          font-size: 12.5px;
+          padding: 18px 16px;
+        }
+        .hosts {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .agents,
+        .facts,
+        .steps,
+        .chain,
+        .defs > div {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .row .get,
+        .row .ghost {
+          height: 48px;
+        }
+        .hosts .term {
+          font-size: 12px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .fact::before {
+          animation: none;
+        }
+      }
+    </style>
   </head>
-<body>
-<a class="skip" href="#main">Skip to content</a>
-<header class="nav"><div class="wrap">
-  <a class="brand" href="#main">Claudexor</a>
-  <nav class="links" aria-label="Primary navigation"><a href="#subscriptions">Subscriptions</a><a href="#network">Agents</a><a href="#workflow">How it works</a><a href="#trust">Limits &amp; privacy</a><a class="keep" href="#install">Install</a><a class="keep" href="https://github.com/razzant/claudexor">GitHub</a></nav>
-</div></header>
-
-<main id="main">
-<section class="hero stage" id="top"><div class="wrap">
-  <div class="copy">
-    <h1><span>Keep coding</span> <span>when a</span> <span>subscription</span> <span>hits its limit.</span></h1>
-    <p class="motto">A limit is an eclipse, not a sunset.</p>
-    <p class="lede">Connect the accounts and coding agents you already use. Claudexor reads real quota where the vendor reports it, moves an unpinned run off an account that hit its limit, and keeps the work in one auditable thread.</p>
-    <div class="acts">
-      <a class="get" href="https://github.com/razzant/claudexor/releases/latest">Download for macOS</a>
-      <button class="cmd" type="button" data-copy="npm install -g claudexor"><code>npm install -g claudexor</code><span aria-live="polite">Copy</span></button>
-      <a class="more" href="#agent-hosts">Install in Hermes, Pi or OpenClaw</a>
-    </div>
-    <p class="fact" id="fact" aria-hidden="true"></p>
-  </div>
-  <div class="spot" id="spot" aria-hidden="true"></div>
-</div><div class="drops" id="drops" aria-hidden="true"></div></section>
-
-<section class="band" id="network"><div class="wrap">
-  <h2>One project thread across every agent.</h2>
-  <p class="sub">Claudexor connects the coding agents you already use, routes each run to one that is ready, and brings the result back into one history you can inspect.</p>
-  <ul class="agents" aria-label="Coding agents Claudexor runs">
-    <li><b><i data-logo="claude"></i>Claude Code</b><span>Its own CLI, with named subscription accounts.</span></li>
-    <li><b><i data-logo="codex"></i>Codex</b><span>Its own CLI, with named subscription accounts.</span></li>
-    <li><b><i data-logo="antigravity"></i>Antigravity</b><span>Its CLI, for a Gemini subscription.</span></li>
-    <li><b><i data-logo="cursor"></i>Cursor</b><span>The Cursor CLI, an editor-native coding agent.</span></li>
-    <li><b>OpenCode</b><span>An open harness for many model providers.</span></li>
-    <li><b>Grok Build</b><span>A grok.com subscription, no API key.</span></li>
-  </ul>
-  <dl class="facts">
-    <div><dt>One task history</dt><dd>Plans, runs, reviews and results stay connected.</dd></div>
-    <div><dt>Ready-agent routing</dt><dd>Choose the agent yourself, or route from live readiness and quota.</dd></div>
-    <div><dt>Cross-family verification</dt><dd>Ask for a review and Claudexor picks a panel from other model families to read the work before it is delivered.</dd></div>
-  </dl>
-</div></section>
-
-<section class="band" id="subscriptions"><div class="wrap">
-  <h2>Use the headroom you already pay for.</h2>
-  <p class="sub">Add separate accounts for the same agent without mixing credentials. Where the vendor reports quota, for Claude Code, Codex and Antigravity, Claudexor shows each account's live windows and moves an unpinned run off an account that hit a confirmed limit. An ordinary network error never moves it, and a pinned run stays where you put it.</p>
-  <dl class="facts">
-    <div><dt>Separate profiles</dt><dd>Each account is a named profile with its own scoped state. Where its credentials are kept follows the vendor and the platform.</dd></div>
-    <div><dt>Real quota facts</dt><dd>The windows a vendor reports, with their resets, stay with the account that reported them: five-hour and seven-day for Claude Code and Codex, per model for Antigravity.</dd></div>
-    <div><dt>One holder at a time</dt><dd>When an Agent or Ask run that already did work moves to the next account, its session moves with it where the agent supports that. Otherwise the work continues from a recorded packet.</dd></div>
-  </dl>
-</div></section>
-
-<section class="band stage" id="cost"><div class="wrap">
-  <h2>What it cannot know, it does not invent.</h2>
-  <div class="sums" id="sums">
-    <div><span class="pxword">$0.41</span><p>Claude Code on an API key. Its CLI reported what the run cost, so the record keeps that amount and says where it came from.</p></div>
-    <div><span class="pxword">Included</span><p>Codex on a subscription. The window it used is on the record instead.</p></div>
-    <div><span class="pxword" data-level=".5">Unknown</span><p>A run whose price nobody reported. It is printed as unknown, never as zero. Budgets die of confident zeroes.</p></div>
-  </div>
-</div></section>
-
-<section class="band" id="workflow"><div class="wrap">
-  <h2>Use each agent for the part it's actually good at.</h2>
-  <p class="sub">Plan in Claude Code, implement in Codex, let Cursor and Claude attack the patch, apply only what survives. The thread stays one auditable chain even when the agent underneath it changes.</p>
-  <ol class="steps">
-    <li><span class="who"><i data-logo="claude"></i>Claude Code</span><b>Plan</b><span>Shape the task and freeze it as a content-hashed contract.</span></li>
-    <li><span class="who"><i data-logo="codex"></i>Codex</span><b>Implement</b><span>Work in an isolated lane and produce a patch you can inspect.</span></li>
-    <li><span class="who"><i data-logo="cursor"></i>A panel from another family</span><b>Review</b><span>A model won't forgive itself if the reviewer is from another family.</span></li>
-    <li><span class="who">A typed gate</span><b>Deliver</b><span>Apply, commit, branch, or stop with the reason attached.</span></li>
-  </ol>
-</div></section>
-
-<section class="band stage" id="race"><div class="wrap">
-  <h2>Three agents race. One patch lands.</h2>
-  <p class="sub">Ask for a race and each agent works in its own isolated copy of your tree. A model from another family reads every patch and the gates run. In this race the winner's patch is adopted into the thread's working tree, with the record that says why. A patch that touches a protected path waits for you.</p>
-  <div class="lanes" id="lanes">
-    <div class="lane"><div class="who"><i data-logo="codex"></i>Codex</div><div class="bar"></div><div class="say">212 of 214 tests, 1 finding</div></div>
-    <div class="lane win"><div class="who"><i data-logo="claude"></i>Claude Code</div><div class="bar"></div><div class="say">214 of 214 tests, adopted into the thread</div></div>
-    <div class="lane"><div class="who"><i data-logo="antigravity"></i>Antigravity</div><div class="bar"></div><div class="say">214 of 214 tests, 2 findings</div></div>
-  </div>
-  <p class="aside">First is not the same as right.</p>
-</div></section>
-
-<div class="plane" id="ouroboros"><section class="band"><div class="wrap">
-  <h2>Claudexor powers delegated coding in Ouroboros.</h2>
-  <p class="sub">Ouroboros owns its tasks, memory, review and final integration. It runs an exact-pinned Claudexor build to do the work through connected coding agents and to receive durable evidence of what ran.</p>
-  <ol class="chain" aria-label="Who does what">
-    <li><b>Ouroboros</b><span>Decides what to do and what to keep: tasks, memory, review.</span></li>
-    <li><b>Claudexor</b><span>Routes and runs the selected agent, then returns the evidence needed for review and integration.</span></li>
-    <li><b>Coding agents</b><span>Claude Code, Codex, Cursor, OpenCode, Antigravity, Grok Build.</span></li>
-  </ol>
-  <div class="row"><a class="get" href="https://ouroboros-agent.ai/">Explore Ouroboros</a><a class="ghost" href="https://github.com/razzant/ouroboros">View source</a></div>
-</div></section></div>
-
-<section class="band" id="agent-hosts"><div class="wrap">
-  <h2>Use Claudexor in Hermes, Pi or OpenClaw.</h2>
-  <p class="sub">Ask a second model to explain a passage or draft an edit for review. Your agent calls the Claudexor CLI on its machine and brings the answer, or the proposed change, back to the same chat.</p>
-  <div class="hosts">
-    <div id="host-setup">
-      <h3>First, the CLI</h3>
-      <p>On the machine that runs your agent: macOS or Linux with Node.js 24.15 or newer, and the agent's own CLI installed. The host process must find <code>node</code> and <code>claudexor</code> on its PATH. Use the account you already connected, and sign in only if this machine has none; switching accounts during a Codex sign-in can revoke other sessions. <a href="https://github.com/razzant/claudexor#set-up-the-cli-and-account">CLI and account setup</a></p>
-      <div class="term"><i>$</i> npm install -g claudexor<br><i># Open the Codex sign-in link</i><br><i># in a private window.</i><br><i>$</i> claudexor auth login codex<br><i>$</i> claudexor doctor</div>
-    </div>
-    <div>
-      <h3>Then, your agent</h3>
-      <div class="tabs" role="tablist" aria-label="Agent host">
-        <button type="button" role="tab" id="tab-hermes" aria-controls="install-in-hermes" aria-selected="true">Hermes</button>
-        <button type="button" role="tab" id="tab-pi" aria-controls="install-in-pi" aria-selected="false" tabindex="-1">Pi</button>
-        <button type="button" role="tab" id="tab-openclaw" aria-controls="install-in-openclaw" aria-selected="false" tabindex="-1">OpenClaw</button>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="nav">
+      <div class="wrap">
+        <a class="brand" href="#main">Claudexor</a>
+        <nav class="links" aria-label="Primary navigation">
+          <a href="#subscriptions">Subscriptions</a><a href="#network">Agents</a
+          ><a href="#workflow">How it works</a><a href="#trust">Limits &amp; privacy</a
+          ><a class="keep" href="#install">Install</a
+          ><a class="keep" href="https://github.com/razzant/claudexor">GitHub</a>
+        </nav>
       </div>
-      <div class="pane on" role="tabpanel" id="install-in-hermes" aria-labelledby="tab-hermes">
-        <h4 class="host-name">Hermes</h4>
-        <div class="term"><i># Asks for the full SHA you inspected</i><br><i>$</i> printf 'Inspected commit SHA: ' &amp;&amp;<br>IFS= read -r sha &amp;&amp;<br>hermes plugins install \<br>razzant/claudexor/plugins/hermes \<br>--ref "${sha:?Full SHA required}" --enable</div>
-        <p>Confirm the pin with <code>hermes plugins list</code>, then start a new Hermes session in that profile and ask it to load <code>claudexor:claudexor</code>. <a href="https://github.com/razzant/claudexor#install-in-hermes">All steps</a></p>
+    </header>
+
+    <main id="main">
+      <section class="hero stage" id="top">
+        <div class="wrap">
+          <div class="copy">
+            <h1>
+              <span>Keep coding</span> <span>when a</span> <span>subscription</span>
+              <span>hits its limit.</span>
+            </h1>
+            <p class="motto">A limit is an eclipse, not a sunset.</p>
+            <p class="lede">
+              Connect the accounts and coding agents you already use. Claudexor reads real quota
+              where the vendor reports it, moves an unpinned run off an account that hit its limit,
+              and keeps the work in one auditable thread.
+            </p>
+            <div class="acts">
+              <a class="get" href="https://github.com/razzant/claudexor/releases/latest"
+                >Download for macOS</a
+              >
+              <button class="cmd" type="button" data-copy="npm install -g claudexor">
+                <code>npm install -g claudexor</code><span aria-live="polite">Copy</span>
+              </button>
+              <a class="more" href="#agent-hosts">Install in Hermes, Pi or OpenClaw</a>
+            </div>
+            <p class="fact" id="fact" aria-hidden="true"></p>
+          </div>
+          <div class="spot" id="spot" aria-hidden="true"></div>
+        </div>
+        <div class="drops" id="drops" aria-hidden="true"></div>
+      </section>
+
+      <section class="band" id="network">
+        <div class="wrap">
+          <h2>One project thread across every agent.</h2>
+          <p class="sub">
+            Claudexor connects the coding agents you already use, routes each run to one that is
+            ready, and brings the result back into one history you can inspect.
+          </p>
+          <ul class="agents" aria-label="Coding agents Claudexor runs">
+            <li>
+              <b><i data-logo="claude"></i>Claude Code</b
+              ><span>Its own CLI, with named subscription accounts.</span>
+            </li>
+            <li>
+              <b><i data-logo="codex"></i>Codex</b
+              ><span>Its own CLI, with named subscription accounts.</span>
+            </li>
+            <li>
+              <b><i data-logo="antigravity"></i>Antigravity</b
+              ><span>Its CLI, for a Gemini subscription.</span>
+            </li>
+            <li>
+              <b><i data-logo="cursor"></i>Cursor</b
+              ><span>The Cursor CLI, an editor-native coding agent.</span>
+            </li>
+            <li><b>OpenCode</b><span>An open harness for many model providers.</span></li>
+            <li><b>Grok Build</b><span>A grok.com subscription, no API key.</span></li>
+          </ul>
+          <dl class="facts">
+            <div>
+              <dt>One task history</dt>
+              <dd>Plans, runs, reviews and results stay connected.</dd>
+            </div>
+            <div>
+              <dt>Ready-agent routing</dt>
+              <dd>Choose the agent yourself, or route from live readiness and quota.</dd>
+            </div>
+            <div>
+              <dt>Cross-family verification</dt>
+              <dd>
+                Ask for a review and Claudexor picks a panel from other model families to read the
+                work before it is delivered.
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="band" id="subscriptions">
+        <div class="wrap">
+          <h2>Use the headroom you already pay for.</h2>
+          <p class="sub">
+            Add separate accounts for the same agent without mixing credentials. Where the vendor
+            reports quota, for Claude Code, Codex and Antigravity, Claudexor shows each account's
+            live windows and moves an unpinned run off an account that hit a confirmed limit. An
+            ordinary network error never moves it, and a pinned run stays where you put it.
+          </p>
+          <dl class="facts">
+            <div>
+              <dt>Separate profiles</dt>
+              <dd>
+                Each account is a named profile with its own scoped state. Where its credentials are
+                kept follows the vendor and the platform.
+              </dd>
+            </div>
+            <div>
+              <dt>Real quota facts</dt>
+              <dd>
+                The windows a vendor reports, with their resets, stay with the account that reported
+                them: five-hour and seven-day for Claude Code and Codex, per model for Antigravity.
+              </dd>
+            </div>
+            <div>
+              <dt>One holder at a time</dt>
+              <dd>
+                When an Agent or Ask run that already did work moves to the next account, its
+                session moves with it where the agent supports that. Otherwise the work continues
+                from a recorded packet.
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="band stage" id="cost">
+        <div class="wrap">
+          <h2>What it cannot know, it does not invent.</h2>
+          <div class="sums" id="sums">
+            <div>
+              <span class="pxword">$0.41</span>
+              <p>
+                Claude Code on an API key. Its CLI reported what the run cost, so the record keeps
+                that amount and says where it came from.
+              </p>
+            </div>
+            <div>
+              <span class="pxword">Included</span>
+              <p>Codex on a subscription. The window it used is on the record instead.</p>
+            </div>
+            <div>
+              <span class="pxword" data-level=".5">Unknown</span>
+              <p>
+                A run whose price nobody reported. It is printed as unknown, never as zero. Budgets
+                die of confident zeroes.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="band" id="workflow">
+        <div class="wrap">
+          <h2>Use each agent for the part it's actually good at.</h2>
+          <p class="sub">
+            Plan in Claude Code, implement in Codex, let Cursor and Claude attack the patch, apply
+            only what survives. The thread stays one auditable chain even when the agent underneath
+            it changes.
+          </p>
+          <ol class="steps">
+            <li>
+              <span class="who"><i data-logo="claude"></i>Claude Code</span><b>Plan</b
+              ><span>Shape the task and freeze it as a content-hashed contract.</span>
+            </li>
+            <li>
+              <span class="who"><i data-logo="codex"></i>Codex</span><b>Implement</b
+              ><span>Work in an isolated lane and produce a patch you can inspect.</span>
+            </li>
+            <li>
+              <span class="who"><i data-logo="cursor"></i>A panel from another family</span
+              ><b>Review</b
+              ><span>A model won't forgive itself if the reviewer is from another family.</span>
+            </li>
+            <li>
+              <span class="who">A typed gate</span><b>Deliver</b
+              ><span>Apply, commit, branch, or stop with the reason attached.</span>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="band stage" id="race">
+        <div class="wrap">
+          <h2>Three agents race. One patch lands.</h2>
+          <p class="sub">
+            Ask for a race and each agent works in its own isolated copy of your tree. A model from
+            another family reads every patch and the gates run. In this race the winner's patch is
+            adopted into the thread's working tree, with the record that says why. A patch that
+            touches a protected path waits for you.
+          </p>
+          <div class="lanes" id="lanes">
+            <div class="lane">
+              <div class="who"><i data-logo="codex"></i>Codex</div>
+              <div class="bar"></div>
+              <div class="say">212 of 214 tests, 1 finding</div>
+            </div>
+            <div class="lane win">
+              <div class="who"><i data-logo="claude"></i>Claude Code</div>
+              <div class="bar"></div>
+              <div class="say">214 of 214 tests, adopted into the thread</div>
+            </div>
+            <div class="lane">
+              <div class="who"><i data-logo="antigravity"></i>Antigravity</div>
+              <div class="bar"></div>
+              <div class="say">214 of 214 tests, 2 findings</div>
+            </div>
+          </div>
+          <p class="aside">First is not the same as right.</p>
+        </div>
+      </section>
+
+      <div class="plane" id="ouroboros">
+        <section class="band">
+          <div class="wrap">
+            <h2>Claudexor powers delegated coding in Ouroboros.</h2>
+            <p class="sub">
+              Ouroboros owns its tasks, memory, review and final integration. It runs an
+              exact-pinned Claudexor build to do the work through connected coding agents and to
+              receive durable evidence of what ran.
+            </p>
+            <ol class="chain" aria-label="Who does what">
+              <li>
+                <b>Ouroboros</b
+                ><span>Decides what to do and what to keep: tasks, memory, review.</span>
+              </li>
+              <li>
+                <b>Claudexor</b
+                ><span
+                  >Routes and runs the selected agent, then returns the evidence needed for review
+                  and integration.</span
+                >
+              </li>
+              <li>
+                <b>Coding agents</b
+                ><span>Claude Code, Codex, Cursor, OpenCode, Antigravity, Grok Build.</span>
+              </li>
+            </ol>
+            <div class="row">
+              <a class="get" href="https://ouroboros-agent.ai/">Explore Ouroboros</a
+              ><a class="ghost" href="https://github.com/razzant/ouroboros">View source</a>
+            </div>
+          </div>
+        </section>
       </div>
-      <div class="pane" role="tabpanel" id="install-in-pi" aria-labelledby="tab-pi">
-        <h4 class="host-name">Pi</h4>
-        <div class="term"><i># Does the npm package carry the extension?</i><br><i>$</i> npm view claudexor@latest \<br>pi.extensions --json</div>
-        <p>If it lists <code>./pi/index.js</code>, install with <code>pi install npm:claudexor</code>. If not, <a href="https://github.com/razzant/claudexor#get-a-package-checkout">get a checkout</a> and run <code>pi install "$HOME/claudexor-hosts/packages/claudexor"</code>.</p>
-        <p>Use a Pi version with built-in MCP and <code>registerMcpServer</code>, such as 1.5.2. After <code>/reload</code>, check that Claudexor is connected in <code>/mcp</code>. <a href="https://github.com/razzant/claudexor#install-in-pi">All steps</a></p>
+
+      <section class="band" id="agent-hosts">
+        <div class="wrap">
+          <h2>Use Claudexor in Hermes, Pi or OpenClaw.</h2>
+          <p class="sub">
+            Ask a second model to explain a passage or draft an edit for review. Your agent calls
+            the Claudexor CLI on its machine and brings the answer, or the proposed change, back to
+            the same chat.
+          </p>
+          <div class="hosts">
+            <div id="host-setup">
+              <h3>First, the CLI</h3>
+              <p>
+                On the machine that runs your agent: macOS or Linux with Node.js 24.15 or newer, and
+                the agent's own CLI installed. The host process must find <code>node</code> and
+                <code>claudexor</code> on its PATH. Use the account you already connected, and sign
+                in only if this machine has none; switching accounts during a Codex sign-in can
+                revoke other sessions.
+                <a href="https://github.com/razzant/claudexor#set-up-the-cli-and-account"
+                  >CLI and account setup</a
+                >
+              </p>
+              <div class="term">
+                <i>$</i> npm install -g claudexor<br /><i># Open the Codex sign-in link</i><br /><i
+                  ># in a private window.</i
+                ><br /><i>$</i> claudexor auth login codex<br /><i>$</i> claudexor doctor
+              </div>
+            </div>
+            <div>
+              <h3>Then, your agent</h3>
+              <div class="tabs" role="tablist" aria-label="Agent host">
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-hermes"
+                  aria-controls="install-in-hermes"
+                  aria-selected="true"
+                >
+                  Hermes
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-pi"
+                  aria-controls="install-in-pi"
+                  aria-selected="false"
+                  tabindex="-1"
+                >
+                  Pi
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-openclaw"
+                  aria-controls="install-in-openclaw"
+                  aria-selected="false"
+                  tabindex="-1"
+                >
+                  OpenClaw
+                </button>
+              </div>
+              <div
+                class="pane on"
+                role="tabpanel"
+                id="install-in-hermes"
+                aria-labelledby="tab-hermes"
+              >
+                <h4 class="host-name">Hermes</h4>
+                <div class="term">
+                  <i># Asks for the full SHA you inspected</i><br /><i>$</i> printf 'Inspected
+                  commit SHA: ' &amp;&amp;<br />IFS= read -r sha &amp;&amp;<br />hermes plugins
+                  install \<br />razzant/claudexor/plugins/hermes \<br />--ref "${sha:?Full SHA
+                  required}" --enable
+                </div>
+                <p>
+                  Confirm the pin with <code>hermes plugins list</code>, then start a new Hermes
+                  session in that profile and ask it to load <code>claudexor:claudexor</code>.
+                  <a href="https://github.com/razzant/claudexor#install-in-hermes">All steps</a>
+                </p>
+              </div>
+              <div class="pane" role="tabpanel" id="install-in-pi" aria-labelledby="tab-pi">
+                <h4 class="host-name">Pi</h4>
+                <div class="term">
+                  <i># Does the npm package carry the extension?</i><br /><i>$</i> npm view
+                  claudexor@latest \<br />pi.extensions --json
+                </div>
+                <p>
+                  If it lists <code>./pi/index.js</code>, install with
+                  <code>pi install npm:claudexor</code>. If not,
+                  <a href="https://github.com/razzant/claudexor#get-a-package-checkout"
+                    >get a checkout</a
+                  >
+                  and run <code>pi install "$HOME/claudexor-hosts/packages/claudexor"</code>.
+                </p>
+                <p>
+                  Use a Pi version with built-in MCP and <code>registerMcpServer</code>, such as
+                  1.5.2. After <code>/reload</code>, check that Claudexor is connected in
+                  <code>/mcp</code>.
+                  <a href="https://github.com/razzant/claudexor#install-in-pi">All steps</a>
+                </p>
+              </div>
+              <div
+                class="pane"
+                role="tabpanel"
+                id="install-in-openclaw"
+                aria-labelledby="tab-openclaw"
+              >
+                <h4 class="host-name">OpenClaw</h4>
+                <div class="term">
+                  <i># On the Gateway machine, from a checkout</i><br /><i>$</i> openclaw plugins
+                  install \<br />"$HOME/claudexor-hosts/plugins/claude"<br /><i>$</i> openclaw
+                  plugins inspect claudexor
+                </div>
+                <p>
+                  Put <code>node</code> and <code>claudexor</code> on the Gateway service's PATH and
+                  allow the tools for your embedded agent. OpenClaw 2026.11.5 needs Node 24.16.0 to
+                  24.x, or 26.1.0 and newer.
+                  <a href="https://github.com/razzant/claudexor#get-a-package-checkout"
+                    >Get a checkout</a
+                  >
+                  · <a href="https://github.com/razzant/claudexor#install-in-openclaw">All steps</a>
+                </p>
+              </div>
+            </div>
+          </div>
+          <p class="credit">
+            Integration by <a href="https://github.com/razzant/ouroboros">Ouroboros</a>.
+          </p>
+        </div>
+      </section>
+
+      <section class="band" id="trust">
+        <div class="wrap">
+          <h2>No magic session teleportation.</h2>
+          <dl class="defs">
+            <div>
+              <dt>Where rotation applies</dt>
+              <dd>
+                Live quota and moving a run off a spent account cover Claude Code, Codex and
+                Antigravity, the agents whose vendors report quota.
+              </dd>
+            </div>
+            <div>
+              <dt>Where each agent can take part</dt>
+              <dd>
+                Every connected agent can join the same thread wherever Doctor has enabled the
+                requested role. A role that is not available stays off, with the reason attached.
+              </dd>
+            </div>
+            <div>
+              <dt>What “shared context” means</dt>
+              <dd>
+                Between different agents, bounded continuation packets carry the thread. Between two
+                accounts of the same agent, a session has one holder at a time: when an Agent or Ask
+                run that already did work moves, its session moves too where the agent supports
+                that, or the work continues from a recorded packet.
+              </dd>
+            </div>
+            <div>
+              <dt>What this page collects</dt>
+              <dd>
+                Nothing. No analytics, no trackers, no remote fonts, no external requests of any
+                kind.
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="band" id="install">
+        <div class="wrap">
+          <h2>Start with the app, or stay in the terminal.</h2>
+          <div class="start" id="start">
+            <div>
+              <p class="sub">
+                On macOS 26 or newer, download the signed and notarized app and drag it to
+                Applications. It brings its own runtime, so you need no Node or pnpm. In a terminal
+                on macOS or Linux, install the npm package with Node.js 24.15 or newer (use the
+                latest Node 24 release), or build it from source.
+              </p>
+              <div class="row">
+                <a class="get" href="https://github.com/razzant/claudexor/releases/latest"
+                  >Download for macOS</a
+                ><a class="ghost" href="https://github.com/razzant/claudexor#quickstart"
+                  >First steps</a
+                ><a class="ghost" href="https://github.com/razzant/claudexor#from-a-source-checkout"
+                  >Build from source</a
+                >
+              </div>
+              <p class="note">
+                Connect one coding agent through Claudexor, choose a project and try an Ask
+                question. When a run ends, the CLI prints its run ID, and
+                <code>claudexor inspect</code> with that ID shows what it did. A subscription login
+                counts against that plan; an API key is a paid fallback. Git and the selected coding
+                agent are checked during setup.
+              </p>
+            </div>
+            <div class="term">
+              <i>$</i> npm install -g claudexor<br /><i>$</i> claudexor doctor<br /><i
+                ># Open the Codex sign-in link</i
+              ><br /><i># in a private window.</i><br /><i>$</i> claudexor auth login codex<br /><i
+                ># Then, in your project directory:</i
+              ><br /><i>$</i> claudexor ask "map this repo"
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap">
+        <p>
+          No telemetry. Everything runs on your machine, and files are the source of truth. MIT
+          licensed, which means the bugs are yours now too.
+        </p>
+        <nav aria-label="Project links">
+          <a href="https://github.com/razzant/claudexor">GitHub</a
+          ><a href="https://www.npmjs.com/package/claudexor">npm</a
+          ><a href="https://github.com/razzant/claudexor/releases">Releases</a
+          ><a href="#agent-hosts">Agent hosts</a
+          ><a href="https://github.com/razzant/claudexor/blob/main/LICENSE">MIT</a>
+        </nav>
+        <small
+          >Claude Code, Codex, Cursor, OpenCode, Antigravity, Grok Build, Hermes, Pi and OpenClaw
+          names and marks belong to their respective owners and identify compatibility only.
+          Claudexor is independent and is not endorsed by the named vendors or projects.</small
+        >
       </div>
-      <div class="pane" role="tabpanel" id="install-in-openclaw" aria-labelledby="tab-openclaw">
-        <h4 class="host-name">OpenClaw</h4>
-        <div class="term"><i># On the Gateway machine, from a checkout</i><br><i>$</i> openclaw plugins install \<br>"$HOME/claudexor-hosts/plugins/claude"<br><i>$</i> openclaw plugins inspect claudexor</div>
-        <p>Put <code>node</code> and <code>claudexor</code> on the Gateway service's PATH and allow the tools for your embedded agent. OpenClaw 2026.11.5 needs Node 24.16.0 to 24.x, or 26.1.0 and newer. <a href="https://github.com/razzant/claudexor#get-a-package-checkout">Get a checkout</a> · <a href="https://github.com/razzant/claudexor#install-in-openclaw">All steps</a></p>
-      </div>
-    </div>
-  </div>
-  <p class="credit">Integration by <a href="https://github.com/razzant/ouroboros">Ouroboros</a>.</p>
-</div></section>
+    </footer>
 
-<section class="band" id="trust"><div class="wrap">
-  <h2>No magic session teleportation.</h2>
-  <dl class="defs">
-    <div><dt>Where rotation applies</dt><dd>Live quota and moving a run off a spent account cover Claude Code, Codex and Antigravity, the agents whose vendors report quota.</dd></div>
-    <div><dt>Where each agent can take part</dt><dd>Every connected agent can join the same thread wherever Doctor has enabled the requested role. A role that is not available stays off, with the reason attached.</dd></div>
-    <div><dt>What “shared context” means</dt><dd>Between different agents, bounded continuation packets carry the thread. Between two accounts of the same agent, a session has one holder at a time: when an Agent or Ask run that already did work moves, its session moves too where the agent supports that, or the work continues from a recorded packet.</dd></div>
-    <div><dt>What this page collects</dt><dd>Nothing. No analytics, no trackers, no remote fonts, no external requests of any kind.</dd></div>
-  </dl>
-</div></section>
-
-<section class="band" id="install"><div class="wrap">
-  <h2>Start with the app, or stay in the terminal.</h2>
-  <div class="start" id="start">
-    <div>
-      <p class="sub">On macOS 26 or newer, download the signed and notarized app and drag it to Applications. It brings its own runtime, so you need no Node or pnpm. In a terminal on macOS or Linux, install the npm package with Node.js 24.15 or newer (use the latest Node 24 release), or build it from source.</p>
-      <div class="row"><a class="get" href="https://github.com/razzant/claudexor/releases/latest">Download for macOS</a><a class="ghost" href="https://github.com/razzant/claudexor#quickstart">First steps</a><a class="ghost" href="https://github.com/razzant/claudexor#from-a-source-checkout">Build from source</a></div>
-      <p class="note">Connect one coding agent through Claudexor, choose a project and try an Ask question. When a run ends, the CLI prints its run ID, and <code>claudexor inspect</code> with that ID shows what it did. A subscription login counts against that plan; an API key is a paid fallback. Git and the selected coding agent are checked during setup.</p>
-    </div>
-    <div class="term"><i>$</i> npm install -g claudexor<br><i>$</i> claudexor doctor<br><i># Open the Codex sign-in link</i><br><i># in a private window.</i><br><i>$</i> claudexor auth login codex<br><i># Then, in your project directory:</i><br><i>$</i> claudexor ask "map this repo"</div>
-  </div>
-</div></section>
-</main>
-
-<footer><div class="wrap">
-  <p>No telemetry. Everything runs on your machine, and files are the source of truth. MIT licensed, which means the bugs are yours now too.</p>
-  <nav aria-label="Project links"><a href="https://github.com/razzant/claudexor">GitHub</a><a href="https://www.npmjs.com/package/claudexor">npm</a><a href="https://github.com/razzant/claudexor/releases">Releases</a><a href="#agent-hosts">Agent hosts</a><a href="https://github.com/razzant/claudexor/blob/main/LICENSE">MIT</a></nav>
-  <small>Claude Code, Codex, Cursor, OpenCode, Antigravity, Grok Build, Hermes, Pi and OpenClaw names and marks belong to their respective owners and identify compatibility only. Claudexor is independent and is not endorsed by the named vendors or projects.</small>
-</div></footer>
-
-<script>
-
-const LOGOS = {
-  codex: { viewBox: "0 0 256 260", path: "M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z" },
-  claude: { viewBox: "0 0 24 24", path: "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" },
-  cursor: { viewBox: "0 0 24 24", path: "M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23" },
-  antigravity: { viewBox: "0 0 16 15", path: "M14.0777 13.984C14.945 14.6345 16.2458 14.2008 15.0533 13.0084C11.476 9.53949 12.2349 0 7.79033 0C3.34579 0 4.10461 9.53949 0.527295 13.0084C-0.773543 14.3092 0.635692 14.6345 1.50293 13.984C4.86344 11.7076 4.64663 7.69664 7.79033 7.69664C10.934 7.69664 10.7172 11.7076 14.0777 13.984Z" }
-};
-document.querySelectorAll("[data-logo]").forEach((el) => {
-  const mark = LOGOS[el.dataset.logo];
-  if (!mark) return;
-  el.outerHTML = `<svg viewBox="${mark.viewBox}" aria-hidden="true" class="mark"><path fill="currentColor" fill-rule="evenodd" d="${mark.path}"/></svg>`;
-});
-const $ = (id) => document.getElementById(id);
-const fact = $("fact"), spot = $("spot"), dropsEl = $("drops");
-const motion = window.matchMedia("(prefers-reduced-motion: reduce)"); let still = motion.matches;
-const HUE = { claude: [1.0, .83, .72], codex: [.72, .97, .87], cursor: [.87, .81, 1.0], antigravity: [.74, .9, 1.0] };   // light tints of each agent's colour
-const LOGO_INDEX = { claude: 0, codex: 1, cursor: 2, antigravity: 3 };
-// a 5 by 7 face for the words that are made of pixels
-const FONT = {
-  A: "01110 10001 10001 11111 10001 10001 10001", B: "11110 10001 10001 11110 10001 10001 11110", C: "01110 10001 10000 10000 10000 10001 01110", D: "11110 10001 10001 10001 10001 10001 11110",
-  E: "11111 10000 10000 11110 10000 10000 11111", F: "11111 10000 10000 11110 10000 10000 10000", G: "01110 10001 10000 10111 10001 10001 01111", H: "10001 10001 10001 11111 10001 10001 10001",
-  I: "01110 00100 00100 00100 00100 00100 01110", J: "00111 00010 00010 00010 00010 10010 01100", K: "10001 10010 10100 11000 10100 10010 10001", L: "10000 10000 10000 10000 10000 10000 11111",
-  M: "10001 11011 10101 10101 10001 10001 10001", N: "10001 10001 11001 10101 10011 10001 10001", O: "01110 10001 10001 10001 10001 10001 01110", P: "11110 10001 10001 11110 10000 10000 10000",
-  Q: "01110 10001 10001 10001 10101 10010 01101", R: "11110 10001 10001 11110 10100 10010 10001", S: "01111 10000 10000 01110 00001 00001 11110", T: "11111 00100 00100 00100 00100 00100 00100",
-  U: "10001 10001 10001 10001 10001 10001 01110", V: "10001 10001 10001 10001 10001 01010 00100", W: "10001 10001 10001 10101 10101 10101 01010", X: "10001 10001 01010 00100 01010 10001 10001",
-  Y: "10001 10001 10001 01010 00100 00100 00100", Z: "11111 00001 00010 00100 01000 10000 11111",
-  0: "01110 10001 10011 10101 11001 10001 01110", 1: "00100 01100 00100 00100 00100 00100 01110", 2: "01110 10001 00001 00010 00100 01000 11111", 3: "11111 00010 00100 00010 00001 10001 01110",
-  4: "00010 00110 01010 10010 11111 00010 00010", 5: "11111 10000 11110 00001 00001 10001 01110", 6: "00110 01000 10000 11110 10001 10001 01110", 7: "11111 00001 00010 00100 01000 01000 01000",
-  8: "01110 10001 10001 01110 10001 10001 01110", 9: "01110 10001 10001 01111 00001 00010 01100",
-  $: "00100 01111 10100 01110 00101 11110 00100", ".": "00000 00000 00000 00000 00000 01100 01100", ":": "00000 01100 01100 00000 01100 01100 00000", "%": "11000 11001 00010 00100 01000 10011 00011",
-};
-// the four accounts of the first screen's story
-const ACC = [
-  { mark: "claude", key: "claude / personal", used: 64, ang: -2.25 },
-  { mark: "claude", key: "claude / work", used: 31, ang: -.78 },
-  { mark: "codex", key: "codex / personal", used: 18, ang: .3 },
-  { mark: "antigravity", key: "antigravity / personal", used: 44, ang: 1.62 },
-].map((a) => ({ ...a, start: a.used }));
-/* Every glass on the page: the part it belongs to, what it rests on (an element and a point in it), whose it is, its size and its depth.
+    <script>
+      const LOGOS = {
+        codex: {
+          viewBox: "0 0 256 260",
+          path: "M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z",
+        },
+        claude: {
+          viewBox: "0 0 24 24",
+          path: "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z",
+        },
+        cursor: {
+          viewBox: "0 0 24 24",
+          path: "M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23",
+        },
+        antigravity: {
+          viewBox: "0 0 16 15",
+          path: "M14.0777 13.984C14.945 14.6345 16.2458 14.2008 15.0533 13.0084C11.476 9.53949 12.2349 0 7.79033 0C3.34579 0 4.10461 9.53949 0.527295 13.0084C-0.773543 14.3092 0.635692 14.6345 1.50293 13.984C4.86344 11.7076 4.64663 7.69664 7.79033 7.69664C10.934 7.69664 10.7172 11.7076 14.0777 13.984Z",
+        },
+      };
+      document.querySelectorAll("[data-logo]").forEach((el) => {
+        const mark = LOGOS[el.dataset.logo];
+        if (!mark) return;
+        el.outerHTML = `<svg viewBox="${mark.viewBox}" aria-hidden="true" class="mark"><path fill="currentColor" fill-rule="evenodd" d="${mark.path}"/></svg>`;
+      });
+      const $ = (id) => document.getElementById(id);
+      const fact = $("fact"),
+        spot = $("spot"),
+        dropsEl = $("drops");
+      const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+      let still = motion.matches;
+      const HUE = {
+        claude: [1.0, 0.83, 0.72],
+        codex: [0.72, 0.97, 0.87],
+        cursor: [0.87, 0.81, 1.0],
+        antigravity: [0.74, 0.9, 1.0],
+      }; // light tints of each agent's colour
+      const LOGO_INDEX = { claude: 0, codex: 1, cursor: 2, antigravity: 3 };
+      // a 5 by 7 face for the words that are made of pixels
+      const FONT = {
+        A: "01110 10001 10001 11111 10001 10001 10001",
+        B: "11110 10001 10001 11110 10001 10001 11110",
+        C: "01110 10001 10000 10000 10000 10001 01110",
+        D: "11110 10001 10001 10001 10001 10001 11110",
+        E: "11111 10000 10000 11110 10000 10000 11111",
+        F: "11111 10000 10000 11110 10000 10000 10000",
+        G: "01110 10001 10000 10111 10001 10001 01111",
+        H: "10001 10001 10001 11111 10001 10001 10001",
+        I: "01110 00100 00100 00100 00100 00100 01110",
+        J: "00111 00010 00010 00010 00010 10010 01100",
+        K: "10001 10010 10100 11000 10100 10010 10001",
+        L: "10000 10000 10000 10000 10000 10000 11111",
+        M: "10001 11011 10101 10101 10001 10001 10001",
+        N: "10001 10001 11001 10101 10011 10001 10001",
+        O: "01110 10001 10001 10001 10001 10001 01110",
+        P: "11110 10001 10001 11110 10000 10000 10000",
+        Q: "01110 10001 10001 10001 10101 10010 01101",
+        R: "11110 10001 10001 11110 10100 10010 10001",
+        S: "01111 10000 10000 01110 00001 00001 11110",
+        T: "11111 00100 00100 00100 00100 00100 00100",
+        U: "10001 10001 10001 10001 10001 10001 01110",
+        V: "10001 10001 10001 10001 10001 01010 00100",
+        W: "10001 10001 10001 10101 10101 10101 01010",
+        X: "10001 10001 01010 00100 01010 10001 10001",
+        Y: "10001 10001 10001 01010 00100 00100 00100",
+        Z: "11111 00001 00010 00100 01000 10000 11111",
+        0: "01110 10001 10011 10101 11001 10001 01110",
+        1: "00100 01100 00100 00100 00100 00100 01110",
+        2: "01110 10001 00001 00010 00100 01000 11111",
+        3: "11111 00010 00100 00010 00001 10001 01110",
+        4: "00010 00110 01010 10010 11111 00010 00010",
+        5: "11111 10000 11110 00001 00001 10001 01110",
+        6: "00110 01000 10000 11110 10001 10001 01110",
+        7: "11111 00001 00010 00100 01000 01000 01000",
+        8: "01110 10001 10001 01110 10001 10001 01110",
+        9: "01110 10001 10001 01111 00001 00010 01100",
+        $: "00100 01111 10100 01110 00101 11110 00100",
+        ".": "00000 00000 00000 00000 00000 01100 01100",
+        ":": "00000 01100 01100 00000 01100 01100 00000",
+        "%": "11000 11001 00010 00100 01000 10011 00011",
+      };
+      // the four accounts of the first screen's story
+      const ACC = [
+        { mark: "claude", key: "claude / personal", used: 64, ang: -2.25 },
+        { mark: "claude", key: "claude / work", used: 31, ang: -0.78 },
+        { mark: "codex", key: "codex / personal", used: 18, ang: 0.3 },
+        { mark: "antigravity", key: "antigravity / personal", used: 44, ang: 1.62 },
+      ].map((a) => ({ ...a, start: a.used }));
+      /* Every glass on the page: the part it belongs to, what it rests on (an element and a point in it), whose it is, its size and its depth.
    Depth is z: above 1 the glass is nearer, larger and slides with the pointer; below 1 it is further, smaller and softer. */
-const BUBBLES = [
-  ...ACC.map((a, i) => ({ stage: "top", hero: i, mark: a.mark, k: 1, z: [1.16, .88, 1.24, .82][i] })),
-].map((b) => ({ ...b, x: 0, y: 0, r: 0, glow: 0, hot: 0, blur: 0 }));
-/* The parts that carry a picture. "text" lists the words of the part: the sky never reaches under them and no glass touches them. */
-const PARTS = [
-  { id: "top", root: "#top", text: "h1, .motto, .lede, .acts, .fact", stars: true },
-  { id: "race", root: "#race", text: "#race h2, #race .sub, .lane .who, .lane .say, #race .aside" },
-  { id: "cost", root: "#cost", words: true, text: "#cost h2, #sums p" },
-];
+      const BUBBLES = [
+        ...ACC.map((a, i) => ({
+          stage: "top",
+          hero: i,
+          mark: a.mark,
+          k: 1,
+          z: [1.16, 0.88, 1.24, 0.82][i],
+        })),
+      ].map((b) => ({ ...b, x: 0, y: 0, r: 0, glow: 0, hot: 0, blur: 0 }));
+      /* The parts that carry a picture. "text" lists the words of the part: the sky never reaches under them and no glass touches them. */
+      const PARTS = [
+        { id: "top", root: "#top", text: "h1, .motto, .lede, .acts, .fact", stars: true },
+        {
+          id: "race",
+          root: "#race",
+          text: "#race h2, #race .sub, .lane .who, .lane .say, #race .aside",
+        },
+        { id: "cost", root: "#cost", words: true, text: "#cost h2, #sums p" },
+      ];
 
-const VS = "attribute vec2 a; void main() { gl_Position = vec4(a, 0.0, 1.0); }";
-const FS = `#ifdef GL_FRAGMENT_PRECISION_HIGH
+      const VS = "attribute vec2 a; void main() { gl_Position = vec4(a, 0.0, 1.0); }";
+      const FS = `#ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
 #else
 precision mediump float;
@@ -536,242 +1551,641 @@ void main() {
   }
   gl_FragColor = vec4(mix(dots(p, uCell, 0.0) * (1.0 - shade), c, inside), 1.0);
 }`;
-let dpr = 1, VW = 0, VH = 0, cell = 5, wide = true;
-const STAGES = [];
-// the agents' marks, side by side, white on nothing
-const atlas = document.createElement("canvas"); atlas.width = 512; atlas.height = 128;
-function buildAtlas() {
-  const x = atlas.getContext("2d"); x.fillStyle = "#fff";
-  ["claude", "codex", "cursor", "antigravity"].forEach((name, i) => {
-    const m = LOGOS[name]; if (!m) return;
-    const [vx, vy, vw, vh] = String(m.viewBox).split(/[\s,]+/).map(Number), k = 112 / Math.max(vw, vh);
-    x.save(); x.translate(i * 128 + 64 - (vx + vw / 2) * k, 64 - (vy + vh / 2) * k); x.scale(k, k); x.fill(new Path2D(m.path), "evenodd"); x.restore();
-  });
-}
-function makeStage(part) {
-  const root = document.querySelector(part.root); if (!root) return null;
-  const cv = document.createElement("canvas"); cv.className = "gl"; cv.setAttribute("aria-hidden", "true");
-  const gl = cv.getContext("webgl", { antialias: false, alpha: false, premultipliedAlpha: true, preserveDrawingBuffer: true, depth: false, stencil: false });
-  if (!gl) return null;
-  const sh = (type, src) => { const x = gl.createShader(type); gl.shaderSource(x, src); gl.compileShader(x); if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x)); return x; };
-  const prog = gl.createProgram(); gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(prog);
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-  gl.useProgram(prog);
-  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-  const a = gl.getAttribLocation(prog, "a"); gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
-  const U = {};
-  for (const n of ["uRes", "uPx", "uCell", "uT", "uDocF", "uDocN", "uFar", "uNear", "uLogo", "uSun", "uPhase", "uLight", "uN", "uQN", "uB", "uTint", "uS", "uL", "uBars", "uBarP", "uQuiet"]) U[n] = gl.getUniformLocation(prog, n);
-  [0, 1, 2].forEach((unit) => {
-    gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
-    const f = unit === 2 ? gl.LINEAR : gl.NEAREST;
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  });
-  gl.uniform1i(U.uFar, 0); gl.uniform1i(U.uNear, 1); gl.uniform1i(U.uLogo, 2);
-  gl.activeTexture(gl.TEXTURE2); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
-  const far = document.createElement("canvas"), near = document.createElement("canvas"), F = far.getContext("2d"), N = near.getContext("2d");
-  if (!F || !N) return null;                         // without its painting surfaces this part stays plain text
-  root.prepend(cv); root.classList.add("lit");
-  const s = { ...part, root, cv, gl, U, far, near, F, N,
-    bubbles: BUBBLES.filter((b) => b.stage === part.id), rects: [], w: 1, h: 1, key: "", fresh: true };
-  cv.addEventListener("webglcontextlost", () => {      // the browser took the picture back: show this part as plain text again
-    const i = STAGES.indexOf(s); if (i >= 0) STAGES.splice(i, 1);
-    root.classList.remove("lit"); cv.remove();
-    root.querySelectorAll(".pxword").forEach((el) => { el.style.width = el.style.height = ""; });
-    if (part.id === "top") dropsEl.hidden = true;
-    if (part.id === "race") { raceT = 6.5; race(0); }   // the race stops where it would have ended
-  });
-  return s;
-}
+      let dpr = 1,
+        VW = 0,
+        VH = 0,
+        cell = 5,
+        wide = true;
+      const STAGES = [];
+      // the agents' marks, side by side, white on nothing
+      const atlas = document.createElement("canvas");
+      atlas.width = 512;
+      atlas.height = 128;
+      function buildAtlas() {
+        const x = atlas.getContext("2d");
+        x.fillStyle = "#fff";
+        ["claude", "codex", "cursor", "antigravity"].forEach((name, i) => {
+          const m = LOGOS[name];
+          if (!m) return;
+          const [vx, vy, vw, vh] = String(m.viewBox)
+              .split(/[\s,]+/)
+              .map(Number),
+            k = 112 / Math.max(vw, vh);
+          x.save();
+          x.translate(i * 128 + 64 - (vx + vw / 2) * k, 64 - (vy + vh / 2) * k);
+          x.scale(k, k);
+          x.fill(new Path2D(m.path), "evenodd");
+          x.restore();
+        });
+      }
+      function makeStage(part) {
+        const root = document.querySelector(part.root);
+        if (!root) return null;
+        const cv = document.createElement("canvas");
+        cv.className = "gl";
+        cv.setAttribute("aria-hidden", "true");
+        const gl = cv.getContext("webgl", {
+          antialias: false,
+          alpha: false,
+          premultipliedAlpha: true,
+          preserveDrawingBuffer: true,
+          depth: false,
+          stencil: false,
+        });
+        if (!gl) return null;
+        const sh = (type, src) => {
+          const x = gl.createShader(type);
+          gl.shaderSource(x, src);
+          gl.compileShader(x);
+          if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x));
+          return x;
+        };
+        const prog = gl.createProgram();
+        gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+        gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+          throw new Error(gl.getProgramInfoLog(prog));
+        gl.useProgram(prog);
+        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+        const a = gl.getAttribLocation(prog, "a");
+        gl.enableVertexAttribArray(a);
+        gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+        const U = {};
+        for (const n of [
+          "uRes",
+          "uPx",
+          "uCell",
+          "uT",
+          "uDocF",
+          "uDocN",
+          "uFar",
+          "uNear",
+          "uLogo",
+          "uSun",
+          "uPhase",
+          "uLight",
+          "uN",
+          "uQN",
+          "uB",
+          "uTint",
+          "uS",
+          "uL",
+          "uBars",
+          "uBarP",
+          "uQuiet",
+        ])
+          U[n] = gl.getUniformLocation(prog, n);
+        [0, 1, 2].forEach((unit) => {
+          gl.activeTexture(gl.TEXTURE0 + unit);
+          gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+          const f = unit === 2 ? gl.LINEAR : gl.NEAREST;
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        });
+        gl.uniform1i(U.uFar, 0);
+        gl.uniform1i(U.uNear, 1);
+        gl.uniform1i(U.uLogo, 2);
+        gl.activeTexture(gl.TEXTURE2);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
+        const far = document.createElement("canvas"),
+          near = document.createElement("canvas"),
+          F = far.getContext("2d"),
+          N = near.getContext("2d");
+        if (!F || !N) return null; // without its painting surfaces this part stays plain text
+        root.prepend(cv);
+        root.classList.add("lit");
+        const s = {
+          ...part,
+          root,
+          cv,
+          gl,
+          U,
+          far,
+          near,
+          F,
+          N,
+          bubbles: BUBBLES.filter((b) => b.stage === part.id),
+          rects: [],
+          w: 1,
+          h: 1,
+          key: "",
+          fresh: true,
+        };
+        cv.addEventListener("webglcontextlost", () => {
+          // the browser took the picture back: show this part as plain text again
+          const i = STAGES.indexOf(s);
+          if (i >= 0) STAGES.splice(i, 1);
+          root.classList.remove("lit");
+          cv.remove();
+          root.querySelectorAll(".pxword").forEach((el) => {
+            el.style.width = el.style.height = "";
+          });
+          if (part.id === "top") dropsEl.hidden = true;
+          if (part.id === "race") {
+            raceT = 6.5;
+            race(0);
+          } // the race stops where it would have ended
+        });
+        return s;
+      }
 
-/* Painting the picture of a part, in the part's own coordinates */
-const snap = (v) => Math.round(v / cell) * cell;
-const ink = (level, warm) => `rgb(255,${Math.round(((warm ? .55 : .05) + level * .4) * 255)},0)`;
-function glyphs(s, word, X, Y, u, style) {
-  s.F.fillStyle = s.N.fillStyle = style;
-  [...word].forEach((ch, i) => { (FONT[ch] || "").split(" ").forEach((row, r) => { for (let c = 0; c < 5; c++) if (row[c] === "1") { const x = X + (i * 6 + c) * u, y = Y + r * u; s.F.fillRect(x, y, u, u); s.N.fillRect(x, y, u, u); } }); });
-}
-function layout() {       // the words made of pixels get the size their pixels need
-  const words = [...document.querySelectorAll(".lit .pxword")]; if (!words.length) return;
-  words.forEach((el) => { el.style.width = ""; });
-  const column = (el) => parseFloat(getComputedStyle(el.parentElement).gridTemplateColumns) || el.parentElement.clientWidth;   // the word's own column
-  const k = Math.max(1, Math.min(2, ...words.map((el) => Math.floor(column(el) / ((el.textContent.trim().length * 6 - 1) * cell)))));
-  words.forEach((el) => { const n = el.textContent.trim().length; el._s = k; el.style.width = (n * 6 - 1) * k * cell + "px"; el.style.height = 7 * k * cell + "px"; });
-}
-function paintStage(s) {
-  const gl = s.gl, sr = s.root.getBoundingClientRect();
-  const key = [Math.round(sr.width), Math.round(sr.height), dpr, cell].join(":"); if (key === s.key) return;   // nothing moved: keep the picture
-  s.key = key; s.w = Math.max(1, Math.round(sr.width)); s.h = Math.max(1, Math.round(sr.height));
-  s.cv.width = Math.round(s.w * dpr); s.cv.height = Math.round(s.h * dpr); gl.viewport(0, 0, s.cv.width, s.cv.height);
-  const max = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096, 8192);
-  s.near.width = s.words ? Math.min(s.w, max) : 1; s.near.height = s.words ? Math.min(s.h, max) : 1;   // only the words need a painted picture
-  s.far.width = Math.max(1, Math.ceil(s.near.width / cell)); s.far.height = Math.max(1, Math.ceil(s.near.height / cell)); s.F.setTransform(1 / cell, 0, 0, 1 / cell, 0, 0);
-  if (s.words) s.root.querySelectorAll(".pxword").forEach((el) => { const r = el.getBoundingClientRect(); glyphs(s, el.textContent.trim().toUpperCase(), snap(r.left - sr.left), snap(r.top - sr.top), (el._s || 1) * cell, ink(el._s > 1 ? parseFloat(el.dataset.level || "1") : 1)); });
-  gl.activeTexture(gl.TEXTURE0); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s.far);
-  gl.activeTexture(gl.TEXTURE1); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s.near);
-  s.rects = [...s.root.querySelectorAll(s.text)].map((el) => { const r = el.getBoundingClientRect(); return [r.left - sr.left, r.top - sr.top, r.right - sr.left, r.bottom - sr.top]; }).filter((r) => r[2] > r[0] && r[3] > r[1]);
-  s.fresh = true;
-}
-function size() {
-  VW = window.innerWidth; VH = window.innerHeight; dpr = Math.min(2, window.devicePixelRatio || 1); wide = VW > 860;
-  cell = Math.max(4, Math.min(10, Math.round(VW / 290))); layout(); STAGES.forEach(paintStage);   // dots stop growing on very wide screens
-}
-// how much room a glass has here: the distance to the nearest word of its part, or to the part's edge
-function room(s, x, y) {
-  let d = Math.min(x, y, s.w - x, s.h - y);
-  for (const [x0, y0, x1, y1] of s.rects) d = Math.min(d, Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(y0 - y, 0, y - y1)));
-  return d;
-}
+      /* Painting the picture of a part, in the part's own coordinates */
+      const snap = (v) => Math.round(v / cell) * cell;
+      const ink = (level, warm) =>
+        `rgb(255,${Math.round(((warm ? 0.55 : 0.05) + level * 0.4) * 255)},0)`;
+      function glyphs(s, word, X, Y, u, style) {
+        s.F.fillStyle = s.N.fillStyle = style;
+        [...word].forEach((ch, i) => {
+          (FONT[ch] || "").split(" ").forEach((row, r) => {
+            for (let c = 0; c < 5; c++)
+              if (row[c] === "1") {
+                const x = X + (i * 6 + c) * u,
+                  y = Y + r * u;
+                s.F.fillRect(x, y, u, u);
+                s.N.fillRect(x, y, u, u);
+              }
+          });
+        });
+      }
+      function layout() {
+        // the words made of pixels get the size their pixels need
+        const words = [...document.querySelectorAll(".lit .pxword")];
+        if (!words.length) return;
+        words.forEach((el) => {
+          el.style.width = "";
+        });
+        const column = (el) =>
+          parseFloat(getComputedStyle(el.parentElement).gridTemplateColumns) ||
+          el.parentElement.clientWidth; // the word's own column
+        const k = Math.max(
+          1,
+          Math.min(
+            2,
+            ...words.map((el) =>
+              Math.floor(column(el) / ((el.textContent.trim().length * 6 - 1) * cell)),
+            ),
+          ),
+        );
+        words.forEach((el) => {
+          const n = el.textContent.trim().length;
+          el._s = k;
+          el.style.width = (n * 6 - 1) * k * cell + "px";
+          el.style.height = 7 * k * cell + "px";
+        });
+      }
+      function paintStage(s) {
+        const gl = s.gl,
+          sr = s.root.getBoundingClientRect();
+        const key = [Math.round(sr.width), Math.round(sr.height), dpr, cell].join(":");
+        if (key === s.key) return; // nothing moved: keep the picture
+        s.key = key;
+        s.w = Math.max(1, Math.round(sr.width));
+        s.h = Math.max(1, Math.round(sr.height));
+        s.cv.width = Math.round(s.w * dpr);
+        s.cv.height = Math.round(s.h * dpr);
+        gl.viewport(0, 0, s.cv.width, s.cv.height);
+        const max = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096, 8192);
+        s.near.width = s.words ? Math.min(s.w, max) : 1;
+        s.near.height = s.words ? Math.min(s.h, max) : 1; // only the words need a painted picture
+        s.far.width = Math.max(1, Math.ceil(s.near.width / cell));
+        s.far.height = Math.max(1, Math.ceil(s.near.height / cell));
+        s.F.setTransform(1 / cell, 0, 0, 1 / cell, 0, 0);
+        if (s.words)
+          s.root.querySelectorAll(".pxword").forEach((el) => {
+            const r = el.getBoundingClientRect();
+            glyphs(
+              s,
+              el.textContent.trim().toUpperCase(),
+              snap(r.left - sr.left),
+              snap(r.top - sr.top),
+              (el._s || 1) * cell,
+              ink(el._s > 1 ? parseFloat(el.dataset.level || "1") : 1),
+            );
+          });
+        gl.activeTexture(gl.TEXTURE0);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s.far);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s.near);
+        s.rects = [...s.root.querySelectorAll(s.text)]
+          .map((el) => {
+            const r = el.getBoundingClientRect();
+            return [r.left - sr.left, r.top - sr.top, r.right - sr.left, r.bottom - sr.top];
+          })
+          .filter((r) => r[2] > r[0] && r[3] > r[1]);
+        s.fresh = true;
+      }
+      function size() {
+        VW = window.innerWidth;
+        VH = window.innerHeight;
+        dpr = Math.min(2, window.devicePixelRatio || 1);
+        wide = VW > 860;
+        cell = Math.max(4, Math.min(10, Math.round(VW / 290)));
+        layout();
+        STAGES.forEach(paintStage); // dots stop growing on very wide screens
+      }
+      // how much room a glass has here: the distance to the nearest word of its part, or to the part's edge
+      function room(s, x, y) {
+        let d = Math.min(x, y, s.w - x, s.h - y);
+        for (const [x0, y0, x1, y1] of s.rects)
+          d = Math.min(d, Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(y0 - y, 0, y - y1)));
+        return d;
+      }
 
-ACC.forEach((a) => { const el = document.createElement("div"); el.className = "drop"; el.innerHTML = `<b></b><small></small>`; dropsEl.appendChild(el); a.el = el; });
-const put = (el, text) => { if (el.textContent !== text) el.textContent = text; };
-function label(a) { a.el.classList.toggle("spent", a.used >= 100); put(a.el.querySelector("b"), Math.round(a.used) + "%"); put(a.el.querySelector("small"), a.used >= 100 ? "resets 14:02" : a.key); }
-function say(text) { if (fact.textContent !== text) fact.textContent = text; }
+      ACC.forEach((a) => {
+        const el = document.createElement("div");
+        el.className = "drop";
+        el.innerHTML = `<b></b><small></small>`;
+        dropsEl.appendChild(el);
+        a.el = el;
+      });
+      const put = (el, text) => {
+        if (el.textContent !== text) el.textContent = text;
+      };
+      function label(a) {
+        a.el.classList.toggle("spent", a.used >= 100);
+        put(a.el.querySelector("b"), Math.round(a.used) + "%");
+        put(a.el.querySelector("small"), a.used >= 100 ? "resets 14:02" : a.key);
+      }
+      function say(text) {
+        if (fact.textContent !== text) fact.textContent = text;
+      }
 
-// the story of the first screen: an account runs out, the run comes out on the next one
-let serving = 0, pull = null, side = -1, left = 1 - ACC[0].used / 100, st = { phase: "use", t: 0, from: ACC[0].used };
-const ease = (k) => k * k * (3 - 2 * k);
-function story(dt) {
-  st.t += dt; const a = ACC[serving];
-  if (st.phase === "use") {
-    a.used = Math.min(100, st.from + (100 - st.from) * (st.t / 7)); left = 1 - a.used / 100; say(`Run 7f3a is working on ${a.key}.`);
-    if (a.used >= 100) st = { phase: "dark", t: 0 };
-  } else if (st.phase === "dark") {
-    left = 0; say(`${a.key} reached its five-hour limit. From outside, the sun is gone.`);
-    if (st.t > 1.7) {
-      const to = ACC.findIndex((x) => x.mark === a.mark && x.used < 100);
-      if (to < 0) { ACC.forEach((x) => { x.used = x.start; }); serving = 0; side = -1; left = 1 - ACC[0].used / 100; st = { phase: "reset", t: 0 }; }
-      else { st = { phase: "out", t: 0, to }; pull = { from: serving, to, t: 0 }; side = -side; }
-    }
-  } else if (st.phase === "reset") {
-    say("14:02. The windows have reset.");
-    if (st.t > 2.2) st = { phase: "use", t: 0, from: ACC[0].used };
-  } else {
-    const k = Math.min(1, st.t / 5); left = ease(k) * (1 - ACC[st.to].used / 100);
-    if (pull) { pull.t += dt / 1.5; if (pull.t >= .5) serving = st.to; if (pull.t >= 1) pull = null; }
-    if (k > .25) say(`The run came out on ${ACC[st.to].key}, and its session went with it.`);
-    if (k >= 1) { serving = st.to; pull = null; st = { phase: "use", t: 0, from: ACC[serving].used }; }
-  }
-  ACC.forEach(label);
-}
-// the race, while it is on screen
-const RACE = [{ dur: 3.1, tests: 212, verdict: "1 finding" }, { dur: 4.4, tests: 214, verdict: "adopted into the thread", win: true }, { dur: 2.2, tests: 214, verdict: "2 findings" }];
-const lanes = [...document.querySelectorAll(".lane")], barP = new Float32Array(6); let raceT = 0;
-function race(dt) {
-  raceT = (raceT + dt) % 10.5;
-  RACE.forEach((r, i) => {
-    const k = Math.min(1, raceT / r.dur), judged = raceT > r.dur + 1.1 && (!r.win || raceT > 5.6);
-    barP[i * 2] = 1 - Math.pow(1 - k, 1.7); barP[i * 2 + 1] = judged ? (r.win ? 2 : 1) : 0;
-    lanes[i].classList.toggle("win", judged && !!r.win);
-    put(lanes[i].querySelector(".say"), judged ? `${r.tests} of 214 tests, ${r.verdict}` : k >= 1 ? `${r.tests} of 214 tests, read by another family` : `${Math.round(r.tests * k)} of 214 tests`);
-  });
-}
+      // the story of the first screen: an account runs out, the run comes out on the next one
+      let serving = 0,
+        pull = null,
+        side = -1,
+        left = 1 - ACC[0].used / 100,
+        st = { phase: "use", t: 0, from: ACC[0].used };
+      const ease = (k) => k * k * (3 - 2 * k);
+      function story(dt) {
+        st.t += dt;
+        const a = ACC[serving];
+        if (st.phase === "use") {
+          a.used = Math.min(100, st.from + (100 - st.from) * (st.t / 7));
+          left = 1 - a.used / 100;
+          say(`Run 7f3a is working on ${a.key}.`);
+          if (a.used >= 100) st = { phase: "dark", t: 0 };
+        } else if (st.phase === "dark") {
+          left = 0;
+          say(`${a.key} reached its five-hour limit. From outside, the sun is gone.`);
+          if (st.t > 1.7) {
+            const to = ACC.findIndex((x) => x.mark === a.mark && x.used < 100);
+            if (to < 0) {
+              ACC.forEach((x) => {
+                x.used = x.start;
+              });
+              serving = 0;
+              side = -1;
+              left = 1 - ACC[0].used / 100;
+              st = { phase: "reset", t: 0 };
+            } else {
+              st = { phase: "out", t: 0, to };
+              pull = { from: serving, to, t: 0 };
+              side = -side;
+            }
+          }
+        } else if (st.phase === "reset") {
+          say("14:02. The windows have reset.");
+          if (st.t > 2.2) st = { phase: "use", t: 0, from: ACC[0].used };
+        } else {
+          const k = Math.min(1, st.t / 5);
+          left = ease(k) * (1 - ACC[st.to].used / 100);
+          if (pull) {
+            pull.t += dt / 1.5;
+            if (pull.t >= 0.5) serving = st.to;
+            if (pull.t >= 1) pull = null;
+          }
+          if (k > 0.25) say(`The run came out on ${ACC[st.to].key}, and its session went with it.`);
+          if (k >= 1) {
+            serving = st.to;
+            pull = null;
+            st = { phase: "use", t: 0, from: ACC[serving].used };
+          }
+        }
+        ACC.forEach(label);
+      }
+      // the race, while it is on screen
+      const RACE = [
+        { dur: 3.1, tests: 212, verdict: "1 finding" },
+        { dur: 4.4, tests: 214, verdict: "adopted into the thread", win: true },
+        { dur: 2.2, tests: 214, verdict: "2 findings" },
+      ];
+      const lanes = [...document.querySelectorAll(".lane")],
+        barP = new Float32Array(6);
+      let raceT = 0;
+      function race(dt) {
+        raceT = (raceT + dt) % 10.5;
+        RACE.forEach((r, i) => {
+          const k = Math.min(1, raceT / r.dur),
+            judged = raceT > r.dur + 1.1 && (!r.win || raceT > 5.6);
+          barP[i * 2] = 1 - Math.pow(1 - k, 1.7);
+          barP[i * 2 + 1] = judged ? (r.win ? 2 : 1) : 0;
+          lanes[i].classList.toggle("win", judged && !!r.win);
+          put(
+            lanes[i].querySelector(".say"),
+            judged
+              ? `${r.tests} of 214 tests, ${r.verdict}`
+              : k >= 1
+                ? `${r.tests} of 214 tests, read by another family`
+                : `${Math.round(r.tests * k)} of 214 tests`,
+          );
+        });
+      }
 
-const mouse = { x: 0, y: 0, on: false }, sm = { x: 0, y: 0, on: 0 };
-let last = null;
-function draw(s, sr, t, dt) {
-  const gl = s.gl, U = s.U;
-  let sun = null;
-  if (s.id === "top") { const r = spot.getBoundingClientRect(); sun = { x: r.left - sr.left + r.width / 2, y: r.top - sr.top + r.height * (wide ? .5 : .54), R: Math.min(r.width, r.height) * (wide ? .25 : .18) }; }
-  const vis = [];
-  for (const b of s.bubbles) {
-    const hero = b.hero !== undefined, a = hero ? ACC[b.hero] : null;
-    let ax, ay, R;
-    if (hero) {
-      const ang = a.ang + Math.sin(t * .21 + b.hero * 1.7) * .02, ring = sun.R * (1.1 + .12 * (b.hero % 2));
-      ax = sun.x + Math.cos(ang) * ring * 1.08; ay = sun.y + Math.sin(ang) * ring * .96;
-      R = sun.R * (wide ? .44 : .5) * (.62 + .38 * (1 - a.used / 100));
-      if (pull && b.hero === pull.from) { const o = s.bubbles[pull.to], k = Math.sin(Math.PI * Math.min(1, pull.t)) * .72; ax += (o.x - ax) * k; ay += (o.y - ay) * k; }   // the run pours into the next account
-    } else {
-      if (!b.el || !b.el.isConnected) b.el = s.root.querySelector(b.at);
-      if (!b.el) continue;
-      const r = b.el.getBoundingClientRect(); ax = r.left - sr.left + r.width * b.fx; ay = r.top - sr.top + r.height * b.fy;
-      R = Math.min(VW, VH) * (wide ? .066 : .09) * b.k;
-    }
-    const m = (hero ? .3 : .18) * sm.on;                 // depth: the near glass slides with the pointer, the far glass against it
-    ax += (sm.x - VW / 2) * (b.z - 1) * m; ay += (sm.y - VH / 2) * (b.z - 1) * m;
-    R = Math.min(R * b.z, room(s, ax, ay) - 8); if (R < (hero || wide ? 12 : 22)) R = 0;   // and no glass ever lies on words
-    b.x = ax; b.y = ay; b.r = b.r && !still ? b.r + (R - b.r) * (1 - Math.exp(-dt * 6)) : R;
-    b.blur = Math.max(0, Math.min(.7, (1 - b.z) * 2.2));
-    const glow = hero && b.hero === serving && a.used < 100 ? 1 : 0, hot = hero && a.used >= 100 ? 1 : 0;
-    const ease4 = still ? 1 : 1 - Math.exp(-dt * 4); b.glow += (glow - b.glow) * ease4; b.hot += (hot - b.hot) * ease4;
-    if (hero) { const el = a.el, up = Math.sin(a.ang) < -.5; el.style.setProperty("--r", b.r.toFixed(1)); el.style.opacity = b.r > 3 ? 1 : 0; el.style.transform = `translate(${b.x.toFixed(1)}px, ${(up ? b.y - b.r - 8 : b.y + b.r + 8).toFixed(1)}px) translate(-50%, ${up ? -100 : 0}%)`; }
-    if (b.r > 3) vis.push(b);
-  }
-  const B = new Float32Array(24), TI = new Float32Array(32), S = new Float32Array(32), L = new Float32Array(16), bars = new Float32Array(12), Q = new Float32Array(32);
-  vis.slice(0, 8).forEach((b, i) => {
-    B.set([b.x * dpr, b.y * dpr, b.r * dpr], i * 3); TI.set([...HUE[b.mark], b.z], i * 4);
-    S.set([b.glow, b.hot, LOGO_INDEX[b.mark], b.blur], i * 4);
-    L.set(b.hero !== undefined ? [.53, 0] : [.3, .44], i * 2);
-  });
-  if (s.id === "race") lanes.forEach((l, i) => { const r = l.querySelector(".bar").getBoundingClientRect(); bars.set([r.left - sr.left, r.top - sr.top, r.width, r.height], i * 4); });
-  const quiet = s.stars ? s.rects.slice(0, 8) : [];
-  quiet.forEach((r, i) => Q.set(r.map((v) => v * dpr), i * 4));
-  // the light: the pointer, or, with no pointer, a lamp above the top left of the screen
-  const lx = VW * .2 + (sm.x - VW * .2) * sm.on, ly = -VH * .35 + (sm.y + VH * .35) * sm.on;
-  gl.uniform2f(U.uRes, s.cv.width, s.cv.height); gl.uniform1f(U.uPx, dpr); gl.uniform1f(U.uCell, cell * dpr); gl.uniform1f(U.uT, t);
-  gl.uniform2f(U.uDocF, s.far.width * cell, s.far.height * cell); gl.uniform2f(U.uDocN, s.near.width, s.near.height);
-  gl.uniform4f(U.uSun, sun ? sun.x * dpr : 0, sun ? sun.y * dpr : 0, sun ? sun.R * dpr : 0, sun ? 1 : 0);
-  gl.uniform4f(U.uPhase, left, side, s.stars ? 1 : 0, 0);
-  gl.uniform3f(U.uLight, (lx - sr.left) * dpr, (ly - sr.top) * dpr, .6 + .4 * sm.on);
-  gl.uniform1f(U.uN, Math.min(8, vis.length)); gl.uniform3fv(U.uB, B); gl.uniform4fv(U.uTint, TI); gl.uniform4fv(U.uS, S); gl.uniform2fv(U.uL, L);
-  gl.uniform4fv(U.uBars, bars); gl.uniform2fv(U.uBarP, barP); gl.uniform1f(U.uQN, quiet.length); gl.uniform4fv(U.uQuiet, Q);
-  // only the part of the picture that is on screen is drawn again; the rest keeps what it had
-  if (s.fresh) { gl.disable(gl.SCISSOR_TEST); s.fresh = false; }
-  else {
-    const y0 = Math.max(0, -sr.top), y1 = Math.min(s.h, VH - sr.top);
-    gl.enable(gl.SCISSOR_TEST); gl.scissor(0, Math.max(0, Math.floor((s.h - y1) * dpr) - 2), s.cv.width, Math.ceil((y1 - y0) * dpr) + 4);
-  }
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-}
-function frame(ms) {
-  if (last === null) last = ms;
-  const dt = Math.min(.05, (ms - last) / 1000 || .016), t = ms / 1000; last = ms;
-  if (mouse.on) { const e = 1 - Math.exp(-dt * 8); sm.x += (mouse.x - sm.x) * e; sm.y += (mouse.y - sm.y) * e; }
-  sm.on += ((mouse.on ? 1 : 0) - sm.on) * (1 - Math.exp(-dt * 5));
-  for (const s of STAGES) {
-    const sr = s.cv.getBoundingClientRect(), on = sr.bottom > 0 && sr.top < VH;
-    if (!s.fresh && (!on || s.id === "cost")) continue;     // off screen, or a picture that never changes
-    if (on && !still && s.id === "top") story(dt);
-    if (on && !still && s.id === "race") race(dt);
-    draw(s, sr, t, dt);
-  }
-  if (!still) requestAnimationFrame(frame);
-}
-(() => {
-  const tabs = [...document.querySelectorAll('.tabs [role="tab"]')]; if (!tabs.length) return;
-  document.documentElement.classList.add("js");
-  const pick = (t, focus) => { tabs.forEach((x) => { const on = x === t; x.setAttribute("aria-selected", on); x.tabIndex = on ? 0 : -1; document.getElementById(x.getAttribute("aria-controls")).classList.toggle("on", on); }); if (focus) t.focus(); };
-  const choose = (t, focus) => { pick(t, focus); history.replaceState(null, "", "#" + t.getAttribute("aria-controls")); };   // a chosen host is the address you share
-  tabs.forEach((t, i) => { t.addEventListener("click", () => choose(t)); t.addEventListener("keydown", (e) => {
-    const n = tabs.length, to = e.key === "ArrowRight" ? (i + 1) % n : e.key === "ArrowLeft" ? (i + n - 1) % n : e.key === "Home" ? 0 : e.key === "End" ? n - 1 : -1;
-    if (to >= 0) { e.preventDefault(); choose(tabs[to], true); }
-  }); });
-  const follow = () => { const t = tabs.find((x) => x.getAttribute("aria-controls") === location.hash.slice(1)); if (t) { pick(t); document.getElementById(location.hash.slice(1)).scrollIntoView(); } };
-  window.addEventListener("hashchange", follow);
-  pick(tabs.find((x) => x.getAttribute("aria-controls") === location.hash.slice(1)) || tabs[0]);
-})();
-document.querySelectorAll("[data-copy]").forEach((b) => { let back = null; b.addEventListener("click", () => {
-  const tell = (text) => { b.querySelector("span").textContent = text; clearTimeout(back); back = setTimeout(() => { b.querySelector("span").textContent = "Copy"; }, 2200); };
-  const manual = () => { const r = document.createRange(); r.selectNodeContents(b.querySelector("code")); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); tell(/Mac/.test(navigator.platform) ? "Press ⌘C" : "Press Ctrl+C"); };
-  (navigator.clipboard ? navigator.clipboard.writeText(b.dataset.copy) : Promise.reject()).then(() => tell("Copied"), manual);
-}); });
-try { buildAtlas(); } catch (err) { console.error(err); }
-PARTS.forEach((p) => { try { const s = makeStage(p); if (s) STAGES.push(s); } catch (err) { console.error(err); } });   // one part failing leaves the others
-if (still || !STAGES.some((s) => s.id === "race")) raceT = 6.5;          // nothing will run the race: show how it ended
-if (STAGES.length) {
-  size(); ACC.forEach(label); say(`Run 7f3a is working on ${ACC[0].key}.`); race(0);
-  let again = null; const all = () => { clearTimeout(again); again = setTimeout(() => { size(); if (still) requestAnimationFrame(frame); }, 120); };
-  window.addEventListener("resize", all); window.addEventListener("load", all); if (document.fonts && document.fonts.ready) document.fonts.ready.then(all);
-    window.addEventListener("pointermove", (e) => { if (e.pointerType === "touch") return; mouse.x = e.clientX; mouse.y = e.clientY; if (sm.on < .05) { sm.x = mouse.x; sm.y = mouse.y; } mouse.on = true; });
-  document.documentElement.addEventListener("pointerleave", () => { mouse.on = false; });
-  motion.addEventListener("change", () => {      // the reader asked for less motion, or for motion again
-    const was = still; still = motion.matches;
-    if (still) { raceT = 6.5; race(0); STAGES.forEach((s) => { s.fresh = true; }); }
-    if (was && !still) { last = null; requestAnimationFrame(frame); } else requestAnimationFrame(frame);
-  });
-  requestAnimationFrame(frame);
-} else { dropsEl.remove(); say(`Run 7f3a is working on ${ACC[0].key}.`); race(0); }
-</script>
-</body>
+      const mouse = { x: 0, y: 0, on: false },
+        sm = { x: 0, y: 0, on: 0 };
+      let last = null;
+      function draw(s, sr, t, dt) {
+        const gl = s.gl,
+          U = s.U;
+        let sun = null;
+        if (s.id === "top") {
+          const r = spot.getBoundingClientRect();
+          sun = {
+            x: r.left - sr.left + r.width / 2,
+            y: r.top - sr.top + r.height * (wide ? 0.5 : 0.54),
+            R: Math.min(r.width, r.height) * (wide ? 0.25 : 0.18),
+          };
+        }
+        const vis = [];
+        for (const b of s.bubbles) {
+          const hero = b.hero !== undefined,
+            a = hero ? ACC[b.hero] : null;
+          let ax, ay, R;
+          if (hero) {
+            const ang = a.ang + Math.sin(t * 0.21 + b.hero * 1.7) * 0.02,
+              ring = sun.R * (1.1 + 0.12 * (b.hero % 2));
+            ax = sun.x + Math.cos(ang) * ring * 1.08;
+            ay = sun.y + Math.sin(ang) * ring * 0.96;
+            R = sun.R * (wide ? 0.44 : 0.5) * (0.62 + 0.38 * (1 - a.used / 100));
+            if (pull && b.hero === pull.from) {
+              const o = s.bubbles[pull.to],
+                k = Math.sin(Math.PI * Math.min(1, pull.t)) * 0.72;
+              ax += (o.x - ax) * k;
+              ay += (o.y - ay) * k;
+            } // the run pours into the next account
+          } else {
+            if (!b.el || !b.el.isConnected) b.el = s.root.querySelector(b.at);
+            if (!b.el) continue;
+            const r = b.el.getBoundingClientRect();
+            ax = r.left - sr.left + r.width * b.fx;
+            ay = r.top - sr.top + r.height * b.fy;
+            R = Math.min(VW, VH) * (wide ? 0.066 : 0.09) * b.k;
+          }
+          const m = (hero ? 0.3 : 0.18) * sm.on; // depth: the near glass slides with the pointer, the far glass against it
+          ax += (sm.x - VW / 2) * (b.z - 1) * m;
+          ay += (sm.y - VH / 2) * (b.z - 1) * m;
+          R = Math.min(R * b.z, room(s, ax, ay) - 8);
+          if (R < (hero || wide ? 12 : 22)) R = 0; // and no glass ever lies on words
+          b.x = ax;
+          b.y = ay;
+          b.r = b.r && !still ? b.r + (R - b.r) * (1 - Math.exp(-dt * 6)) : R;
+          b.blur = Math.max(0, Math.min(0.7, (1 - b.z) * 2.2));
+          const glow = hero && b.hero === serving && a.used < 100 ? 1 : 0,
+            hot = hero && a.used >= 100 ? 1 : 0;
+          const ease4 = still ? 1 : 1 - Math.exp(-dt * 4);
+          b.glow += (glow - b.glow) * ease4;
+          b.hot += (hot - b.hot) * ease4;
+          if (hero) {
+            const el = a.el,
+              up = Math.sin(a.ang) < -0.5;
+            el.style.setProperty("--r", b.r.toFixed(1));
+            el.style.opacity = b.r > 3 ? 1 : 0;
+            el.style.transform = `translate(${b.x.toFixed(1)}px, ${(up ? b.y - b.r - 8 : b.y + b.r + 8).toFixed(1)}px) translate(-50%, ${up ? -100 : 0}%)`;
+          }
+          if (b.r > 3) vis.push(b);
+        }
+        const B = new Float32Array(24),
+          TI = new Float32Array(32),
+          S = new Float32Array(32),
+          L = new Float32Array(16),
+          bars = new Float32Array(12),
+          Q = new Float32Array(32);
+        vis.slice(0, 8).forEach((b, i) => {
+          B.set([b.x * dpr, b.y * dpr, b.r * dpr], i * 3);
+          TI.set([...HUE[b.mark], b.z], i * 4);
+          S.set([b.glow, b.hot, LOGO_INDEX[b.mark], b.blur], i * 4);
+          L.set(b.hero !== undefined ? [0.53, 0] : [0.3, 0.44], i * 2);
+        });
+        if (s.id === "race")
+          lanes.forEach((l, i) => {
+            const r = l.querySelector(".bar").getBoundingClientRect();
+            bars.set([r.left - sr.left, r.top - sr.top, r.width, r.height], i * 4);
+          });
+        const quiet = s.stars ? s.rects.slice(0, 8) : [];
+        quiet.forEach((r, i) =>
+          Q.set(
+            r.map((v) => v * dpr),
+            i * 4,
+          ),
+        );
+        // the light: the pointer, or, with no pointer, a lamp above the top left of the screen
+        const lx = VW * 0.2 + (sm.x - VW * 0.2) * sm.on,
+          ly = -VH * 0.35 + (sm.y + VH * 0.35) * sm.on;
+        gl.uniform2f(U.uRes, s.cv.width, s.cv.height);
+        gl.uniform1f(U.uPx, dpr);
+        gl.uniform1f(U.uCell, cell * dpr);
+        gl.uniform1f(U.uT, t);
+        gl.uniform2f(U.uDocF, s.far.width * cell, s.far.height * cell);
+        gl.uniform2f(U.uDocN, s.near.width, s.near.height);
+        gl.uniform4f(
+          U.uSun,
+          sun ? sun.x * dpr : 0,
+          sun ? sun.y * dpr : 0,
+          sun ? sun.R * dpr : 0,
+          sun ? 1 : 0,
+        );
+        gl.uniform4f(U.uPhase, left, side, s.stars ? 1 : 0, 0);
+        gl.uniform3f(U.uLight, (lx - sr.left) * dpr, (ly - sr.top) * dpr, 0.6 + 0.4 * sm.on);
+        gl.uniform1f(U.uN, Math.min(8, vis.length));
+        gl.uniform3fv(U.uB, B);
+        gl.uniform4fv(U.uTint, TI);
+        gl.uniform4fv(U.uS, S);
+        gl.uniform2fv(U.uL, L);
+        gl.uniform4fv(U.uBars, bars);
+        gl.uniform2fv(U.uBarP, barP);
+        gl.uniform1f(U.uQN, quiet.length);
+        gl.uniform4fv(U.uQuiet, Q);
+        // only the part of the picture that is on screen is drawn again; the rest keeps what it had
+        if (s.fresh) {
+          gl.disable(gl.SCISSOR_TEST);
+          s.fresh = false;
+        } else {
+          const y0 = Math.max(0, -sr.top),
+            y1 = Math.min(s.h, VH - sr.top);
+          gl.enable(gl.SCISSOR_TEST);
+          gl.scissor(
+            0,
+            Math.max(0, Math.floor((s.h - y1) * dpr) - 2),
+            s.cv.width,
+            Math.ceil((y1 - y0) * dpr) + 4,
+          );
+        }
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+      function frame(ms) {
+        if (last === null) last = ms;
+        const dt = Math.min(0.05, (ms - last) / 1000 || 0.016),
+          t = ms / 1000;
+        last = ms;
+        if (mouse.on) {
+          const e = 1 - Math.exp(-dt * 8);
+          sm.x += (mouse.x - sm.x) * e;
+          sm.y += (mouse.y - sm.y) * e;
+        }
+        sm.on += ((mouse.on ? 1 : 0) - sm.on) * (1 - Math.exp(-dt * 5));
+        for (const s of STAGES) {
+          const sr = s.cv.getBoundingClientRect(),
+            on = sr.bottom > 0 && sr.top < VH;
+          if (!s.fresh && (!on || s.id === "cost")) continue; // off screen, or a picture that never changes
+          if (on && !still && s.id === "top") story(dt);
+          if (on && !still && s.id === "race") race(dt);
+          draw(s, sr, t, dt);
+        }
+        if (!still) requestAnimationFrame(frame);
+      }
+      (() => {
+        const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
+        if (!tabs.length) return;
+        document.documentElement.classList.add("js");
+        const pick = (t, focus) => {
+          tabs.forEach((x) => {
+            const on = x === t;
+            x.setAttribute("aria-selected", on);
+            x.tabIndex = on ? 0 : -1;
+            document.getElementById(x.getAttribute("aria-controls")).classList.toggle("on", on);
+          });
+          if (focus) t.focus();
+        };
+        const choose = (t, focus) => {
+          pick(t, focus);
+          history.replaceState(null, "", "#" + t.getAttribute("aria-controls"));
+        }; // a chosen host is the address you share
+        tabs.forEach((t, i) => {
+          t.addEventListener("click", () => choose(t));
+          t.addEventListener("keydown", (e) => {
+            const n = tabs.length,
+              to =
+                e.key === "ArrowRight"
+                  ? (i + 1) % n
+                  : e.key === "ArrowLeft"
+                    ? (i + n - 1) % n
+                    : e.key === "Home"
+                      ? 0
+                      : e.key === "End"
+                        ? n - 1
+                        : -1;
+            if (to >= 0) {
+              e.preventDefault();
+              choose(tabs[to], true);
+            }
+          });
+        });
+        const follow = () => {
+          const t = tabs.find((x) => x.getAttribute("aria-controls") === location.hash.slice(1));
+          if (t) {
+            pick(t);
+            document.getElementById(location.hash.slice(1)).scrollIntoView();
+          }
+        };
+        window.addEventListener("hashchange", follow);
+        pick(
+          tabs.find((x) => x.getAttribute("aria-controls") === location.hash.slice(1)) || tabs[0],
+        );
+      })();
+      document.querySelectorAll("[data-copy]").forEach((b) => {
+        let back = null;
+        b.addEventListener("click", () => {
+          const tell = (text) => {
+            b.querySelector("span").textContent = text;
+            clearTimeout(back);
+            back = setTimeout(() => {
+              b.querySelector("span").textContent = "Copy";
+            }, 2200);
+          };
+          const manual = () => {
+            const r = document.createRange();
+            r.selectNodeContents(b.querySelector("code"));
+            const sel = getSelection();
+            sel.removeAllRanges();
+            sel.addRange(r);
+            tell(/Mac/.test(navigator.platform) ? "Press ⌘C" : "Press Ctrl+C");
+          };
+          (navigator.clipboard
+            ? navigator.clipboard.writeText(b.dataset.copy)
+            : Promise.reject()
+          ).then(() => tell("Copied"), manual);
+        });
+      });
+      try {
+        buildAtlas();
+      } catch (err) {
+        console.error(err);
+      }
+      PARTS.forEach((p) => {
+        try {
+          const s = makeStage(p);
+          if (s) STAGES.push(s);
+        } catch (err) {
+          console.error(err);
+        }
+      }); // one part failing leaves the others
+      if (still || !STAGES.some((s) => s.id === "race")) raceT = 6.5; // nothing will run the race: show how it ended
+      if (STAGES.length) {
+        size();
+        ACC.forEach(label);
+        say(`Run 7f3a is working on ${ACC[0].key}.`);
+        race(0);
+        let again = null;
+        const all = () => {
+          clearTimeout(again);
+          again = setTimeout(() => {
+            size();
+            if (still) requestAnimationFrame(frame);
+          }, 120);
+        };
+        window.addEventListener("resize", all);
+        window.addEventListener("load", all);
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(all);
+        window.addEventListener("pointermove", (e) => {
+          if (e.pointerType === "touch") return;
+          mouse.x = e.clientX;
+          mouse.y = e.clientY;
+          if (sm.on < 0.05) {
+            sm.x = mouse.x;
+            sm.y = mouse.y;
+          }
+          mouse.on = true;
+        });
+        document.documentElement.addEventListener("pointerleave", () => {
+          mouse.on = false;
+        });
+        motion.addEventListener("change", () => {
+          // the reader asked for less motion, or for motion again
+          const was = still;
+          still = motion.matches;
+          if (still) {
+            raceT = 6.5;
+            race(0);
+            STAGES.forEach((s) => {
+              s.fresh = true;
+            });
+          }
+          if (was && !still) {
+            last = null;
+            requestAnimationFrame(frame);
+          } else requestAnimationFrame(frame);
+        });
+        requestAnimationFrame(frame);
+      } else {
+        dropsEl.remove();
+        say(`Run 7f3a is working on ${ACC[0].key}.`);
+        race(0);
+      }
+    </script>
+  </body>
 </html>
