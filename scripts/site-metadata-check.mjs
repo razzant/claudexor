@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 const productionUrl = "https://claudexor.ai/";
 const legacyUrl = "https://razzant.github.io/claudexor";
-const socialImageUrl = `${productionUrl}assets/social-preview-v2.png`;
+const socialImageUrl = `${productionUrl}assets/social-preview-v3.png`;
 const ouroborosRepositoryUrl = "https://github.com/razzant/ouroboros";
 const ouroborosSiteUrl = "https://ouroboros-agent.ai/";
 const ouroborosRuntimePinUrl = `${ouroborosRepositoryUrl}/blob/ouroboros/ouroboros/claudexor_runtime_pin.json`;
