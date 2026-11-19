@@ -457,7 +457,7 @@ export interface ThreadContinuityContext {
   laneCheckpoints: Array<{ harness: string; profileId: string | null; turnId: string }>;
 }
 
-export interface RunInput {
+export interface RunInput extends Pick<AnnouncedRunContext, "stopSender"> {
   /** Frozen model-review intent from the accepting surface; optional for embedders. */
   review?: boolean;
   repoRoot: string;

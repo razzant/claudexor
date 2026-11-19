@@ -245,8 +245,8 @@ function nativeEvent(
 }
 
 describe("durable vendor operation", () => {
-  it.each([20, "vendor_launch_failed"])(
-    "settles an abort-shaped failure with code %s without throwing in the handler",
+  it.each([20, "vendor_launch_failed", ""])(
+    "settles an abort-shaped failure with code %j without throwing in the handler",
     async (code) => {
       const error = Object.assign(new Error("The operation was aborted"), {
         name: "AbortError",
@@ -260,10 +260,12 @@ describe("durable vendor operation", () => {
         state: "failed",
         phase: "settled",
         problem: {
-          code: typeof code === "string" ? code : "maintenance_failed",
+          code: typeof code === "string" && code ? code : "maintenance_failed",
           message: "The operation was aborted",
         },
       });
+      // The handler's own settlement still runs after the fallback.
+      expect(w.readiness.invalidate).toHaveBeenCalledWith("codex");
     },
   );
   it("publishes the inspection child's answer without erasing known versions or retrying mute identities", async () => {
@@ -476,6 +478,20 @@ describe("durable vendor operation", () => {
       mutation: "unknown",
       outcome: "unknown",
       problem: { message: "owner exited" },
+    });
+  });
+  it("projects an empty recorded error code as the lifecycle's own code", async () => {
+    const w = await harnessWorld();
+    const op = await w.maintenance.routes.createMaintenanceOperation(latest, "empty-code");
+    w.store.update(op.id, {
+      state: "failed",
+      result: EVIDENCE,
+      error: "owner failed",
+      errorCode: "",
+    });
+    expect(await w.maintenance.routes.getMaintenanceOperation(op.id)).toMatchObject({
+      state: "failed",
+      problem: { code: "maintenance_failed", message: "owner failed" },
     });
   });
   it("rejects retired targets and discloses active maintenance on the bound readiness service", async () => {

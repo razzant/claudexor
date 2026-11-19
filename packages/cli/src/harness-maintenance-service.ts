@@ -33,7 +33,11 @@ import {
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { accountObservations } from "./account-observations.js";
-import { emptyMaintenanceEvidence, type HarnessInspection } from "./harness-maintenance.js";
+import {
+  emptyMaintenanceEvidence,
+  maintenanceProblemCode,
+  type HarnessInspection,
+} from "./harness-maintenance.js";
 import { harnessProgram, harnessPrograms } from "./harness-programs.js";
 import { MAINTENANCE_EVIDENCE_PREFIX } from "./harness-installer.js";
 import { trackHarnessRuns } from "./harness-maintenance-runs.js";
@@ -202,7 +206,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
       : emptyMaintenanceEvidence(params.data.target, params.data.requester);
     if (isTerminalLifecycle(record.state) && record.state !== "succeeded" && !evidence.problem) {
       evidence.problem = problem(
-        record.errorCode ?? `maintenance_${record.state}`,
+        maintenanceProblemCode(record.errorCode, `maintenance_${record.state}`),
         record.error ?? `Maintenance ended ${record.state}`,
       );
       if (evidence.phase === "installing") {
@@ -321,9 +325,8 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
         );
     } catch (error) {
       lifecycle = ctx.signal.aborted ? "cancelled" : "failed";
-      const code = (error as { code?: unknown } | null)?.code;
       evidence.problem = problem(
-        typeof code === "string" ? code : "maintenance_failed",
+        maintenanceProblemCode((error as { code?: unknown } | null)?.code, "maintenance_failed"),
         error instanceof Error ? error.message : String(error),
       );
     } finally {

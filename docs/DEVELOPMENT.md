@@ -541,10 +541,11 @@ Tests and local smokes must never touch real user state:
   and prints one timing line, which is an observation and not a gate. Its
   mismatched birth is seeded on a witness process the test owns, and it signals
   only children it spawned. It does not force real PID recycling; injected
-  unknown and `EPERM` readings stay synthetic. A failed run, a failed soft check
-  included, logs the exact bytes of every writer record and root-authority
-  marker in its private root, with child stderr and the daemon log, before that
-  root is removed.
+  unknown and `EPERM` readings stay synthetic. Failures, including soft checks,
+  log the exact bytes of every writer record and root-authority marker in the
+  private root, plus the daemon log, before removal.
+  Child diagnostics include the observed exit code and signal, whether stdio
+  closed, and bounded stdout and stderr tails.
 - The Windows agy print/ConPTY acceptance reports a failed or timed-out run
   as the worker's error message (or, without one, the console host's stderr)
   followed by typed facts: its stage, the in-app runner's exit, allowlisted

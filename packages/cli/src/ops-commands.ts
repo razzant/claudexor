@@ -27,6 +27,7 @@ import {
   ControlSetupJob,
   GitCapability,
 } from "@claudexor/schema";
+import { CLAUDEXOR_VERSION, safeProblemMessage } from "@claudexor/util";
 import { type ParsedArgs, flagStr } from "./args.js";
 import { gcCommand } from "./gc-command.js";
 export { gcCommand } from "./gc-command.js";
@@ -60,6 +61,7 @@ import { streamDurableLogin } from "./setup-login-inline.js";
 import { terminalLoginFallback } from "./setup-login-fallback.js";
 import { scannerCommand } from "./scanner-command.js";
 import { readDaemonDiagnosticTail } from "./startup-diagnostics.js";
+import { readDaemonRareHistory, withRareHistory } from "./daemon-rare-history.js";
 import {
   assertOperatorDaemonLifecycle,
   daemonOwner,
@@ -185,15 +187,25 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
     return 0;
   }
   if (sub === "logs") {
+    const rare = readDaemonRareHistory();
     let tail: string;
     try {
       tail = readDaemonDiagnosticTail({ path: logPath(), lines: 40 }).text;
     } catch (err) {
-      const message = `no daemon log at ${logPath()} (${err instanceof Error ? err.message : String(err)}); the daemon may not have started on this machine yet`;
-      return renderCliFailure(json, new Error(message));
+      const detail = err instanceof Error ? err.message : String(err);
+      const message = `no daemon log at ${logPath()} (${detail})`;
+      if (!rare?.hasEvents) {
+        const problem = rare?.text.trim();
+        const hint = problem
+          ? `${message}\n${problem}`
+          : `${message}; the daemon may not have started on this machine yet`;
+        return renderCliFailure(json, new Error(hint));
+      }
+      tail = `[${safeProblemMessage(message)}]\n`;
     }
-    if (json) printJson({ ok: true, log_tail: tail });
-    else print(tail);
+    const extra = rare === null ? {} : { rare_tail: rare.text };
+    if (json) printJson({ ok: true, log_tail: tail, ...extra });
+    else print(rare === null ? tail : withRareHistory(tail, rare.text));
     return 0;
   }
 
@@ -226,7 +238,13 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
       // exit code instead of racing a still-live process.
       const termination = await stopDaemonForOperator(defaultSocketPath(), {
         inspectLease: inspectDaemonWriterLease,
-        shutdown: () => client.shutdown(),
+        shutdown: () =>
+          client.shutdown({
+            name: "claudexor-cli",
+            version: CLAUDEXOR_VERSION,
+            pid: process.pid,
+            ppid: process.ppid,
+          }),
         awaitTermination: awaitDaemonTermination,
       });
       if (termination.outcome === "still_alive") {

@@ -841,8 +841,9 @@ describe("public Stop of a predecessor with a next message", () => {
   });
 
   // Only the Stop's own hold write fails; later writes succeed again.
-  const failHoldOnce = () =>
+  const failHoldOnce = (onHold?: () => void) =>
     vi.spyOn(SqlDeferredMessages.prototype, "hold").mockImplementationOnce(() => {
+      onHold?.();
       throw new StoreFullError("fixture: no space for the hold");
     });
   async function validating(f: Fixture) {
@@ -1040,8 +1041,12 @@ describe("public Stop of a predecessor with a next message", () => {
   it("shutdown still aborts and drains runners when a next-message hold cannot be saved", async () => {
     const f = await fixture();
     const draft = (await f.create()).draft;
-    failHoldOnce();
+    let abortedAtHold = false;
+    failHoldOnce(() => {
+      abortedAtHold = f.started[0]!.ctx.signal.aborted;
+    });
     const outcome = await unconfirmedStop(f);
+    expect(abortedAtHold).toBe(true);
     expect(f.started[0]!.ctx.signal.aborted).toBe(true);
     expect(state(f, f.initial.id)).not.toBe("running");
     expect(outcome).toMatchObject({ code: "daemon_shutdown_unconfirmed" });

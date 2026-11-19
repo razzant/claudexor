@@ -1,7 +1,7 @@
 import type { ArtifactStore } from "@claudexor/artifact-store";
 import type { BudgetLedger, BudgetTerminal, CashCertainty } from "@claudexor/budget";
 import type { EventLog } from "@claudexor/event-log";
-import type { ModeKind } from "@claudexor/schema";
+import type { DaemonStopSender, ModeKind } from "@claudexor/schema";
 import type { ContinuityTerminalFacts } from "./continuity-terminal.js";
 
 export interface AnnouncedRunContext {
@@ -11,6 +11,7 @@ export interface AnnouncedRunContext {
   runId: string;
   taskId: string;
   mode: ModeKind;
+  stopSender?: () => DaemonStopSender | undefined;
   /** Failure phase label when the net has to stamp the terminal. */
   phase: string;
   /** Settled ledger spend snapshot — failure/cancel terminals must account

@@ -1,7 +1,8 @@
-import { appendFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DaemonClient, type DaemonServingMode } from "@claudexor/daemon";
 import { CONTROL_PROTOCOL_MAJOR } from "@claudexor/schema";
+import { logLine } from "./log-line.js";
 
 /** Single canonical admission snapshot; both transports read the SAME fact. */
 export class DaemonStartupAdmission {
@@ -45,20 +46,13 @@ export async function bindRecoveryTransport(
 async function bindTransport(
   input: RecoveryTransportBind,
 ): Promise<{ host: string; port: number } | null> {
-  const stamp = () => `[${new Date().toISOString()}]`;
   if (!input.requested()) await input.server.start();
   if (!input.requested()) {
-    appendFileSync(
-      input.logPath,
-      `${stamp()} claudexord listening on ${input.socketPath} (recovery-only admission)\n`,
-    );
+    logLine(input.logPath, `claudexord listening on ${input.socketPath} (recovery-only admission)`);
   }
   if (!input.control) {
     if (!input.requested()) {
-      appendFileSync(
-        input.logPath,
-        `${stamp()} claudexor control-api disabled by CLAUDEXOR_NO_CONTROL_API=1\n`,
-      );
+      logLine(input.logPath, "claudexor control-api disabled by CLAUDEXOR_NO_CONTROL_API=1");
     }
     return null;
   }
@@ -70,9 +64,9 @@ async function bindTransport(
     `${JSON.stringify({ ...controlAddr, tokenPath: join(input.daemonDir, "token") }, null, 2)}\n`,
     { mode: 0o600 },
   );
-  appendFileSync(
+  logLine(
     input.logPath,
-    `${stamp()} claudexor control-api listening on http://${controlAddr.host}:${controlAddr.port}\n`,
+    `claudexor control-api listening on http://${controlAddr.host}:${controlAddr.port}`,
   );
   return controlAddr;
 }

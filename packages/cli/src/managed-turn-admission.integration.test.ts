@@ -259,10 +259,15 @@ describe("managed bytes published from the write-time digest", () => {
     expect(f.sql.graph.resources.resolve(refs, holder)[0]!.path).toBe(blob(f, first));
     expect(() => f.sql.graph.resources.resolve(refs)).toThrow(/released/);
 
-    // The holder's end frees the file after commit; the digest then starts over.
+    // prune starts GC after commit. Observe the promise from that call, past the flush barrier.
+    const digest = first.sha256.slice("sha256:".length);
+    const gc = vi.spyOn(f.sql.graph.blobs, "gc");
     f.sql.graph.pruner.prune(accepted);
     expect(f.holders(first.resourceId)).toEqual([]);
-    await vi.waitFor(() => expect(existsSync(blob(f, first))).toBe(false));
+    expect(gc).toHaveBeenCalledWith(digest);
+    const call = gc.mock.calls.findIndex(([sha]) => sha === digest);
+    await expect(gc.mock.results[call]!.value).resolves.toBe("removed");
+    expect(existsSync(blob(f, first))).toBe(false);
     const third = await f.importManaged("third", text);
     expect(third).toMatchObject({ deduplicated: false, sha256: first.sha256 });
     expect(third.resourceId).not.toBe(first.resourceId);

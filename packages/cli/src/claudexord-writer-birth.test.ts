@@ -59,7 +59,7 @@ interface Owned {
   child: ChildProcess;
   label: string;
   finished: Promise<Finished>;
-  stderr(): string;
+  diagnostics(): string;
 }
 
 /** Exact bytes of every file at or below `path`. A failed read is named, never thrown. */
@@ -74,12 +74,44 @@ function filesBelow(path: string): string[] {
   }
 }
 
-function within<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+function observeChild(child: ChildProcess, label: string, startedAt: number): Owned {
+  let stdout = "";
+  let stderr = "";
+  let childError: string | undefined;
+  child.stdout?.setEncoding("utf8").on("data", (part: string) => {
+    stdout = (stdout + part).slice(-65_536);
+  });
+  child.stderr?.setEncoding("utf8").on("data", (part: string) => {
+    stderr = (stderr + part).slice(-16_384);
+  });
+  child.on("error", (error) => {
+    childError = error.message.slice(-2048);
+  });
+  let closed: Finished | undefined;
+  const finished = new Promise<Finished>((done) => {
+    child.once("close", (code, signal) => {
+      closed = { code, signal, stdout, stderr, ms: Math.round(performance.now() - startedAt) };
+      done(closed);
+    });
+  });
+  const diagnostics = () => {
+    const { code, signal } = closed ?? { code: child.exitCode, signal: child.signalCode };
+    return [
+      `${label} pid=${child.pid} code=${code} signal=${signal} closeObserved=${!!closed}`,
+      ...(childError ? [`child process error: ${childError}`] : []),
+      `stdout tail: ${stdout}`,
+      `stderr tail: ${stderr}`,
+    ].join("\n");
+  };
+  return { child, label, finished, diagnostics };
+}
+
+function waitForClose(owned: Owned, ms: number): Promise<Finished> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_, fail) => {
-    timer = setTimeout(() => fail(new Error(`${label} exceeded ${ms}ms`)), ms);
+    timer = setTimeout(() => fail(new Error(`close exceeded ${ms}ms\n${owned.diagnostics()}`)), ms);
   });
-  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
+  return Promise.race([owned.finished, expired]).finally(() => clearTimeout(timer));
 }
 
 /** Private root, credential-free environment and exact custody of every child. */
@@ -124,40 +156,22 @@ function createFixture() {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (part) => (stdout = `${stdout}${String(part)}`.slice(-65_536)));
-    child.stderr?.on("data", (part) => (stderr = `${stderr}${String(part)}`.slice(-16_384)));
-    const finished = new Promise<Finished>((done) => {
-      const settle = (code: number | null, signal: NodeJS.Signals | null) =>
-        done({ code, signal, stdout, stderr, ms: Math.round(performance.now() - startedAt) });
-      child.once("error", (error) => {
-        stderr += `spawn failed: ${error.message}\n`;
-        settle(null, null);
-      });
-      child.once("close", settle);
-    });
-    const entry = { child, label, finished, stderr: () => stderr };
+    const entry = observeChild(child, label, startedAt);
     owned.push(entry);
     return entry;
   };
   const finish = (label: string, args: readonly string[]): Promise<Finished> =>
-    within(launch(label, args).finished, 120_000, label);
+    waitForClose(launch(label, args), 120_000);
 
   /** An unrelated process the test owns; its answer proves that it kept running. */
   const startWitness = () => {
+    const startedAt = performance.now();
     const child = spawn(
       process.execPath,
       ["-e", "process.on('message', (m) => process.send(m)); setInterval(() => {}, 1000);"],
       { cwd: root, env, stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true },
     );
-    const finished = new Promise<Finished>((done) => {
-      const settle = (code: number | null, signal: NodeJS.Signals | null) =>
-        done({ code, signal, stdout: "", stderr: "", ms: 0 });
-      child.once("error", () => settle(null, null));
-      child.once("close", settle);
-    });
-    owned.push({ child, label: "witness", finished, stderr: () => "" });
+    owned.push(observeChild(child, "witness", startedAt));
     const answers = () =>
       new Promise<void>((done, fail) => {
         const nonce = randomUUID();
@@ -183,7 +197,7 @@ function createFixture() {
   const diagnostics = () => {
     const log = join(config, "daemon", "claudexord.log");
     return [
-      ...owned.map(({ label, child, stderr }) => `--- ${label} pid ${child.pid}\n${stderr()}`),
+      ...owned.map((entry) => entry.diagnostics()),
       ...filesBelow(anchor),
       `--- ${log}\n${existsSync(log) ? readFileSync(log, "utf8").slice(-16_384) : "(absent)"}`,
     ].join("\n");
@@ -220,9 +234,14 @@ interface Served {
 async function awaitServing(daemon: Owned): Promise<Served> {
   const startedAt = performance.now();
   const deadline = Date.now() + 90_000;
+  const failure = async (reason: string) => {
+    // exit precedes close; give buffered output a chance to arrive even if a pipe stays open.
+    await Promise.race([daemon.finished, delay(1_000, undefined, { ref: false })]);
+    return new Error(`${daemon.label} ${reason}\n${daemon.diagnostics()}`);
+  };
   for (;;) {
     if (daemon.child.exitCode !== null || daemon.child.signalCode !== null) {
-      throw new Error(`${daemon.label} exited before serving:\n${daemon.stderr()}`);
+      throw await failure("exited before serving");
     }
     try {
       const response = await controlApiFetch(controlApiAddress(), "/v2/handshake", {
@@ -251,11 +270,26 @@ async function awaitServing(daemon: Owned): Promise<Served> {
       /* descriptor or listener not ready yet; the bounded loop owns the verdict */
     }
     if (Date.now() >= deadline) {
-      throw new Error(`${daemon.label} never reached normal admission:\n${daemon.stderr()}`);
+      throw await failure("never reached normal admission before the deadline");
     }
     await delay(100);
   }
 }
+
+it("reports the exit and both output tails when a child exits before serving", async () => {
+  const fixture = createFixture();
+  try {
+    const child = fixture.launch("early exit fixture", [
+      "-e",
+      "process.stdout.write('out-marker'); process.stderr.write('err-marker'); process.exitCode = 23",
+    ]);
+    await expect(awaitServing(child)).rejects.toThrow(
+      /exited before serving\n.*code=23 signal=null closeObserved=true\nstdout tail: out-marker\nstderr tail: err-marker/,
+    );
+  } finally {
+    expect(await fixture.dispose()).toEqual([]);
+  }
+});
 
 it("runs the built daemon's writer lease through its default endpoint and stop paths", async ({
   task,
@@ -339,7 +373,7 @@ it("runs the built daemon's writer lease through its default endpoint and stop p
       }
       await delay(500);
     }
-    expect(await within(first.finished, 30_000, "first daemon exit")).toMatchObject({
+    expect(await waitForClose(first, 30_000)).toMatchObject({
       code: 0,
       signal: null,
     });
@@ -367,7 +401,7 @@ it("runs the built daemon's writer lease through its default endpoint and stop p
       timings[label] = stop.ms;
       expect(stop.code, stop.stderr).toBe(0);
       expect(JSON.parse(stop.stdout)).toMatchObject({ stopped: true, outcome: "exited" });
-      expect(await within(daemon.finished, 30_000, `${daemon.label} exit`)).toMatchObject({
+      expect(await waitForClose(daemon, 30_000)).toMatchObject({
         code: 0,
         signal: null,
       });

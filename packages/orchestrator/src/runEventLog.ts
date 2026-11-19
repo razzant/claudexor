@@ -132,6 +132,7 @@ export async function beginAnnouncedRun(
     ledger,
     () => authority?.hasParent(runId) === true,
   );
+  runContext.stopSender = input.stopSender;
   announce(runContext);
   safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
   await announcePreparedProjectGitInitialization(input, log);

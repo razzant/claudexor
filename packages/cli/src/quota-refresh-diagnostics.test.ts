@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { refreshClaudeOauthUsageQuota, forgetClaudeOauthRejections } from "./claude-oauth-usage.js";
+import { openStartupDiagnostics } from "./daemon-admission-runtime.js";
 import type { QuotaRefreshDiagnostic } from "./quota-refresh-diagnostics.js";
+import { readDaemonDiagnosticTail } from "./startup-diagnostics.js";
 
 describe("quota observation diagnostics", () => {
   let previous: string | undefined;
@@ -91,6 +93,36 @@ describe("quota observation diagnostics", () => {
       },
     });
     expect(successful.snapshots).toHaveLength(1);
+  });
+
+  it("retains one terminal receipt for many unnamed Claude windows", async () => {
+    const path = join(root, "claudexord.log");
+    const log = openStartupDiagnostics({ version: "test", sha: "test", entry: "test" }, { path });
+    const limits = Array.from({ length: 400 }, () => ({ kind: "weekly_scoped", percent: 50 }));
+    try {
+      const result = await refreshClaudeOauthUsageQuota({
+        readCredential: async () => credential,
+        fetchUsage: async () => ({ ...usage, limits }),
+        now: () => new Date(now),
+        diagnostic: log.logQuotaObservation,
+      });
+      expect(result.snapshots).toHaveLength(1);
+      const receipts = readDaemonDiagnosticTail({ path })
+        .text.split("\n")
+        .filter((line) => line.includes("quota.observation"))
+        .map((line) => JSON.parse(/^\[[^\]]+\] quota\.observation (\{.*\})$/.exec(line)![1]!));
+      expect(receipts).toHaveLength(2);
+      expect(receipts[0]).toMatchObject({ stage: "usage_http", outcome: "started" });
+      expect(receipts[1]).toMatchObject({
+        operationId: receipts[0].operationId,
+        stage: "usage_http",
+        outcome: "succeeded",
+        reason: expect.stringContaining("windows_observed; unknown_scope=weekly_scoped:scoped"),
+      });
+      expect(receipts[1].omittedTextBytes).toBeGreaterThan(0);
+    } finally {
+      log.close();
+    }
   });
 
   it("retains native child and expiry observations without guessing who wrote the store", async () => {

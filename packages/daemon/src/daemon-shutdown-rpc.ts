@@ -1,4 +1,15 @@
+import { type CancelReasonCode, DaemonStopSender } from "@claudexor/schema";
 import type { DaemonLeaseOwner } from "./writer-lease.js";
+
+export class JobAbortController extends AbortController {
+  stopSender?: DaemonStopSender;
+
+  shutdown(sender?: DaemonStopSender): void {
+    if (this.signal.aborted) return;
+    this.stopSender = sender;
+    this.abort("host_cancelled" satisfies CancelReasonCode);
+  }
+}
 
 export interface RuntimeReplacementIdentity {
   version: string;
@@ -75,14 +86,16 @@ export function dispatchShutdownRpc(
   params: unknown,
   transientActivity: number,
   readRecords: () => Iterable<{ state: string }>,
-  requestOperatorShutdown: () => Promise<void>,
+  requestOperatorShutdown: (sender: DaemonStopSender) => Promise<void>,
   requestRuntimeReplacement?: () => Promise<void>,
   configuredRuntimeIdentity?: RuntimeReplacementIdentity,
   configuredLeaseOwner?: Pick<DaemonLeaseOwner, "pid" | "token">,
 ): DaemonShutdownRpcReceipt | null {
   if (method === "claudexor.shutdown") {
+    const value = params && typeof params === "object" && "sender" in params ? params.sender : null;
+    const sender = DaemonStopSender.safeParse(value).data ?? {};
     setTimeout(() => {
-      void requestOperatorShutdown().catch(() => {
+      void requestOperatorShutdown(sender).catch(() => {
         // Fail closed: the process and ownership lease remain alive. The
         // composition root records the detailed failure in its private log.
       });

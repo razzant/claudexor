@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ControlRunDetail } from "@claudexor/schema";
 import { afterEach, expect, it } from "vitest";
 import { cli, makeSandbox, readEvents, type Sandbox } from "./support.js";
 
@@ -114,6 +115,58 @@ async function continueRun(api: Api, from: string) {
   });
 }
 const terminal = (r: Run) => !["queued", "running"].includes(r.state);
+
+it("[INV-116:daemon-stop-sender] reopens the cancelled run with the CLI sender in its timeline", async () => {
+  sandbox = makeSandbox();
+  const sb = sandbox;
+  startDaemon(sb);
+  const api = requestApi(sb);
+  expect((await api("POST", "/projects", { root: sb.repo })).status).toBeLessThan(300);
+  const earlier = await hang(api, sb.repo);
+  const cancelled = await api("POST", `/runs/${earlier.runId}/control`, {
+    control: { kind: "cancel", reason_code: "host_cancelled" },
+  });
+  expect(cancelled.status).toBeLessThan(300);
+  await waitForRun(api, earlier.jobId, terminal);
+  const earlierPath = `/runs/${earlier.runId}`;
+  const before = await api<ControlRunDetail>("GET", earlierPath);
+  expect(before.status).toBe(200);
+  expect(before.body.runFacts?.outcome.reason).toBe("host_cancelled");
+  const run = await hang(api, sb.repo);
+
+  const stopped = cli(sb, ["daemon", "stop", "--json"]);
+  expect(stopped.code, stopped.stderr + stopped.stdout).toBe(0);
+  expect(stopped.json()).toMatchObject({ stopped: true, outcome: "exited" });
+  const logs = cli(sb, ["daemon", "logs", "--json"]);
+  expect(logs.code, logs.stderr + logs.stdout).toBe(0);
+  const line = (logs.json() as { log_tail: string }).log_tail;
+  const request =
+    /shutdown requested \(socket-rpc stop\) \((client-reported: claudexor-cli version=\d+\.\d+\.\d+ pid=\d+ ppid=\d+)\)/;
+  const sender = line.match(request)?.[1];
+  expect(sender).toBeDefined();
+  expect(sender).toContain(` ppid=${process.pid}`);
+
+  startDaemon(sb);
+  const detail = await api<ControlRunDetail>("GET", `/runs/${run.runId}`);
+  expect(detail.status).toBe(200);
+  expect(detail.body.runFacts?.outcome).toMatchObject({
+    lifecycle: "cancelled",
+    reason: "host_cancelled",
+  });
+  expect(detail.body.timeline.filter((row) => row.type === "run.failed")).toEqual([
+    expect.objectContaining({
+      detail: expect.stringContaining(`Daemon Stop requested (${sender})`),
+    }),
+  ]);
+  const summary = readFileSync(join(run.runDir, "final", "summary.md"), "utf8");
+  expect(summary).toContain("- Reason: host_cancelled");
+  expect(summary).not.toContain("client-reported");
+  expect(detail.body.primaryOutput?.text ?? "").not.toContain("client-reported");
+  const prior = await api<ControlRunDetail>("GET", earlierPath);
+  expect(prior.status).toBe(200);
+  expect(prior.body.timeline).toEqual(before.body.timeline);
+  expect(prior.body.primaryOutput).toEqual(before.body.primaryOutput);
+});
 
 it("[INV-142:continuation-lifecycle] continues cancelled and recovered work, and respects project retirement", async () => {
   sandbox = makeSandbox();
