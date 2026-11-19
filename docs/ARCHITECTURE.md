@@ -3744,15 +3744,24 @@ plus the first normal-admission snapshot. It is also available in recovery-only
 mode, where admission memory is null until normal admission has opened. Sampling
 does not force GC or materialize retained commands; total job count comes from
 SQL and active/queued counts come from the existing live runner lifecycle.
-`loop` carries the last completed ten-second window of event-loop facts: delay
-p50/p99/max from `monitorEventLoopDelay` (sampled at 10 ms, so an idle loop's
-p50 sits near 10 ms, and reset every window), the `eventLoopUtilization` busy
-share, and the GC pauses a `PerformanceObserver` saw (count, total, longest).
-It is null until the first window completes; a stalled loop rolls its window
-late, so `windowMs` grows with the stall. `claudexor daemon status` prints the
-same window as one line. The status route reaches the daemon in process, so it
-answers while the loop is merely slow.
-The `store` facts report flusher state, interval, last barrier and lag, WAL bytes,
+`claudexor daemon status` shows the last completed `loop` window (initially
+null) with p50/p99/max delay (`monitorEventLoopDelay`, 10 ms sampling, idle
+p50 near 10 ms), `eventLoopUtilization` busy share and GC pauses (count, total,
+longest). A late timer extends the ten-second `windowMs`. A blocked timer leaves
+it stale. Maximum delay or late close ≥1 s records `loop_stall` with current
+RSS and heap used in bytes. `worstSyncInWindow` filters the lifetime top 32 by
+end time. Timing alone cannot identify the cause.
+
+The root owner writes JSON stages and `[time] message` lines to `claudexord.log`
+(16 KiB per record, 256 KiB per generation). Opens check parent privacy, owner,
+type and link count, with nonblocking flags where supported. Each oversized
+legacy file gets its own discard receipt. Rename replaces `.1`. A later write retries
+a failed rename or reopen. `claudexord.rare.log` and its `.1` (256 KiB each)
+retain stalls and Stops across quota rotation. `daemon logs` shows the current
+main tail and up to 40 lines across both rare generations (`rare_tail` in JSON).
+Read errors name the generation.
+
+The status `store` facts report flusher state, interval, last barrier and lag, WAL bytes,
 open obligations, busy waits, request-thread COMMIT timing since the store opened
 ([SQLite engine store](#sqlite-engine-store)), integrity and current import
 progress. A field is null when its owner cannot observe it; pending integrity is
@@ -5527,8 +5536,8 @@ read-modify-write of `harness-metrics.json`), `file.write_text` (a remaining
 synchronous text or JSON write, which creates its directory only when the write
 proves it missing), `file.capture_write` (a chunk of a Git child's output streamed
 to its capture file: the capture projection is synchronous and the child's output
-has no other backpressure) and `daemon.log_line` (a daemon log line: the startup
-diagnostics writer rotates the same file with synchronous calls).
+has no other backpressure) and `daemon.log_line` (a daemon log line through the
+bounded writer, which rotates with synchronous calls).
 
 **Not covered yet.** These synchronous sites run on paths whose count grows with
 work and are not converted or labeled: resolving and inspecting each spawned
@@ -5564,19 +5573,20 @@ whole-store recovery are described under
 [Legacy import and recovery](#legacy-import-and-recovery), and a complete
 pre-upgrade backup under [Upgrade backup and restore](#upgrade-backup-and-restore).
 
-Every shutdown trigger — SIGTERM/SIGINT, the `claudexor.shutdown` socket RPC,
-a startup failure — enters ONE state machine (`DaemonRuntimeShutdown
-.beginShutdown(reason)`): abort in-flight runs, complete their committed
-terminal transitions, await storage/worker cleanup, let every line still queued
-on the ordered appender land (a failure nobody awaited is logged and never keeps
-the store open) and close the SQL store under
-one shared bounded escalation ladder (hung-stop deadline, then a post-stop leaked-handle sweep, every rung
-disclosed in the log). Awaiting-user interactive login runners are the one
-exemption: the shutdown drain does NOT signal them (a detached Terminal login
-survives an ordinary daemon bounce and is reconciled on the next start;
-explicit cancel is the only killer). A hung participant cannot immortalize the
-daemon whichever trigger asked it to die. Runtime replacement uses a separate
-internal socket operation: in one synchronous event-loop turn the daemon checks
+SIGTERM/SIGINT, the `claudexor.shutdown` socket RPC and startup failure all enter
+`DaemonRuntimeShutdown.beginShutdown`. It fences admission and starts cancellation
+before logging the request. It drains committed run transitions, storage, workers
+and queued run appends before closing the SQL store. An unobserved append
+failure is logged and still allows the store to close. Awaiting-user interactive
+login runners survive ordinary Stop and reconcile on restart. Only explicit
+cancel signals them.
+
+A stop deadline or leaked-handle timer tries both open logs when it fires.
+At close the daemon reserves space in rare history (main on failure) and
+releases both writers. A late timer fills its matching inode and bytes in either generation.
+Eviction drops the receipt. Exit proceeds when I/O returns, even after a partial
+write. `daemon logs` hides the reservation. A failed start reports its cleanup separately.
+Runtime replacement uses a separate internal socket operation. In one turn the daemon checks
 its queued/running/in-flight command authority, the composition root checks the
 setup authority, including terminal jobs whose process termination remains
 unconfirmed, and only an idle result enters `beginShutdown`, whose
@@ -9060,7 +9070,8 @@ version answer. A missing answer gets one immediate second read before a
 verification decision, including the initial selection, conversion, cleanup and
 exact-version checks. Ordinary profile cleanup runs only after the result answers;
 its acknowledgment includes that observation. Interrupted-hide recovery still runs
-when the program does not answer.
+when the program does not answer; the selection is read again before the vendor
+command only when a recovery started to change something.
 If the second read answers, the receipt records one limitation. The final
 observation after all mutations determines verification; no vendor command is
 repeated and no sleep is added; a second read can take its own ten-second limit.
@@ -9085,8 +9096,10 @@ runs the vendor installer, resolves with old launchers masked and requires a
 replacement that answers `--version` and is not known to be older by the adapter's
 version ordering before retiring the old package and launcher. An adapter
 with a declared major requires that line, including before an exact-version
-command; OpenCode 2.x cannot replace its product-made 1.x copy. An unorderable
-version is acceptable only when no declared major excludes it. The installer's status and lines remain in the receipt;
+command; OpenCode 2.x cannot replace its product-made 1.x copy. A plain vendor
+command that leaves another major selected ends `program_unsupported_major`,
+naming the observed version; its actual change is recorded and kept, never rolled
+back. An unorderable version is acceptable only when no declared major excludes it. The installer's status and lines remain in the receipt;
 a nonzero exit can complete conversion with a limitation when the resulting
 program passes the same proof; otherwise that exit stays the problem and the
 conversion's own code and message become a limitation. A vendor that already removed npm completes
@@ -9754,17 +9767,17 @@ code touching one of these areas must honor it or change it explicitly here.
   allowlisted windows in the external v3 root and composes/restores any
   existing display command. Per-run budget observations remain run evidence,
   not quota authority.
-- Quota operation diagnostics reuse the daemon log (`quota.observation`): source,
-  profile, operation id, time, cause, known currentness and native binary/child
-  facts are non-secret metadata. A physical Claude usage HTTP attempt, a skipped
-  token, and a Codex native RPC are different observations; an RPC does not imply
-  one HTTP request. An Agy `poll` receipt records one account's quota read
-  (its `/quota` and `/model` print commands) or why it was skipped, not a count
-  of vendor requests; a read's started and terminal receipts share one operation
-  id, and each skip has its own. Native refresh receipts describe observed
-  expiry and child outcome, not an inferred writer or reconstructed historical
-  credential loss.
-  Retry-After and existing foreground/background polling rules are unchanged.
+- Each `[time] quota.observation {json}` line in the main log records the source,
+  profile, operation id, time, cause and known currentness. Oversized receipts
+  keep the operation id, stage and outcome. `omittedTextBytes` counts UTF-8
+  text bytes dropped after redaction. Claude reports physical HTTP attempts
+  separately from skipped tokens. Codex reports native RPCs. Their HTTP request
+  count is unknown.
+  An Agy `poll` records one account's quota read (`/quota` and `/model`) or its
+  skip reason. Started and terminal receipts share an id and each skip has its
+  own. Native refresh reports the observed binary, expiry and child outcome.
+  The writer of the credential and any historical loss can remain unknown.
+  Polling and Retry-After use the existing foreground and background rules.
 - The `verify` intent is reserved: the shipped FinalVerifier is
   deterministic-only (fresh-tree apply + gates, no model), so no engine path
   requests verify-intent routing; the value stays for a future model-backed

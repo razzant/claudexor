@@ -78,6 +78,7 @@ describe("held terminal, late throw (fix round 4 item 3 / Astra R1)", () => {
             spend: () => root.spend(),
             valuation: () => root.valuation(),
             spendEstimated: () => root.estimated(),
+            stopSender: () => (controller.signal.aborted ? { pid: 101 } : undefined),
             // Only a Delegate parent owns a child drain; its cancel stays live.
             ...(delegate
               ? { budgetTerminal: () => root.terminal(), recheckBudgetAfterBarrier: () => true }
@@ -104,7 +105,16 @@ describe("held terminal, late throw (fix round 4 item 3 / Astra R1)", () => {
       const published = terminals(paths.eventsPath);
       expect(published).toHaveLength(1);
       expect(published[0]?.lifecycle).toBe(lifecycle);
-      if (!delegate) expect(published[0]?.type).toBe("run.completed");
+      const terminal = readRunEvents(paths.eventsPath).events.at(-1)!;
+      if (delegate) {
+        expect(terminal.payload.detail).toContain(
+          "Daemon Stop requested (client-reported: pid=101)",
+        );
+      } else {
+        expect(published[0]?.type).toBe("run.completed");
+        expect(terminal.payload.detail).toBeUndefined();
+        expect(readFileSync(join(paths.finalDir, "summary.md"), "utf8")).toBe("done\n");
+      }
     },
   );
 });

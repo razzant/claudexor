@@ -1,7 +1,12 @@
+import { describeStopSender, type DaemonStopSender } from "@claudexor/schema";
 import { orderedAppender, redactSecrets } from "@claudexor/util";
 
 export interface RuntimeStopParticipant {
   stop(): Promise<void>;
+}
+
+interface DaemonStopParticipant {
+  stop(sender?: DaemonStopSender): Promise<void>;
 }
 
 export interface RuntimeSetupParticipant {
@@ -15,12 +20,14 @@ export interface RuntimeJournalParticipant {
 }
 
 export interface DaemonRuntimeShutdownOptions {
-  daemon: RuntimeStopParticipant;
+  daemon: DaemonStopParticipant;
   setup: RuntimeSetupParticipant;
   control: () => RuntimeStopParticipant | null;
   journal: RuntimeJournalParticipant;
   /** Shutdown diagnostics sink (must never throw); silent by default. */
   log?: (message: string) => void;
+  /** One diagnostic at the instant a timer fires. Defaults to the normal log. */
+  logForcedExit?: (message: string) => void;
   /** Injectable force-exit (tests); defaults to process.exit. */
   forceExit?: (code: number) => void;
   /** Observes a failed participant stop; defaults to process.exitCode = 1. */
@@ -35,7 +42,7 @@ export interface DaemonRuntimeShutdownOptions {
  * the current owner at stop time: storage recovery and admission replace both. */
 export interface ProductionDaemonStopOptions {
   abort(): void;
-  server(): RuntimeStopParticipant;
+  server(): DaemonStopParticipant;
   closeExecutors(): void;
   stopRetention(): Promise<void>;
   opening(): Promise<void> | null;
@@ -46,12 +53,12 @@ export interface ProductionDaemonStopOptions {
  * is accepted while an in-flight retention pass drains. Every cleanup is
  * started and held in the same turn, so a failed stop has a handler at once and
  * still fails the shutdown (keeping the journal open) after the others settle. */
-export function productionDaemonStop(options: ProductionDaemonStopOptions): RuntimeStopParticipant {
+export function productionDaemonStop(options: ProductionDaemonStopOptions): DaemonStopParticipant {
   return {
-    stop: async () => {
+    stop: async (sender) => {
       options.abort();
       const results = await Promise.allSettled(
-        [() => options.server().stop(), options.closeExecutors, options.stopRetention].map(
+        [() => options.server().stop(sender), options.closeExecutors, options.stopRetention].map(
           async (step) => step(),
         ),
       );
@@ -72,10 +79,8 @@ export function productionDaemonStop(options: ProductionDaemonStopOptions): Runt
  * hung-stop deadline, then post-stop leaked-handle sweep). It stops ingress
  * and setup work, lets every line still queued on the ordered appender land
  * (each landing's durable sink writes the store), and only then closes the
- * journal they write to; a hung participant or a leaked handle can no longer
- * immortalize the daemon, whichever trigger asked it to die. Every rung is
- * DISCLOSED in the log and every timer is unref'd so the ladder itself never
- * keeps a clean process alive. Nothing outside the machine can disarm it: the
+ * journal they write to. Each exit timer attempts one diagnostic when it fires.
+ * Both are unref'd so they allow a clean process to exit naturally. The
  * clean-stop continuation itself clears the hung-stop deadline (the exit-1
  * hazard), a FAILED stop keeps that deadline armed to guarantee termination,
  * and the drain sweep is deliberately uncancellable — the F2.5 finalize() hook
@@ -125,14 +130,17 @@ export class DaemonRuntimeShutdown {
     return this.beginShutdown(reason);
   }
 
-  beginShutdown(reason: string): Promise<void> {
+  beginShutdown(reason: string, sender?: DaemonStopSender): Promise<void> {
+    const source = () => (sender ? ` (${describeStopSender(sender)})` : "");
     if (this.requestedValue) {
-      this.log(`shutdown already in progress (${reason} coalesced)`);
+      queueMicrotask(() =>
+        this.log(`shutdown already in progress (${reason} coalesced)${source()}`),
+      );
       return this.completion;
     }
     this.requestedValue = true;
-    this.log(`shutdown requested (${reason})`);
     const stopDeadlineMs = this.options.stopDeadlineMs ?? 15_000;
+    const drainGraceMs = this.options.drainGraceMs ?? 2_000;
     this.deadlineTimer = this.armExitTimer(
       stopDeadlineMs,
       `graceful stop exceeded ${stopDeadlineMs}ms; forcing exit`,
@@ -160,8 +168,12 @@ export class DaemonRuntimeShutdown {
     } catch (error) {
       failures.push(error);
     }
-    start(() => this.options.daemon.stop());
+    start(() => this.options.daemon.stop(sender));
     start(() => this.options.setup.shutdown());
+    this.log(
+      `shutdown requested (${reason})${source()}; force-exit deadline ${stopDeadlineMs}ms, ` +
+        `leaked-handle grace after a clean stop ${drainGraceMs}ms`,
+    );
 
     void Promise.allSettled(operations).then(async (results) => {
       for (const result of results) {
@@ -198,7 +210,6 @@ export class DaemonRuntimeShutdown {
       // still exits nonzero.
       if (this.deadlineTimer) clearTimeout(this.deadlineTimer);
       this.deadlineTimer = null;
-      const drainGraceMs = this.options.drainGraceMs ?? 2_000;
       this.armExitTimer(
         drainGraceMs,
         `event loop still alive ${drainGraceMs}ms after a clean stop (leaked handle); forcing exit`,
@@ -234,16 +245,16 @@ export class DaemonRuntimeShutdown {
   private armExitTimer(ms: number, reason: string, code?: number): ReturnType<typeof setTimeout> {
     const forceExit = this.options.forceExit ?? ((exitCode: number) => process.exit(exitCode));
     const t = setTimeout(() => {
-      this.log(reason);
+      this.log(reason, this.options.logForcedExit);
       forceExit(code ?? Number(process.exitCode ?? 0));
     }, ms);
     t.unref?.();
     return t;
   }
 
-  private log(message: string): void {
+  private log(message: string, sink = this.options.log): void {
     try {
-      this.options.log?.(message);
+      sink?.(message);
     } catch {
       /* shutdown safety must not depend on diagnostic I/O */
     }

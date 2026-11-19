@@ -3,7 +3,13 @@ import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { DaemonLoopFacts } from "@claudexor/schema";
 import { afterEach, describe, expect, it } from "vitest";
-import { LoopFactsWindow, loopFacts, startLoopFacts } from "./loop-facts.js";
+import {
+  isDelayedLoopWindow,
+  LOOP_STALL_THRESHOLD_MS,
+  LoopFactsWindow,
+  loopFacts,
+  startLoopFacts,
+} from "./loop-facts.js";
 
 const stops: Array<() => void> = [];
 afterEach(() => {
@@ -69,5 +75,35 @@ describe("startLoopFacts / loopFacts", () => {
     expect(facts.windowMs).toBeGreaterThan(0);
     stop();
     expect(loopFacts()).toBeNull();
+  });
+});
+
+describe("delayed loop windows (#707)", () => {
+  const facts = (windowMs: number, maxMs: number | null): DaemonLoopFacts => ({
+    windowMs,
+    windowEndedAt: "2026-11-17T12:00:00.000Z",
+    delay: maxMs === null ? null : { resolutionMs: 10, samples: 3, p50Ms: 10, p99Ms: maxMs, maxMs },
+    utilization: null,
+    gc: { count: 0, totalMs: 0, maxMs: 0 },
+  });
+
+  it("counts a long delay sample or a late close, never a missing histogram", () => {
+    const at = LOOP_STALL_THRESHOLD_MS;
+    expect(isDelayedLoopWindow(facts(10_000, at), 10_000)).toBe(true);
+    expect(isDelayedLoopWindow(facts(10_000 + at, null), 10_000)).toBe(true);
+    expect(isDelayedLoopWindow(facts(10_000 + at - 1, at - 1), 10_000)).toBe(false);
+    expect(isDelayedLoopWindow(facts(10_000, null), 10_000)).toBe(false);
+  });
+
+  it("hands each closed window to the observer, whose failure never stops the facts", async () => {
+    const seen: DaemonLoopFacts[] = [];
+    const stop = startLoopFacts(20, (window) => {
+      seen.push(window);
+      throw new Error("observer failed");
+    });
+    stops.push(stop);
+    for (let i = 0; i < 250 && seen.length < 2; i += 1) await turn(20);
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(loopFacts()).toBe(seen.at(-1));
   });
 });

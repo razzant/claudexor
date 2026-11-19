@@ -207,6 +207,12 @@ export function emptyMaintenanceEvidence(
   };
 }
 
+/** A problem code needs at least one character; an empty or non-string thrown
+ * or recorded code yields the owning path's fallback instead of a throw. */
+export function maintenanceProblemCode(code: unknown, fallback: string): string {
+  return typeof code === "string" && code.length > 0 ? code : fallback;
+}
+
 /** One vendor operation under the installation HOME. Newest lookup is never
  * an update prerequisite. Package metadata is consulted only for conversion. */
 export async function runHarnessUpdate(
@@ -268,17 +274,20 @@ export async function runHarnessUpdate(
     const cleanup =
       options.planProfileProgramCleanup ??
       (!options.program ? harnessProgramAdapter(harness)?.planProfileProgramCleanup : undefined);
+    /** True once removal may have started, even if it then failed part-way. */
     const cleanupProfiles = async (recoverOnly: boolean, selected: SelectedHarnessProgram) => {
-      if (!cleanup || options.dryRun) return;
+      if (!cleanup || options.dryRun) return false;
+      let executing = false;
       try {
         const profiles =
           options.credentialProfiles ?? loadConfig(noProjectRepoRoot()).global.credential_profiles;
         const plan = cleanup(profiles, selected, { recoverOnly });
         receipt.limitations.push(...plan.limitations.map(redactSecrets));
-        if (!plan.paths.length) return;
+        if (!plan.paths.length) return false;
         receipt.profileCleanup ??= { plannedPaths: [], removedPaths: [] };
         receipt.profileCleanup.plannedPaths.push(...plan.paths);
         await options.beforeMutation?.(receipt);
+        executing = true;
         const result = plan.execute(() => resolveSelectedProgram(program!, runtime!));
         receipt.profileCleanup.removedPaths.push(...result.removed);
         receipt.limitations.push(...result.limitations.map(redactSecrets));
@@ -288,6 +297,7 @@ export async function runHarnessUpdate(
           `Profile program cleanup did not finish: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
         );
       }
+      return executing;
     };
     // Unavailable actions cannot mutate even profile copies. Healthy repeated
     // Install is an idempotent read; broken Install still gets recovery first.
@@ -307,8 +317,9 @@ export async function runHarnessUpdate(
       cleaned ||= recovered.changed;
       if (recovered.changed) before = observe();
     }
-    await cleanupProfiles(true, before);
-    if (cleanup) before = observe();
+    // A recovery pass that planned nothing cannot have moved the selection; a
+    // mute program would otherwise spend another version-check budget here.
+    if (await cleanupProfiles(true, before)) before = observe();
     const data = programPlatform(program, runtime.platform);
     const copy = productNpmCopy(program, before, runtime);
     if (version && program.majorVersion && Number(version.split(".")[0]) !== program.majorVersion)
@@ -428,9 +439,9 @@ export async function runHarnessUpdate(
       if (!installerFailure) throw error;
       // The installer's own exit stays the problem; the conversion's reason
       // must not disappear behind it.
-      const code = (error as { code?: unknown } | null)?.code;
+      const code = maintenanceProblemCode((error as { code?: unknown } | null)?.code, "");
       receipt.limitations.push(
-        `After the installer exited ${installerExit}, npm copy conversion failed${typeof code === "string" ? ` (${code})` : ""}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+        `After the installer exited ${installerExit}, npm copy conversion failed${code ? ` (${code})` : ""}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
       );
       throw installerFailure;
     }
@@ -442,7 +453,7 @@ export async function runHarnessUpdate(
   } catch (error) {
     const code = (error as { code?: unknown } | null)?.code;
     receipt.problem = ControlProblem.parse({
-      code: typeof code === "string" ? code : "maintenance_failed",
+      code: maintenanceProblemCode(code, "maintenance_failed"),
       message: redactSecrets(error instanceof Error ? error.message : String(error)),
       retryable: true,
     });
@@ -479,6 +490,23 @@ export async function runHarnessUpdate(
           : started && !receipt.ok
             ? "unknown"
             : "none";
+      // A plain vendor upgrade may follow the vendor's newest line past the
+      // adapter's declared major. The observed effect stays recorded as is.
+      const major = receipt.after.version?.split(".")[0];
+      if (
+        receipt.ok &&
+        started &&
+        program.majorVersion &&
+        major !== undefined &&
+        Number(major) !== program.majorVersion
+      ) {
+        receipt.ok = false;
+        receipt.problem = ControlProblem.parse({
+          code: "program_unsupported_major",
+          message: `After the vendor command, the selected ${harness} reports ${receipt.after.version}; Claudexor supports only ${program.majorVersion}.x (#668). The installed program was kept; nothing was rolled back.`,
+          retryable: false,
+        });
+      }
       receipt.limitations = [...new Set(receipt.limitations)];
     }
     receipt.phase = "settled";

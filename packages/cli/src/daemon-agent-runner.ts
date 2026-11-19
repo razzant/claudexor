@@ -273,6 +273,7 @@ export function createDaemonAgentRunner(deps: {
         processingIntent: exactRetryProcessingIntent(p, deps.commands, repoRoot),
         inPlace,
         signal: timeLimit.signal,
+        stopSender: ctx.stopSender,
         onRunStart,
       })
       .finally(() => {

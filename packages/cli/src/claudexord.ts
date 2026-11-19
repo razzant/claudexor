@@ -72,7 +72,7 @@ export async function main(): Promise<void> {
   const log = (message: string) => diagnostics.log("sql_runtime", message);
   const admission = new DaemonStartupAdmission();
   const abort = new AbortController();
-  let cleanShutdown = true;
+  let cleanupSucceeded = true;
   let stopRetention: () => Promise<void> = async () => {};
   let shutdown: DaemonRuntimeShutdown | null = null;
   let lifecycle: ReturnType<typeof armDaemonLifecycle> | null = null;
@@ -130,7 +130,7 @@ export async function main(): Promise<void> {
         onCommandTerminal: (record) => executors?.onCommandTerminal(record),
         onRunTerminal: (runId, threadId) => executors?.onRunTerminal(runId, threadId),
         onTurnEnqueueFailed: (turnId, problem) => executors?.onTurnEnqueueFailed(turnId, problem),
-        onShutdownRequested: () => shutdown!.beginShutdown("socket-rpc stop"),
+        onShutdownRequested: (sender) => shutdown!.beginShutdown("socket-rpc stop", sender),
         onRuntimeReplacementRequested: () => shutdown!.beginRuntimeReplacement(),
         runner: (params, ctx) => {
           if (!executors) throw recoveryOnlyRefusal("runner");
@@ -207,7 +207,7 @@ export async function main(): Promise<void> {
       graph: {
         purgeFiles: startupPurgeEffect(noProjectRepoRoot(), laneCredentialStores, abort.signal),
         log,
-        refreshers: quotaRefreshers((record) => log(`quota.observation ${JSON.stringify(record)}`)),
+        refreshers: quotaRefreshers(diagnostics.logQuotaObservation),
         subjects: quotaSubjectUniverseFromConfig,
         pacerStore: quotaPacerFileStore(daemonDir()),
       },
@@ -298,12 +298,12 @@ export async function main(): Promise<void> {
           await storage?.close();
         },
       },
-      log,
+      log: (message) => diagnostics.log("shutdown", message),
+      logForcedExit: diagnostics.logForcedExit,
     });
     lifecycle = armDaemonLifecycle({
       daemonDir: daemonDir(),
-      logPath: logPath(),
-      ...(diagnostics.diagnostics ? { diagnostics: diagnostics.diagnostics } : {}),
+      diagnostics: diagnostics.port,
       beginShutdown: (reason) => shutdown!.beginShutdown(reason),
       scopeCapture: daemonRunScopeIndex(),
     });
@@ -338,11 +338,10 @@ export async function main(): Promise<void> {
           const roots = sqlReads.sqlStartupRoots(value.store);
           await runStartupCrashGc({
             daemonDir: daemonDir(),
-            logPath: logPath(),
             knownProjectRoots: roots.projects,
             knownExecutionRoots: roots.execution,
             runScopes: daemonRunScopeIndex(),
-            ...(diagnostics.diagnostics ? { diagnostics: diagnostics.diagnostics } : {}),
+            diagnostics: diagnostics.port,
           });
           if (shutdown!.requested()) return;
           for (const sweep of sweepRetiredConfigKeysAtStartup())
@@ -395,7 +394,6 @@ export async function main(): Promise<void> {
     }
     await shutdown.wait();
     await lifecycle.finalize();
-    log("claudexord shut down");
     diagnostics.recordStage("shutdown_complete", "claudexord shut down");
   } catch (error) {
     log(`daemon lifecycle FAILED: ${redactSecrets(String(error))}`);
@@ -404,10 +402,12 @@ export async function main(): Promise<void> {
       try {
         await shutdown.beginShutdown("startup failure");
         await lifecycle?.finalize();
-      } catch (shutdownError) {
-        cleanShutdown = false;
+        diagnostics.recordStage("shutdown", "daemon cleanup completed after lifecycle failure");
+      } catch (cause) {
+        cleanupSucceeded = false;
+        diagnostics.port.record({ stage: "shutdown", message: "cleanup failed", error: cause });
         throw new AggregateError(
-          [error, shutdownError],
+          [error, cause],
           "claudexord failed and could not complete shutdown",
         );
       }
@@ -415,8 +415,8 @@ export async function main(): Promise<void> {
     throw error;
   } finally {
     quotaPoller.stop();
-    diagnostics.close();
-    if (cleanShutdown) authority.release();
+    diagnostics.close(shutdown?.requested());
+    if (cleanupSucceeded) authority.release();
   }
 }
 
