@@ -11,8 +11,12 @@ const present = (path: string) => {
 };
 
 /** Hide, observe, then retire. A fixed sibling can also resume an interrupted hide.
- * Callers prove ownership and fence path changes before entering this operation. */
-export function hideProgramPaths(paths: ReadonlyArray<{ path: string; hidden: string }>) {
+ * Callers prove ownership and fence path changes before entering this operation.
+ * The optional hook runs only at a forward rename, after its path check. */
+export function hideProgramPaths(
+  paths: ReadonlyArray<{ path: string; hidden: string }>,
+  beforeForwardRename?: () => void,
+) {
   const moved: Array<{ path: string; hidden: string }> = [];
   const restore = () => {
     for (const { path, hidden } of [...moved].reverse()) {
@@ -26,7 +30,10 @@ export function hideProgramPaths(paths: ReadonlyArray<{ path: string; hidden: st
       if (present(entry.hidden)) {
         if (present(entry.path))
           throw new Error(`Both program and hidden copy exist: ${entry.path}`);
-      } else renameSync(entry.path, entry.hidden);
+      } else {
+        beforeForwardRename?.();
+        renameSync(entry.path, entry.hidden);
+      }
       moved.push(entry);
     }
   } catch (error) {

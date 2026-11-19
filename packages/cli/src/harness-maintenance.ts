@@ -233,6 +233,13 @@ export async function runHarnessUpdate(
   let verifyFinalSelection = !receipt.dryRun;
   let program: HarnessProgram | undefined;
   let runtime: ReturnType<typeof installerRuntime> | undefined;
+  let conversion:
+    | {
+        selection: SelectedHarnessProgram;
+        installerFailure: (Error & { code: string }) | null;
+        installerExit: number | null;
+      }
+    | undefined;
   const observe = () =>
     verifyProgramSelection(() => resolveSelectedProgram(program!, runtime!), receipt.limitations);
   let otherBefore: SelectedHarnessProgram | undefined;
@@ -418,11 +425,14 @@ export async function runHarnessUpdate(
           );
       }
       if (copy) {
-        retireProductNpmCopy(program, copy, runtime, before, receipt.limitations);
-        if (installerFailure)
-          receipt.limitations.push(
-            `The installer exited ${installerExit}, but conversion completed because the selected replacement answers its version and is not known to be older.`,
-          );
+        const { selection } = retireProductNpmCopy(
+          program,
+          copy,
+          runtime,
+          before,
+          receipt.limitations,
+        );
+        conversion = { selection, installerFailure, installerExit };
       }
     } catch (error) {
       if (!installerFailure) throw error;
@@ -451,6 +461,25 @@ export async function runHarnessUpdate(
       // Settle against the last observation, after every mutation. An earlier
       // missed answer cannot leave a verification error beside a healthy after.
       receipt.after = verifyFinalSelection ? observe() : resolveSelectedProgram(program, runtime);
+      if (receipt.ok && conversion) {
+        const { selection, installerFailure, installerExit } = conversion;
+        if (changed(selection, receipt.after)) {
+          const shown = ({ path, realPath, version }: SelectedHarnessProgram) =>
+            JSON.stringify({ path, realPath, version });
+          const message = `Final selection after npm conversion differs from the verified replacement: expected ${shown(selection)}, observed ${shown(receipt.after)}.`;
+          if (installerFailure) receipt.limitations.push(redactSecrets(message));
+          receipt.ok = false;
+          receipt.problem = ControlProblem.parse({
+            code: installerFailure?.code ?? "conversion_verification_failed",
+            message: redactSecrets(installerFailure?.message ?? message),
+            retryable: true,
+          });
+        } else if (installerFailure) {
+          receipt.limitations.push(
+            `The installer exited ${installerExit}, but conversion completed because the selected replacement answers its version and is not known to be older.`,
+          );
+        }
+      }
       if (receipt.ok && verifyFinalSelection && (!receipt.after.path || !receipt.after.version)) {
         receipt.ok = false;
         receipt.problem = ControlProblem.parse({

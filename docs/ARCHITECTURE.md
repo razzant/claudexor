@@ -9034,7 +9034,7 @@ its acknowledgment includes that observation. Interrupted-hide recovery still ru
 when the program does not answer.
 If the second read answers, the receipt records one limitation. The final
 observation after all mutations determines verification; no vendor command is
-repeated and no sleep is added; a second read can take its own ten-second limit.
+repeated and the version recheck adds no sleep; it can take its own ten-second limit.
 A zero child exit alone proves no runnable installation. A dry-run Install of an
 existing program requires the same version answer as a real Install.
 
@@ -9053,8 +9053,8 @@ changed, unchanged, an unselected copy changed, and unknown; none implies rollba
 A product-made npm copy is converted during Update only when its package's bin
 entry proves the launcher's relation inside the product prefix. The operation
 runs the vendor installer, resolves with old launchers masked and requires a
-replacement that answers `--version` and is not known to be older by the adapter's
-version ordering before retiring the old package and launcher. An adapter
+replacement that answers `--version` and is not known to be older than either
+observation of the npm copy (before the installer and before hide). An adapter
 with a declared major requires that line, including before an exact-version
 command; OpenCode 2.x cannot replace its product-made 1.x copy. An unorderable
 version is acceptable only when no declared major excludes it. The installer's status and lines remain in the receipt;
@@ -9071,7 +9071,21 @@ vendor installer did. Only Claude, Codex, Copilot and OpenCode declare old produ
 packages; a person's Grok npm copy is not eligible for conversion. Folder
 containment or stale sibling metadata never authorizes removal of a hand-placed
 wrapper or symlink. Retirement hides the package at the fixed sibling
-`<package>.claudexor-converted`, keeping the launchers in place until removal.
+`<package>.claudexor-converted`. After pruning, an occupied or unreadable old
+path keeps its launchers. If the final selection differs from the verified
+replacement, maintenance reports the change rather than claiming conversion.
+Only a Windows forward rename that fails with `EPERM`, `EACCES`, or `EBUSY`
+may be retried. New attempts can start for up to two seconds after the first
+refusal reaches the conversion code, with pauses and fresh filesystem checks of
+the same package, launchers and replacement entry. The package directory,
+manifest bytes and proven bin identities must still match the original proof
+before hide, on each retry and at the hidden path before pruning. The deadline
+is checked after each pause, after revalidating the source, and just before
+rename. It does not cap wake-up latency or a filesystem call already in progress.
+No vendor command or version probe runs in the retry loop. If refusals exhaust the window,
+the first error is returned; a later path or non-retryable error is reported as
+such. The receipt records the qualifying first error's code, the number of
+actual forward rename calls and elapsed time, even if conversion succeeds.
 If a failed commit check cannot restore it, the failure names the restore error
 and the hidden sibling instead of claiming the old copy is back. Each commit
 refusal names what it compared: the previous and current package/launcher
@@ -9079,8 +9093,9 @@ relation with the ordinary selection it was read from, the expected and observed
 path/real path/version, or a launcher's differing stat fields.
 The next explicit maintenance restores a leftover and applies the same
 version/major/ordering proof to retire it or leave it restored. A linked HOME is
-accepted when the real package parent stays inside the real product prefix. Colliding or
-changed paths are preserved with a limitation; there is no journal or timer.
+accepted when the real package parent stays inside the real product prefix.
+Observed collisions or changes leave those paths in place with a limitation;
+recovery has no journal or background timer.
 
 The inventory exposes action command previews, newest observation time/failure,
 selected identity, last operation and optional release notes. The engine's
