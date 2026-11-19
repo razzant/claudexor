@@ -1,0 +1,74 @@
+name: Windows Copilot npm conversion
+
+# One qualification on the reviewed repair branch. The regular vendor smoke
+# still exercises the real installers in required CI.
+on:
+  push:
+    branches: [fix/copilot-windows-conversion-20261118]
+
+permissions:
+  contents: read
+
+jobs:
+  # The test-only commit sits directly on the product commit, whose parent is
+  # the unmodified control. Exercise the contributor gate on product bytes.
+  portable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the product commit without the test harness
+        run: git switch --detach HEAD^1 && git rev-parse HEAD
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm release:verify:node
+
+  compare:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      C672_BASE_SHA: 0ff3df717c2e807fdbd3a233487e35d81993fdea
+      CLAUDEXOR_SKIP_WIN32_CONPTY_BUILD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec turbo run build --filter=@claudexor/cli
+
+      - name: Run the conversion unit tests on Windows
+        run: pnpm exec vitest run --maxWorkers=1 packages/cli/src/harness-npm-conversion.test.ts
+      - run: node --test scripts/c672/check-conversion-verdict.mjs
+
+      - name: Check out the unmodified control in a second directory
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.C672_BASE_SHA }}
+          path: control
+          persist-credentials: false
+      - run: pnpm install --frozen-lockfile
+        working-directory: control
+      - run: pnpm exec turbo run build --filter=@claudexor/cli
+        working-directory: control
+
+      - name: Compare both CLIs with the same synthetic programs and native file lock
+        run: node scripts/c672/qualify-conversion.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: windows-copilot-conversion
+          path: ${{ runner.temp }}/copilot-conversion-evidence
+          if-no-files-found: error
+          retention-days: 30
