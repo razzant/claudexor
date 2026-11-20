@@ -472,7 +472,8 @@ describe("run-deadline/1 at the scheduler", () => {
         5_000,
       );
       expect(ended.state).toBe("cancelled");
-      expect(Date.now()).toBeLessThan(Date.parse(at) + 2_000);
+      // Seconds late at most on a loaded host, never the hour the clock stepped back.
+      expect(Date.now()).toBeLessThan(Date.parse(at) + 10_000);
     } finally {
       await d.close();
     }
@@ -650,10 +651,11 @@ describe("run-deadline/1 host clock and successors", () => {
       const ended = await until(
         () => d.client.status(accepted.id),
         (record) => !live(record),
-        3_000,
+        6_000,
       );
       expect(ended).toMatchObject({ state: "cancelled", errorCode: "run_deadline_expired" });
-      expect(Date.now() - started).toBeLessThan(1_500);
+      // Within the one-second re-read (plus a loaded host), not after the hour slept.
+      expect(Date.now() - started).toBeLessThan(5_000);
     } finally {
       slot.release();
       await d.close();

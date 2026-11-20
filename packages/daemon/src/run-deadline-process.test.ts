@@ -19,7 +19,15 @@
  * the run's own cgroup).
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -116,13 +124,20 @@ const inMs = (ms: number) => new Date(Date.now() + ms).toISOString();
 function tempDir(): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "d-rdp-")));
   dirs.push(dir);
+  diagnosticDir = dir;
   return dir;
 }
+
+let diagnosticDir: string | null = null;
 
 async function until(check: () => boolean, deadlineMs: number, label: string): Promise<number> {
   for (;;) {
     if (check()) return Date.now();
-    if (Date.now() > deadlineMs) throw new Error(`timed out: ${label}`);
+    if (Date.now() > deadlineMs) {
+      const log = diagnosticDir ? join(diagnosticDir, "daemon.log") : null;
+      const tail = log && existsSync(log) ? readFileSync(log, "utf8").slice(-2_000) : "";
+      throw new Error(`timed out: ${label}${tail ? `\n--- daemon log ---\n${tail}` : ""}`);
+    }
     await sleep(50);
   }
 }
@@ -158,17 +173,23 @@ async function startDaemon(
       "Delegate=yes",
       "-p",
       "KillMode=process",
+      "-p",
+      `StandardOutput=append:${join(dir, "daemon.log")}`,
+      "-p",
+      `StandardError=append:${join(dir, "daemon.log")}`,
       `--working-directory=${HERE}`,
       ...setenv,
       ...argv,
     ]);
     if (started.status !== 0) throw new Error(`systemd-run failed: ${started.stderr}`);
   } else {
+    const log = openSync(join(dir, "daemon.log"), "a");
     child = spawn(argv[0]!, argv.slice(1), {
       cwd: HERE,
-      stdio: "ignore",
+      stdio: ["ignore", log, log],
       env: { ...process.env, ...env },
     });
+    closeSync(log);
   }
   await until(() => readJson(join(dir, "ready")) !== null, Date.now() + 30_000, "daemon ready");
   const ready = readJson<{ pid: number; boundary: string }>(join(dir, "ready"))!;

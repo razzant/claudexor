@@ -392,7 +392,10 @@ export async function runWarden(
       cgroupEmpty = members !== null && members.length === 0;
     }
     const settled = cgroupEmpty && outcomes.every((o) => o.settled);
-    const confirmed = settled && outcomes.every((o) => o.completeness === "complete");
+    // With a cgroup the boundary itself is proven empty; without one only a
+    // complete census proves that no marked process is left.
+    const confirmed =
+      settled && (state.cgroup !== null || outcomes.every((o) => o.completeness === "complete"));
     return { settled, confirmed, outcomes };
   };
 

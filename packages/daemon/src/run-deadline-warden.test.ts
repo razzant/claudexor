@@ -309,7 +309,10 @@ describe("RunDeadlines warden hand-off", () => {
       const remaining = BigInt(written.own!.targetNs) - process.hrtime.bigint();
       if (written.clock === "monotonic") expect(remaining).toBeGreaterThan(55_000_000_000n);
       deadlines.close("job");
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The hand-back is written off the main thread: wait for it to land.
+      const until = Date.now() + 5_000;
+      while ((readWardenState(started[0]!) as WardenState).released !== true && Date.now() < until)
+        await new Promise((resolve) => setTimeout(resolve, 20));
       expect(readWardenState(started[0]!)).toMatchObject({
         released: true,
         frozen: expect.anything(),
