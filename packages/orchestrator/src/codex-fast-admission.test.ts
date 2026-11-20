@@ -73,10 +73,12 @@ function fixture() {
     runCliHarness: async function* (options): AsyncGenerator<HarnessEvent> {
       launches.push(options.spec);
       args.push(options.args);
-      yield* options.parseEvent?.(
-        { type: "thread.started", thread_id: "native" },
-        options.spec.session_id,
-      ) ?? [];
+      yield* (
+        options.parseEvent?.(
+          { type: "thread.started", thread_id: "native" },
+          options.spec.session_id,
+        ) ?? []
+      );
       yield {
         type: "completed",
         session_id: options.spec.session_id,

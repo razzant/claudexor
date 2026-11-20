@@ -328,10 +328,12 @@ it("a model-id effort carrier: ONE prepared result feeds --model, the processing
       observedSpec = opts.spec;
       // The vendor init frame, through the adapter's own parser (which stamps
       // the processing receipt on every event), then the terminal frame.
-      yield* opts.parseEvent(
-        { type: "system", subtype: "init", model: "grok-4.7-xhigh" },
-        opts.spec.session_id,
-      ) ?? [];
+      yield* (
+        opts.parseEvent(
+          { type: "system", subtype: "init", model: "grok-4.7-xhigh" },
+          opts.spec.session_id,
+        ) ?? []
+      );
       yield { type: "completed", session_id: opts.spec.session_id, ts: new Date(0).toISOString() };
     },
   });
