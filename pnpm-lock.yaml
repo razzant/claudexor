@@ -63,8 +63,8 @@ importers:
   packages/acp-server:
     dependencies:
       '@agentclientprotocol/sdk':
-        specifier: 2.6.0
-        version: 2.6.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)
+        specifier: 2.7.0
+        version: 2.7.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)
       '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
@@ -314,8 +314,8 @@ importers:
   packages/harness-acp:
     dependencies:
       '@agentclientprotocol/sdk':
-        specifier: 2.6.0
-        version: 2.6.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)
+        specifier: 2.7.0
+        version: 2.7.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)
       '@claudexor/core':
         specifier: workspace:*
         version: link:../core
@@ -626,8 +626,8 @@ importers:
 
 packages:
 
-  '@agentclientprotocol/sdk@2.6.0':
-    resolution: {integrity: sha512-3FtL6MkAV5F9qxg0FQV8wmBszIm2xuVPoDWOILIFSDQ+Vq3Twdh7Cw6Hk2GOPUbevgrTUpUAqZXQy7Geaj79mw==}
+  '@agentclientprotocol/sdk@2.7.0':
+    resolution: {integrity: sha512-oXdQq0plWv3iOg01zJghNZRSuyWeMYxOgWIaSdwg1BZe2ZAC9LRhNDi023lNYxXq1zVIpQjIp8P6AfsxpvxF6g==}
     peerDependencies:
       '@modelcontextprotocol/server': ^2.4.0
       zod: ^3.25.76 || ^4.0.0
@@ -2160,7 +2160,7 @@ packages:
 
 snapshots:
 
-  '@agentclientprotocol/sdk@2.6.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)':
+  '@agentclientprotocol/sdk@2.7.0(@modelcontextprotocol/server@2.4.0)(zod@4.6.7)':
     dependencies:
       zod: 4.6.7
     optionalDependencies:
