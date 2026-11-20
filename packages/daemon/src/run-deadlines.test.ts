@@ -120,20 +120,23 @@ function slotRunner() {
 }
 
 /** A clock whose host reading can be pushed forward (a late timer, a suspend). */
-function steppedClock() {
+function steppedClock(opts: { frozen?: boolean } = {}) {
   const system = systemDeadlineClock();
+  const hostBase = system.hostNow();
+  const wallBase = Date.now();
   let hostOffset = 0n;
   let wallOffset = 0;
   let jumpAfterRead = 0n;
   const clock: RunDeadlineClock = {
     ...system,
     hostNow: () => {
-      const value = system.hostNow() + hostOffset;
+      // Frozen: only the test moves time (`advanceHost`), never the real clock.
+      const value = (opts.frozen ? hostBase : system.hostNow()) + hostOffset;
       hostOffset += jumpAfterRead;
       jumpAfterRead = 0n;
       return value;
     },
-    wallNow: () => Date.now() + wallOffset,
+    wallNow: () => (opts.frozen ? wallBase : Date.now()) + wallOffset,
   };
   return {
     clock,
@@ -286,39 +289,51 @@ describe("run-deadline/1 at the scheduler", () => {
   });
 
   it("trial 6: a run queued longer than one period starts when renewed and expires when not", async () => {
+    // Virtual time: slow disks or a loaded host must not decide whether a renewal
+    // arrived in time; the daemon reads only this clock.
     const slot = slotRunner();
-    const d = daemon(slot.runner);
-    const period = 1_500;
+    const time = steppedClock({ frozen: true });
+    const d = daemon(slot.runner, { clock: time.clock });
+    const period = 1_000;
+    const ahead = (ms: number) => new Date(time.clock.wallNow() + ms).toISOString();
+    const advance = (ms: number) => {
+      time.advanceHost(ms);
+      time.stepWall(ms);
+    };
     try {
       await d.client.enqueue({ label: "blocker" }, { idempotencyKey: "b", clientId: "t" });
       const renewed = await d.client.enqueue(
-        { label: "renewed", deadline: { at: inMs(period) } },
+        { label: "renewed", deadline: { at: ahead(period) } },
         { idempotencyKey: "r", clientId: "t" },
       );
       const abandoned = await d.client.enqueue(
-        { label: "abandoned", deadline: { at: inMs(period) } },
+        { label: "abandoned", deadline: { at: ahead(period) } },
         { idempotencyKey: "a", clientId: "t" },
       );
       let revision = 0;
       for (let i = 0; i < 6; i += 1) {
         const next = await d.client.runDeadline(renewed.id, {
           action: "set",
-          at: inMs(period),
+          at: ahead(period),
           expectedRevision: revision,
         });
         revision = next.revision;
-        await sleep(period / 3);
+        advance(period / 2); // three periods in all: one renewal every half period
       }
-      expect(await d.client.status(abandoned.id)).toMatchObject({
-        state: "cancelled",
-        errorCode: "run_deadline_expired",
-      });
-      expect(await d.client.status(renewed.id)).toMatchObject({ state: "queued" });
+      // The controller keeps renewing while the abandoned run's timer looks.
       await d.client.runDeadline(renewed.id, {
         action: "set",
-        at: inMs(30_000),
+        at: ahead(30_000),
         expectedRevision: revision,
       });
+      expect(
+        await until(
+          () => d.client.status(abandoned.id),
+          (record) => !live(record),
+          3_000,
+        ),
+      ).toMatchObject({ state: "cancelled", errorCode: "run_deadline_expired" });
+      expect(await d.client.status(renewed.id)).toMatchObject({ state: "queued" });
       slot.release();
       const ended = await until(
         () => d.client.status(renewed.id),
