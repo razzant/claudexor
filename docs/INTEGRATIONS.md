@@ -807,7 +807,10 @@ refuses `delivery_path_occupied`, one that must address a name that is not
 valid UTF-8 (a name the result changes) refuses `result_path_encoding`, and in a
 sparse checkout one that adds, changes or removes a path outside its patterns
 refuses `delivery_outside_sparse_checkout` (a revert after the patterns were
-narrowed too), each naming the paths with nothing written; a name only your
+narrowed too), each naming the paths with nothing written (with Git 2.41 or
+newer a result still holds a new file the work created outside the patterns, for
+a target that includes it; an older Git fails on that file while saving the
+result, as before); a name only your
 project changed stays as it is, and every path an operation does not address
 keeps its bytes, and its index mark except that in a sparse checkout Git itself
 clears the skip-worktree mark of a file that is present, which sticks once a

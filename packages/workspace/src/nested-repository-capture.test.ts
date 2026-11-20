@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -214,6 +214,22 @@ it("excludes a nested repository by its literal name, never as a glob over its s
   expect(captured.captureIncomplete).toBe(false);
   expect(captured.patch).toContain("b/ev/b");
   expect(captured.excludedNestedRepositories).toEqual(["ev/[ab]"]);
+});
+
+it("names a nested repository by the bytes of a name Git prints quoted", async () => {
+  const { root, git } = repository();
+  // Non-ASCII anywhere; a quote, a backslash and a newline where a file system holds them.
+  const name = process.platform === "win32" ? "ev/тест [x]" : 'ev/тест "q"\\\n[x]';
+  nestedRepository(join(root, name), git, true);
+  writeFileSync(join(root, "ev", "plain.txt"), "a sibling\n");
+  const index = readFileSync(join(root, ".git", "index"));
+
+  const captured = await captureWorkingTreeTransient(root, "HEAD");
+
+  expect(readFileSync(join(root, ".git", "index")).equals(index)).toBe(true);
+  expect(captured.captureIncomplete).toBe(false);
+  expect(captured.patch).toContain("b/ev/plain.txt");
+  expect(captured.excludedNestedRepositories).toEqual([name]);
 });
 
 it("snapshots a dirty tree without its undeclared nested repositories", async () => {

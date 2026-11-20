@@ -19,10 +19,7 @@ import {
   objectDirectoryProgress,
   preflightCaptureSpace,
 } from "./capture-objects.js";
-import {
-  nestedRepositoryExcludes,
-  untrackedNestedRepositories,
-} from "./git-nested-repositories.js";
+import { nestedRepositoryExcludes, untrackedPaths } from "./git-nested-repositories.js";
 import { gitObserved, GitOperationError, proofStallMs, treeBlobBytes } from "./git-observed.js";
 import { addKeptPaths } from "./git-snapshot.js";
 import {
@@ -33,6 +30,7 @@ import {
 } from "./git-result.js";
 import { assertNoBinaryStubs, gitEnv, SCRATCH_INDEX_CONFIG } from "./git-run.js";
 import { PINNED_DIFF_CONFIG, PINNED_DIFF_FLAGS } from "./object-compose.js";
+import { addOutsideSparseCheckout } from "./object-sparse.js";
 import {
   assertProjectObjectFormat,
   beginPendingRoots,
@@ -148,25 +146,39 @@ export async function captureWorkingTreeTransient(
     if (read.code !== 0) {
       throw new WorkspaceError(`transient diff read-tree failed: ${read.stderr.trim()}`);
     }
-    const nested = await untrackedNestedRepositories(
-      repo,
-      env,
-      [".", ...pathExcludes],
-      "transient diff",
-    );
-    const excludes = [...pathExcludes, ...nestedRepositoryExcludes(nested)];
-    await gitObserved(
-      repo,
-      [...SCRATCH_INDEX_CONFIG, "add", "-A", "--", ".", ...excludes],
-      // A tracked file whose blob the base already holds is re-hashed without a sign
-      // (no output, no new object), so the silent read is bounded by the base's bytes.
-      {
+    const scope = [".", ...pathExcludes];
+    const listed = await untrackedPaths(repo, env, scope, "transient diff");
+    const baseCommit = (
+      await gitObserved(repo, ["rev-parse", "--verify", "--quiet", `${baseSha}^{commit}`], {
         env,
-        label: "add -A (capture)",
-        progress,
-        stallMs: proofStallMs(await treeBlobBytes(repo, baseSha, env)),
-      },
-    );
+        label: "rev-parse base commit",
+        allowFailure: true,
+      })
+    ).stdout.trim();
+    const commit = /^[0-9a-f]{40,64}$/.test(baseCommit) ? baseCommit : null;
+    const boundaryCommit = await storeBoundaryCommit(repo, commit, env);
+    // A tracked file whose blob the base already holds is re-hashed without a sign
+    // (no output, no new object), so the silent read is bounded by the base's bytes.
+    const watch = { progress, stallMs: proofStallMs(await treeBlobBytes(repo, baseSha, env)) };
+    // New files outside the sparse-checkout patterns, and those a dirty base added to
+    // its boundary commit on an earlier turn, are taken first: `add -A` refuses the one
+    // and skips the other (#734). A repository found among them stays out, named.
+    const nested = [
+      ...listed.nested,
+      ...(await addOutsideSparseCheckout(
+        repo,
+        env,
+        listed.files,
+        boundaryCommit && boundaryCommit !== commit ? { boundary: boundaryCommit, scope } : null,
+        watch,
+      )),
+    ];
+    const excludes = [...pathExcludes, ...nestedRepositoryExcludes(nested)];
+    await gitObserved(repo, [...SCRATCH_INDEX_CONFIG, "add", "-A", "--", ".", ...excludes], {
+      env,
+      label: "add -A (capture)",
+      ...watch,
+    });
     await addKeptPaths(repo, env, options.keep ?? [], excludes, progress, "cwd");
     const tree = (
       await gitObserved(repo, [...SCRATCH_INDEX_CONFIG, "write-tree"], {
@@ -177,17 +189,8 @@ export async function captureWorkingTreeTransient(
     ).stdout.trim();
     if (!tree) throw new WorkspaceError("transient diff write-tree returned no tree");
     candidate = { tree, env };
-    const baseCommit = (
-      await gitObserved(repo, ["rev-parse", "--verify", "--quiet", `${baseSha}^{commit}`], {
-        env,
-        label: "rev-parse base commit",
-        allowFailure: true,
-      })
-    ).stdout.trim();
     const baseTree = await treeOf(repo, baseSha, env);
     const objectFormat = await repositoryObjectFormat(repo, env);
-    const commit = /^[0-9a-f]{40,64}$/.test(baseCommit) ? baseCommit : null;
-    const boundaryCommit = await storeBoundaryCommit(repo, commit, env);
     const result = makeGitObjectResult({
       object_format: objectFormat,
       base_tree: baseTree,
