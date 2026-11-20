@@ -1,0 +1,61 @@
+name: Verify zero-budget readiness candidate
+
+# One-use QA overlay; this workflow is not part of the product change.
+on:
+  push:
+    branches: [verify/zero-budget-diagnostics-r10]
+    paths:
+      - .github/workflows/verify-zero-budget-diagnostics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Full Node release verification (no release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    defaults:
+      run:
+        shell: bash
+    env:
+      REVIEWED_BASE: "3846cbc7858b3975d4b50297e6c71b08a10d58b5"
+      REVIEWED_HEAD: "8bcbc1dc86c90fbb668ef6d0ab24217bacdbbf15"
+      REVIEWED_TREE: "99787ca1afd2ce94f3ebb915c59f2f4fce59b908"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: "8bcbc1dc86c90fbb668ef6d0ab24217bacdbbf15"
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Confirm reviewed subject
+        run: |
+          test "$(git rev-parse HEAD)" = "$REVIEWED_HEAD"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$REVIEWED_TREE"
+          test "$(git rev-parse 'HEAD^')" = "5dc3b73fbcd85c1c7054ff1478a0d2e5f0d0f6b5"
+          test "$(git rev-parse 'HEAD^^')" = "$REVIEWED_BASE"
+          test -z "$(git status --porcelain)"
+          printf 'Reviewed base: %s\nTested commit: %s\nTested tree: %s\n' \
+            "$REVIEWED_BASE" "$REVIEWED_HEAD" "$REVIEWED_TREE"
+
+      - name: Install pnpm from packageManager
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Verify outbound content with the pinned scanner
+        run: |
+          node scripts/provision-betterleaks.mjs --dest "$RUNNER_TEMP/betterleaks"
+          CLAUDEXOR_BETTERLEAKS_PATH="$RUNNER_TEMP/betterleaks" node scripts/publication-scan.mjs \
+            --repo . --range "$REVIEWED_BASE..$REVIEWED_HEAD" --tree "$REVIEWED_HEAD"
+          printf 'CLAUDEXOR_BETTERLEAKS_PATH=%s\n' "$RUNNER_TEMP/betterleaks" >> "$GITHUB_ENV"
+
+      - name: Install locked workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run exact Node verification command
+        run: pnpm release:verify:node
