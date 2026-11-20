@@ -300,12 +300,15 @@ smoke attaches `scripts/c672/c672-rename-capture.cjs` to its CLI child by
 `fs.renameSync` wrapper that only on the product's own
 `node_modules/@github/copilot` -> `.claudexor-converted` hide failing records the
 error first, then runs the observers under one finite budget, then re-throws the
-same error. Green runs write nothing and stdout stays the CLI receipt. It is
-diagnostics for the next real failure, not a fix; its native qualification is
-`qualify-rename-capture.mjs` plus the push-triggered QA workflow. It retains full
-CLI output/receipts and final qualification/cleanup in the uploaded evidence,
-checks retirement of the package and owned `.cmd`, and requires acknowledged
-holder exit. Portable tests do not establish native Windows qualification.
+same error. A first-try successful hide writes no capture; a conversion that
+succeeds after a refusal can still retain the capture. Stdout stays the CLI
+receipt. The product retry window starts when the first refusal reaches the
+conversion code, so observer time inside that call is outside the retry window.
+Neither the capture nor a successful retry establishes the cause of #672.
+Native qualification uses `qualify-rename-capture.mjs` and the push-triggered
+QA workflow. It retains the CLI output, receipts and qualification/cleanup in the
+uploaded evidence, checks retirement of the package and owned `.cmd`, and
+requires acknowledged holder exit. Portable tests do not qualify native Windows.
 Reassess/remove this temporary capture after a natural failure is captured and
 analyzed, and at #672 closure; retain the qualifier for reproducibility meanwhile.
 

@@ -269,18 +269,22 @@ async function conversionRoute(program) {
   const runPath = await assertNativeRunSelection(program, after.selection, env, root);
   // A published installer may lag npm. A proved downgrade refusal is a guarded
   // route, not a claimed conversion; the old program and launchers must survive.
+  // The old program answers for itself: after the Update it may report another
+  // version than before, so its verified final answer, at the same path and real
+  // path, must be proved newer than the replacement the vendor offered.
   if (!receipt.ok && receipt.problem?.code === "conversion_older_program") {
     const replacement = receipt.elsewhere?.after;
     if (
       receipt.exitCode !== 0 ||
       !replacement?.version ||
+      !after.selection.version ||
       programUpdateAvailable(
         program.versionScheme,
         replacement.version,
-        before.selection.version,
+        after.selection.version,
       ) !== "yes" ||
       after.selection.path !== before.selection.path ||
-      after.selection.version !== before.selection.version ||
+      after.selection.realPath !== before.selection.realPath ||
       !present(packageRoot) ||
       launchers.some((path) => !present(path))
     )
@@ -289,6 +293,7 @@ async function conversionRoute(program) {
       preservedOlderVendor: true,
       runPath,
       before: before.selection.version,
+      after: after.selection.version,
       vendor: replacement.version,
       progress: receipt.progress,
     };
