@@ -27,7 +27,7 @@ describe("operation catalog wording (QA-039 / QA-049)", () => {
     expect(op("PUT", "/v2/uploads/:id/bytes")?.summary.toLowerCase()).toMatch(/one request|single/);
   });
 
-  it("advertises the opt-in store identity header on the handshake", () => {
+  it("advertises the opt-in store identity and capabilities headers on the handshake", () => {
     expect(op("POST", "/v2/handshake")?.parameters).toEqual([
       expect.objectContaining({
         name: "x-claudexor-store-identity",
@@ -35,7 +35,25 @@ describe("operation catalog wording (QA-039 / QA-049)", () => {
         required: false,
         enum: ["1"],
       }),
+      expect.objectContaining({
+        name: "x-claudexor-capabilities",
+        location: "header",
+        required: false,
+        enum: ["1"],
+      }),
     ]);
+  });
+
+  it("advertises the run-deadline/1 read and set routes", () => {
+    expect(op("GET", "/v2/runs/:id/deadline")).toMatchObject({
+      mutability: "read_only",
+      responseSchema: "RunDeadlineSnapshot",
+    });
+    expect(op("PATCH", "/v2/runs/:id/deadline")).toMatchObject({
+      mutability: "mutating",
+      requestSchema: "RunDeadlineSetRequest",
+      responseSchema: "RunDeadlineSnapshot",
+    });
   });
 
   it("advertises DELETE /v2/projects/:id as a fenced, artifact-retaining removal", () => {

@@ -220,12 +220,31 @@ export interface RunScopeCustody {
   ): T & { runScopeMarker: string; preparationSignal: AbortSignal };
 }
 
+/** Run input hook: the recorded scope, handed over BEFORE the first launch. */
+export interface RunScopeOpenedHook {
+  /**
+   * Called once with the run's scope marker after it is recorded and before
+   * anything is launched (run-deadline/1 starts its warden here). A throw
+   * settles the never-announced scope and refuses the run.
+   */
+  onRunScopeOpened?: (scope: { marker: string; openedAt: string }) => Promise<void>;
+}
+
 export async function openRunScopeCustody(
   custodian: RunScopeCustodian | undefined,
   runId: string,
+  onOpened?: RunScopeOpenedHook["onRunScopeOpened"],
 ): Promise<RunScopeCustody> {
   const custody = custodian ?? inProcessRunScopeCustodian;
   const { marker } = await custody.open(runId);
+  if (onOpened) {
+    try {
+      await onOpened({ marker, openedAt: new Date().toISOString() });
+    } catch (error) {
+      await custody.settle(runId, marker).catch(() => {});
+      throw error;
+    }
+  }
   let announcedContext: AnnouncedRunContext | null = null;
   let settlement: Promise<ScopeReapOutcome> | null = null;
   const settle = (): Promise<ScopeReapOutcome> => {

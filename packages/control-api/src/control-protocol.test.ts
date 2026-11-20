@@ -142,3 +142,28 @@ describe("control protocol recovery-only gate (issue #165 D5)", () => {
     });
   });
 });
+
+describe("handshake capabilities (run-deadline/1)", () => {
+  const handshake = (wantsCapabilities: boolean | undefined) =>
+    resolveControlProtocol({
+      method: "POST",
+      requestPath: "/v2/handshake",
+      requestedMajor: undefined,
+      readBody: async () => ({ protocolMajor: CONTROL_PROTOCOL_MAJOR, client: "test" }),
+      capabilities: () => [{ name: "run-deadline/1", stopGraceSec: 15 }],
+      wantsCapabilities,
+    });
+
+  it("keeps the earlier strict shape for a client that did not opt in", async () => {
+    const result = await handshake(undefined);
+    expect(result.kind).toBe("response");
+    expect((result as { body: Record<string, unknown> }).body).not.toHaveProperty("capabilities");
+  });
+
+  it("names run-deadline/1 and its stop grace on opt-in", async () => {
+    expect(await handshake(true)).toMatchObject({
+      status: 200,
+      body: { capabilities: [{ name: "run-deadline/1", stopGraceSec: 15 }] },
+    });
+  });
+});

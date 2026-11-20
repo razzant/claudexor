@@ -337,6 +337,29 @@ gate's explicit exemptions):
   different fact and does not restrict timers. Timers are process-local, not
   resumable across daemon restart; the existing interrupted-run recovery still
   applies. There is no dedicated timer editor in the macOS UI.
+- Server-enforced deadline (`run-deadline/1`), additive to the timer above: a
+  `POST /v2/runs` body may carry `deadline: {at}`, an RFC3339 UTC instant on the
+  server clock. It holds from acceptance (queued, preparing, running); an
+  instant not after the server time refuses `run_deadline_passed` and nothing
+  is accepted. The engine converts `at` once to the host monotonic clock, so a
+  wall-clock step never moves the stop. `GET /v2/runs/:id/deadline` reads
+  `{at, revision, serverNow, state, stopGraceSec, inheritedFrom}`; `PATCH` with
+  `{at, expectedRevision}` replaces it in every non-terminal state (stale
+  revision `run_deadline_revision_conflict`, terminal `run_deadline_closed`).
+  The start receipt carries the same snapshot when the request set one, and
+  `POST /v2/runs/lookup` finds a queued start by its key. A queued run that
+  reaches its deadline ends `cancelled` with `run_deadline_expired`; a
+  preparing or running one is cancelled as `wall_clock_exceeded`. A Delegate
+  child's effective deadline is the earlier of its own and its parent's current
+  one, so extending the parent extends the child; children refuse their own
+  changes (`delegated_deadline_forbidden`). Before a run's first launch the
+  daemon starts a detached warden process that, independent of the daemon,
+  ends every process carrying the run's scope marker by `at + stopGraceSec`
+  (also while the daemon is down or after it restarted). The handshake names
+  the capability only to a client sending `X-Claudexor-Capabilities: 1`, and
+  only on Linux, where the marker census reads every same-uid environment; on
+  macOS (SIP-hidden platform-binary environments) and Windows the warden runs
+  but the capability is not declared.
 - `--processing standard|fast|ultrafast|economy`: advisory service preference, carried as
   `processingPreference` on Agent requests and as `options.processingPreference`
   on raw model requests. Structured reviewer entries accept their own optional

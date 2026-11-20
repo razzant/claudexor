@@ -281,6 +281,17 @@
           ],
           "schema_ref": null,
           "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        },
+        {
+          "name": "x-claudexor-capabilities",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive `capabilities`, the features this engine proves on this host (run-deadline/1 with its stopGraceSec); without it the response keeps its earlier shape."
         }
       ],
       "response_schema": "ControlHandshakeResponse",
@@ -1198,6 +1209,30 @@
       "request_schema": "ControlRunControlRequest",
       "parameters": [],
       "response_schema": "ControlRunControlResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/runs/:id/deadline",
+      "mutating": false,
+      "applicability": "run",
+      "summary": "Read a run's server-enforced run-deadline/1 deadline, revision and server time.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [],
+      "response_schema": "RunDeadlineSnapshot",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/runs/:id/deadline",
+      "mutating": true,
+      "applicability": "run",
+      "summary": "Replace a non-terminal run's absolute deadline with an expected revision (run-deadline/1).",
+      "auth": "loopback_bearer",
+      "request_schema": "RunDeadlineSetRequest",
+      "parameters": [],
+      "response_schema": "RunDeadlineSnapshot",
       "error_schema": "ControlProblem"
     },
     {

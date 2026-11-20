@@ -13,6 +13,7 @@ import {
   scopedRouteContext,
   scopedSpecEnv,
   type RunScopeCustodian,
+  type RunScopeOpenedHook,
 } from "./runScope.js";
 import { delegationBeltFor } from "./delegationBelt.js";
 import { routePromptCacheTtl, withReviewerPromptCacheTtl } from "./prompt-cache-routing.js";
@@ -457,7 +458,7 @@ export interface ThreadContinuityContext {
   laneCheckpoints: Array<{ harness: string; profileId: string | null; turnId: string }>;
 }
 
-export interface RunInput extends Pick<AnnouncedRunContext, "stopSender"> {
+export interface RunInput extends Pick<AnnouncedRunContext, "stopSender">, RunScopeOpenedHook {
   /** Frozen model-review intent from the accepting surface; optional for embedders. */
   review?: boolean;
   repoRoot: string;
@@ -620,12 +621,6 @@ export interface RunInput extends Pick<AnnouncedRunContext, "stopSender"> {
   onHarnessEvent?: (event: HarnessEvent) => void;
   /** Called once when the run id/dir are known, before any harness work begins. */
   onRunStart?: (info: { runId: string; taskId: string; runDir: string }) => void;
-  /**
-   * Called once with the run's process scope marker, after it is recorded and
-   * BEFORE the first launch (run-deadline/1 starts its warden here). A throw
-   * refuses the run before anything is launched.
-   */
-  onRunScopeOpened?: (scope: { marker: string; openedAt: string }) => Promise<void>;
   /**
    * Interactive answer surface (waiting_on_user). When a harness raises a
    * question, the orchestrator emits `interaction.requested`, calls this
@@ -854,15 +849,7 @@ export class Orchestrator {
     // recorded BEFORE the first launch, rides every spec env (`scopedSpecEnv`),
     // and every announced run HOLDS its terminal until the barrier has ended
     // what still carries it. The reap never changes the verdict.
-    const custody = await openRunScopeCustody(this.deps.runScopes, runId);
-    if (input.onRunScopeOpened) {
-      try {
-        await input.onRunScopeOpened({ marker: custody.marker, openedAt: new Date().toISOString() });
-      } catch (error) {
-        await custody.settleUnannounced().catch(() => {});
-        throw error;
-      }
-    }
+    const custody = await openRunScopeCustody(this.deps.runScopes, runId, input.onRunScopeOpened);
     resolved = custody.scope(resolved);
     try {
       return await guardAnnouncedRun(

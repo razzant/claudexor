@@ -3,8 +3,7 @@ import { RunDeadlineSetRequest, RunDeadlineSnapshot } from "@claudexor/schema";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
 
 export interface RunDeadlineRouteContext {
-  daemon: Pick<DaemonFacadeClient, "runDeadline">;
-  findRun(id: string): Promise<DaemonRunRecord | null>;
+  daemon: Pick<DaemonFacadeClient, "runDeadline" | "list">;
   readBody(req: IncomingMessage): Promise<unknown>;
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown): void;
@@ -19,10 +18,13 @@ export async function handleRunDeadlineRoute(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<boolean> {
-  const match = /^\/runs\/([^/]+)\/deadline$/.exec(path);
-  if (!match || (method !== "GET" && method !== "PATCH")) return false;
+  const deadlineMatch = /^\/runs\/([^/]+)\/deadline$/.exec(path);
+  if (!(method === "GET" && deadlineMatch) && !(method === "PATCH" && deadlineMatch)) return false;
   try {
-    const record = await ctx.findRun(decodeURIComponent(match[1]!));
+    const id = decodeURIComponent(deadlineMatch![1]!);
+    const record: DaemonRunRecord | undefined = (await ctx.daemon.list({ id })).find(
+      (run) => run.id === id || run.runId === id,
+    );
     if (!record) {
       ctx.json(res, 404, { error: "no such run", code: "run_not_found" });
       return true;

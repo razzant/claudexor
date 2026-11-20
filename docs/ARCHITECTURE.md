@@ -3963,6 +3963,8 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `GET /v2/runs/:id/artifacts`
 - `GET /v2/runs/:id/artifacts/<path>`
 - `POST /v2/runs/:id/control`
+- `GET /v2/runs/:id/deadline`
+- `PATCH /v2/runs/:id/deadline`
 - `POST /v2/runs/:id/decision`
 - `GET /v2/runs/:id/events`
 - `GET /v2/runs/:id/events/:id`

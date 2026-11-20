@@ -29,6 +29,58 @@
         "runDir": {
           "type": "string",
           "description": "On-disk run artifact directory."
+        },
+        "deadline": {
+          "type": "object",
+          "properties": {
+            "at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "The effective deadline the engine enforces: the run's own or, when earlier, its Delegate parent's current one."
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Revision of the run's own deadline; a set must name it."
+            },
+            "serverNow": {
+              "type": "string",
+              "format": "date-time",
+              "description": "The server's wall clock when this answer was made."
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "armed",
+                "expired",
+                "closed"
+              ],
+              "description": "armed while the run is live; expired once the deadline ended it; closed after any other terminal."
+            },
+            "stopGraceSec": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30,
+              "description": "Seconds after `at` by which every process of the run is gone."
+            },
+            "inheritedFrom": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Job id of the Delegate parent whose deadline is the effective one, or null."
+            }
+          },
+          "required": [
+            "at",
+            "revision",
+            "serverNow",
+            "state",
+            "stopGraceSec",
+            "inheritedFrom"
+          ],
+          "additionalProperties": false,
+          "description": "The accepted run-deadline/1 deadline; present only when the request set one."
         }
       },
       "required": [

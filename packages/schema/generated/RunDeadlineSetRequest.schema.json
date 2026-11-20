@@ -1,0 +1,26 @@
+{
+  "$ref": "#/definitions/RunDeadlineSetRequest",
+  "definitions": {
+    "RunDeadlineSetRequest": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Absolute instant on the server's wall clock, RFC3339 UTC (Z)."
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "at",
+        "expectedRevision"
+      ],
+      "additionalProperties": false,
+      "description": "Replace the run's own absolute deadline in any non-terminal state. A stale expectedRevision is a conflict; a terminal run refuses."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

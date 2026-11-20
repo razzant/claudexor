@@ -1,6 +1,7 @@
 import {
   CLAUDE_TURN_REPLIES_HEADER,
   CONTROL_STORE_IDENTITY_HEADER,
+  CONTROL_CAPABILITIES_HEADER,
   QuotaRequestKind,
 } from "@claudexor/schema";
 import type { ControlOperationParameter } from "@claudexor/schema";
@@ -62,6 +63,14 @@ export const STORE_IDENTITY_HEADER = headerParam({
   enum: ["1"],
   description:
     "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape.",
+});
+
+/** The opt-in header of the handshake: `1` adds `capabilities` (run-deadline/1). */
+export const CAPABILITIES_HEADER = headerParam({
+  name: CONTROL_CAPABILITIES_HEADER,
+  enum: ["1"],
+  description:
+    "Send `1` to receive `capabilities`, the features this engine proves on this host (run-deadline/1 with its stopGraceSec); without it the response keeps its earlier shape.",
 });
 
 export const REPLY_PROJECTION_HEADER = headerParam({

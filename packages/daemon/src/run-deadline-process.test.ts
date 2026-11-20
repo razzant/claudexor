@@ -23,7 +23,9 @@ import { RunDeadlines, type RunDeadlineClock } from "./run-deadlines.js";
 import { RUN_DEADLINE_STOP_GRACE_SEC } from "./run-deadline-warden.js";
 
 const GRACE_MS = RUN_DEADLINE_STOP_GRACE_SEC * 1_000;
-const CHILD = fileURLToPath(new URL("./test-support/run-deadline-daemon-child.ts", import.meta.url));
+const CHILD = fileURLToPath(
+  new URL("./test-support/run-deadline-daemon-child.ts", import.meta.url),
+);
 const HARNESS = `
 const { spawn } = require("node:child_process");
 const g = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e6)"], { detached: true, stdio: "ignore" });
@@ -137,7 +139,10 @@ describe("run-deadline/1 warden: no run process outlives deadline + stopGraceSec
     const daemon = await startDaemon(dir);
     const client = new DaemonClient(join(dir, "d.sock"), "token");
     const at = inMs(4_000);
-    await client.enqueue({ label: "t3", deadline: { at } }, { idempotencyKey: "t3", clientId: "t" });
+    await client.enqueue(
+      { label: "t3", deadline: { at } },
+      { idempotencyKey: "t3", clientId: "t" },
+    );
     const [tree] = await recordedTree(dir);
     await killDaemon(daemon);
     expect(treeWholeAlive(tree!)).toBe(true); // the daemon's death ended nothing

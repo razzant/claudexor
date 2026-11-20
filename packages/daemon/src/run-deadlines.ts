@@ -94,7 +94,7 @@ export interface RunDeadlinesOptions {
   stopGraceSec?: number;
   spawnWarden?: (statePath: string) => Promise<{ pid: number }>;
   /** The effective deadline passed: the scheduler ends the job (queued or running). */
-  onExpire: (jobId: string) => void;
+  onExpire?: (jobId: string) => void;
 }
 
 /** Parse an optional `deadline` from a run request; undefined when absent. */
@@ -130,7 +130,10 @@ export class RunDeadlines {
         `deadline.at ${at} is not after the server time ${new Date(now).toISOString()}`,
         "run_deadline_passed",
       );
-    return { at: new Date(wall).toISOString(), mono: this.clock.monoNow() + BigInt(wall - now) * 1_000_000n };
+    return {
+      at: new Date(wall).toISOString(),
+      mono: this.clock.monoNow() + BigInt(wall - now) * 1_000_000n,
+    };
   }
 
   /** The refusal a start must answer before anything is accepted; null when fine. */
@@ -221,7 +224,11 @@ export class RunDeadlines {
   }
 
   /** Replace the job's own deadline. `live` is false for a terminal job. */
-  set(jobId: string, raw: unknown, opts: { live: boolean; delegated: boolean }): RunDeadlineSnapshot {
+  set(
+    jobId: string,
+    raw: unknown,
+    opts: { live: boolean; delegated: boolean },
+  ): RunDeadlineSnapshot {
     const request = RunDeadlineSetRequest.parse(raw);
     const entry = this.entries.get(jobId);
     if (!opts.live || !entry || entry.state !== "armed")
@@ -351,6 +358,11 @@ export class RunDeadlines {
     entry.state = "expired";
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = undefined;
-    this.opts.onExpire(entry.jobId);
+    this.expired(entry.jobId);
+  }
+
+  /** The effective deadline passed (the scheduler subclass ends the job). */
+  protected expired(jobId: string): void {
+    this.opts.onExpire?.(jobId);
   }
 }

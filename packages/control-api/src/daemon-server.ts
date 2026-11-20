@@ -766,6 +766,7 @@ export class DaemonControlApiServer {
         this.requestError(response, error, fallback),
     };
     for (const route of [
+      handleRunDeadlineRoute,
       handleDeferredMessageRoute,
       handleRunWaitManyRoute,
       handleTaskGroupRunsRoute,
@@ -838,23 +839,6 @@ export class DaemonControlApiServer {
       await handleRunMessageRoute(
         {
           services: this.opts.services,
-          findRun: (id) => this.findRun(id),
-          readBody: (request) => this.readBody(request),
-          json: (response, status, body) => this.json(response, status, body),
-          requestError: (response, error) => this.requestError(response, error),
-        },
-        method,
-        path,
-        req,
-        res,
-      )
-    )
-      return;
-
-    if (
-      await handleRunDeadlineRoute(
-        {
-          daemon: this.opts.daemon,
           findRun: (id) => this.findRun(id),
           readBody: (request) => this.readBody(request),
           json: (response, status, body) => this.json(response, status, body),
