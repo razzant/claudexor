@@ -209,6 +209,15 @@
         gap: 14px;
         margin-top: 34px;
       }
+      .install-choice {
+        display: grid;
+        gap: 6px;
+        justify-items: start;
+      }
+      .install-choice small {
+        font-size: 13px;
+        color: var(--steel);
+      }
       .get {
         --n: 4px;
         display: inline-flex;
@@ -886,12 +895,27 @@
               and keeps the work in one auditable thread.
             </p>
             <div class="acts">
-              <a class="get" href="https://github.com/razzant/claudexor/releases/latest"
-                >Download for macOS</a
-              >
-              <button class="cmd" type="button" data-copy="npm install -g claudexor">
-                <code>npm install -g claudexor</code><span aria-live="polite">Copy</span>
-              </button>
+              <div class="install-choice">
+                <a
+                  class="get"
+                  aria-describedby="mac-requirements"
+                  data-mac-installer
+                  href="https://github.com/razzant/claudexor/releases/latest"
+                  >Choose the Claudexor .dmg</a
+                >
+                <small id="mac-requirements">Apple Silicon · macOS 26+</small>
+              </div>
+              <div class="install-choice">
+                <button
+                  class="cmd"
+                  type="button"
+                  aria-describedby="cli-requirements"
+                  data-copy="npm install -g claudexor"
+                >
+                  <code>npm install -g claudexor</code><span aria-live="polite">Copy</span>
+                </button>
+                <small id="cli-requirements">CLI · macOS / Linux · Node.js 24.15+</small>
+              </div>
               <a class="more" href="#agent-hosts">Install in Hermes, Pi or OpenClaw</a>
             </div>
             <p class="fact" id="fact" aria-hidden="true"></p>
@@ -1282,14 +1306,17 @@
           <div class="start" id="start">
             <div>
               <p class="sub">
-                On macOS 26 or newer, download the signed and notarized app and drag it to
-                Applications. It brings its own runtime, so you need no Node or pnpm. In a terminal
-                on macOS or Linux, install the npm package with Node.js 24.15 or newer (use the
-                latest Node 24 release), or build it from source.
+                On an Apple Silicon Mac with macOS 26 or newer, download the signed and notarized
+                app and drag it to Applications. It brings its own runtime, so you need no Node or
+                pnpm. In a terminal on macOS or Linux, install the npm package with Node.js 24.15 or
+                newer (use the latest Node 24 release), or build it from source.
               </p>
               <div class="row">
-                <a class="get" href="https://github.com/razzant/claudexor/releases/latest"
-                  >Download for macOS</a
+                <a
+                  class="get"
+                  data-mac-installer
+                  href="https://github.com/razzant/claudexor/releases/latest"
+                  >Choose the Claudexor .dmg</a
                 ><a class="ghost" href="https://github.com/razzant/claudexor#quickstart"
                   >First steps</a
                 ><a class="ghost" href="https://github.com/razzant/claudexor#from-a-source-checkout"
