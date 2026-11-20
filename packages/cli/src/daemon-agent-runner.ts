@@ -275,6 +275,9 @@ export function createDaemonAgentRunner(deps: {
         signal: timeLimit.signal,
         stopSender: ctx.stopSender,
         onRunStart,
+        onRunScopeOpened: ctx.deadlineScope
+          ? ({ marker, openedAt }) => ctx.deadlineScope!.attach(marker, openedAt)
+          : undefined,
       })
       .finally(() => {
         timeLimit.dispose();

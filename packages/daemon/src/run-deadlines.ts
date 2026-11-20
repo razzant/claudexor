@@ -15,6 +15,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  RUN_DEADLINE_CAPABILITY,
+  type ControlCapability,
   RunDeadlineSetRequest,
   RunDeadlineStart,
   type RunDeadlineSnapshot,
@@ -29,6 +31,22 @@ import {
   writeJsonAtomic,
   type WardenState,
 } from "./run-deadline-warden.js";
+
+/**
+ * The capabilities this host proves. run-deadline/1 is declared only on Linux:
+ * there the warden's marker census reads every same-uid process environment
+ * (`/proc/<pid>/environ`), so a reap that settles is complete. On macOS SIP
+ * hides the environment of Apple platform binaries, so a system binary started
+ * in the background by a shell that already exited cannot be ruled out
+ * (`DARWIN_COMPLETENESS_LIMIT`); Windows has no environment census. The warden
+ * still runs there, but the stop invariant is not proven, so it is not declared.
+ */
+export function runDeadlineCapabilities(
+  platform: string = process.platform,
+  stopGraceSec: number = RUN_DEADLINE_STOP_GRACE_SEC,
+): ControlCapability[] {
+  return platform === "linux" ? [{ name: RUN_DEADLINE_CAPABILITY, stopGraceSec }] : [];
+}
 
 export interface RunDeadlineClock {
   /** Wall clock, ms since the epoch (injectable: a test steps it backwards). */

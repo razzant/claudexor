@@ -621,6 +621,12 @@ export interface RunInput extends Pick<AnnouncedRunContext, "stopSender"> {
   /** Called once when the run id/dir are known, before any harness work begins. */
   onRunStart?: (info: { runId: string; taskId: string; runDir: string }) => void;
   /**
+   * Called once with the run's process scope marker, after it is recorded and
+   * BEFORE the first launch (run-deadline/1 starts its warden here). A throw
+   * refuses the run before anything is launched.
+   */
+  onRunScopeOpened?: (scope: { marker: string; openedAt: string }) => Promise<void>;
+  /**
    * Interactive answer surface (waiting_on_user). When a harness raises a
    * question, the orchestrator emits `interaction.requested`, calls this
    * handler, and blocks ONLY that attempt's tool until answers arrive, a finite
@@ -849,6 +855,14 @@ export class Orchestrator {
     // and every announced run HOLDS its terminal until the barrier has ended
     // what still carries it. The reap never changes the verdict.
     const custody = await openRunScopeCustody(this.deps.runScopes, runId);
+    if (input.onRunScopeOpened) {
+      try {
+        await input.onRunScopeOpened({ marker: custody.marker, openedAt: new Date().toISOString() });
+      } catch (error) {
+        await custody.settleUnannounced().catch(() => {});
+        throw error;
+      }
+    }
     resolved = custody.scope(resolved);
     try {
       return await guardAnnouncedRun(

@@ -5,7 +5,8 @@ import {
   ControlRunStartInfo,
   TaskGroupReceipt,
 } from "@claudexor/schema";
-import type { DaemonRunRecord } from "./run-record.js";
+import type { RunDeadlineSnapshot } from "@claudexor/schema";
+import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 
 /** The request opted in to `storeId`: some shipped same-major clients parse a receipt strictly. */
@@ -64,7 +65,7 @@ export function unboundRunStartResponse(
   rec: DaemonRunRecord,
   terminal: boolean,
   terminalContext: Record<string, unknown> = {},
-  metadata: Partial<TaskGroupReceipt> = {},
+  metadata: Partial<TaskGroupReceipt> & { deadline?: RunDeadlineSnapshot } = {},
 ): { status: number; body: Record<string, unknown> } {
   // errorStatus is served verbatim only inside the failure range; anything
   // else (absent, or a non-4xx/5xx value from a defective writer) must not
@@ -110,19 +111,35 @@ export function unboundRunStartResponse(
   };
 }
 
+/** The run-deadline/1 snapshot a start receipt carries: only for a request that set one
+ * (older strict clients never send `deadline`, so they never see the field). */
+async function receiptDeadline(
+  daemon: Pick<DaemonFacadeClient, "runDeadline"> | undefined,
+  rec: DaemonRunRecord,
+): Promise<{ deadline?: RunDeadlineSnapshot }> {
+  const params = rec.params as { deadline?: unknown } | null | undefined;
+  if (!params || typeof params !== "object" || params.deadline === undefined) return {};
+  if (!daemon?.runDeadline) return {};
+  return { deadline: await daemon.runDeadline(rec.id, { action: "read" }) };
+}
+
 /** Answer an accepted one-shot job: its bound handle, its queued handle or its pre-run refusal. */
 export async function respondToAcceptedJob(
   ctx: {
     waitForRunStart(jobId: string): Promise<DaemonRunRecord>;
     storeId?: () => string | undefined;
     json(res: ServerResponse, status: number, body: unknown): void;
+    daemon?: Pick<DaemonFacadeClient, "runDeadline">;
   },
   req: IncomingMessage,
   res: ServerResponse,
   jobId: string,
 ): Promise<void> {
   const rec = await ctx.waitForRunStart(jobId);
-  const metadata = acceptedRunReceipt(rec, ctx.storeId, wantsStoreIdentity(req));
+  const metadata = {
+    ...acceptedRunReceipt(rec, ctx.storeId, wantsStoreIdentity(req)),
+    ...(await receiptDeadline(ctx.daemon, rec)),
+  };
   if (rec.runId && rec.runDir) {
     return ctx.json(
       res,
