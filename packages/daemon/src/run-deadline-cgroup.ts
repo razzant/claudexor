@@ -29,6 +29,8 @@ export type DeadlineBoundary =
   { kind: "cgroup"; runsDir: string } | { kind: "marker"; reason: string };
 
 const RUNS_DIR = "claudexor-runs";
+/** How long the startup probe waits for its child to enter the probe cgroup. */
+const PROBE_LANDING_MS = 10_000;
 
 /** The cgroup v2 mount point from mountinfo text (field 5 of the `cgroup2` row). */
 export function cgroup2MountPoint(mountinfo: string): string | null {
@@ -104,11 +106,19 @@ export async function probeCgroupBoundary(
     } finally {
       unregisterScopeCgroup(marker);
     }
-    const early = await waitExit(child, 300);
-    if (early === CGROUP_ENTRY_FAILED_EXIT)
+    // A loaded host may take a while to run the shim: wait for the child to land
+    // (or to fail the move) instead of judging after a fixed pause.
+    const exit = waitExit(child, PROBE_LANDING_MS);
+    let exited: number | null | undefined;
+    void exit.then((code) => (exited = code));
+    const landed = async () =>
+      (await readFile(join(probe, "cgroup.procs"), "utf8")).split("\n").includes(String(child.pid));
+    const until = Date.now() + PROBE_LANDING_MS;
+    while (exited === undefined && !(await landed()) && Date.now() < until)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    if (exited === CGROUP_ENTRY_FAILED_EXIT)
       return { kind: "marker", reason: "a child cannot be moved into a run cgroup" };
-    const members = (await readFile(join(probe, "cgroup.procs"), "utf8")).split("\n");
-    if (!members.includes(String(child.pid))) {
+    if (exited !== undefined || !(await landed())) {
       child.kill("SIGKILL");
       return { kind: "marker", reason: "the probe child did not land in its cgroup" };
     }

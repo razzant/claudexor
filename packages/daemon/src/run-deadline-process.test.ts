@@ -269,6 +269,7 @@ describe.skipIf(process.platform === "win32")(
         CX_JOB: JSON.stringify({ key: "t4", label: "t4", deadlineAt: at }),
         CX_CLEAN: DELEGATED ? "1" : "0",
       });
+      if (DELEGATED) expect(first.boundary).toBe("cgroup");
       const [tree] = await recordedTrees(dir);
       const jobId = readFileSync(join(dir, "job"), "utf8");
       await killDaemon(first.pid);
