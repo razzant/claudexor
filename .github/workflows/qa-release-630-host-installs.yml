@@ -1,0 +1,476 @@
+name: qa release 6.3.0 host installs
+
+# TEMPORARY post-release check. It lives only on its QA branch and is never
+# merged to main. A push to that branch installs the published v6.3.0 artifacts
+# into three real agent hosts on a fresh hosted runner. It does not check out
+# this branch and publishes nothing. No operator, provider or publishing
+# credentials or logins are used and there are no model calls: the only token
+# in scope is the ephemeral job-scoped default GITHUB_TOKEN, granted no
+# permissions by `permissions: {}` below.
+# Each host starts only after the shared setup succeeded, works in its own
+# empty HOME and does not depend on the other two.
+on:
+  push:
+    branches: [qa/release-630-host-installs-3764b405-02]
+
+permissions: {}
+
+concurrency:
+  group: qa-release-630-host-installs
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CLAUDEXOR_VERSION: "6.3.0"
+  CLAUDEXOR_SHA: "0ff3df717c2e807fdbd3a233487e35d81993fdea" # razzant/claudexor v6.3.0
+  PI_VERSION: "1.5.2"
+  HERMES_SHA: "3b421578588243f920886e6fe79a6faa87ea026e" # NousResearch/hermes-agent v0.23.1
+  OPENCLAW_VERSION: "2026.11.5"
+
+jobs:
+  host-installs:
+    name: Published installs in Pi, Hermes and OpenClaw
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+
+      - name: Shared setup, release objects from Git and the CLI from npm
+        id: setup
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          git clone --quiet --bare --depth 1 --branch "v$CLAUDEXOR_VERSION" \
+            https://github.com/razzant/claudexor.git "$RUNNER_TEMP/claudexor.git"
+          test "$(git -C "$RUNNER_TEMP/claudexor.git" rev-parse "v$CLAUDEXOR_VERSION^{commit}")" = "$CLAUDEXOR_SHA"
+          npm install -g "claudexor@$CLAUDEXOR_VERSION"
+          claudexor --version 2>&1 | grep -F "$CLAUDEXOR_VERSION"
+          cat > "$RUNNER_TEMP/same-as-git" <<'EOF'
+          # same-as-git <tree in the release commit> <directory> <file>...
+          # The tree holds exactly these files, and the directory has each of them
+          # with the bytes of its Git blob.
+          set -euo pipefail
+          repo="$(dirname "$0")/claudexor.git" tree="$1" dir="$2"
+          shift 2
+          test "$(git -C "$repo" ls-tree -r --name-only "$CLAUDEXOR_SHA:$tree" | sort)" = "$(printf '%s\n' "$@" | sort)" ||
+            { echo "Git $CLAUDEXOR_SHA:$tree does not hold exactly: $*"; exit 1; }
+          for f in "$@"; do
+            test "$(git hash-object --no-filters "$dir/$f")" = "$(git -C "$repo" rev-parse "$CLAUDEXOR_SHA:$tree/$f")" ||
+              { echo "$dir/$f differs from Git $CLAUDEXOR_SHA:$tree/$f"; exit 1; }
+          done
+          echo "$dir: $# files have the bytes of Git $CLAUDEXOR_SHA:$tree"
+          EOF
+
+      - name: Pi installs npm:claudexor at the exact release version
+        id: pi
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        timeout-minutes: 10
+        env:
+          HOME: ${{ runner.temp }}/home-pi
+        run: |
+          set -euo pipefail
+          mkdir "$HOME"
+          spec="npm:claudexor@$CLAUDEXOR_VERSION"
+          pkg="$HOME/.pi/agent/npm/node_modules/claudexor"
+          npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@$PI_VERSION"
+          pi --version 2>&1 | grep -F "$PI_VERSION"
+          # Package source: the registry manifest of this exact version lists the
+          # extension, and Pi records the npm source it installed from.
+          npm view "claudexor@$CLAUDEXOR_VERSION" pi.extensions --json | jq -e '[.] | flatten == ["./pi/index.js"]'
+          pi install "$spec"
+          pi list | tee "$RUNNER_TEMP/pi-list.txt"
+          grep -F "$spec" "$RUNNER_TEMP/pi-list.txt"
+          grep -F ".pi/agent/npm/node_modules/claudexor" "$RUNNER_TEMP/pi-list.txt"
+          jq -e --arg s "$spec" '[.packages[] | if type == "string" then . else .source end] == [$s]' \
+            "$HOME/.pi/agent/settings.json"
+          jq -e --arg v "$CLAUDEXOR_VERSION" '.name == "claudexor" and .version == $v
+            and .pi == {extensions: ["./pi/index.js"], skills: ["./pi/skills"]}' "$pkg/package.json"
+          bash "$RUNNER_TEMP/same-as-git" packages/claudexor/pi "$pkg/pi" index.js mcp.json skills/claudexor/SKILL.md
+          # No manual MCP entry: besides extensions, Pi reads servers only from these files.
+          test ! -e "$HOME/.pi/agent/mcp.json"
+          test ! -e .pi/mcp.json
+
+      - name: README command pi install npm:claudexor, while latest is the release
+        id: pi-readme
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.pi.outcome == 'success' }}
+        timeout-minutes: 10
+        env:
+          HOME: ${{ runner.temp }}/home-pi-readme
+        run: |
+          set -euo pipefail
+          mkdir "$HOME"
+          spec="npm:claudexor"
+          pkg="$HOME/.pi/agent/npm/node_modules/claudexor"
+          # The README's exact command. It floats with dist-tags.latest, so it
+          # is judged only while latest still is the release under test; its
+          # result never changes the pinned 6.3.0 verdict above.
+          # A registry error fails the step: it must never read as "latest differs".
+          latest="$(npm view claudexor dist-tags.latest)"
+          [[ "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]
+          if [ "$latest" != "$CLAUDEXOR_VERSION" ]; then
+            echo "note=NOT RUN: dist-tags.latest is $latest, not $CLAUDEXOR_VERSION" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pi install "$spec"
+          pi list | tee "$RUNNER_TEMP/pi-readme-list.txt"
+          grep -F "$spec" "$RUNNER_TEMP/pi-readme-list.txt"
+          grep -F ".pi/agent/npm/node_modules/claudexor" "$RUNNER_TEMP/pi-readme-list.txt"
+          # Pi 1.5.2 records the npm source in settings exactly as typed.
+          jq -e --arg s "$spec" '[.packages[] | if type == "string" then . else .source end] == [$s]' \
+            "$HOME/.pi/agent/settings.json"
+          actual="$(jq -er .version "$pkg/package.json")"
+          if [ "$actual" != "$CLAUDEXOR_VERSION" ]; then
+            # A different install is explained only by an observed move of the tag, never assumed.
+            latest_after="$(npm view claudexor dist-tags.latest)"
+            [[ "$latest_after" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]
+            if [ "$latest_after" = "$CLAUDEXOR_VERSION" ]; then
+              echo "Installed claudexor@$actual although dist-tags.latest is still $CLAUDEXOR_VERSION"
+              exit 1
+            fi
+            echo "note=NOT JUDGED: dist-tags.latest moved from $CLAUDEXOR_VERSION to $latest_after; installed claudexor@$actual" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "note=verified: $spec resolved to claudexor@$CLAUDEXOR_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Hermes installs the plugin pinned to the release commit
+        id: hermes
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        timeout-minutes: 30
+        env:
+          HOME: ${{ runner.temp }}/home-hermes
+        run: |
+          set -euo pipefail
+          mkdir "$HOME"
+          plugin="$HOME/.hermes/plugins/claudexor"
+          meta="$HOME/.hermes/plugins/.install-metadata.json"
+          report="$RUNNER_TEMP/hermes-validate.json"
+          on_pin() { test "$(git -C "$HOME/.hermes/hermes-agent" rev-parse HEAD)" = "$HERMES_SHA"; }
+          # The stable channel has moved on to 0.23.2, so pin the v0.23.1 commit
+          # using the installer from that same commit.
+          test "$(git ls-remote https://github.com/NousResearch/hermes-agent.git \
+            refs/tags/v0.23.1 'refs/tags/v0.23.1^{}' | tail -n 1 | cut -f 1)" = "$HERMES_SHA"
+          curl -fsSL -o "$RUNNER_TEMP/hermes-install.sh" \
+            "https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_SHA/scripts/install.sh"
+          bash "$RUNNER_TEMP/hermes-install.sh" --commit "$HERMES_SHA" \
+            --non-interactive --skip-browser --skip-computer-use
+          # The documented launcher directory, then the one the installer itself calls.
+          export PATH="$HOME/.local/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$PATH"
+          on_pin
+          hermes --version
+          hermes plugins install razzant/claudexor/plugins/hermes --ref "$CLAUDEXOR_SHA" --enable
+          hermes plugins list
+          hermes plugins list --json | jq -e --arg pin "git pinned@${CLAUDEXOR_SHA:0:8}" \
+            'map(select(.name == "claudexor")) | length == 1 and .[0].status == "enabled" and .[0].source == $pin'
+          jq .claudexor "$meta"
+          jq -e --arg sha "$CLAUDEXOR_SHA" '.claudexor | .pinned == true and .revision == $sha
+            and (.source | test("^https://github\\.com/razzant/claudexor(\\.git)?#plugins/hermes$"))' "$meta"
+          bash "$RUNNER_TEMP/same-as-git" plugins/hermes "$plugin" \
+            LICENSE README.md mcp.json plugin.json skills/claudexor/SKILL.md
+          find "$plugin" -type f | sort
+          # Plain validation, as a user would run it. At pinned 0.23.1
+          # `plugins validate --json` prints {ok, checks:[{name,ok,detail}],
+          # warnings:[...], isolation} and exits 1 when any check failed;
+          # warnings never change that exit code. The real exit status decides
+          # the step (no `|| true` swallow): pipefail keeps it, the jq checks
+          # require a genuine passing report for this plugin, and every warning
+          # stays a visible diagnostic.
+          status=0
+          hermes plugins validate "$plugin" --json | tee "$report" || status=$?
+          warnings="$(jq '.warnings | length' "$report")"
+          echo "warnings=$warnings" >> "$GITHUB_OUTPUT"
+          # The portable path of a plugin.json-only package always runs these
+          # exact checks at 0.23.1; their presence proves a real report.
+          jq -e '(.ok == true) and ((.warnings | type) == "array")
+            and ((.checks | type) == "array") and (.checks | length > 0)
+            and (.checks | all(.[]; type == "object" and .ok == true and has("name")))
+            and ([.checks[].name]
+              | contains(["portable manifest", "manifest fields", "config schema", "security scan"]))' "$report"
+          if [ "$warnings" -gt 0 ]; then
+            { echo "### Hermes validator diagnostics (claudexor)";
+              jq -r '.warnings[] | "- " + .' "$report"; } | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          # A diagnostic about mcp.json or a skill means that component of this
+          # plugin did not load. At 0.23.1 that reports only as a warning, so it
+          # must fail here instead of certifying a reduced install as full.
+          lost="$(jq -r '[.warnings[] | select(startswith("mcp") or startswith("skill"))] | join("; ")' "$report")"
+          test -z "$lost" || { echo "Plugin components reported not loaded: $lost"; exit 1; }
+          on_pin
+          exit "$status"
+
+      - name: OpenClaw installs the Claude-format bundle
+        id: openclaw
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        timeout-minutes: 15
+        env:
+          HOME: ${{ runner.temp }}/home-openclaw
+        run: |
+          set -euo pipefail
+          mkdir "$HOME"
+          files=(.claude-plugin/plugin.json .mcp.json LICENSE README.md skills/claudexor/SKILL.md)
+          bundle="$HOME/claudexor-bundle"
+          report="$RUNNER_TEMP/openclaw-inspect.json"
+          npm install -g "openclaw@$OPENCLAW_VERSION" --allow-scripts=openclaw
+          openclaw --version 2>&1 | grep -F "$OPENCLAW_VERSION"
+          # Exactly the five known files of the release commit, written into a new
+          # directory right before the install.
+          mkdir "$bundle"
+          for f in "${files[@]}"; do
+            mkdir -p "$(dirname "$bundle/$f")"
+            git -C "$RUNNER_TEMP/claudexor.git" cat-file blob "$CLAUDEXOR_SHA:plugins/claude/$f" > "$bundle/$f"
+          done
+          test "$(cd "$bundle" && find . -type f | sort)" = "$(printf './%s\n' "${files[@]}" | sort)"
+          bash "$RUNNER_TEMP/same-as-git" plugins/claude "$bundle" "${files[@]}"
+          jq -e '. == {mcpServers: {claudexor: {command: "claudexor", args: ["mcp", "serve"]}}}' "$bundle/.mcp.json"
+          # There is no terminal. The two ordinary confirmations are given for this
+          # verified bundle only: its source, and its skill plus one stdio server.
+          # A refusal by OpenClaw's own install policy stands as this host's result.
+          openclaw plugins install "$bundle" --force --accept-capabilities
+          openclaw plugins inspect claudexor
+          openclaw plugins inspect claudexor --json | tee "$report"
+          jq -e --arg v "$CLAUDEXOR_VERSION" '.plugin.id == "claudexor" and .plugin.version == $v
+            and .plugin.format == "bundle" and .plugin.bundleFormat == "claude"
+            and .plugin.enabled == true and .plugin.status == "loaded"
+            and (.bundleCapabilities | sort) == ["mcpServers", "skills"]
+            and (.mcpServers | length) == 1 and .mcpServers[0].name == "claudexor"
+            and .mcpServers[0].hasStdioTransport == true and .lspServers == []
+            and ([.diagnostics[] | select(.level == "error")] | length) == 0
+            and .install.source == "path"' "$report"
+          managed="$(jq -er '.install.installPath' "$report")"
+          managed="${managed/#\~/$HOME}"
+          case "$managed" in
+            "$HOME/.openclaw/"*) ;;
+            *) echo "The managed copy is not in the OpenClaw state directory: $managed"; exit 1 ;;
+          esac
+          test "$(jq -er '.plugin.rootDir' "$report")" = "$managed"
+          bash "$RUNNER_TEMP/same-as-git" plugins/claude "$managed" "${files[@]}"
+          find "$managed" -type f | sort
+
+      - name: Verdict per host
+        if: ${{ always() }}
+        env:
+          SETUP: ${{ steps.setup.outcome }}
+          PI: ${{ steps.pi.outcome }}
+          HERMES: ${{ steps.hermes.outcome }}
+          HERMES_WARNINGS: ${{ steps.hermes.outputs.warnings }}
+          OPENCLAW: ${{ steps.openclaw.outcome }}
+          PI_README: ${{ steps.pi-readme.outcome }}
+          PI_README_NOTE: ${{ steps.pi-readme.outputs.note }}
+        run: |
+          set -euo pipefail
+          verdict() {
+            case "$1" in
+              success) echo "verified" ;;
+              failure) echo "FAILED in this host" ;;
+              *) [ "$SETUP" = success ] && echo "not completed ($1)" || echo "BLOCKED, the shared setup did not succeed" ;;
+            esac
+          }
+          {
+            echo "| Published install | Result |"
+            echo "| --- | --- |"
+            echo "| Shared setup: Git objects of v$CLAUDEXOR_VERSION and the claudexor $CLAUDEXOR_VERSION CLI from npm | ${SETUP:-not run} |"
+            echo "| Pi $PI_VERSION: pi install npm:claudexor@$CLAUDEXOR_VERSION | $(verdict "$PI") |"
+            echo "| Hermes 0.23.1: plugin pinned to the release commit | $(verdict "$HERMES")${HERMES_WARNINGS:+, validator warnings about this plugin: $HERMES_WARNINGS} |"
+            echo "| OpenClaw $OPENCLAW_VERSION: Claude-format bundle of the release commit | $(verdict "$OPENCLAW") |"
+            echo "| README command pi install npm:claudexor, unversioned and judged only while dist-tags.latest is $CLAUDEXOR_VERSION | ${PI_README_NOTE:-$(verdict "$PI_README")} |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  hermes-trust-probe:
+    name: Candidate Hermes plugin, ${{ matrix.mode }} profile, validate and native approval probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [stock, unattended, custom]
+    steps:
+      - name: Candidate commit and the two QA files from public Git
+        id: candidate
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          # No checkout action and no token: public, unauthenticated Git reads only.
+          # One stack per disposable ref: the run judges exactly the pushed event commit, never a branch tip.
+          repo="https://github.com/razzant/claudexor.git"
+          branch="qa/release-630-host-installs-3764b405-02"
+          wf=".github/workflows/qa-release-630-host-installs.yml"
+          probe=".github/qa/hermes-trust-probe.py"
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REPOSITORY" = razzant/claudexor
+          test "$GITHUB_REF" = "refs/heads/$branch"
+          test "$GITHUB_WORKFLOW_REF" = "razzant/claudexor/$wf@refs/heads/$branch"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git init --quiet --bare "$RUNNER_TEMP/candidate.git"
+          cg=(git -C "$RUNNER_TEMP/candidate.git")
+          "${cg[@]}" fetch --quiet --depth=2 "$repo" "$GITHUB_SHA"
+          test "$("${cg[@]}" rev-parse --verify "$GITHUB_SHA^{commit}")" = "$GITHUB_SHA"
+          # Exactly one parent, counted as array length. No ancestor walking.
+          read -r -a commit_line <<< "$("${cg[@]}" rev-list --parents -n 1 "$GITHUB_SHA")"
+          test "${#commit_line[@]}" -eq 2
+          product="${commit_line[1]}"
+          [[ "$product" =~ ^[0-9a-f]{40}$ ]]
+          # The event commit's parent must be exactly the reviewed product commit.
+          test "$product" = "6bc0ed57c0012bd6a636ab46865389df3269be9d"
+          test "$product" != "$GITHUB_SHA"
+          # The event commit adds only the two QA files (an A for each also proves the parent has neither).
+          test "$("${cg[@]}" diff --name-status --no-renames "$product" "$GITHUB_SHA")" = "$(printf 'A\t%s\nA\t%s' "$probe" "$wf")"
+          test "$("${cg[@]}" ls-tree "$GITHUB_SHA" -- "$probe" "$wf" | cut -d' ' -f1 | sort -u)" = 100644
+          echo "product commit (HEAD^): $product"
+          # The documented floor must be in the product docs, and the manifest must declare the gate.
+          for f in README.md docs/INTEGRATIONS.md plugins/hermes/README.md; do
+            "${cg[@]}" cat-file blob "$product:$f" | grep -F "0.23.1" >/dev/null ||
+              { echo "$f at $product does not name the Hermes 0.23.1 floor"; exit 1; }
+          done
+          "${cg[@]}" cat-file blob "$product:plugins/hermes/plugin.json" |
+            jq -e '.extensions["com.nousresearch.hermes"].servers.claudexor.trust == "untrusted"'
+          # Only the probe (and the product docs it parses) are taken from Git; nothing from the product commit is executed.
+          mkdir "$RUNNER_TEMP/qa" "$RUNNER_TEMP/home-trust"
+          "${cg[@]}" cat-file blob "$GITHUB_SHA:$probe" > "$RUNNER_TEMP/qa/probe.py"
+          "${cg[@]}" cat-file blob "$product:docs/INTEGRATIONS.md" > "$RUNNER_TEMP/qa/INTEGRATIONS.md"
+          if env | grep -E '^(HERMES_|CLAUDEXOR_)' | grep -vE '^(HERMES_SHA|CLAUDEXOR_VERSION|CLAUDEXOR_SHA)=' >/dev/null; then
+            echo "unexpected HERMES_/CLAUDEXOR_ variables in the job environment"; exit 1
+          fi
+          test -z "$(command -v claudexor || true)"
+          echo "product=$product" >> "$GITHUB_OUTPUT"
+          echo "HOME=$RUNNER_TEMP/home-trust" >> "$GITHUB_ENV"
+
+      - name: Hermes 0.23.1 installs the candidate plugin pinned to HEAD^
+        id: hermes
+        timeout-minutes: 30
+        env:
+          PRODUCT: ${{ steps.candidate.outputs.product }}
+        run: |
+          set -euo pipefail
+          src="$HOME/.hermes/hermes-agent"
+          plugin="$HOME/.hermes/plugins/claudexor"
+          meta="$HOME/.hermes/plugins/.install-metadata.json"
+          report="$RUNNER_TEMP/hermes-validate.json"
+          cg=(git -C "$RUNNER_TEMP/candidate.git")
+          files=(LICENSE README.md mcp.json plugin.json skills/claudexor/SKILL.md)
+          on_pin() { test "$(git -C "$src" rev-parse HEAD)" = "$HERMES_SHA"; }
+          test "$(git ls-remote https://github.com/NousResearch/hermes-agent.git \
+            refs/tags/v0.23.1 'refs/tags/v0.23.1^{}' | tail -n 1 | cut -f 1)" = "$HERMES_SHA"
+          curl -fsSL -o "$RUNNER_TEMP/hermes-install.sh" \
+            "https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_SHA/scripts/install.sh"
+          bash "$RUNNER_TEMP/hermes-install.sh" --commit "$HERMES_SHA" \
+            --non-interactive --skip-browser --skip-computer-use
+          export PATH="$HOME/.local/bin:$src/.hermes/bin:$PATH"
+          on_pin
+          hermes --version 2>&1 | tee "$RUNNER_TEMP/hermes-version.txt" | grep -F "0.23.1"
+          # The documented command, with the reviewed product commit as the pin and no --force.
+          hermes plugins install razzant/claudexor/plugins/hermes --ref "$PRODUCT" --enable
+          hermes plugins list --json | jq -e --arg pin "git pinned@${PRODUCT:0:8}" \
+            'map(select(.name == "claudexor")) | length == 1 and .[0].status == "enabled" and .[0].source == $pin'
+          jq -e --arg sha "$PRODUCT" '.claudexor | .pinned == true and .revision == $sha
+            and (.source | test("^https://github\\.com/razzant/claudexor(\\.git)?#plugins/hermes$"))' "$meta"
+          # Five installed files, each with the bytes of its blob at HEAD^, and no others.
+          test "$("${cg[@]}" ls-tree -r --name-only "$PRODUCT:plugins/hermes" | sort)" = "$(printf '%s\n' "${files[@]}" | sort)"
+          test "$(find "$plugin" -type f -not -path "$plugin/.git/*" | sed "s|^$plugin/||" | sort)" = "$(printf '%s\n' "${files[@]}" | sort)"
+          for f in "${files[@]}"; do
+            test "$(git hash-object --no-filters "$plugin/$f")" = "$("${cg[@]}" rev-parse "$PRODUCT:plugins/hermes/$f")" ||
+              { echo "$plugin/$f differs from $PRODUCT:plugins/hermes/$f"; exit 1; }
+          done
+
+      - name: Plain plugins validate, its own step so the probe is still tried after a validator problem
+        id: validate
+        if: ${{ !cancelled() && steps.hermes.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          src="$HOME/.hermes/hermes-agent"
+          plugin="$HOME/.hermes/plugins/claudexor"
+          report="$RUNNER_TEMP/hermes-validate.json"
+          export PATH="$HOME/.local/bin:$src/.hermes/bin:$PATH"
+          # Plain validation: the text form and the JSON form must exit alike, and the JSON must be a real passing report.
+          plain=0
+          hermes plugins validate "$plugin" 2>&1 | tee "$RUNNER_TEMP/validate-plain.txt" || plain=$?
+          status=0
+          hermes plugins validate "$plugin" --json | tee "$report" || status=$?
+          test "$plain" = "$status"
+          jq -e '(.ok == true) and (.warnings | type == "array") and (.checks | type == "array")
+            and (.checks | length > 0) and (.checks | all(.[]; .ok == true))
+            and ([.checks[].name] | contains(["portable manifest", "manifest fields", "config schema",
+                  "security scan", "server trust: claudexor"]))
+            and ([.checks[] | select(.name == "server trust: claudexor")][0].detail
+                 == "untrusted (Hermes asks before every write-capable tool call)")' "$report"
+          warnings="$(jq '.warnings | length' "$report")"
+          echo "warnings=$warnings" >> "$GITHUB_OUTPUT"
+          if [ "$warnings" -gt 0 ]; then
+            { echo "### Hermes validator diagnostics (candidate claudexor)";
+              jq -r '.warnings[] | "- " + .' "$report"; } | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          lost="$(jq -r '[.warnings[] | select(startswith("mcp") or startswith("skill") or startswith("server")
+            or test("trust|newer Hermes"))] | join("; ")' "$report")"
+          test -z "$lost" || { echo "Component or trust diagnostics: $lost"; exit 1; }
+          test "$status" = 0
+          test "$(git -C "$src" rev-parse HEAD)" = "$HERMES_SHA"
+
+      - name: Python that Hermes itself selects for its dependencies
+        id: interpreter
+        if: ${{ !cancelled() && steps.hermes.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          src="$HOME/.hermes/hermes-agent"
+          launcher="$src/.hermes/bin/hermes"
+          rt="$RUNNER_TEMP/hermes-runtime-command.json"
+          test -x "$launcher"
+          # The published launcher's own machine boundary: the exact runtime command, one JSON array.
+          "$launcher" --print-runtime-command | tee "$rt"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' "$rt"
+          boot="$(jq -er '.[0]' "$rt")"
+          test -x "$boot"
+          # pm.environments.project_python: the dependency environment recorded for this install.
+          py="$("$boot" -I -c 'import pathlib, sys; src = pathlib.Path(sys.argv[1]).resolve(); sys.path.insert(0, str(src)); from pm.environments import project_python; print(project_python(src))' "$src")"
+          test -x "$py"
+          "$py" -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import yaml, mcp, tools.registry, tools.mcp_tool_discovery' "$src"
+          echo "launcher runtime: $boot"
+          echo "dependency interpreter: $py"
+          echo "QA_PY=$py" >> "$GITHUB_ENV"
+
+      - name: Probe, ${{ matrix.mode }} profile
+        id: probe
+        if: ${{ !cancelled() && steps.hermes.outcome == 'success' && steps.interpreter.outcome == 'success' }}
+        timeout-minutes: 5
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ "$MODE" = custom ]; then
+            extra=(--readme "$HOME/.hermes/plugins/claudexor/README.md" --integrations "$RUNNER_TEMP/qa/INTEGRATIONS.md")
+          fi
+          env -u CLAUDEXOR_VERSION -u CLAUDEXOR_SHA -u PI_VERSION -u OPENCLAW_VERSION -u HERMES_SHA \
+            "$QA_PY" -I "$RUNNER_TEMP/qa/probe.py" "$MODE" \
+            --hermes-src "$HOME/.hermes/hermes-agent" --hermes-sha "$HERMES_SHA" "${extra[@]}" </dev/null |
+            tee "$RUNNER_TEMP/probe.txt"
+          grep '^RESULT' "$RUNNER_TEMP/probe.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Verdict, candidate Hermes plugin
+        if: ${{ always() }}
+        env:
+          MODE: ${{ matrix.mode }}
+          CANDIDATE: ${{ steps.candidate.outcome }}
+          HERMES: ${{ steps.hermes.outcome }}
+          VALIDATE: ${{ steps.validate.outcome }}
+          VALIDATE_WARNINGS: ${{ steps.validate.outputs.warnings }}
+          INTERPRETER: ${{ steps.interpreter.outcome }}
+          PROBE: ${{ steps.probe.outcome }}
+          PRODUCT: ${{ steps.candidate.outputs.product }}
+        run: |
+          set -euo pipefail
+          v() { case "$1" in success) echo "verified" ;; failure) echo "FAILED" ;; *) echo "NOT RUN (${1:-no result})" ;; esac; }
+          {
+            echo "| Candidate ${PRODUCT:-unknown} (HEAD^), $MODE profile, Hermes 0.23.1 | Result |"
+            echo "| --- | --- |"
+            echo "| Event commit = the two QA files on one parent | $(v "$CANDIDATE") |"
+            echo "| Exact install at HEAD^, pin, five source bytes | $(v "$HERMES") |"
+            echo "| Plain plugins validate | $(v "$VALIDATE")${VALIDATE_WARNINGS:+, validator warnings: $VALIDATE_WARNINGS} |"
+            echo "| Hermes-selected dependency interpreter | $(v "$INTERPRETER") |"
+            echo "| Probe ($MODE): read reaches the stdio stub, write-labelled no-op is refused before it | $(v "$PROBE") |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
