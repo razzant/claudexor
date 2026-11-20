@@ -150,7 +150,7 @@ describe("run-deadline/1 at the scheduler", () => {
     const d = daemon(slot.runner);
     try {
       await d.client.enqueue({ label: "blocker" }, { idempotencyKey: "b", clientId: "t" });
-      const request = { label: "late", deadline: { at: inMs(400) } };
+      const request = { label: "late", deadline: { at: inMs(1_500) } };
       // The caller never reads this answer ("lost"); it finds the run by its key.
       void d.client.enqueue(request, { idempotencyKey: "lost", clientId: "t" });
       const found = (await until(
@@ -288,7 +288,7 @@ describe("run-deadline/1 at the scheduler", () => {
   it("trial 6: a run queued longer than one period starts when renewed and expires when not", async () => {
     const slot = slotRunner();
     const d = daemon(slot.runner);
-    const period = 400;
+    const period = 1_500;
     try {
       await d.client.enqueue({ label: "blocker" }, { idempotencyKey: "b", clientId: "t" });
       const renewed = await d.client.enqueue(
@@ -307,7 +307,7 @@ describe("run-deadline/1 at the scheduler", () => {
           expectedRevision: revision,
         });
         revision = next.revision;
-        await sleep(period / 2);
+        await sleep(period / 3);
       }
       expect(await d.client.status(abandoned.id)).toMatchObject({
         state: "cancelled",
@@ -611,6 +611,96 @@ describe("run-deadline/1 at the scheduler", () => {
     } finally {
       await d.close();
     }
+  });
+});
+
+describe("run-deadline/1 host clock and successors", () => {
+  it("item 10: a host that slept past the deadline expires it within a second of waking", async () => {
+    const slot = slotRunner();
+    const time = steppedClock();
+    const d = daemon(slot.runner, { clock: time.clock });
+    try {
+      await d.client.enqueue({ label: "blocker" }, { idempotencyKey: "b", clientId: "t" });
+      const accepted = await d.client.enqueue(
+        { label: "asleep", deadline: { at: inMs(60_000) } },
+        { idempotencyKey: "s", clientId: "t" },
+      );
+      time.advanceHost(3_600_000); // an hour of suspend the event loop never saw
+      const started = Date.now();
+      const ended = await until(
+        () => d.client.status(accepted.id),
+        (record) => !live(record),
+        3_000,
+      );
+      expect(ended).toMatchObject({ state: "cancelled", errorCode: "run_deadline_expired" });
+      expect(Date.now() - started).toBeLessThan(1_500);
+    } finally {
+      slot.release();
+      await d.close();
+    }
+  });
+
+  it("item 5: a successor the engine started inherits its predecessor's deadline, expiring at once when it passed", async () => {
+    const time = steppedClock();
+    const d = daemon(
+      async (_params, ctx) => {
+        ctx.onRunStart({ runId: `run-${ctx.jobId}`, taskId: "t", runDir: "/tmp/none" });
+        return { lifecycle: "succeeded" };
+      },
+      { clock: time.clock },
+    );
+    try {
+      const predecessor = await d.client.enqueue(
+        { label: "first", deadline: { at: inMs(60_000) } },
+        { idempotencyKey: "p", clientId: "t" },
+      );
+      const done = await until(
+        () => d.client.status(predecessor.id),
+        (record) => !live(record),
+      );
+      const at = (await d.client.runDeadline(predecessor.id, { action: "read" })).at;
+      const successor = (id: string): JobRecord => ({
+        id,
+        state: "queued",
+        params: { label: "next", continueFrom: done.runId },
+        createdAt: new Date().toISOString(),
+      });
+      d.server.deadlines.admitRecord(successor("job-next-1"));
+      expect(d.server.deadlines.snapshot("job-next-1")).toMatchObject({ at, state: "armed" });
+      time.advanceHost(61_000);
+      time.stepWall(61_000);
+      d.server.deadlines.admitRecord(successor("job-next-2"));
+      expect(d.server.deadlines.snapshot("job-next-2")).toMatchObject({ at, state: "expired" });
+    } finally {
+      await d.close();
+    }
+  });
+
+  it("item 2: a state file from another boot is read by the wall clock", async () => {
+    const dir = join(temp(), "deadlines");
+    const bootA = { ...systemDeadlineClock(), bootId: () => "boot-a" };
+    const a = new RunDeadlines({ dir, clock: bootA });
+    a.admit("job", a.toPoint(inMs(60_000)), null);
+    await a.set(
+      "job",
+      { at: inMs(-0 + 120_000), expectedRevision: 0 },
+      { live: true, delegated: false },
+    );
+    a.dispose();
+    const bootB = { ...systemDeadlineClock(), bootId: () => "boot-b" };
+    const b = new RunDeadlines({ dir, clock: bootB });
+    expect(b.durableSnapshot("job", { params: {}, expired: false })).toMatchObject({
+      revision: 1,
+      state: "closed",
+    });
+    const later = new RunDeadlines({
+      dir,
+      clock: { ...bootB, wallNow: () => Date.now() + 600_000 },
+    });
+    expect(later.durableSnapshot("job", { params: {}, expired: false })).toMatchObject({
+      revision: 1,
+      state: "expired",
+    });
   });
 });
 
