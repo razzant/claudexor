@@ -11,7 +11,12 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { DaemonLocalClient } from "./daemon-local-client.js";
 import { RunDeadlines, systemDeadlineClock, type RunDeadlineClock } from "./run-deadlines.js";
-import { RUN_DEADLINE_STOP_GRACE_SEC } from "./run-deadline-warden.js";
+import {
+  RUN_DEADLINE_STOP_GRACE_SEC,
+  effectiveTarget,
+  readWardenState,
+  type WardenState,
+} from "./run-deadline-warden.js";
 import { DaemonServer, type JobRecord, type RunnerFn } from "./server.js";
 import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
@@ -770,6 +775,37 @@ describe("RunDeadlines registry", () => {
       });
       deadlines.forget("parent");
       expect(deadlines.snapshot("child")).toMatchObject({ at: before.at, state: "closed" });
+    } finally {
+      deadlines.dispose();
+    }
+  });
+
+  it("item 7: a parent revision whose write failed leaves the parent and every dependent warden on the old deadline", async () => {
+    const dir = join(temp(), "deadlines");
+    const deadlines = registry({ dir, spawnWarden: async () => ({ pid: 1 }) });
+    try {
+      const first = deadlines.toPoint(inMs(300_000));
+      deadlines.admit("parent", first, null);
+      await deadlines.attachScope("parent", `CLAUDEXOR_RUN_SCOPE_${"1".repeat(32)}`);
+      deadlines.admit("child", null, "parent");
+      await deadlines.attachScope("child", `CLAUDEXOR_RUN_SCOPE_${"2".repeat(32)}`);
+      chmodSync(dir, 0o500);
+      try {
+        await expect(
+          deadlines.set(
+            "parent",
+            { at: inMs(120_000), expectedRevision: 0 },
+            { live: true, delegated: false },
+          ),
+        ).rejects.toBeTruthy();
+      } finally {
+        chmodSync(dir, 0o700);
+      }
+      expect(deadlines.snapshot("parent")).toMatchObject({ at: first.at, revision: 0 });
+      expect(deadlines.snapshot("child")).toMatchObject({ at: first.at, inheritedFrom: "parent" });
+      // What the child's warden obeys: its own file, capped by the parent's unchanged file.
+      const childState = readWardenState(join(dir, "child.json")) as WardenState;
+      expect(effectiveTarget(childState, dir)).toBe(first.target);
     } finally {
       deadlines.dispose();
     }
