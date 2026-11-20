@@ -133,6 +133,9 @@ describe("npm history reconciliation", () => {
       ],
     );
     expect(reconcileMetrics(result, "2026-07-12", 13, totals)).toEqual(result);
+    expect(() =>
+      reconcileMetrics([], "2026-07-12", 13, new Map([[next, Number.MAX_SAFE_INTEGER]])),
+    ).toThrow("invalid download total");
     expect(() => reconcileMetrics(input, "2026-07-13", 13, totals)).toThrow(
       "no complete npm history",
     );

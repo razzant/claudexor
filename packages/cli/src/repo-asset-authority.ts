@@ -275,7 +275,10 @@ export function reconcileMetrics(
     const npm_total = npmTotals.get(row.npm_through);
     if (npm_total === undefined)
       throw new Error(`no complete npm history through ${row.npm_through}`);
-    return { ...row, npm_total, total_downloads: npm_total + row.github_release_downloads };
+    const total_downloads = npm_total + row.github_release_downloads;
+    if (!Number.isSafeInteger(total_downloads))
+      throw new Error(`invalid download total on ${row.date}`);
+    return { ...row, npm_total, total_downloads };
   });
 }
 
