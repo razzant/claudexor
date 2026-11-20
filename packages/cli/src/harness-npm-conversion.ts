@@ -7,15 +7,23 @@ import {
   npmGlobalPackagesDir,
   resolveHarnessCommandOnPath,
   resolveSelectedProgram,
+  selectProgramEntry,
   verifyProgramSelection,
 } from "@claudexor/core";
 import type { HarnessProgram, SelectedHarnessProgram } from "@claudexor/schema";
 import type { InstallerRuntime } from "./harness-install-runtime.js";
 
+interface PackageSource {
+  directory: string | null;
+  manifest: Buffer;
+  entries: Array<{ path: string; identity: string }>;
+}
+
 export interface ProductNpmCopy {
   packageRoot: string;
   launchers: string[];
   entrypoints: string[];
+  source: PackageSource;
 }
 const prefixes = (runtime: InstallerRuntime) => [
   managedNodeRoot(runtime.home),
@@ -25,6 +33,126 @@ const hiddenPackage = (path: string) => `${path}.claudexor-converted`;
 function inside(root: string, path: string): boolean {
   const rest = relative(root, path);
   return rest !== "" && rest !== ".." && !rest.startsWith(`..${sep}`) && !isAbsolute(rest);
+}
+
+/** Windows can refuse to rename a folder while a file inside it is open. */
+const WINDOWS_HIDE_REFUSALS = new Set(["EPERM", "EACCES", "EBUSY"]);
+const WINDOWS_HIDE_WAIT_MS = 2_000;
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+const refusedRenameCode = (error: unknown) => {
+  const { syscall, code } = (error ?? {}) as NodeJS.ErrnoException;
+  return syscall === "rename" && code && WINDOWS_HIDE_REFUSALS.has(code) ? code : null;
+};
+const directoryIdentity = (path: string) => {
+  try {
+    const stat = lstatSync(path, { bigint: true });
+    return stat.isDirectory() ? `dev ${stat.dev} ino ${stat.ino}` : null;
+  } catch {
+    return null;
+  }
+};
+
+// Track only proven, package-relative targets: the parent can move even
+// though an absolute symlink launcher no longer resolves after the hide.
+function packageEntries(root: string, paths: string[]): PackageSource["entries"] {
+  return paths.map((path) => {
+    const stat = lstatSync(join(root, path), { bigint: true });
+    if (!stat.isFile()) throw new Error(`The npm entry ${path} is not a regular file`);
+    return {
+      path,
+      identity: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`,
+    };
+  });
+}
+
+const shownCopy = ({ packageRoot, launchers, entrypoints }: ProductNpmCopy) =>
+  JSON.stringify({ packageRoot, launchers, entrypoints });
+
+function packageChange(before: PackageSource, after: PackageSource): string | null {
+  if (!before.directory || before.directory !== after.directory)
+    return `the npm package directory could not be reverified (before ${before.directory}, now ${after.directory ?? "unknown"})`;
+  if (!before.manifest.equals(after.manifest)) return "the npm package manifest changed";
+  for (const [i, entry] of before.entries.entries()) {
+    const current = after.entries[i];
+    if (current?.path !== entry.path || current.identity !== entry.identity)
+      return `the npm entry ${entry.path} changed`;
+  }
+  return null;
+}
+
+const sourceChanged = (message: string, cause?: unknown) =>
+  Object.assign(new Error(message, { cause }), { code: "conversion_source_changed" });
+
+/** Retry only the Windows forward rename. The deadline admits new attempts;
+ * it does not bound an in-progress filesystem call or wake-up latency. */
+function hidePackage(
+  packageRoot: string,
+  platform: NodeJS.Platform,
+  limitations: string[],
+  changed: () => string | null,
+): ReturnType<typeof hideProgramPaths> {
+  const sibling = hiddenPackage(packageRoot);
+  const paths = [{ path: packageRoot, hidden: sibling }];
+  let attempts = 0;
+  const countRename = () => {
+    attempts++;
+  };
+  // The shared helper also resumes a hide that already sits at the sibling, as
+  // explicit recovery needs. On any platform conversion keeps a handle only for
+  // a rename it made; otherwise those bytes are not its to restore or prune.
+  const ownHide = (hidden: ReturnType<typeof hideProgramPaths>) => {
+    if (!attempts)
+      throw sourceChanged(
+        `The npm package path ${packageRoot} is absent and ${sibling} already exists, but this conversion did not hide it; that sibling is left untouched and conversion removed nothing`,
+      );
+    return hidden;
+  };
+  if (platform !== "win32") return ownHide(hideProgramPaths(paths, countRename));
+  try {
+    return ownHide(hideProgramPaths(paths, countRename));
+  } catch (error) {
+    const code = attempts ? refusedRenameCode(error) : null;
+    if (!code) throw error;
+    const started = performance.now();
+    const deadline = started + WINDOWS_HIDE_WAIT_MS;
+    const checkDeadline = () => {
+      if (performance.now() >= deadline) throw error;
+    };
+    const beginRetry = () => {
+      checkDeadline();
+      countRename();
+    };
+    const changedWhileWaiting = (detail: string) =>
+      sourceChanged(
+        `While waiting to retry the refused hide (${code}), ${detail}; conversion removed nothing`,
+        error,
+      );
+    try {
+      for (let pause = 50; ; pause = Math.min(pause * 2, 400)) {
+        const left = deadline - performance.now();
+        if (left <= 0) throw error;
+        Atomics.wait(sleepCell, 0, 0, Math.min(pause, left));
+        checkDeadline();
+        const difference = changed();
+        if (difference) throw changedWhileWaiting(difference);
+        checkDeadline();
+        const previousAttempts = attempts;
+        try {
+          // Enforce the deadline again after the source proof and sibling check.
+          const hidden = hideProgramPaths(paths, beginRetry);
+          if (attempts === previousAttempts)
+            throw changedWhileWaiting(`${packageRoot} disappeared and ${sibling} is occupied`);
+          return hidden;
+        } catch (again) {
+          if (attempts === previousAttempts || !refusedRenameCode(again)) throw again;
+        }
+      }
+    } finally {
+      limitations.push(
+        `Windows npm conversion: first rename error ${code}; ${attempts} attempts; elapsed ${Math.round(performance.now() - started)} ms.`,
+      );
+    }
+  }
 }
 
 /** A package and its bin relation prove conversion, never folder containment
@@ -41,10 +169,12 @@ export function productNpmCopy(
       program.legacyNpmPackage,
     );
     try {
-      if (!lstatSync(packageRoot).isDirectory()) continue;
+      const directory = directoryIdentity(packageRoot);
+      if (!directory) continue;
       const realRoot = realpathSync(packageRoot);
       if (!inside(realpathSync(prefix), realRoot)) continue;
-      const pkg = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as {
+      const manifest = readFileSync(join(packageRoot, "package.json"));
+      const pkg = JSON.parse(manifest.toString("utf8")) as {
         name?: string;
         bin?: string | Record<string, unknown>;
       };
@@ -71,7 +201,19 @@ export function productNpmCopy(
         entrypoints.push(entry);
       }
       if (entrypoints.includes(selected.realPath) && launchers.length)
-        return { packageRoot, launchers, entrypoints };
+        return {
+          packageRoot,
+          launchers,
+          entrypoints,
+          source: {
+            directory,
+            manifest,
+            entries: packageEntries(
+              realRoot,
+              entrypoints.map((entry) => relative(realRoot, entry)),
+            ),
+          },
+        };
     } catch {
       /* Missing, escaping or unrelated metadata proves no ownership. */
     }
@@ -127,13 +269,16 @@ export function retireProductNpmCopy(
       ),
       { code: "conversion_verification_failed" },
     );
-  if (programUpdateAvailable(program.versionScheme, expected.version, previous.version) === "yes")
-    throw Object.assign(
-      new Error(
-        `After the installer, ${expected.path} version ${expected.version} is found first and is older than the selected ${previous.version}; the installer's copy may be hidden behind it. Conversion removed nothing.`,
-      ),
-      { code: "conversion_older_program" },
-    );
+  const refuseOlder = (selected: SelectedHarnessProgram, context: string) => {
+    if (programUpdateAvailable(program.versionScheme, expected.version, selected.version) === "yes")
+      throw Object.assign(
+        new Error(
+          `${context}, ${expected.path} version ${expected.version} is found first and is older than the selected ${selected.version}; the installer's copy may be hidden behind it. Conversion removed nothing.`,
+        ),
+        { code: "conversion_older_program" },
+      );
+  };
+  refuseOlder(previous, "After the installer");
   const ordinary = observe();
   const matches = (value: SelectedHarnessProgram) =>
     value.path === expected.path &&
@@ -156,13 +301,15 @@ export function retireProductNpmCopy(
   if (matches(ordinary) && [copy.packageRoot, ...copy.launchers].some(absent))
     return { selection: ordinary, limitations };
   const current = productNpmCopy(program, ordinary, runtime);
-  if (!current || JSON.stringify(current) !== JSON.stringify(copy))
-    throw Object.assign(
-      new Error(
-        `The old package/launcher relation changed during conversion: before ${JSON.stringify(copy)}, now ${current ? JSON.stringify(current) : "no proven relation"} for the ordinary selection ${shown(ordinary)}; conversion removed nothing`,
-      ),
-      { code: "conversion_source_changed" },
+  if (!current || shownCopy(current) !== shownCopy(copy))
+    throw sourceChanged(
+      `The old package/launcher relation changed during conversion: before ${shownCopy(copy)}, now ${current ? shownCopy(current) : "no proven relation"} for the ordinary selection ${shown(ordinary)}; conversion removed nothing`,
     );
+  const beforeHide = packageChange(copy.source, current.source);
+  if (beforeHide)
+    throw sourceChanged(`At ${copy.packageRoot}, ${beforeHide}; conversion removed nothing`);
+  // The npm entry can report a newer version than it did before the installer.
+  refuseOlder(ordinary, "With the old npm launcher masked");
   // Leave the proven launchers in place while their package is hidden. Their
   // targets become unresolvable; one fixed package sibling is enough to recover.
   const launchers = copy.launchers.map((path) => ({ path, before: lstatSync(path) }));
@@ -173,9 +320,28 @@ export function retireProductNpmCopy(
       .map((field) => `${field} ${before[field]} → ${after[field]}`);
   };
   const unchanged = (launcher: (typeof launchers)[number]) => changes(launcher).length === 0;
-  const hidden = hideProgramPaths([
-    { path: copy.packageRoot, hidden: hiddenPackage(copy.packageRoot) },
-  ]);
+  // A refused Windows hide re-reads these facts without asking any version.
+  const located = ({ path, realPath }: Pick<SelectedHarnessProgram, "path" | "realPath">) =>
+    JSON.stringify({ path, realPath });
+  const hidden = hidePackage(copy.packageRoot, runtime.platform, limitations, () => {
+    for (const launcher of launchers) {
+      const fields = changes(launcher);
+      if (fields.length) return `the npm launcher ${launcher.path} changed (${fields.join(", ")})`;
+    }
+    const now = selectProgramEntry(program, runtime).observed;
+    if (located(now) !== located(ordinary))
+      return `the ordinary selection moved from ${located(ordinary)} to ${located(now)}`;
+    const relation = productNpmCopy(program, now, runtime);
+    if (!relation || shownCopy(relation) !== shownCopy(copy))
+      return `the package/launcher relation is now ${relation ? shownCopy(relation) : "no proven relation"}`;
+    const difference = packageChange(copy.source, relation.source);
+    if (difference) return `at ${copy.packageRoot}, ${difference}`;
+    const masked = [...copy.launchers, ...copy.entrypoints];
+    const replacement = selectProgramEntry(program, { ...runtime, maskedPaths: masked }).observed;
+    if (located(replacement) !== located(expected))
+      return `the masked selection moved from ${located(expected)} to ${located(replacement)}`;
+    return null;
+  });
   let selection: SelectedHarnessProgram;
   try {
     selection = observe();
@@ -190,6 +356,23 @@ export function retireProductNpmCopy(
           `An npm launcher changed before conversion committed: ${launcher.path} (${fields.join(", ")})`,
         );
     }
+    const root = hiddenPackage(copy.packageRoot);
+    let difference: string | null;
+    try {
+      difference = packageChange(copy.source, {
+        directory: directoryIdentity(root),
+        manifest: readFileSync(join(root, "package.json")),
+        entries: packageEntries(
+          root,
+          copy.source.entries.map(({ path }) => path),
+        ),
+      });
+    } catch (error) {
+      throw sourceChanged(`The hidden npm package at ${root} could not be reverified`, error);
+    }
+    if (difference) throw sourceChanged(`Before conversion committed at ${root}, ${difference}`);
+    if (!absent(copy.packageRoot))
+      throw sourceChanged(`The npm package path ${copy.packageRoot} was reoccupied before pruning`);
   } catch (error) {
     try {
       hidden.restore();
@@ -211,16 +394,19 @@ export function retireProductNpmCopy(
   }
   const retired = hidden.retire();
   limitations.push(...retired.limitations);
-  const { removed } = retired;
-  if (removed.length)
-    for (const launcher of launchers) {
-      try {
-        if (!unchanged(launcher)) throw new Error("launcher changed");
-        rmSync(launcher.path);
-      } catch {
-        limitations.push(`Retired npm package; launcher could not be removed at ${launcher.path}`);
-      }
+  for (const launcher of retired.removed.length ? launchers : []) {
+    try {
+      if (!unchanged(launcher)) throw new Error("launcher changed");
+      // Pruning may take time, and npm can reuse an unchanged launcher.
+      if (!absent(copy.packageRoot))
+        throw new Error(`the npm package path is occupied at ${copy.packageRoot}`);
+      rmSync(launcher.path);
+    } catch (error) {
+      limitations.push(
+        `Retired old npm package; launcher could not be removed at ${launcher.path}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
+  }
   return { selection, limitations };
 }
 
