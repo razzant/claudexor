@@ -2430,7 +2430,7 @@ the selected managed secret as `COPILOT_GITHUB_TOKEN`, with `HOME` and
 other provider credentials are removed. Native/device-code login is stage 2.
 
 Wire: one `copilot --acp --stdio` process per attempt, using the stable v1
-client exported by `@agentclientprotocol/sdk` 2.6.0. Startup flags live in the
+client exported by `@agentclientprotocol/sdk`. Startup flags live in the
 vendor row and were checked against the [official CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference),
 not a locally installed Copilot binary. The client negotiates `initialize`,
 creates `session/new {cwd, mcpServers: []}`, then sends one `session/prompt`.
