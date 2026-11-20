@@ -1,5 +1,6 @@
 import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import { join } from "node:path";
+import type { DiagnosticGeneration } from "@claudexor/core";
 import {
   canonicalIsolationLocator,
   credentialProfilePinned,
@@ -163,6 +164,8 @@ export type CursorDefaultRouteInput = {
   env: EnvMap;
   authPreference: AuthPreference;
   abortSignal: AbortSignal | undefined;
+  /** Forbidden: the default route ladder must not send a key smoke. */
+  diagnosticGeneration?: DiagnosticGeneration;
   /** Set only for API-key profiles: overrides the default key lookup (INV-146 transient). */
   cursorApiKey?: (env?: EnvMap) => string | null;
 };
@@ -179,6 +182,7 @@ export async function resolveCursorRunRoute(
     credential_profile: CredentialProfile | null;
     env: EnvMap;
     auth_preference: AuthPreference;
+    diagnosticGeneration?: DiagnosticGeneration;
   },
   runtime: CursorProfileRuntimeDeps,
   resolveDefaultRoute: (input: CursorDefaultRouteInput) => Promise<CursorRunRoute>,
@@ -206,6 +210,7 @@ export async function resolveCursorRunRoute(
     env: spec.env,
     authPreference: profile ? "api_key" : spec.auth_preference,
     abortSignal,
+    ...(spec.diagnosticGeneration ? { diagnosticGeneration: spec.diagnosticGeneration } : {}),
     ...(keyOverride === null ? {} : { cursorApiKey: () => keyOverride }),
   });
 }

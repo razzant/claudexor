@@ -3,9 +3,11 @@ import type { GlobalConfig, Intent, RouteDropStage } from "@claudexor/schema";
 import {
   AccessProfileIncompatibleError,
   AuxiliaryWritableRootsUnsupportedError,
+  DIAGNOSTIC_GENERATION_WITHHELD,
   HarnessUnavailableError,
   ModelSelectionRequiredError,
   type AdapterRegistry,
+  type DiagnosticGeneration,
 } from "@claudexor/core";
 import type { HarnessStatus } from "@claudexor/gateway";
 import { accountPoolRows } from "./account-pool.js";
@@ -44,9 +46,11 @@ export function resolveCandidateHarnessIds(args: {
   registry: AdapterRegistry;
   statuses: Array<
     Pick<HarnessStatus, "id" | "status" | "enabledIntents"> &
-      Partial<Pick<HarnessStatus, "manifest">>
+      Partial<Pick<HarnessStatus, "manifest" | "reasons">>
   >;
   intent: Intent;
+  /** A withheld paid verification changes what a refusal can honestly advise. */
+  diagnosticGeneration?: DiagnosticGeneration;
 }): string[] {
   const { config, registry, statuses, intent } = args;
   const input = args;
@@ -102,8 +106,20 @@ export function resolveCandidateHarnessIds(args: {
         )
         .map((s) => s.id);
       if (ids.length === 0) {
+        // The doctor's own reasons stay visible: an unproven route (including a
+        // proof withheld by the $0 diagnostic mode) is not a missing route.
+        const unproven = statuses.filter((s) => s.manifest?.kind !== "fake" && s.reasons?.length);
+        const why = unproven.map((s) => `${s.id}: ${s.reasons!.join("; ")}`).join(" | ");
+        // Raising the paid limit is advised only where a doctor recorded the withheld proof (the
+        // one exact text every Claude, Codex and Cursor smoke skip carries in its reason).
+        const withheld =
+          args.diagnosticGeneration === "forbidden" &&
+          unproven.some((s) => s.reasons!.some((r) => r.includes(DIAGNOSTIC_GENERATION_WITHHELD)));
+        const remedy = withheld
+          ? "no paid budget remains for this Ask, so paid verification was withheld: sign in to a subscription account (`claudexor accounts`) or raise the paid limit"
+          : "inspect `claudexor doctor` and `claudexor accounts`, or pass --harness explicitly";
         throw new HarnessUnavailableError(
-          "no doctor-OK default route or enabled account row for this mode; inspect `claudexor doctor` and `claudexor accounts`, or pass --harness explicitly",
+          `no doctor-OK default route or enabled account row for this mode${why ? ` (${why})` : ""}; ${remedy}`,
         );
       }
     }

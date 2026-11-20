@@ -340,3 +340,79 @@ describe("reviewer seat account preflight (#532)", () => {
     expect(probes.every((probe) => probe.options === undefined)).toBe(true);
   });
 });
+
+describe("withheld $0 Ask account choice (production preflight)", () => {
+  it("prefers the vendor-verified row; pins, bindings and other modes keep theirs", async () => {
+    const row = (profileId: string) => ({
+      profile_id: profileId,
+      harness_id: "stub",
+      display_name: profileId,
+      credential_kind: "config_dir_login" as const,
+      isolation_locator: `/tmp/stub-${profileId}`,
+      secret_ref: null,
+      enabled: true,
+      created_at: null,
+    });
+    // The quota poller's authenticated read of one account with that account's own token.
+    const vendorRead = (profileId: string) => ({
+      subject: {
+        harness: "stub",
+        credential_route: "vendor_native",
+        plan_label: null,
+        subject_id: profileId,
+      },
+      constraints: [],
+      source: "claude_oauth_usage",
+      observed_at: new Date().toISOString(),
+      freshness: "fresh",
+    });
+    // Two otherwise ready named logins, a then b; only `verified` have vendor evidence.
+    const choose = async (
+      verified: string[],
+      mode?: "allowed" | "forbidden",
+      input: Partial<RunInput> = {},
+    ) => {
+      const probes: string[] = [];
+      const adapter = {
+        id: "stub",
+        async probeCredentialProfile(profile: { profile_id: string }) {
+          probes.push(profile.profile_id);
+          return {
+            profile_id: profile.profile_id,
+            harness_id: "stub",
+            availability: "available",
+            verification: "passed",
+            verification_source: "local_store",
+            detail: "login file present",
+            last_verified_at: null,
+          };
+        },
+      } as unknown as HarnessAdapter;
+      const host = {
+        config: () => ({ global: { credential_profiles: [row("a"), row("b")], harnesses: {} } }),
+        registry: () => new Map([["stub", adapter]]),
+        quotaSnapshots: () => verified.map(vendorRead),
+        quotaAbsences: () => [],
+        credentialUnusable: () => [],
+        recordCredentialUnusable: () => {},
+        preProgressRefusals: () => undefined,
+        authPreferenceForHarness: () => "auto",
+      } as unknown as CredentialResolutionHost;
+      const credentials = new OrchestratorCredentials(host);
+      const run = { repoRoot: "/repo", ...input } as RunInput;
+      const profile = await credentials.preflightProfile(run, "stub", null, undefined, null, mode);
+      return { chosen: profile?.profile_id, probes: probes.sort() };
+    };
+    // R7 chose a, whose $0 lease then refused although b could be served.
+    expect(await choose(["b"], "forbidden")).toEqual({ chosen: "b", probes: ["a", "b"] });
+    // The ranked row stays in every other mode, among verified rows, and with none verified.
+    expect((await choose(["b"], "allowed")).chosen).toBe("a");
+    expect((await choose(["b"])).chosen).toBe("a");
+    expect((await choose(["a", "b"], "forbidden")).chosen).toBe("a");
+    expect((await choose([], "forbidden")).chosen).toBe("a");
+    // An explicit pin and a ready bound account are never moved.
+    expect((await choose(["b"], "forbidden", { credentialProfileId: "a" })).chosen).toBe("a");
+    const bound = { threadAccountBindings: { stub: "a" } };
+    expect((await choose(["b"], "forbidden", bound)).chosen).toBe("a");
+  });
+});

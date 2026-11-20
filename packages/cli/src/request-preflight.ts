@@ -3,7 +3,10 @@ import {
   HarnessUnavailableError,
   credentialProfilePolicyProblem,
   credentialProfilePolicyState,
+  diagnosticGenerationFor,
+  isOrdinaryAsk,
   type AdapterRegistry,
+  type DiagnosticGeneration,
 } from "@claudexor/core";
 import type { ProjectControlPort, ResourceStorePort } from "@claudexor/daemon";
 import type { HarnessStatus } from "@claudexor/gateway";
@@ -39,11 +42,15 @@ const modeIntent = {
 } as const satisfies Record<NonNullable<ControlRunStartRequest["mode"]>, Intent>;
 
 type HarnessStatusProjection = Pick<HarnessStatus, "id" | "status" | "enabledIntents"> &
-  Partial<Pick<HarnessStatus, "manifest">>;
+  Partial<Pick<HarnessStatus, "manifest" | "reasons">>;
 
 interface RunRequirementsPreflightDependencies {
   config?: typeof loadConfig;
-  statusAll?: (cwd: string, harnessIds?: string[]) => Promise<HarnessStatusProjection[]>;
+  statusAll?: (
+    cwd: string,
+    harnessIds?: string[],
+    diagnosticGeneration?: DiagnosticGeneration,
+  ) => Promise<HarnessStatusProjection[]>;
   registry?: AdapterRegistry;
   accessDefault?: (cwd: string) => AccessProfile;
   gitCapability?: () => Promise<GitCapability>;
@@ -173,6 +180,15 @@ export function createRunRequirementsPreflight(
     const needsManifests = (request.attachments?.length ?? 0) > 0 || request.browser === true;
     if (!hasAuxiliaryRoots && !needsManifests) return;
     const config = (dependencies.config ?? loadConfig)(cwd).global;
+    // Static admission reads the same effective-budget probe mode as execution; an
+    // allowed mode adds nothing to the probe spec. No ledger exists yet and none is
+    // needed here: an authorized Delegate child enters through the daemon's
+    // `delegated-run` operation and never reaches this preflight, while POST /runs,
+    // Exact Retry and deferred messages refuse delegated lineage.
+    const withheld =
+      isOrdinaryAsk(request) &&
+      diagnosticGenerationFor(request.paidBudget ?? config.budget.paid_budget_per_run) ===
+        "forbidden";
     // Execution's pool: the request's (a thread turn carries its sticky pool),
     // else Settings; either is strict. Only Auto membership reads host status.
     const pool = effectiveHarnessPool(request.harnesses, config.routing.eligible_harnesses);
@@ -189,6 +205,7 @@ export function createRunRequirementsPreflight(
           registry,
           statuses,
           intent,
+          ...(withheld ? { diagnosticGeneration: "forbidden" as const } : {}),
         });
       } catch (error) {
         if (error instanceof HarnessUnavailableError)
@@ -222,8 +239,15 @@ export function createRunRequirementsPreflight(
       probeIds.length === 0
         ? []
         : dependencies.statusAll
-          ? await dependencies.statusAll(cwd, probeIds)
-          : await buildGateway({ includeFakes: false }).statusAll({ cwd }, probeIds);
+          ? await dependencies.statusAll(
+              cwd,
+              probeIds,
+              ...(withheld ? (["forbidden"] as const) : []),
+            )
+          : await buildGateway({ includeFakes: false }).statusAll(
+              { cwd, ...(withheld ? { diagnosticGeneration: "forbidden" as const } : {}) },
+              probeIds,
+            );
     const harnessIds = candidateIds(statuses);
 
     // Static lane facts only: account readiness, quota and model admission

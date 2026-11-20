@@ -761,6 +761,39 @@ describe("model fallback billing", () => {
     expect(billingOf(result)).toBe("subscription_entitlement");
     if (denied) expect(failureText(result)).toContain("finite_zero");
   });
+
+  it("keeps a $0 Ask's fallback model on the vendor-verified account", async () => {
+    const lane = codexLane("verified", "local_passed", true);
+    const seen: string[] = [];
+    const originalRun = lane.adapter.run.bind(lane.adapter);
+    lane.adapter.models = async () =>
+      ["primary", "fallback"].map((id) => ({ id, label: null, context_window: null, routes: [] }));
+    lane.adapter.run = async function* (spec) {
+      seen.push(`${spec.model_hint}@${spec.credential_profile?.profile_id}`);
+      yield* originalRun(spec);
+    };
+    // Without rotation the failed first try goes to fallback_model and a fresh account
+    // choice: the earlier row a has only its login file, b the vendor's own read.
+    const result = await withConfig(
+      "when_unavailable",
+      ["a", "b"],
+      () =>
+        ask(lane, [vendorHonored("b")], undefined, {
+          models: { codex: "primary" },
+          paidBudget: { kind: "finite", maxUsd: 0 },
+        }),
+      [
+        "harnesses:",
+        "  codex:",
+        "    fallback_model: fallback",
+        "    profile_policy:",
+        "      limit_action: fail",
+      ],
+    );
+    // Before, the fallback's fresh choice took a, whose send the $0 ledger then refused.
+    expect(seen, result.summary).toEqual(["primary@b", "fallback@b"]);
+    expect(result.lifecycle, result.summary).toBe("succeeded");
+  });
 });
 
 it.each([false, true])(

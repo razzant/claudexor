@@ -1,7 +1,7 @@
 /**
  * Per-harness POOL AUTHORITY projection of the unified account model
  * (INV-135): every account is a named registry row; `accountPools` carries
- * the routing facts (who an UNPINNED run routes to next), computed ONCE on
+ * the routing facts (the first candidate in ordinary pool order), computed ONCE on
  * the server by the same pool owner run admission uses so no surface
  * re-derives it. The legacy `harnessAccounts` carrier stays on the wire as
  * `[]` for strict old clients; its native "CLI login" pseudo-row is gone —

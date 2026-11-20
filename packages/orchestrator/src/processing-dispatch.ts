@@ -79,15 +79,18 @@ function preparedCost(spec: HarnessRunSpec, harnessId: string): CostEvidence | u
           provenance,
         )
       : undefined;
-  // Ordinary dispatches also re-admit the exact row after a rotation. No
-  // processing controls are required to consume account billing evidence.
+  // Ordinary dispatches also re-admit the exact row after a rotation, and a withheld $0 send its
+  // own concrete profileless verdict (admitCurrentProfileDispatch), so no earlier lease stands for
+  // it. No processing controls are required to consume account billing evidence.
   return (
     processing ??
-    (spec.credential_profile && resolver !== undefined
+    (resolver !== undefined && (spec.credential_profile || typeof resolver !== "function")
       ? routeCostEvidence({
           billing: ordinary,
           knowledge: ordinary === "subscription_entitlement" ? "exact" : "unknown",
-          source: "credential-profile-verification",
+          source: spec.credential_profile
+            ? "credential-profile-verification"
+            : "native-pin-verification",
           provenance,
         })
       : undefined)

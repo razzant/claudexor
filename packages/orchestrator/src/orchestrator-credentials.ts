@@ -27,6 +27,7 @@ import {
   bindCredentialExecutionObserverFactory,
   type CredentialExecutionObserverFactory,
   type CredentialEvidenceAuthority,
+  type DiagnosticGeneration,
   credentialExecutionSubject,
 } from "@claudexor/core";
 import type { EventLog } from "@claudexor/event-log";
@@ -502,6 +503,9 @@ export class OrchestratorCredentials {
     model: string | null,
     log: EventLog | undefined,
     defaultRoute: "local_session" | "api_key" | null,
+    /** The probe mode its run's admission sampled once (readiness-probe.ts), also for a later
+     * send's fresh choice: only a withheld $0 Ask's unbound pool choice reads it. */
+    diagnosticGeneration?: DiagnosticGeneration,
     probes?: AdmissionProfileProbes,
   ): Promise<CredentialProfile | null> {
     const adapter = this.host.registry().get(harnessId);
@@ -532,6 +536,7 @@ export class OrchestratorCredentials {
         harnessId,
         input.authPreference,
       ),
+      diagnosticGeneration,
       notePoolApiKeyRoute: () => this.poolApiKeyRoutes.note(input, harnessId),
       emit: (type, payload) => log?.emit(type, payload),
     });

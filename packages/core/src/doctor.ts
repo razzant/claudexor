@@ -86,7 +86,7 @@ function doctorCacheKey(adapterId: string, spec: DoctorSpec): string {
   // The key covers EVERY spec field that can change a probe's outcome: cwd,
   // the auth-route preference, any scoped env overlay, and the explicit paid
   // conformance opt-in (a free probe never stands in for a paid one, nor the
-  // reverse). Omitting them would let a scoped-route probe poison (or be
+  // reverse) and the diagnostic-generation mode. Omitting them would let a scoped-route probe poison (or be
   // served) the default-route report for the same cwd — a latent cross-route
   // cache bug even though today's scoped callers bypass runDoctor. Env
   // entries can carry key MATERIAL, so they enter the key only as a digest,
@@ -98,7 +98,10 @@ function doctorCacheKey(adapterId: string, spec: DoctorSpec): string {
         .slice(0, 16)
     : "";
   const conformance = spec.conformance === true ? "conformance" : "";
-  return `${adapterId}::${spec.cwd ?? ""}::${spec.authPreference ?? ""}::${spec.authSource ?? ""}::${envDigest}::${conformance}`;
+  // A probe that withheld its generation proofs is a different observation:
+  // it must never be served as, nor overwrite, the full-verification report.
+  const generation = spec.diagnosticGeneration === "forbidden" ? "no_generation" : "";
+  return `${adapterId}::${spec.cwd ?? ""}::${spec.authPreference ?? ""}::${spec.authSource ?? ""}::${envDigest}::${conformance}::${generation}`;
 }
 
 /** Run conformance probes across all registered adapters; never throws. */

@@ -1,5 +1,5 @@
 import type { AuthPreference } from "@claudexor/schema";
-import type { DoctorSpec } from "@claudexor/core";
+import type { DiagnosticGeneration, DoctorSpec } from "@claudexor/core";
 import type { HarnessStatus } from "@claudexor/gateway";
 import { WorkspaceManager } from "@claudexor/workspace";
 
@@ -55,6 +55,7 @@ export async function candidateStatusInRouteContext(
   harnessId: string,
   authPreference: AuthPreference,
   statusById: Map<string, HarnessStatus>,
+  diagnosticGeneration: DiagnosticGeneration = "allowed",
 ): Promise<HarnessStatus | undefined> {
   const host = statusById.get(harnessId);
   if (!ctx || !host?.manifest) return host;
@@ -63,6 +64,7 @@ export async function candidateStatusInRouteContext(
     env: ctx.envForHarness?.(harnessId) ?? ctx.env,
     authPreference,
     fresh: true,
+    ...(diagnosticGeneration === "forbidden" ? { diagnosticGeneration } : {}),
   });
   // Fail CLOSED (release wave sol #1): a null scoped probe is ABSENT evidence
   // for the env this route would actually run in — host readiness must not

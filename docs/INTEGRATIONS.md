@@ -560,8 +560,11 @@ cursor. A quota marker or a rejected/lost cursor invalidates the quota and
 and wait for an explicit Accounts Refresh rather than automatically fetching a
 new snapshot. The engine-default API-key fallback can appear as the native
 `next_up` route, but it never becomes an account row or changes the account
-count. `next_up` in either listing is the configured default model's verdict,
-never a forecast for another model.
+count. `next_up` in either listing is informational: the first candidate in ordinary
+pool order for the configured default model, which a run's own pin, thread
+binding, model, mode, paid budget or auth preference can change, and never a
+forecast for another model (see
+[Credential profiles](ARCHITECTURE.md#credential-profiles-inv-135-unified-account-model)).
 
 The MCP `claudexor_accounts` tool projects the structured Accounts response
 against its advertised union before returning it to the SDK. This is a

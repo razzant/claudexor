@@ -267,7 +267,7 @@ struct AccountsSurface: View {
         return false
     }
 
-    /// Harnesses whose pool verdict says the next UNPINNED run rides the policy
+    /// Harnesses whose ordinary-order pool verdict for the default model is the policy
     /// API-key ROUTE (INV-061) — a route, never an account row, so it cannot be
     /// a "Next up" badge and is disclosed as its own quiet line instead. The
     /// pure helper limits this to config-dir-login families: for api-key-primary
@@ -284,7 +284,7 @@ struct AccountsSurface: View {
             accountsList
             ForEach(apiKeyRouteDisclosures, id: \.self) { harness in
                 Label(
-                    "\(HarnessFamily(rawValue: harness).label): the next unpinned default-model run uses the API-key route (no enabled account is ready).",
+                    "\(HarnessFamily(rawValue: harness).label): no enabled account is ready, so ordinary default-model routing uses the API-key route.",
                     systemImage: "key")
                     .font(.caption2).foregroundStyle(.secondary)
             }

@@ -9,16 +9,27 @@ import { CURSOR_PROGRAM } from "./program.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { observeHarnessProgram, providerScrubEnv, runCapture } from "@claudexor/core";
+import {
+  DIAGNOSTIC_GENERATION_WITHHELD,
+  observeHarnessProgram,
+  providerScrubEnv,
+  runCapture,
+  type DiagnosticGeneration,
+} from "@claudexor/core";
 import { redactSecrets } from "@claudexor/util";
 import { resolveCursorBin } from "./bin.js";
 
 export type CursorApiSmokeResult = { ok: boolean; detail: string };
 
-/** The route did not need (or could not run) the isolated key smoke. */
-export const unsmokedApiSmoke = (key: string | null): CursorApiSmokeResult => ({
+/** The route did not need (or could not run) the isolated key smoke. With
+ * `withheld`, the smoke was needed but diagnostic generation is forbidden. */
+export const unsmokedApiSmoke = (key: string | null, withheld = false): CursorApiSmokeResult => ({
   ok: false,
-  detail: key ? "Cursor API-key smoke not required for selected route" : "no Cursor API key",
+  detail: key
+    ? withheld
+      ? DIAGNOSTIC_GENERATION_WITHHELD
+      : "Cursor API-key smoke not required for selected route"
+    : "no Cursor API key",
 });
 
 export type CursorApiSmokeOptions = {
@@ -183,7 +194,12 @@ export async function smokeCursorApiKey(
   deps: CursorApiSmokeDeps,
   key: string,
   fresh = false,
+  generation: DiagnosticGeneration = "allowed",
 ): Promise<CursorApiSmokeResult> {
+  // The one physical boundary every Cursor key proof passes (doctor, route
+  // ladder, model inventory): a forbidden mode neither sends nor reads the
+  // smoke cache, so a withheld proof is never reported as a pass or a failure.
+  if (generation === "forbidden") return unsmokedApiSmoke(key, true);
   const binding = smokeBinding(deps.apiSmokeCache, key);
   const program = await observeHarnessProgram(CURSOR_PROGRAM, undefined, undefined, { fresh });
   const cacheKey = JSON.stringify([binding, program.key]);

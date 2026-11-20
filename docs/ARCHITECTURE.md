@@ -1176,6 +1176,32 @@ CLI `auth status`, and macOS Auth UI consume it. Explicit `subscription` exclude
 API-key smoke, explicit `api_key` excludes native fallback, and `auto` preserves
 native-first fallback. A point probe may request `fresh` evidence, bypassing
 adapter/doctor caches without clearing or replacing shared cached reports.
+An ordinary read-only Ask (mode `ask`) with no paid budget left to spend (a
+finite $0 from the request or Settings, or an inherited family ledger already
+used up) runs its automatic readiness reads (the candidate doctor, the scoped
+route probe, model catalog and processing reads, static request admission) with
+`diagnosticGeneration: "forbidden"`: every generation smoke (Claude API key and
+setup-token, Codex and Cursor API key) is then `not_run`, never `passed` or
+`failed`, and the report keeps a separate cache dimension. Non-generative checks
+and a ready subscription session are unchanged. A lane admitted on a
+vendor-verified native session spawns pinned to it, with no API-key fallback;
+each send (a fallback model or continuity summary too) can count as subscription
+usage only by that pin on a strict native spawn or a named account's vendor
+verification, never by a preference, history or processing receipt alone. When
+its readiness admission takes an unbound account from the pool, the first ranked
+account whose own status the vendor verified goes ahead of accounts still awaiting
+that evidence (a login file or setup-token alone never counts, whatever the
+account's kind), and the same verification still prices each send; an explicit
+pin and a ready bound account are kept. With no verified row the ordinary
+order stands, and routing or the ledger can refuse the route. Accounts `next_up` keeps the ordinary
+order ([Credential profiles](#credential-profiles-inv-135-unified-account-model)).
+Two refusals stay distinct. Routing can filter: an Auto pool drops a harness
+that is neither doctor-OK nor carries an enabled account row, including one
+whose only proof was withheld (`not_run`), and with none left the run fails
+`harness_unavailable` before any lease, naming each harness's own reasons. The
+ledger then refuses an admitted route's send whose billing is unknown or
+metered (`finite_zero` at a $0 limit). Plan, Agent, Deep Scan, review and the
+manual `doctor` and `auth` probes stay full.
 An absent/logged-out source is `unavailable + not_run`; a probe failure that
 cannot decide source presence is `unknown + not_run`; present but wrong or
 unusable source material is `available + failed`.
@@ -1710,9 +1736,13 @@ account row or count. Accounts are SYMMETRIC: the
 listing (`GET /v2/credential-profiles`, `claudexor profiles`) projects every
 credential row with its `enabled` flag (the only routing
 control) plus the additive `accountPools` key — the per-harness pool
-authority whose `next_up` verdict says who an unpinned run of the configured
-default model would route to next, computed by the same routing owner; it is
-never a forecast for another model. The separate read-only
+authority. Its `next_up` is informational: the first candidate in ordinary
+pool order (step (3) of the resolve order above) for the configured default
+model, computed by the same routing owner without any request's choices. A
+run's own pin or thread binding, model, mode, paid budget or auth preference
+can still pick another row or route (a zero-paid ordinary Ask puts a
+vendor-verified row first, see [Auth And Secrets](#5-auth-and-secrets)), and
+`next_up` is never a forecast for another model. The separate read-only
 `GET /v2/accounts/routing-evidence` carries live pre-progress refusal marks,
 temporary model capability marks, model-scoped credential refusals (on request), and the last-served facts of the registered rows, each scoped to its requested model,
 and leaves the legacy listings unchanged. Its `kind` is

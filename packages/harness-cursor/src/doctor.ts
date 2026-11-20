@@ -2,6 +2,7 @@ import type { AuthPreference, AuthSourceReadiness } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAccountDoctorReceipt } from "@claudexor/core";
 import { CURSOR_VERSION_UNAVAILABLE } from "./bin.js";
+import { unsmokedApiSmoke } from "./smoke.js";
 import {
   cursorObservationAuthenticated,
   cursorObservationError,
@@ -72,10 +73,13 @@ export async function probeCursorDoctorForAccounts(
     nativeAuthed,
     nativeProbeError,
   });
+  // A needed proof withheld by `diagnosticGeneration: "forbidden"` is not run:
+  // neither a pass nor a failed smoke.
+  const apiSmoked = shouldSmokeApiKey && spec.diagnosticGeneration !== "forbidden";
   const apiSmoke =
-    key && shouldSmokeApiKey
+    key && apiSmoked
       ? await runtime.smokeApiKey(key, spec.fresh === true)
-      : unsmokedApiSmoke(key);
+      : unsmokedApiSmoke(key, shouldSmokeApiKey);
   // Readiness doctrine: a key string alone is source availability, not
   // proven readiness. A bridged native status probe proves the exact scoped
   // environment; API fallback still requires its isolated smoke.
@@ -133,7 +137,7 @@ export async function probeCursorDoctorForAccounts(
   const apiSource: AuthSourceReadiness = {
     source: "api_key_env",
     availability: apiKey ? "available" : "unavailable",
-    verification: apiSmoke.ok ? "passed" : shouldSmokeApiKey ? "failed" : "not_run",
+    verification: apiSmoke.ok ? "passed" : apiSmoked ? "failed" : "not_run",
     detail: apiSmoke.detail,
   };
   const authSources: AuthSourceReadiness[] =
@@ -175,7 +179,7 @@ export async function probeCursorDoctorForAccounts(
               },
               {
                 id: "isolated_api_smoke",
-                status: apiSmoke.ok ? ("pass" as const) : shouldSmokeApiKey ? "fail" : "skip",
+                status: apiSmoke.ok ? ("pass" as const) : apiSmoked ? "fail" : "skip",
                 detail: apiSmoke.detail,
               },
             ]
@@ -203,12 +207,5 @@ export async function probeCursorDoctorForAccounts(
                   ],
     }),
     identity: probeNative ? cursorObservationIdentity(nativeProbe) : null,
-  };
-}
-
-function unsmokedApiSmoke(key: string | null): CursorApiSmokeResult {
-  return {
-    ok: false,
-    detail: key ? "Cursor API-key smoke not required for selected route" : "no Cursor API key",
   };
 }

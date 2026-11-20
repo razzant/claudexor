@@ -1,8 +1,13 @@
-import { prepareHarnessProcessing, type PreparedHarnessProcessing } from "@claudexor/core";
-import { processingBillingKnowledge } from "@claudexor/budget";
+import {
+  type DiagnosticGeneration,
+  prepareHarnessProcessing,
+  type PreparedHarnessProcessing,
+} from "@claudexor/core";
+import { billingKnowledgeForAuthRoute, processingBillingKnowledge } from "@claudexor/budget";
 import type { BillingKnowledge, CostEvidence, GlobalConfig, PaidBudget } from "@claudexor/schema";
 import type { RoutedAdapter, RunInput } from "./orchestrator.js";
 import type { ReviewerSpec } from "@claudexor/review";
+import { withheldCostBasis } from "./auth-route-classification.js";
 
 export async function prepareRoutedProcessing(
   routes: RoutedAdapter[],
@@ -10,14 +15,17 @@ export async function prepareRoutedProcessing(
   cwd: string,
   config: GlobalConfig,
   paidBudget: PaidBudget,
-  envFor?: (id: string) => Record<string, string> | undefined,
+  envFor: ((id: string) => Record<string, string> | undefined) | undefined,
+  /** The mode the readiness admission probed under; never re-derived from the budget alone. */
+  diagnosticGeneration: DiagnosticGeneration,
 ): Promise<void> {
   await Promise.all(
     routes.map(async (route) => {
       if (!input.processingPreference && !route.adapter.prepareProcessing) return;
       route.processingAllowPaid =
         config.routing.paid_fallback !== "never" &&
-        !(paidBudget.kind === "finite" && paidBudget.maxUsd === 0);
+        !(paidBudget.kind === "finite" && paidBudget.maxUsd === 0) &&
+        diagnosticGeneration !== "forbidden";
       route.processing = await prepareHarnessProcessing(route.adapter, {
         preference: input.processingPreference,
         model: route.quotaAdmission.model,
@@ -25,13 +33,28 @@ export async function prepareRoutedProcessing(
         cwd,
         env: envFor?.(route.adapter.id),
         credentialProfile: route.quotaAdmission.profile,
-        authPreference: input.authPreference,
+        // A lane pinned to its verified native session prepares for that route.
+        authPreference: route.quotaAdmission.pinnedNative ? "subscription" : input.authPreference,
         allowPaid: route.processingAllowPaid,
+        diagnosticGeneration,
         // Exact Retry keeps its source's inherited intent, like a later try does.
         ...(!input.processingPreference && input.processingIntent?.[route.adapter.id]
           ? { chosen: input.processingIntent[route.adapter.id] }
           : {}),
       });
+      // A withheld $0 Ask reads an "included" class only on the lane's own proof: a named row's
+      // vendor verification (the router's own rule) or the verified native pin. The initial lease
+      // and the ranking read this; every send repeats it on its own spec (modelGovernance.ts).
+      const admission = route.quotaAdmission;
+      const entitled = admission.profile
+        ? billingKnowledgeForAuthRoute({
+            route: admission.route,
+            verification: admission.profileVerification ?? "not_run",
+          }) === "subscription_entitlement"
+        : admission.pinnedNative === true;
+      const basis = withheldCostBasis(diagnosticGeneration, entitled, route.processing.costBasis);
+      if (basis !== route.processing.costBasis)
+        route.processing = { ...route.processing, costBasis: basis };
       // The lane's intent is the earliest typed selection: the Exact Retry
       // original when given, else this routing-time receipt.
       if (!input.processingPreference)

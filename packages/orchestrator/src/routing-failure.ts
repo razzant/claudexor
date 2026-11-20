@@ -100,3 +100,38 @@ export function writeRoutingFailureTerminal(
     failure_ref: "final/failure.yaml",
   });
 }
+
+/**
+ * The reviewer-panel preflight terminal: the same artifacts as a routing refusal,
+ * written before any candidate spends money. The caller keeps its own result shape.
+ */
+export async function writeReviewerPreflightFailure(
+  store: ArtifactStore,
+  paths: ReturnType<ArtifactStore["runPaths"]>,
+  log: EventLog,
+  run: { runId: string; mode: string; message: string },
+): Promise<void> {
+  await store.writeTextAsync(
+    join(paths.contextDir, "context_error.md"),
+    `# Reviewer Panel Error\n\n${run.message}\n`,
+  );
+  writeFailure(store, paths, {
+    phase: "review_preflight",
+    category: "harness_unavailable",
+    safeMessage: run.message,
+    runDir: paths.root,
+  });
+  await store.writeTextAsync(
+    join(paths.finalDir, "summary.md"),
+    `# Run ${run.runId} (${run.mode})\n\n- Lifecycle: failed\n- Phase: review preflight\n\n${run.message}\n`,
+  );
+  log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
+  log.emit("run.failed", {
+    lifecycle: "failed",
+    facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
+    reason: "harness_failed",
+    phase: "review_preflight",
+    error: run.message,
+    failure_ref: "final/failure.yaml",
+  });
+}

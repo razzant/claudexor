@@ -32,8 +32,17 @@ export interface CredentialAccountProbeReceipt {
   identity: AccountIdentity | null;
 }
 
+/** Whether a readiness probe may send a diagnostic generation request.
+ * `forbidden` keeps every non-generative check (version, login status, key
+ * presence, model catalog reads on an already-ready route) and reports each
+ * generation-only proof as not run; it never promotes a skipped proof to ready. */
+export type DiagnosticGeneration = "allowed" | "forbidden";
+
 export interface DoctorSpec {
   cwd: string;
+  /** Internal policy mode resolved from the effective paid budget (see
+   * `diagnosticGenerationFor`); absent means `allowed`. It is a cache dimension. */
+  diagnosticGeneration?: DiagnosticGeneration;
   /** ACP opt-in for one paid conformance prompt; other adapters may ignore it. */
   conformance?: boolean;
   /** Optional scoped env for probes that must mirror a concrete run route. */

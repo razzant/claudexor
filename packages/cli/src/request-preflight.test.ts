@@ -420,6 +420,43 @@ describe("run request requirements preflight", () => {
     expect(probes).toBe(0);
   });
 
+  it("withholds paid diagnostics for an Ask at $0 and for no other mode or strategy", async () => {
+    const lane = adapter("lane", { attachments: [textInput] });
+    const seen: Array<string | undefined> = [];
+    const statusAll = async (_cwd: string, _ids?: string[], generation?: string) => {
+      seen.push(generation);
+      return [
+        {
+          id: lane.id,
+          status: "ok" as const,
+          enabledIntents: ["explain" as const, "plan" as const, "implement" as const],
+        },
+      ];
+    };
+    const preflight = createRunRequirementsPreflight(resources, "/no-project", {
+      registry: registry(lane),
+      statusAll,
+      gitCapability: gitAvailable,
+    });
+    for (const [mode, deepScan] of [
+      ["ask", false],
+      ["plan", false],
+      ["agent", false],
+      ["ask", true],
+    ] as const)
+      await preflight(
+        ControlRunStartRequest.parse({
+          prompt: "read attachment",
+          mode,
+          deepScan,
+          scope: { kind: "project", root: "/project", context: "auto" },
+          attachments: [{ resourceId: attachment.resource_id }],
+          paidBudget: { kind: "finite", maxUsd: 0 },
+        }),
+      );
+    expect(seen).toEqual(["forbidden", undefined, undefined, undefined]);
+  });
+
   it("requires every explicit lane to apply auxiliary roots, filters Auto, refuses empty", async () => {
     const capable = adapter("capable", { auxiliaryWritableRoots: true });
     const plain = adapter("plain");
