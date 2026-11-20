@@ -10,7 +10,7 @@ name: Repo metrics
 on:
   schedule:
     # 06:17 UTC daily. Off the top of the hour to dodge cron congestion; the
-    # npm point range and GitHub cumulative counts do not care about the minute.
+    # npm daily ranges and GitHub cumulative counts do not care about the minute.
     - cron: "17 6 * * *"
   workflow_dispatch: {}
 
@@ -43,17 +43,16 @@ jobs:
       - name: Self-test the metrics collector
         run: node scripts/update-repo-metrics.mjs --check
 
-      - name: Restore the durable npm watermark
+      - name: Restore historical GitHub snapshots
         run: |
           set -euo pipefail
-          if git ls-remote --exit-code origin "refs/heads/$METRICS_BRANCH" >/dev/null 2>&1; then
+          branch=$(git ls-remote --heads origin "refs/heads/$METRICS_BRANCH")
+          if [[ -n "$branch" ]]; then
             git fetch --no-tags origin \
               "$METRICS_BRANCH:refs/remotes/origin/$METRICS_BRANCH"
-            if git cat-file -e \
-              "origin/$METRICS_BRANCH:docs/assets/repo-metrics.csv" 2>/dev/null; then
-              git show "origin/$METRICS_BRANCH:docs/assets/repo-metrics.csv" \
-                > docs/assets/repo-metrics.csv
-            fi
+            git show "origin/$METRICS_BRANCH:docs/assets/repo-metrics.csv" \
+              > docs/assets/repo-metrics.csv
+            test -s docs/assets/repo-metrics.csv
           fi
 
       - name: Refresh metrics and badge
