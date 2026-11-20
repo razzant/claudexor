@@ -113,18 +113,29 @@ describe("npm history reconciliation", () => {
   const pkg = "claudexor";
   const first = "2026-07-10";
   const next = "2026-07-11";
-  const daily = [{ day: first, downloads: 20 }, { day: next, downloads: 0 }];
+  const daily = [
+    { day: first, downloads: 20 },
+    { day: next, downloads: 0 },
+  ];
   const response = { package: pkg, start: first, end: next, downloads: daily };
 
   it("accepts backward and forward revisions and genuine zeros without changing historical GitHub", async () => {
     const totals = await fetchNpmTotals(pkg, first, next, async () => response);
-    const input = parseCsv("date,npm_through,npm_total,github_release_downloads,total_downloads\n" +
-      "2026-07-11,2026-07-10,10,7,17\n2026-07-12,2026-07-11,30,12,42\n").rows;
+    const input = parseCsv(
+      "date,npm_through,npm_total,github_release_downloads,total_downloads\n" +
+        "2026-07-11,2026-07-10,10,7,17\n2026-07-12,2026-07-11,30,12,42\n",
+    ).rows;
     const result = reconcileMetrics(input, "2026-07-12", 13, totals);
-    expect(result.map(r => [r.npm_total, r.github_release_downloads, r.total_downloads]))
-      .toEqual([[20, 7, 27], [20, 13, 33]]);
+    expect(result.map((r) => [r.npm_total, r.github_release_downloads, r.total_downloads])).toEqual(
+      [
+        [20, 7, 27],
+        [20, 13, 33],
+      ],
+    );
     expect(reconcileMetrics(result, "2026-07-12", 13, totals)).toEqual(result);
-    expect(() => reconcileMetrics(input, "2026-07-13", 13, totals)).toThrow("no complete npm history");
+    expect(() => reconcileMetrics(input, "2026-07-13", 13, totals)).toThrow(
+      "no complete npm history",
+    );
   });
 
   it("requests contiguous bounded chunks and carries the total over leap day", async () => {
@@ -132,24 +143,37 @@ describe("npm history reconciliation", () => {
     const totals = await fetchNpmTotals(pkg, "2027-03-01", "2028-03-01", async (start, end) => {
       calls.push([start, end]);
       const downloads = [];
-      for (let day = start; day <= end; day = addDaysUtc(day, 1)) downloads.push({day, downloads: 1});
+      for (let day = start; day <= end; day = addDaysUtc(day, 1))
+        downloads.push({ day, downloads: 1 });
       return { package: pkg, start, end, downloads };
     });
-    expect(calls).toEqual([["2027-03-01", "2028-02-28"], ["2028-02-29", "2028-03-01"]]);
+    expect(calls).toEqual([
+      ["2027-03-01", "2028-02-28"],
+      ["2028-02-29", "2028-03-01"],
+    ]);
     expect(totals.get("2028-03-01")).toBe(367);
   });
 
   it("refuses incomplete, duplicated or malformed responses instead of silently counting zero", async () => {
     for (const bad of [
-      { package: "other" }, { start: next }, { end: first }, { downloads: [daily[1]] },
-      { downloads: [daily[0], daily[0]] }, { downloads: [...daily, { day: "2026-07-12", downloads: 0 }] },
+      { package: "other" },
+      { start: next },
+      { end: first },
+      { downloads: [daily[1]] },
+      { downloads: [daily[0], daily[0]] },
+      { downloads: [...daily, { day: "2026-07-12", downloads: 0 }] },
       { downloads: [daily[0], { day: next, downloads: -1 }] },
       { downloads: [daily[0], { day: next, downloads: 1.5 }] },
     ]) {
-      await expect(fetchNpmTotals(pkg, first, next, async () => ({ ...response, ...bad }))).rejects.toThrow();
+      await expect(
+        fetchNpmTotals(pkg, first, next, async () => ({ ...response, ...bad })),
+      ).rejects.toThrow();
     }
-    await expect(fetchNpmTotals(pkg, first, next, async () => { throw new Error("source unavailable"); }))
-      .rejects.toThrow("source unavailable");
+    await expect(
+      fetchNpmTotals(pkg, first, next, async () => {
+        throw new Error("source unavailable");
+      }),
+    ).rejects.toThrow("source unavailable");
   });
 
   it("addDaysUtc / utcDate stay on UTC day boundaries", () => {
@@ -157,7 +181,6 @@ describe("npm history reconciliation", () => {
     expect(addDaysUtc("2026-07-01", -1)).toBe("2026-06-30");
     expect(utcDate(new Date("2026-07-23T23:59:00Z"))).toBe("2026-07-23");
   });
-
 });
 
 describe("CSV ledger same-day idempotency", () => {

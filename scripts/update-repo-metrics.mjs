@@ -217,12 +217,23 @@ async function runSelfTests() {
 
   // Later npm revisions affect their original dates, not just the newest row.
   const revised = await fetchNpmTotals("test", "2026-07-21", "2026-07-22", async (start, end) => ({
-    package: "test", start, end,
-    downloads: [{ day: start, downloads: 10 }, { day: end, downloads: 0 }],
+    package: "test",
+    start,
+    end,
+    downloads: [
+      { day: start, downloads: 10 },
+      { day: end, downloads: 0 },
+    ],
   }));
   const repaired = reconcileMetrics(rows, "2026-07-23", 711, revised);
-  ok(repaired[0].total_downloads === 10 && repaired[0].github_release_downloads === 0, "prior GitHub sample preserved");
-  ok(repaired[1].npm_total === 10 && repaired[1].total_downloads === 721, "same-day revision and true zero");
+  ok(
+    repaired[0].total_downloads === 10 && repaired[0].github_release_downloads === 0,
+    "prior GitHub sample preserved",
+  );
+  ok(
+    repaired[1].npm_total === 10 && repaired[1].total_downloads === 721,
+    "same-day revision and true zero",
+  );
 
   // 4. Malformed persisted state fails loudly instead of poisoning all future
   // cumulative totals with NaN or a mismatched arithmetic result.

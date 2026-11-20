@@ -128,10 +128,17 @@ export function addDaysUtc(dateStr: string, days: number): string {
 
 /** npm can revise any closed day; build one prefix sum from freshly validated ranges. */
 export async function fetchNpmTotals(
-  pkg: string, first: string, through: string,
-  readRange: (from: string, to: string) => Promise<{
-    package?: string; start?: string; end?: string;
-    downloads?: {day: string; downloads: number}[];
+  pkg: string,
+  first: string,
+  through: string,
+  readRange: (
+    from: string,
+    to: string,
+  ) => Promise<{
+    package?: string;
+    start?: string;
+    end?: string;
+    downloads?: { day: string; downloads: number }[];
   }>,
 ): Promise<Map<string, number>> {
   const totals = new Map<string, number>();
@@ -140,13 +147,24 @@ export async function fetchNpmTotals(
     const limit = addDaysUtc(from, 364);
     const to = limit < through ? limit : through;
     const range = await readRange(from, to);
-    if (range?.package !== pkg || range.start !== from || range.end !== to || !Array.isArray(range.downloads)) {
+    if (
+      range?.package !== pkg ||
+      range.start !== from ||
+      range.end !== to ||
+      !Array.isArray(range.downloads)
+    ) {
       throw new Error(`npm returned an incomplete or mismatched range for ${pkg} ${from}:${to}`);
     }
     const counts = new Map<string, number>();
     for (const point of range.downloads) {
-      if (!point || point.day < from || point.day > to || counts.has(point.day) ||
-          !Number.isSafeInteger(point.downloads) || point.downloads < 0) {
+      if (
+        !point ||
+        point.day < from ||
+        point.day > to ||
+        counts.has(point.day) ||
+        !Number.isSafeInteger(point.downloads) ||
+        point.downloads < 0
+      ) {
         throw new Error(`invalid or duplicate npm daily point in ${from}:${to}`);
       }
       counts.set(point.day, point.downloads);
@@ -241,13 +259,22 @@ export function upsertRow(rows: readonly MetricsRow[], row: MetricsRow): Metrics
 
 /** Refresh today's live GitHub observation, but preserve every earlier GitHub snapshot. */
 export function reconcileMetrics(
-  existing: readonly MetricsRow[], today: string, githubDownloads: number, npmTotals: ReadonlyMap<string, number>,
+  existing: readonly MetricsRow[],
+  today: string,
+  githubDownloads: number,
+  npmTotals: ReadonlyMap<string, number>,
 ): MetricsRow[] {
-  const snapshot = { date: today, npm_through: addDaysUtc(today, -1),
-    github_release_downloads: githubDownloads, npm_total: 0, total_downloads: 0 };
+  const snapshot = {
+    date: today,
+    npm_through: addDaysUtc(today, -1),
+    github_release_downloads: githubDownloads,
+    npm_total: 0,
+    total_downloads: 0,
+  };
   return upsertRow(existing, snapshot).map((row) => {
     const npm_total = npmTotals.get(row.npm_through);
-    if (npm_total === undefined) throw new Error(`no complete npm history through ${row.npm_through}`);
+    if (npm_total === undefined)
+      throw new Error(`no complete npm history through ${row.npm_through}`);
     return { ...row, npm_total, total_downloads: npm_total + row.github_release_downloads };
   });
 }
