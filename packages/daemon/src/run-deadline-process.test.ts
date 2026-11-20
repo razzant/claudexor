@@ -192,7 +192,7 @@ describe("run-deadline/1 warden: no run process outlives deadline + stopGraceSec
     deadlines.admit("parent", { deadline: { at: parentAt } }, null);
     deadlines.admit("child", { deadline: { at: inMs(120_000) } }, "parent");
     const marker = mintRunScopeMarker();
-    await deadlines.attachScope("child", marker, new Date().toISOString());
+    await deadlines.attachScope("child", marker);
     const tree = await launchTree(marker);
     deadlines.dispose(); // the "daemon" is gone: no timer of it can act any more
     await sleep(Math.max(0, Date.parse(parentAt) - Date.now() - 300));
@@ -212,7 +212,7 @@ describe("run-deadline/1 warden: no run process outlives deadline + stopGraceSec
     deadlines.admit("parent", { deadline: { at: firstAt } }, null);
     deadlines.admit("child", {}, "parent");
     const marker = mintRunScopeMarker();
-    await deadlines.attachScope("child", marker, new Date().toISOString());
+    await deadlines.attachScope("child", marker);
     const tree = await launchTree(marker);
     const extended = deadlines.set(
       "parent",
@@ -248,7 +248,7 @@ describe("run-deadline/1 warden: no run process outlives deadline + stopGraceSec
     const at = inMs(2_500);
     deadlines.admit("run", { deadline: { at } }, null);
     const marker = mintRunScopeMarker();
-    await deadlines.attachScope("run", marker, new Date().toISOString());
+    await deadlines.attachScope("run", marker);
     const tree = await launchTree(marker);
     stepped = true;
     expect(Date.parse(deadlines.snapshot("run")!.serverNow)).toBeLessThan(Date.now() - 3_000_000);

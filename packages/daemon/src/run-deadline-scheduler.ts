@@ -19,7 +19,7 @@ import { RunDeadlines, deadlineProblem, type RunDeadlinesOptions } from "./run-d
  * must not launch then).
  */
 export interface DeadlineScope {
-  attach(marker: string, scopeStartAt: string): Promise<void>;
+  attach(marker: string): Promise<void>;
 }
 
 export type RunDeadlineOptions = Omit<RunDeadlinesOptions, "onExpire">;
@@ -59,7 +59,7 @@ export class SchedulerDeadlines extends RunDeadlines {
   }
 
   scope(jobId: string): DeadlineScope {
-    return { attach: (marker, scopeStartAt) => this.attachScope(jobId, marker, scopeStartAt) };
+    return { attach: (marker) => this.attachScope(jobId, marker) };
   }
 
   forgetAll(ids: Iterable<string>): void {

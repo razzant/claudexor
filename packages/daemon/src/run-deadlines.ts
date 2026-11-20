@@ -84,7 +84,6 @@ interface Entry {
   timer?: ReturnType<typeof setTimeout>;
   statePath?: string;
   marker?: string;
-  scopeStartAt?: string;
 }
 
 export interface RunDeadlinesOptions {
@@ -255,13 +254,12 @@ export class RunDeadlines {
    * Throws when the warden cannot be started — the run must not launch
    * without the enforcement it promised.
    */
-  async attachScope(jobId: string, marker: string, scopeStartAt: string): Promise<void> {
+  async attachScope(jobId: string, marker: string): Promise<void> {
     const entry = this.entries.get(jobId);
     if (!entry || !this.opts.dir) return;
     if (entry.state !== "armed")
       throw deadlineProblem("Run deadline already passed", "run_deadline_expired");
     entry.marker = marker;
-    entry.scopeStartAt = scopeStartAt;
     entry.statePath = this.statePath(jobId);
     this.writeState(entry);
     await (this.opts.spawnWarden ?? spawnWarden)(entry.statePath);
@@ -293,7 +291,13 @@ export class RunDeadlines {
     if (entry?.timer) clearTimeout(entry.timer);
     if (entry?.parentJobId) this.entries.get(entry.parentJobId)?.children.delete(jobId);
     this.entries.delete(jobId);
-    if (this.opts.dir) removeWardenFiles(this.statePath(jobId));
+    if (!this.opts.dir) return;
+    // Never pull the file from under a warden that may still have to act: only
+    // a closed scope or one the warden already reaped is released.
+    const path = this.statePath(jobId);
+    const state = readWardenState(path);
+    if (state && state !== "unreadable" && (state.closed || readWardenOutcome(path)))
+      removeWardenFiles(path);
   }
 
   dispose(): void {
@@ -311,7 +315,6 @@ export class RunDeadlines {
       version: 1,
       jobId: entry.jobId,
       marker: entry.marker ?? null,
-      scopeStartAt: entry.scopeStartAt ?? null,
       at: point.at,
       monoTargetNs: point.mono.toString(),
       revision: entry.revision,

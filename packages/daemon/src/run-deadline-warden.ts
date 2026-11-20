@@ -31,7 +31,7 @@ import {
   rmSync,
   writeSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   reapScopeMembers,
@@ -59,7 +59,6 @@ export interface WardenState {
   jobId: string;
   /** The run's scope marker NAME; null until the run opened its scope. */
   marker: string | null;
-  scopeStartAt: string | null;
   /** Effective deadline, wall-clock ISO (informational for readers). */
   at: string;
   /** Effective deadline on the host monotonic clock, decimal nanoseconds. */
@@ -118,43 +117,85 @@ export function readWardenOutcome(statePath: string): WardenOutcome | null {
 export function removeWardenFiles(statePath: string): void {
   rmSync(statePath, { force: true });
   rmSync(wardenOutcomePath(statePath), { force: true });
+  rmSync(wardenReadyPath(statePath), { force: true });
 }
 
-/** argv of the warden entry for this build: compiled JS, or TS under tsx in a source checkout. */
-export function wardenCommand(): { command: string; args: string[]; cwd: string } {
-  const self = fileURLToPath(import.meta.url);
-  const source = self.endsWith(".ts");
-  const entry = self.replace(/run-deadline-warden\.(ts|js)$/, `run-deadline-warden-main.$1`);
-  return {
-    command: process.execPath,
-    args: source ? ["--import", "tsx", entry] : [entry],
-    cwd: dirname(entry),
-  };
+/** The engine's alternate entry role that runs a warden (`claudexord.bundle.cjs`). */
+export const WARDEN_ENTRY_ROLE = "--run-deadline-warden";
+const ENGINE_BUNDLE = "claudexord.bundle.cjs";
+const WARDEN_READY_TIMEOUT_MS = 10_000;
+
+export function wardenReadyPath(statePath: string): string {
+  return `${statePath}.ready`;
 }
 
 /**
- * Start the warden for `statePath` and resolve once the OS confirmed the
- * process exists. Detached: its own session and process group, so neither a
+ * argv of the warden for this build. An installed package runs the small
+ * sibling entry (TS under tsx in a source checkout); the single-file engine
+ * bundle runs itself in its warden role. Anything else has no warden: the
+ * caller refuses the run rather than launch it unenforced.
+ */
+export function wardenCommand(moduleUrl: string = import.meta.url): {
+  command: string;
+  args: string[];
+  cwd: string;
+} {
+  const self = fileURLToPath(moduleUrl);
+  const unbundled = /run-deadline-warden\.(ts|js)$/.exec(self);
+  if (unbundled) {
+    const entry = self.replace(/run-deadline-warden\.(ts|js)$/, `run-deadline-warden-main.$1`);
+    return {
+      command: process.execPath,
+      args: unbundled[1] === "ts" ? ["--import", "tsx", entry] : [entry],
+      cwd: dirname(entry),
+    };
+  }
+  if (basename(self) === ENGINE_BUNDLE)
+    return { command: process.execPath, args: [self, WARDEN_ENTRY_ROLE], cwd: dirname(self) };
+  throw Object.assign(new Error(`no run-deadline warden entry for ${basename(self)}`), {
+    code: "run_deadline_warden_unavailable",
+    status: 503,
+    retryable: false,
+  });
+}
+
+/**
+ * Start the warden for `statePath` and resolve once it reported itself
+ * running (its ready file), so an exited or foreign entry never passes for
+ * enforcement. Detached: its own session and process group, so neither a
  * signal to the daemon's group nor the daemon's death reaches it. Its
  * environment drops every Claudexor run marker, so it is never a member of
  * the scope it ends.
  */
-export function spawnWarden(statePath: string): Promise<{ pid: number }> {
+export async function spawnWarden(statePath: string): Promise<{ pid: number }> {
   const { command, args, cwd } = wardenCommand();
+  rmSync(wardenReadyPath(statePath), { force: true });
   const child = spawn(command, [...args, statePath], {
     cwd,
     detached: true,
     stdio: "ignore",
     env: withoutRunScopeMarkers({ ...process.env }) as NodeJS.ProcessEnv,
   });
-  return new Promise((resolve, reject) => {
+  let exited = false;
+  child.once("exit", () => (exited = true));
+  await new Promise<void>((resolve, reject) => {
     child.once("error", reject);
-    child.once("spawn", () => {
-      child.unref();
-      if (typeof child.pid === "number") resolve({ pid: child.pid });
-      else reject(new Error("warden spawned without a pid"));
-    });
+    child.once("spawn", () => resolve());
   });
+  const end = Date.now() + WARDEN_READY_TIMEOUT_MS;
+  while (!existsSync(wardenReadyPath(statePath))) {
+    if (exited || Date.now() > end) {
+      if (!exited) child.kill("SIGKILL");
+      throw Object.assign(new Error("the run-deadline warden did not start"), {
+        code: "run_deadline_warden_unavailable",
+        status: 503,
+        retryable: true,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  child.unref();
+  return { pid: child.pid! };
 }
 
 export interface WardenLoopDeps {
@@ -179,6 +220,11 @@ export async function runWarden(
   const reap = deps.reap ?? reapScopeMembers;
   const headStartNs = BigInt(Math.round((deps.headStartMs ?? WARDEN_HEAD_START_MS) * 1e6));
   let last: WardenState | null = null;
+  try {
+    writeJsonAtomic(wardenReadyPath(statePath), { pid: process.pid });
+  } catch {
+    return "removed"; // no directory any more: nothing to guard
+  }
   for (;;) {
     const read = readWardenState(statePath);
     if (read === null) return "removed";
@@ -188,7 +234,9 @@ export async function runWarden(
       if (!last.marker) return "no_scope";
       let outcome: ScopeReapOutcome | null = null;
       for (let attempt = 0; attempt < WARDEN_REAP_ATTEMPTS; attempt += 1) {
-        outcome = await reap({ marker: last.marker, scopeStartAt: last.scopeStartAt });
+        // A full census, never an age-filtered one: the age filter is measured on
+        // the wall clock, and a backward step must not hide a member.
+        outcome = await reap({ marker: last.marker, scopeStartAt: null });
         if (outcome.settled) break;
       }
       try {

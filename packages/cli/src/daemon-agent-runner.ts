@@ -276,7 +276,7 @@ export function createDaemonAgentRunner(deps: {
         stopSender: ctx.stopSender,
         onRunStart,
         onRunScopeOpened: ctx.deadlineScope
-          ? ({ marker, openedAt }) => ctx.deadlineScope!.attach(marker, openedAt)
+          ? ({ marker }) => ctx.deadlineScope!.attach(marker)
           : undefined,
       })
       .finally(() => {

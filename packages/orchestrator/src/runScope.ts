@@ -227,7 +227,7 @@ export interface RunScopeOpenedHook {
    * anything is launched (run-deadline/1 starts its warden here). A throw
    * settles the never-announced scope and refuses the run.
    */
-  onRunScopeOpened?: (scope: { marker: string; openedAt: string }) => Promise<void>;
+  onRunScopeOpened?: (scope: { marker: string }) => Promise<void>;
 }
 
 export async function openRunScopeCustody(
@@ -239,7 +239,7 @@ export async function openRunScopeCustody(
   const { marker } = await custody.open(runId);
   if (onOpened) {
     try {
-      await onOpened({ marker, openedAt: new Date().toISOString() });
+      await onOpened({ marker });
     } catch (error) {
       await custody.settle(runId, marker).catch(() => {});
       throw error;

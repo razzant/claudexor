@@ -8,7 +8,11 @@ export {
   type RunDeadlineClock,
   type RunDeadlinesOptions,
 } from "./run-deadlines.js";
-export { RUN_DEADLINE_STOP_GRACE_SEC } from "./run-deadline-warden.js";
+export {
+  RUN_DEADLINE_STOP_GRACE_SEC,
+  WARDEN_ENTRY_ROLE,
+  runWarden,
+} from "./run-deadline-warden.js";
 export * from "./delegation-admission.js";
 export * from "./writer-lease.js";
 export * from "./root-authority.js";

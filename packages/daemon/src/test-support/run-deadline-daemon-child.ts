@@ -42,7 +42,7 @@ const server = new DaemonServer({
   runDeadlines: { dir: join(dir, "deadlines") },
   runner: async (params, ctx) => {
     const marker = mintRunScopeMarker();
-    await ctx.deadlineScope?.attach(marker, new Date().toISOString());
+    await ctx.deadlineScope?.attach(marker);
     const harness = spawn(process.execPath, ["-e", HARNESS], {
       env: { ...process.env, [marker]: "1" },
       detached: true,
