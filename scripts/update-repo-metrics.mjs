@@ -9,11 +9,8 @@
 //   - The headline metric is "total downloads" = top-level npm package
 //     downloads + the raw cumulative count across ALL uploaded GitHub release
 //     assets. It is a download-event count, never an installation claim.
-//   - npm_total is SEEDED once from the package's lifetime point range (the
-//     package is younger than the npm 18-month range cap), then extended by
-//     idempotent daily deltas summed from the npm daily range since the last
-//     fully closed UTC day. It is never recomputed from scratch, and a rerun on
-//     the same day reuses the closed-day watermark while refreshing GitHub.
+//   - npm can revise past days. Re-read the complete daily series through
+//     yesterday UTC, and reconcile each historical npm column at its own date.
 //   - github_release_downloads is the current raw cumulative sum from the
 //     GitHub releases API (that endpoint reports live cumulative counts).
 //   - A source that fails is surfaced loudly; we never write a fabricated zero.
@@ -29,7 +26,7 @@ import { get as httpsGet } from "node:https";
 
 // Single shared collector / asset-authority (D-15 reuse-lock; audit A-6). This
 // same module backs the CLI `claudexor release stats`, so release-asset totals,
-// npm daily-delta math, and the CSV ledger logic have exactly ONE definition.
+// npm history reconciliation, and the CSV ledger logic have exactly ONE definition.
 // Imported unbuilt via Node's native
 // TypeScript type stripping (the workflow runs plain `node`; .node-version pins
 // the type-stripping runtime) — so this file stays dependency-free and only
@@ -37,21 +34,19 @@ import { get as httpsGet } from "node:https";
 import {
   computeReleaseAssetTotals,
   hasMoreReleasePages,
-  sumNpmDeltaAfter,
+  fetchNpmTotals,
+  reconcileMetrics,
   utcDate,
   addDaysUtc,
   parseCsv,
   serializeCsv,
   upsertRow,
-  latestRowAtOrBefore,
   formatThousands,
 } from "../packages/cli/src/repo-asset-authority.ts";
 
 const REPO = "razzant/claudexor";
 const NPM_PACKAGE = "claudexor";
-// npm registry "created" time for the package; the lifetime point range starts
-// here. GitHub v1.0.0 predates the first npm publish (v1.0.1) by a day; npm is
-// the seed authority for the npm column.
+// First npm publication (GitHub v1.0.0 predates it by a day).
 const NPM_FIRST_PUBLISH = "2026-07-10";
 const USER_AGENT = "claudexor-repo-metrics (+https://github.com/razzant/claudexor)";
 
@@ -61,7 +56,7 @@ const assetsDir = join(repoRoot, "docs", "assets");
 const csvPath = join(assetsDir, "repo-metrics.csv");
 const badgePath = join(assetsDir, "downloads-badge.json");
 
-// Release-asset totals, npm daily-delta math, CSV helpers, pagination, and
+// Release-asset totals, npm history reconciliation, CSV helpers, pagination, and
 // number formatting live in the shared authority. Only network/file IO and
 // orchestration remain here.
 
@@ -108,24 +103,8 @@ async function fetchAllReleases() {
   return releases;
 }
 
-async function fetchNpmRange(from, to) {
-  const data = await fetchJson(
-    `https://api.npmjs.org/downloads/range/${from}:${to}/${NPM_PACKAGE}`,
-  );
-  if (!Array.isArray(data?.downloads)) throw new Error("npm range API returned no downloads array");
-  if (data.end !== to || !data.downloads.some((point) => point?.day === to)) {
-    throw new Error(`npm range API has not finalized ${to}`);
-  }
-  return data.downloads;
-}
-
-async function fetchNpmLifetime(to) {
-  const data = await fetchJson(
-    `https://api.npmjs.org/downloads/point/${NPM_FIRST_PUBLISH}:${to}/${NPM_PACKAGE}`,
-  );
-  if (typeof data?.downloads !== "number") throw new Error("npm point API returned no downloads");
-  if (data.end !== to) throw new Error(`npm point API has not finalized ${to}`);
-  return data.downloads;
+function fetchNpmRange(from, to) {
+  return fetchJson(`https://api.npmjs.org/downloads/range/${from}:${to}/${NPM_PACKAGE}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -137,37 +116,11 @@ async function main() {
   const npmThrough = addDaysUtc(today, -1);
 
   const existing = existsSync(csvPath) ? parseCsv(readFileSync(csvPath, "utf8")).rows : [];
-  const prior = latestRowAtOrBefore(existing, today);
-
+  const totals = await fetchNpmTotals(NPM_PACKAGE, NPM_FIRST_PUBLISH, npmThrough, fetchNpmRange);
   const releases = await fetchAllReleases();
   const githubReleaseDownloads = computeReleaseAssetTotals(releases).rawTotalDownloads;
-
-  let npmTotal;
-  if (prior === null) {
-    // First ever row: seed only through the latest fully closed UTC day.
-    npmTotal = await fetchNpmLifetime(npmThrough);
-  } else if (prior.npm_through === npmThrough) {
-    // Same-day rerun: npm is unchanged; only GitHub's live cumulative total moves.
-    npmTotal = prior.npm_total;
-  } else if (prior.npm_through < npmThrough) {
-    // Extend from the persisted closed-day watermark. A missed cron window is
-    // recovered by the whole range tail, never by trusting a provisional day.
-    const daily = await fetchNpmRange(addDaysUtc(prior.npm_through, 1), npmThrough);
-    npmTotal = prior.npm_total + sumNpmDeltaAfter(daily, prior.npm_through, npmThrough);
-  } else {
-    throw new Error(`npm watermark ${prior.npm_through} is after target ${npmThrough}`);
-  }
-
-  const totalDownloads = npmTotal + githubReleaseDownloads;
-  const row = {
-    date: today,
-    npm_through: npmThrough,
-    npm_total: npmTotal,
-    github_release_downloads: githubReleaseDownloads,
-    total_downloads: totalDownloads,
-  };
-
-  const rows = upsertRow(existing, row);
+  const rows = reconcileMetrics(existing, today, githubReleaseDownloads, totals);
+  const { npm_total: npmTotal, total_downloads: totalDownloads } = rows.at(-1);
 
   if (!existsSync(assetsDir)) mkdirSync(assetsDir, { recursive: true });
   writeFileSync(csvPath, serializeCsv(rows));
@@ -190,7 +143,7 @@ async function main() {
 // Self-tests (--check): pure logic only, no network, no writes.
 // ---------------------------------------------------------------------------
 
-function runSelfTests() {
+async function runSelfTests() {
   let failures = 0;
   const ok = (cond, msg) => {
     if (!cond) {
@@ -262,19 +215,14 @@ function runSelfTests() {
   const round2 = serializeCsv(parseCsv(round1).rows);
   ok(round1 === round2, "CSV serialize/parse round-trips");
 
-  // 3. The npm watermark is the last CLOSED day. A 07-23 seed through 07-22
-  // must collect the 61 downloads that finalize for 07-23 on the next run.
-  const prior = latestRowAtOrBefore(rows, "2026-07-23");
-  ok(prior && prior.date === "2026-07-23", "same-day rerun reuses the latest row");
-  const delta = sumNpmDeltaAfter(
-    [
-      { day: "2026-07-22", downloads: 180 },
-      { day: "2026-07-23", downloads: 61 },
-    ],
-    "2026-07-22",
-    "2026-07-23",
-  );
-  ok(1250 + delta === 1311, "closed-day delta repairs the provisional seed");
+  // Later npm revisions affect their original dates, not just the newest row.
+  const revised = await fetchNpmTotals("test", "2026-07-21", "2026-07-22", async (start, end) => ({
+    package: "test", start, end,
+    downloads: [{ day: start, downloads: 10 }, { day: end, downloads: 0 }],
+  }));
+  const repaired = reconcileMetrics(rows, "2026-07-23", 711, revised);
+  ok(repaired[0].total_downloads === 10 && repaired[0].github_release_downloads === 0, "prior GitHub sample preserved");
+  ok(repaired[1].npm_total === 10 && repaired[1].total_downloads === 721, "same-day revision and true zero");
 
   // 4. Malformed persisted state fails loudly instead of poisoning all future
   // cumulative totals with NaN or a mismatched arithmetic result.
@@ -301,7 +249,7 @@ function runSelfTests() {
 
 const arg = process.argv[2];
 if (arg === "--check") {
-  runSelfTests();
+  await runSelfTests();
 } else {
   main().catch((err) => {
     console.error(`repo-metrics failed: ${err.message}`);

@@ -7,11 +7,11 @@ import {
   hasMoreReleasePages,
   utcDate,
   addDaysUtc,
-  sumNpmDeltaAfter,
+  fetchNpmTotals,
+  reconcileMetrics,
   parseCsv,
   serializeCsv,
   upsertRow,
-  latestRowAtOrBefore,
   formatThousands,
   type MetricsRow,
 } from "./repo-asset-authority.js";
@@ -20,7 +20,7 @@ import {
 // reuse-lock, audit A-6). This module is the one definition consumed by BOTH
 // the CLI `release stats` and scripts/update-repo-metrics.mjs, so the behaviors
 // the audit named are pinned here once: allowlisting, source-failure handling,
-// pagination, closed-day npm deltas, persisted-state validation, and same-day
+// pagination, revised npm history, persisted-state validation, and same-day
 // idempotency.
 
 describe("asset allowlisting (the one authority)", () => {
@@ -109,36 +109,47 @@ describe("pagination", () => {
   });
 });
 
-describe("npm lifetime seed + daily deltas + gap repair", () => {
-  it("sums only days after the npm watermark through the closed target day", () => {
-    const daily = [
-      { day: "2026-07-21", downloads: 200 },
-      { day: "2026-07-22", downloads: 100 },
-      { day: "2026-07-23", downloads: 50 },
-    ];
-    // prior row is 2026-07-22, so only 07-23 (50) is new.
-    expect(sumNpmDeltaAfter(daily, "2026-07-22", "2026-07-23")).toBe(50);
+describe("npm history reconciliation", () => {
+  const pkg = "claudexor";
+  const first = "2026-07-10";
+  const next = "2026-07-11";
+  const daily = [{ day: first, downloads: 20 }, { day: next, downloads: 0 }];
+  const response = { package: pkg, start: first, end: next, downloads: daily };
+
+  it("accepts backward and forward revisions and genuine zeros without changing historical GitHub", async () => {
+    const totals = await fetchNpmTotals(pkg, first, next, async () => response);
+    const input = parseCsv("date,npm_through,npm_total,github_release_downloads,total_downloads\n" +
+      "2026-07-11,2026-07-10,10,7,17\n2026-07-12,2026-07-11,30,12,42\n").rows;
+    const result = reconcileMetrics(input, "2026-07-12", 13, totals);
+    expect(result.map(r => [r.npm_total, r.github_release_downloads, r.total_downloads]))
+      .toEqual([[20, 7, 27], [20, 13, 33]]);
+    expect(reconcileMetrics(result, "2026-07-12", 13, totals)).toEqual(result);
+    expect(() => reconcileMetrics(input, "2026-07-13", 13, totals)).toThrow("no complete npm history");
   });
 
-  it("repairs a missed cron day by summing the whole gap tail", () => {
-    const daily = [
-      { day: "2026-07-21", downloads: 10 },
-      { day: "2026-07-22", downloads: 20 },
-      { day: "2026-07-23", downloads: 30 },
-    ];
-    // prior row is 2026-07-20 (a day was missed); recover 21+22+23 = 60.
-    expect(sumNpmDeltaAfter(daily, "2026-07-20", "2026-07-23")).toBe(60);
+  it("requests contiguous bounded chunks and carries the total over leap day", async () => {
+    const calls: string[][] = [];
+    const totals = await fetchNpmTotals(pkg, "2027-03-01", "2028-03-01", async (start, end) => {
+      calls.push([start, end]);
+      const downloads = [];
+      for (let day = start; day <= end; day = addDaysUtc(day, 1)) downloads.push({day, downloads: 1});
+      return { package: pkg, start, end, downloads };
+    });
+    expect(calls).toEqual([["2027-03-01", "2028-02-28"], ["2028-02-29", "2028-03-01"]]);
+    expect(totals.get("2028-03-01")).toBe(367);
   });
 
-  it("ignores days at/after `through` and malformed points", () => {
-    const daily = [
-      { day: "2026-07-23", downloads: 5 },
-      { day: "2026-07-24", downloads: 999 },
-      { downloads: 7 },
-      { day: "2026-07-23" },
-    ];
-    expect(sumNpmDeltaAfter(daily, "2026-07-22", "2026-07-23")).toBe(5);
-    expect(sumNpmDeltaAfter(null, "2026-07-22", "2026-07-23")).toBe(0);
+  it("refuses incomplete, duplicated or malformed responses instead of silently counting zero", async () => {
+    for (const bad of [
+      { package: "other" }, { start: next }, { end: first }, { downloads: [daily[1]] },
+      { downloads: [daily[0], daily[0]] }, { downloads: [...daily, { day: "2026-07-12", downloads: 0 }] },
+      { downloads: [daily[0], { day: next, downloads: -1 }] },
+      { downloads: [daily[0], { day: next, downloads: 1.5 }] },
+    ]) {
+      await expect(fetchNpmTotals(pkg, first, next, async () => ({ ...response, ...bad }))).rejects.toThrow();
+    }
+    await expect(fetchNpmTotals(pkg, first, next, async () => { throw new Error("source unavailable"); }))
+      .rejects.toThrow("source unavailable");
   });
 
   it("addDaysUtc / utcDate stay on UTC day boundaries", () => {
@@ -147,27 +158,6 @@ describe("npm lifetime seed + daily deltas + gap repair", () => {
     expect(utcDate(new Date("2026-07-23T23:59:00Z"))).toBe("2026-07-23");
   });
 
-  it("reuses the latest row on a same-day refresh", () => {
-    const rows: MetricsRow[] = [
-      {
-        date: "2026-07-22",
-        npm_through: "2026-07-21",
-        npm_total: 100,
-        github_release_downloads: 3,
-        total_downloads: 103,
-      },
-      {
-        date: "2026-07-23",
-        npm_through: "2026-07-22",
-        npm_total: 150,
-        github_release_downloads: 4,
-        total_downloads: 154,
-      },
-    ];
-    expect(latestRowAtOrBefore(rows, "2026-07-23")?.date).toBe("2026-07-23");
-    expect(latestRowAtOrBefore(rows, "2026-07-22")?.date).toBe("2026-07-22");
-    expect(latestRowAtOrBefore([], "2026-07-23")).toBeNull();
-  });
 });
 
 describe("CSV ledger same-day idempotency", () => {
