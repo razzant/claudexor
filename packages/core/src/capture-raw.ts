@@ -6,6 +6,7 @@ import {
 } from "./process-registry.js";
 import { composeSpawnEnv } from "./env-scope.js";
 import { backgroundSpawnShape, prepareHarnessCommand } from "./runtime-env.js";
+import { enterScopeCgroup } from "./process-cgroup.js";
 import { runScopeMarkerOf } from "./process-scope.js";
 import {
   defaultProbeGroupAlive,
@@ -90,7 +91,9 @@ export async function runCaptureRaw(
     opts.cwd,
   );
   const env = invocation.env;
-  const child = spawn(invocation.binary, invocation.args, {
+  // run-deadline/1: a run with a proven cgroup boundary enters it before exec.
+  const launch = enterScopeCgroup(invocation, env);
+  const child = spawn(launch.binary, launch.args, {
     cwd: opts.cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],

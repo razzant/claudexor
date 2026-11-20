@@ -93,7 +93,8 @@ async function exactRetry(
     const replay = await sourceReplayInput(ctx, source);
     sourceTurnProvenance = replay.turn;
     const recorded = restoreRecordedRunReviewRequest(decodeAcceptedRunStart(replay.params).request);
-    const { turnId: _turnId, retryOf: _retryOf, ...original } = recorded;
+    // A run-deadline/1 instant binds the one accepted run: a retry never replays it.
+    const { turnId: _turnId, retryOf: _retryOf, deadline: _deadline, ...original } = recorded;
     // QA-035: Exact Retry replays the IMMUTABLE original request. The stored
     // params omit any model/effort the caller left to settings, so re-reading
     // current settings would silently change the route after a settings edit.
@@ -340,6 +341,7 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
       parentRunId,
       delegatedFromRunId,
       continueModelInherited,
+      deadline,
       ...request
     } = parsed;
     const differences = [
@@ -391,6 +393,16 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
               field: "delegatedFromRunId",
               change: "omitted" as const,
               reason: "Delegate parent authority is not replayable",
+            },
+          ]
+        : []),
+      ...(deadline
+        ? [
+            {
+              field: "deadline",
+              change: "omitted" as const,
+              reason:
+                "an absolute run deadline binds the source run; give the new run its own deadline",
             },
           ]
         : []),

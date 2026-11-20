@@ -1,18 +1,25 @@
 /**
  * Scheduler-owned registry of server-enforced run deadlines (run-deadline/1).
  *
- * - A deadline is accepted as an absolute wall-clock instant and converted ONCE
- *   to the monotonic clock at that moment; every timer and the warden compare
- *   monotonic readings, so a wall-clock step never moves a stop.
- * - It holds from acceptance: queued, preparing and running.
+ * Ownership (INV-144, see ARCHITECTURE "Daemon lifecycle"):
+ * - The accepted command holds revision 0: `params.deadline.at`, durable with
+ *   the command itself. Each later revision is written durably to the run's
+ *   state file (`daemon/run-deadlines/<job>.json`) BEFORE it is confirmed, and
+ *   that file is also what the run's warden obeys.
+ * - The daemon converts an absolute instant ONCE, when it accepts it, to the
+ *   host clock (`run-deadline-clock.ts`: CLOCK_BOOTTIME on Linux), so neither a
+ *   wall-clock step nor a host suspend postpones a stop.
+ * - It holds from acceptance: queued, preparing and running. The daemon's own
+ *   timer ends the job (a queued one never starts; a running one is cancelled);
+ *   the warden (`run-deadline-warden.ts`), started before the run's first
+ *   process, ends the run's processes even while the daemon is dead.
  * - A Delegate child's effective deadline is the earlier of its own and its
- *   parent's CURRENT effective deadline; changing the parent re-arms the child.
- * - Before the run's first launch the runner hands its scope marker here; the
- *   registry writes the warden state file and starts the warden
- *   (`run-deadline-warden.ts`), which ends the scope at the deadline even if
- *   the daemon is gone. Every change rewrites the file atomically.
+ *   parent's CURRENT one: the child's warden reads the parent's state file, so
+ *   one durable write of the parent moves every dependent warden at once.
+ * - A run that reached a terminal keeps the effective deadline it ended under
+ *   (`frozen`): a later parent change or the parent's removal never moves it.
  */
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   RUN_DEADLINE_CAPABILITY,
@@ -22,43 +29,39 @@ import {
   type RunDeadlineSnapshot,
   type RunDeadlineState,
 } from "@claudexor/schema";
+import { registerScopeCgroup, unregisterScopeCgroup } from "@claudexor/core";
+import { hostClock, type HostClockKind } from "./run-deadline-clock.js";
+import {
+  createRunCgroup,
+  probeCgroupBoundary,
+  type DeadlineBoundary,
+} from "./run-deadline-cgroup.js";
 import {
   RUN_DEADLINE_STOP_GRACE_SEC,
+  effectiveTarget,
   readWardenOutcome,
   readWardenState,
   removeWardenFiles,
   spawnWarden,
-  writeJsonAtomic,
+  wardenDonePath,
+  wardenReadyPath,
+  writeJsonAtomicAsync,
   type WardenState,
 } from "./run-deadline-warden.js";
-
-/**
- * The capabilities this host proves. run-deadline/1 is declared only on Linux:
- * there the warden's marker census reads every same-uid process environment
- * (`/proc/<pid>/environ`), so a reap that settles is complete. On macOS SIP
- * hides the environment of Apple platform binaries, so a system binary started
- * in the background by a shell that already exited cannot be ruled out
- * (`DARWIN_COMPLETENESS_LIMIT`); Windows has no environment census. The warden
- * still runs there, but the stop invariant is not proven, so it is not declared.
- */
-export function runDeadlineCapabilities(
-  platform: string = process.platform,
-  stopGraceSec: number = RUN_DEADLINE_STOP_GRACE_SEC,
-): ControlCapability[] {
-  return platform === "linux" ? [{ name: RUN_DEADLINE_CAPABILITY, stopGraceSec }] : [];
-}
 
 export interface RunDeadlineClock {
   /** Wall clock, ms since the epoch (injectable: a test steps it backwards). */
   wallNow(): number;
-  /** Host monotonic clock, ns. Must be the same clock the warden reads. */
-  monoNow(): bigint;
+  /** Host clock, ns: the same clock every warden reads (`kind`). */
+  hostNow(): bigint;
+  kind: HostClockKind;
+  bootId(): string | null;
 }
 
-export const systemDeadlineClock: RunDeadlineClock = {
-  wallNow: () => Date.now(),
-  monoNow: () => process.hrtime.bigint(),
-};
+export function systemDeadlineClock(platform: NodeJS.Platform = process.platform): RunDeadlineClock {
+  const clock = hostClock(platform);
+  return { wallNow: () => Date.now(), hostNow: clock.now, kind: clock.kind, bootId: clock.bootId };
+}
 
 export function deadlineProblem(
   message: string,
@@ -69,29 +72,44 @@ export function deadlineProblem(
   return Object.assign(new Error(message), { code, status, retryable });
 }
 
-interface Point {
+/** An absolute deadline converted once to the host clock. */
+export interface DeadlinePoint {
   at: string;
-  mono: bigint;
+  target: bigint;
 }
 
 interface Entry {
   jobId: string;
-  own: Point | null;
+  own: DeadlinePoint | null;
   revision: number;
   parentJobId: string | null;
   children: Set<string>;
   state: RunDeadlineState;
+  /** The effective deadline fixed at the terminal (or at expiry). */
+  frozen: (DeadlinePoint & { from: string | null }) | null;
+  /** The parent's effective deadline when last seen (used if the parent is forgotten). */
+  lastParent: (DeadlinePoint & { from: string }) | null;
   timer?: ReturnType<typeof setTimeout>;
-  statePath?: string;
-  marker?: string;
+  markers: string[];
+  /** The state file exists (written by a set or the warden hand-off). */
+  durable: boolean;
+  wardenStarted: boolean;
+  cgroup: string | null;
+  /** Serializes this run's durable writes and hand-offs. */
+  chain: Promise<unknown>;
 }
 
 export interface RunDeadlinesOptions {
-  /** Directory of warden state files; absent disables the warden (in-process timers only). */
+  /** Directory of state files; absent: in-process timers only, no warden. */
   dir?: string;
+  /** The run-scope index the warden reads recorded process groups from. */
+  runScopesPath?: string;
   clock?: RunDeadlineClock;
   stopGraceSec?: number;
   spawnWarden?: (statePath: string) => Promise<{ pid: number }>;
+  /** Boundary probe (default: the delegated cgroup v2 probe on Linux). */
+  probeBoundary?: () => Promise<DeadlineBoundary>;
+  platform?: NodeJS.Platform;
   /** The effective deadline passed: the scheduler ends the job (queued or running). */
   onExpire?: (jobId: string) => void;
 }
@@ -103,15 +121,42 @@ export function requestedDeadline(params: unknown): RunDeadlineStart | undefined
   return raw === undefined ? undefined : RunDeadlineStart.parse(raw);
 }
 
+/** The longest single timer wait: a suspended host is re-checked at least this often. */
+const MAX_TIMER_MS = 1_000;
+
 export class RunDeadlines {
   private readonly entries = new Map<string, Entry>();
-  private readonly clock: RunDeadlineClock;
+  protected readonly clock: RunDeadlineClock;
   readonly stopGraceSec: number;
+  private readonly platform: NodeJS.Platform;
+  private boundary: DeadlineBoundary | null = null;
+  private boundaryProbe: Promise<DeadlineBoundary> | null = null;
 
   constructor(private readonly opts: RunDeadlinesOptions) {
-    this.clock = opts.clock ?? systemDeadlineClock;
+    this.platform = opts.platform ?? process.platform;
+    this.clock = opts.clock ?? systemDeadlineClock(this.platform);
     this.stopGraceSec = opts.stopGraceSec ?? RUN_DEADLINE_STOP_GRACE_SEC;
     if (opts.dir) mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
+  }
+
+  /** Prove the boundary once (Linux): needed before the capability is declared. */
+  prepare(): Promise<DeadlineBoundary> {
+    this.boundaryProbe ??= (this.opts.probeBoundary ?? (() => probeCgroupBoundary(this.platform)))()
+      .catch((error: unknown) => ({ kind: "marker" as const, reason: String(error) }))
+      .then((boundary) => (this.boundary = boundary));
+    return this.boundaryProbe;
+  }
+
+  /**
+   * The capability this host proves: Linux only, once the boundary probe has
+   * finished and a warden can run (a state directory exists). The boundary
+   * names how the run's processes are delimited.
+   */
+  capabilities(): ControlCapability[] {
+    if (this.platform !== "linux" || !this.opts.dir || !this.boundary) return [];
+    return [
+      { name: RUN_DEADLINE_CAPABILITY, stopGraceSec: this.stopGraceSec, boundary: this.boundary.kind },
+    ];
   }
 
   has(jobId: string): boolean {
@@ -119,7 +164,7 @@ export class RunDeadlines {
   }
 
   /** Convert an absolute instant now; refuse one that is not in the future. */
-  private point(at: string): Point {
+  toPoint(at: string): DeadlinePoint {
     const wall = Date.parse(at);
     const now = this.clock.wallNow();
     if (!Number.isFinite(wall))
@@ -131,173 +176,288 @@ export class RunDeadlines {
       );
     return {
       at: new Date(wall).toISOString(),
-      mono: this.clock.monoNow() + BigInt(wall - now) * 1_000_000n,
+      target: this.clock.hostNow() + BigInt(wall - now) * 1_000_000n,
     };
   }
 
-  /** The refusal a start must answer before anything is accepted; null when fine. */
-  assertStartable(params: unknown): void {
-    const requested = requestedDeadline(params);
-    if (requested) this.point(requested.at);
+  /** A held run's effective deadline and whether the run is still live (armed). */
+  pointOf(jobId: string): { point: DeadlinePoint; live: boolean } | null {
+    const entry = this.entries.get(jobId);
+    const point = entry ? this.effective(entry) : null;
+    return entry && point ? { point, live: entry.state === "armed" } : null;
+  }
+
+  /** An instant converted without refusing one already past (it then expires). */
+  protected lenientPoint(at: string): DeadlinePoint {
+    const wall = Date.parse(at);
+    return {
+      at: new Date(wall).toISOString(),
+      target: this.clock.hostNow() + BigInt(wall - this.clock.wallNow()) * 1_000_000n,
+    };
   }
 
   /**
-   * Register an accepted job. `own` comes from its request; `parentJobId` names
-   * a Delegate parent that has a deadline (its effective deadline then caps the
-   * child). Nothing is registered when neither exists.
+   * Register an accepted job. Never throws: the instant was checked before the
+   * command was committed (`toPoint`), and one that passed since expires here
+   * through the ordinary path. `parentJobId` names a Delegate parent whose
+   * effective deadline also caps the child.
    */
-  admit(jobId: string, params: unknown, parentJobId: string | null): void {
+  admit(jobId: string, own: DeadlinePoint | null, parentJobId: string | null): void {
     if (this.entries.has(jobId)) return;
-    const requested = requestedDeadline(params);
     const parent = parentJobId ? this.entries.get(parentJobId) : undefined;
-    if (!requested && !parent) return;
+    if (!own && !parent) return;
     const entry: Entry = {
       jobId,
-      own: requested ? this.point(requested.at) : null,
+      own,
       revision: 0,
       parentJobId: parent ? parentJobId : null,
       children: new Set(),
       state: "armed",
+      frozen: null,
+      lastParent: null,
+      markers: [],
+      durable: false,
+      wardenStarted: false,
+      cgroup: null,
+      chain: Promise.resolve(),
     };
     this.entries.set(jobId, entry);
     parent?.children.add(jobId);
     this.arm(entry);
   }
 
-  /** The effective deadline: the earlier of the own one and every ancestor's. */
-  private effective(entry: Entry): { point: Point; from: string | null } {
-    let best: { point: Point; from: string | null } | null = entry.own
-      ? { point: entry.own, from: null }
+  /** Expire now when the effective deadline already passed; true when it did (or had). */
+  expireIfDue(jobId: string): boolean {
+    const entry = this.entries.get(jobId);
+    if (!entry) return false;
+    if (entry.state === "armed" && this.due(entry)) this.expire(entry);
+    return entry.state === "expired";
+  }
+
+  private effective(entry: Entry): (DeadlinePoint & { from: string | null }) | null {
+    if (entry.frozen) return entry.frozen;
+    let best: (DeadlinePoint & { from: string | null }) | null = entry.own
+      ? { ...entry.own, from: null }
       : null;
     let parentId = entry.parentJobId;
     const seen = new Set([entry.jobId]);
+    let parentBest: (DeadlinePoint & { from: string }) | null = null;
     while (parentId && !seen.has(parentId)) {
       seen.add(parentId);
       const parent = this.entries.get(parentId);
       if (!parent) break;
-      if (parent.own && (!best || parent.own.mono < best.point.mono))
-        best = { point: parent.own, from: parentId };
+      const point = parent.frozen ?? parent.own;
+      if (point && (!parentBest || point.target < parentBest.target))
+        parentBest = { at: point.at, target: point.target, from: parentId };
+      if (parent.frozen) break;
       parentId = parent.parentJobId;
     }
-    if (!best) throw new Error(`run deadline for ${entry.jobId} has no source`);
+    if (parentBest) entry.lastParent = parentBest;
+    const inherited = parentBest ?? entry.lastParent;
+    if (inherited && (!best || inherited.target < best.target)) best = inherited;
     return best;
+  }
+
+  private due(entry: Entry): boolean {
+    const point = this.effective(entry);
+    return point !== null && this.clock.hostNow() >= point.target;
   }
 
   snapshot(jobId: string): RunDeadlineSnapshot | null {
     const entry = this.entries.get(jobId);
     if (!entry) return null;
-    const { point, from } = this.effective(entry);
+    if (entry.state === "armed" && this.due(entry)) this.expire(entry);
+    const point = this.effective(entry);
+    if (!point) return null;
     return {
       at: point.at,
       revision: entry.revision,
       serverNow: new Date(this.clock.wallNow()).toISOString(),
       state: entry.state,
       stopGraceSec: this.stopGraceSec,
-      inheritedFrom: from,
+      inheritedFrom: point.from,
     };
   }
 
   /**
-   * A durable read for a job this daemon no longer holds in memory (a previous
-   * generation's run): its warden state file, if one was written.
+   * The deadline of a job this daemon holds no entry for (a previous
+   * generation's, or one pruned from memory): its state file when one was
+   * written (a later revision, or a warden hand-off), else revision 0 from the
+   * accepted request. `expired` tells whether the job ended by its deadline.
    */
-  durableSnapshot(jobId: string): RunDeadlineSnapshot | null {
-    if (!this.opts.dir) return null;
-    const path = this.statePath(jobId);
-    const state = readWardenState(path);
-    if (!state || state === "unreadable") return null;
+  durableSnapshot(
+    jobId: string,
+    accepted: { params: unknown; expired: boolean },
+  ): RunDeadlineSnapshot | null {
+    const state = this.opts.dir ? readWardenState(this.statePath(jobId)) : null;
+    const serverNow = new Date(this.clock.wallNow()).toISOString();
+    if (state && state !== "unreadable") {
+      const point = state.frozen ?? state.own ?? state.inherited;
+      if (!point) return null;
+      const sameBoot = state.bootId === this.clock.bootId() && state.clock === this.clock.kind;
+      const target = sameBoot ? effectiveTarget(state, this.opts.dir!) : null;
+      const reached =
+        readWardenOutcome(this.statePath(jobId)) !== null ||
+        (target !== null ? this.clock.hostNow() >= target : Date.parse(point.at) <= this.clock.wallNow());
+      return {
+        at: point.at,
+        revision: state.revision,
+        serverNow,
+        state: accepted.expired || (reached && !state.released) ? "expired" : "closed",
+        stopGraceSec: this.stopGraceSec,
+        inheritedFrom: state.frozen?.inheritedFrom ?? (state.own ? null : (state.inherited?.from ?? null)),
+      };
+    }
+    const requested = requestedDeadline(accepted.params);
+    if (!requested) return null;
     return {
-      at: state.at,
-      revision: state.revision,
-      serverNow: new Date(this.clock.wallNow()).toISOString(),
-      // A previous generation's run that the daemon did not close keeps its
-      // warden; once the deadline passed, that warden is what ended it.
-      state:
-        !state.closed &&
-        (readWardenOutcome(path) !== null || this.clock.monoNow() >= BigInt(state.monoTargetNs))
-          ? "expired"
-          : "closed",
+      at: new Date(Date.parse(requested.at)).toISOString(),
+      revision: 0,
+      serverNow,
+      state: accepted.expired ? "expired" : "closed",
       stopGraceSec: this.stopGraceSec,
       inheritedFrom: null,
     };
   }
 
-  /** Replace the job's own deadline. `live` is false for a terminal job. */
+  /**
+   * Replace the job's own deadline. The new revision is written durably first
+   * (the file every dependent warden reads) and confirmed only after that.
+   * An effective deadline that already passed expires the run and refuses.
+   */
   set(
     jobId: string,
     raw: unknown,
     opts: { live: boolean; delegated: boolean },
-  ): RunDeadlineSnapshot {
+  ): Promise<RunDeadlineSnapshot> {
     const request = RunDeadlineSetRequest.parse(raw);
     const entry = this.entries.get(jobId);
-    if (!opts.live || !entry || entry.state !== "armed")
-      throw deadlineProblem("Run is terminal; its deadline is closed", "run_deadline_closed");
-    if (opts.delegated)
-      throw deadlineProblem(
-        "A Delegate child's deadline follows its parent; change the parent",
-        "delegated_deadline_forbidden",
-        403,
+    if (!opts.live || !entry)
+      return Promise.reject(
+        deadlineProblem("Run is terminal; its deadline is closed", "run_deadline_closed"),
       );
-    if (request.expectedRevision !== entry.revision)
-      throw deadlineProblem(
-        `Deadline revision changed (expected ${request.expectedRevision}, current ${entry.revision}); read before retrying`,
-        "run_deadline_revision_conflict",
-      );
-    entry.own = this.point(request.at);
-    entry.revision += 1;
-    this.rearmTree(entry);
-    return this.snapshot(jobId)!;
+    return this.serialized(entry, async () => {
+      if (entry.state === "armed" && this.due(entry)) this.expire(entry);
+      if (entry.state === "expired")
+        throw deadlineProblem("Run deadline already passed", "run_deadline_expired");
+      if (entry.state !== "armed")
+        throw deadlineProblem("Run is terminal; its deadline is closed", "run_deadline_closed");
+      if (opts.delegated)
+        throw deadlineProblem(
+          "A Delegate child's deadline follows its parent; change the parent",
+          "delegated_deadline_forbidden",
+          403,
+        );
+      if (request.expectedRevision !== entry.revision)
+        throw deadlineProblem(
+          `Deadline revision changed (expected ${request.expectedRevision}, current ${entry.revision}); read before retrying`,
+          "run_deadline_revision_conflict",
+        );
+      const next = this.toPoint(request.at);
+      if (this.opts.dir) {
+        await this.writeState(entry, { own: next, revision: entry.revision + 1 });
+        entry.durable = true;
+      }
+      if (entry.state !== "armed")
+        throw deadlineProblem("Run is terminal; its deadline is closed", "run_deadline_closed");
+      entry.own = next;
+      entry.revision += 1;
+      this.rearmTree(entry);
+      return this.snapshot(jobId)!;
+    });
   }
 
   /**
-   * Before the run's first launch: record the scope and start the warden.
-   * Throws when the warden cannot be started — the run must not launch
-   * without the enforcement it promised.
+   * Hand a scope marker of the run to its warden BEFORE the first process that
+   * carries it (preparation first, then the run): the first hand-off starts the
+   * warden, later ones add markers. On a cgroup boundary the marker is bound to
+   * the run's cgroup, so every launch carrying it enters that cgroup. Throws when
+   * the warden cannot be started or the deadline passed meanwhile: then nothing
+   * may be launched.
    */
-  async attachScope(jobId: string, marker: string): Promise<void> {
+  attachScope(jobId: string, marker: string): Promise<void> {
     const entry = this.entries.get(jobId);
-    if (!entry || !this.opts.dir) return;
+    if (!entry || !this.opts.dir) return Promise.resolve();
+    return this.serialized(entry, async () => {
+      this.refuseIfDue(entry);
+      if (this.boundary?.kind === "cgroup") {
+        entry.cgroup ??= await createRunCgroup(this.boundary.runsDir, jobId);
+        registerScopeCgroup(marker, join(entry.cgroup, "cgroup.procs"));
+      }
+      if (!entry.markers.includes(marker)) entry.markers.push(marker);
+      await this.writeState(entry);
+      entry.durable = true;
+      if (!entry.wardenStarted) {
+        await (this.opts.spawnWarden ?? spawnWarden)(this.statePath(jobId));
+        entry.wardenStarted = true;
+      }
+      this.refuseIfDue(entry);
+    });
+  }
+
+  private refuseIfDue(entry: Entry): void {
+    if (entry.state === "armed" && this.due(entry)) this.expire(entry);
     if (entry.state !== "armed")
       throw deadlineProblem("Run deadline already passed", "run_deadline_expired");
-    entry.marker = marker;
-    entry.statePath = this.statePath(jobId);
-    this.writeState(entry);
-    await (this.opts.spawnWarden ?? spawnWarden)(entry.statePath);
   }
 
   /**
-   * The job reached a terminal other than its deadline: stop the timer and
-   * release the warden (the run's own barrier already ended its scope). An
-   * expired job keeps its warden: it still ends whatever the cancel left.
+   * The job reached a terminal other than its deadline: stop the timer, fix the
+   * effective deadline and tell the warden the run ended (it leaves once the
+   * group is confirmed empty, else it stays to the deadline). An expired job's
+   * warden is told the same; it is already enforcing.
    */
   close(jobId: string): void {
     const entry = this.entries.get(jobId);
-    if (!entry || entry.state !== "armed") return;
-    entry.state = "closed";
+    if (!entry || entry.state === "closed") return;
+    if (entry.state === "armed") {
+      entry.state = "closed";
+      entry.frozen = this.effective(entry);
+    }
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = undefined;
-    if (entry.statePath) {
-      try {
-        this.writeState(entry, true);
-      } catch {
-        /* a warden that cannot read `closed` still ends an already-ended scope */
-      }
-    }
+    for (const marker of entry.markers) unregisterScopeCgroup(marker);
+    if (entry.durable) void this.serialized(entry, () => this.writeState(entry, { released: true })).catch(() => {});
   }
 
-  /** Retention: forget a pruned job and its files. */
+  /**
+   * Retention forgot the job. Its state file goes with it unless a warden may
+   * still act on it (started and not yet done); the startup sweep removes those
+   * once their warden finished.
+   */
   forget(jobId: string): void {
     const entry = this.entries.get(jobId);
     if (entry?.timer) clearTimeout(entry.timer);
     if (entry?.parentJobId) this.entries.get(entry.parentJobId)?.children.delete(jobId);
+    for (const marker of entry?.markers ?? []) unregisterScopeCgroup(marker);
     this.entries.delete(jobId);
     if (!this.opts.dir) return;
-    // Never pull the file from under a warden that may still have to act: only
-    // a closed scope or one the warden already reaped is released.
     const path = this.statePath(jobId);
-    const state = readWardenState(path);
-    if (state && state !== "unreadable" && (state.closed || readWardenOutcome(path)))
-      removeWardenFiles(path);
+    if (!existsSync(wardenReadyPath(path)) || existsSync(wardenDonePath(path))) removeWardenFiles(path);
+  }
+
+  /**
+   * Startup: drop the files of finished wardens whose job is no longer
+   * retained, and every runtime file of a previous boot (no warden survives a
+   * reboot). Durable records of retained jobs stay.
+   */
+  sweep(retained: (jobId: string) => boolean): void {
+    if (!this.opts.dir) return;
+    let names: string[];
+    try {
+      names = readdirSync(this.opts.dir).filter((name) => name.endsWith(".json") && !name.includes(".json."));
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const path = join(this.opts.dir, name);
+      const state = readWardenState(path);
+      const jobId = state && state !== "unreadable" ? state.jobId : name.slice(0, -5);
+      const otherBoot =
+        state && state !== "unreadable" && state.bootId !== null && state.bootId !== this.clock.bootId();
+      const wardenGone = !existsSync(wardenReadyPath(path)) || existsSync(wardenDonePath(path)) || otherBoot;
+      if (wardenGone && !retained(jobId)) removeWardenFiles(path);
+    }
   }
 
   dispose(): void {
@@ -308,18 +468,36 @@ export class RunDeadlines {
     return join(this.opts.dir!, `${jobId.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
   }
 
-  private writeState(entry: Entry, closed = false): void {
-    if (!entry.statePath) return;
-    const { point } = this.effective(entry);
-    writeJsonAtomic(entry.statePath, {
-      version: 1,
+  private serialized<T>(entry: Entry, work: () => Promise<T>): Promise<T> {
+    const next = entry.chain.then(work, work);
+    entry.chain = next.catch(() => {});
+    return next;
+  }
+
+  private writeState(
+    entry: Entry,
+    patch: { own?: DeadlinePoint; revision?: number; released?: boolean } = {},
+  ): Promise<void> {
+    const own = patch.own ?? entry.own;
+    const point = (value: DeadlinePoint) => ({ at: value.at, targetNs: value.target.toString() });
+    this.effective(entry); // refreshes `lastParent`
+    const parentPoint = entry.parentJobId ? entry.lastParent : null;
+    const state: WardenState = {
+      version: 2,
       jobId: entry.jobId,
-      marker: entry.marker ?? null,
-      at: point.at,
-      monoTargetNs: point.mono.toString(),
-      revision: entry.revision,
-      closed,
-    } satisfies WardenState);
+      clock: this.clock.kind,
+      bootId: this.clock.bootId(),
+      own: own ? point(own) : null,
+      revision: patch.revision ?? entry.revision,
+      parent: entry.parentJobId ? `${entry.parentJobId.replace(/[^A-Za-z0-9_.-]/g, "_")}.json` : null,
+      inherited: parentPoint ? { ...point(parentPoint), from: parentPoint.from } : null,
+      frozen: entry.frozen ? { ...point(entry.frozen), inheritedFrom: entry.frozen.from } : null,
+      markers: [...entry.markers],
+      cgroup: entry.cgroup,
+      runScopes: this.opts.runScopesPath ?? null,
+      released: patch.released ?? entry.state !== "armed",
+    };
+    return writeJsonAtomicAsync(this.statePath(entry.jobId), state);
   }
 
   private rearmTree(entry: Entry): void {
@@ -329,10 +507,7 @@ export class RunDeadlines {
       const next = stack.pop()!;
       if (seen.has(next.jobId)) continue;
       seen.add(next.jobId);
-      if (next.state === "armed") {
-        this.arm(next);
-        if (next.statePath) this.writeState(next);
-      }
+      this.arm(next);
       for (const child of next.children) {
         const value = this.entries.get(child);
         if (value) stack.push(value);
@@ -344,23 +519,27 @@ export class RunDeadlines {
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = undefined;
     if (entry.state !== "armed") return;
-    const { point } = this.effective(entry);
-    const remainingNs = point.mono - this.clock.monoNow();
+    const point = this.effective(entry);
+    if (!point) return;
+    const remainingNs = point.target - this.clock.hostNow();
     if (remainingNs <= 0n) {
       this.expire(entry);
       return;
     }
-    // setTimeout runs on the event loop's monotonic clock; re-check on fire.
-    const ms = Number(remainingNs / 1_000_000n) + 1;
-    entry.timer = setTimeout(() => this.arm(entry), Math.min(ms, 2_147_000_000));
+    // Event-loop timers run on the monotonic clock, which stops while the host
+    // sleeps: re-read the host clock at least every second.
+    const ms = Math.min(Number(remainingNs / 1_000_000n) + 1, MAX_TIMER_MS);
+    entry.timer = setTimeout(() => this.arm(entry), ms);
     entry.timer.unref?.();
   }
 
   private expire(entry: Entry): void {
     if (entry.state !== "armed") return;
+    entry.frozen = this.effective(entry);
     entry.state = "expired";
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = undefined;
+    if (entry.durable) void this.serialized(entry, () => this.writeState(entry)).catch(() => {});
     this.expired(entry.jobId);
   }
 

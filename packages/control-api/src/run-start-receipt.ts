@@ -113,14 +113,21 @@ export function unboundRunStartResponse(
 
 /** The run-deadline/1 snapshot a start receipt carries: only for a request that set one
  * (older strict clients never send `deadline`, so they never see the field). */
-async function receiptDeadline(
+export async function receiptDeadline(
   daemon: Pick<DaemonFacadeClient, "runDeadline"> | undefined,
   rec: DaemonRunRecord,
 ): Promise<{ deadline?: RunDeadlineSnapshot }> {
   const params = rec.params as { deadline?: unknown } | null | undefined;
   if (!params || typeof params !== "object" || params.deadline === undefined) return {};
   if (!daemon?.runDeadline) return {};
-  return { deadline: await daemon.runDeadline(rec.id, { action: "read" }) };
+  try {
+    return { deadline: await daemon.runDeadline(rec.id, { action: "read" }) };
+  } catch (error) {
+    // The handle is the receipt's authority; a deadline that cannot be read
+    // (an engine without the record) leaves the field out rather than the handle.
+    if ((error as { code?: unknown })?.code === "run_deadline_absent") return {};
+    throw error;
+  }
 }
 
 /** Answer an accepted one-shot job: its bound handle, its queued handle or its pre-run refusal. */

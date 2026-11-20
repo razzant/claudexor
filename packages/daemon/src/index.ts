@@ -3,7 +3,6 @@ export * from "./server.js";
 export * from "./run-time-limit.js";
 export {
   RunDeadlines,
-  runDeadlineCapabilities,
   systemDeadlineClock,
   type RunDeadlineClock,
   type RunDeadlinesOptions,

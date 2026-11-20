@@ -18,12 +18,12 @@ import {
   recordAdmissionMemory,
   processMemoryFields,
   recoveryOnlyRefusal,
-  runDeadlineCapabilities,
   type createSqlDaemonServices,
 } from "@claudexor/daemon";
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "@claudexor/control-api";
 import { createDaemonQuotaPoller, openStartupDiagnostics } from "./daemon-admission-runtime.js";
 import { armDaemonLifecycle, daemonRunScopeIndex, runStartupCrashGc } from "./daemon-lifecycle.js";
+import { RUN_SCOPE_INDEX_FILE } from "./run-scope-index.js";
 import {
   bindRecoveryTransport,
   DaemonStartupAdmission,
@@ -123,7 +123,10 @@ export async function main(): Promise<void> {
         commands: sqlReads.deferredCommands(() => graph().commands),
         deferredStart: () => executors?.deferredStart,
         runtimeConcurrencyCaps: caps,
-        runDeadlines: { dir: join(daemonDir(), "run-deadlines") },
+        runDeadlines: {
+          dir: join(daemonDir(), "run-deadlines"),
+          runScopesPath: join(daemonDir(), RUN_SCOPE_INDEX_FILE),
+        },
         servingMode: admission.snapshot,
         storeFacts: () => storage!.facts(),
         delegationAuthority: delegation.authority,
@@ -250,7 +253,7 @@ export async function main(): Promise<void> {
         port: Number(process.env.CLAUDEXOR_CONTROL_PORT ?? 0),
         servingMode: admission.snapshot,
         storeId: () => storage.storeId(),
-        capabilities: () => runDeadlineCapabilities(),
+        capabilities: () => server.deadlines.capabilities(),
         bus,
         services,
         ...sqlReads.sqlControlReadSources(graph, () => storage.storeId()),
@@ -346,6 +349,7 @@ export async function main(): Promise<void> {
             runScopes: daemonRunScopeIndex(),
             diagnostics: diagnostics.port,
           });
+          await server.deadlines.startup();
           if (shutdown!.requested()) return;
           for (const sweep of sweepRetiredConfigKeysAtStartup())
             log(`swept retired config keys from ${sweep.path}: ${sweep.removed.join(", ")}`);

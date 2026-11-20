@@ -138,8 +138,13 @@ export function createDaemonAgentRunner(deps: {
           ),
       });
     }
-    // The preparation's own short process scope, opened only if the tree is made.
-    const preparation = threadPreparationScope(daemonRunScopeIndex(), ctx.jobId);
+    // The preparation's own short process scope, opened only if the tree is made;
+    // a deadline's warden takes it over before the first Git child.
+    const preparation = threadPreparationScope(
+      daemonRunScopeIndex(),
+      ctx.jobId,
+      ctx.deadlineScope && ((marker) => ctx.deadlineScope!.attach(marker)),
+    );
     const {
       executionRoot: threadExecutionRoot,
       inPlace,

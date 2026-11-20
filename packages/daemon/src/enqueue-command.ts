@@ -122,9 +122,22 @@ function acceptance(
  * replay, Stop, refusal or any staging failure is left to the synchronous
  * enqueue, which decides and reports as before.
  */
+/**
+ * A check that must run synchronously immediately before the commit, and whose
+ * reservation the commit consumes (run-deadline/1 converts the deadline here,
+ * once; a refusal throws before anything is accepted).
+ */
+export interface CommitReservation {
+  reserve(jobId: string, request: unknown): void;
+  release(jobId: string): void;
+}
+
 export async function enqueueStaged(
   params: any,
-  deps: Omit<EnqueueDeps, "accept" | "stopping"> & { stopping(): boolean },
+  deps: Omit<EnqueueDeps, "accept" | "stopping"> & {
+    stopping(): boolean;
+    reservation?: CommitReservation;
+  },
 ) {
   const stamp: AcceptanceStamp = { id: newId("job") };
   try {
@@ -150,7 +163,15 @@ export async function enqueueStaged(
         operation,
         stamp,
       );
-      return store.accept(input);
+      deps.reservation?.reserve(stamp.id, input.params);
+      try {
+        const accepted = store.accept(input);
+        if (accepted.reused || accepted.record.id !== stamp.id) deps.reservation?.release(stamp.id);
+        return accepted;
+      } catch (error) {
+        deps.reservation?.release(stamp.id);
+        throw error;
+      }
     },
   });
 }

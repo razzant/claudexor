@@ -48,6 +48,8 @@ export interface ThreadPreparationScope {
 export function threadPreparationScope(
   index: DaemonRunScopeIndex,
   jobId: string,
+  /** run-deadline/1: hand the marker to the run's warden before the first Git child. */
+  onOpened?: (marker: string) => Promise<void>,
 ): ThreadPreparationScope {
   const scopeId = `thread-preparation:${jobId}`;
   const quiet = daemonPreparationQuiet(index);
@@ -63,6 +65,7 @@ export function threadPreparationScope(
     settleScope: settle,
     openScope: async () => {
       ({ marker } = await index.open(scopeId, { requireDurable: true }));
+      await onOpened?.(marker);
       return { marker };
     },
     closeAfter: async (error) => {

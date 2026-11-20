@@ -1,16 +1,17 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { RunDeadlineSetRequest, RunDeadlineSnapshot } from "@claudexor/schema";
-import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
+import type { DaemonFacadeClient } from "./run-record.js";
 
 export interface RunDeadlineRouteContext {
-  daemon: Pick<DaemonFacadeClient, "runDeadline" | "list">;
+  daemon: Pick<DaemonFacadeClient, "runDeadline">;
   readBody(req: IncomingMessage): Promise<unknown>;
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown): void;
 }
 
-/** GET/PATCH /v2/runs/:id/deadline (run-deadline/1). The daemon owns every verdict:
- * a terminal run, a stale revision or a Delegate child refuse there, typed. */
+/** GET/PATCH /v2/runs/:id/deadline (run-deadline/1). One daemon call addresses the
+ * run by job id or run id and owns every verdict: an unknown run, a run without a
+ * deadline, a terminal run, a stale revision or a Delegate child refuse there, typed. */
 export async function handleRunDeadlineRoute(
   ctx: RunDeadlineRouteContext,
   method: string,
@@ -21,22 +22,15 @@ export async function handleRunDeadlineRoute(
   const deadlineMatch = /^\/runs\/([^/]+)\/deadline$/.exec(path);
   if (!(method === "GET" && deadlineMatch) && !(method === "PATCH" && deadlineMatch)) return false;
   try {
-    const id = decodeURIComponent(deadlineMatch![1]!);
-    const record: DaemonRunRecord | undefined = (await ctx.daemon.list({ id })).find(
-      (run) => run.id === id || run.runId === id,
-    );
-    if (!record) {
-      ctx.json(res, 404, { error: "no such run", code: "run_not_found" });
-      return true;
-    }
     if (!ctx.daemon.runDeadline) {
       ctx.json(res, 501, { error: "run deadlines are not supported by this daemon" });
       return true;
     }
+    const id = decodeURIComponent(deadlineMatch![1]!);
     const snapshot =
       method === "GET"
-        ? await ctx.daemon.runDeadline(record.id, { action: "read" })
-        : await ctx.daemon.runDeadline(record.id, {
+        ? await ctx.daemon.runDeadline(id, { action: "read" })
+        : await ctx.daemon.runDeadline(id, {
             action: "set",
             ...RunDeadlineSetRequest.parse(await ctx.readBody(req)),
           });

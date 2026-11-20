@@ -19,7 +19,7 @@ import {
   turnEnqueueProblemResponse,
 } from "./thread-turn-problems.js";
 import type { RunStartNormalizationOptions } from "./run-start.js";
-import { servingStore } from "./run-start-receipt.js";
+import { receiptDeadline, servingStore } from "./run-start-receipt.js";
 import {
   assertLatestThreadTurn,
   assertThreadAdmitsWork,
@@ -105,6 +105,7 @@ async function respondToTurnJob(
       ControlThreadTurnResponse.parse({
         ...ControlRunStartInfo.parse({
           ...store,
+          ...(await receiptDeadline(ctx.daemon, rec)),
           jobId: rec.id,
           runId: rec.runId,
           taskId: rec.taskId,
@@ -145,12 +146,19 @@ async function respondToTurnJob(
     202,
     ControlThreadTurnResponse.parse({
       ...store,
+      ...(await receiptDeadline(ctx.daemon, rec)),
       jobId: rec.id,
       turnId,
       threadId,
       state: rec.state,
     }),
   );
+}
+
+function withoutDeadline(params: unknown): unknown {
+  if (!params || typeof params !== "object" || !("deadline" in params)) return params;
+  const { deadline: _deadline, ...rest } = params as Record<string, unknown>;
+  return rest;
 }
 
 /** The durable key of a turn create. Its read-only lookup derives the same turn and command
@@ -479,8 +487,10 @@ export function handleThreadTurnRetry(
         })
         .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
       const last = jobs[jobs.length - 1];
+      // A run-deadline/1 instant binds the one accepted run: a retry replays without it.
+      const replayParams = last ? withoutDeadline(last.params) : undefined;
       if (last && ctx.daemon.findAccepted) {
-        const prior = await ctx.daemon.findAccepted(last.params, {
+        const prior = await ctx.daemon.findAccepted(replayParams, {
           idempotencyKey,
           clientId: "control-api",
           operation: "thread.turn.retry",
@@ -531,11 +541,11 @@ export function handleThreadTurnRetry(
       // the replay fails. Honest, ordering-independent, no lost refusals.
       let job: { id: string };
       try {
-        job = await ctx.daemon.enqueue(last.params, {
+        job = await ctx.daemon.enqueue(replayParams, {
           idempotencyKey,
           clientId: "control-api",
           operation: "thread.turn.retry",
-          idempotencyRequest: last.params,
+          idempotencyRequest: replayParams,
         });
       } catch (err) {
         // A failed replay ENQUEUE is a fresh refusal — but the ORIGINAL job

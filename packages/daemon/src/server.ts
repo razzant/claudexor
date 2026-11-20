@@ -128,22 +128,18 @@ export class DaemonServer {
   });
 
   constructor(private readonly opts: DaemonOptions) {
-    this.deadlines = new rd.SchedulerDeadlines(opts.runDeadlines, {
-      commands: opts.commands,
-      delegation: opts.delegationAuthority,
-      getRecord: (id) => this.getRecord(id),
-      update: (record, patch) => this.updateRecord(record, patch),
-      dequeue: (id) => (this.cancelled.add(id), this.dropQueued(id)),
+    this.concurrency = daemonConcurrencyCaps(opts);
+    this.deadlines = new rd.SchedulerDeadlines(opts.runDeadlines, opts, {
+      cancel: (id, patch) => void this.cancelJob(id, undefined, patch),
       abort: (id) => this.controllers.get(id)?.abort("wall_clock_exceeded"),
     });
-    this.concurrency = daemonConcurrencyCaps(opts);
     this.commands = opts.commands;
     this.deferred = new DeferredMessages({
       commands: this.commands,
       preparation: () => this.opts.deferredStart?.(),
       active: (id) => this.activeJobs.has(id),
       stopped: (id) => this.cancelled.has(id),
-      publish: (record) => this.publishQueued(record),
+      publish: (record) => this.publishQueued(this.deadlines.admitRecord(record)),
     });
   }
 
@@ -330,11 +326,11 @@ export class DaemonServer {
     if (servingMode !== "normal") throw recoveryOnlyRefusal(method);
     switch (method) {
       case "claudexor.enqueue":
-        this.deadlines.checkStart(params);
         return enqueueStaged(params, {
           commands: this.commands,
           stopping: () => this.stopping,
           delegation: this.opts.delegationAuthority,
+          reservation: this.deadlines,
           publish: (record) => this.publishQueued(this.deadlines.admitRecord(record)),
         });
       case "claudexor.deferredMessage":
@@ -403,13 +399,15 @@ export class DaemonServer {
   cancelJob(
     jid: string,
     reasonCode?: CancelReasonCode,
+    terminal?: Partial<JobRecord>,
   ): { id: string; cancelled: true; deferredMessageStop: DeferredMessageStopReport } {
     const rec = this.getRecord(jid);
     if (!rec) throw new Error(`no such job: ${jid}`);
     this.cancelled.add(jid);
     if (rec.state === "queued") {
-      this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
-      this.dropQueued(jid);
+      this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso(), ...terminal });
+      const index = this.queue.findIndex((job) => job.id === jid);
+      if (index !== -1) this.queue.splice(index, 1);
       const delegatedFrom = delegatedParentOf(rec.params);
       if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, rec.id);
     }
@@ -420,11 +418,6 @@ export class DaemonServer {
     // saved, its typed failure follows the stop and the fences keep the next
     // message unsent.
     return { id: jid, cancelled: true, deferredMessageStop: this.deferred.stop(rec.id) };
-  }
-
-  private dropQueued(id: string): void {
-    const index = this.queue.findIndex((job) => job.id === id);
-    if (index !== -1) this.queue.splice(index, 1);
   }
 
   private stoppingError(message: string): Error & { code: string; status: number } {
@@ -490,6 +483,7 @@ export class DaemonServer {
         this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
         continue;
       }
+      if (this.deadlines.expireIfDue(id)) continue;
       this.activeJobs.set(id, job);
       const task = this.runJob(id, rec);
       this.activeTasks.add(task);

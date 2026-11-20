@@ -58,7 +58,7 @@ export const RunDeadlineSnapshot = z
       "armed while the run is live; expired once the deadline ended it; closed after any other terminal.",
     ),
     stopGraceSec: StopGraceSec.describe(
-      "Seconds after `at` by which every process of the run is gone.",
+      "Seconds after `at` by which every process inside the run's boundary is gone (see the capability's `boundary`). Work the run handed to another service (a container engine, an already running tmux server, systemd-run) is outside that boundary.",
     ),
     inheritedFrom: z
       .string()
@@ -69,13 +69,24 @@ export const RunDeadlineSnapshot = z
   .describe("A run's server-enforced deadline (run-deadline/1).");
 export type RunDeadlineSnapshot = z.infer<typeof RunDeadlineSnapshot>;
 
+/** How a run's processes are delimited for its deadline. */
+export const RunDeadlineBoundary = z
+  .enum(["cgroup", "marker"])
+  .describe(
+    "cgroup: every run has its own delegated cgroup v2, killed whole (cgroup.kill), so setsid, double fork and a cleaned environment stay inside. marker: processes carrying the run's scope marker in their environment plus the process groups and descendants the daemon recorded for the run; a process that clears its environment after leaving the recorded tree is outside.",
+  );
+export type RunDeadlineBoundary = z.infer<typeof RunDeadlineBoundary>;
+
 export const ControlCapability = z
   .object({
     name: z.literal(RUN_DEADLINE_CAPABILITY),
-    stopGraceSec: StopGraceSec,
+    stopGraceSec: StopGraceSec.describe(
+      "Seconds after a run's deadline by which every process inside its boundary is gone.",
+    ),
+    boundary: RunDeadlineBoundary,
   })
   .strict()
   .describe(
-    "A capability this engine proves on this host; run-deadline/1 is absent where the stop invariant is not proven.",
+    "A capability this engine proves on this host: run-deadline/1 is declared only on Linux, after the daemon checked which boundary it can enforce; macOS and Windows do not declare it.",
   );
 export type ControlCapability = z.infer<typeof ControlCapability>;
