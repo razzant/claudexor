@@ -34,10 +34,12 @@ describe("GPT-6 Astra on the pinned Codex CLI", () => {
         probeEfforts: async () => (source === "live" ? capturedCatalog : null),
         runCliHarness: async function* (options): AsyncGenerator<HarnessEvent> {
           cliArgs = options.args;
-          yield* options.parseEvent?.(
-            { type: "turn.completed", usage: { input_tokens: 1000, output_tokens: 10 } },
-            options.spec.session_id,
-          ) ?? [];
+          yield* (
+            options.parseEvent?.(
+              { type: "turn.completed", usage: { input_tokens: 1000, output_tokens: 10 } },
+              options.spec.session_id,
+            ) ?? []
+          );
           yield {
             type: "completed",
             session_id: options.spec.session_id,
