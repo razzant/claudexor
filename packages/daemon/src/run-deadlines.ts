@@ -208,7 +208,13 @@ export class RunDeadlines {
       at: state.at,
       revision: state.revision,
       serverNow: new Date(this.clock.wallNow()).toISOString(),
-      state: readWardenOutcome(path) ? "expired" : "closed",
+      // A previous generation's run that the daemon did not close keeps its
+      // warden; once the deadline passed, that warden is what ended it.
+      state:
+        !state.closed &&
+        (readWardenOutcome(path) !== null || this.clock.monoNow() >= BigInt(state.monoTargetNs))
+          ? "expired"
+          : "closed",
       stopGraceSec: this.stopGraceSec,
       inheritedFrom: null,
     };
