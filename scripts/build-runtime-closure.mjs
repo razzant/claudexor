@@ -63,6 +63,7 @@ const CLOSURE_ENTRIES = [
   "claudexord.bundle.cjs",
   "claudexor.bundle.cjs",
   "setup-login-runner.cjs",
+  "run-deadline-warden.cjs",
   "browser-mcp-runtime",
   "native",
 ];

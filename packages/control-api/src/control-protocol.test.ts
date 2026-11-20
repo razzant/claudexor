@@ -150,7 +150,7 @@ describe("handshake capabilities (run-deadline/1)", () => {
       requestPath: "/v2/handshake",
       requestedMajor: undefined,
       readBody: async () => ({ protocolMajor: CONTROL_PROTOCOL_MAJOR, client: "test" }),
-      capabilities: () => [{ name: "run-deadline/1", stopGraceSec: 15 }],
+      capabilities: () => [{ name: "run-deadline/1", stopGraceSec: 15, boundary: "cgroup" }],
       wantsCapabilities,
     });
 
@@ -163,7 +163,7 @@ describe("handshake capabilities (run-deadline/1)", () => {
   it("names run-deadline/1 and its stop grace on opt-in", async () => {
     expect(await handshake(true)).toMatchObject({
       status: 200,
-      body: { capabilities: [{ name: "run-deadline/1", stopGraceSec: 15 }] },
+      body: { capabilities: [{ name: "run-deadline/1", stopGraceSec: 15, boundary: "cgroup" }] },
     });
   });
 });

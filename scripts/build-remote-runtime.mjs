@@ -37,6 +37,7 @@ const REQUIRED_RESOURCES = [
   "claudexor.bundle.cjs",
   "claudexord.bundle.cjs",
   "setup-login-runner.cjs",
+  "run-deadline-warden.cjs",
   "browser-mcp-runtime",
 ];
 

@@ -10283,6 +10283,7 @@ describe("DaemonControlApiServer", () => {
       ...(record.params as Record<string, unknown>),
       retryOf: "run-original",
       protectedPathApprovals: [{ path: "packages/**/*.test.ts", reason: "source-run only" }],
+      deadline: { at: "2026-01-01T00:00:00.000Z" },
     };
     writeFileSync(
       join(record.runDir as string, "arbitration", "decision.yaml"),
@@ -10317,6 +10318,7 @@ describe("DaemonControlApiServer", () => {
       expect(enqueued?.["parentRunId"]).toBe("run-d1");
       expect(enqueued).not.toHaveProperty("retryOf");
       expect(enqueued).not.toHaveProperty("protectedPathApprovals");
+      expect(enqueued).not.toHaveProperty("deadline");
     });
   });
 
@@ -12009,6 +12011,43 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("Run Again, Exact Retry and a decision rerun never replay a source run's absolute deadline", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      deadline: { at: "2026-01-01T00:00:00.000Z" },
+    };
+    const enqueued: Array<Record<string, unknown>> = [];
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params, options) {
+        enqueued.push(params as Record<string, unknown>);
+        return daemon.enqueue(params, options);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const draft = await apiFetch(`${base}/runs/run-d1/run-again`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(draft.status).toBe(200);
+      const body = (await draft.json()) as {
+        request: Record<string, unknown>;
+        differences: Array<{ field: string; reason: string }>;
+      };
+      expect(body.request).not.toHaveProperty("deadline");
+      expect(body.differences).toContainEqual(
+        expect.objectContaining({ field: "deadline", change: "omitted" }),
+      );
+      const retry = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "deadline-retry" },
+        body: "{}",
+      });
+      expect(retry.status).toBe(200);
+      expect(enqueued.at(-1)).not.toHaveProperty("deadline");
+    });
+  });
+
   it("refuses Exact Retry of retired access and makes Run Again require an active choice", async () => {
     const { daemon, record } = fakeDaemon();
     record.state = "succeeded";
@@ -13169,5 +13208,131 @@ describe("operation catalog route descriptors (V12)", () => {
     expect(list?.responseSchema).toBe("ControlProjectOutputsResponse");
     expect(list?.mutability).toBe("read_only");
     expect(byKey.has("GET /v2/projects/:id/outputs/<path>")).toBe(true);
+  });
+});
+
+describe("run-deadline/1 over the mounted HTTP routes", () => {
+  it("answers a fresh deadline receipt, a renewal, a stale revision and a replay after a daemon restart", async () => {
+    const { DaemonServer } = await import("../../daemon/src/server.js");
+    const { DaemonLocalClient } = await import("../../daemon/src/daemon-local-client.js");
+    const { DurableJournal } = await import(
+      "../../daemon/src/store/test-support/fixtures/legacy/journal/index.js"
+    );
+    const { CommandStore } = await import(
+      "../../daemon/src/store/test-support/fixtures/legacy/daemon/command-store.js"
+    );
+    const { legacyCommandFixture } = await import(
+      "../../daemon/src/store/test-support/legacy-command-fixture.js"
+    );
+    const dir = reapMk(join(tmpdir(), "cx-rdl-http-"));
+    const project = join(dir, "project");
+    mkdirSync(project);
+    const token = "deadline-token";
+    const generation = () => {
+      const journal = new DurableJournal({ rootDir: join(dir, "journal"), partition: "global" });
+      const store = new CommandStore(journal);
+      store.recoverAfterStartup();
+      const daemon = new DaemonServer({
+        socketPath: join(dir, "unused.sock"),
+        token,
+        commands: legacyCommandFixture({ current: () => store }),
+        runtimeConcurrencyCaps: {
+          max_concurrent: 1,
+          max_concurrent_non_model_jobs: 1,
+          max_concurrent_model_operations: 1,
+          max_parallel_candidates: 1,
+          max_deep_scan_width: 1,
+          max_council_members: 2,
+        },
+        runDeadlines: { dir: join(dir, "deadlines"), spawnWarden: async () => ({ pid: 1 }) },
+        // The slot holder waits for Stop; nothing else is admitted while it runs.
+        runner: (_params, ctx) =>
+          new Promise((resolve) =>
+            ctx.signal.addEventListener("abort", () => resolve({ lifecycle: "cancelled" }), {
+              once: true,
+            }),
+          ),
+      });
+      const client = new DaemonLocalClient(() => daemon);
+      const api = new DaemonControlApiServer({ token, daemon: client, pollMs: 5, runStartTimeoutMs: 50 });
+      return { journal, daemon, client, api };
+    };
+    const call = (base: string, path: string, init: RequestInit = {}) =>
+      apiFetch(`${base}${path}`, {
+        ...init,
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...init.headers },
+      });
+    const body = JSON.stringify({
+      prompt: "remote work",
+      mode: "agent",
+      scope: { kind: "project", root: project, ephemeral: true },
+      deadline: { at: new Date(Date.now() + 600_000).toISOString() },
+    });
+
+    const a = generation();
+    const { host, port } = await a.api.start();
+    const base = `http://${host}:${port}`;
+    let jobId: string;
+    let renewedAt: string;
+    try {
+      await a.client.enqueue({ label: "slot holder" }, { idempotencyKey: "holder", clientId: "t" });
+      const fresh = await call(base, "/v2/runs", {
+        method: "POST",
+        headers: { "Idempotency-Key": "deadline-start" },
+        body,
+      });
+      expect(fresh.status).toBe(202);
+      const receipt = (await fresh.json()) as { jobId: string; deadline: Record<string, unknown> };
+      expect(receipt.deadline).toMatchObject({ revision: 0, state: "armed", stopGraceSec: 15 });
+      jobId = receipt.jobId;
+      renewedAt = new Date(Date.now() + 1_200_000).toISOString();
+      const renewed = await call(base, `/v2/runs/${jobId}/deadline`, {
+        method: "PATCH",
+        body: JSON.stringify({ at: renewedAt, expectedRevision: 0 }),
+      });
+      expect(renewed.status).toBe(200);
+      expect(await renewed.json()).toMatchObject({ at: renewedAt, revision: 1, state: "armed" });
+      const stale = await call(base, `/v2/runs/${jobId}/deadline`, {
+        method: "PATCH",
+        body: JSON.stringify({ at: new Date(Date.now() + 1_800_000).toISOString(), expectedRevision: 0 }),
+      });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ code: "run_deadline_revision_conflict" });
+      const read = await call(base, `/v2/runs/${jobId}/deadline`);
+      expect(await read.json()).toMatchObject({ at: renewedAt, revision: 1 });
+    } finally {
+      await a.api.stop();
+      await a.daemon.stop();
+      a.journal.close();
+    }
+
+    // The start's answer was lost; the daemon restarted; the caller replays.
+    const b = generation();
+    const next = await b.api.start();
+    const nextBase = `http://${next.host}:${next.port}`;
+    try {
+      const replay = await call(nextBase, "/v2/runs", {
+        method: "POST",
+        headers: { "Idempotency-Key": "deadline-start" },
+        body,
+      });
+      // An accepted start the restart interrupted before it ran keeps the engine's
+      // terminal answer for an unbound job: the handle and its durable deadline.
+      expect(replay.status).toBe(500);
+      expect(await replay.json()).toMatchObject({
+        context: {
+          jobId: jobId!,
+          state: "interrupted",
+          deadline: { at: renewedAt!, revision: 1, state: "closed" },
+        },
+      });
+      const read = await call(nextBase, `/v2/runs/${jobId!}/deadline`);
+      expect(read.status).toBe(200);
+      expect(await read.json()).toMatchObject({ at: renewedAt!, revision: 1 });
+    } finally {
+      await b.api.stop();
+      await b.daemon.stop();
+      b.journal.close();
+    }
   });
 });

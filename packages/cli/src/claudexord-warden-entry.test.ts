@@ -26,13 +26,20 @@ describe("claudexord --run-deadline-warden", () => {
     writeFileSync(
       state,
       JSON.stringify({
-        version: 1,
+        version: 2,
         jobId: "job",
-        marker: null,
-        at: new Date().toISOString(),
-        monoTargetNs: "0",
+        clock: "monotonic",
+        bootId: null,
+        own: { at: new Date().toISOString(), targetNs: "9000000000000000000" },
         revision: 0,
-        closed: true,
+        parent: null,
+        inherited: null,
+        frozen: null,
+        markers: [],
+        cgroup: null,
+        runScopes: null,
+        // The run ended and owns no marker: the group is confirmed empty at once.
+        released: true,
       }),
     );
     let daemonStarts = 0;
