@@ -1120,7 +1120,8 @@
                 the agent's own CLI installed. The host process must find <code>node</code> and
                 <code>claudexor</code> on its PATH. Use the account you already connected, and sign
                 in only if this machine has none; switching accounts during a Codex sign-in can
-                revoke other sessions.
+                revoke other sessions. <code>claudexor doctor</code> may check other configured
+                providers besides the one you intend to use, consuming quota or incurring charges.
                 <a href="https://github.com/razzant/claudexor#set-up-the-cli-and-account"
                   >CLI and account setup</a
                 >
@@ -1172,15 +1173,18 @@
               >
                 <h4 class="host-name">Hermes</h4>
                 <div class="term">
-                  <i># Asks for the full SHA you inspected</i><br /><i>$</i> printf 'Inspected
+                  <i># Hermes 0.23.1+: reviewed full SHA</i><br /><i>$</i> printf 'Reviewed source
                   commit SHA: ' &amp;&amp;<br />IFS= read -r sha &amp;&amp;<br />hermes plugins
                   install \<br />razzant/claudexor/plugins/hermes \<br />--ref "${sha:?Full SHA
                   required}" --enable
                 </div>
                 <p>
-                  Confirm the pin with <code>hermes plugins list</code>, then start a new Hermes
-                  session in that profile and ask it to load <code>claudexor:claudexor</code>.
+                  Needs Hermes 0.23.1 or later. Use the SHA of a source commit whose manifest
+                  declares the Claudexor server <code>trust: untrusted</code>; older releases may
+                  not. Check that the plugin is enabled with <code>hermes plugins list</code> in the
+                  same profile.
                   <a href="https://github.com/razzant/claudexor#install-in-hermes">All steps</a>
+                  shows how to verify the full source commit and get your first answer.
                 </p>
               </div>
               <div class="pane" role="tabpanel" id="install-in-pi" aria-labelledby="tab-pi">
@@ -1296,8 +1300,9 @@
                 Connect one coding agent through Claudexor, choose a project and try an Ask
                 question. When a run ends, the CLI prints its run ID, and
                 <code>claudexor inspect</code> with that ID shows what it did. A subscription login
-                counts against that plan; an API key is a paid fallback. Git and the selected coding
-                agent are checked during setup.
+                counts against that plan; an API key is a paid fallback. Setup checks Git and coding
+                agents. On a cold cache, <code>claudexor doctor</code> can contact other configured
+                providers and incur charges even when you select a subscription for Ask.
               </p>
             </div>
             <div class="term">

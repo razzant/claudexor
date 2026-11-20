@@ -2121,8 +2121,11 @@ host owns the conversation and tool permissions. The local engine selects a
 harness and retains the run and its result. [Set up the CLI and account](../README.md#set-up-the-cli-and-account).
 
 - **Hermes** reads `plugin.json`, `mcp.json`, and the `claudexor:claudexor`
-  skill from `plugins/hermes`. Its Git installer pins the plugin by full commit
-  SHA in the selected profile. [Install in Hermes](../README.md#install-in-hermes) · [Hermes plugin management](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins).
+  skill from `plugins/hermes`. [Install from a reviewed Git commit](../README.md#install-in-hermes)
+  by full SHA in the selected profile on Hermes 0.23.1 or later, the oldest
+  release tested; no catalog is required. Install by name
+  only if the reviewed entry appears in your Hermes catalog.
+  [Hermes plugin management](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins).
 - **Pi** can install the `claudexor` npm package when its published manifest lists
   the extension at `./pi/index.js`, or load `packages/claudexor` from a Git checkout
   containing it. The extension registers the server through `pi.registerMcpServer`
@@ -2141,6 +2144,33 @@ pass its `harness_id` as `harness` and its `profile_id` as `credentialProfileId`
 on the first `claudexor_ask`. Use the values from its `claudexor_accounts` row.
 For Auto, omit the profile pin and pass a harness only if the user chose one.
 [First request and result](../README.md#first-delegation-from-any-host) · [Validation status](FEATURES.md).
+
+#### Hermes tool approval and access
+
+Hermes starts `claudexor mcp serve` locally. That process can start the local
+Claudexor daemon, which starts the configured coding harness for a delegated run.
+The prompt behavior comes from the selected Hermes version, not from Claudexor.
+The Hermes manifest declares the server `untrusted`; Hermes' documentation says
+calls that can write then ask first, tools annotated read-only do not, and a call
+that needs approval where no user can answer (a scheduled job or single query) is
+refused. A remembered answer applies to a tool, not to one set of arguments, and
+an "always" answer stays in the profile's configuration. Prefer a one-time
+approval for sensitive actions and reserve a Hermes profile for Claudexor. Agent
+work can run commands within what that profile allows.
+
+Approval is not a budget. Ask and Plan can send the delegated prompt and selected
+files to the configured provider and spend money or subscription quota, whether
+or not a write prompt appears. `claudexor_status`, `claudexor_accounts`,
+`claudexor_capabilities` and `claudexor doctor` can contact providers on a cold
+cache, even without a fresh or refresh option, and may incur charges or use
+subscription quota. Reading a stored run's status or result does not start
+another model request.
+
+Direct or in-place work can write immediately once its call is approved.
+Approving an invocation is not approval to deliver an isolated change, and the
+MCP prompt does not govern the separate CLI delivery. The intended operator or
+skill behavior is that a person inspects the complete diff and consents
+explicitly first; Hermes does not enforce that, and the CLI does not prove it.
 
 #### Custom Claudexor configuration directory
 
@@ -2170,12 +2200,31 @@ The mapping is valid in JSON and YAML.
 }
 ```
 
+For Hermes, also keep `trust: untrusted`: a complete same-named entry replaces
+the plugin's entry and must not silently discard the fresh-install approval
+default:
+
+```json
+{
+  "command": "claudexor",
+  "args": ["mcp", "serve"],
+  "trust": "untrusted",
+  "env": { "CLAUDEXOR_CONFIG_DIR": "/absolute/path/to/your/existing/store" }
+}
+```
+
 Before delegating, compare the host's `claudexor_status` with `claudexor doctor`
 in the intended CLI configuration. For a named account, check the profile in
 `claudexor_accounts`. With the daemon running, compare the `storeId` from
 `claudexor store-identity --json` with the host's `claudexor_store_identity`.
 If they differ or the expected profile is missing, correct the connection
-and check again.
+and check again. The shipped skill asks for this comparison before a first
+delegation and may also read `claudexor_accounts` and `claudexor_capabilities`.
+Even without a fresh or refresh option, a cold or missing cached observation can
+make these reads and doctor contact other configured harness providers, not only
+the one chosen for Ask. That can use subscription quota or cost money, and
+skipping the manual check does not guarantee that no probes run. Reading an
+existing run's status or result is separate and does not start another.
 
 ## ACP
 

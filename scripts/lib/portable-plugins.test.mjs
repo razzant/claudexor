@@ -38,6 +38,11 @@ test("portable packages share the existing preinstalled CLI bridge and exact Ski
   expect(read(join(repo, "plugins/hermes/plugin.json"))).toMatchObject({
     $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
     name: "claudexor",
+    extensions: {
+      "com.nousresearch.hermes": {
+        servers: { claudexor: { trust: "untrusted" } },
+      },
+    },
   });
   for (const plugin of PORTABLE_PLUGINS) {
     const stdio = { command: "claudexor", args: ["mcp", "serve"] };
