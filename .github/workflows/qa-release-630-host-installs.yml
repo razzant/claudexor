@@ -1,0 +1,218 @@
+name: qa Hermes 0.23.1 native approvals
+
+# QA only: rerun the three Hermes policy fixtures, not the published installers.
+# Those installers were verified separately in 44762846767/1. This workflow
+# never merges or publishes a product and needs no accounts or model calls.
+on:
+  push:
+    branches: [qa/release-630-host-installs-3764b405-04]
+
+permissions: {}
+
+concurrency:
+  group: qa-release-630-host-installs
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CLAUDEXOR_VERSION: "6.3.0"
+  CLAUDEXOR_SHA: "0ff3df717c2e807fdbd3a233487e35d81993fdea" # razzant/claudexor v6.3.0
+  PI_VERSION: "1.5.2"
+  HERMES_SHA: "3b421578588243f920886e6fe79a6faa87ea026e" # NousResearch/hermes-agent v0.23.1
+  OPENCLAW_VERSION: "2026.11.5"
+
+jobs:
+  hermes-trust-probe:
+    name: Candidate Hermes plugin, ${{ matrix.mode }} profile, validate and native approval probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [stock, unattended, custom]
+    steps:
+      - name: Candidate commit and the two QA files from public Git
+        id: candidate
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          # No checkout action and no token: public, unauthenticated Git reads only.
+          # One stack per disposable ref: the run judges exactly the pushed event commit, never a branch tip.
+          repo="https://github.com/razzant/claudexor.git"
+          branch="qa/release-630-host-installs-3764b405-04"
+          wf=".github/workflows/qa-release-630-host-installs.yml"
+          probe=".github/qa/hermes-trust-probe.py"
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REPOSITORY" = razzant/claudexor
+          test "$GITHUB_REF" = "refs/heads/$branch"
+          test "$GITHUB_WORKFLOW_REF" = "razzant/claudexor/$wf@refs/heads/$branch"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git init --quiet --bare "$RUNNER_TEMP/candidate.git"
+          cg=(git -C "$RUNNER_TEMP/candidate.git")
+          "${cg[@]}" fetch --quiet --depth=2 "$repo" "$GITHUB_SHA"
+          test "$("${cg[@]}" rev-parse --verify "$GITHUB_SHA^{commit}")" = "$GITHUB_SHA"
+          # Exactly one parent, counted as array length. No ancestor walking.
+          read -r -a commit_line <<< "$("${cg[@]}" rev-list --parents -n 1 "$GITHUB_SHA")"
+          test "${#commit_line[@]}" -eq 2
+          product="${commit_line[1]}"
+          [[ "$product" =~ ^[0-9a-f]{40}$ ]]
+          # The event commit's parent must be exactly the reviewed product commit.
+          test "$product" = "6bc0ed57c0012bd6a636ab46865389df3269be9d"
+          test "$product" != "$GITHUB_SHA"
+          # The event commit adds only the two QA files (an A for each also proves the parent has neither).
+          test "$("${cg[@]}" diff --name-status --no-renames "$product" "$GITHUB_SHA")" = "$(printf 'A\t%s\nA\t%s' "$probe" "$wf")"
+          test "$("${cg[@]}" ls-tree "$GITHUB_SHA" -- "$probe" "$wf" | cut -d' ' -f1 | sort -u)" = 100644
+          echo "product commit (HEAD^): $product"
+          # The documented floor must be in the product docs, and the manifest must declare the gate.
+          for f in README.md docs/INTEGRATIONS.md plugins/hermes/README.md; do
+            "${cg[@]}" cat-file blob "$product:$f" | grep -F "0.23.1" >/dev/null ||
+              { echo "$f at $product does not name the Hermes 0.23.1 floor"; exit 1; }
+          done
+          "${cg[@]}" cat-file blob "$product:plugins/hermes/plugin.json" |
+            jq -e '.extensions["com.nousresearch.hermes"].servers.claudexor.trust == "untrusted"'
+          # Only the probe (and the product docs it parses) are taken from Git; nothing from the product commit is executed.
+          mkdir "$RUNNER_TEMP/qa" "$RUNNER_TEMP/home-trust"
+          "${cg[@]}" cat-file blob "$GITHUB_SHA:$probe" > "$RUNNER_TEMP/qa/probe.py"
+          "${cg[@]}" cat-file blob "$product:docs/INTEGRATIONS.md" > "$RUNNER_TEMP/qa/INTEGRATIONS.md"
+          if env | grep -E '^(HERMES_|CLAUDEXOR_)' | grep -vE '^(HERMES_SHA|CLAUDEXOR_VERSION|CLAUDEXOR_SHA)=' >/dev/null; then
+            echo "unexpected HERMES_/CLAUDEXOR_ variables in the job environment"; exit 1
+          fi
+          test -z "$(command -v claudexor || true)"
+          echo "product=$product" >> "$GITHUB_OUTPUT"
+          echo "HOME=$RUNNER_TEMP/home-trust" >> "$GITHUB_ENV"
+
+      - name: Hermes 0.23.1 installs the candidate plugin pinned to HEAD^
+        id: hermes
+        timeout-minutes: 30
+        env:
+          PRODUCT: ${{ steps.candidate.outputs.product }}
+        run: |
+          set -euo pipefail
+          src="$HOME/.hermes/hermes-agent"
+          plugin="$HOME/.hermes/plugins/claudexor"
+          meta="$HOME/.hermes/plugins/.install-metadata.json"
+          report="$RUNNER_TEMP/hermes-validate.json"
+          cg=(git -C "$RUNNER_TEMP/candidate.git")
+          files=(LICENSE README.md mcp.json plugin.json skills/claudexor/SKILL.md)
+          on_pin() { test "$(git -C "$src" rev-parse HEAD)" = "$HERMES_SHA"; }
+          test "$(git ls-remote https://github.com/NousResearch/hermes-agent.git \
+            refs/tags/v0.23.1 'refs/tags/v0.23.1^{}' | tail -n 1 | cut -f 1)" = "$HERMES_SHA"
+          curl -fsSL -o "$RUNNER_TEMP/hermes-install.sh" \
+            "https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_SHA/scripts/install.sh"
+          bash "$RUNNER_TEMP/hermes-install.sh" --commit "$HERMES_SHA" \
+            --non-interactive --skip-browser --skip-computer-use
+          export PATH="$HOME/.local/bin:$src/.hermes/bin:$PATH"
+          on_pin
+          hermes --version 2>&1 | tee "$RUNNER_TEMP/hermes-version.txt" | grep -F "0.23.1"
+          # The documented command, with the reviewed product commit as the pin and no --force.
+          hermes plugins install razzant/claudexor/plugins/hermes --ref "$PRODUCT" --enable
+          hermes plugins list --json | jq -e --arg pin "git pinned@${PRODUCT:0:8}" \
+            'map(select(.name == "claudexor")) | length == 1 and .[0].status == "enabled" and .[0].source == $pin'
+          jq -e --arg sha "$PRODUCT" '.claudexor | .pinned == true and .revision == $sha
+            and (.source | test("^https://github\\.com/razzant/claudexor(\\.git)?#plugins/hermes$"))' "$meta"
+          # Five installed files, each with the bytes of its blob at HEAD^, and no others.
+          test "$("${cg[@]}" ls-tree -r --name-only "$PRODUCT:plugins/hermes" | sort)" = "$(printf '%s\n' "${files[@]}" | sort)"
+          test "$(find "$plugin" -type f -not -path "$plugin/.git/*" | sed "s|^$plugin/||" | sort)" = "$(printf '%s\n' "${files[@]}" | sort)"
+          for f in "${files[@]}"; do
+            test "$(git hash-object --no-filters "$plugin/$f")" = "$("${cg[@]}" rev-parse "$PRODUCT:plugins/hermes/$f")" ||
+              { echo "$plugin/$f differs from $PRODUCT:plugins/hermes/$f"; exit 1; }
+          done
+
+      - name: Plain plugins validate, its own step so the probe is still tried after a validator problem
+        id: validate
+        if: ${{ !cancelled() && steps.hermes.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          src="$HOME/.hermes/hermes-agent"
+          plugin="$HOME/.hermes/plugins/claudexor"
+          report="$RUNNER_TEMP/hermes-validate.json"
+          export PATH="$HOME/.local/bin:$src/.hermes/bin:$PATH"
+          # Plain validation: the text form and the JSON form must exit alike, and the JSON must be a real passing report.
+          plain=0
+          hermes plugins validate "$plugin" 2>&1 | tee "$RUNNER_TEMP/validate-plain.txt" || plain=$?
+          status=0
+          hermes plugins validate "$plugin" --json | tee "$report" || status=$?
+          test "$plain" = "$status"
+          jq -e '(.ok == true) and (.warnings | type == "array") and (.checks | type == "array")
+            and (.checks | length > 0) and (.checks | all(.[]; .ok == true))
+            and ([.checks[].name] | contains(["portable manifest", "manifest fields", "config schema",
+                  "security scan", "server trust: claudexor"]))
+            and ([.checks[] | select(.name == "server trust: claudexor")][0].detail
+                 == "untrusted (Hermes asks before every write-capable tool call)")' "$report"
+          warnings="$(jq '.warnings | length' "$report")"
+          echo "warnings=$warnings" >> "$GITHUB_OUTPUT"
+          if [ "$warnings" -gt 0 ]; then
+            { echo "### Hermes validator diagnostics (candidate claudexor)";
+              jq -r '.warnings[] | "- " + .' "$report"; } | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          lost="$(jq -r '[.warnings[] | select(startswith("mcp") or startswith("skill") or startswith("server")
+            or test("trust|newer Hermes"))] | join("; ")' "$report")"
+          test -z "$lost" || { echo "Component or trust diagnostics: $lost"; exit 1; }
+          test "$status" = 0
+          test "$(git -C "$src" rev-parse HEAD)" = "$HERMES_SHA"
+
+      - name: Hermes launcher interpreter with its committed dependencies
+        id: interpreter
+        if: ${{ !cancelled() && steps.hermes.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          src="$HOME/.hermes/hermes-agent"
+          launcher="$src/.hermes/bin/hermes"
+          rt="$RUNNER_TEMP/hermes-runtime-command.json"
+          test -x "$launcher"
+          # The published launcher's own machine boundary: the exact runtime command, one JSON array.
+          "$launcher" --print-runtime-command | tee "$rt"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' "$rt"
+          boot="$(jq -er '.[0]' "$rt")"
+          test -x "$boot"
+          # The launcher uses this interpreter and explicitly activates its selected dependencies.
+          "$boot" -I -c 'import pathlib, sys; src = pathlib.Path(sys.argv[1]).resolve(); sys.path.insert(0, str(src)); from pm.environments import activate_dependencies; activate_dependencies(src); import ruamel.yaml, mcp, tools.registry, tools.mcp_tool_discovery' "$src"
+          echo "launcher runtime: $boot"
+          echo "QA_PY=$boot" >> "$GITHUB_ENV"
+
+      - name: Probe, ${{ matrix.mode }} profile
+        id: probe
+        if: ${{ !cancelled() && steps.hermes.outcome == 'success' && steps.interpreter.outcome == 'success' }}
+        timeout-minutes: 5
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ "$MODE" = custom ]; then
+            extra=(--readme "$HOME/.hermes/plugins/claudexor/README.md" --integrations "$RUNNER_TEMP/qa/INTEGRATIONS.md")
+          fi
+          env -u CLAUDEXOR_VERSION -u CLAUDEXOR_SHA -u PI_VERSION -u OPENCLAW_VERSION -u HERMES_SHA \
+            "$QA_PY" -I "$RUNNER_TEMP/qa/probe.py" "$MODE" \
+            --hermes-src "$HOME/.hermes/hermes-agent" --hermes-sha "$HERMES_SHA" "${extra[@]}" </dev/null |
+            tee "$RUNNER_TEMP/probe.txt"
+          grep '^RESULT' "$RUNNER_TEMP/probe.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Verdict, candidate Hermes plugin
+        if: ${{ always() }}
+        env:
+          MODE: ${{ matrix.mode }}
+          CANDIDATE: ${{ steps.candidate.outcome }}
+          HERMES: ${{ steps.hermes.outcome }}
+          VALIDATE: ${{ steps.validate.outcome }}
+          VALIDATE_WARNINGS: ${{ steps.validate.outputs.warnings }}
+          INTERPRETER: ${{ steps.interpreter.outcome }}
+          PROBE: ${{ steps.probe.outcome }}
+          PRODUCT: ${{ steps.candidate.outputs.product }}
+        run: |
+          set -euo pipefail
+          v() { case "$1" in success) echo "verified" ;; failure) echo "FAILED" ;; *) echo "NOT RUN (${1:-no result})" ;; esac; }
+          {
+            echo "| Candidate ${PRODUCT:-unknown} (HEAD^), $MODE profile, Hermes 0.23.1 | Result |"
+            echo "| --- | --- |"
+            echo "| Event commit = the two QA files on one parent | $(v "$CANDIDATE") |"
+            echo "| Exact install at HEAD^, pin, five source bytes | $(v "$HERMES") |"
+            echo "| Plain plugins validate | $(v "$VALIDATE")${VALIDATE_WARNINGS:+, validator warnings: $VALIDATE_WARNINGS} |"
+            echo "| Hermes launcher interpreter and committed dependencies | $(v "$INTERPRETER") |"
+            echo "| Probe ($MODE): read reaches the stdio stub, write-labelled no-op is refused before it | $(v "$PROBE") |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
