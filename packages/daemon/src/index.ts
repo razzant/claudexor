@@ -1,6 +1,13 @@
 export * from "./token.js";
 export * from "./server.js";
 export * from "./run-time-limit.js";
+export {
+  RunDeadlines,
+  systemDeadlineClock,
+  type RunDeadlineClock,
+  type RunDeadlinesOptions,
+} from "./run-deadlines.js";
+export { RUN_DEADLINE_STOP_GRACE_SEC } from "./run-deadline-warden.js";
 export * from "./delegation-admission.js";
 export * from "./writer-lease.js";
 export * from "./root-authority.js";

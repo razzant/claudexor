@@ -1,6 +1,8 @@
 import { rpcProblem, storageOnlyFailure } from "./rpc-problem.js";
 import { RunTimeLimits } from "./run-time-limits.js";
 import type { RunTimeLimit } from "./run-time-limit.js";
+import { RunDeadlines, deadlineProblem, type RunDeadlinesOptions } from "./run-deadlines.js";
+import { findAcceptedCommand } from "./command-rpc.js";
 import { type Server, type Socket, createServer } from "node:net";
 
 import {
@@ -56,6 +58,12 @@ export interface RunContext {
   signal: AbortSignal;
   stopSender?: () => DaemonStopSender | undefined;
   registerTimeLimit?: (timer: RunTimeLimit) => void;
+  /**
+   * run-deadline/1: hand the run's scope marker over BEFORE its first launch.
+   * A no-op for a run without a deadline; it throws when the warden that
+   * enforces the deadline cannot be started (the run must not launch then).
+   */
+  deadlineScope?: { attach(marker: string, scopeStartAt: string): Promise<void> };
   onRunStart: (info: { runId: string; taskId: string; runDir: string }) => void;
 }
 
@@ -89,6 +97,8 @@ export interface DaemonOptions extends RuntimeReplacementAuthority {
   onTurnEnqueueFailed?: (turnId: string, problem: TurnEnqueueProblemValue) => void;
   onShutdownRequested?: (sender: DaemonStopSender) => Promise<void>;
   onRuntimeReplacementRequested?: () => Promise<void>;
+  /** run-deadline/1 options (warden directory, clocks); absent: in-process timers only. */
+  runDeadlines?: Omit<RunDeadlinesOptions, "onExpire">;
   /** Issue #165 D5 admission snapshot; absent embedders always serve normal. */
   servingMode?: DaemonServingModeSnapshot;
   /** Test-only barriers around command authority acquisition. */
@@ -107,6 +117,7 @@ export class DaemonServer {
   private readonly cancelled = new Set<string>();
   private readonly controllers = new Map<string, JobAbortController>();
   private readonly timeLimits = new RunTimeLimits();
+  readonly deadlines: RunDeadlines;
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly taskFailures: unknown[] = [];
   private readonly commands: CommandBackend;
@@ -125,6 +136,10 @@ export class DaemonServer {
 
   constructor(private readonly opts: DaemonOptions) {
     this.concurrency = daemonConcurrencyCaps(opts);
+    this.deadlines = new RunDeadlines({
+      ...opts.runDeadlines,
+      onExpire: (id) => this.expireJob(id),
+    });
     this.commands = opts.commands;
     this.deferred = new DeferredMessages({
       commands: this.commands,
@@ -242,6 +257,7 @@ export class DaemonServer {
       }
     });
 
+    this.deadlines.dispose();
     // Existing local RPC sockets can otherwise keep server.close() pending
     // forever. They are destroyed only after every accepted command settled.
     this.followers.destroyAll();
@@ -317,11 +333,18 @@ export class DaemonServer {
     if (servingMode !== "normal") throw recoveryOnlyRefusal(method);
     switch (method) {
       case "claudexor.enqueue":
+        // A deadline already past refuses before acceptance (an exact replay of
+        // an accepted start still returns its handle).
+        if (!findAcceptedCommand(this.commands, params))
+          this.deadlines.assertStartable(params?.request);
         return enqueueStaged(params, {
           commands: this.commands,
           stopping: () => this.stopping,
           delegation: this.opts.delegationAuthority,
-          publish: (record) => this.publishQueued(record),
+          publish: (record) => {
+            this.admitDeadline(record);
+            this.publishQueued(record);
+          },
         });
       case "claudexor.deferredMessage":
         return this.deferred.mutate(params);
@@ -346,6 +369,8 @@ export class DaemonServer {
       }
       case "claudexor.runTimeLimit":
         return this.timeLimits.dispatch(params, (id) => this.getRecord(id));
+      case "claudexor.runDeadline":
+        return this.runDeadline(params);
       case "claudexor.delegationFence": {
         const runId = String(params?.runId ?? "");
         const rec = this.commands.queries.getByRunId(runId);
@@ -407,6 +432,60 @@ export class DaemonServer {
     return { id: jid, cancelled: true, deferredMessageStop: this.deferred.stop(rec.id) };
   }
 
+  /** Register an accepted job's deadline (own, or inherited from a Delegate parent). */
+  private admitDeadline(record: JobRecord): void {
+    const parentRunId = delegatedParentOf(record.params);
+    const parentJobId = parentRunId
+      ? (this.commands.queries.getByRunId(parentRunId)?.id ?? null)
+      : null;
+    this.deadlines.admit(record.id, record.params, parentJobId);
+  }
+
+  /** The effective deadline passed: a queued job never starts; a running one is cancelled. */
+  private expireJob(id: string): void {
+    const rec = this.getRecord(id);
+    if (!rec || isTerminalLifecycle(rec.state)) return;
+    if (rec.state === "queued") {
+      this.cancelled.add(id);
+      const index = this.queue.findIndex((job) => job.id === id);
+      if (index !== -1) this.queue.splice(index, 1);
+      this.updateRecord(rec, {
+        state: "cancelled",
+        finishedAt: nowIso(),
+        error: "run deadline passed before the run started",
+        errorCode: "run_deadline_expired",
+        errorRetryable: false,
+      });
+      const delegatedFrom = delegatedParentOf(rec.params);
+      if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, rec.id);
+      return;
+    }
+    // Preparing or running: the ordinary hard wall-clock cancel path.
+    this.controllers.get(id)?.abort("wall_clock_exceeded");
+  }
+
+  /** `claudexor.runDeadline`: read or set one job's run-deadline/1 deadline. */
+  private runDeadline(params: any): unknown {
+    const id = typeof params?.id === "string" ? params.id : "";
+    const request = params?.request as { action?: unknown } | undefined;
+    const rec = id ? this.getRecord(id) : undefined;
+    if (!rec) throw deadlineProblem("No such run", "run_not_found", 404);
+    if (request?.action === "read") {
+      const snapshot = this.deadlines.snapshot(rec.id) ?? this.deadlines.durableSnapshot(rec.id);
+      if (!snapshot) throw deadlineProblem("Run has no deadline", "run_deadline_absent", 404);
+      return snapshot;
+    }
+    if (request?.action !== "set")
+      throw deadlineProblem("Expected a read or set request", "run_deadline_invalid", 400);
+    const { action: _action, ...body } = request as Record<string, unknown>;
+    if (!this.deadlines.has(rec.id) && !isTerminalLifecycle(rec.state))
+      throw deadlineProblem("Run has no deadline", "run_deadline_absent", 404);
+    return this.deadlines.set(rec.id, body, {
+      live: !isTerminalLifecycle(rec.state),
+      delegated: delegatedParentOf(rec.params) !== null,
+    });
+  }
+
   private stoppingError(message: string): Error & { code: string; status: number } {
     return Object.assign(new Error(message), { code: "daemon_stopping", status: 503 });
   }
@@ -429,7 +508,10 @@ export class DaemonServer {
       this.opts.idempotencyRetentionMs ?? 30 * 24 * 60 * 60 * 1_000,
       (this.opts.now ?? (() => new Date()))().getTime(),
     );
-    for (const id of removed) this.cancelled.delete(id);
+    for (const id of removed) {
+      this.cancelled.delete(id);
+      this.deadlines.forget(id);
+    }
   }
 
   private getRecord(id: string): JobRecord | undefined {
@@ -440,6 +522,7 @@ export class DaemonServer {
     const store = commandStoreForId(this.commands, record.id);
     if (!store) throw new Error(`command authority lost job ${record.id}`);
     const next = store.update(record.id, patch);
+    if (isTerminalLifecycle(next.state)) this.deadlines.close(record.id);
     if (isTerminalLifecycle(next.state) && !isTerminalLifecycle(record.state)) {
       this.opts.onCommandTerminal?.(next);
     }
@@ -492,6 +575,9 @@ export class DaemonServer {
         stopSender: () => controller.stopSender,
         registerTimeLimit: (timer) =>
           this.timeLimits.register(id, timer, () => !controller.signal.aborted),
+        deadlineScope: {
+          attach: (marker, scopeStartAt) => this.deadlines.attachScope(id, marker, scopeStartAt),
+        },
         onRunStart: (info) => {
           rec = this.updateRecord(rec, info);
         },

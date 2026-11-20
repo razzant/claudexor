@@ -1,6 +1,7 @@
 import { z } from "zod/v3";
 import { Id } from "./primitives.js";
 import { TaskGroupReceipt } from "./task-group.js";
+import { RunDeadlineSnapshot } from "./run-deadline.js";
 
 export function makeControlRunRetrySchemas<T extends z.ZodTypeAny>(runRequest: T) {
   const startInfo = z
@@ -10,6 +11,9 @@ export function makeControlRunRetrySchemas<T extends z.ZodTypeAny>(runRequest: T
       runId: z.string().describe("Run id."),
       taskId: z.string().optional().describe("Task id, when already allocated."),
       runDir: z.string().describe("On-disk run artifact directory."),
+      deadline: RunDeadlineSnapshot.optional().describe(
+        "The accepted run-deadline/1 deadline; present only when the request set one.",
+      ),
     })
     .describe("Response for a successfully enqueued run.");
   const response = z
@@ -54,6 +58,9 @@ export function makeControlRunRetrySchemas<T extends z.ZodTypeAny>(runRequest: T
         jobId: z.string().describe("Daemon job id."),
         state,
         error: z.string().optional().describe("Error message, when the job failed."),
+        deadline: RunDeadlineSnapshot.optional().describe(
+          "The accepted run-deadline/1 deadline; present only when the request set one.",
+        ),
       })
       .describe("Compact state of a queued/running daemon job.");
   return { startInfo, response, draft, queuedInfo };

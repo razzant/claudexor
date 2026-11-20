@@ -1,5 +1,6 @@
 import { z } from "zod/v3";
 import { RunTimeLimitStart } from "./run-time-limit.js";
+import { RunDeadlineStart } from "./run-deadline.js";
 import { CANCEL_REASON_CODES } from "./cancel-reason.js";
 import {
   AccessProfile,
@@ -320,6 +321,9 @@ export const ControlRunStartRequest = z
     /** Optional whole-run clock: explicit limits remain hard by default;
      * soft limits warn without cancelling. Separate from attempt inactivity. */
     ...RunTimeLimitStart.shape,
+    /** run-deadline/1: absolute server-clock deadline enforced by the engine
+     * from acceptance, also while the daemon is down. Additive to maxSeconds. */
+    deadline: RunDeadlineStart.optional(),
     /** Per-run globs no candidate may touch at all (create/modify/delete).
      * Envelope/isolated runs only: enforced by the engine's authoritative
      * post-diff policy gate (violation → blocking finding → blocked, patch

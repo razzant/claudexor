@@ -5,6 +5,8 @@ import type {
   CommandListQuery,
   RunTimeLimitRequest,
   RunTimeLimitSnapshot,
+  RunDeadlineSetRequest,
+  RunDeadlineSnapshot,
   DeferredMessageCall,
   DeferredMessageReceipt,
   DeferredMessageDetail,
@@ -147,6 +149,13 @@ export abstract class DaemonRpcMethods {
   }
   runTimeLimit(id: string, request: RunTimeLimitRequest) {
     return this.call<RunTimeLimitSnapshot>("claudexor.runTimeLimit", { id, request });
+  }
+  /** run-deadline/1: read, or set with the expected revision. */
+  runDeadline(
+    id: string,
+    request: { action: "read" } | ({ action: "set" } & RunDeadlineSetRequest),
+  ) {
+    return this.call<RunDeadlineSnapshot>("claudexor.runDeadline", { id, request });
   }
   fenceDelegationParent(runId: string) {
     return this.call<{ runId: string; fenced: boolean }>("claudexor.delegationFence", { runId });
