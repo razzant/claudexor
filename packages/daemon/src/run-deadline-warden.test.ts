@@ -161,16 +161,28 @@ describe("runWarden", () => {
 
   it("after a normal end leaves at once when the group is confirmed empty, without signalling", async () => {
     const path = join(temp(), "job.json");
-    writeJsonAtomic(path, state({ own: point(3_600_000_000_000n), released: true }));
+    writeJsonAtomic(
+      path,
+      state({ own: point(3_600_000_000_000n), released: true, cgroup: "/sys/fs/cgroup/x/run" }),
+    );
     const reaps: ScopeReapOptions[] = [];
+    const removed: string[] = [];
     const result = await runWarden(path, {
       ...clockDeps(),
       reap: async (opts) => {
         reaps.push(opts);
         return outcome();
       },
+      cgroup: {
+        kill: async () => {
+          throw new Error("a released, empty group is never killed");
+        },
+        members: async () => [],
+        remove: async (dir) => void removed.push(dir),
+      },
     });
     expect(result).toBe("released");
+    expect(removed).toEqual(["/sys/fs/cgroup/x/run"]);
     expect(reaps).toHaveLength(1);
     expect(reaps[0]!.signal).toBeTypeOf("function"); // the probe never signals
   });

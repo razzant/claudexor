@@ -20,7 +20,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rmdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CGROUP_ENTRY_FAILED_EXIT, enterScopeCgroup, registerScopeCgroup } from "@claudexor/core";
 import { unregisterScopeCgroup } from "@claudexor/core";
@@ -117,6 +117,10 @@ export async function probeCgroupBoundary(
       child.kill("SIGKILL");
       return { kind: "marker", reason: "cgroup.kill did not end the probe child" };
     }
+    // Run cgroups an earlier daemon left behind: an empty one is removed, a
+    // populated one (its warden is still at work) refuses rmdir and stays.
+    for (const entry of await readdir(runsDir).catch(() => [] as string[]))
+      if (!entry.startsWith("probe-")) await rmdir(join(runsDir, entry)).catch(() => {});
     return { kind: "cgroup", runsDir };
   } catch (error) {
     return { kind: "marker", reason: `delegated cgroup unavailable: ${(error as Error).message}` };

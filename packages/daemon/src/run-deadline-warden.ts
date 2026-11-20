@@ -412,7 +412,10 @@ export async function runWarden(
       if (target !== null && clockNow >= target + headStartNs) break;
       if (last.released && clockNow >= releasedProbeAt) {
         const probe = await pass(last, true);
-        if (probe.confirmed) return finish("released", probe);
+        if (probe.confirmed) {
+          if (last.cgroup) await cgroups.remove(last.cgroup);
+          return finish("released", probe);
+        }
         releasedProbeAt = now(last.clock) + BigInt(releasedBackoffMs) * 1_000_000n;
         releasedBackoffMs = Math.min(releasedBackoffMs * 2, 30_000);
       }
