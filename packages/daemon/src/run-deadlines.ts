@@ -58,7 +58,9 @@ export interface RunDeadlineClock {
   bootId(): string | null;
 }
 
-export function systemDeadlineClock(platform: NodeJS.Platform = process.platform): RunDeadlineClock {
+export function systemDeadlineClock(
+  platform: NodeJS.Platform = process.platform,
+): RunDeadlineClock {
   const clock = hostClock(platform);
   return { wallNow: () => Date.now(), hostNow: clock.now, kind: clock.kind, bootId: clock.bootId };
 }
@@ -155,7 +157,11 @@ export class RunDeadlines {
   capabilities(): ControlCapability[] {
     if (this.platform !== "linux" || !this.opts.dir || !this.boundary) return [];
     return [
-      { name: RUN_DEADLINE_CAPABILITY, stopGraceSec: this.stopGraceSec, boundary: this.boundary.kind },
+      {
+        name: RUN_DEADLINE_CAPABILITY,
+        stopGraceSec: this.stopGraceSec,
+        boundary: this.boundary.kind,
+      },
     ];
   }
 
@@ -298,14 +304,17 @@ export class RunDeadlines {
       const target = sameBoot ? effectiveTarget(state, this.opts.dir!) : null;
       const reached =
         readWardenOutcome(this.statePath(jobId)) !== null ||
-        (target !== null ? this.clock.hostNow() >= target : Date.parse(point.at) <= this.clock.wallNow());
+        (target !== null
+          ? this.clock.hostNow() >= target
+          : Date.parse(point.at) <= this.clock.wallNow());
       return {
         at: point.at,
         revision: state.revision,
         serverNow,
         state: accepted.expired || (reached && !state.released) ? "expired" : "closed",
         stopGraceSec: this.stopGraceSec,
-        inheritedFrom: state.frozen?.inheritedFrom ?? (state.own ? null : (state.inherited?.from ?? null)),
+        inheritedFrom:
+          state.frozen?.inheritedFrom ?? (state.own ? null : (state.inherited?.from ?? null)),
       };
     }
     const requested = requestedDeadline(accepted.params);
@@ -417,7 +426,8 @@ export class RunDeadlines {
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = undefined;
     for (const marker of entry.markers) unregisterScopeCgroup(marker);
-    if (entry.durable) void this.serialized(entry, () => this.writeState(entry, { released: true })).catch(() => {});
+    if (entry.durable)
+      void this.serialized(entry, () => this.writeState(entry, { released: true })).catch(() => {});
   }
 
   /**
@@ -433,7 +443,8 @@ export class RunDeadlines {
     this.entries.delete(jobId);
     if (!this.opts.dir) return;
     const path = this.statePath(jobId);
-    if (!existsSync(wardenReadyPath(path)) || existsSync(wardenDonePath(path))) removeWardenFiles(path);
+    if (!existsSync(wardenReadyPath(path)) || existsSync(wardenDonePath(path)))
+      removeWardenFiles(path);
   }
 
   /**
@@ -445,7 +456,9 @@ export class RunDeadlines {
     if (!this.opts.dir) return;
     let names: string[];
     try {
-      names = readdirSync(this.opts.dir).filter((name) => name.endsWith(".json") && !name.includes(".json."));
+      names = readdirSync(this.opts.dir).filter(
+        (name) => name.endsWith(".json") && !name.includes(".json."),
+      );
     } catch {
       return;
     }
@@ -454,8 +467,12 @@ export class RunDeadlines {
       const state = readWardenState(path);
       const jobId = state && state !== "unreadable" ? state.jobId : name.slice(0, -5);
       const otherBoot =
-        state && state !== "unreadable" && state.bootId !== null && state.bootId !== this.clock.bootId();
-      const wardenGone = !existsSync(wardenReadyPath(path)) || existsSync(wardenDonePath(path)) || otherBoot;
+        state &&
+        state !== "unreadable" &&
+        state.bootId !== null &&
+        state.bootId !== this.clock.bootId();
+      const wardenGone =
+        !existsSync(wardenReadyPath(path)) || existsSync(wardenDonePath(path)) || otherBoot;
       if (wardenGone && !retained(jobId)) removeWardenFiles(path);
     }
   }
@@ -489,7 +506,9 @@ export class RunDeadlines {
       bootId: this.clock.bootId(),
       own: own ? point(own) : null,
       revision: patch.revision ?? entry.revision,
-      parent: entry.parentJobId ? `${entry.parentJobId.replace(/[^A-Za-z0-9_.-]/g, "_")}.json` : null,
+      parent: entry.parentJobId
+        ? `${entry.parentJobId.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`
+        : null,
       inherited: parentPoint ? { ...point(parentPoint), from: parentPoint.from } : null,
       frozen: entry.frozen ? { ...point(entry.frozen), inheritedFrom: entry.frozen.from } : null,
       markers: [...entry.markers],

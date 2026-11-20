@@ -187,7 +187,9 @@ export class SchedulerDeadlines extends RunDeadlines {
   }
 
   /** `claudexor.runDeadline`: read or set one job's deadline, by job id or run id. */
-  async rpc(params: { id?: unknown; request?: unknown } | null | undefined): Promise<RunDeadlineSnapshot> {
+  async rpc(
+    params: { id?: unknown; request?: unknown } | null | undefined,
+  ): Promise<RunDeadlineSnapshot> {
     const id = typeof params?.id === "string" ? params.id : "";
     const request = params?.request as { action?: unknown } | undefined;
     const rec = id ? this.record(id) : undefined;

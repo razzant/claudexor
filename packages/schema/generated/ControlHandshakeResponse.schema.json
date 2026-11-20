@@ -68,15 +68,25 @@
               "stopGraceSec": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 30
+                "maximum": 30,
+                "description": "Seconds after a run's deadline by which every process inside its boundary is gone."
+              },
+              "boundary": {
+                "type": "string",
+                "enum": [
+                  "cgroup",
+                  "marker"
+                ],
+                "description": "cgroup: every run has its own delegated cgroup v2, killed whole (cgroup.kill), so setsid, double fork and a cleaned environment stay inside. marker: processes carrying the run's scope marker in their environment plus the process groups and descendants the daemon recorded for the run; a process that clears its environment after leaving the recorded tree is outside."
               }
             },
             "required": [
               "name",
-              "stopGraceSec"
+              "stopGraceSec",
+              "boundary"
             ],
             "additionalProperties": false,
-            "description": "A capability this engine proves on this host; run-deadline/1 is absent where the stop invariant is not proven."
+            "description": "A capability this engine proves on this host: run-deadline/1 is declared only on Linux, after the daemon checked which boundary it can enforce; macOS and Windows do not declare it."
           },
           "description": "Capabilities this engine proves on this host. Returned only to a request sending `X-Claudexor-Capabilities: 1`; an empty list means none."
         }

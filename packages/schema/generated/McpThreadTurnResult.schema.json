@@ -58,7 +58,7 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 30,
-                  "description": "Seconds after `at` by which every process of the run is gone."
+                  "description": "Seconds after `at` by which every process inside the run's boundary is gone (see the capability's `boundary`). Work the run handed to another service (a container engine, an already running tmux server, systemd-run) is outside that boundary."
                 },
                 "inheritedFrom": {
                   "type": [
@@ -121,6 +121,10 @@
             "state": {
               "type": "string",
               "minLength": 1
+            },
+            "deadline": {
+              "$ref": "#/definitions/McpThreadTurnResult/anyOf/0/properties/deadline",
+              "description": "The accepted run-deadline/1 deadline; present only when the turn set one."
             },
             "summary": {
               "$ref": "#/definitions/McpThreadTurnResult/anyOf/0/properties/summary"

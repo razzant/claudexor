@@ -338,28 +338,48 @@ gate's explicit exemptions):
   resumable across daemon restart; the existing interrupted-run recovery still
   applies. There is no dedicated timer editor in the macOS UI.
 - Server-enforced deadline (`run-deadline/1`), additive to the timer above: a
-  `POST /v2/runs` body may carry `deadline: {at}`, an RFC3339 UTC instant on the
-  server clock. It holds from acceptance (queued, preparing, running); an
-  instant not after the server time refuses `run_deadline_passed` and nothing
-  is accepted. The engine converts `at` once to the host monotonic clock, so a
-  wall-clock step never moves the stop. `GET /v2/runs/:id/deadline` reads
-  `{at, revision, serverNow, state, stopGraceSec, inheritedFrom}`; `PATCH` with
-  `{at, expectedRevision}` replaces it in every non-terminal state (stale
-  revision `run_deadline_revision_conflict`, terminal `run_deadline_closed`).
-  The start receipt carries the same snapshot when the request set one, and
-  `POST /v2/runs/lookup` finds a queued start by its key. A queued run that
-  reaches its deadline ends `cancelled` with `run_deadline_expired`; a
-  preparing or running one is cancelled as `wall_clock_exceeded`. A Delegate
-  child's effective deadline is the earlier of its own and its parent's current
-  one, so extending the parent extends the child; children refuse their own
-  changes (`delegated_deadline_forbidden`). Before a run's first launch the
-  daemon starts a detached warden process that, independent of the daemon,
-  ends every process carrying the run's scope marker by `at + stopGraceSec`
-  (also while the daemon is down or after it restarted). The handshake names
-  the capability only to a client sending `X-Claudexor-Capabilities: 1`, and
-  only on Linux, where the marker census reads every same-uid environment; on
-  macOS (SIP-hidden platform-binary environments) and Windows the warden runs
-  but the capability is not declared.
+  `POST /v2/runs` or thread-turn body may carry `deadline: {at}`, an RFC3339 UTC
+  instant on the server clock. The engine checks and converts it once,
+  immediately before the command is committed: an instant not after the server
+  time refuses `run_deadline_passed` and nothing is accepted. It then holds from
+  acceptance (queued, preparing, running) and is measured on the host clock, so
+  neither a wall-clock step nor (on Linux) a host suspend postpones a stop.
+  `GET /v2/runs/:id/deadline` (job or run id) reads `{at, revision, serverNow,
+  state, stopGraceSec, inheritedFrom}`; `PATCH` with `{at, expectedRevision}`
+  replaces it in every non-terminal state and is confirmed only after the new
+  revision is stored durably (stale revision `run_deadline_revision_conflict`,
+  an effective deadline already past `run_deadline_expired`, a terminal run
+  `run_deadline_closed`, a run without one `run_deadline_absent`). Both answers,
+  the start receipt (when the request set one) and a same-key replay come from
+  the durable record, also after a daemon restart; `POST /v2/runs/lookup` finds a
+  queued start by its key. A queued run that reaches its deadline ends
+  `cancelled` with `errorCode` and `failure.code` `run_deadline_expired` (a
+  thread turn records the same reason; a pending next message is held as by
+  Stop); a preparing or running one is cancelled as `wall_clock_exceeded`. A
+  Delegate child's effective deadline is the earlier of its own and its parent's
+  current one, so extending the parent extends the child; children refuse their
+  own changes (`delegated_deadline_forbidden`); a finished child keeps the
+  deadline it ended under. A continuation (`continueFrom`) without its own
+  deadline, and every next message the engine starts, inherits its predecessor's;
+  one already past refuses the continuation (`run_deadline_passed`) or ends the
+  next message before it starts. Exact Retry, Run Again (named in `differences`),
+  decision rerun and thread-turn retry never replay the source's instant.
+  Before the run's first process the daemon starts a detached warden that,
+  independent of the daemon, ends every process inside the run's boundary by
+  `at + stopGraceSec` (15 s), also while the daemon is down or after it
+  restarted. The handshake names the capability only to a client sending
+  `X-Claudexor-Capabilities: 1`, only on Linux, and only after the daemon's
+  startup check, with `boundary`: `cgroup` when the daemon runs in a delegated
+  cgroup v2 subtree (for example a systemd service with `Delegate=yes`): each
+  run gets its own cgroup, killed whole, so setsid, double fork and a cleaned
+  environment stay inside; `marker` otherwise: processes carrying the run's
+  scope marker and the process groups and descendants the daemon recorded for
+  the run. Outside either boundary: work the run hands to another service (a
+  container engine, an already running tmux or screen server, `systemd-run`,
+  cron), processes of another user (setuid), and in `marker` mode a process that
+  cleared its environment after leaving the recorded tree. macOS and Windows do
+  not declare the capability (SIP hides platform-binary environments; Windows has
+  no environment census, so its warden cannot end anything).
 - `--processing standard|fast|ultrafast|economy`: advisory service preference, carried as
   `processingPreference` on Agent requests and as `options.processingPreference`
   on raw model requests. Structured reviewer entries accept their own optional

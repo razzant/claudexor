@@ -13215,15 +13215,12 @@ describe("run-deadline/1 over the mounted HTTP routes", () => {
   it("answers a fresh deadline receipt, a renewal, a stale revision and a replay after a daemon restart", async () => {
     const { DaemonServer } = await import("../../daemon/src/server.js");
     const { DaemonLocalClient } = await import("../../daemon/src/daemon-local-client.js");
-    const { DurableJournal } = await import(
-      "../../daemon/src/store/test-support/fixtures/legacy/journal/index.js"
-    );
-    const { CommandStore } = await import(
-      "../../daemon/src/store/test-support/fixtures/legacy/daemon/command-store.js"
-    );
-    const { legacyCommandFixture } = await import(
-      "../../daemon/src/store/test-support/legacy-command-fixture.js"
-    );
+    const { DurableJournal } =
+      await import("../../daemon/src/store/test-support/fixtures/legacy/journal/index.js");
+    const { CommandStore } =
+      await import("../../daemon/src/store/test-support/fixtures/legacy/daemon/command-store.js");
+    const { legacyCommandFixture } =
+      await import("../../daemon/src/store/test-support/legacy-command-fixture.js");
     const dir = reapMk(join(tmpdir(), "cx-rdl-http-"));
     const project = join(dir, "project");
     mkdirSync(project);
@@ -13254,13 +13251,22 @@ describe("run-deadline/1 over the mounted HTTP routes", () => {
           ),
       });
       const client = new DaemonLocalClient(() => daemon);
-      const api = new DaemonControlApiServer({ token, daemon: client, pollMs: 5, runStartTimeoutMs: 50 });
+      const api = new DaemonControlApiServer({
+        token,
+        daemon: client,
+        pollMs: 5,
+        runStartTimeoutMs: 50,
+      });
       return { journal, daemon, client, api };
     };
     const call = (base: string, path: string, init: RequestInit = {}) =>
       apiFetch(`${base}${path}`, {
         ...init,
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...init.headers },
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          ...init.headers,
+        },
       });
     const body = JSON.stringify({
       prompt: "remote work",
@@ -13294,7 +13300,10 @@ describe("run-deadline/1 over the mounted HTTP routes", () => {
       expect(await renewed.json()).toMatchObject({ at: renewedAt, revision: 1, state: "armed" });
       const stale = await call(base, `/v2/runs/${jobId}/deadline`, {
         method: "PATCH",
-        body: JSON.stringify({ at: new Date(Date.now() + 1_800_000).toISOString(), expectedRevision: 0 }),
+        body: JSON.stringify({
+          at: new Date(Date.now() + 1_800_000).toISOString(),
+          expectedRevision: 0,
+        }),
       });
       expect(stale.status).toBe(409);
       expect(await stale.json()).toMatchObject({ code: "run_deadline_revision_conflict" });

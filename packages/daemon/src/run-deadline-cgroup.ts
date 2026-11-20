@@ -26,8 +26,7 @@ import { CGROUP_ENTRY_FAILED_EXIT, enterScopeCgroup, registerScopeCgroup } from 
 import { unregisterScopeCgroup } from "@claudexor/core";
 
 export type DeadlineBoundary =
-  | { kind: "cgroup"; runsDir: string }
-  | { kind: "marker"; reason: string };
+  { kind: "cgroup"; runsDir: string } | { kind: "marker"; reason: string };
 
 const RUNS_DIR = "claudexor-runs";
 

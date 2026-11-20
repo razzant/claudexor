@@ -32,7 +32,16 @@
  * it, and on Linux the clock counts suspend.
  */
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeSync,
+} from "node:fs";
 import { open as openFile, rename } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -188,7 +197,8 @@ export function effectiveTarget(
   let parentTarget: bigint | null = null;
   if (state.parent && depth < MAX_CHAIN) {
     const parent = read(join(dir, state.parent));
-    if (parent && parent !== "unreadable") parentTarget = effectiveTarget(parent, dir, read, depth + 1);
+    if (parent && parent !== "unreadable")
+      parentTarget = effectiveTarget(parent, dir, read, depth + 1);
   }
   if (parentTarget === null && state.inherited) parentTarget = BigInt(state.inherited.targetNs);
   if (parentTarget !== null && (best === null || parentTarget < best)) best = parentTarget;
@@ -327,7 +337,8 @@ export async function runWarden(
           ended: outcomes.reduce((sum, o) => sum + o.ended.length, 0),
           survivors: outcomes.reduce((sum, o) => sum + o.survivors.length, 0),
           completeness: pass.confirmed ? "complete" : "not_provable",
-          completenessReason: outcomes.find((o) => o.completenessReason)?.completenessReason ?? null,
+          completenessReason:
+            outcomes.find((o) => o.completenessReason)?.completenessReason ?? null,
         } satisfies WardenOutcome);
       if (existsSync(dir)) writeJsonAtomic(wardenDonePath(statePath), { reason, pid: process.pid });
     } catch {

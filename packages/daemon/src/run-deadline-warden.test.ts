@@ -32,7 +32,10 @@ const temp = () => {
   return dir;
 };
 const MARKER = `CLAUDEXOR_RUN_SCOPE_${"a".repeat(32)}`;
-const point = (targetNs: bigint) => ({ at: "2026-11-20T12:00:00.000Z", targetNs: targetNs.toString() });
+const point = (targetNs: bigint) => ({
+  at: "2026-11-20T12:00:00.000Z",
+  targetNs: targetNs.toString(),
+});
 const state = (patch: Partial<WardenState> = {}): WardenState => ({
   version: 2,
   jobId: "job",
@@ -106,7 +109,11 @@ describe("runWarden", () => {
     writeJsonAtomic(path, state());
     const time = clockDeps();
     const answers = [
-      outcome({ settled: false, survivors: [{ pid: 9, startToken: "x" }], completeness: "not_provable" }),
+      outcome({
+        settled: false,
+        survivors: [{ pid: 9, startToken: "x" }],
+        completeness: "not_provable",
+      }),
       outcome({ settled: false, unreadable: [{ pid: 9, reason: "identity" }] }),
       outcome(),
     ];
@@ -250,11 +257,18 @@ describe("runWarden", () => {
   it("caps a child by its parent's current file, or by the cached value once that file is gone", () => {
     const dir = temp();
     writeJsonAtomic(join(dir, "parent.json"), state({ jobId: "parent", own: point(5n) }));
-    const child = state({ jobId: "child", own: point(9n), parent: "parent.json", inherited: { ...point(7n), from: "parent" } });
+    const child = state({
+      jobId: "child",
+      own: point(9n),
+      parent: "parent.json",
+      inherited: { ...point(7n), from: "parent" },
+    });
     expect(effectiveTarget(child, dir)).toBe(5n);
     rmSync(join(dir, "parent.json"));
     expect(effectiveTarget(child, dir)).toBe(7n);
-    expect(effectiveTarget({ ...child, frozen: { ...point(8n), inheritedFrom: null } }, dir)).toBe(8n);
+    expect(effectiveTarget({ ...child, frozen: { ...point(8n), inheritedFrom: null } }, dir)).toBe(
+      8n,
+    );
   });
 });
 
@@ -296,7 +310,10 @@ describe("RunDeadlines warden hand-off", () => {
       if (written.clock === "monotonic") expect(remaining).toBeGreaterThan(55_000_000_000n);
       deadlines.close("job");
       await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(readWardenState(started[0]!)).toMatchObject({ released: true, frozen: expect.anything() });
+      expect(readWardenState(started[0]!)).toMatchObject({
+        released: true,
+        frozen: expect.anything(),
+      });
     } finally {
       deadlines.dispose();
     }
@@ -330,8 +347,8 @@ describe("host facts", () => {
         "29 23 0:26 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime shared:4 - cgroup2 cgroup2 rw\n",
       ),
     ).toBe("/sys/fs/cgroup");
-    expect(unifiedCgroupPath("0::/user.slice/user-1000.slice/user@1000.service/app.slice/x.service\n")).toBe(
-      "/user.slice/user-1000.slice/user@1000.service/app.slice/x.service",
-    );
+    expect(
+      unifiedCgroupPath("0::/user.slice/user-1000.slice/user@1000.service/app.slice/x.service\n"),
+    ).toBe("/user.slice/user-1000.slice/user@1000.service/app.slice/x.service");
   });
 });

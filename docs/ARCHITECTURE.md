@@ -3865,7 +3865,7 @@ an answer). A route line keeps its counts; its rounded failed share reads
 
 #### Engine store identity
 
-`POST /v2/handshake` returns top-level `storeId`, the durable engine store's UUID (stable across restarts, absent when unavailable), only to a request sending `X-Claudexor-Store-Identity: 1`, so older strict same-major clients keep the legacy shape; a run 404 is meaningful only together with the same `storeId`.
+`POST /v2/handshake` returns top-level `storeId`, the durable engine store's UUID (stable across restarts, absent when unavailable), only to a request sending `X-Claudexor-Store-Identity: 1`, so older strict same-major clients keep the legacy shape; a run 404 is meaningful only together with the same `storeId`. Likewise `capabilities` only to a request sending `X-Claudexor-Capabilities: 1`: `[{name: "run-deadline/1", stopGraceSec, boundary}]` on Linux once the daemon's startup boundary probe finished (`boundary` is `cgroup` or `marker`), an empty list elsewhere.
 
 A run lookup and its admission can name that store, so another store's answer cannot pass for absence. `GET /v2/runs/:id` adds `context.storeId`, the store just read, to its `http_404` problem whenever that store has an identity. With the same request header, which leaves the shape older strict clients parse alone (the queued thread-turn handle is a strict object), `POST /v2/runs`, `POST /v2/runs/:id/retry`, the `rerun_with_feedback` decision, `POST /v2/threads/:id/turns` and its retry name the store that served the accepted job back: top level on a handle, in `context` on a pre-run refusal. A task-group receipt always does. An admission whose store has no identity is still accepted and claims nothing, and so is one whose start could not be read back. A caller keeps the receipt's store and compares it with the 404's. A different or missing store leaves the run unknown. The same store proves only that it retains no such record, never that the run did not start, because retention can remove a record. `claudexor inspect` reports the answering store in its message and `context`. The CLI and MCP send the header, so the CLI's `--json` and NDJSON results, MCP launch and continuation results and `claudexor_thread_turn` handles carry the accepting store. Other run-scoped 404 routes do not name a store, so only this lookup and the [start lookups](#7-control-api), whose answers always name their store, can speak for a store's absence.
 
@@ -6211,7 +6211,38 @@ with `pid == pgid` cannot be verified as the recorded leader, so the host
 skips that group; when no process with `pid == pgid` is alive, the group's
 remaining members born at or after the floor belong to the scope, provided at
 least one was born by `settled_at` when it is recorded (the kernel does not hand
-out a pid that is still a live process-group id). The sweep covers orphaned envelopes (with their
+out a pid that is still a live process-group id).
+
+**Run deadlines (run-deadline/1).** A run started with `deadline.at` extends the
+INV-144 scope ownership past the daemon's life. Revision 0 of the authorization is
+the accepted command itself (`params.deadline`); every later revision is written
+to `daemon/run-deadlines/<job>.json` (fsync, then rename) before it is confirmed,
+and an answer after a restart reads that file, else the request. The daemon
+converts each instant once, at acceptance, to the host clock (CLOCK_BOOTTIME read
+from `/proc/uptime` on Linux, so a suspended host finds the deadline expired when it
+wakes; `process.hrtime` elsewhere) and re-reads that clock at least every second:
+a queued job never starts, a preparing or running one is cancelled
+(`wall_clock_exceeded`). The same file instructs the run's warden: a detached
+process (its own session, no run marker, outside every run cgroup) started before
+the first process of the run's scope — before the thread worktree preparation's
+first Git child, then given the run's own marker — and confirmed through
+`<job>.json.ready` before anything launches. The engine bundle starts the small
+`run-deadline-warden.cjs` beside it (its own `--run-deadline-warden <state file>`
+role when that file is missing); an installed package starts its sibling
+entry. The warden alone acts while the daemon is dead: one second after the target
+it kills the run's cgroup (`cgroup.kill`, when the startup probe proved a
+delegated cgroup v2 subtree: every launch carrying the run's marker enters
+`claudexor-runs/<job>` before exec) and ends every process carrying the run's
+markers plus the groups and descendants `daemon/run-scopes.json` recorded for
+them, repeating until the group is confirmed empty (an empty cgroup, or a complete
+census), its file is removed, or, where no census proves emptiness (macOS), three
+passes found nothing; `<job>.json.outcome.json` and `.done` record its exit. A
+Delegate child's warden also reads its parent's file, so one parent write moves
+every dependent warden; a terminal fixes the effective deadline (`frozen`). After
+a normal end the daemon marks the file `released`: the warden leaves once a
+non-signalling pass confirms the group empty, otherwise it stays to the deadline.
+Retention removes the files once their warden is done; startup removes finished
+ones of jobs no longer retained. The sweep covers orphaned envelopes (with their
 seeded-credential homes), dead per-attempt `claudexor/<task>/<attempt>`
 branches, leaked `claudexor/verify-*` branches, and stale
 `claudexor-ro-*`/`claudexor-verify-*` tmp dirs. Envelopes whose creating

@@ -23,7 +23,7 @@ import {
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "@claudexor/control-api";
 import { createDaemonQuotaPoller, openStartupDiagnostics } from "./daemon-admission-runtime.js";
 import { armDaemonLifecycle, daemonRunScopeIndex, runStartupCrashGc } from "./daemon-lifecycle.js";
-import { RUN_SCOPE_INDEX_FILE } from "./run-scope-index.js";
+import { runDeadlineOptions } from "./run-deadline-paths.js";
 import {
   bindRecoveryTransport,
   DaemonStartupAdmission,
@@ -123,10 +123,7 @@ export async function main(): Promise<void> {
         commands: sqlReads.deferredCommands(() => graph().commands),
         deferredStart: () => executors?.deferredStart,
         runtimeConcurrencyCaps: caps,
-        runDeadlines: {
-          dir: join(daemonDir(), "run-deadlines"),
-          runScopesPath: join(daemonDir(), RUN_SCOPE_INDEX_FILE),
-        },
+        runDeadlines: runDeadlineOptions(daemonDir()),
         servingMode: admission.snapshot,
         storeFacts: () => storage!.facts(),
         delegationAuthority: delegation.authority,

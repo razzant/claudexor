@@ -39,7 +39,9 @@ const GRACE_MS = RUN_DEADLINE_STOP_GRACE_SEC * 1_000;
 /** Deadlines are set at least this far ahead of the moment the warden is attached. */
 const WINDOW_MS = 10_000;
 const DELEGATED = process.env.CLAUDEXOR_TEST_SYSTEMD_DELEGATE === "1";
-const CHILD = fileURLToPath(new URL("./test-support/run-deadline-daemon-child.ts", import.meta.url));
+const CHILD = fileURLToPath(
+  new URL("./test-support/run-deadline-daemon-child.ts", import.meta.url),
+);
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const HARNESS = `
 const { spawn } = require("node:child_process");
@@ -96,7 +98,12 @@ afterEach(() => {
   // …then release the wardens (each exits on its next poll once its file is gone).
   // A warden may still be writing its outcome while the directory goes: retry.
   for (const dir of dirs)
-    rmSync(join(dir, "deadlines"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    rmSync(join(dir, "deadlines"), {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
 });
 afterAll(() => {
   for (const dir of dirs.splice(0))
@@ -319,7 +326,11 @@ describe.skipIf(process.platform === "win32")(
         ...system,
         wallNow: () => (stepped ? Date.now() - 3_600_000 : Date.now()),
       };
-      const deadlines = new RunDeadlines({ dir: join(dir, "deadlines"), clock, onExpire: () => {} });
+      const deadlines = new RunDeadlines({
+        dir: join(dir, "deadlines"),
+        clock,
+        onExpire: () => {},
+      });
       const point = deadlines.toPoint(inMs(WINDOW_MS));
       deadlines.admit("run", point, null);
       const marker = mintRunScopeMarker();

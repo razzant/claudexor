@@ -268,7 +268,11 @@ describe("run-deadline/1 at the scheduler", () => {
       expect(moved.revision).toBe(1);
       expect(
         await errorCode(
-          d.client.runDeadline(accepted.id, { action: "set", at: inMs(120_000), expectedRevision: 0 }),
+          d.client.runDeadline(accepted.id, {
+            action: "set",
+            at: inMs(120_000),
+            expectedRevision: 0,
+          }),
         ),
       ).toBe("run_deadline_revision_conflict");
       expect(await d.client.runDeadline(accepted.id, { action: "read" })).toMatchObject({
@@ -310,7 +314,11 @@ describe("run-deadline/1 at the scheduler", () => {
         errorCode: "run_deadline_expired",
       });
       expect(await d.client.status(renewed.id)).toMatchObject({ state: "queued" });
-      await d.client.runDeadline(renewed.id, { action: "set", at: inMs(30_000), expectedRevision: revision });
+      await d.client.runDeadline(renewed.id, {
+        action: "set",
+        at: inMs(30_000),
+        expectedRevision: revision,
+      });
       slot.release();
       const ended = await until(
         () => d.client.status(renewed.id),
@@ -331,7 +339,10 @@ describe("run-deadline/1 at the scheduler", () => {
         { label: "done", deadline: { at: inMs(60_000) } },
         { idempotencyKey: "d", clientId: "t" },
       );
-      const plain = await d.client.enqueue({ label: "plain" }, { idempotencyKey: "n", clientId: "t" });
+      const plain = await d.client.enqueue(
+        { label: "plain" },
+        { idempotencyKey: "n", clientId: "t" },
+      );
       for (const id of [accepted.id, plain.id])
         await until(
           () => d.client.status(id),
@@ -339,7 +350,11 @@ describe("run-deadline/1 at the scheduler", () => {
         );
       expect(
         await errorCode(
-          d.client.runDeadline(accepted.id, { action: "set", at: inMs(90_000), expectedRevision: 0 }),
+          d.client.runDeadline(accepted.id, {
+            action: "set",
+            at: inMs(90_000),
+            expectedRevision: 0,
+          }),
         ),
       ).toBe("run_deadline_closed");
       expect(await d.client.runDeadline(accepted.id, { action: "read" })).toMatchObject({
@@ -369,7 +384,11 @@ describe("run-deadline/1 at the scheduler", () => {
       time.advanceHost(6_000); // past the target; the 1 s timer has not looked yet
       expect(
         await errorCode(
-          d.client.runDeadline(accepted.id, { action: "set", at: inMs(60_000), expectedRevision: 0 }),
+          d.client.runDeadline(accepted.id, {
+            action: "set",
+            at: inMs(60_000),
+            expectedRevision: 0,
+          }),
         ),
       ).toBe("run_deadline_expired");
       expect(await d.client.status(accepted.id)).toMatchObject({
@@ -460,7 +479,9 @@ describe("run-deadline/1 at the scheduler", () => {
 
     const b = daemon(async () => ({ lifecycle: "succeeded" }), { dir, deadlineDir });
     try {
-      expect(await b.client.findAccepted(request, { idempotencyKey: "k", clientId: "t" })).toMatchObject({
+      expect(
+        await b.client.findAccepted(request, { idempotencyKey: "k", clientId: "t" }),
+      ).toMatchObject({
         id: accepted.id,
         state: "interrupted",
       });
@@ -475,7 +496,11 @@ describe("run-deadline/1 at the scheduler", () => {
       });
       expect(
         await errorCode(
-          b.client.runDeadline(accepted.id, { action: "set", at: inMs(999_000), expectedRevision: 1 }),
+          b.client.runDeadline(accepted.id, {
+            action: "set",
+            at: inMs(999_000),
+            expectedRevision: 1,
+          }),
         ),
       ).toBe("run_deadline_closed");
     } finally {
@@ -497,7 +522,11 @@ describe("run-deadline/1 at the scheduler", () => {
       try {
         expect(
           await errorCode(
-            d.client.runDeadline(accepted.id, { action: "set", at: inMs(90_000), expectedRevision: 0 }),
+            d.client.runDeadline(accepted.id, {
+              action: "set",
+              at: inMs(90_000),
+              expectedRevision: 0,
+            }),
           ),
         ).not.toBe("resolved");
       } finally {
@@ -515,7 +544,9 @@ describe("run-deadline/1 at the scheduler", () => {
   it("item 3: a queued thread turn its deadline ended records the reason on the turn", async () => {
     const slot = slotRunner();
     const turns: Array<{ turnId: string; problem: unknown }> = [];
-    const d = daemon(slot.runner, { onTurnEnqueueFailed: (turnId, problem) => turns.push({ turnId, problem }) });
+    const d = daemon(slot.runner, {
+      onTurnEnqueueFailed: (turnId, problem) => turns.push({ turnId, problem }),
+    });
     try {
       await d.client.enqueue({ label: "blocker" }, { idempotencyKey: "b", clientId: "t" });
       const accepted = await d.client.enqueue(
@@ -527,7 +558,10 @@ describe("run-deadline/1 at the scheduler", () => {
         (record) => !live(record),
       );
       expect(turns).toEqual([
-        { turnId: "turn-1", problem: expect.objectContaining({ code: "run_deadline_expired", retryable: false }) },
+        {
+          turnId: "turn-1",
+          problem: expect.objectContaining({ code: "run_deadline_expired", retryable: false }),
+        },
       ]);
     } finally {
       slot.release();
@@ -596,9 +630,16 @@ describe("RunDeadlines registry", () => {
         { at: inMs(30_000), expectedRevision: 0 },
         { live: true, delegated: false },
       );
-      expect(deadlines.snapshot("child")).toMatchObject({ at: extended.at, inheritedFrom: "parent" });
+      expect(deadlines.snapshot("child")).toMatchObject({
+        at: extended.at,
+        inheritedFrom: "parent",
+      });
       await expect(
-        deadlines.set("child", { at: inMs(20_000), expectedRevision: 0 }, { live: true, delegated: true }),
+        deadlines.set(
+          "child",
+          { at: inMs(20_000), expectedRevision: 0 },
+          { live: true, delegated: true },
+        ),
       ).rejects.toMatchObject({ code: "delegated_deadline_forbidden" });
     } finally {
       deadlines.dispose();
@@ -612,7 +653,11 @@ describe("RunDeadlines registry", () => {
       deadlines.admit("child", null, "parent");
       const before = deadlines.snapshot("child")!;
       deadlines.close("child");
-      await deadlines.set("parent", { at: inMs(30_000), expectedRevision: 0 }, { live: true, delegated: false });
+      await deadlines.set(
+        "parent",
+        { at: inMs(30_000), expectedRevision: 0 },
+        { live: true, delegated: false },
+      );
       expect(deadlines.snapshot("child")).toMatchObject({
         at: before.at,
         inheritedFrom: "parent",
@@ -664,7 +709,11 @@ describe("RunDeadlines registry", () => {
     await cgroup.prepare();
     expect(cgroup.capabilities()[0]).toMatchObject({ boundary: "cgroup" });
     for (const platform of ["darwin", "win32"] as const) {
-      const other = registry({ dir, platform, probeBoundary: async () => ({ kind: "marker", reason: "x" }) });
+      const other = registry({
+        dir,
+        platform,
+        probeBoundary: async () => ({ kind: "marker", reason: "x" }),
+      });
       await other.prepare();
       expect(other.capabilities()).toEqual([]);
     }
