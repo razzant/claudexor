@@ -161,8 +161,8 @@ describe("read-only Ask at an effective $0 paid limit", () => {
       expect(process.env["CLAUDEXOR_CODEX_NATIVE_HOME"]).toBeUndefined();
       const { run, result } = await ask(scope, { paidBudget: ZERO });
       expect(run.state, String(run.error)).toBe("succeeded");
-      // The answer is the fake execution's own text, read through the real MCP projection.
-      expect(result?.["summary"]).toBe("done");
+      // The Ask answer artifact, `# Answer` title included, read through the real MCP projection.
+      expect(result?.["summary"]).toBe("# Answer\n\ndone");
       // The spec the engine built pins the verified native session, so the spawn
       // never meets a key route beside it.
       expect(zero.spawns).toEqual([
@@ -191,7 +191,7 @@ describe("read-only Ask at an effective $0 paid limit", () => {
     const { ask } = await setup({ settingsBudget: ZERO });
     const { run, result } = await ask("project");
     expect(run.state, String(run.error)).toBe("succeeded");
-    expect(result?.["summary"]).toBe("done");
+    expect(result?.["summary"]).toBe("# Answer\n\ndone");
     expect(zero.spawns).toMatchObject([
       { harness: "claude", authPreference: "subscription", route: "subscription" },
     ]);
@@ -230,7 +230,7 @@ describe("read-only Ask at an effective $0 paid limit", () => {
         model: "fixture-model",
       });
       expect(run.state, String(run.error)).toBe("succeeded");
-      expect(result?.["summary"]).toBe("done");
+      expect(result?.["summary"]).toBe("# Answer\n\ndone");
       // Not vacuous: the stubbed inventory was really read, and only under the mode.
       expect(zero.catalogs.length).toBeGreaterThan(0);
       expect(zero.catalogs.every((c) => c.diagnosticGeneration === "forbidden")).toBe(true);
