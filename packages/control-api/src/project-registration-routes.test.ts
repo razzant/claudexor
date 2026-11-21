@@ -63,6 +63,7 @@ describe("paired project registration routes", () => {
       parameters: [
         expect.objectContaining({ name: "expectedStoreId", required: true }),
         expect.objectContaining({ name: "expectedRoot", required: true }),
+        expect.objectContaining({ name: "candidate", required: false }),
       ],
     });
     expect(
@@ -144,6 +145,7 @@ describe("paired project registration routes", () => {
     expect(inspect.mock.calls[0]).toEqual([
       "prj-1",
       { expectedStoreId: "store-1", expectedRoot: "/repo/a" },
+      undefined, // Absent candidate: the call still carries the third argument.
     ]);
     for (const query of ["", "expectedStoreId=store-1", "expectedStoreId=store-1&expectedRoot=%2Frepo%2Fa&extra=1"]) {
       const bad = await call.probe(query);
