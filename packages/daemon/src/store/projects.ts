@@ -400,7 +400,9 @@ export class SqlProjectStore {
     );
     if (n)
       throw Object.assign(
-        new Error(`project ${id} still has ${n} thread(s); trash and purge them before removing it`),
+        new Error(
+          `project ${id} still has ${n} thread(s); trash and purge them before removing it`,
+        ),
         { code: "project_has_threads", status: 409 },
       );
   }

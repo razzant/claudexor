@@ -12,7 +12,7 @@ Statuses: `broken` > `dead` (wired to nothing) > `half-baked` > `suspicious` >
 owns the fix (`backlog` = not yet scheduled). Evidence is file:line at the
 time of the audit; lines drift with edits — verify before relying on them.
 
-Rows: **57** (works-with-caveats: 57)
+Rows: **58** (works-with-caveats: 58)
 
 | Area | Feature | Status | What is wrong / caveat | Evidence | Planned |
 |---|---|---|---|---|---|

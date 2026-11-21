@@ -71,7 +71,12 @@ function path(name: string): string {
 }
 
 function register(name: string, key: string) {
-  return sql.register({ root: path(name), idempotencyKey: key, clientId: "test", includeStoreId: true });
+  return sql.register({
+    root: path(name),
+    idempotencyKey: key,
+    clientId: "test",
+    includeStoreId: true,
+  });
 }
 
 function refusalOf(action: () => unknown): { code: string; status: number } {
@@ -132,7 +137,9 @@ function liveWorkspaceCommand(commands: SqlCommandStore, id: string, workspace?:
     params: {
       mode: "ask",
       prompt: "busy",
-      ...(workspace === undefined ? {} : { execution: { delegated: true, workspaceRoot: workspace } }),
+      ...(workspace === undefined
+        ? {}
+        : { execution: { delegated: true, workspaceRoot: workspace } }),
     },
   });
 }
@@ -244,8 +251,7 @@ describe("paired project registration (engine side)", () => {
   it("answers the one folder comparison for the already-admitted candidate", () => {
     const { project, storeId } = register("origin", "compare");
     const binding = { expectedStoreId: storeId!, expectedRoot: project.root };
-    const probe = (candidate?: string) =>
-      sql.inspectRegistration(project.id, binding, candidate);
+    const probe = (candidate?: string) => sql.inspectRegistration(project.id, binding, candidate);
     // The exact recorded spelling, and a symlink alias of the same folder: same.
     expect(probe(project.root)).toEqual({
       projectId: project.id,
@@ -296,10 +302,7 @@ describe("paired project registration (engine side)", () => {
     expect(store.prepare("SELECT status FROM project WHERE id=?").get(project.id)).toEqual({
       status: "archived",
     });
-    expect(journal()).toEqual([
-      { type: "project.registered" },
-      { type: "project.unregistered" },
-    ]);
+    expect(journal()).toEqual([{ type: "project.registered" }, { type: "project.unregistered" }]);
     // Release never deletes a file, and the released id is never handed out again.
     expect(readFileSync(join(dir, "sentinel.txt"), "utf8")).toBe("fixture\n");
     const again = sql.register({
@@ -566,9 +569,9 @@ describe("paired project registration (engine side)", () => {
         }),
       ),
     ).toEqual({ code: "project_has_active_run", status: 409 });
-    expect(store.prepare("SELECT state FROM deferred_message WHERE id=?").get(draft.draftId)).toEqual(
-      { state: "waiting" },
-    );
+    expect(
+      store.prepare("SELECT state FROM deferred_message WHERE id=?").get(draft.draftId),
+    ).toEqual({ state: "waiting" });
     expect(blobs.read(bodySha).byteLength).toBeGreaterThan(0);
   });
 

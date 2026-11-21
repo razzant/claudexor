@@ -79,12 +79,14 @@ describe("paired project registration routes", () => {
   });
 
   it("carries the store-identity opt-in to the service and the response", async () => {
-    const register = vi.fn(async (_input: {
-      root: string;
-      idempotencyKey: string;
-      clientId: string;
-      includeStoreId?: boolean;
-    }) => ({ ...project, created: true, storeId: "store-1" }));
+    const register = vi.fn(
+      async (_input: {
+        root: string;
+        idempotencyKey: string;
+        clientId: string;
+        includeStoreId?: boolean;
+      }) => ({ ...project, created: true, storeId: "store-1" }),
+    );
     const call = await serve({ registerProject: register });
     const legacy = await call.register({ "Idempotency-Key": "k1" });
     expect(legacy.status).toBe(200);
@@ -147,14 +149,18 @@ describe("paired project registration routes", () => {
       { expectedStoreId: "store-1", expectedRoot: "/repo/a" },
       undefined, // Absent candidate: the call still carries the third argument.
     ]);
-    for (const query of ["", "expectedStoreId=store-1", "expectedStoreId=store-1&expectedRoot=%2Frepo%2Fa&extra=1"]) {
+    for (const query of [
+      "",
+      "expectedStoreId=store-1",
+      "expectedStoreId=store-1&expectedRoot=%2Frepo%2Fa&extra=1",
+    ]) {
       const bad = await call.probe(query);
       expect(bad.status, query).toBe(400);
     }
     expect(inspect).toHaveBeenCalledTimes(1);
-    const unsupported = await (await serve({})).probe(
-      "expectedStoreId=store-1&expectedRoot=%2Frepo%2Fa",
-    );
+    const unsupported = await (
+      await serve({})
+    ).probe("expectedStoreId=store-1&expectedRoot=%2Frepo%2Fa");
     expect(unsupported.status).toBe(501);
   });
 

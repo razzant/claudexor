@@ -46,9 +46,7 @@ export function registrationInUseInTx(
       )
       .get(partition.pid) ||
     tx
-      .prepare(
-        "SELECT 1 FROM deferred_message WHERE state IN ('waiting','held') AND pid=? LIMIT 1",
-      )
+      .prepare("SELECT 1 FROM deferred_message WHERE state IN ('waiting','held') AND pid=? LIMIT 1")
       .get(partition.pid)
   )
     return true;
@@ -98,10 +96,7 @@ export function draftRecordedFolders(
     const body = JSON.parse(blobs.read(bodySha).toString("utf8")) as {
       capturedStart?: { scope?: unknown; execution?: { workspaceRoot?: unknown } } | null;
     };
-    return recordedFolders(
-      body.capturedStart?.scope,
-      body.capturedStart?.execution?.workspaceRoot,
-    );
+    return recordedFolders(body.capturedStart?.scope, body.capturedStart?.execution?.workspaceRoot);
   } catch {
     return null;
   }
