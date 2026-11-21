@@ -6,20 +6,26 @@ on:
     paths:
       - "site/**"
       - "scripts/site-metadata-check.mjs"
+      - "scripts/site-download.mjs"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
+  # release.yml publishes with GITHUB_TOKEN, which does not trigger release.published.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
 
 permissions:
   contents: read
   pages: write
   id-token: write
 
-concurrency:
-  group: pages
-  cancel-in-progress: true
-
 jobs:
   deploy:
+    # Release candidates run on main; successful publications run on a version tag.
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v') && github.event.workflow_run.head_repository.full_name == github.repository)
+    concurrency:
+      group: pages
+      cancel-in-progress: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -29,6 +35,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify production metadata
         run: node scripts/site-metadata-check.mjs
+      - name: Resolve the published Mac installer
+        run: node scripts/site-download.mjs site/index.html
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Upload site
