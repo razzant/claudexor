@@ -9973,7 +9973,16 @@ code touching one of these areas must honor it or change it explicitly here.
   snapshot's `add -A` records. The one exception is an absent file the
   sparse-checkout patterns leave out (one `check-rules` over the absent marked
   files): a sparse checkout leaves it absent on purpose, and `add -A` skips it
-  too. A marked file
+  too. A new file outside the patterns, which `add -A` refuses, is taken first by
+  literal path (`add --sparse`) from its current bytes, staged or not, after the
+  omitted `.gitignore` files are marked skip-worktree in that scratch index so
+  Git reads their rules as it does in the user's checkout; additions staged in
+  the user's own index are read from it, read-only, relative to the capture
+  base and taken even when a working ignore rule now matches them (staged is
+  Git's fact, not an ignored untracked file), while an ignored file the user
+  never staged stays out; the candidate capture
+  does the same, and a checkout that is not sparse, or a Git without
+  `check-rules`, keeps Git's own refusal. A marked file
   that is gone otherwise (its parent become a file included) is a deletion, so a
   clean worktree's snapshot and a dirty one's agree; a Git without `check-rules`
   makes that snapshot read every file instead. Like the user's own `status`, that

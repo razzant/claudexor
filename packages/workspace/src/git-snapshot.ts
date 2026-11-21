@@ -10,18 +10,219 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WorkspaceError } from "@claudexor/core";
+import {
+  CAPTURE_BUFFER_BUDGET_BYTES,
+  CaptureOutputExceeded,
+  WorkspaceError,
+} from "@claudexor/core";
 import { lstatPresent, reachableFile } from "./fs-presence.js";
 import {
   nestedRepositoryExcludes,
   untrackedNestedRepositories,
 } from "./git-nested-repositories.js";
-import { diskProgress, gitObserved, proofStallMs, treeBlobBytes } from "./git-observed.js";
+import {
+  diskProgress,
+  gitObserved,
+  GitOperationError,
+  proofStallMs,
+  treeBlobBytes,
+} from "./git-observed.js";
 import { git, gitEnv, removeAfterDirectGit, revParse, SCRATCH_INDEX_CONFIG } from "./git-run.js";
 import { pathspecBatches } from "./object-compose.js";
-import { outsideSparseCheckout } from "./object-sparse.js";
+import { outsideSparseCheckout, sparsePatternsApply } from "./object-sparse.js";
 
 type GitEnv = Record<string, string>;
+
+/** The worktree top and `cwd`'s prefix below it. `--show-cdup` is only `../` steps, so no
+ * worktree path, whatever its spelling, is parsed. */
+async function worktreeTop(
+  cwd: string,
+  env: GitEnv,
+  label: string,
+  signal?: AbortSignal,
+): Promise<{ top: string; prefix: string }> {
+  const { stdout } = await gitObserved(cwd, ["rev-parse", "--show-cdup", "--show-prefix"], {
+    env,
+    label: `rev-parse (${label})`,
+    signal,
+  });
+  const lineEnd = stdout.indexOf("\n");
+  return {
+    top: join(realpathSync(cwd), stdout.slice(0, lineEnd)),
+    prefix: stdout.slice(lineEnd + 1, -1),
+  };
+}
+
+/** The NUL-delimited path names a Git listing prints, read byte-faithfully: a
+ * lossy `toString("utf8")` could turn one path into another or into none (a
+ * replacement character names no file and `git add` would refuse or mis-add),
+ * so the raw stdout is decoded strictly, one name at a time. A name that is
+ * not valid UTF-8 cannot be carried on to `git add` by its literal path, so
+ * the capture is refused rather than guessed or omitted. The listing keeps
+ * the capture buffer's explicit bound: a projection replaces the bounded
+ * in-memory capture, so it enforces the same budget itself. */
+async function gitNulNames(
+  cwd: string,
+  args: string[],
+  options: { env: Record<string, string | null>; label: string; signal?: AbortSignal },
+): Promise<string[]> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  await gitObserved(cwd, args, {
+    env: options.env,
+    label: options.label,
+    signal: options.signal,
+    stdout: {
+      write(chunk) {
+        bytes += chunk.length;
+        if (bytes > CAPTURE_BUFFER_BUDGET_BYTES) throw new CaptureOutputExceeded("stdout");
+        chunks.push(chunk);
+      },
+      end: () => "",
+    },
+  });
+  return decodeNulNames(Buffer.concat(chunks), options.label);
+}
+
+/** Split raw NUL-delimited stdout into path names, decoding each one strictly.
+ * A name that is not valid UTF-8 cannot be carried on to `git add` by its
+ * literal path, so this refuses ({@link GitOperationError} `capture_read_failed`)
+ * rather than guessing a replacement or omitting the file. */
+export function decodeNulNames(data: Buffer, label: string): string[] {
+  const names: string[] = [];
+  for (let start = 0; start < data.length;) {
+    const end = data.indexOf(0, start);
+    const record = data.subarray(start, end === -1 ? data.length : end);
+    if (record.length > 0) {
+      let name: string;
+      try {
+        name = STRICT_UTF8.decode(record);
+      } catch {
+        throw new GitOperationError(
+          "capture_read_failed",
+          `git ${label}: a listed path name is not valid UTF-8; refusing the capture instead of guessing it`,
+        );
+      }
+      names.push(name);
+    }
+    start = end === -1 ? data.length : end + 1;
+  }
+  return names;
+}
+
+/**
+ * Take the new regular files a sparse checkout holds outside its patterns (#734) into the
+ * scratch index `env` names, before the caller's `add -A`. Git refuses such a file there
+ * (exit 1) and `add -A --sparse` would record every omitted tracked file as a deletion, so
+ * the files are listed by Git itself: as untracked and not ignored against the capture
+ * base, and as the additions staged in the user's own index relative to that same base —
+ * a staged file is not untracked, and a working ignore rule that arrived after staging
+ * must not turn its capture into a silent omission. Both lists are scoped by Git (`--others
+ * --exclude-standard`, `diff --cached`) to `pathspec`, and each file is added by literal
+ * top-relative path from its current bytes; the listings are read byte-faithfully, and a
+ * name that is not valid UTF-8 refuses the capture rather than being guessed or omitted. A
+ * staged file whose working copy is gone is a staged deletion Git's `add -A` records, so
+ * it stays out. `add -A` then leaves the taken files
+ * as they are, as it leaves any tracked file outside the patterns. The omitted
+ * `.gitignore` files, absent from the disk, are marked skip-worktree first, which is how
+ * Git reads their rules from the index in the user's own checkout: an allow rule there
+ * keeps a file, and a rule there keeps an ignored one out.
+ * `base`: the exact capture base (`HEAD` for a snapshot, the caller's base for a
+ * candidate capture). `pathspec`: what the caller's `add -A` covers. A checkout that is
+ * not sparse, or a Git older than 2.41 that cannot tell the paths outside the patterns,
+ * changes nothing here: Git's own refusal of the file then stays.
+ */
+export async function addSparseNewFiles(
+  cwd: string,
+  env: GitEnv,
+  base: string,
+  pathspec: readonly string[],
+  progress: () => Promise<number>,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!(await sparsePatternsApply(cwd, env, signal))) return;
+  const { top } = await worktreeTop(cwd, env, "sparse new files", signal);
+  const list = async (args: string[], label: string) =>
+    gitNulNames(cwd, [...SCRATCH_INDEX_CONFIG, "ls-files", "--full-name", "-z", ...args], {
+      env,
+      label,
+      signal,
+    });
+  const rulesFiles = await list(["--", ":(top,glob)**/.gitignore"], "ls-files (ignore files)");
+  const omitted = await outsideSparseCheckout(top, rulesFiles, env, signal);
+  if (omitted === null) return;
+  const hidden = omitted.filter((path) => lstatPresent(join(top, path)) === undefined);
+  if (hidden.length > 0)
+    // At the top: the names are top-relative, whatever directory the caller runs in.
+    await gitObserved(
+      top,
+      [...SCRATCH_INDEX_CONFIG, "update-index", "--skip-worktree", "-z", "--stdin"],
+      {
+        env,
+        label: "update-index (omitted ignore files)",
+        input: `${hidden.join("\0")}\0`,
+        signal,
+      },
+    );
+  const untracked = (
+    await list(["--others", "--exclude-standard", "--", ...pathspec], "ls-files (new files)")
+  ).filter((name) => !name.endsWith("/")); // a trailing slash names a nested repository
+  // Staged additions are a fact of the user's own index, read-only here
+  // (GIT_OPTIONAL_LOCKS=0): `--others` on the scratch index cannot see them,
+  // and the ignore rules do not apply to what is already staged. GIT_INDEX_FILE
+  // is removed with `null`, not `delete`: deleting the key from the patch would
+  // leave the daemon's own inherited value in force, and this read must use the
+  // linked worktree's real index, never the capture's scratch index. `--no-renames`
+  // keeps a staged rename's new path an addition; `--no-relative` keeps the names
+  // top-relative whatever the user's `diff.relative` says.
+  const stagedEnv: Record<string, string | null> = {
+    ...env,
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_INDEX_FILE: null,
+  };
+  const staged = (
+    await gitNulNames(
+      cwd,
+      [
+        ...SCRATCH_INDEX_CONFIG,
+        "diff",
+        "--cached",
+        "--no-renames",
+        "--no-relative",
+        "--name-only",
+        "--diff-filter=A",
+        "-z",
+        base,
+        "--",
+        ...pathspec,
+      ],
+      { env: stagedEnv, label: "diff --cached (staged new files)", signal },
+    )
+  ).filter((name) => reachableFile(top, name)); // present, not a directory, not a nested repository
+  // Staged additions are already Git's fact about the user's index, so the ignore
+  // rules do not apply to taking them (-f); an ignored file the user never staged
+  // is still never force-added. A stage match outside the requested scope or the
+  // caller's excludes is simply not listed here, not an error.
+  const stagedNames = new Set(staged);
+  const outside = new Set(
+    (await outsideSparseCheckout(top, [...new Set([...untracked, ...staged])], env, signal)) ?? [],
+  );
+  for (const [paths, force] of [
+    [untracked.filter((path) => outside.has(path) && !stagedNames.has(path)), ""],
+    [staged.filter((path) => outside.has(path)), "-f"],
+  ] as const)
+    for (const batch of pathspecBatches(paths))
+      await gitObserved(
+        cwd,
+        [...SCRATCH_INDEX_CONFIG, "add", "--sparse", ...(force ? [force] : []), "--", ...batch],
+        {
+          env,
+          label: "add --sparse (new files)",
+          progress,
+          signal,
+        },
+      );
+}
 
 /**
  * Take the paths an accepted raw patch wrote (#594) into the scratch index `env`
@@ -41,15 +242,8 @@ export async function addKeptPaths(
   signal?: AbortSignal,
 ): Promise<void> {
   if (keep.length === 0) return;
-  // `--show-cdup` is only `../` steps, so no worktree path, whatever its spelling, is parsed.
-  const { stdout } = await gitObserved(cwd, ["rev-parse", "--show-cdup", "--show-prefix"], {
-    env,
-    label: "rev-parse (kept paths)",
-    signal,
-  });
-  const lineEnd = stdout.indexOf("\n");
-  const top = join(realpathSync(cwd), stdout.slice(0, lineEnd));
-  const prefix = scope === "cwd" ? stdout.slice(lineEnd + 1, -1) : "";
+  const { top, prefix: cwdPrefix } = await worktreeTop(cwd, env, "kept paths", signal);
+  const prefix = scope === "cwd" ? cwdPrefix : "";
   const reachable = keep.filter((path) => path.startsWith(prefix) && reachableFile(top, path));
   // `git add` refuses out-of-pattern paths; delivery names that refusal before writing.
   const outside = new Set((await outsideSparseCheckout(top, reachable, env, signal)) ?? []);
@@ -288,6 +482,7 @@ export async function stashCreate(
     // An undeclared nested repository stays out, as in the candidate capture:
     // `add` refuses one without a commit and would freeze one with a commit as
     // a commit link (`:/` keeps the whole-tree scope of the bare add).
+    await addSparseNewFiles(repo, env, headSha, [":/"], diskProgress(repo), signal);
     const nested = await untrackedNestedRepositories(repo, env, [":/"], "snapshot", signal);
     const add = await gitObserved(
       repo,
