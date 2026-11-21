@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync, statSync, type BigIntStats } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { Project as ProjectSchema, type Project, type ProjectNesting } from "@claudexor/schema";
 import { isClaudexorOwnedRuntimePath } from "@claudexor/util";
@@ -21,12 +21,22 @@ export interface RegisterProject {
   root: string;
   idempotencyKey: string;
   clientId: string;
+  /** The request opted in to `storeId` (`X-Claudexor-Store-Identity: 1`). */
+  includeStoreId?: boolean;
 }
 
 export interface ProjectRegistration {
   project: Project;
   created: boolean;
+  /** Present only on the store-identity opt-in, and only when known. */
+  storeId?: string;
 }
+
+/** The three-valued verdict of the one folder comparison of the paired-custody
+ * contract: `same` (the candidate is the recorded folder), `different` (it
+ * resolves elsewhere — an independent folder), `unknown` (it cannot be resolved
+ * now; never folded into `different`). */
+export type FolderComparison = "same" | "different" | "unknown";
 
 export function canonicalRoot(input: string): string {
   if (!isAbsolute(input))
@@ -50,6 +60,48 @@ export function canonicalRoot(input: string): string {
     throw Object.assign(new Error(`project root is not a directory: ${input}`), { status: 400 });
   }
   return root;
+}
+
+/** The one folder comparison, applied at check time: the candidate equals the
+ * recorded root, or resolves to it through the registry's own canonicalization
+ * (realpath — the same resolution `canonicalRoot` performs at registration).
+ * When two spellings still differ after resolution, only the two named
+ * directories' own filesystem identity (device and inode, one stat of each,
+ * compared as the exact 64-bit values the filesystem reports — no floating
+ * point rounding, no traversal and no durable tokens) may prove them the same
+ * folder or distinct objects — a string difference alone is never proof of
+ * `different` (case-variant spellings of one folder may resolve differently on
+ * some volumes), and a path that no longer names a directory on either side
+ * carries none of that evidence. A candidate that cannot be resolved now, or
+ * whose directory identity evidence is unavailable (inode 0), answers
+ * `unknown`, never `different` — unavailability is not independence. The
+ * resolved form itself is never returned or stored, and a non-absolute
+ * candidate is honestly `unknown`. The verdict is accounting only: it is never
+ * permission. */
+export function compareFolder(candidate: string, recordedRoot: string): FolderComparison {
+  if (candidate === recordedRoot) return "same";
+  if (!isAbsolute(candidate)) return "unknown";
+  let resolved: string;
+  try {
+    resolved = realpathSync(candidate);
+  } catch {
+    return "unknown";
+  }
+  if (resolved === recordedRoot) return "same";
+  let candidateDirectory: BigIntStats, recordedDirectory: BigIntStats;
+  try {
+    candidateDirectory = statSync(resolved, { bigint: true });
+    recordedDirectory = statSync(recordedRoot, { bigint: true });
+  } catch {
+    return "unknown";
+  }
+  // A stat that is not a directory is not directory-identity evidence.
+  if (!candidateDirectory.isDirectory() || !recordedDirectory.isDirectory()) return "unknown";
+  if (candidateDirectory.ino === 0n || recordedDirectory.ino === 0n) return "unknown";
+  return candidateDirectory.dev === recordedDirectory.dev &&
+    candidateDirectory.ino === recordedDirectory.ino
+    ? "same"
+    : "different";
 }
 
 /** F2 ghost-project guard: a project root inside the Claudexor

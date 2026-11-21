@@ -763,7 +763,19 @@
       "summary": "Register a project root as a durable handle.",
       "auth": "loopback_bearer",
       "request_schema": "ControlProjectRegisterRequest",
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlProjectRegisterResponse",
       "error_schema": "ControlProblem"
     },
@@ -866,6 +878,58 @@
       "request_schema": null,
       "parameters": [],
       "response_schema": null,
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/projects/:id/registration",
+      "mutating": false,
+      "applicability": "project",
+      "summary": "Read the addressed registration in the expected store at its recorded root.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [
+        {
+          "name": "expectedStoreId",
+          "in": "query",
+          "required": true,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "Registration receipt's store ID."
+        },
+        {
+          "name": "expectedRoot",
+          "in": "query",
+          "required": true,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "Registration receipt's canonical root."
+        },
+        {
+          "name": "candidate",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "The caller's already-admitted workspace choice, as an absolute path; the answer then adds candidateMatch — same (the registered folder), different (proven another directory), or unknown (undecidable now, never a case-normalization promise)."
+        }
+      ],
+      "response_schema": "ControlProjectRegistrationState",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/projects/:id/release",
+      "mutating": true,
+      "applicability": "project",
+      "summary": "Release the matching registration when idle, retaining threads, files and artifacts.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlProjectBinding",
+      "parameters": [],
+      "response_schema": "ControlProjectReleaseReceipt",
       "error_schema": "ControlProblem"
     },
     {
