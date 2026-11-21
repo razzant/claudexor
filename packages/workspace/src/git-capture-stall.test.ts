@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -94,5 +94,25 @@ describe("the silent-read allowance of a re-hash", () => {
     expect(await stashCreate(repo)).not.toBeNull();
 
     expect(boundOf("add -A (snapshot)")).toBe(scaled(repo));
+  });
+
+  // #734: a file an earlier snapshot took in is re-hashed there as silently as by `add -A`.
+  it("gives the step that takes new files outside the sparse patterns the same bound", async () => {
+    const repo = repository();
+    git(repo, "sparse-checkout", "set", "--cone", "inside");
+    mkdirSync(join(repo, "outside"));
+    writeFileSync(join(repo, "outside", "new.txt"), "new\n");
+    const user = () =>
+      ["index", "info/sparse-checkout"].map((file) => readFileSync(join(repo, ".git", file)));
+    const before = user();
+
+    await captureWorkingTreeTransient(repo, "HEAD");
+    const captured = boundOf("update-index (outside sparse patterns)");
+    bounds.splice(0);
+    expect(await stashCreate(repo)).not.toBeNull();
+    const snapshot = boundOf("update-index (outside sparse patterns)");
+
+    expect(user()).toEqual(before);
+    expect([captured, snapshot]).toEqual([scaled(repo), scaled(repo)]);
   });
 });

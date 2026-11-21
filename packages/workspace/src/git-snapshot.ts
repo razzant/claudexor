@@ -12,14 +12,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceError } from "@claudexor/core";
 import { lstatPresent, reachableFile } from "./fs-presence.js";
-import {
-  nestedRepositoryExcludes,
-  untrackedNestedRepositories,
-} from "./git-nested-repositories.js";
+import { nestedRepositoryExcludes, untrackedPaths } from "./git-nested-repositories.js";
 import { diskProgress, gitObserved, proofStallMs, treeBlobBytes } from "./git-observed.js";
 import { git, gitEnv, removeAfterDirectGit, revParse, SCRATCH_INDEX_CONFIG } from "./git-run.js";
 import { pathspecBatches } from "./object-compose.js";
-import { outsideSparseCheckout } from "./object-sparse.js";
+import { addOutsideSparseCheckout, outsideSparseCheckout } from "./object-sparse.js";
 
 type GitEnv = Record<string, string>;
 
@@ -161,7 +158,8 @@ async function snapshotStatus(
   const env: GitEnv = { ...objects, GIT_OPTIONAL_LOCKS: "0" };
   const top = await gitEnv(repo, ["rev-parse", "--show-toplevel"], env, undefined, signal);
   if (top.code !== 0) throw new WorkspaceError(`snapshot top level failed: ${top.stderr.trim()}`);
-  const root = top.stdout.trim();
+  // Only the line end: a directory name may end in a space.
+  const root = top.stdout.replace(/\n$/, "");
   const marked = await markedEntries(root, env, new Set(exact), signal);
   // A parent that became a file (ENOTDIR) means the marked file is not there.
   const compared: string[] = [];
@@ -288,7 +286,26 @@ export async function stashCreate(
     // An undeclared nested repository stays out, as in the candidate capture:
     // `add` refuses one without a commit and would freeze one with a commit as
     // a commit link (`:/` keeps the whole-tree scope of the bare add).
-    const nested = await untrackedNestedRepositories(repo, env, [":/"], "snapshot", signal);
+    const listed = await untrackedPaths(repo, env, [":/"], "snapshot", signal);
+    const watch = {
+      progress: diskProgress(repo),
+      // Re-hashing HEAD's files reads silently: bounded by their bytes, not a flat ten minutes.
+      stallMs: proofStallMs(await treeBlobBytes(repo, headSha, env, signal)),
+    };
+    // A new file outside the sparse-checkout patterns, or one a `.gitignore` the patterns
+    // leave out un-ignores, is taken first: `add -A` refuses the one and skips the other
+    // (#734). A repository found among them stays out, like the listed ones.
+    const nested = [
+      ...listed.nested,
+      ...(await addOutsideSparseCheckout(
+        repo,
+        env,
+        listed.files,
+        { treeish: headSha, scope: [":/"], boundary: null },
+        watch,
+        signal,
+      )),
+    ];
     const add = await gitObserved(
       repo,
       [
@@ -297,15 +314,7 @@ export async function stashCreate(
         "-A",
         ...(nested.length ? ["--", ":/", ...nestedRepositoryExcludes(nested)] : []),
       ],
-      {
-        env,
-        label: "add -A (snapshot)",
-        progress: diskProgress(repo),
-        allowFailure: true,
-        signal,
-        // Re-hashing HEAD's files reads silently: bounded by their bytes, not a flat ten minutes.
-        stallMs: proofStallMs(await treeBlobBytes(repo, headSha, env, signal)),
-      },
+      { env, label: "add -A (snapshot)", allowFailure: true, signal, ...watch },
     );
     if (add.code !== 0) throw new WorkspaceError(`snapshot add -A failed: ${add.stderr.trim()}`);
     const excludes = nestedRepositoryExcludes(nested);

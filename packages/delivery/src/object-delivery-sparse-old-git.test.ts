@@ -167,6 +167,35 @@ describe("a sparse checkout whose Git has no sparse-checkout check-rules", () =>
     process.env["CX_OLD_GIT"] = "1";
     expect(await snapshotTree(f.repo)).toBe(git(f.repo, "rev-parse", "HEAD"));
   });
+
+  // #734: the step that takes new files outside the patterns asks `check-rules` too.
+  // Without it, both captures keep what `add -A` alone answers.
+  it("still holds a new file inside the patterns and refuses one outside, as before", async () => {
+    const f = await fixture(true);
+    process.env["CX_OLD_GIT"] = "1";
+    writeFileSync(join(f.repo, "near/added.txt"), "added\n");
+    const user = () =>
+      ["index", "info/sparse-checkout"].map((file) => readFileSync(join(f.repo, ".git", file)));
+    const before = user();
+
+    const snapshot = await snapshotTree(f.repo);
+    rmSync(asked, { force: true });
+    const inside = await captureWorkingTreeTransient(f.repo, "HEAD", [], { projectRoot: f.repo });
+
+    expect(user()).toEqual(before);
+    expect(timesAsked()).toBe(1);
+    expect(git(f.repo, "diff", "--name-status", "HEAD", snapshot)).toBe("A\tnear/added.txt");
+    expect(inside.captureIncomplete).toBe(false);
+    expect(inside.patch).toContain("b/near/added.txt");
+
+    mkdirSync(join(f.repo, "tests"));
+    writeFileSync(join(f.repo, "tests/test.py"), "print(1)\n");
+    await expect(snapshotTree(f.repo)).rejects.toThrow(/tests\/test\.py/);
+    const outside = await captureWorkingTreeTransient(f.repo, "HEAD", [], { projectRoot: f.repo });
+    expect(user()).toEqual(before);
+    expect(outside.captureIncomplete).toBe(true);
+    expect(outside.captureFailure?.message).toContain("tests/test.py");
+  });
 });
 
 describe("a checkout that is not sparse (the control)", () => {

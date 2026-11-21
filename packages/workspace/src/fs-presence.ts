@@ -22,9 +22,10 @@ export function existsStrict(path: string): boolean {
  * What lstat finds at `path`, or undefined when nothing is there: no entry
  * (ENOENT), or a parent that is not a directory (ENOTDIR). Any other failure (a
  * parent that cannot be searched, an I/O error) says nothing about presence and is
- * thrown, never read as absence.
+ * thrown, never read as absence. A Buffer names a path by its bytes, one that is
+ * not UTF-8 included.
  */
-export function lstatPresent(path: string): Stats | undefined {
+export function lstatPresent(path: string | Buffer): Stats | undefined {
   try {
     return lstatSync(path, { throwIfNoEntry: false });
   } catch (error) {

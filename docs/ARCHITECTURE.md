@@ -9987,9 +9987,28 @@ code touching one of these areas must honor it or change it explicitly here.
   exactly those files, not the whole tree a dirty snapshot's `add -A` re-reads.
   The copy keeps the user's index time, so an entry Git would compare as racily
   clean is still compared. `branch`, `commit` and `pr` keep the stat cache for
-  the paths they write through the real index (the limit `git checkout` has). A modified file outside the
-  patterns is still skipped by `add -A`, so a snapshot and an in-place turn's
-  capture miss that edit, as before. Such a timeout fails that capture or snapshot,
+  the paths they write through the real index (the limit `git checkout` has). A new file outside
+  the patterns, which `add -A` refuses (#734), enters the scratch index first, through one
+  `update-index --add --remove` under that `add`'s own stall bound: the untracked files
+  `check-rules` puts outside, those the checkout's own Git lists as new where the scratch index's
+  ignores them (a `.gitignore` the patterns leave out, which only the checkout's own index reads,
+  un-ignores them; inside the patterns too, within the capture's pathspec and not in its base), then
+  those out there that a dirty base added to its own boundary commit, wherever HEAD is by now, so a
+  later turn records their edit or removal. The new names go first, so the step replaces no entry (a
+  file where the base holds a directory, or the reverse, fails it); it takes no commit link, and
+  names travel C-quoted, byte for byte. Not taken, so the capture fails on it as before: a new file
+  that only a `.gitignore` outside the patterns ignores (the checkout's own Git says so), one whose
+  name is not UTF-8, one below a commit link only that index holds, and any new file out there with
+  a Git older than 2.41 (no `check-rules`). A directory there that became another repository where
+  the base has files stays out, named like any undeclared nested repository, with what a dirty base
+  took in below it as that base has it. A file a dirty base took in that is absent from the worktree
+  (its name read as bytes) is the checkout's own index entry where that index marks it skip-worktree
+  (a worktree made on the snapshot is sparse too; a commit made since keeps its content), else it is
+  a removal. The free-space preflight counts these files
+  too, ignored by now or not. On a case-insensitive volume a new file takes its directory's on-disk
+  spelling, even where HEAD tracks one differing only in case (the tree then holds both). A
+  modified file HEAD tracks outside the patterns is still skipped by `add -A`: a snapshot and an
+  in-place turn's capture miss that edit, as before. Such a timeout fails that capture or snapshot,
   except that the render's only leaves its view out (`render_failed`) and the
   inventory pass only leaves its inventory out. Claudexor's own isolated clones (an
   envelope, a delivery's fresh verify) read the source repository's object directory
