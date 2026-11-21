@@ -16,7 +16,6 @@ import {
   type ObservedGitResult,
 } from "./git-observed.js";
 import { SCRATCH_INDEX_CONFIG, STAT_TRUST_OFF } from "./git-run.js";
-import { pathspecBatches } from "./object-compose.js";
 
 /** `git sparse-checkout check-rules` arrived in Git 2.41; an older Git answers its
  * usage error (exit 129: an unknown subcommand) instead. */
@@ -115,38 +114,71 @@ async function addedByBase(
   return listedNames(listed.stdout);
 }
 
-/** Those of the untracked `paths` (text, relative to `top`) that the checkout's own
- * Git ignores. Its own index, never the scratch one, reads a `.gitignore` the patterns
- * leave out; each name is a literal pathspec, so one that looks like a glob never
- * stands for a tracked neighbour (which `check-ignore` reads as "not ignored"). */
-async function ignoredByCheckout(
+/** `env` for a Git that reads the checkout's own index: the scratch one is dropped. */
+function checkoutEnv(env: Record<string, string>): Record<string, string> {
+  const { GIT_INDEX_FILE: _scratch, ...checkout } = env;
+  return checkout;
+}
+
+/**
+ * What the checkout's own Git says of `names` (bytes, as {@link listedNames} gives them):
+ * one `ls-files -t -z --cached`, with `--others --exclude-standard` when `untracked`, run
+ * at the top on the checkout's own index (the scratch one lacks the `.gitignore` files the
+ * patterns leave out) and given no pathspec. Git walks the worktree as `status` does, skips
+ * ignored directories, reads every `.gitignore` on the way (one the patterns leave out from
+ * that index) and prints each tracked name, tagged `S` where the index marks it
+ * skip-worktree, and each untracked name its rules do not ignore, tagged `?`. The listing is
+ * streamed and a name is looked up as bytes, so an ignored name simply has no tag. Asking
+ * for the names cannot be made literal: `check-ignore` and `ls-files` read a name as a
+ * pathspec (a glob stands for its tracked neighbour, and the walk begins at the paths'
+ * common prefix, below a `.gitignore` above it), and the backslash that escapes a glob
+ * character is part of the string the ignore rules then match.
+ */
+async function checkoutTags(
   top: string,
-  paths: readonly string[],
+  names: ReadonlySet<string>,
+  untracked: boolean,
   env: Record<string, string>,
   signal?: AbortSignal,
-): Promise<Set<string | null>> {
-  const { GIT_INDEX_FILE: _scratch, ...checkout } = env;
-  const ignored = new Set<string | null>();
-  for (const batch of pathspecBatches(paths)) {
-    const listed = await gitObserved(
-      top,
-      [
-        ...STAT_TRUST_OFF,
-        "-c",
-        "core.untrackedCache=false",
-        ...QUOTED_NAMES,
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-        "--",
-        ...batch,
-      ],
-      { env: checkout, label: "ls-files --ignored (outside sparse patterns)", signal },
-    );
-    for (const name of listedNames(listed.stdout)) ignored.add(nameText(name));
-  }
-  return ignored;
+): Promise<Map<string, string>> {
+  const tags = new Map<string, string>();
+  const take = (record: Buffer) => {
+    // "<tag> <name>", a tag being one character.
+    const name = record.subarray(2).toString("latin1");
+    if (names.has(name)) tags.set(name, String.fromCharCode(record[0] ?? 0));
+  };
+  let carry = Buffer.alloc(0);
+  await gitObserved(
+    top,
+    [
+      ...STAT_TRUST_OFF,
+      "-c",
+      "core.untrackedCache=false",
+      "ls-files",
+      "-t",
+      "-z",
+      "--cached",
+      ...(untracked ? ["--others", "--exclude-standard"] : []),
+    ],
+    {
+      env: checkoutEnv(env),
+      label: "ls-files -t (outside sparse patterns)",
+      signal,
+      stdout: {
+        write(chunk) {
+          const data = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
+          let start = 0;
+          for (let end = data.indexOf(0); end !== -1; end = data.indexOf(0, start)) {
+            take(data.subarray(start, end));
+            start = end + 1;
+          }
+          carry = Buffer.from(data.subarray(start));
+        },
+        end: () => "",
+      },
+    },
+  );
+  return tags;
 }
 
 /**
@@ -166,15 +198,24 @@ async function ignoredByCheckout(
  * go first, so it replaces no entry: a new file where the base holds a directory, or
  * below a path the base holds as a file, fails the capture. Names travel as Git's own
  * quoted lines, byte for byte. A new file is not taken, and so still fails the capture,
- * when the checkout's own Git ignores it (only that Git's index reads a `.gitignore`
- * the patterns leave out) or when its name is not UTF-8. Nor is one below a directory
- * that became another repository where the base has files, and a file the base took in
- * below one stays as the base has it: those repositories are returned, for the caller to
- * leave out of its `add -A` and to name (a base file whose name is not UTF-8 cannot be
- * looked up, and is followed as before). A base file is followed whatever the checkout's
- * Git ignores by now, as `add -A` follows a tracked one. A commit link is never taken. A
- * checkout that is not sparse costs one `git config`, and one whose Git cannot evaluate
- * the patterns (older than 2.41) keeps `add -A`'s answer.
+ * when the checkout's own Git ignores it (it lists the file nowhere: {@link checkoutTags},
+ * the one reader of a `.gitignore` the patterns leave out) or when its name is not
+ * UTF-8. Nor is one below a directory that became another repository where the base has
+ * files, and a file the base took in below one stays as the base has it: those
+ * repositories are returned, for the caller to leave out of its `add -A` and to name (a
+ * base file whose name is not UTF-8 cannot be looked up, and is followed as before). A
+ * base file is followed whatever the checkout's Git ignores by now, as `add -A` follows a
+ * tracked one; but one that is absent from the worktree while the checkout's own index
+ * marks it skip-worktree stays as the base has it, as the clean check of a snapshot leaves
+ * such a file: a worktree made on the snapshot is a sparse checkout too and leaves every
+ * file outside its patterns absent, so its removal there is nobody's deletion. One absent
+ * without that mark is a removal. A commit link is never taken. A checkout that is not
+ * sparse costs one `git config`, and one whose Git cannot evaluate the patterns (older
+ * than 2.41) keeps `add -A`'s answer.
+ *
+ * `space`: the capture's free-space preflight, asked before anything is written to count
+ * also the files this step takes, among them one the user's Git ignores by now, which
+ * the `git status` it estimated from does not list.
  */
 export async function addOutsideSparseCheckout(
   cwd: string,
@@ -183,6 +224,7 @@ export async function addOutsideSparseCheckout(
   taken: { boundary: string; scope: readonly string[] } | null,
   watch: { progress: () => Promise<number>; stallMs: number },
   signal?: AbortSignal,
+  space?: { alsoReading(paths: readonly string[]): void },
 ): Promise<string[]> {
   if (untracked.length === 0 && !taken) return [];
   if (!(await sparsePatternsApply(cwd, env, signal))) return [];
@@ -225,30 +267,43 @@ export async function addOutsideSparseCheckout(
     signal,
   );
   const candidates = fresh.filter(({ text }) => !repositories.inside.has(text));
-  const ignored = await ignoredByCheckout(
-    top,
-    candidates.map(({ text }) => text),
-    env,
-    signal,
+  const followed = held.filter(({ text }) => text === null || !repositories.inside.has(text));
+  // A base file the worktree lacks: whether its absence is the checkout's own doing (the
+  // patterns leave it out), or a removal, is in the checkout's own index.
+  const absent = followed.filter(
+    ({ text }) => text !== null && lstatPresent(join(top, text)) === undefined,
   );
-  const names = [
-    ...candidates.filter(({ text }) => !ignored.has(text)).map(({ name }) => name),
-    ...held
-      .filter(({ text }) => text === null || !repositories.inside.has(text))
-      .map(({ name }) => name),
+  const tags =
+    candidates.length + absent.length > 0
+      ? await checkoutTags(
+          top,
+          new Set([...candidates, ...absent].map(({ name }) => name)),
+          candidates.length > 0,
+          env,
+          signal,
+        )
+      : new Map<string, string>();
+  const taking = [
+    // Git lists what it tracks and what it does not ignore: a name it lists nowhere is ignored.
+    ...candidates.filter(({ name }) => tags.has(name)),
+    // Absent, and marked skip-worktree: that checkout leaves the file out, nobody removed it,
+    // and `--remove` would record a deletion. (Only absent names are asked for.)
+    ...followed.filter(({ name }) => tags.get(name) !== "S"),
   ];
-  if (names.length > 0)
+  if (taking.length > 0) {
+    space?.alsoReading(taking.flatMap(({ text }) => (text === null ? [] : [text])));
     await gitObserved(
       top,
       [...SCRATCH_INDEX_CONFIG, "update-index", "--add", "--remove", "--stdin"],
       {
         env,
         label: "update-index (outside sparse patterns)",
-        input: quotedNames(names),
+        input: quotedNames(taking.map(({ name }) => name)),
         ...watch,
         signal,
       },
     );
+  }
   return repositories.nested;
 }
 

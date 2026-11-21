@@ -123,7 +123,7 @@ export async function captureWorkingTreeTransient(
         `transient diff could not resolve Git objects: ${actualObjects.stderr.trim()}`,
       );
     }
-    await preflightCaptureSpace(repo, scratchDir, { GIT_OPTIONAL_LOCKS: "0" });
+    const space = await preflightCaptureSpace(repo, scratchDir, { GIT_OPTIONAL_LOCKS: "0" });
     // The lease comes first: a prune then either finished before or yields until
     // the capture's own custody is recorded. No store yet: nothing to mount.
     const store = objectStorePath(projectRoot);
@@ -162,7 +162,9 @@ export async function captureWorkingTreeTransient(
     const watch = { progress, stallMs: proofStallMs(await treeBlobBytes(repo, baseSha, env)) };
     // New files outside the sparse-checkout patterns, and those a dirty base added to
     // its boundary commit on an earlier turn, are taken first: `add -A` refuses the one
-    // and skips the other (#734). A repository found among them stays out, named.
+    // and skips the other (#734). A repository found among them stays out, named. The
+    // preflight counts them too before they are written: `git status` lists none of them
+    // that the user's Git ignores by now.
     const nested = [
       ...listed.nested,
       ...(await addOutsideSparseCheckout(
@@ -171,6 +173,8 @@ export async function captureWorkingTreeTransient(
         listed.files,
         boundaryCommit && boundaryCommit !== commit ? { boundary: boundaryCommit, scope } : null,
         watch,
+        undefined,
+        space,
       )),
     ];
     const excludes = [...pathExcludes, ...nestedRepositoryExcludes(nested)];

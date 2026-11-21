@@ -96,41 +96,72 @@ export function objectDirectoryProgress(objectsDir: string): () => Promise<numbe
   };
 }
 
+/** What {@link preflightCaptureSpace} counted. */
+export interface CaptureSpaceEstimate {
+  /** The bytes of the files `git status` listed. */
+  bytes: number;
+  /**
+   * The same refusal, counting also those of `paths` (relative to the worktree top) that
+   * `git status` did not list: a step that reads files beyond its answer asks this before
+   * it writes. Each path counts once, listed or not. Nothing is asked when `git status`
+   * could not be read.
+   */
+  alsoReading(paths: readonly string[]): void;
+}
+
 /**
  * Free-space preflight BEFORE a capture writes anything (owner decision
  * 29.10 17:10): the scratch object directory will hold at most the bytes of the
  * worktree's changed and untracked files, so refuse with exact numbers when the
- * filesystem cannot hold them; nothing has been written at that point.
+ * filesystem cannot hold them; nothing has been written at that point. `git status`
+ * does not list every file the capture reads: one the user's Git ignores but the
+ * base holds is followed all the same, which the step that takes it counts by
+ * {@link CaptureSpaceEstimate.alsoReading}, before its own write.
  */
 export async function preflightCaptureSpace(
   repo: string,
   scratchDir: string,
   env: Record<string, string>,
-): Promise<number> {
+): Promise<CaptureSpaceEstimate> {
   const status = await gitObserved(
     repo,
     ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"],
     { env, label: "status (space preflight)", allowFailure: true },
   );
-  if (status.code !== 0) return 0;
+  if (status.code !== 0) return { bytes: 0, alsoReading: () => {} };
   const top = (
     await gitObserved(repo, ["rev-parse", "--show-toplevel"], {
       env,
       label: "rev-parse --show-toplevel",
     })
   ).stdout.trim();
-  let bytes = 0;
-  for (const entry of status.stdout.split("\0")) {
-    if (entry.length < 4 || entry[1] === "D" || entry[0] === "D") continue;
+  /** What a file holds, in bytes: nothing for a vanished one, a directory or a link. */
+  const fileBytes = (path: string): number => {
     try {
-      const stat = lstatSync(join(top, entry.slice(3)));
-      if (stat.isFile()) bytes += stat.size;
+      const stat = lstatSync(join(top, path));
+      return stat.isFile() ? stat.size : 0;
     } catch {
       // Vanished meanwhile: it adds nothing to write.
+      return 0;
     }
+  };
+  let bytes = 0;
+  const listed = new Set<string>();
+  for (const entry of status.stdout.split("\0")) {
+    if (entry.length < 4 || entry[1] === "D" || entry[0] === "D") continue;
+    listed.add(entry.slice(3));
+    bytes += fileBytes(entry.slice(3));
   }
   assertSpaceFor(scratchDir, bytes, "capture");
-  return bytes;
+  return {
+    bytes,
+    alsoReading(paths) {
+      const more = new Set(paths.filter((path) => !listed.has(path)));
+      let extra = 0;
+      for (const path of more) extra += fileBytes(path);
+      assertSpaceFor(scratchDir, bytes + extra, "capture");
+    },
+  };
 }
 
 /**
