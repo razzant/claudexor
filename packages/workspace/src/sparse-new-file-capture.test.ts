@@ -60,6 +60,11 @@ function repository(sparse: boolean, patterns = ["--cone", "src"]): string {
   const repo = mkdtempSync(join(tmpdir(), "cx-sparse-new-file-"));
   dirs.push(repo);
   git(repo, "init", "-q", "-b", "main");
+  // #734 Windows CI: the runner's global Git config sets core.autocrlf=true, and the
+  // product's collectors inherit that environment while the native-tree helper above is
+  // isolated by GIT_CONFIG_NOSYSTEM/GIT_CONFIG_GLOBAL. Record the same line-ending rule
+  // in each synthetic repository, so both read one config and stage/commit one byte form.
+  git(repo, "config", "core.autocrlf", "false");
   put(repo, "src/a", "one\n");
   put(repo, "other/b", "two\n");
   put(repo, ".gitignore", "*.txt\n");
