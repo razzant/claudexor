@@ -158,7 +158,8 @@ async function snapshotStatus(
   const env: GitEnv = { ...objects, GIT_OPTIONAL_LOCKS: "0" };
   const top = await gitEnv(repo, ["rev-parse", "--show-toplevel"], env, undefined, signal);
   if (top.code !== 0) throw new WorkspaceError(`snapshot top level failed: ${top.stderr.trim()}`);
-  const root = top.stdout.trim();
+  // Only the line end: a directory name may end in a space.
+  const root = top.stdout.replace(/\n$/, "");
   const marked = await markedEntries(root, env, new Set(exact), signal);
   // A parent that became a file (ENOTDIR) means the marked file is not there.
   const compared: string[] = [];
@@ -291,11 +292,19 @@ export async function stashCreate(
       // Re-hashing HEAD's files reads silently: bounded by their bytes, not a flat ten minutes.
       stallMs: proofStallMs(await treeBlobBytes(repo, headSha, env, signal)),
     };
-    // A new file outside the sparse-checkout patterns is taken first: `add -A` refuses
-    // it (#734). A repository found among them stays out, like the listed ones.
+    // A new file outside the sparse-checkout patterns, or one a `.gitignore` the patterns
+    // leave out un-ignores, is taken first: `add -A` refuses the one and skips the other
+    // (#734). A repository found among them stays out, like the listed ones.
     const nested = [
       ...listed.nested,
-      ...(await addOutsideSparseCheckout(repo, env, listed.files, null, watch, signal)),
+      ...(await addOutsideSparseCheckout(
+        repo,
+        env,
+        listed.files,
+        { treeish: headSha, scope: [":/"], boundary: null },
+        watch,
+        signal,
+      )),
     ];
     const add = await gitObserved(
       repo,

@@ -129,12 +129,13 @@ export async function preflightCaptureSpace(
     { env, label: "status (space preflight)", allowFailure: true },
   );
   if (status.code !== 0) return { bytes: 0, alsoReading: () => {} };
+  // Only the line end: a directory name may end in a space.
   const top = (
     await gitObserved(repo, ["rev-parse", "--show-toplevel"], {
       env,
       label: "rev-parse --show-toplevel",
     })
-  ).stdout.trim();
+  ).stdout.replace(/\n$/, "");
   /** What a file holds, in bytes: nothing for a vanished one, a directory or a link. */
   const fileBytes = (path: string): number => {
     try {

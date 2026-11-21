@@ -160,18 +160,22 @@ export async function captureWorkingTreeTransient(
     // A tracked file whose blob the base already holds is re-hashed without a sign
     // (no output, no new object), so the silent read is bounded by the base's bytes.
     const watch = { progress, stallMs: proofStallMs(await treeBlobBytes(repo, baseSha, env)) };
-    // New files outside the sparse-checkout patterns, and those a dirty base added to
-    // its boundary commit on an earlier turn, are taken first: `add -A` refuses the one
-    // and skips the other (#734). A repository found among them stays out, named. The
-    // preflight counts them too before they are written: `git status` lists none of them
-    // that the user's Git ignores by now.
+    // New files outside the sparse-checkout patterns, those a `.gitignore` the patterns
+    // leave out un-ignores, and those a dirty base added to its boundary commit on an
+    // earlier turn, are taken first: `add -A` refuses the first and skips the others (#734).
+    // A repository found among them stays out, named. The preflight counts them too before
+    // they are written: `git status` lists none of them that the user's Git ignores by now.
     const nested = [
       ...listed.nested,
       ...(await addOutsideSparseCheckout(
         repo,
         env,
         listed.files,
-        boundaryCommit && boundaryCommit !== commit ? { boundary: boundaryCommit, scope } : null,
+        {
+          treeish: baseSha,
+          scope,
+          boundary: boundaryCommit && boundaryCommit !== commit ? boundaryCommit : null,
+        },
         watch,
         undefined,
         space,

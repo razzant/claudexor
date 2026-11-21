@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -67,14 +68,17 @@ const PATTERNS = {
   "non-cone": ["--no-cone", "/.gitattributes", "/.gitignore", "src/"],
 };
 
-/** src/a and other/b are tracked, with any `more`; only src/ (and the root's own files) is checked out. */
+/** src/a and other/b are tracked, with any `more`; only src/ (and the root's own files) is
+ * checked out. `at`: a directory to make the repository in, instead of a fresh one. */
 function sparseRepo(
   mode: keyof typeof PATTERNS = "cone",
   more: Record<string, string> = {},
   patterns: readonly string[] = PATTERNS[mode],
+  at?: string,
 ): string {
-  const repo = mkdtempSync(join(tmpdir(), "cx-sparse-new-file-"));
-  dirs.push(repo);
+  const repo = at ?? mkdtempSync(join(tmpdir(), "cx-sparse-new-file-"));
+  if (at) mkdirSync(at, { recursive: true });
+  else dirs.push(repo);
   git(repo, "init", "-q", "-b", "main");
   put(repo, "src/a", "one\n");
   put(repo, "other/b", "two\n");
@@ -104,6 +108,64 @@ const changes = (repo: string, base: string, tree: string) =>
   git(repo, "diff", "--no-renames", "--name-status", base, tree).split("\n").filter(Boolean);
 const blob = (repo: string, tree: string, path: string) =>
   gitBytes(repo, ["cat-file", "blob", `${tree}:${path}`]);
+
+/** A commit as a dirty snapshot records one, on HEAD: the tree of `from` with `added` too,
+ * built from objects alone, so no file system need hold a name that is not UTF-8. */
+function snapshotAdding(repo: string, from: string, added: [Buffer, string][]): string {
+  const index = {
+    ...ENV,
+    GIT_INDEX_FILE: join(repo, ".git/base-index"),
+    GIT_AUTHOR_NAME: "Claudexor",
+    GIT_AUTHOR_EMAIL: "noreply@claudexor.local",
+  };
+  const run = (args: string[], input?: Buffer) =>
+    execFileSync("git", ["-C", repo, ...args], { env: index, input })
+      .toString("utf8")
+      .trim();
+  run(["read-tree", from]);
+  for (const [name, content] of added) {
+    const oid = run(["hash-object", "-w", "--stdin"], Buffer.from(content));
+    run(
+      ["update-index", "-z", "--index-info"],
+      Buffer.concat([Buffer.from(`100644 ${oid}\t`), name, Buffer.from([0])]),
+    );
+  }
+  return run([
+    "commit-tree",
+    run(["write-tree"]),
+    "-p",
+    "HEAD",
+    "-m",
+    "claudexor: dirty worktree snapshot (incl. untracked)",
+  ]);
+}
+
+/** A worktree of `repo` on `commit`, sparse as `repo` is (Git copies the patterns; a Git that
+ * does not gets them here): every file outside them absent, marked skip-worktree by Git. */
+function sparseWorktree(repo: string, commit: string): string {
+  const holder = mkdtempSync(join(tmpdir(), "cx-sparse-worktree-"));
+  dirs.push(holder);
+  const thread = join(holder, "thread");
+  git(repo, "worktree", "add", "-q", "--detach", thread, commit);
+  git(thread, "sparse-checkout", "set", "--cone", "src");
+  return thread;
+}
+
+/** `name` (bytes) below `dir`, as a path a file-system call takes. */
+const bytesPath = (dir: string, name: Buffer) => Buffer.concat([Buffer.from(`${dir}/`), name]);
+
+/** Whether this file system holds a name that is not UTF-8 byte for byte (APFS refuses one). */
+function holdsBytes(): boolean {
+  const dir = mkdtempSync(join(tmpdir(), "cx-sparse-bytes-"));
+  dirs.push(dir);
+  const name = Buffer.from([0x78, 0xff]);
+  try {
+    writeFileSync(bytesPath(dir, name), "");
+  } catch {
+    return false;
+  }
+  return readdirSync(dir, { encoding: "buffer" }).some((entry) => entry.equals(name));
+}
 
 const EVIDENCE = Buffer.from([0, 1, 2, 0xff, 0x65, 0x76, 0]);
 const ISSUE = ["A\t.review-evidence/check.txt", "M\tsrc/a", "A\ttests/new_test.py"];
@@ -304,23 +366,22 @@ describe("new files outside the sparse-checkout patterns (#734)", () => {
   });
 
   it("do not false-positive on bracket names: shape[2].csv is not shape2.csv", async () => {
-    const repo = sparseRepo();
-    put(repo, "other/.gitignore", "shape2.csv\n");
-    git(repo, "add", "-f", "other/.gitignore");
-    git(repo, "commit", "-qm", "ignore rule");
-    git(repo, "sparse-checkout", "set", "--cone", "src");
+    // The .gitignore must be committed BEFORE sparse-checkout excludes other/,
+    // so pass it via `more` to sparseRepo (git add -f on an excluded dir fails).
+    const repo = sparseRepo("cone", { "other/.gitignore": "shape2.csv\n" });
     put(repo, "src/a", "edited\n");
     put(repo, "other/shape[2].csv", "data\n");
-    put(repo, "other/shape2.csv", "ignored\n");
     const before = userBytes(repo);
 
     const capture = await captureWorkingTreeTransient(repo, "HEAD", [], { projectRoot: repo });
 
     expect(userBytes(repo)).toEqual(before);
     // shape[2].csv is NOT ignored (the rule matches shape2.csv, not shape[2].csv).
-    // shape2.csv IS ignored and must not appear; capture fails on it as before.
-    expect(capture.captureIncomplete).toBe(true);
-    expect(capture.captureFailure?.message).toContain("shape2.csv");
+    // It must be captured successfully.
+    expect(capture.captureIncomplete).toBe(false);
+    const tree = capture.result!.candidate_tree;
+    expect(blob(repo, tree, "other/shape[2].csv").toString()).toBe("data\n");
+    expect(changes(repo, "HEAD", tree)).toEqual(["A\tother/shape[2].csv", "M\tsrc/a"]);
   });
 
   it("are left as the snapshot has them where the user committed them and the sparse checkout then left them out again", async () => {
@@ -337,6 +398,127 @@ describe("new files outside the sparse-checkout patterns (#734)", () => {
     put(repo, "src/a", "one edited twice\n");
 
     expect(changes(repo, base, await captured(repo, base))).toEqual(["M\tsrc/a"]);
+  });
+
+  it("are what the checkout's own index holds where the user committed a new version and the sparse checkout then left it out", async () => {
+    const repo = sparseRepo();
+    work(repo);
+    const base = await snapshotTree(repo); // took in print(1)
+    put(repo, "tests/new_test.py", "print(2)\r\n");
+    git(repo, "add", "--sparse", "tests/new_test.py", ".review-evidence/check.txt");
+    git(repo, "commit", "-qm", "keep the work, edited");
+    git(repo, "sparse-checkout", "reapply");
+    expect(git(repo, "ls-files", "-t", "tests")).toBe("S tests/new_test.py");
+    expect(existsSync(join(repo, "tests"))).toBe(false);
+    put(repo, "src/a", "one edited twice\n");
+    const before = userBytes(repo);
+
+    const tree = await captured(repo, base);
+
+    expect(userBytes(repo)).toEqual(before);
+    expect(changes(repo, base, tree)).toEqual(["M\tsrc/a", "M\ttests/new_test.py"]);
+    expect(blob(repo, tree, "tests/new_test.py").toString()).toBe("print(2)\n");
+    // The snapshot of the same checkout reads it so too.
+    expect(tree).toBe(git(repo, "rev-parse", `${await snapshotTree(repo)}^{tree}`));
+  });
+
+  it("are left as the snapshot has them in a worktree made on it, a name that is not UTF-8 included", async () => {
+    const repo = sparseRepo();
+    work(repo);
+    const name = Buffer.concat([Buffer.from("other/"), Buffer.from([0xff]), Buffer.from(".py")]);
+    const base = snapshotAdding(repo, await snapshotTree(repo), [[name, "taken in\n"]]);
+    const thread = sparseWorktree(repo, base);
+    expect(gitBytes(thread, [...QUOTED_NAMES, "ls-files", "-t", "other"]).toString()).toBe(
+      'S other/.gitignore\nS other/b\nS "other/\\377.py"\n',
+    );
+    put(thread, "src/a", "one edited by the agent\n");
+    const before = userState(thread);
+
+    const tree = await captured(repo, base, [], thread);
+
+    // Absent, and marked by the checkout itself: nobody removed it.
+    expect(changes(repo, base, tree)).toEqual(["M\tsrc/a"]);
+    expect(git(repo, "rev-parse", `${tree}:other`)).toBe(git(repo, "rev-parse", `${base}:other`));
+    expect(userState(thread)).toEqual(before);
+  });
+
+  it("are held where a .gitignore outside the patterns un-ignores them, within the capture's pathspec", async () => {
+    const repo = sparseRepo("cone", {
+      ".gitignore": "*.tmp\n*.log\n",
+      "other/.gitignore": "!keep.log\n",
+    });
+    put(repo, "src/a", "one edited\n");
+    put(repo, "other/keep.log", "kept\n");
+    put(repo, "other/debug.log", "noise\n");
+    // The user's Git reads other/.gitignore from its index; the scratch index's Git cannot,
+    // and ignores keep.log by the root rule.
+    expect(git(repo, "status", "--porcelain", "--untracked-files=all", "--ignored")).toBe(
+      "M src/a\n?? other/keep.log\n!! other/debug.log",
+    );
+    const before = userBytes(repo);
+
+    const snapshot = await snapshotTree(repo);
+    const tree = await captured(repo, "HEAD");
+
+    expect(userBytes(repo)).toEqual(before);
+    expect(changes(repo, "HEAD", snapshot)).toEqual(["A\tother/keep.log", "M\tsrc/a"]);
+    expect(tree).toBe(git(repo, "rev-parse", `${snapshot}^{tree}`));
+    expect(blob(repo, tree, "other/keep.log").toString()).toBe("kept\n");
+    // Outside the capture's own pathspec it stays out. (An exclusion naming a file the
+    // capture's Git ignores is refused by `add -A` itself, in a full checkout too.)
+    const excluded = await captured(repo, "HEAD", [":(exclude,top)other"]);
+    expect(changes(repo, "HEAD", excluded)).toEqual(["M\tsrc/a"]);
+    expect(changes(repo, "HEAD", await captured(repo, "HEAD", [], join(repo, "src")))).toEqual([
+      "M\tsrc/a",
+    ]);
+  });
+
+  it("are held inside non-cone patterns too where a .gitignore they leave out un-ignores them", async () => {
+    const repo = sparseRepo(
+      "non-cone",
+      {
+        ".gitignore": "*.tmp\n*.log\n",
+        "other/.gitignore": "!keep/*.log\n",
+        "other/keep/.keep": "",
+      },
+      ["--no-cone", "/.gitignore", "/.gitattributes", "/src/", "/other/keep/"],
+    );
+    expect(existsSync(join(repo, "other/.gitignore"))).toBe(false);
+    put(repo, "src/a", "one edited\n");
+    put(repo, "other/keep/x.log", "kept\n");
+    expect(git(repo, "status", "--porcelain", "--untracked-files=all")).toBe(
+      "M src/a\n?? other/keep/x.log",
+    );
+
+    const tree = await captured(repo, "HEAD");
+
+    expect(changes(repo, "HEAD", tree)).toEqual(["A\tother/keep/x.log", "M\tsrc/a"]);
+    expect(tree).toBe(git(repo, "rev-parse", `${await snapshotTree(repo)}^{tree}`));
+  });
+
+  it("are counted before they are written in a checkout whose directory name ends in a space", async () => {
+    const holder = mkdtempSync(join(tmpdir(), "cx-sparse-space-"));
+    dirs.push(holder);
+    const repo = sparseRepo("cone", {}, PATTERNS.cone, join(holder, "repo "));
+    put(repo, ".review-evidence/check.txt", EVIDENCE);
+    const base = await snapshotTree(repo); // took in the evidence
+    put(repo, ".git/info/exclude", "/.review-evidence/\n");
+    put(repo, ".review-evidence/check.txt", Buffer.alloc(256 * 1024, 7));
+    fakeFreeBytes = 4096;
+
+    const refused = await captureWorkingTreeTransient(repo, base, [], { projectRoot: repo });
+
+    // The preflight's own refusal, before anything is written, counting the file.
+    expect(refused.captureFailure?.message).toMatch(
+      /^capture needs \d+ bytes plus a \d+-byte margin;/,
+    );
+    const failure = captureFailureEvidence(refused.captureFailure);
+    expect(failure.code).toBe("capture_space_insufficient");
+    expect(failure.requiredBytes).toBeGreaterThan(256 * 1024);
+    fakeFreeBytes = null;
+    expect(changes(repo, base, await captured(repo, base))).toEqual([
+      "M\t.review-evidence/check.txt",
+    ]);
   });
 
   it("are counted before they are written, among them a file the user's Git ignores by now", async () => {
@@ -712,5 +894,118 @@ describe("a capture against an earlier base, wherever HEAD is by now (#734)", ()
     expect(git(repo, "rev-parse", `${tree}:other/\uFFFD.py`)).toBe(
       git(repo, "rev-parse", "HEAD:other/\uFFFD.py"),
     );
+  });
+});
+
+// The class (#734): the same work, done in a full checkout and in a sparse one of the same
+// commit, is the same result, and a file the sparse checkout leaves out is no deletion.
+describe("a sparse checkout's capture is a full checkout's (#734)", () => {
+  /** A full checkout: src/a, other/b, a root .gitignore that ignores *.log and *.tmp, and an
+   * other/.gitignore that un-ignores keep.log, which a sparse checkout of src/ leaves out. */
+  function fullRepo(): string {
+    const repo = mkdtempSync(join(tmpdir(), "cx-sparse-full-"));
+    dirs.push(repo);
+    git(repo, "init", "-q", "-b", "main");
+    put(repo, "src/a", "one\n");
+    put(repo, "other/b", "two\n");
+    put(repo, "other/.gitignore", "!keep.log\n");
+    put(repo, ".gitignore", "*.tmp\n*.log\n");
+    put(repo, ".gitattributes", "*.py text eol=lf\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", "base");
+    return repo;
+  }
+
+  /** Ordinary names, a bracket name, nested directories, a file only the left-out .gitignore
+   * un-ignores, ignored ones, and, where the file system holds one, a name that is not UTF-8
+   * (inside the patterns: outside them a new one still fails the capture, as documented). */
+  function addWork(dir: string): void {
+    put(dir, "src/new.py", "print(1)\r\n");
+    put(dir, "tests/new_test.py", "print(1)\r\n");
+    put(dir, "tests/unit/deep/t.py", "deep\n");
+    put(dir, "other/shape[2].csv", "data\n");
+    put(dir, "other/deep/er/x.txt", "deep\n");
+    put(dir, "other/keep.log", "kept\n");
+    put(dir, "other/debug.log", "noise\n");
+    put(dir, "tests/cache.tmp", "noise\n");
+    if (holdsBytes()) writeFileSync(bytesPath(dir, Buffer.from("src/\xff.dat", "latin1")), "x\n");
+  }
+
+  /** Git's own names of a checkout's new files, as bytes: what its `status` lists untracked. */
+  const untrackedOf = (dir: string) =>
+    gitBytes(dir, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+      .toString("latin1")
+      .split("\0")
+      .filter((entry) => entry.startsWith("?? "))
+      .map((entry) => entry.slice(3))
+      .sort();
+  /** Every change from `base` to `tree`, as bytes: "<status>\t<name>". */
+  const changesOf = (repo: string, base: string, tree: string) => {
+    const fields = gitBytes(repo, ["diff", "--no-renames", "--name-status", "-z", base, tree])
+      .toString("latin1")
+      .split("\0")
+      .filter(Boolean);
+    return fields.flatMap((field, at) => (at % 2 === 0 ? [`${field}\t${fields[at + 1]}`] : []));
+  };
+
+  it("holds the same new files, as Git lists them, byte for byte, in the capture and the snapshot", async () => {
+    const full = fullRepo();
+    const sparse = join(mkdtempSync(join(tmpdir(), "cx-sparse-of-full-")), "sparse");
+    dirs.push(dirname(sparse));
+    git(full, "worktree", "add", "-q", "--detach", sparse, "HEAD");
+    git(sparse, "sparse-checkout", "set", "--cone", "src");
+    expect(existsSync(join(sparse, "other"))).toBe(false);
+    expect(existsSync(join(full, "other/.gitignore"))).toBe(true);
+    addWork(full);
+    addWork(sparse);
+    const expected = untrackedOf(full);
+    // Git itself sees the same new files in both, ignored ones left out by each.
+    expect(untrackedOf(sparse)).toEqual(expected);
+    expect(expected).toContain("other/keep.log");
+    expect(expected).not.toContain("other/debug.log");
+
+    const fullTree = await captured(full, "HEAD");
+    const sparseTree = await captured(full, "HEAD", [], sparse);
+
+    // Only additions, exactly Git's names, and the very same tree: the files the sparse
+    // checkout leaves out are the base's, no deletion.
+    expect(changesOf(full, "HEAD", fullTree)).toEqual(expected.map((name) => `A\t${name}`));
+    expect(sparseTree).toBe(fullTree);
+    expect(git(full, "rev-parse", `${await snapshotTree(full)}^{tree}`)).toBe(fullTree);
+    expect(git(full, "rev-parse", `${await snapshotTree(sparse)}^{tree}`)).toBe(fullTree);
+  });
+
+  it("removes no file the sparse checkout leaves out, whatever its name, in a worktree made on a dirty snapshot", async () => {
+    const full = fullRepo();
+    addWork(full);
+    // The base: a dirty snapshot of that work, with one more file whose name is not UTF-8
+    // outside the patterns (built from objects, so no file system here need hold it).
+    const name = Buffer.concat([Buffer.from("other/"), Buffer.from([0xff]), Buffer.from(".py")]);
+    const base = snapshotAdding(full, await snapshotTree(full), [[name, "taken in\n"]]);
+    const added = changesOf(full, "HEAD", base);
+    expect(added).toContain(`A\t${name.toString("latin1")}`);
+    expect(added).toContain("A\tother/keep.log");
+    // A sparse checkout moved onto the base: Git marks every file outside the patterns
+    // skip-worktree and writes none of them.
+    const sparse = join(mkdtempSync(join(tmpdir(), "cx-sparse-on-base-")), "sparse");
+    dirs.push(dirname(sparse));
+    git(full, "worktree", "add", "-q", "--detach", sparse, "HEAD");
+    git(sparse, "sparse-checkout", "set", "--cone", "src");
+    git(sparse, "checkout", "-q", "--detach", base);
+    expect(existsSync(join(sparse, "other"))).toBe(false);
+    expect(existsSync(join(sparse, "tests"))).toBe(false);
+    put(sparse, "src/a", "one edited by the agent\n");
+
+    const sparseTree = await captured(full, base, [], sparse);
+
+    expect(changesOf(full, base, sparseTree)).toEqual(["M\tsrc/a"]);
+    if (holdsBytes()) {
+      // Where the file system holds every name, a full checkout of the base says the same.
+      const whole = join(mkdtempSync(join(tmpdir(), "cx-full-on-base-")), "whole");
+      dirs.push(dirname(whole));
+      git(full, "worktree", "add", "-q", "--detach", whole, base);
+      put(whole, "src/a", "one edited by the agent\n");
+      expect(await captured(full, base, [], whole)).toBe(sparseTree);
+    }
   });
 });
