@@ -2,6 +2,53 @@ import { describe, expect, it } from "vitest";
 import { ConformanceReport } from "@claudexor/schema";
 import type { HarnessAdapter } from "./adapter.js";
 import { invalidateDoctorCache, runDoctor } from "./doctor.js";
+import { DIAGNOSTIC_GENERATION_WITHHELD, diagnosticGenerationFor } from "./readiness-policy.js";
+
+describe("diagnostic generation policy", () => {
+  it("forbids generation only for a finite $0 effective budget", () => {
+    expect(diagnosticGenerationFor({ kind: "finite", maxUsd: 0 })).toBe("forbidden");
+    expect(diagnosticGenerationFor({ kind: "finite", maxUsd: 0.01 })).toBe("allowed");
+    expect(diagnosticGenerationFor({ kind: "unlimited" })).toBe("allowed");
+    expect(diagnosticGenerationFor(undefined)).toBe("allowed");
+    expect(DIAGNOSTIC_GENERATION_WITHHELD).toMatch(/not run/);
+  });
+
+  it("keeps a withheld probe and a full probe of one route apart in the cache", async () => {
+    invalidateDoctorCache();
+    let calls = 0;
+    const adapter = {
+      id: "real-generation-cache-test",
+      discover: async () => {
+        throw new Error("not used");
+      },
+      doctor: async (spec: { diagnosticGeneration?: string }) =>
+        ConformanceReport.parse({
+          harness_id: "real-generation-cache-test",
+          status: "ok",
+          reasons: [`${spec.diagnosticGeneration ?? "full"}-${++calls}`],
+        }),
+      run: async function* () {
+        /* not used */
+      },
+    } satisfies HarnessAdapter;
+    const registry = new Map([[adapter.id, adapter]]);
+    const withheld = { cwd: "/repo", diagnosticGeneration: "forbidden" } as const;
+
+    const first = await runDoctor(registry, withheld);
+    const full = await runDoctor(registry, { cwd: "/repo" });
+    const withheldAgain = await runDoctor(registry, withheld);
+    const fullAgain = await runDoctor(registry, { cwd: "/repo" });
+    const fresh = await runDoctor(registry, { ...withheld, fresh: true });
+
+    expect(first[0]?.reasons).toEqual(["forbidden-1"]);
+    expect(full[0]?.reasons).toEqual(["full-2"]);
+    expect(withheldAgain[0]?.reasons).toEqual(["forbidden-1"]);
+    expect(fullAgain[0]?.reasons).toEqual(["full-2"]);
+    // `fresh` stays fresh: it neither reads nor seeds either entry.
+    expect(fresh[0]?.reasons).toEqual(["forbidden-3"]);
+    expect(calls).toBe(3);
+  });
+});
 
 describe("runDoctor fresh probes", () => {
   it("bypasses cache reads and writes without clearing the shared cached report", async () => {

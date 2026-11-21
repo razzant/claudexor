@@ -598,9 +598,9 @@ same **Remove** (removal deletes the binding and any Claudexor-owned state or
 managed secret, provably: a partial cleanup is a typed retryable error, never a
 silent half-delete; a vendor credential for the OS user may be left unchanged).
 An UNPINNED run routes through the quota-aware **pool** of enabled,
-signed-in accounts: the freshest-headroom account wins, unknown-quota accounts
-rank after known headroom but before exhausted ones, and ties break
-deterministically. An unpinned chat thread is **sticky**: it stays on the
+signed-in accounts. In ordinary pool order the freshest-headroom account wins,
+unknown-quota accounts rank after known headroom but before exhausted ones, and
+ties break deterministically. An unpinned chat thread is **sticky**: it stays on the
 account it started with while that account is ready, and switches to a pool
 sibling only with a disclosed lane switch. An explicit pin (per-run
 `--profile`, or the composer's per-thread account chip) is STRICT — exactly
@@ -608,11 +608,15 @@ that account or a typed refusal (`subscription_window_exhausted` with the
 reset time when its quota window is spent, or when it reached a saved
 `headroom_threshold` below 100%; `quotaRefusal.basis` tells the two apart),
 never a silent rotation.
-`claudexor profiles` shows the informational **next-up** verdict — who an
-unpinned run of the configured default model would route to next — computed
+`claudexor profiles` shows the informational **next-up** verdict — the first
+candidate in ordinary pool order for the configured default model — computed
 server-side by the same routing owner (`accountPools`; also
 `GET /v2/account-pools`), plus each account's recent refusals, temporary capability marks and last
-service per requested model. Among accounts with unknown quota, the one that last
+service per requested model. A run's own pin or sticky thread, model, mode, paid
+budget or auth preference can still pick another account or route; a zero-paid
+Ask, for example, puts a vendor-verified account first
+([routing order](docs/ARCHITECTURE.md#credential-profiles-inv-135-unified-account-model)).
+Among accounts with unknown quota, the one that last
 served the requested model is tried first, also after a daemon restart. When the pool is empty
 or exhausted, the typed API-key fallback may serve the run as an explicit,
 disclosed **route** — never a synthetic account row; key management stays in

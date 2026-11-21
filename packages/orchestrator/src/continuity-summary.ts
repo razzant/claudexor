@@ -77,6 +77,10 @@ export interface SummaryRunParams {
   physicalDispatchStarted?: () => void;
   billingVerificationForProfile?: ModelGovernedRoute["billingVerificationForProfile"];
   paidFallback?: ModelGovernedRoute["paidFallback"];
+  /** The lane's withheld-$0 mode and admission pin: this auxiliary send is priced at the lane's
+   * own send gate by its own strict spec (`admitCurrentProfileDispatch`). */
+  diagnosticGeneration?: ModelGovernedRoute["diagnosticGeneration"];
+  quotaAdmission?: ModelGovernedRoute["quotaAdmission"];
   credentialObserverFactory?: CredentialExecutionObserverFactory;
 }
 

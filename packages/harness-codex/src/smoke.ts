@@ -1,9 +1,17 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { providerScrubEnv, runCapture } from "@claudexor/core";
+import { DIAGNOSTIC_GENERATION_WITHHELD, providerScrubEnv, runCapture } from "@claudexor/core";
 import { CODEX_FILE_AUTH_ARGS, codexApiKey, ensureCodexApiAuth } from "./auth.js";
 import { resolveCodexBin, redactCodexDoctorDetail } from "./index.js";
+
+/** Why no key smoke ran: no key, a proof withheld by the $0 diagnostic mode, or an unselected route. */
+export const unsmokedKeyDetail = (apiKey: boolean, withheld: boolean): string =>
+  !apiKey
+    ? "no API key fallback available"
+    : withheld
+      ? DIAGNOSTIC_GENERATION_WITHHELD
+      : "verification not run for the unselected API-key route";
 
 export async function smokeIsolatedApiKey(
   abortSignal?: AbortSignal,

@@ -151,7 +151,7 @@ export function accountsTool(runner: RunnerFn, outputSchema: Record<string, unkn
     name: "claudexor_accounts",
     description:
       "Return the read-only Accounts view: registered profiles, readiness, quota freshness, and routing identity. " +
-      "accountPools.next_up is the configured default model's verdict, never a forecast for another model; routingEvidence carries model-scoped recent refusals, temporary per-model capability marks, and each account's last service per requested model (a routing observation, not a quota or authentication verdict). " +
+      "accountPools.next_up is informational: the first candidate in ordinary pool order for the configured default model (a run's own pin, binding, model, mode, paid budget or auth preference can route elsewhere), never a forecast for another model; routingEvidence carries model-scoped recent refusals, temporary per-model capability marks, and each account's last service per requested model (a routing observation, not a quota or authentication verdict). " +
       "Default combines current quota and registry facts with retained readiness observations: one coalesced cold acquisition, including failure, then passive reads with the original check time. Viewing does not renew old evidence; actual execution performs its own checks. " +
       "fresh:true requests the atomic snapshot instead — an EXPENSIVE explicit refresh (a live probe per registered profile, a full harness doctor sweep, and the vendor quota fan-out, which honors account/route rate-limit cooldowns and existing broad floors and discloses paused subjects in quota.refresh_skipped). " +
       "Use fresh:true only when acting on staleness matters; never poll with it. This tool never starts login or changes account state.",

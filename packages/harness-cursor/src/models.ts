@@ -1,5 +1,5 @@
 import { CURSOR_PROGRAM } from "./program.js";
-import type { HarnessModelSpec } from "@claudexor/core";
+import type { DiagnosticGeneration, HarnessModelSpec } from "@claudexor/core";
 import { providerScrubEnv, runCapture } from "@claudexor/core";
 import type { CredentialProfile, HarnessModel } from "@claudexor/schema";
 import { parseCursorModelList } from "./parse.js";
@@ -24,7 +24,11 @@ type CursorModelAuthInput = Omit<CursorDefaultRouteInput, "env"> & {
   fresh?: boolean;
 };
 type ResolveCursorAuthRoute = (input: CursorModelAuthInput) => Promise<CursorRunRoute>;
-type SmokeCursorApiKey = (key: string, fresh?: boolean) => Promise<CursorApiSmokeResult>;
+type SmokeCursorApiKey = (
+  key: string,
+  fresh?: boolean,
+  generation?: DiagnosticGeneration,
+) => Promise<CursorApiSmokeResult>;
 
 /** Query the vendor's model inventory in the exact environment used by a run. */
 export async function queryCursorModels(
@@ -60,6 +64,7 @@ async function listCursorModelsForProfile(
       credential_profile: spec.credentialProfile,
       env: spec.env ?? {},
       auth_preference: spec.authPreference ?? "auto",
+      ...(spec.diagnosticGeneration ? { diagnosticGeneration: spec.diagnosticGeneration } : {}),
     },
     deps,
     resolveAuthRoute,
@@ -103,6 +108,7 @@ export async function listCursorModelsFromReadyRoute(
       authPreference,
       fresh: spec.fresh,
       abortSignal: spec.abortSignal,
+      ...(spec.diagnosticGeneration ? { diagnosticGeneration: spec.diagnosticGeneration } : {}),
     });
     if (resolved.route === "local_session") {
       const models = await modelsFrom({ ...resolved.env, CURSOR_API_KEY: null });
@@ -120,7 +126,7 @@ export async function listCursorModelsFromReadyRoute(
   // Keychain is never probed); the key route and the static catalog remain.
   const key = deps.cursorApiKey();
   if (!key) return catalogOnly();
-  const apiSmoke = await smokeApiKey(key, spec?.fresh === true);
+  const apiSmoke = await smokeApiKey(key, spec?.fresh === true, spec?.diagnosticGeneration);
   if (apiSmoke.ok) {
     const models = await modelsFrom({ ...providerScrubEnv(), CURSOR_API_KEY: key });
     if (models.length > 0) return models;

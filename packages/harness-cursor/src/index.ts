@@ -19,7 +19,7 @@ import {
   HarnessCapabilityProfile as HarnessCapabilityProfileSchema,
   HarnessManifest as HarnessManifestSchema,
 } from "@claudexor/schema";
-import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import type { DiagnosticGeneration, DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
   abortSignalFromSpec,
   HarnessUnavailableError,
@@ -166,6 +166,7 @@ async function resolveCursorAuthRoute(
     authPreference?: AuthPreference;
     fresh?: boolean;
     abortSignal?: AbortSignal;
+    diagnosticGeneration?: DiagnosticGeneration;
   },
 ): Promise<{
   route: CursorAuthRoute;
@@ -195,7 +196,7 @@ async function resolveCursorAuthRoute(
   });
   const apiSmoke =
     shouldSmokeApiKey && key
-      ? await smokeCursorApiKey(deps, key, input.fresh === true)
+      ? await smokeCursorApiKey(deps, key, input.fresh === true, input.diagnosticGeneration)
       : unsmokedApiSmoke(key);
   const route = selectCursorAuthRoute({
     authPreference,
@@ -252,7 +253,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
         input,
         ({ cursorApiKey, ...query }) =>
           resolveCursorAuthRoute(cursorApiKey ? { ...runtime, cursorApiKey } : runtime, query),
-        (key, fresh) => smokeCursorApiKey(runtime, key, fresh),
+        (key, fresh, generation) => smokeCursorApiKey(runtime, key, fresh, generation),
       ),
     ),
 

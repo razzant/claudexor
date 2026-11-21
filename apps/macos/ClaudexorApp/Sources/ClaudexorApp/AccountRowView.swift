@@ -6,7 +6,7 @@ import ClaudexorKit
 /// quota/detail) and the shared-Grid trailing columns are owned by the
 /// component, so this row cannot reintroduce the owner-round-3 wrap/drift bug.
 /// The F1 engine cut deleted user-settable Active: the Enabled toggle is the
-/// only routing control, and the row routing would pick next carries a quiet
+/// only routing control, and the row first in ordinary pool order carries a quiet
 /// informational "Next up" badge (never a control); per-thread pinning lives on
 /// the composer chip.
 struct AccountRowView: View {
@@ -76,11 +76,11 @@ struct AccountRowView: View {
             AlignedRowBadge(row.harnessId, emphasis: .secondary)
         ]
         if row.nextUp {
-            // F1 informational hint: who an unpinned run of the configured
-            // default model routes to next — never a forecast for another model.
+            // F1 informational hint: first in ordinary pool order for the configured
+            // default model, not a promise for any run — never a forecast for another model.
             badges.append(AlignedRowBadge(
                 AccountsPresentation.nextUpLabel, systemImage: "arrow.turn.down.right", emphasis: .accent,
-                help: "The configured default model's next unpinned run routes here. Other models order separately."))
+                help: "First in ordinary pool order for the configured default model. A run's own pin, thread, model, mode, paid limit or auth preference can choose another account or route."))
         }
         var details: [AlignedRowDetail] = []
         details.append(quotaDetail)

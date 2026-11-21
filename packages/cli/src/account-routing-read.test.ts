@@ -362,15 +362,15 @@ describe("CLI and MCP consumers of the additive read", () => {
     expect(out()).not.toContain("expired-model");
     // The none reason and the paid route disclosure are retained, qualified.
     expect(out()).toContain(
-      "next up (default model): nothing routable (no enabled account is ready (work: probe unanswered))",
+      "pool order (default model): nothing routable (no enabled account is ready (work: probe unanswered))",
     );
-    expect(out()).toContain("next up (default model): API key (paid route)");
+    expect(out()).toContain("pool order (default model): API key (paid route)");
     vi.restoreAllMocks();
     out = capture();
     expect(await accountsCommandWithDeps(parseArgs(["accounts"]), false)).toBe(0);
     expect(out()).toContain("recent refusal · claude-opus-5-5");
     expect(out()).toContain("model capability · unsupported-model · probe_due");
-    expect(out()).toContain("next up (default model) codex: API key route");
+    expect(out()).toContain("pool order (default model) codex: API key route");
     vi.restoreAllMocks();
     out = capture();
     expect(await accountsCommandWithDeps(parseArgs(["accounts", "--json"]), true)).toBe(0);
