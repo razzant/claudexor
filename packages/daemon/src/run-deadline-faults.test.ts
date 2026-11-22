@@ -37,7 +37,12 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { RunFacts, SCHEMA_VERSION, makeOutcomeFacts } from "@claudexor/schema";
-import { RunScopeSpentError, SCOPE_MARKER_VALUE, spawnRunOwned } from "@claudexor/core";
+import {
+  RunScopeSpentError,
+  SCOPE_MARKER_VALUE,
+  spawnRunOwned,
+  withinRunScope,
+} from "@claudexor/core";
 import { DaemonLocalClient } from "./daemon-local-client.js";
 import {
   fileRecordIo,
@@ -517,12 +522,26 @@ describe("run-deadline/1 under faults: an acceptance racing its own deadline", (
         }
       });
 
-  it("with the production SQL store: a deadline reached during preparation is refused inside the acceptance transaction and binds no key", async () => {
+  it("with the production SQL store: a deadline reached while the transaction is prepared is refused inside it and binds no key", async () => {
     const time = frozenClock();
     const root = temp();
     const sql = await sqlFixture(root);
-    // The deadline passes right after the staged record's last write, before the transaction.
-    const ops = new Ops([{ at: 3, kind: "head-start" }], () => time.advance(6_000));
+    // The deadline passes while the store prepares the acceptance, after every
+    // check made before the store was entered.
+    const request = { label: "sql", deadline: { at: time.iso(5_000) } };
+    // The store is made per call: its class's preparation is wrapped for this test.
+    const proto = Object.getPrototypeOf(sql.graph.commands.forRequest(request)) as {
+      prepareAcceptance(this: unknown, input: unknown): unknown;
+    };
+    const prepare = proto.prepareAcceptance;
+    let passed = false;
+    proto.prepareAcceptance = function (input) {
+      if (!passed) {
+        passed = true;
+        time.advance(6_000);
+      }
+      return prepare.call(this, input);
+    };
     const server = new DaemonServer({
       socketPath: join(root, "unused.sock"),
       token: "token",
@@ -531,7 +550,6 @@ describe("run-deadline/1 under faults: an acceptance racing its own deadline", (
       runDeadlines: {
         dir: join(root, "deadlines"),
         clock: time.clock,
-        io: ops.io(),
         spawnWarden: async () => ({ pid: 1 }),
         platform: "linux",
         probeBoundary: async () => ({ kind: "marker", reason: "test" }),
@@ -540,11 +558,9 @@ describe("run-deadline/1 under faults: an acceptance racing its own deadline", (
     });
     await server.deadlines.startup();
     const client = new DaemonLocalClient(() => server);
-    ops.counting = true;
     try {
-      const request = { label: "sql", deadline: { at: time.iso(5_000) } };
       const answer = await outcome(client.enqueue(request, { idempotencyKey: "s", clientId: "t" }));
-      ops.assertFired();
+      expect(passed, "the deadline passed during the store's preparation").toBe(true);
       expect(answer).toEqual({ ok: false, code: "run_deadline_passed" });
       expect(await client.findAccepted(request, { idempotencyKey: "s", clientId: "t" })).toBe(null);
       expect(sql.records()).toEqual([]);
@@ -554,8 +570,67 @@ describe("run-deadline/1 under faults: an acceptance racing its own deadline", (
         (await outcome(client.enqueue(fresh, { idempotencyKey: "f", clientId: "t" }))).ok,
       ).toBe(true);
     } finally {
+      proto.prepareAcceptance = prepare;
       await server.stop();
       await sql.close();
+    }
+  });
+});
+
+describe("run-deadline/1 under faults: a launch the fence refuses", () => {
+  it("settles the job as the deadline's expiry at once, even while the record of its stop is still being written", async () => {
+    const time = frozenClock();
+    let release: (() => void) | null = null;
+    let block = false;
+    const io: RecordIo = {
+      ...fileRecordIo,
+      // The stop's record write hangs: settlement must not wait for it.
+      stage: async (path, record) => {
+        if (block && record.state === "enforcing")
+          await new Promise<void>((resolve) => (release = resolve));
+        return fileRecordIo.stage(path, record);
+      },
+    };
+    const marker = `CLAUDEXOR_RUN_SCOPE_${"d".repeat(32)}`;
+    let refused: unknown = null;
+    const d = await legacyDaemon(time, io, async (_params, ctx) => {
+      await ctx.deadlineScope!.attach(marker);
+      block = true;
+      time.advance(11_000); // the deadline passed; no timer has seen it yet
+      try {
+        withinRunScope(marker, () =>
+          spawnRunOwned(
+            "git",
+            ["status"],
+            { env: {} },
+            {
+              spawnFn: () => {
+                throw new Error("launched after the deadline");
+              },
+            },
+          ),
+        );
+      } catch (error) {
+        refused = error;
+        // What preparation Git reports for a launch that failed.
+        throw Object.assign(new Error("git could not start"), { code: "git_failed" });
+      }
+      return { lifecycle: "succeeded" };
+    });
+    try {
+      const job = await d.client.enqueue(
+        { label: "prep", deadline: { at: time.iso(10_000) } },
+        { idempotencyKey: "p", clientId: "t" },
+      );
+      const record = await until(
+        () => d.client.status(job.id),
+        (r) => r.state !== "queued" && r.state !== "running",
+      );
+      expect(refused).toBeInstanceOf(RunScopeSpentError);
+      expect(record).toMatchObject({ errorCode: "run_deadline_expired" });
+    } finally {
+      (release as (() => void) | null)?.();
+      await d.close();
     }
   });
 });
