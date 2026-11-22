@@ -1,4 +1,4 @@
-import { runCaptureRaw } from "@claudexor/core";
+import { runCaptureRaw, spawnRunOwned } from "@claudexor/core";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -120,6 +120,8 @@ export async function gatePublication(input: {
       logOpts: range.join(" "),
       metadata,
       env,
+      // The engine's run-owned launch point: inside a run the scan stays in its boundary.
+      launch: (command, args, options) => spawnRunOwned(command, args, options).child,
     });
     if (result.status === "clean") continue;
     cleanup();

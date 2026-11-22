@@ -45,6 +45,8 @@ const EXCEPTIONS: Record<string, string> = {
   "packages/daemon/src/run-deadline-warden.ts": "the warden must stay outside every run's boundary",
   "packages/daemon/src/run-deadline-cgroup.ts":
     "the daemon's startup boundary probe, before any run",
+  "packages/delivery/src/publication-scan.ts":
+    "the dependency-free scanner CI loads before any install; delivery always passes spawnRunOwned as its launcher",
   "packages/delivery/src/publication-scanner-provision.ts":
     "explicit operator provisioning (`claudexor scanner`); delivery never calls it",
   "packages/harness-agy/src/keychain.ts":

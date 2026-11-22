@@ -8,8 +8,12 @@
  * this same source with Node's type stripping before dependencies are
  * installed, so delivery and CI cannot drift into two detectors. Which binary
  * runs (the release pin and its location) is `publication-scanner-pin.ts`.
+ * Its processes start through the launcher a caller passes (`launch`): delivery
+ * passes the engine's run-owned launch point, so a scan inside a run stays in
+ * that run's boundary; the standalone CI entry keeps the plain spawn.
  */
-import { spawnRunOwned as launch } from "@claudexor/core"; // the run-owned launch point
+import { AsyncLocalStorage } from "node:async_hooks";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -40,6 +44,16 @@ export interface PublicationFinding {
   line: number | null;
   commit: string | null;
 }
+
+/** How the scan starts a process (Git, tar, the scanner). */
+export type PublicationLauncher = (
+  command: string,
+  args: string[],
+  options: SpawnOptions & { env: NodeJS.ProcessEnv },
+) => ChildProcess;
+const plainSpawn: PublicationLauncher = (command, args, options) => spawn(command, args, options);
+/** The launcher of the scan in progress (one per `scanPublication` call). */
+const launching = new AsyncLocalStorage<PublicationLauncher>();
 
 export type PublicationScanResult =
   | { status: "clean" }
@@ -92,7 +106,15 @@ export async function scanPublication(input: {
   metadata: readonly PublicationMetadata[];
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** How processes start (default: the plain spawn the standalone CI entry uses). */
+  launch?: PublicationLauncher;
 }): Promise<PublicationScanResult> {
+  return launching.run(input.launch ?? plainSpawn, () => scanWith(input));
+}
+
+async function scanWith(
+  input: Parameters<typeof scanPublication>[0],
+): Promise<PublicationScanResult> {
   const work = mkdtempSync(join(tmpdir(), "claudexor-publication-scan-"));
   try {
     const config = join(work, "betterleaks.toml");
@@ -568,11 +590,12 @@ function run(
   return new Promise((resolve) => {
     let stdout = "";
     let timedOut = false;
-    let child: ReturnType<typeof launch>["child"];
+    let child: ChildProcess;
     let fd: number | undefined;
     try {
       if (stdoutPath !== undefined) fd = openSync(stdoutPath, "w", 0o600);
-      child = launch(command, args, { cwd, env, stdio: ["ignore", fd ?? "pipe", "ignore"] }).child;
+      const launch = launching.getStore() ?? plainSpawn;
+      child = launch(command, args, { cwd, env, stdio: ["ignore", fd ?? "pipe", "ignore"] });
     } catch {
       resolve({ code: null, stdout: "", timedOut: false });
       return;

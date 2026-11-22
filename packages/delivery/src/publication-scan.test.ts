@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   describeFindings,
@@ -644,6 +645,35 @@ const remoteHelper = {
 
 /** Deterministic on every platform: hard links stand in for two tracked
  * paths the file system folded into one file. */
+describe("the scanner source CI loads before any install (INV-146)", () => {
+  it("imports only Node built-ins, and loads from a checkout without dependencies", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    for (const file of ["publication-scan.ts", "publication-scanner-pin.ts"]) {
+      const text = readFileSync(join(here, file), "utf8");
+      const specifiers = [...text.matchAll(/^import[^"']*["']([^"']+)["']/gm)].map((m) => m[1]!);
+      expect(specifiers.filter((name) => !name.startsWith("node:"))).toEqual([]);
+    }
+    // The CI entry's load, from a copy with no node_modules anywhere above it.
+    const clean = mkdtempSync(join(tmpdir(), "cx-scan-clean-"));
+    try {
+      for (const file of ["publication-scan.ts", "publication-scanner-pin.ts"])
+        writeFileSync(join(clean, file), readFileSync(join(here, file)));
+      const out = execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          'const m = await import("./publication-scan.ts"); process.stdout.write(typeof m.scanPublication);',
+        ],
+        { cwd: clean, encoding: "utf8" },
+      );
+      expect(out).toBe("function");
+    } finally {
+      rmSync(clean, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("extracted tree checked against the commit inventory (INV-146)", () => {
   const entry = (mode: string, path: string) =>
     `${mode} ${mode === "160000" ? "commit" : "blob"} ${"0".repeat(40)}\t${path}\0`;
