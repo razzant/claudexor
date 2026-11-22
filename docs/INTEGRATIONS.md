@@ -351,19 +351,25 @@ gate's explicit exemptions):
   state, stopGraceSec, inheritedFrom, successorOf, enforcement}`. `state` is
   linear: `armed`, then `enforcing` once the deadline was reached and its stop
   began, then `expired`; or `closed` after any other terminal. `PATCH` with
-  `{at, expectedRevision}` replaces the run's own deadline while it is `armed`
-  and is confirmed only after the new revision is durable: stale revision
-  `run_deadline_revision_conflict`; `enforcing` or `expired`, or a deadline that
-  was reached while the new one was being written, `run_deadline_expired`;
-  `closed` `run_deadline_closed`; no deadline `run_deadline_absent`; an unwritable
-  record `503 run_deadline_record_unavailable` (retryable, nothing changed). A
+  `{at, expectedRevision}` replaces the run's own deadline while it is `armed`,
+  decided before anything is visible and confirmed only after the new revision is
+  durable: stale revision `run_deadline_revision_conflict`; `enforcing` or
+  `expired`, or a deadline that won while the new one was being decided or
+  written, `run_deadline_expired` (the replaced deadline stays in force); a
+  terminal that arrived first, `run_deadline_closed`; no deadline
+  `run_deadline_absent`; an unwritable record `503
+  run_deadline_record_unavailable` (retryable, nothing changed). A start whose
+  deadline passed while it was being accepted refuses `run_deadline_passed` and
+  takes no idempotency key. A
   job its deadline ends before it starts (queued, or preparing its thread
   worktree) ends `cancelled` with `errorCode` and `failure.code`
   `run_deadline_expired`, `errorStatus` 409, not retryable (a thread turn
   records the same; a pending next message is held as by Stop): the start and its
   same-key replay (one-shot and thread turn) answer that 409 with the durable
   `deadline` in the problem's `context`, and `POST /v2/runs/lookup` returns the
-  handle with its recorded `problem` (status 409) and its `deadline`. A running job is cancelled with reason
+  handle with its recorded `problem` (status 409) and its `deadline`; receipts,
+  refusals and lookups of a continuation or a Delegate child carry the deadline it
+  inherited. A running job is cancelled with reason
   `run_deadline_expired` (`wall_clock_exceeded` stays the `maxSeconds` / time
   limit's). A Delegate child is capped by its parent's current deadline, so
   extending the parent extends the child (`inheritedFrom`); children refuse
@@ -372,14 +378,22 @@ gate's explicit exemptions):
   deadline, and every next message the engine starts, takes its predecessor's
   from that record (`successorOf`), never converted again; one already spent
   (passed, claimed, or of another boot) refuses the continuation
-  (`run_deadline_passed`) or ends the next message before it starts. Exact
-  Retry, Run Again (named in `differences`), decision rerun and thread-turn
-  retry never replay the source's instant.
+  (`run_deadline_passed`) or ends the next message before it starts. Run Again
+  drops the source's instant (named in `differences`); Exact Retry, a decision
+  rerun and a thread-turn retry of a run that held a deadline refuse
+  `409 run_deadline_replay_refused` (they would run it again with none): start
+  it again with its own `deadline.at`.
   Before the run's first process the daemon starts a detached warden that,
   independent of the daemon, ends every process inside the run's boundary by
   `at + stopGraceSec` (15 s), also while the daemon is down or after it
-  restarted; `enforcement` carries its final report (`confirmed`, or
-  `unresolved` with why). The handshake names the capability only to a client
+  restarted; from the deadline on no process is launched in the run's scope;
+  `enforcement` carries its final report (`confirmed`, or `unresolved` with why).
+  In `marker` mode on Linux a warden whose run ended normally leaves once the
+  recorded tree is empty and no readable environment carries the marker, even if
+  an unrelated same-user process with an unreadable environment (ssh-agent,
+  gpg-agent) keeps the census from proving completeness; it reports that as
+  `unresolved`, and a marked process that is both unreadable and outside the
+  recorded tree is then not ruled out. The handshake names the capability only to a client
   sending `X-Claudexor-Capabilities: 1`, only on Linux, and only after the
   daemon's startup check, with `boundary`: `cgroup` when the daemon runs in a
   delegated cgroup v2 subtree (for example a systemd service with

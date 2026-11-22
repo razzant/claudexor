@@ -2692,8 +2692,9 @@ including thread worktrees and directory scans; one waiter cannot stop shared
 store initialization. `harness.started` marks entry into the execution path.
 
 Preparation Git, snapshots and copies carry the run's stop. Hooks and filters
-(`core.fsmonitor=false`) join its scope, or `thread-preparation:<job>` opened before
-a new tree's first Git step; success also settles it. Raw-record seeding stays
+(`core.fsmonitor=false`) join its scope, or `thread-preparation:<job>`, opened before
+a new tree's first Git step (first of all for a job with a run deadline); every
+successful preparation settles it. Raw-record seeding stays
 inside envelope preparation, before handover, for candidates and synthesis.
 A caller Stop cancels preparation and releases its lease uncharged. A failure
 without that Stop stays failed with its existing unknown-cost settlement.
@@ -6226,18 +6227,27 @@ suspended host finds the deadline reached when it wakes), `process.hrtime`
 elsewhere; an inherited deadline is copied from the source record's host-clock
 target, never converted again. Per job, transitions are linear: `armed`, then
 `enforcing` (the deadline began its stop), then `expired`; or `closed` (a terminal
-before the deadline). They run on one per-job chain in the daemon. The warden's
-only transition is its enforcement claim (`<job>.json.enforcing`, exclusive
-create, before its first stop); a set and the warden are ordered by the shared
-host clock, not a lock a SIGKILLed daemon would leave held: the daemon publishes
-a new revision and confirms it only if, after the publication, the clock is
-still before the deadline it replaced (otherwise it restores that revision as
-`enforcing` and refuses); the warden reads the clock before the record and acts
-only one second after the deadline. The daemon re-reads the clock at least every
-second: a queued job never starts, a preparing or running one is cancelled
-(`run_deadline_expired`). The warden is a detached process (its own session, no
+before the deadline). They run on one per-job chain in the daemon; from the terminal
+on (the SQL terminal commit, or the scheduler's settlement of a job that never ran)
+only the terminal's own facts decide `closed` or `expired`. The enforcement claim
+(`<job>.json.enforcing`, exclusive create) is the one durable fact that a deadline
+won and names it: the warden makes it before its first stop, the daemon when it
+decides the deadline won; it floors the governing deadline, so no failed write or
+daemon death postpones it. A set and the warden are ordered by the shared host
+clock, not a lock a SIGKILLed daemon would leave held: the daemon decides a set
+before anything is visible (no terminal, no claim, the clock before the replaced
+deadline), then publishes it, and confirms it only if afterwards the clock is
+still before the replaced deadline plus the warden's one-second head start and no
+claim of the replaced revision exists (otherwise it claims the replaced deadline,
+restores it as `enforcing` and refuses); the warden reads the clock before the
+record and acts only one second after the deadline. The daemon re-reads the clock
+at least every second: a queued job never starts, a preparing or running one is
+cancelled (`run_deadline_expired`), an acceptance whose deadline passed before its
+commit is refused, and from the deadline on the run's scope launches nothing
+(`registerScopeFence`). The warden is a detached process (its own session, no
 run marker, outside every run cgroup) started before the first process of the
-run's scope — before the thread worktree preparation's first Git child, then given
+run's scope — before the thread worktree preparation's first Git child (a job
+with a deadline runs its whole preparation inside that scope), then given
 the run's own marker — and confirmed through `<job>.json.ready` before anything
 launches. The engine bundle starts the small `run-deadline-warden.cjs` beside it
 (its own `--run-deadline-warden <record>` role when that file is missing); an
@@ -6246,15 +6256,16 @@ daemon is dead: it kills the run's cgroup (`cgroup.kill`, when the startup probe
 proved a delegated cgroup v2 subtree: every launch carrying the run's marker
 enters `claudexor-runs/<job>` before exec) and ends every process carrying the
 run's markers plus the groups and descendants `daemon/run-scopes.json` recorded
-for them. Every process a run starts launches through core's one run-owned launch point
-(`spawnRunOwned`; `spawnProcess` and `runCaptureRaw` use it): the run's marker in
-the spawn env places the child in the boundary and the registry. Vendor probes
-(the Codex effort probe, the Antigravity print probe) carry it in their env; an
-in-run delivery (its Git, `gh` and scanner children) and final verification run
-inside `withinRunScope(marker)`, and so does a thread turn's Git preflight, as
-the first child of its preparation scope; a source test refuses any other
-direct `node:child_process` launch outside its explained exceptions (host
-measurement, the daemon's warden and probe, operator commands). It leaves,
+for them. Every process a run starts launches through core's one run-owned launch
+point (`spawnRunOwned`; `spawnProcess` and `runCaptureRaw` use it), and the
+orchestrator runs the whole run inside `withinRunScope(marker)`: each launch
+carries the run's marker whatever env its call site built; the single-flight
+vendor probes several runs share (Claude auth status, model and `--help` probes,
+the Cursor status cache) launch as `sharedLaunch(name)` without one, and the
+daemon starts every job outside any inherited scope. A source test refuses any
+other direct `node:child_process` launch outside its explained exceptions (host
+measurement, the daemon's warden and probe, operator commands, the dependency-free
+publication scanner, which delivery hands the run-owned launcher). It leaves,
 writing `<job>.json.outcome.json` (what `enforcement`
 reports) and `.done`: on the cgroup boundary once `cgroup.events` reports the
 cgroup unpopulated (nested subgroups included) and every marker reap settled; on
@@ -6263,13 +6274,18 @@ unprovable census or a surviving member is retried with backoff and ends
 `unresolved` only after two minutes of enforcement; where no census proves
 emptiness (macOS, not declared) after three settled passes, `unresolved`; at once
 when its record is removed. A Delegate child's warden reads its ancestors'
-current records, so one parent write moves every dependent warden; a terminal
+current records, so one parent write moves every dependent warden, and every
+confirmed parent change is copied into its descendants' `inherited`; a terminal
 fixes the deadline the run ended under (`frozen`), and a closed child's
 survivors stay capped by its parent's current deadline. After the terminal the
-warden leaves once a non-signalling pass confirms the boundary empty, otherwise
-it stays to that deadline. Retention removes the files once their warden is
-done; startup writes the terminal state of every earlier generation's retained
-record and removes finished ones of jobs no longer retained. The sweep covers orphaned envelopes (with their
+warden leaves once a non-signalling pass confirms the boundary empty (on the
+marker boundary on Linux, after a normal terminal, also once the recorded tree is
+empty and no readable environment carries the marker, reported `unresolved` with
+that residual), otherwise it stays to that deadline. A record goes only when
+nothing may act on it: its warden is done and no record naming it as Delegate
+parent is held or has a warden that may act. Startup reconciles in two passes:
+the terminal state of every earlier generation's retained record, then the
+removal of what nothing needs. The sweep covers orphaned envelopes (with their
 seeded-credential homes), dead per-attempt `claudexor/<task>/<attempt>`
 branches, leaked `claudexor/verify-*` branches, and stale
 `claudexor-ro-*`/`claudexor-verify-*` tmp dirs. Envelopes whose creating

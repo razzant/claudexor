@@ -69,7 +69,7 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 30,
-                "description": "Seconds after a run's deadline by which every process inside its boundary is gone. Physical limits outside it: a suspended host stops the run when it wakes; a task in uninterruptible kernel I/O (D state) dies once that I/O returns; on the marker boundary a process running as another user, or one that cleared its environment after leaving the recorded tree, is not found; work handed to another service (a container engine, an already running tmux server, systemd-run) is outside the boundary."
+                "description": "Seconds after a run's deadline by which every process inside its boundary is gone. Physical limits outside it: a suspended host stops the run when it wakes; a task in uninterruptible kernel I/O (D state) dies once that I/O returns; on the marker boundary a process running as another user, one that cleared its environment after leaving the recorded tree, or (once the run ended normally) one whose environment cannot be read outside that tree, is not found; work handed to another service (a container engine, an already running tmux server, systemd-run) is outside the boundary."
               },
               "boundary": {
                 "type": "string",
