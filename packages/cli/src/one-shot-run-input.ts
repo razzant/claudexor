@@ -29,6 +29,7 @@ export function oneShotRunInput(p: ControlRunStartRequest): RunInput {
     harnesses: p.harnesses,
     primaryHarness: p.primaryHarness,
     routingGoal: p.routingGoal,
+    complexity: p.complexity,
     model: p.model,
     models: p.models,
     effort: p.effort,

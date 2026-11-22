@@ -42,6 +42,7 @@
             "route.account.pool_selected",
             "route.account.lane_switch",
             "route.account.pool_exhausted",
+            "route.complexity.decided",
             "route.transient.exhausted",
             "route.fallback.auth_switched",
             "route.primary.diverged",

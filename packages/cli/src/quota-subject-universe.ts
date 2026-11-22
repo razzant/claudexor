@@ -1,6 +1,7 @@
-import { loadConfig } from "@claudexor/config";
+import { accountUsageAllowance, loadConfig } from "@claudexor/config";
 import {
   accountResourceSourceHarnesses,
+  quotaDemandRequiresAllowance,
   harnessHasDefaultCredentialStore,
   quotaRefreshDemandHarnesses,
   type QuotaSubject,
@@ -44,6 +45,11 @@ export function quotaSubjectUniverseFromConfig(): QuotaSubject[] {
     for (const profile of profiles) {
       if (profile.harness_id !== harness || !profile.enabled) continue;
       if (profile.credential_kind !== "config_dir_login") continue;
+      if (
+        quotaDemandRequiresAllowance(harness) &&
+        !accountUsageAllowance(profile, global.routing.account_tiers)
+      )
+        continue;
       subjects.push({
         harness,
         credential_route: "vendor_native",

@@ -106,6 +106,10 @@ export const RunEventType = z
      * `fallback: "api_key_route"` means the EXPLICIT api_key preference opted
      * the run onto the typed PAID route (INV-061) — never silently under auto. */
     "route.account.pool_exhausted",
+    /** A run that stated a complexity was routed or refused: the payload is the
+     * ComplexityRouteDecision (every table candidate with its chosen account or
+     * the typed reason it was blocked). */
+    "route.complexity.decided",
     "route.transient.exhausted",
     /** A subscription->API (or harness->harness) auth switch driven by a typed
      * quota/money signal. Distinct from a plain harness rotation; never silent. */

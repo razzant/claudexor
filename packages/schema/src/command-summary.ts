@@ -8,6 +8,7 @@ export const COMMAND_SUMMARY_PARAM_KEYS = [
   "mode",
   "taskGroupId",
   "routingGoal",
+  "complexity",
   "access",
   "reviewerPanel",
   "protectedPathApprovals",

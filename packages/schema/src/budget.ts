@@ -4,6 +4,7 @@ import { BillingKnowledge, CostKnowledge } from "./auth.js";
 import { Id, Intent } from "./primitives.js";
 import { EffortHint, SignalQuality } from "./harness.js";
 import { ProcessingCostBasis } from "./processing.js";
+import { ComplexityRouteDecision } from "./account-tier.js";
 
 export const PaidBudget = z
   .discriminatedUnion("kind", [
@@ -82,6 +83,7 @@ export const RouteRankingReason = z
     "all_incremental_cash_unknown",
     "delegate_effective_first",
     "explicit_primary",
+    "complexity_account_tier",
     "declared_order",
   ])
   .describe("Typed decisive reason the pool ranked the way it did (QA-034).");
@@ -122,6 +124,7 @@ export const RouteRankingRationale = z
       .describe("Ids removed by paid_fallback or cooldown before ranking."),
     reason: RouteRankingReason,
     entries: z.array(RouteRankingEntry).default([]),
+    complexity: ComplexityRouteDecision.optional(),
   })
   .describe("Typed routing rationale recorded once at pool ordering (QA-034).");
 export type RouteRankingRationale = z.infer<typeof RouteRankingRationale>;

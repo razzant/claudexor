@@ -12,7 +12,14 @@ import type {
 } from "@claudexor/schema";
 import { quotaConstraintAppliesToModel } from "@claudexor/budget";
 import { profileQuotaBlock } from "./credential-cooldown.js";
-import { limitSubjectRoute, profileHeadroomBreach } from "./credential-profile-rotation.js";
+import {
+  bySoonestReset,
+  primaryQuotaUnknown,
+  tierGroup,
+  tierHeadroomBreach,
+  type TierRouting,
+} from "./account-tier-routing.js";
+import { limitSubjectRoute } from "./credential-profile-rotation.js";
 import { liveRefusalMarks } from "./pre-progress-refusal.js";
 import { quotaRefusalBasis, quotaRefusalResetsAt } from "./quota-refusal-scope.js";
 
@@ -45,6 +52,12 @@ import { quotaRefusalBasis, quotaRefusalResetsAt } from "./quota-refusal-scope.j
  * INV-135), before the profile-id tie-break. It never outranks known headroom,
  * a mark, a cooldown or a pin, and a row with no service history keeps id order.
  *
+ * A run that states a complexity adds the account tiers (account-tier-routing.ts)
+ * as one key after the mark: auxiliary rows with known room by soonest limiting
+ * reset, untiered rows with known room, primary rows below their reserve, then
+ * rows whose quota is unknown. A primary row at or over the reserve, or whose
+ * quota is unknown, is not selectable. Without a complexity nothing changes.
+ *
  * The pool contains SUBSCRIPTION-kind rows only: an api_key row is a paid
  * route and is never silently selected (INV-061); it remains an explicit pin
  * target. Pool exhaustion is the typed `credential_pool_exhausted` terminal
@@ -53,7 +66,12 @@ import { quotaRefusalBasis, quotaRefusalResetsAt } from "./quota-refusal-scope.j
  */
 
 export type PoolQuotaVerdict =
-  | { kind: "fresh_headroom"; headroom: number }
+  | {
+      kind: "fresh_headroom";
+      headroom: number;
+      /** Reset of the window that limits this row, when its source names one. */
+      resets_at: string | null;
+    }
   | { kind: "unknown" }
   | {
       kind: "exhausted";
@@ -61,6 +79,8 @@ export type PoolQuotaVerdict =
       basis: QuotaRefusalBasis;
       /** A usage refusal with no reopening time (#558): no instant heals this row. */
       reopening?: "unknown";
+      /** A primary row a complexity run could not prove to be below its reserve. */
+      quota_unknown?: true;
     };
 
 export interface PoolCandidate {
@@ -98,8 +118,8 @@ function freshModelHeadroom(
   model: string | null | undefined,
   requestKind: QuotaRequestKind | undefined,
   now: number,
-): number | null {
-  let worst: number | null = null;
+): { headroom: number; resets_at: string | null } | null {
+  let worst: { headroom: number; resets_at: string | null } | null = null;
   for (const snapshot of snapshots) {
     if (snapshot.subject.harness !== harnessId) continue;
     if ((snapshot.subject.subject_id ?? null) !== profileId) continue;
@@ -109,7 +129,8 @@ function freshModelHeadroom(
       if (!quotaConstraintAppliesToModel(constraint, model)) continue;
       if (constraint.used_ratio === null) continue;
       const headroom = 1 - constraint.used_ratio;
-      if (worst === null || headroom < worst) worst = headroom;
+      if (worst === null || headroom < worst.headroom)
+        worst = { headroom, resets_at: constraint.resets_at };
     }
   }
   return worst;
@@ -134,8 +155,11 @@ export function rankAccountPool(args: {
   refusals?: readonly PreProgressRefusalObservation[];
   /** Durable last-served facts for the final unknown-headroom tie-break. */
   lastService?: LastServiceReader | null;
+  /** Account tiers of a run that states a complexity; absent keeps the pool order. */
+  tier?: TierRouting | null;
 }): PoolCandidate[] {
   const now = Date.now();
+  const profileHeadroomBreach = tierHeadroomBreach(args.tier, args.registry);
   const markedAt = liveRefusalMarks(args.refusals ?? [], args.harnessId, args.model, now);
   for (const obs of args.substitutions ?? []) {
     if (obs.harness_id !== args.harnessId || obs.requested_model !== args.model) continue;
@@ -186,7 +210,21 @@ export function rankAccountPool(args: {
       });
       continue;
     }
-    const headroom = freshModelHeadroom(
+    if (
+      primaryQuotaUnknown(args.tier, profile, args.snapshots, args.model, args.requestKind, now)
+    ) {
+      candidates.push({
+        profile,
+        verdict: {
+          kind: "exhausted",
+          resets_at: null,
+          basis: "owner_reserve",
+          quota_unknown: true,
+        },
+      });
+      continue;
+    }
+    const fresh = freshModelHeadroom(
       args.snapshots,
       args.harnessId,
       profile.profile_id,
@@ -196,7 +234,7 @@ export function rankAccountPool(args: {
     );
     candidates.push({
       profile,
-      verdict: headroom === null ? { kind: "unknown" } : { kind: "fresh_headroom", headroom },
+      verdict: fresh === null ? { kind: "unknown" } : { kind: "fresh_headroom", ...fresh },
     });
   }
   const unknown = candidates.filter((candidate) => candidate.verdict.kind === "unknown");
@@ -219,6 +257,19 @@ export function rankAccountPool(args: {
     if (orderOf(a) === 1) {
       const byAge = markedAt.get(a.profile.profile_id)! - markedAt.get(b.profile.profile_id)!;
       if (byAge !== 0) return byAge;
+    }
+    if (args.tier && a.verdict.kind !== "exhausted" && b.verdict.kind !== "exhausted") {
+      const aKnown = a.verdict.kind === "fresh_headroom";
+      const bKnown = b.verdict.kind === "fresh_headroom";
+      const byTier = tierGroup(a.profile.tier, aKnown) - tierGroup(b.profile.tier, bKnown);
+      if (byTier !== 0) return byTier;
+      if (a.profile.tier === "auxiliary" && aKnown && bKnown) {
+        const byReset = bySoonestReset(
+          a.verdict.kind === "fresh_headroom" ? a.verdict.resets_at : null,
+          b.verdict.kind === "fresh_headroom" ? b.verdict.resets_at : null,
+        );
+        if (byReset !== 0) return byReset;
+      }
     }
     const byRank = rankOf(a.verdict) - rankOf(b.verdict);
     if (byRank !== 0) return byRank;

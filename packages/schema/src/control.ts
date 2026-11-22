@@ -55,7 +55,9 @@ import { ContinueCarrierPreference, ControlRetainedEnvelope } from "./run-contin
 import { ProcessingPreference } from "./processing.js";
 import { PromptCacheTtl } from "./prompt-cache.js";
 import { TaskGroupId, TaskGroupReceipt } from "./task-group.js";
+import { ComplexityLevel } from "./account-tier.js";
 export { RunExecution } from "./control-run-execution.js";
+export * from "./control-artifact-info.js";
 export { ControlTimelineEvent } from "./control-timeline.js";
 export const ControlReviewerPanelEntry = z
   .object({
@@ -112,6 +114,7 @@ export const ControlRunStartRequest = z
       .describe("Eligible harness pool for the run; omitted = engine auto-pools."),
     primaryHarness: NonBlankString.optional().describe("Primary harness the run should prefer."),
     routingGoal: RoutingGoal.optional(),
+    complexity: ComplexityLevel.optional(),
     /** Scalar model convenience: expands to the RESOLVED PRIMARY harness only
      * (never the pool). With a multi-harness pool and no primary it is
      * rejected — use `models` instead (INV-103). */
@@ -630,6 +633,7 @@ export const ControlRunSummary = z
     harnesses: z.array(z.string()).optional().describe("Harness pool the run used."),
     primaryHarness: z.string().optional().describe("Primary harness the run preferred."),
     routingGoal: RoutingGoal.optional(),
+    complexity: ComplexityLevel.optional(),
     model: z.string().optional().describe("Scalar model requested for the run."),
     review: z
       .boolean()
@@ -852,27 +856,6 @@ export const ControlBudgetSnapshot = z
   })
   .describe("Budget snapshot for a run: cap, spend, and provenance.");
 export type ControlBudgetSnapshot = z.infer<typeof ControlBudgetSnapshot>;
-
-export const ControlArtifactInfo = z
-  .object({
-    path: z.string().describe("Artifact path relative to the run directory."),
-    kind: z.enum(["file", "directory"]).describe("Whether the artifact is a file or a directory."),
-    bytes: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe("Size in bytes; absent for directories."),
-    /** Clean MIME type derived from the extension (e.g. `image/png`, `text/plain`,
-     *  `application/pdf`); lets a gallery render text vs image vs pdf. Absent for
-     *  directories. */
-    mime: z
-      .string()
-      .optional()
-      .describe("MIME type derived from the extension; absent for directories."),
-  })
-  .describe("One artifact in the run's artifact tree.");
-export type ControlArtifactInfo = z.infer<typeof ControlArtifactInfo>;
 
 export const ControlInteractionAnswerRequest = z
   .object({

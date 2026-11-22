@@ -122,6 +122,8 @@ export type ControlDeliveryResponse = z.infer<typeof ControlDeliveryResponse>;
 
 export const ControlThreadTurnRequest = ControlRunStartRequest.omit({
   taskGroupId: true,
+  // A thread turn is routed by the thread's sticky pool and bound account.
+  complexity: true,
   scope: true,
   execution: true,
   threadId: true,

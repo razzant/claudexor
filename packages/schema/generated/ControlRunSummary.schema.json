@@ -1377,6 +1377,15 @@
           ],
           "description": "Routing objective: pace expiring quota, choose the highest declared quality tier, or minimize incremental paid spend."
         },
+        "complexity": {
+          "type": "string",
+          "enum": [
+            "easy",
+            "medium",
+            "hard"
+          ],
+          "description": "Complexity a run states for itself; selects the route candidates to consider."
+        },
         "model": {
           "type": "string",
           "description": "Scalar model requested for the run."
@@ -2628,6 +2637,7 @@
                     "all_incremental_cash_unknown",
                     "delegate_effective_first",
                     "explicit_primary",
+                    "complexity_account_tier",
                     "declared_order"
                   ],
                   "description": "Typed decisive reason the pool ranked the way it did (QA-034)."
@@ -2679,6 +2689,189 @@
                     "description": "Per-candidate billing/cost tuple in the routing rationale (QA-034)."
                   },
                   "default": []
+                },
+                "complexity": {
+                  "type": "object",
+                  "properties": {
+                    "level": {
+                      "$ref": "#/definitions/ControlRunSummary/properties/complexity"
+                    },
+                    "selected": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/definitions/ControlRunSummary/properties/parentRunId/anyOf/0"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Harness of the candidate that serves first; null = refused."
+                    },
+                    "candidates": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "harness_id": {
+                            "$ref": "#/definitions/ControlRunSummary/properties/parentRunId/anyOf/0"
+                          },
+                          "model": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "effort": {
+                            "anyOf": [
+                              {
+                                "$ref": "#/definitions/ControlRunSummary/properties/reviewerPanel/items/properties/effort"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Cross-harness reasoning-effort level as a lowercase slug (open vocabulary, mirroring the vendor contract); adapters advertise the levels they accept per model, ordered weakest to strongest by the vendor itself, and a shared normalizer passes advertised levels through, clamps inside the vendor order, places a word the vendor order lacks by the shared preference order (none < minimal < low < medium < high < xhigh < max < ultra) onto an advertised level, and refuses words neither order places."
+                          },
+                          "profile_id": {
+                            "anyOf": [
+                              {
+                                "$ref": "#/definitions/ControlRunSummary/properties/parentRunId/anyOf/0"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The account chosen for this candidate, when one was."
+                          },
+                          "tier": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "primary",
+                                  "auxiliary"
+                                ],
+                                "description": "Routing tier of an account row for runs that state a complexity: auxiliary accounts are used first; a primary account serves only below the configured reserve."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Routing tier of an account row for runs that state a complexity: auxiliary accounts are used first; a primary account serves only below the configured reserve."
+                          },
+                          "quota": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "known_room",
+                                  "unknown"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Quota evidence of the chosen account; null for a blocked candidate."
+                          },
+                          "resets_at": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "description": "Reset of the chosen account's limiting window, or of the earliest block."
+                          },
+                          "blocked_by": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "lane_unavailable",
+                                  "account_not_ready",
+                                  "account_exhausted",
+                                  "owner_reserve",
+                                  "primary_quota_unknown",
+                                  "budget_or_cooldown",
+                                  "refused"
+                                ],
+                                "description": "Why a route candidate or one of its accounts could not serve a complexity run: the harness lane was unavailable, no account was ready, the provider reports a spent window or cooldown, usage reached the owner's reserve (the primary reserve included), a primary account's quota is unknown, the budget router excluded the lane, or another typed refusal."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Null for a candidate that could serve."
+                          },
+                          "detail": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "description": "The refusal's own text for a blocked candidate."
+                          },
+                          "accounts": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "profile_id": {
+                                  "$ref": "#/definitions/ControlRunSummary/properties/parentRunId/anyOf/0"
+                                },
+                                "tier": {
+                                  "anyOf": [
+                                    {
+                                      "$ref": "#/definitions/ControlRunSummary/properties/routingRationale/anyOf/0/properties/complexity/properties/candidates/items/properties/tier/anyOf/0"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "Routing tier of an account row for runs that state a complexity: auxiliary accounts are used first; a primary account serves only below the configured reserve."
+                                },
+                                "blocked_by": {
+                                  "$ref": "#/definitions/ControlRunSummary/properties/routingRationale/anyOf/0/properties/complexity/properties/candidates/items/properties/blocked_by/anyOf/0"
+                                },
+                                "resets_at": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ],
+                                  "description": "When this account's block lifts, when known."
+                                }
+                              },
+                              "required": [
+                                "profile_id",
+                                "tier",
+                                "blocked_by",
+                                "resets_at"
+                              ],
+                              "additionalProperties": false,
+                              "description": "One account of a refused route candidate and what blocked it."
+                            },
+                            "default": []
+                          }
+                        },
+                        "required": [
+                          "harness_id",
+                          "model",
+                          "effort",
+                          "profile_id",
+                          "tier",
+                          "quota",
+                          "resets_at",
+                          "blocked_by",
+                          "detail"
+                        ],
+                        "additionalProperties": false,
+                        "description": "One route candidate of a complexity decision, in table order."
+                      }
+                    }
+                  },
+                  "required": [
+                    "level",
+                    "selected",
+                    "candidates"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Audit record of a complexity routing decision: every table candidate with the account chosen for it or the typed reason it was blocked. Computed from config and quota evidence only."
                 }
               },
               "required": [

@@ -14,6 +14,7 @@ export const QuotaSource = z
     "agy_command_usage",
     "cursor_rate_limit",
     "grok_rate_limit",
+    "grok_local_usage",
     "claude_rate_limit_event",
     "codex_app_server_event",
     "codex_image_response",
@@ -33,10 +34,13 @@ export interface QuotaSourceTraits {
   readonly vendorAuthenticated: boolean;
   /** A missing/stale primary observation from this harness creates daemon
    * refresh demand. Reactive and spool sources deliberately use null. */
-  readonly refreshDemandHarness: "claude" | "codex" | "agy" | null;
+  readonly refreshDemandHarness: "claude" | "codex" | "agy" | "grok" | null;
   /** At least one registered top-level quota refresher can produce this
    * source. This is independent of whether it satisfies refresh demand. */
   readonly producedByRefresher: boolean;
+  /** The source can answer only for an account with a configured usage
+   * allowance, so only such accounts create refresh demand for its harness. */
+  readonly demandRequiresAllowance?: true;
 }
 
 export const QUOTA_SOURCE_TRAITS = {
@@ -94,6 +98,16 @@ export const QUOTA_SOURCE_TRAITS = {
     vendorAuthenticated: false,
     refreshDemandHarness: null,
     producedByRefresher: false,
+  },
+  grok_local_usage: {
+    snapshotMode: "full",
+    // Spend summed from the Grok CLI's own local `usage.json` files against a
+    // configured allowance. It is local bookkeeping, never a vendor answer, so
+    // it proves nothing about the credential and retires no vendor refusal.
+    vendorAuthenticated: false,
+    refreshDemandHarness: "grok",
+    producedByRefresher: true,
+    demandRequiresAllowance: true,
   },
   claude_rate_limit_event: {
     snapshotMode: "window",
@@ -164,14 +178,22 @@ export function legacyV320QuotaSource(source: QuotaSource): QuotaSource {
     : source;
 }
 
-export function quotaRefreshDemandHarnesses(): Array<"claude" | "codex" | "agy"> {
+export function quotaRefreshDemandHarnesses(): Array<"claude" | "codex" | "agy" | "grok"> {
   return [
     ...new Set(
       Object.values(QUOTA_SOURCE_TRAITS)
         .map((traits) => traits.refreshDemandHarness)
-        .filter((harness): harness is "claude" | "codex" | "agy" => harness !== null),
+        .filter((harness): harness is "claude" | "codex" | "agy" | "grok" => harness !== null),
     ),
   ].sort();
+}
+
+/** Whether this harness's refresh demand exists only for accounts with a usage allowance. */
+export function quotaDemandRequiresAllowance(harness: string): boolean {
+  const sources: QuotaSourceTraits[] = Object.values(QUOTA_SOURCE_TRAITS).filter(
+    (traits) => traits.refreshDemandHarness === harness,
+  );
+  return sources.length > 0 && sources.every((traits) => traits.demandRequiresAllowance === true);
 }
 
 export function quotaSourcesProducedByRefreshers(): QuotaSource[] {

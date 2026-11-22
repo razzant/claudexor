@@ -1153,6 +1153,157 @@ success nor starts route fallback. Only an explicitly persisted
 `web_required=true` compatibility contract can become `web-unsatisfied` and
 use the existing read-only fallback path.
 
+### Complexity routing and account tiers
+
+A one-shot run may state its own complexity, `easy | medium | hard`
+(`claudexor agent --complexity <level>`, `complexity` on `POST /v2/runs` and on
+the MCP launch tools). The engine then takes the run's candidates from the
+operator's table and picks the account by tier. The whole decision is
+arithmetic over configuration and the quota windows every source reports in
+one model: no model is asked, and no branch names a vendor, so an account of
+any harness can carry either tier. A run that states no complexity never reads
+any of this and routes exactly as described above.
+
+Everything is configured in the global config; nothing is built in. The model
+ids below are an illustration: use the ids your own accounts list
+(`claudexor models <harness>`).
+
+```yaml
+routing:
+  complexity_routes:
+    easy:
+      - { harness: claude, model: claude-sonnet-5-5 }
+      - { harness: grok, model: grok-4.7, effort: medium }
+      - { harness: codex, model: gpt-6-terra }
+    medium:
+      - { harness: claude, model: claude-opus-5-5 }
+      - { harness: grok, model: grok-4.7, effort: xhigh }
+      - { harness: codex, model: gpt-6.2-sol, effort: medium }
+    hard:
+      - { harness: claude, model: claude-fable-5-2, effort: medium }
+      - { harness: codex, model: gpt-6.2-sol }
+  account_tiers:
+    primary_reserve:
+      weekly_used_ratio: 0.85 # default
+      short_window_used_ratio: 0.9 # default
+      short_window_max_seconds: 86400 # default: a window this long or shorter is short
+    allowances: {} # optional default usage allowance per tier
+credential_profiles:
+  - profile_id: lead
+    harness_id: claude
+    # ...the row's existing fields...
+    tier: primary # or auxiliary; absent = untiered
+  - profile_id: spare
+    harness_id: grok
+    # ...
+    tier: auxiliary
+    usage_allowance: { usd: 100, period_start: "2026-01-01T00:00:00Z", period_days: 30 }
+```
+
+A harness appears at most once per level. `tier` and `usage_allowance` are
+edited in the config file; no CLI verb, Settings field or app control writes
+them.
+
+The table is a candidate list, not a strict pool
+(`orchestrator/complexity-routing.ts`). Input resolution turns the level into
+the run's pool and its per-harness model and effort; a request that also names
+harnesses narrows the candidates to those, while a scalar `model` or `effort`,
+or a harness-scoped one that contradicts the table, is refused before the run
+is announced, as is a level with no candidates. Each candidate then passes the
+ordinary lane admission, and an unavailable one is dropped as in an Auto pool.
+A saved default primary does not apply; an explicit `--primary-harness` keeps
+its meaning and is recorded as `explicit_primary`.
+
+Each admitted candidate resolves its account through the one account owner
+above, with the tiers folded into the same pool ranking
+(`orchestrator/account-tier-routing.ts`):
+
+1. Auxiliary accounts serve first, until none is left. Among auxiliary accounts
+   with known room, the one whose limiting window resets soonest goes first,
+   since its unused quota is lost at that reset; a window with no known reset
+   goes after every dated one; headroom and then profile id break ties.
+2. Untiered accounts with known room come next, in the ordinary pool order.
+3. A primary account serves last, and only while every fresh quota window is
+   below the reserve: `weekly_used_ratio` for a long window or one of unknown
+   length, `short_window_used_ratio` for a window of at most
+   `short_window_max_seconds`. The remainder belongs to runs that state no
+   complexity. A primary account at or over the reserve is refused as the
+   owner's reserve (`owner_reserve`, the basis a saved `headroom_threshold`
+   already uses); at 100% it is the provider's spent window.
+4. Unknown or stale quota ranks after every account with known room, a primary
+   one included, and is never room on a primary account: a primary account
+   whose usage cannot be read is not selectable.
+
+An account with a live typed refusal or cooldown is skipped as before. The same
+order then applies across harnesses to the lanes that were admitted, with the
+table's order as the last tie-break (rationale reason `complexity_account_tier`
+when it changed the order). In-run account rotation of a complexity run follows
+the tiers too and never rotates into a primary account that is reserved or
+unknown.
+
+The existing guarantees keep their order. A credential pin is resolved first
+and never rotates: it is served whatever the tier order says, and a pinned
+primary account at its reserve refuses `subscription_window_exhausted` with
+basis `owner_reserve` (unknown quota: `primary_quota_unknown`). An unpinned
+thread turn stays on its bound account while that account may serve, and moves
+with the disclosed `route.account.lane_switch` when it reaches the reserve.
+The paid-fallback rule is unchanged: a candidate whose subscription billing is
+not vendor-proven is excluded while a proven one is available, and the decision
+records it as `budget_or_cooldown`.
+
+The decision is evidence. `route.complexity.decided` and
+`RunTelemetry.routing_rationale.complexity` carry every table candidate in
+order with the account chosen for it, its tier, whether its room was known and
+its limiting reset, or the typed reason it was blocked (`lane_unavailable`,
+`account_not_ready`, `account_exhausted`, `owner_reserve`,
+`primary_quota_unknown`, `budget_or_cooldown`, `refused`) with each of its
+accounts and that account's own reason and reset. When nothing qualifies the
+run refuses before any provider starts: category `harness_unavailable`, problem
+code `complexity_route_refused`, the earliest known reset, and that same
+decision. The failure record's `code` stays null, as for the other refusals
+that are not a `RunFailureCode`. A reserved or unknown primary account is
+never used to avoid the refusal.
+
+Exhaustion is one state for every harness: a quota window at 100% with a
+future reset, or a typed provider refusal held as a cooldown, makes the account
+unavailable until that instant, and it returns to routing by itself afterwards
+with no configuration change. A window whose reset has passed is stale, so the
+account ranks as unknown until its next reading; the quota poll renews a
+reading at its reset. How each harness learns of the reset:
+
+| Harness | Measured usage and reset | Typed refusal |
+|---|---|---|
+| Claude | Vendor usage read per account, with each window's reset | Rate-limit event; its reset or retry delay, else a five-minute cooldown |
+| Codex | Vendor rate-limit read per account, with each window's reset | The same; a usage refusal that names no reopening time has no reset |
+| Antigravity | The vendor's quota command per account, with each window's reset | None is recorded: a structured quota refusal ends the try without a cooldown |
+| Grok | Local spend against a configured allowance (below); none without one | Rate-limit text with its retry hint; a spent-credits refusal has no reset |
+| Cursor | None: balances are shown and never decide routing | Vendor-limit text; a named reset day, else a cooldown |
+| OpenCode, Copilot, raw API | None | No reactive cooldown is recorded |
+
+A refusal with no reset keeps the engine's bounded recheck (INV-135, #318), so
+its account returns on that recheck, not at a known reset. One addition dates
+it: when the refused account has a usage allowance, the refusal lasts until
+that allowance's period ends (`cli/usage-period-refusal.ts`), for any harness.
+Where a row above says none, the account's quota is unknown: it serves after
+accounts with known room when auxiliary or untiered, and never as a primary
+account of a complexity run.
+
+Grok's own usage endpoint can report nothing spent until the vendor refuses,
+so it is not asked. The `grok_local_usage` source (`cli/grok-usage-source.ts`,
+`harness-grok/usage-meter.ts`) sums `costUsdTicks` over the turns that ended in
+the account's current allowance period from the Grok CLI's own
+`<profile HOME>/.grok/sessions/<project>/<session>/usage.json` files and
+publishes one ordinary window: spend over allowance, the period length, a reset
+at the period's end. Ten billion ticks are one US dollar, the unit xAI's API
+reference defines for `cost_in_usd_ticks`; the CLI's field is taken to be the
+same unit. Only `usage.json` is opened, never the credential or a conversation
+beside it. A record modified in the period that cannot be read whole makes the
+reading a typed absence instead of a smaller number, so the account's quota is
+unknown until it can be read. The window is local bookkeeping: it is not a
+vendor answer, proves nothing about the credential, counts only spend made
+through that profile's home on this machine, and retires no vendor refusal. An
+account without an allowance is not metered and creates no refresh demand.
+
 ## 5. Auth And Secrets
 
 Native harness auth is preferred. API-key fallback uses the v2-owned `0600`

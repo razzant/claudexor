@@ -61,6 +61,7 @@ export * from "./route-controls.js";
 export * from "./browser-evidence.js";
 export * from "./telemetry.js";
 export * from "./attempt-execution.js";
+export * from "./account-tier.js";
 export * from "./config.js";
 export * from "./runtime-concurrency.js";
 export * from "./workspace.js";
