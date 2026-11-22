@@ -1197,39 +1197,38 @@
               >
                 <h4 class="host-name">Hermes</h4>
                 <div class="term">
-                  <i># Hermes 0.23.1+: reviewed full SHA</i><br /><i>$</i> printf 'Reviewed source
-                  commit SHA: ' &amp;&amp;<br />IFS= read -r sha &amp;&amp;<br />hermes plugins
-                  install \<br />razzant/claudexor/plugins/hermes \<br />--ref "${sha:?Full SHA
-                  required}" --enable
+                  <i># Hermes 0.23.1+, macOS or Linux. Put node</i><br /><i
+                    ># and claudexor on the Hermes PATH first.</i
+                  ><br /><i>$</i> hermes plugins install claudexor --enable
                 </div>
                 <p>
-                  Needs Hermes 0.23.1 or later. Use the SHA of a source commit whose manifest
-                  declares the Claudexor server <code>trust: untrusted</code>; older releases may
-                  not. Check that the plugin is enabled with <code>hermes plugins list</code> in the
-                  same profile.
-                  <a href="https://github.com/razzant/claudexor#install-in-hermes">All steps</a>
-                  shows how to verify the full source commit and get your first answer.
+                  A Community plugin in the Hermes catalog; it needs Claudexor CLI 6.3.0 or later.
+                  Check its pinned source first with <code>hermes plugins info claudexor</code>.
+                  The catalog pin can change. To verify the installed SHA before enabling,
+                  omit <code>--enable</code> and answer No if prompted. Follow All steps below
+                  to check the installed files, then run <code>hermes plugins enable claudexor</code>.
+                </p>
+                <p>
+                  In a new session of the same profile, ask: “Load
+                  <code>claudexor:claudexor</code>, then use Claudexor's read-only Ask for a second
+                  opinion on this plan.” Approving a call is not a budget: even this Ask can use
+                  your quota or incur charges.
+                  <a href="https://hermes-agent.nousresearch.com/marketplace/claudexor"
+                    >Catalog entry</a
+                  >
+                  · <a href="https://github.com/razzant/claudexor#install-in-hermes">All steps</a>
+                  covers checking the pin, updating and installing from a reviewed Git commit.
                 </p>
               </div>
               <div class="pane" role="tabpanel" id="install-in-pi" aria-labelledby="tab-pi">
                 <h4 class="host-name">Pi</h4>
-                <div class="term">
-                  <i># Does the npm package carry the extension?</i><br /><i>$</i> npm view
-                  claudexor@latest \<br />pi.extensions --json
-                </div>
-                <p>
-                  If it lists <code>./pi/index.js</code>, install with
-                  <code>pi install npm:claudexor</code>. If not,
-                  <a href="https://github.com/razzant/claudexor#get-a-package-checkout"
-                    >get a checkout</a
-                  >
-                  and run <code>pi install "$HOME/claudexor-hosts/packages/claudexor"</code>.
-                </p>
+                <div class="term"><i>$</i> pi install npm:claudexor</div>
                 <p>
                   Use a Pi version with built-in MCP and <code>registerMcpServer</code>, such as
                   1.5.2. After <code>/reload</code>, check that Claudexor is connected in
                   <code>/mcp</code>.
-                  <a href="https://github.com/razzant/claudexor#install-in-pi">All steps</a>
+                  <a href="https://pi.dev/packages/claudexor">Pi package page</a>
+                  · <a href="https://github.com/razzant/claudexor#install-in-pi">All steps</a>
                 </p>
               </div>
               <div
@@ -1240,16 +1239,20 @@
               >
                 <h4 class="host-name">OpenClaw</h4>
                 <div class="term">
-                  <i># On the Gateway machine, from a checkout</i><br /><i>$</i> openclaw plugins
-                  install \<br />"$HOME/claudexor-hosts/plugins/claude"<br /><i>$</i> openclaw
-                  plugins inspect claudexor
+                  <i># On the Gateway machine</i><br /><i>$</i> openclaw plugins install \<br />clawhub:@ouroboros-agent/claudexor<br /><i
+                    >$</i
+                  >
+                  openclaw plugins inspect claudexor
                 </div>
                 <p>
                   Put <code>node</code> and <code>claudexor</code> on the Gateway service's PATH and
                   allow the tools for your embedded agent. OpenClaw 2026.11.5 needs Node 24.16.0 to
-                  24.x, or 26.1.0 and newer.
+                  24.x, or 26.1.0 and newer. The installer asks you to confirm the bundled skill
+                  and the local MCP server (<code>claudexor mcp serve</code>).
+                  <a href="https://clawhub.ai/ouroboros-agent/plugins/claudexor">ClawHub page</a>
+                  ·
                   <a href="https://github.com/razzant/claudexor#get-a-package-checkout"
-                    >Get a checkout</a
+                    >Install from a checkout instead</a
                   >
                   · <a href="https://github.com/razzant/claudexor#install-in-openclaw">All steps</a>
                 </p>

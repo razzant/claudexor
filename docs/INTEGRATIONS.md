@@ -2124,20 +2124,29 @@ host owns the conversation and tool permissions. The local engine selects a
 harness and retains the run and its result. [Set up the CLI and account](../README.md#set-up-the-cli-and-account).
 
 - **Hermes** reads `plugin.json`, `mcp.json`, and the `claudexor:claudexor`
-  skill from `plugins/hermes`. [Install from a reviewed Git commit](../README.md#install-in-hermes)
-  by full SHA in the selected profile on Hermes 0.23.1 or later, the oldest
-  release tested; no catalog is required. Install by name
-  only if the reviewed entry appears in your Hermes catalog.
+  skill from `plugins/hermes`. The Hermes plugin catalog lists it as a Community
+  plugin for macOS and Linux on Hermes 0.23.1 or later, the oldest release tested,
+  at a pinned commit of this directory. [Install it by name](../README.md#install-in-hermes)
+  in the selected profile. The pin covers only the package: the CLI (6.3.0 or
+  later) and the harnesses it starts are separate installations.
+  `hermes plugins update claudexor` moves a catalog install to the catalog's
+  current pin, and Hermes describes a catalog entry as a point-in-time review, not
+  a security audit. A Git install at a reviewed full SHA needs no catalog entry
+  and stays on that commit until you choose another.
+  [Catalog entry](https://hermes-agent.nousresearch.com/marketplace/claudexor) ·
+  [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugin-catalog) ·
   [Hermes plugin management](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins).
-- **Pi** can install the `claudexor` npm package when its published manifest lists
-  the extension at `./pi/index.js`, or load `packages/claudexor` from a Git checkout
-  containing it. The extension registers the server through `pi.registerMcpServer`
-  on each load. A user or project `mcp.json` entry of the same name takes precedence,
-  including when disabled.
-  [Install in Pi](../README.md#install-in-pi) · [Pi MCP configuration](https://docs.pi.dev/latest/mcp).
-- **OpenClaw** loads the Claude-format `plugins/claude` bundle. Its embedded
-  agent exposes tools as `claudexor__<tool>` if the Gateway and the agent's
-  tool policy allow them. [Install in OpenClaw](../README.md#install-in-openclaw) · [OpenClaw bundle MCP](https://docs.openclaw.ai/plugins/bundles).
+- **Pi** installs the `claudexor` npm package, whose published manifest lists
+  the extension at `./pi/index.js` (6.3.0 or later), or loads `packages/claudexor`
+  from a Git checkout containing it. The extension registers the server through
+  `pi.registerMcpServer` on each load. A user or project `mcp.json` entry of the
+  same name takes precedence, including when disabled.
+  [Install in Pi](../README.md#install-in-pi) · [Pi package page](https://pi.dev/packages/claudexor) · [Pi MCP configuration](https://docs.pi.dev/latest/mcp).
+- **OpenClaw** loads the Claude-format `plugins/claude` bundle, published on
+  [ClawHub](https://clawhub.ai/ouroboros-agent/plugins/claudexor) as
+  `@ouroboros-agent/claudexor` and installable from a package checkout. Its
+  embedded agent exposes tools as `claudexor__<tool>` if the Gateway and the
+  agent's tool policy allow them. [Install in OpenClaw](../README.md#install-in-openclaw) · [OpenClaw install sources](https://docs.openclaw.ai/tools/plugin#choose-an-install-source) · [OpenClaw bundle MCP](https://docs.openclaw.ai/plugins/bundles).
 
 Use one Claudexor connection per host. Keep the selected project's absolute
 `repoPath` on the machine running MCP. The server's working directory can be
