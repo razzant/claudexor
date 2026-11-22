@@ -417,7 +417,7 @@ export class RunDeadlines extends RunDeadlineStore {
     entry.won = true;
     this.stopTimer(entry);
     this.claimFloor(entry, entry.record.revision, this.governing(entry.record));
-    this.expired(entry.jobId);
+    this.stopJob(entry);
     await this.commit(entry, { ...entry.record, state: "enforcing" }, "keep");
     throw deadlineExpired("Run deadline was reached while the new one was being written");
   }
@@ -483,12 +483,17 @@ export class RunDeadlines extends RunDeadlineStore {
     entry.won = true;
     this.stopTimer(entry);
     this.claimFloor(entry, entry.record.revision, this.governing(entry.record));
+    this.stopJob(entry);
+    return true;
+  }
+
+  /** End the job (the scheduler subclass); its failure is reported, never thrown. */
+  private stopJob(entry: Entry): void {
     try {
       this.expired(entry.jobId);
     } catch (error) {
       this.opts.onFault?.(`run-deadline stop of ${entry.jobId}`, error);
     }
-    return true;
   }
 
   private expireWhenDue(entry: Entry): Promise<void> {
