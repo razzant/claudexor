@@ -143,7 +143,10 @@ describe("directory delivery", () => {
     expect(delivered).toMatchObject({
       applied: false,
       treeMutated: false,
-      finalVerify: { applied_cleanly: null, reason: "the run was stopped during final verification" },
+      finalVerify: {
+        applied_cleanly: null,
+        reason: "the run was stopped during final verification",
+      },
     });
     expect(await readFile(marker, "utf8").catch(() => "never ran")).toBe("never ran");
     expect(await readFile(join(f.source, "a.txt"), "utf8")).toBe("original");

@@ -87,6 +87,7 @@ async function inPlaceTurn(jobId: string, holds: boolean) {
           attached.push(marker);
         },
         holds: () => holds,
+        terminalCommitted: () => {},
       },
     },
   )) as { lifecycle: string };

@@ -20,6 +20,7 @@
   "packages/control-api/src/thread-turn-routes.ts": 600,
   "packages/daemon/src/server.ts": 579,
   "packages/daemon/src/threads.ts": 593,
+  "packages/delivery/src/publication-scan.ts": 618,
   "packages/harness-claude/src/index.ts": 671,
   "packages/harness-codex/src/app-server-run.ts": 600,
   "packages/harness-codex/src/index.ts": 852,

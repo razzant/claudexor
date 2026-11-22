@@ -664,7 +664,11 @@ describe("run-deadline/1: one durable record", () => {
         a.server.deadlines
           .set(accepted.id, { at: inMs(90_000), expectedRevision: 0 }, { delegated: false })
           .then(
-            (snapshot) => ({ ok: true as const, revision: snapshot.revision, state: snapshot.state }),
+            (snapshot) => ({
+              ok: true as const,
+              revision: snapshot.revision,
+              state: snapshot.state,
+            }),
             (error: { code?: string }) => ({ ok: false as const, code: error.code }),
           );
       let answer: Awaited<ReturnType<typeof set>>;

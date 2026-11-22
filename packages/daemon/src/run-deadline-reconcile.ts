@@ -129,7 +129,7 @@ export function sweepRecords(deps: SweepDeps): string[] {
   const removed: string[] = [];
   const needs = (name: string) =>
     deps.holds(name) || wardenMayAct(join(deps.dir, name), deps.clock);
-  for (let changed = true; changed; ) {
+  for (let changed = true; changed;) {
     changed = false;
     for (const name of candidates) {
       if (deps.holds(name) || wardenMayAct(join(deps.dir, name), deps.clock)) continue;

@@ -10,12 +10,12 @@ import type { RunContext } from "@claudexor/daemon";
 
 export function terminalCommitHook<H extends (...args: never[]) => unknown>(
   persist: H | undefined,
-  ctx: Pick<RunContext, "onTerminalCommitted">,
+  ctx: Pick<RunContext, "deadlineScope">,
 ): H | undefined {
   if (!persist) return undefined;
   return ((...args: Parameters<H>) => {
     const result = persist(...args);
-    ctx.onTerminalCommitted?.();
+    ctx.deadlineScope?.terminalCommitted();
     return result;
   }) as H;
 }

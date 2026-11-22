@@ -38,6 +38,9 @@ export interface DeadlineScope {
   attach(marker: string): Promise<void>;
   /** The job holds a deadline record: only then is a scope opened for it early. */
   holds(): boolean;
+  /** The run's terminal was durably committed (SQL; file materialization may still be
+   * pending): its deadline closes now, whatever the runner still writes. */
+  terminalCommitted(): void;
 }
 
 export type RunDeadlineOptions = Omit<RunDeadlinesOptions, "onExpire">;
@@ -245,7 +248,11 @@ export class SchedulerDeadlines extends RunDeadlines {
   }
 
   scope(jobId: string): DeadlineScope {
-    return { attach: (marker) => this.attachScope(jobId, marker), holds: () => this.has(jobId) };
+    return {
+      attach: (marker) => this.attachScope(jobId, marker),
+      holds: () => this.has(jobId),
+      terminalCommitted: () => this.close(jobId),
+    };
   }
 
   /**

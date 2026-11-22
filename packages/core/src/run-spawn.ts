@@ -39,9 +39,13 @@ import {
 type LaunchScope = { marker: string; shared?: undefined } | { marker?: undefined; shared: string };
 const bounded = new AsyncLocalStorage<LaunchScope>();
 
-/** Run `work` as part of the run whose scope marker is `marker` (see the module doc). */
-export function withinRunScope<T>(marker: string | undefined, work: () => T): T {
-  return marker ? bounded.run({ marker }, work) : work();
+/** Run `work(...args)` as part of the run whose scope marker is `marker` (see the module doc). */
+export function withinRunScope<T, A extends unknown[]>(
+  marker: string | undefined,
+  work: (...args: A) => T,
+  ...args: A
+): T {
+  return marker ? bounded.run({ marker }, work, ...args) : work(...args);
 }
 
 /**
@@ -126,8 +130,7 @@ export function spawnRunOwned<T extends ChildProcess = ChildProcess>(
   if (fences.size > 0)
     for (const [name, value] of Object.entries(env))
       if (value === SCOPE_MARKER_VALUE && fences.get(name)?.()) throw new RunScopeSpentError(name);
-  for (const observer of launchObservers)
-    observer({ binary, args, marker, shared: store?.shared });
+  for (const observer of launchObservers) observer({ binary, args, marker, shared: store?.shared });
   const launch = enterScopeCgroup({ binary, args: [...args] }, env);
   const child = (run.spawnFn ?? spawn)(launch.binary, launch.args, { ...options, env }) as T;
   const registration =

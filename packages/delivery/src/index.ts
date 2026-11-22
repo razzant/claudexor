@@ -47,9 +47,7 @@ async function withRepositoryMutationLease<T>(
   const key = await realpath(repoRoot);
   const previous = repositoryMutationTails.get(key) ?? Promise.resolve();
   let release!: () => void;
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const held = new Promise<void>((resolve) => (release = resolve));
   const tail = previous.catch(() => undefined).then(() => held);
   repositoryMutationTails.set(key, tail);
   await previous.catch(() => undefined);
@@ -111,8 +109,7 @@ export interface DeliverOptions {
   /** Config root holding the provisioned publication scanner; defaults to
    * Claudexor's own runtime root. */
   scannerConfigDir?: string;
-  /** The owning run's stop: its final verification launches no gate after it fired. */
-  signal?: AbortSignal;
+  signal?: AbortSignal; // the owning run's stop: no verification gate once it fired
 }
 
 export interface DeliverResult {
@@ -159,13 +156,8 @@ export async function verifyAndDeliverFiles(
       return sha256(JSON.stringify(entries));
     };
     const targetPreimageSha = await preimage();
-    const finalVerify = await finalVerifyFiles(
-      candidate,
-      options.paths,
-      gates,
-      log,
-      options.signal,
-    );
+    const { paths, signal } = options;
+    const finalVerify = await finalVerifyFiles(candidate, paths, gates, log, signal);
     const refusal =
       (await realpath(targetRoot)) !== (await realpath(candidate.manifest.sourceRoot))
         ? "target does not match the work product source"

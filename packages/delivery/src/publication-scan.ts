@@ -8,9 +8,7 @@
  * this same source with Node's type stripping before dependencies are
  * installed, so delivery and CI cannot drift into two detectors. Which binary
  * runs (the release pin and its location) is `publication-scanner-pin.ts`.
- * Its processes start through the launcher a caller passes (`launch`): delivery
- * passes the engine's run-owned launch point, so a scan inside a run stays in
- * that run's boundary; the standalone CI entry keeps the plain spawn.
+ * It launches through `launch` (delivery: the run-owned launch point; CI: spawn).
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
@@ -45,15 +43,14 @@ export interface PublicationFinding {
   commit: string | null;
 }
 
-/** How the scan starts a process (Git, tar, the scanner). */
+type LaunchOptions = SpawnOptions & { env: NodeJS.ProcessEnv };
 export type PublicationLauncher = (
-  command: string,
+  cmd: string,
   args: string[],
-  options: SpawnOptions & { env: NodeJS.ProcessEnv },
+  opts: LaunchOptions,
 ) => ChildProcess;
-const plainSpawn: PublicationLauncher = (command, args, options) => spawn(command, args, options);
-/** The launcher of the scan in progress (one per `scanPublication` call). */
-const launching = new AsyncLocalStorage<PublicationLauncher>();
+const plainSpawn: PublicationLauncher = (cmd, args, opts) => spawn(cmd, args, opts);
+const launching = new AsyncLocalStorage<PublicationLauncher>(); // this scan's launcher
 
 export type PublicationScanResult =
   | { status: "clean" }
@@ -106,8 +103,7 @@ export async function scanPublication(input: {
   metadata: readonly PublicationMetadata[];
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
-  /** How processes start (default: the plain spawn the standalone CI entry uses). */
-  launch?: PublicationLauncher;
+  launch?: PublicationLauncher; // how processes start (default: the plain spawn)
 }): Promise<PublicationScanResult> {
   return launching.run(input.launch ?? plainSpawn, () => scanWith(input));
 }
@@ -594,8 +590,8 @@ function run(
     let fd: number | undefined;
     try {
       if (stdoutPath !== undefined) fd = openSync(stdoutPath, "w", 0o600);
-      const launch = launching.getStore() ?? plainSpawn;
-      child = launch(command, args, { cwd, env, stdio: ["ignore", fd ?? "pipe", "ignore"] });
+      const opts = { cwd, env, stdio: ["ignore", fd ?? "pipe", "ignore"] } as LaunchOptions;
+      child = (launching.getStore() ?? plainSpawn)(command, args, opts);
     } catch {
       resolve({ code: null, stdout: "", timedOut: false });
       return;

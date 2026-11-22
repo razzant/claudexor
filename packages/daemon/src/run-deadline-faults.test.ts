@@ -547,7 +547,7 @@ describe("run-deadline/1 under faults: the SQL terminal and a renewal", () => {
       // it still stages its final update before the scheduler settles it.
       runner: async (_params, ctx) => {
         ctx.onRunStart({ runId: `run-${ctx.jobId}`, taskId: "t", runDir: "/tmp/none" });
-        ctx.onTerminalCommitted?.();
+        ctx.deadlineScope?.terminalCommitted();
         committed();
         await new Promise<void>((resolve) => (release = resolve));
         return { lifecycle: "succeeded" };

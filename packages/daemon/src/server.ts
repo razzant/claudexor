@@ -59,9 +59,6 @@ export interface RunContext {
   stopSender?: () => DaemonStopSender | undefined;
   registerTimeLimit?: (timer: RunTimeLimit) => void;
   deadlineScope?: rd.DeadlineScope;
-  /** The run's terminal was durably committed (SQL; file materialization may still be
-   * pending): from here its deadline is closed, whatever the runner still writes. */
-  onTerminalCommitted?: () => void;
   onRunStart: (info: { runId: string; taskId: string; runDir: string }) => void;
 }
 
@@ -485,7 +482,7 @@ export class DaemonServer {
       }
       if (this.deadlines.mustNotStart(id)) continue;
       this.activeJobs.set(id, job);
-      const task = this.runJob(id, rec);
+      const task = outsideRunScope(() => this.runJob(id, rec)); // never an enqueuer's scope
       this.activeTasks.add(task);
       void task.then(
         () => this.activeTasks.delete(task),
@@ -502,21 +499,17 @@ export class DaemonServer {
     this.controllers.set(id, controller);
     rec = this.updateRecord(rec, { state: "running", startedAt: nowIso() });
     try {
-      // A job starts outside any run's launch scope, whatever enqueued it.
-      const result = await outsideRunScope(() =>
-        this.opts.runner(rec.params, {
-          jobId: id,
-          signal: controller.signal,
-          stopSender: () => controller.stopSender,
-          registerTimeLimit: (timer) =>
-            this.timeLimits.register(id, timer, () => !controller.signal.aborted),
-          deadlineScope: this.deadlines.scope(id),
-          onTerminalCommitted: () => this.deadlines.close(id),
-          onRunStart: (info) => {
-            rec = this.updateRecord(rec, info);
-          },
-        }),
-      );
+      const result = await this.opts.runner(rec.params, {
+        jobId: id,
+        signal: controller.signal,
+        stopSender: () => controller.stopSender,
+        registerTimeLimit: (timer) =>
+          this.timeLimits.register(id, timer, () => !controller.signal.aborted),
+        deadlineScope: this.deadlines.scope(id),
+        onRunStart: (info) => {
+          rec = this.updateRecord(rec, info);
+        },
+      });
       const patch = {
         ...settledJobPatch(jobStateFromResult(result, controller.signal.aborted), result),
         ...this.deadlines.unboundExpiry(controller.signal, rec),
