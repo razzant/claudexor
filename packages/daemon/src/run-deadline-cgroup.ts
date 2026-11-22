@@ -209,7 +209,19 @@ export async function killCgroup(dir: string): Promise<boolean> {
   }
 }
 
-/** Remove an empty run cgroup; a populated or vanished one is left as it is. */
-export async function removeRunCgroup(dir: string): Promise<void> {
-  await rmdir(dir).catch(() => {});
+/**
+ * Remove an empty run cgroup with its empty nested subgroups, deepest first (a
+ * cgroup with a child cannot be removed). A populated or vanished one is left
+ * as it is; true when the run's cgroup is gone.
+ */
+export async function removeRunCgroup(dir: string, depth = 0): Promise<boolean> {
+  if (depth < 32)
+    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => []))
+      if (entry.isDirectory()) await removeRunCgroup(join(dir, entry.name), depth + 1);
+  try {
+    await rmdir(dir);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ENOENT";
+  }
 }

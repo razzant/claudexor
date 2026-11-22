@@ -17,7 +17,7 @@ import {
 import type { CommandBackend } from "./command-authority.js";
 import { commandStoreForId } from "./command-authority.js";
 import type { JobRecord } from "./job-record.js";
-import type { DeadlineRecord } from "./run-deadline-record.js";
+import { reportedBound, type DeadlineRecord } from "./run-deadline-record.js";
 import {
   RUN_DEADLINE_EXPIRED,
   deadlineProblem,
@@ -36,6 +36,8 @@ import { RunDeadlines, type RunDeadlinesOptions } from "./run-deadlines.js";
  */
 export interface DeadlineScope {
   attach(marker: string): Promise<void>;
+  /** The job holds a deadline record: only then is a scope opened for it early. */
+  holds(): boolean;
 }
 
 export type RunDeadlineOptions = Omit<RunDeadlinesOptions, "onExpire">;
@@ -120,8 +122,10 @@ export class SchedulerDeadlines extends RunDeadlines {
     const predecessorId = typeof from === "string" ? this.jobIdOf(from) : null;
     const predecessor = predecessorId ? this.recordOf(predecessorId) : null;
     if (predecessor) {
-      const bound = this.governing(predecessor);
       const live = predecessor.state === "armed";
+      // A terminal predecessor hands on the deadline it ended under (`frozen`,
+      // what its GET reports), never its survivors' current process cap.
+      const bound = live ? this.governing(predecessor) : reportedBound(predecessor, this.reader);
       if (live && !this.spent(predecessor)) {
         if (bound && (!own || bound.target < own.target)) {
           own = { at: bound.at, target: bound.target };
@@ -166,15 +170,27 @@ export class SchedulerDeadlines extends RunDeadlines {
   }
 
   /**
-   * Immediately before the commit, synchronously: a prepared refusal refuses
-   * (nothing is accepted). A request that holds a deadline but was not
-   * prepared refuses as retryable.
+   * At the commit itself, synchronously, after replays were resolved: a
+   * prepared refusal refuses (nothing is accepted). The prepared record is
+   * judged again here, on the host clock, against what governs it now (its own
+   * target, its parent's current deadline, a claim): its preparation awaited
+   * durable writes, and an authority spent meanwhile must not take the key. A
+   * request that holds a deadline but was not prepared refuses as retryable.
    */
   reserve(jobId: string, params: unknown): void {
     const prepared = this.prepared.get(jobId);
     this.prepared.delete(jobId);
     if (prepared && "error" in prepared) throw prepared.error;
-    if (prepared) return;
+    if (prepared) {
+      const record = this.stagedRecord(jobId);
+      const bound = record ? this.governing(record) : null;
+      if (bound && this.hostNow() >= bound.target)
+        throw deadlineProblem(
+          "the run's deadline passed before it was accepted; nothing was accepted",
+          "run_deadline_passed",
+        );
+      return;
+    }
     if (this.specFor(params, "refuse"))
       throw deadlineProblem(
         "the deadline record was not prepared; retry the request",
@@ -229,11 +245,7 @@ export class SchedulerDeadlines extends RunDeadlines {
   }
 
   scope(jobId: string): DeadlineScope {
-    return { attach: (marker) => this.attachScope(jobId, marker) };
-  }
-
-  forgetAll(ids: Iterable<string>): void {
-    for (const id of ids) this.forget(id);
+    return { attach: (marker) => this.attachScope(jobId, marker), holds: () => this.has(jobId) };
   }
 
   /**

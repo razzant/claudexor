@@ -314,10 +314,18 @@ export async function runWarden(
     await sleep(deps.pollMs ?? WARDEN_POLL_MS);
   }
 
-  // The deadline won: claim it before the first stop of a live run.
+  // The deadline won: claim it (with the deadline it judged) before the first
+  // stop of a live run.
   if (!terminal(last)) {
+    const bound = governingBound(last, read);
     try {
-      claimEnforcement(recordPath, { revision: last.revision, at: new Date().toISOString() });
+      if (bound)
+        claimEnforcement(recordPath, {
+          revision: last.revision,
+          at: bound.at,
+          targetNs: bound.target.toString(),
+          by: "warden",
+        });
     } catch {
       /* the stop matters more than its record; the daemon's clock reaches the same verdict */
     }

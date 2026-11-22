@@ -15,11 +15,13 @@ import { RunDeadlines } from "./run-deadlines.js";
 import { SchedulerDeadlines } from "./run-deadline-scheduler.js";
 import {
   claimEnforcement,
+  fileRecordIo,
   governingBound,
   diskReader,
   readRecord,
   writeJsonAtomic,
   type DeadlineRecord,
+  type RecordIo,
 } from "./run-deadline-record.js";
 import { RUN_DEADLINE_STOP_GRACE_SEC, runWarden } from "./run-deadline-warden.js";
 import { DaemonServer, type JobRecord, type RunnerFn } from "./server.js";
@@ -68,6 +70,7 @@ async function daemon(
     clock?: RunDeadlineClock;
     deadlineDir?: string;
     platform?: NodeJS.Platform;
+    io?: RecordIo;
     onTurnEnqueueFailed?: (turnId: string, problem: unknown) => void;
   } = {},
 ) {
@@ -87,6 +90,7 @@ async function daemon(
       platform: opts.platform ?? "linux",
       probeBoundary: async () => ({ kind: "marker", reason: "test" }),
       ...(opts.clock ? { clock: opts.clock } : {}),
+      ...(opts.io ? { io: opts.io } : {}),
     },
     ...(opts.onTurnEnqueueFailed ? { onTurnEnqueueFailed: opts.onTurnEnqueueFailed } : {}),
     runner,
@@ -317,9 +321,10 @@ describe("run-deadline/1 at the scheduler", () => {
     try {
       await d.client.enqueue({ label: "blocker" }, { idempotencyKey: "b", clientId: "t" });
       const request = { label: "edge", deadline: { at: inMs(5_000) } };
-      // The acceptance converts the instant (one host reading); every later
-      // reading is past it, as if the host stalled right after.
-      time.advanceHostAfterReads(1, 10_000);
+      // The acceptance converts the instant and judges it again at the commit
+      // (two host readings); every later reading is past it, as if the host
+      // stalled right after the commit.
+      time.advanceHostAfterReads(2, 10_000);
       const receipt = await d.client.enqueue(request, { idempotencyKey: "k", clientId: "t" });
       const ended = await until(
         () => d.client.status(receipt.id),
@@ -335,6 +340,27 @@ describe("run-deadline/1 at the scheduler", () => {
       expect(slot.ran).toEqual(["blocker"]);
     } finally {
       slot.release();
+      await d.close();
+    }
+  });
+
+  it("item C: a deadline that passed while its acceptance was being prepared refuses at the commit; the key stays free", async () => {
+    const time = steppedClock();
+    const d = await daemon(async () => ({ lifecycle: "succeeded" }), { clock: time.clock });
+    try {
+      const request = { label: "late", deadline: { at: inMs(5_000) } };
+      // The instant is converted in the present; the commit's reading, after the
+      // preparation's durable writes, is past it.
+      time.advanceHostAfterReads(1, 10_000);
+      expect(await errorOf(d.client.enqueue(request, { idempotencyKey: "k", clientId: "t" }))).toBe(
+        "run_deadline_passed",
+      );
+      expect(await d.client.findAccepted(request, { idempotencyKey: "k", clientId: "t" })).toBe(
+        null,
+      );
+      const { readdirSync } = await import("node:fs");
+      expect(readdirSync(d.deadlineDir).filter((name) => name.endsWith(".json"))).toEqual([]);
+    } finally {
       await d.close();
     }
   });
@@ -615,10 +641,20 @@ describe("run-deadline/1: one durable record", () => {
     }
   });
 
-  it("Stop during the first set: the answer, the live read and the record after a restart agree", async () => {
-    for (const order of ["set-first", "stop-first"] as const) {
+  it("Stop during a set: the terminal wins unless the set was published first; the answer, the live read and the record after a restart agree", async () => {
+    for (const order of ["terminal-first", "before-decision", "after-publication"] as const) {
       const slot = slotRunner();
-      const a = await daemon(slot.runner);
+      let onPublish: (() => void) | null = null;
+      const io: RecordIo = {
+        ...fileRecordIo,
+        publish: async (tmp, path) => {
+          await fileRecordIo.publish(tmp, path);
+          const hook = onPublish;
+          onPublish = null;
+          hook?.();
+        },
+      };
+      const a = await daemon(slot.runner, { io });
       await a.client.enqueue({ label: "blocker" }, { idempotencyKey: "b", clientId: "t" });
       const accepted = await a.client.enqueue(
         { label: "q", deadline: { at: inMs(60_000) } },
@@ -628,25 +664,32 @@ describe("run-deadline/1: one durable record", () => {
         a.server.deadlines
           .set(accepted.id, { at: inMs(90_000), expectedRevision: 0 }, { delegated: false })
           .then(
-            (snapshot) => ({ ok: true as const, revision: snapshot.revision }),
+            (snapshot) => ({ ok: true as const, revision: snapshot.revision, state: snapshot.state }),
             (error: { code?: string }) => ({ ok: false as const, code: error.code }),
           );
       let answer: Awaited<ReturnType<typeof set>>;
-      if (order === "set-first") {
-        const pending = set();
-        a.server.cancelJob(accepted.id); // the terminal arrives while the set is publishing
-        answer = await pending;
-        expect(answer).toEqual({ ok: true, revision: 1 });
-      } else {
+      if (order === "terminal-first") {
         a.server.cancelJob(accepted.id);
         answer = await set();
-        expect(answer).toEqual({ ok: false, code: "run_deadline_closed" });
+      } else if (order === "before-decision") {
+        // The terminal arrives while the new revision is staged, before the set decided.
+        const pending = set();
+        a.server.cancelJob(accepted.id);
+        answer = await pending;
+      } else {
+        // The terminal arrives right after the new revision became visible.
+        onPublish = () => a.server.cancelJob(accepted.id);
+        answer = await set();
       }
+      if (order === "after-publication")
+        expect(answer).toEqual({ ok: true, revision: 1, state: "closed" });
+      else expect(answer).toEqual({ ok: false, code: "run_deadline_closed" });
       const expected = answer.ok ? 1 : 0;
       expect(await a.client.runDeadline(accepted.id, { action: "read" })).toMatchObject({
         revision: expected,
         state: "closed",
       });
+      expect(a.record(accepted.id)).toMatchObject({ revision: expected, state: "closed" });
       slot.release();
       await a.close();
       const b = await daemon(async () => ({ lifecycle: "succeeded" }), {
@@ -713,7 +756,12 @@ describe("run-deadline/1: one durable record", () => {
         { label: "q", deadline: { at: inMs(60_000) } },
         { idempotencyKey: "q", clientId: "t" },
       );
-      claimEnforcement(join(d.deadlineDir, `${accepted.id}.json`), { revision: 0, at: inMs(0) });
+      claimEnforcement(join(d.deadlineDir, `${accepted.id}.json`), {
+        revision: 0,
+        at: inMs(0),
+        targetNs: "0",
+        by: "warden",
+      });
       expect(
         await errorOf(
           d.client.runDeadline(accepted.id, {
