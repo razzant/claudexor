@@ -1,3 +1,4 @@
+import { deadlineReplayRefusal } from "./run-start-receipt.js";
 import type { ServerResponse } from "node:http";
 import {
   ControlRunDecisionResponse,
@@ -49,6 +50,8 @@ export async function rerunWithFeedback(
       retryable: false,
     });
   }
+  const deadlineRefusal = await deadlineReplayRefusal(ctx.daemon, rec, "A decision rerun");
+  if (deadlineRefusal) return ctx.json(res, 409, deadlineRefusal);
   const originalPrompt = typeof source["prompt"] === "string" ? source["prompt"] : "";
   const {
     turnId: _turnId,

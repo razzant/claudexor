@@ -19,7 +19,7 @@ import {
   turnEnqueueProblemResponse,
 } from "./thread-turn-problems.js";
 import type { RunStartNormalizationOptions } from "./run-start.js";
-import { receiptDeadline, servingStore } from "./run-start-receipt.js";
+import { deadlineReplayRefusal, receiptDeadline, servingStore } from "./run-start-receipt.js";
 import {
   assertLatestThreadTurn,
   assertThreadAdmitsWork,
@@ -490,6 +490,16 @@ export function handleThreadTurnRetry(
         })
         .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
       const last = jobs[jobs.length - 1];
+      const deadlineRefusal = last
+        ? await deadlineReplayRefusal(ctx.daemon, last, "A turn retry")
+        : null;
+      if (deadlineRefusal)
+        throw Object.assign(new Error(deadlineRefusal.error), {
+          status: 409,
+          code: deadlineRefusal.code,
+          retryable: false,
+          requiredActions: deadlineRefusal.requiredActions,
+        });
       // A run-deadline/1 instant binds the one accepted run: a retry replays without it.
       const replayParams = last ? withoutDeadline(last.params) : undefined;
       if (last && ctx.daemon.findAccepted) {

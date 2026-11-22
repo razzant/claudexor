@@ -12095,7 +12095,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("Run Again, Exact Retry and a decision rerun never replay a source run's absolute deadline", async () => {
+  it("Run Again drops a source run's absolute deadline; Exact Retry of a run that held one refuses, typed", async () => {
     const { daemon, record } = fakeDaemon();
     record.params = {
       ...(record.params as Record<string, unknown>),
@@ -12107,6 +12107,19 @@ describe("DaemonControlApiServer", () => {
       async enqueue(params, options) {
         enqueued.push(params as Record<string, unknown>);
         return daemon.enqueue(params, options);
+      },
+      // The source's durable deadline record (run-deadline/1).
+      async runDeadline() {
+        return {
+          at: "2026-01-01T00:00:00.000Z",
+          revision: 0,
+          serverNow: "2026-01-01T00:00:00.000Z",
+          state: "closed",
+          stopGraceSec: 15,
+          inheritedFrom: null,
+          successorOf: null,
+          enforcement: null,
+        };
       },
     };
     await withDaemonServer(wrapped, async (base) => {
@@ -12127,8 +12140,13 @@ describe("DaemonControlApiServer", () => {
         headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "deadline-retry" },
         body: "{}",
       });
-      expect(retry.status).toBe(200);
-      expect(enqueued.at(-1)).not.toHaveProperty("deadline");
+      // A replay would run it again with no deadline at all: refused, nothing enqueued.
+      expect(retry.status).toBe(409);
+      expect(await retry.json()).toMatchObject({
+        code: "run_deadline_replay_refused",
+        retryable: false,
+      });
+      expect(enqueued).toEqual([]);
     });
   });
 

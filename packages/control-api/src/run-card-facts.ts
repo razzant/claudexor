@@ -50,7 +50,15 @@ export function legacyRunOutcomeFacts(
   // Arbitrated runs already carry work_state on decision.facts (INV-116).
   if (decision) return decision.facts;
   const lifecycle = rec.state as RunOutcomeFacts["lifecycle"];
-  const base = outcomeFactsFromFailure(lifecycle, failure?.category);
+  // A job its deadline ended before any run keeps that cause on the card; a
+  // legacy cancellation with no recorded cause keeps the generic fallback.
+  const base =
+    lifecycle === "cancelled" && failure?.code === "run_deadline_expired"
+      ? {
+          ...outcomeFactsFromFailure(lifecycle, failure.category),
+          reason: "run_deadline_expired" as const,
+        }
+      : outcomeFactsFromFailure(lifecycle, failure?.category);
   if (!workState || lifecycle !== "succeeded") return base;
   const vetoed = workState.state === "needs_input" || workState.state === "incomplete";
   return {

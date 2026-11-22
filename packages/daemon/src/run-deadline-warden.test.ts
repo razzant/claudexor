@@ -288,6 +288,50 @@ describe("runWarden", () => {
     expect(time.now()).toBeGreaterThanOrEqual(6_000_000_000n);
   });
 
+  it("on Linux after a normal terminal, a marker warden leaves once the recorded tree is empty and no readable environment carries the marker, though unrelated environments are unreadable", async () => {
+    for (const coverage of ["marker+capture", "marker"] as const) {
+      const dir = temp();
+      const path = join(dir, "job.json");
+      writeJsonAtomic(
+        path,
+        record({
+          state: "closed",
+          frozen: { ...point(3_600_000_000_000n), inheritedFrom: null, successorOf: null },
+          runScopes: join(dir, "run-scopes.json"),
+        }),
+      );
+      const time = clockDeps();
+      const result = await runWarden(path, {
+        ...time,
+        platform: "linux",
+        // A non-dumpable agent of the same user: the census cannot prove completeness.
+        reap: async () =>
+          outcome({
+            coverage,
+            completeness: "not_provable",
+            completenessReason: "1 same-uid process environment unreadable",
+          }),
+        // Stop a warden that would stay: its clock reaching an hour means it never left.
+        sleep: async (ms) => {
+          if (time.now() > 60_000_000_000n) rmSync(path, { force: true });
+          return time.sleep(ms);
+        },
+      });
+      if (coverage === "marker+capture") {
+        expect(result).toBe("released");
+        expect(time.now()).toBeLessThan(60_000_000_000n);
+        expect(readWardenOutcome(path)).toMatchObject({
+          reason: "released",
+          confirmed: false,
+          detail: expect.stringContaining("unreadable"),
+        });
+      } else {
+        // Without the recorded tree, the census alone proves nothing: it stays.
+        expect(result).toBe("removed");
+      }
+    }
+  });
+
   it("a closed child's survivors are stopped at its parent's current deadline when that came earlier", async () => {
     const dir = temp();
     writeJsonAtomic(

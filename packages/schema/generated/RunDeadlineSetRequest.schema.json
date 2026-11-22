@@ -19,7 +19,7 @@
         "expectedRevision"
       ],
       "additionalProperties": false,
-      "description": "Replace the run's own absolute deadline in any non-terminal state. A stale expectedRevision is a conflict; a terminal run refuses."
+      "description": "Replace the run's own absolute deadline while that deadline is armed (queued, preparing or running, not yet reached or claimed). A stale expectedRevision is a conflict; a deadline that already won refuses (run_deadline_expired), so does a terminal run (run_deadline_closed)."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

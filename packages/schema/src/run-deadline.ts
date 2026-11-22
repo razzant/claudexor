@@ -43,14 +43,14 @@ export const RunDeadlineSetRequest = z
   .object({ at: DeadlineInstant, expectedRevision: Revision })
   .strict()
   .describe(
-    "Replace the run's own absolute deadline in any non-terminal state. A stale expectedRevision is a conflict; a terminal run refuses.",
+    "Replace the run's own absolute deadline while that deadline is armed (queued, preparing or running, not yet reached or claimed). A stale expectedRevision is a conflict; a deadline that already won refuses (run_deadline_expired), so does a terminal run (run_deadline_closed).",
   );
 export type RunDeadlineSetRequest = z.infer<typeof RunDeadlineSetRequest>;
 
 export const RunDeadlineState = z
   .enum(["armed", "enforcing", "expired", "closed"])
   .describe(
-    "Linear per run: armed while it is live; enforcing once its deadline was reached and the stop began (no set is accepted any more); expired once the run's terminal followed its deadline; closed after any other terminal.",
+    "Linear per run: armed while it is live and its deadline was neither reached nor claimed (the only state a set is accepted in); enforcing once its deadline won and the stop began; expired once the run's terminal followed its deadline; closed after any other terminal.",
   );
 export type RunDeadlineState = z.infer<typeof RunDeadlineState>;
 

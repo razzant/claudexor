@@ -37,7 +37,14 @@
  * - at once when its record is removed.
  * After the run's terminal (record `closed` or `expired`) it probes without
  * signals and leaves as soon as the boundary is confirmed empty; otherwise it
- * stays to the deadline that still governs the survivors and enforces it.
+ * stays to the deadline that still governs the survivors and enforces it. On
+ * the marker boundary on Linux, after a normal terminal (`closed`), it also
+ * leaves once a non-signalling pass found the run's recorded process groups
+ * and captured descendants empty and no readable environment carrying its
+ * marker, even when a same-user process whose environment cannot be read (a
+ * non-dumpable agent) keeps the census from proving completeness; it reports
+ * that as `unresolved`, naming the residual (a marked process that is both
+ * unreadable and outside the recorded tree).
  */
 import { spawn } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
@@ -191,6 +198,34 @@ interface Pass {
   confirmed: boolean;
   outcomes: ScopeReapOutcome[];
   cgroupPopulated: boolean | null;
+  /** Why it is not confirmed, when that is known better than the census says. */
+  detail?: string;
+}
+
+const TERMINAL_RELEASE_DETAIL =
+  "left after the run's normal terminal: its recorded process groups and descendants are gone and no readable environment carries its marker; a marked process whose environment is unreadable and that left the recorded tree is not ruled out";
+
+/**
+ * After a normal terminal on the marker boundary (Linux): every census source
+ * ran, nothing was found or left unidentified, and the run's recorded groups
+ * and descendants were part of it. Completeness may still be unprovable
+ * because of unrelated unreadable same-user processes.
+ */
+function releasableAfterTerminal(
+  record: DeadlineRecord,
+  probe: Pass,
+  platform: NodeJS.Platform,
+): boolean {
+  return (
+    platform === "linux" &&
+    record.cgroup === null &&
+    record.runScopes !== null &&
+    probe.settled &&
+    probe.outcomes.length > 0 &&
+    probe.outcomes.every(
+      (o) => o.census === "ok" && !o.incomplete && o.coverage === "marker+capture",
+    )
+  );
 }
 
 const terminal = (record: DeadlineRecord) =>
@@ -227,7 +262,7 @@ export async function runWarden(
           reason,
           at: new Date().toISOString(),
           confirmed: pass.confirmed,
-          detail: pass.confirmed ? null : unresolvedDetail(pass, survivors),
+          detail: pass.confirmed ? null : (pass.detail ?? unresolvedDetail(pass, survivors)),
           ended: outcomes.reduce((sum, o) => sum + o.ended.length, 0),
           survivors,
         } satisfies WardenOutcome);
@@ -307,6 +342,11 @@ export async function runWarden(
           if (current.cgroup) await cgroups.remove(current.cgroup);
           return finish("released", probe);
         }
+        if (current.state === "closed" && releasableAfterTerminal(current, probe, platform))
+          return finish("released", {
+            ...probe,
+            detail: TERMINAL_RELEASE_DETAIL,
+          });
         probeAt = now(current.clock) + BigInt(probeBackoffMs) * 1_000_000n;
         probeBackoffMs = Math.min(probeBackoffMs * 2, 30_000);
       }

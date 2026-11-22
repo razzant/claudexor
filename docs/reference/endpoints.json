@@ -1228,7 +1228,7 @@
       "path": "/v2/runs/:id/deadline",
       "mutating": true,
       "applicability": "run",
-      "summary": "Replace a non-terminal run's absolute deadline with an expected revision (run-deadline/1).",
+      "summary": "Replace a run's absolute deadline while it is armed (not yet reached or claimed), with an expected revision (run-deadline/1).",
       "auth": "loopback_bearer",
       "request_schema": "RunDeadlineSetRequest",
       "parameters": [],

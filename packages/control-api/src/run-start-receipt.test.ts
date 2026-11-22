@@ -4,7 +4,7 @@
  * read, an inherited deadline included; a job that cannot is never asked.
  */
 import { describe, expect, it } from "vitest";
-import { receiptDeadline } from "./run-start-receipt.js";
+import { deadlineReplayRefusal, receiptDeadline } from "./run-start-receipt.js";
 import type { DaemonRunRecord } from "./run-record.js";
 
 const snapshot = {
@@ -62,5 +62,24 @@ describe("receiptDeadline", () => {
       {},
     );
     expect(d.asked).toEqual([]);
+  });
+
+  it("a replay of a run that held a deadline is refused with the start that carries a new one", async () => {
+    const held = daemon(true);
+    expect(
+      await deadlineReplayRefusal(
+        held.client as never,
+        record({ params: { continueFrom: "run-first" } }),
+        "Exact Retry",
+      ),
+    ).toMatchObject({ code: "run_deadline_replay_refused", retryable: false });
+    const none = daemon(false);
+    expect(
+      await deadlineReplayRefusal(
+        none.client as never,
+        record({ params: { continueFrom: "run-first" } }),
+        "Exact Retry",
+      ),
+    ).toBe(null);
   });
 });

@@ -58,7 +58,7 @@
                     "expired",
                     "closed"
                   ],
-                  "description": "Linear per run: armed while it is live; enforcing once its deadline was reached and the stop began (no set is accepted any more); expired once the run's terminal followed its deadline; closed after any other terminal."
+                  "description": "Linear per run: armed while it is live and its deadline was neither reached nor claimed (the only state a set is accepted in); enforcing once its deadline won and the stop began; expired once the run's terminal followed its deadline; closed after any other terminal."
                 },
                 "stopGraceSec": {
                   "type": "integer",

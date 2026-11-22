@@ -59,7 +59,7 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "GET /v2/runs/:id/deadline":
     "Read a run's server-enforced run-deadline/1 deadline, revision and server time.",
   "PATCH /v2/runs/:id/deadline":
-    "Replace a non-terminal run's absolute deadline with an expected revision (run-deadline/1).",
+    "Replace a run's absolute deadline while it is armed (not yet reached or claimed), with an expected revision (run-deadline/1).",
   "POST /v2/runs/:id/retry": "Retry a run, returning a new durable handle.",
   "GET /v2/runs/:id/run-again": "Draft a run-again request from a prior run.",
   "POST /v2/runs/:id/apply":

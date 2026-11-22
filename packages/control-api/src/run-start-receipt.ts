@@ -123,9 +123,7 @@ export async function receiptDeadline(
   rec: DaemonRunRecord,
 ): Promise<{ deadline?: RunDeadlineSnapshot }> {
   const params = rec.params as
-    | { deadline?: unknown; continueFrom?: unknown; delegatedFromRunId?: unknown }
-    | null
-    | undefined;
+    { deadline?: unknown; continueFrom?: unknown; delegatedFromRunId?: unknown } | null | undefined;
   const mayHold =
     rec.errorCode === "run_deadline_expired" ||
     (!!params &&
@@ -142,6 +140,29 @@ export async function receiptDeadline(
     if ((error as { code?: unknown })?.code === "run_deadline_absent") return {};
     throw error;
   }
+}
+
+/**
+ * A replay of a run that held a run-deadline/1 deadline (its own or inherited)
+ * would start an ordinary run with no deadline at all: Exact Retry, a decision
+ * rerun and a thread turn retry refuse it, typed, and name the start that
+ * carries a new deadline. Null when the source held none.
+ */
+export async function deadlineReplayRefusal(
+  daemon: Pick<DaemonFacadeClient, "runDeadline"> | undefined,
+  source: DaemonRunRecord,
+  route: string,
+): Promise<{ error: string; code: string; retryable: false; requiredActions: string[] } | null> {
+  const { deadline } = await receiptDeadline(daemon, source);
+  if (!deadline) return null;
+  return {
+    error: `${route} would start this run again without its deadline; start it again with a new deadline instead`,
+    code: "run_deadline_replay_refused",
+    retryable: false,
+    requiredActions: [
+      "Start a new run with deadline.at (POST /v2/runs), or take Run Again and give the draft its own deadline.",
+    ],
+  };
 }
 
 /** Answer an accepted one-shot job: its bound handle, its queued handle or its pre-run refusal. */

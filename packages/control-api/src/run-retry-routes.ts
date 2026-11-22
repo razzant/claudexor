@@ -1,3 +1,4 @@
+import { deadlineReplayRefusal } from "./run-start-receipt.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -85,6 +86,8 @@ async function exactRetry(
   if (source.state === "queued" || source.state === "running") {
     return ctx.json(res, 409, { error: `run is still ${source.state}` });
   }
+  const deadlineRefusal = await deadlineReplayRefusal(ctx.daemon, source, "Exact Retry");
+  if (deadlineRefusal) return ctx.json(res, 409, deadlineRefusal);
   let idempotencyKey: string;
   let recordedParams: RecordedControlRunStartRequest;
   let sourceTurnProvenance: SourceTurnProvenance = {};
