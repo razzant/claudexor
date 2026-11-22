@@ -10385,7 +10385,6 @@ describe("DaemonControlApiServer", () => {
       ...(record.params as Record<string, unknown>),
       retryOf: "run-original",
       protectedPathApprovals: [{ path: "packages/**/*.test.ts", reason: "source-run only" }],
-      deadline: { at: "2026-01-01T00:00:00.000Z" },
     };
     writeFileSync(
       join(record.runDir as string, "arbitration", "decision.yaml"),
@@ -10420,7 +10419,37 @@ describe("DaemonControlApiServer", () => {
       expect(enqueued?.["parentRunId"]).toBe("run-d1");
       expect(enqueued).not.toHaveProperty("retryOf");
       expect(enqueued).not.toHaveProperty("protectedPathApprovals");
-      expect(enqueued).not.toHaveProperty("deadline");
+    });
+  });
+
+  it("rerun_with_feedback of a run whose request set a deadline is refused, typed, even with no record left", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "succeeded";
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      deadline: { at: "2026-01-01T00:00:00.000Z" },
+    };
+    let enqueued = 0;
+    // No runDeadline at all: the request's own field decides (fail closed).
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown, options) {
+        enqueued += 1;
+        return daemon.enqueue(params, options);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const res = await apiFetch(`${base}/runs/run-d1/decision`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "decision-rerun-dl" },
+        body: JSON.stringify({ action: "rerun_with_feedback", feedback: "Again." }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        code: "run_deadline_replay_refused",
+        retryable: false,
+      });
+      expect(enqueued).toBe(0);
     });
   });
 
@@ -13485,7 +13514,8 @@ describe("run-deadline/1 over the mounted HTTP routes", () => {
         prompt: "short remote work",
         mode: "agent",
         scope: { kind: "project", root: project, ephemeral: true },
-        deadline: { at: new Date(Date.now() + 400).toISOString() },
+        // Room for a durable acceptance on a loaded host: the deadline is judged inside it.
+        deadline: { at: new Date(Date.now() + 2_000).toISOString() },
       });
       const queued = await call(base, "/v2/runs", {
         method: "POST",
@@ -13494,7 +13524,7 @@ describe("run-deadline/1 over the mounted HTTP routes", () => {
       });
       expect(queued.status).toBe(202);
       const queuedJob = ((await queued.json()) as { jobId: string }).jobId;
-      for (let i = 0; i < 200; i += 1) {
+      for (let i = 0; i < 400; i += 1) {
         const state = (await a.client.status(queuedJob)).state;
         if (state !== "queued") break;
         await new Promise((resolve) => setTimeout(resolve, 20));
