@@ -697,8 +697,12 @@ frequency and volume are. The contracts:
     routing pool (a disabled account is never routable; there is NO user-settable
     "active" account — an unpinned run routes through the quota-aware pool of
     enabled ready accounts, an unpinned thread stays sticky on its own
-    account, and `next-up` is the server-computed INFORMATIONAL pool verdict
-    of the configured default model from `accountPools`, badged
+    account, and `next-up` is the server-computed INFORMATIONAL first candidate in
+    ordinary pool order for the configured default model from `accountPools`
+    (a run's own pin, thread, model, mode, paid budget or auth preference can
+    pick another account; see
+    [Credential profiles](ARCHITECTURE.md#credential-profiles-inv-135-unified-account-model)),
+    badged
     "Next up · default model", not an auto-default the user can set), and a
     confirmed Remove (trash) on EVERY row that deletes the binding plus any
     Claudexor-owned state or managed secret
@@ -769,8 +773,8 @@ frequency and volume are. The contracts:
     answering later, with evidence or a failure, changes nothing), and a
     credential mutation fences the reads begun before it and reads again. Ages
     are English and locale-independent. The API-key route
-    disclosure names the scope: "the next unpinned default-model run uses the
-    API-key route".
+    disclosure names the scope: "no enabled account is ready, so ordinary
+    default-model routing uses the API-key route".
 
     Do not globally rename generic `Automatic`: the unpinned route may use the
     policy API-key fallback, which is not an account row.

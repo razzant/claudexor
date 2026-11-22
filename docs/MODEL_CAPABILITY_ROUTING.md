@@ -58,15 +58,19 @@ does not become an advisory miss.
 Read `GET /v2/operations` before creating the operation. If
 `post:model-operations` advertises `typedRefusals`, the caller can request
 `POST /v2/model-operations?typedRefusals=true` for one text operation. This
-choice is bound to the idempotency key. Omission keeps the legacy error codes
-and plain-text representation.
+choice is bound to the idempotency key. Without the option, failure codes come
+from the legacy vocabulary and text uses the legacy representation.
 
-For a failed Codex inference, `problem.context.vendorCode = cyber_policy`
-from an HTTP error or a stream error (`error` or `response.failed`) produces
-`provider_content_refused` in the typed view, with `retryable: false`.
-End the request even with a fallback account or model. Both views retain the
-cached catalog and account evidence. It remains unknown whether generation
-started. For all Codex text failures, public diagnostics report only recognized
+A failed Codex inference is a content refusal when the provider error's `code`
+or `type` is exactly `cyber_policy` (HTTP error or stream `error` or `response.failed`).
+Both views report `problem.context.vendorCode = cyber_policy` and `retryable: false`;
+only the typed view changes the error code to `provider_content_refused`. End the
+request even with a fallback account or model. An explicit refusal takes
+precedence over HTTP status: even a 408 with that marker is terminal, not a
+retryable transport timeout. Free text, catalog failures and
+login failures do not establish a content refusal. Both views retain the cached
+catalog and account evidence. It remains unknown whether generation started.
+For all Codex text failures, public diagnostics report only recognized
 codes, field names, event types, incomplete reasons and error classes, plus
 request IDs in known formats. Unrecognized values are omitted or masked.
 Exact HTTP or stream failure bytes require the separate `captureFailureEvidence=true`

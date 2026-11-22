@@ -478,7 +478,9 @@ describe("late mandatory-context failure on the released MCP wire", () => {
     expect(projectRecoveryRunDetail("__run_status", "run-plan", widened)["failure"]).toBeNull();
     // ...and the released 6.2.0 reader rejects the record outright.
     const readAs620 = releasedRunReader("McpRunHandleResult");
-    const wire = JSON.parse(JSON.stringify(projectRecoveryRunDetail("__run_status", "run-plan", detail(latePlanFailure))));
+    const wire = JSON.parse(
+      JSON.stringify(projectRecoveryRunDetail("__run_status", "run-plan", detail(latePlanFailure))),
+    );
     expect(readAs620(wire)).toBe(true);
     wire.failure.code = "mandatory_context_unavailable";
     expect(readAs620(wire)).toBe(false);

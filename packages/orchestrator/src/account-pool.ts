@@ -254,11 +254,19 @@ export type PoolSelection =
       reopening?: "unknown";
     };
 
-/** Select the unpinned-run account from the pool (or report why not). */
-export function selectFromAccountPool(args: Parameters<typeof rankAccountPool>[0]): PoolSelection {
+/** Select the unpinned-run account from the pool (or report why not). A withheld $0 Ask
+ * names the rows its own vendor proof entitles (account-resolution.ts): the first selectable
+ * one in this order goes ahead of rows whose entitlement is unknown. With none, the ranked
+ * choice stands and that Ask's ledger refuses it as before; an exhausted row is never chosen. */
+export function selectFromAccountPool(
+  args: Parameters<typeof rankAccountPool>[0] & { entitledProfileIds?: ReadonlySet<string> },
+): PoolSelection {
   const ranked = rankAccountPool(args);
-  const selectable = ranked.find((candidate) => candidate.verdict.kind !== "exhausted");
-  if (selectable) return { outcome: "selected", candidate: selectable };
+  const selectable = ranked.filter((candidate) => candidate.verdict.kind !== "exhausted");
+  const entitled = args.entitledProfileIds;
+  const chosen =
+    selectable.find((candidate) => entitled?.has(candidate.profile.profile_id)) ?? selectable[0];
+  if (chosen) return { outcome: "selected", candidate: chosen };
   if (ranked.length === 0) return { outcome: "empty", resets_at: null };
   let resetsAt: string | null = null;
   let reserveOnly = true;

@@ -578,9 +578,11 @@ describe("a queued EventLog", () => {
       undefined,
       refresh,
     );
-    const stage = vi.fn(async () => {}).mockImplementationOnce(async () => {
-      log.emit("harness.event", message("Review notes."));
-    });
+    const stage = vi
+      .fn(async () => {})
+      .mockImplementationOnce(async () => {
+        log.emit("harness.event", message("Review notes."));
+      });
     log.setTerminalStaging(stage);
     try {
       log.emit("run.created");

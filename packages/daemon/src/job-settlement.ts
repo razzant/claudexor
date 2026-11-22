@@ -92,9 +92,7 @@ export function settleJobError({
     // route recorder persists via problemFromError, so one refused turn stores
     // one identical TurnEnqueueProblem whichever path recorded it.
     errorContext:
-      refusedTurn && typeof turnRetryable === "boolean"
-        ? { turnRetryable, ...context }
-        : context,
+      refusedTurn && typeof turnRetryable === "boolean" ? { turnRetryable, ...context } : context,
     finishedAt: nowIso(),
   });
 }

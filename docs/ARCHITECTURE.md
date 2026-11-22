@@ -1176,6 +1176,32 @@ CLI `auth status`, and macOS Auth UI consume it. Explicit `subscription` exclude
 API-key smoke, explicit `api_key` excludes native fallback, and `auto` preserves
 native-first fallback. A point probe may request `fresh` evidence, bypassing
 adapter/doctor caches without clearing or replacing shared cached reports.
+An ordinary read-only Ask (mode `ask`) with no paid budget left to spend (a
+finite $0 from the request or Settings, or an inherited family ledger already
+used up) runs its automatic readiness reads (the candidate doctor, the scoped
+route probe, model catalog and processing reads, static request admission) with
+`diagnosticGeneration: "forbidden"`: every generation smoke (Claude API key and
+setup-token, Codex and Cursor API key) is then `not_run`, never `passed` or
+`failed`, and the report keeps a separate cache dimension. Non-generative checks
+and a ready subscription session are unchanged. A lane admitted on a
+vendor-verified native session spawns pinned to it, with no API-key fallback;
+each send (a fallback model or continuity summary too) can count as subscription
+usage only by that pin on a strict native spawn or a named account's vendor
+verification, never by a preference, history or processing receipt alone. When
+its readiness admission takes an unbound account from the pool, the first ranked
+account whose own status the vendor verified goes ahead of accounts still awaiting
+that evidence (a login file or setup-token alone never counts, whatever the
+account's kind), and the same verification still prices each send; an explicit
+pin and a ready bound account are kept. With no verified row the ordinary
+order stands, and routing or the ledger can refuse the route. Accounts `next_up` keeps the ordinary
+order ([Credential profiles](#credential-profiles-inv-135-unified-account-model)).
+Two refusals stay distinct. Routing can filter: an Auto pool drops a harness
+that is neither doctor-OK nor carries an enabled account row, including one
+whose only proof was withheld (`not_run`), and with none left the run fails
+`harness_unavailable` before any lease, naming each harness's own reasons. The
+ledger then refuses an admitted route's send whose billing is unknown or
+metered (`finite_zero` at a $0 limit). Plan, Agent, Deep Scan, review and the
+manual `doctor` and `auth` probes stay full.
 An absent/logged-out source is `unavailable + not_run`; a probe failure that
 cannot decide source presence is `unknown + not_run`; present but wrong or
 unusable source material is `available + failed`.
@@ -1710,9 +1736,13 @@ account row or count. Accounts are SYMMETRIC: the
 listing (`GET /v2/credential-profiles`, `claudexor profiles`) projects every
 credential row with its `enabled` flag (the only routing
 control) plus the additive `accountPools` key — the per-harness pool
-authority whose `next_up` verdict says who an unpinned run of the configured
-default model would route to next, computed by the same routing owner; it is
-never a forecast for another model. The separate read-only
+authority. Its `next_up` is informational: the first candidate in ordinary
+pool order (step (3) of the resolve order above) for the configured default
+model, computed by the same routing owner without any request's choices. A
+run's own pin or thread binding, model, mode, paid budget or auth preference
+can still pick another row or route (a zero-paid ordinary Ask puts a
+vendor-verified row first, see [Auth And Secrets](#5-auth-and-secrets)), and
+`next_up` is never a forecast for another model. The separate read-only
 `GET /v2/accounts/routing-evidence` carries live pre-progress refusal marks,
 temporary model capability marks, model-scoped credential refusals (on request), and the last-served facts of the registered rows, each scoped to its requested model,
 and leaves the legacy listings unchanged. Its `kind` is
@@ -3728,15 +3758,24 @@ plus the first normal-admission snapshot. It is also available in recovery-only
 mode, where admission memory is null until normal admission has opened. Sampling
 does not force GC or materialize retained commands; total job count comes from
 SQL and active/queued counts come from the existing live runner lifecycle.
-`loop` carries the last completed ten-second window of event-loop facts: delay
-p50/p99/max from `monitorEventLoopDelay` (sampled at 10 ms, so an idle loop's
-p50 sits near 10 ms, and reset every window), the `eventLoopUtilization` busy
-share, and the GC pauses a `PerformanceObserver` saw (count, total, longest).
-It is null until the first window completes; a stalled loop rolls its window
-late, so `windowMs` grows with the stall. `claudexor daemon status` prints the
-same window as one line. The status route reaches the daemon in process, so it
-answers while the loop is merely slow.
-The `store` facts report flusher state, interval, last barrier and lag, WAL bytes,
+`claudexor daemon status` shows the last completed `loop` window (initially
+null) with p50/p99/max delay (`monitorEventLoopDelay`, 10 ms sampling, idle
+p50 near 10 ms), `eventLoopUtilization` busy share and GC pauses (count, total,
+longest). A late timer extends the ten-second `windowMs`. A blocked timer leaves
+it stale. Maximum delay or late close ≥1 s records `loop_stall` with current
+RSS and heap used in bytes. `worstSyncInWindow` filters the lifetime top 32 by
+end time. Timing alone cannot identify the cause.
+
+The root owner writes JSON stages and `[time] message` lines to `claudexord.log`
+(16 KiB per record, 256 KiB per generation). Opens check parent privacy, owner,
+type and link count, with nonblocking flags where supported. Each oversized
+legacy file gets its own discard receipt. Rename replaces `.1`. A later write retries
+a failed rename or reopen. `claudexord.rare.log` and its `.1` (256 KiB each)
+retain stalls and Stops across quota rotation. `daemon logs` shows the current
+main tail and up to 40 lines across both rare generations (`rare_tail` in JSON).
+Read errors name the generation.
+
+The status `store` facts report flusher state, interval, last barrier and lag, WAL bytes,
 open obligations, busy waits, request-thread COMMIT timing since the store opened
 ([SQLite engine store](#sqlite-engine-store)), integrity and current import
 progress. A field is null when its owner cannot observe it; pending integrity is
@@ -5506,8 +5545,8 @@ read-modify-write of `harness-metrics.json`), `file.write_text` (a remaining
 synchronous text or JSON write, which creates its directory only when the write
 proves it missing), `file.capture_write` (a chunk of a Git child's output streamed
 to its capture file: the capture projection is synchronous and the child's output
-has no other backpressure) and `daemon.log_line` (a daemon log line: the startup
-diagnostics writer rotates the same file with synchronous calls).
+has no other backpressure) and `daemon.log_line` (a daemon log line through the
+bounded writer, which rotates with synchronous calls).
 
 **Not covered yet.** These synchronous sites run on paths whose count grows with
 work and are not converted or labeled: resolving and inspecting each spawned
@@ -5543,19 +5582,20 @@ whole-store recovery are described under
 [Legacy import and recovery](#legacy-import-and-recovery), and a complete
 pre-upgrade backup under [Upgrade backup and restore](#upgrade-backup-and-restore).
 
-Every shutdown trigger — SIGTERM/SIGINT, the `claudexor.shutdown` socket RPC,
-a startup failure — enters ONE state machine (`DaemonRuntimeShutdown
-.beginShutdown(reason)`): abort in-flight runs, complete their committed
-terminal transitions, await storage/worker cleanup, let every line still queued
-on the ordered appender land (a failure nobody awaited is logged and never keeps
-the store open) and close the SQL store under
-one shared bounded escalation ladder (hung-stop deadline, then a post-stop leaked-handle sweep, every rung
-disclosed in the log). Awaiting-user interactive login runners are the one
-exemption: the shutdown drain does NOT signal them (a detached Terminal login
-survives an ordinary daemon bounce and is reconciled on the next start;
-explicit cancel is the only killer). A hung participant cannot immortalize the
-daemon whichever trigger asked it to die. Runtime replacement uses a separate
-internal socket operation: in one synchronous event-loop turn the daemon checks
+SIGTERM/SIGINT, the `claudexor.shutdown` socket RPC and startup failure all enter
+`DaemonRuntimeShutdown.beginShutdown`. It fences admission and starts cancellation
+before logging the request. It drains committed run transitions, storage, workers
+and queued run appends before closing the SQL store. An unobserved append
+failure is logged and still allows the store to close. Awaiting-user interactive
+login runners survive ordinary Stop and reconcile on restart. Only explicit
+cancel signals them.
+
+A stop deadline or leaked-handle timer tries both open logs when it fires.
+At close the daemon reserves space in rare history (main on failure) and
+releases both writers. A late timer fills its matching inode and bytes in either generation.
+Eviction drops the receipt. Exit proceeds when I/O returns, even after a partial
+write. `daemon logs` hides the reservation. A failed start reports its cleanup separately.
+Runtime replacement uses a separate internal socket operation. In one turn the daemon checks
 its queued/running/in-flight command authority, the composition root checks the
 setup authority, including terminal jobs whose process termination remains
 unconfirmed, and only an idle result enters `beginShutdown`, whose
@@ -5930,20 +5970,49 @@ holding unrelated cold sessions. The pass rereads changed SQL owners and each ac
 or newly changed command's output files before unlink; this includes a capsule
 published without another SQL update, or work that starts and finishes during the
 scan. Durable continuation addresses include sources outside the hashed run layout.
-Native references accumulate in a live set; the adapter normalizes session IDs initially and again only when that set grows. Already read terminal ancestry is shared
-within the pass; active output files are reread. A late reference keeps its entire
-session and allows unrelated groups to progress. Each unlink rechecks setup state,
-references and current file identity synchronously, without a yield between proof
-and deletion. An unreadable owner keeps the remaining files and preserves any
-completed deletions in the receipt. Retaining a run can retain its session even if
-that run no longer needs resume.
+Native references accumulate in a live set. The adapter normalizes IDs initially
+and whenever the set grows. The pass reuses terminal ancestry and rereads active
+output files. A late reference protects the inventoried group. References span
+all homes of the harness. If no recognized filename in this home's inventory
+identifies a new reference, the pass is truncated. An imported file may already
+have supplied its header under another name. The next pass takes the ID as an
+initial reference. Each unlink synchronously rechecks setup, references and file
+identity. An unreadable owner keeps the remaining files and the receipt includes
+completed deletions. A retained run can retain its session even after it no longer
+needs resume.
 
-Codex owns only the recognized `sessions/YYYY/MM/DD/rollout-…-<uuid>.jsonl`
-and `.jsonl.zst` candidates. All parts of a referenced session survive; a recent
-part protects the whole group. File identity and modification facts are rechecked
-before deletion. Each pass removes at most 500 native files and promptly continues
-when capped. Credentials, configuration, SQLite logs/indexes, archived sessions,
-unknown filenames/layouts and symlinks remain untouched. Codex SQLite reclamation
+Codex can unlink only one-ID `sessions/YYYY/MM/DD/rollout-…-<uuid>.jsonl`
+files and their `.zst` forms. For group age and the pre-unlink file check,
+a dated rollout with another UUID in its prefix still belongs to the group
+of its final hyphen-delimited UUID. Native `<thread>_<rollout>` pairs and
+imported names outside that pattern supply no age evidence for either ID.
+With candidates and budget, GC reads bounded headers from rollout-prefixed
+files in the dated session layout and from UUID-bearing `.jsonl` or `.jsonl.zst`
+files three directories below `sessions`, as found by continuity. In
+`archived_sessions` it checks both name forms at the root and up to three
+plain directories below it, including imported paths used by export. Codex 0.169.0's
+first newline-terminated JSON record identifies the session and may name a base
+by its filename ID in `session_meta.payload.history_base.thread_id`.
+Named bases survive the pass even if their forks retire. The receipt counts each
+old candidate file once when a readable header first names its group as a base,
+regardless of where unreadable headers occur in the scan. Directly referenced and recent files keep
+their original counts.
+A sole unreadable file may retire alone if it meets the usual age and ownership
+rules and no readable header names it as a base. Its retirement marks the pass
+truncated if another eligible file must wait. Unreadable headers hold the home
+only when they defer eligible files. Persistent damage can keep cleanup on hold
+for that home until the affected headers are repaired. File I/O and identity-check failures still
+appear as errors. A linked rollout path vetoes pruning.
+These deferrals appear in `native_home_veto` with their reason. A changed file
+or directory marks the pass truncated.
+Before each unlink the adapter checks inventoried directory metadata and every
+surviving part in the candidate's age group. Native appends preserve a completed
+header. In-place header rewrites, changes with indistinguishable directory metadata, and forks
+published between their directory check and unlink can escape detection. The
+same race applies while recording the parent directory's metadata after unlink.
+Each pass removes at most 500 native files and promptly continues when capped.
+Credentials, configuration, SQLite logs/indexes, archived sessions, unknown
+filenames/layouts and symlinks remain untouched. Codex SQLite reclamation
 is **not pruned: no proven independent row/file lifetime contract**. Claude is
 **not pruned: its CLI owns transcript expiry and the engine has no independent
 sidecar deletion proof**. Cursor, Agy and OpenCode are **not pruned: their native
@@ -8779,6 +8848,9 @@ and `throughEventSeq` (highest readable sequence examined). Each later line is
 one complete `RunEvent` for a harness message typed `final: true`, including
 its recorded attempt, session and native identifiers. Journal order, repeated
 messages and empty finals survive. Deltas and buffered snapshots are excluded.
+`complete` describes the collection of records explicitly typed `final: true`; it
+does not promote unmarked assistant text. When `final/retained-output.md` is
+published, read that report to recover other recorded assistant text.
 
 When requested, `finalMessages` gives the document's `path`, `state`, `count`,
 `bytes`, `sha256` (`sha256:<hex>`) and `throughEventSeq`. The digest covers
@@ -8792,9 +8864,11 @@ The artifact GET checks size and digest before sending bytes. It returns HTTP
 409 for an unavailable or mismatched document. A legacy terminal without a
 declaration retains ordinary capped file access.
 
-The selected run output supplies the primary answer. Machine consumers read
-`final/output.json` and WorkReport from their respective envelopes.
-Completion of a background action requires its own evidence.
+The selected run output supplies the primary answer. A final event marked
+`after_stop: true` records a message drained during Stop. It stays in the
+collection as evidence and is not delivered as the cancelled attempt's answer.
+Machine consumers read `final/output.json` and WorkReport from their respective
+envelopes. Completion of a background action requires its own evidence.
 
 ## 9. macOS App
 
@@ -9037,10 +9111,11 @@ version answer. A missing answer gets one immediate second read before a
 verification decision, including the initial selection, conversion, cleanup and
 exact-version checks. Ordinary profile cleanup runs only after the result answers;
 its acknowledgment includes that observation. Interrupted-hide recovery still runs
-when the program does not answer.
+when the program does not answer; the selection is read again before the vendor
+command only when a recovery started to change something.
 If the second read answers, the receipt records one limitation. The final
 observation after all mutations determines verification; no vendor command is
-repeated and no sleep is added; a second read can take its own ten-second limit.
+repeated and the version recheck adds no sleep; it can take its own ten-second limit.
 A zero child exit alone proves no runnable installation. A dry-run Install of an
 existing program requires the same version answer as a real Install.
 
@@ -9059,11 +9134,13 @@ changed, unchanged, an unselected copy changed, and unknown; none implies rollba
 A product-made npm copy is converted during Update only when its package's bin
 entry proves the launcher's relation inside the product prefix. The operation
 runs the vendor installer, resolves with old launchers masked and requires a
-replacement that answers `--version` and is not known to be older by the adapter's
-version ordering before retiring the old package and launcher. An adapter
+replacement that answers `--version` and is not known to be older than either
+observation of the npm copy (before the installer and before hide). An adapter
 with a declared major requires that line, including before an exact-version
-command; OpenCode 2.x cannot replace its product-made 1.x copy. An unorderable
-version is acceptable only when no declared major excludes it. The installer's status and lines remain in the receipt;
+command; OpenCode 2.x cannot replace its product-made 1.x copy. A plain vendor
+command that leaves another major selected ends `program_unsupported_major`,
+naming the observed version; its actual change is recorded and kept, never rolled
+back. An unorderable version is acceptable only when no declared major excludes it. The installer's status and lines remain in the receipt;
 a nonzero exit can complete conversion with a limitation when the resulting
 program passes the same proof; otherwise that exit stays the problem and the
 conversion's own code and message become a limitation. A vendor that already removed npm completes
@@ -9071,13 +9148,31 @@ conversion when ordinary and masked resolution agree.
 An exact-version conversion verifies its second command before retirement too.
 An older-copy refusal names the path and version found first, the selected
 version, the possibility that it shadows the installer's copy, and that
-conversion removed nothing. A failed engine verification preserves any old copy
-the vendor left in place; its messages describe conversion, never what the
-vendor installer did. Only Claude, Codex, Copilot and OpenCode declare old product npm
+conversion removed nothing. A failed engine verification's messages describe
+conversion, never what the vendor installer did. Only Claude, Codex, Copilot and OpenCode declare old product npm
 packages; a person's Grok npm copy is not eligible for conversion. Folder
 containment or stale sibling metadata never authorizes removal of a hand-placed
 wrapper or symlink. Retirement hides the package at the fixed sibling
-`<package>.claudexor-converted`, keeping the launchers in place until removal.
+`<package>.claudexor-converted`. On every platform a hide counts only when the
+conversion's own forward rename made it: a sibling already holding the package
+while the original path is absent ends `conversion_source_changed`, neither
+restored nor pruned. After pruning, an occupied or unreadable old path keeps its
+launchers. A final selection that differs from the verified replacement is
+reported as that change, not a conversion, and the retired copy is not restored.
+Only a Windows forward rename that fails with `EPERM`, `EACCES`, or `EBUSY` may
+be retried; other platforms try once under the same source and final-selection
+checks. New attempts can start for up to two seconds after the first
+refusal reaches the conversion code, with pauses and fresh filesystem checks of
+the same package, launchers and replacement entry. The package directory,
+manifest bytes and proven bin identities must still match the original proof
+before hide, on each retry and at the hidden path before pruning. The deadline
+is checked after each pause, after revalidating the source, and just before
+rename. It does not cap wake-up latency or a filesystem call already in progress.
+No vendor command or version probe runs in the retry loop. If refusals exhaust the window,
+the first error is returned before any retirement, with the old copy kept; a
+later path or non-retryable error is reported as such. The receipt records the
+qualifying first error's code, the number of
+actual forward rename calls and elapsed time, even if conversion succeeds.
 If a failed commit check cannot restore it, the failure names the restore error
 and the hidden sibling instead of claiming the old copy is back. Each commit
 refusal names what it compared: the previous and current package/launcher
@@ -9085,8 +9180,9 @@ relation with the ordinary selection it was read from, the expected and observed
 path/real path/version, or a launcher's differing stat fields.
 The next explicit maintenance restores a leftover and applies the same
 version/major/ordering proof to retire it or leave it restored. A linked HOME is
-accepted when the real package parent stays inside the real product prefix. Colliding or
-changed paths are preserved with a limitation; there is no journal or timer.
+accepted when the real package parent stays inside the real product prefix.
+Observed collisions or changes leave those paths in place with a limitation;
+recovery has no journal or background timer.
 
 The inventory exposes action command previews, newest observation time/failure,
 selected identity, last operation and optional release notes. The engine's
@@ -9731,17 +9827,17 @@ code touching one of these areas must honor it or change it explicitly here.
   allowlisted windows in the external v3 root and composes/restores any
   existing display command. Per-run budget observations remain run evidence,
   not quota authority.
-- Quota operation diagnostics reuse the daemon log (`quota.observation`): source,
-  profile, operation id, time, cause, known currentness and native binary/child
-  facts are non-secret metadata. A physical Claude usage HTTP attempt, a skipped
-  token, and a Codex native RPC are different observations; an RPC does not imply
-  one HTTP request. An Agy `poll` receipt records one account's quota read
-  (its `/quota` and `/model` print commands) or why it was skipped, not a count
-  of vendor requests; a read's started and terminal receipts share one operation
-  id, and each skip has its own. Native refresh receipts describe observed
-  expiry and child outcome, not an inferred writer or reconstructed historical
-  credential loss.
-  Retry-After and existing foreground/background polling rules are unchanged.
+- Each `[time] quota.observation {json}` line in the main log records the source,
+  profile, operation id, time, cause and known currentness. Oversized receipts
+  keep the operation id, stage and outcome. `omittedTextBytes` counts UTF-8
+  text bytes dropped after redaction. Claude reports physical HTTP attempts
+  separately from skipped tokens. Codex reports native RPCs. Their HTTP request
+  count is unknown.
+  An Agy `poll` records one account's quota read (`/quota` and `/model`) or its
+  skip reason. Started and terminal receipts share an id and each skip has its
+  own. Native refresh reports the observed binary, expiry and child outcome.
+  The writer of the credential and any historical loss can remain unknown.
+  Polling and Retry-After use the existing foreground and background rules.
 - The `verify` intent is reserved: the shipped FinalVerifier is
   deterministic-only (fresh-tree apply + gates, no model), so no engine path
   requests verify-intent routing; the value stays for a future model-backed
@@ -9888,7 +9984,16 @@ code touching one of these areas must honor it or change it explicitly here.
   snapshot's `add -A` records. The one exception is an absent file the
   sparse-checkout patterns leave out (one `check-rules` over the absent marked
   files): a sparse checkout leaves it absent on purpose, and `add -A` skips it
-  too. A marked file
+  too. A new file outside the patterns, which `add -A` refuses, is taken first by
+  literal path (`add --sparse`) from its current bytes, staged or not, after the
+  omitted `.gitignore` files are marked skip-worktree in that scratch index so
+  Git reads their rules as it does in the user's checkout; additions staged in
+  the user's own index are read from it, read-only, relative to the capture
+  base and taken even when a working ignore rule now matches them (staged is
+  Git's fact, not an ignored untracked file), while an ignored file the user
+  never staged stays out; the candidate capture
+  does the same, and a checkout that is not sparse, or a Git without
+  `check-rules`, keeps Git's own refusal. A marked file
   that is gone otherwise (its parent become a file included) is a deletion, so a
   clean worktree's snapshot and a dirty one's agree; a Git without `check-rules`
   makes that snapshot read every file instead. Like the user's own `status`, that

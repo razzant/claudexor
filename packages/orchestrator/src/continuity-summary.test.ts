@@ -364,3 +364,45 @@ describe("summary pass byte bounds keep whole UTF-8 characters (INV-137, #577)",
     }
   });
 });
+
+describe("a withheld $0 Ask's continuity summary send", () => {
+  it("is priced by its own strict spec and the lane's pin, never by the lane's receipt", async () => {
+    const projectRoot = reapMk(join(tmpdir(), "claudexor-withheld-summary-"));
+    const filler = "f".repeat(5 * 1024);
+    const turn = (id: string) => ({ id, prompt: filler, outputText: filler });
+    // Four long turns overflow the packet budget, so the real consumer sends the summary pass.
+    const req: ContinuityRequest = {
+      lane: { harness: "lane-b", profileId: null },
+      priorTurns: ["t1", "t2", "t3", "t4"].map(turn),
+      laneCheckpointTurnId: null,
+      nativeResumeAvailable: false,
+      priorHeadLane: { harness: "lane-a", profileId: null },
+      activePlan: null,
+      anchor: null,
+    };
+    const seen: unknown[] = [];
+    for (const authPreference of ["subscription", "auto"] as const)
+      await resolveContinuitySummary({
+        req,
+        threadId: `th-withheld-${authPreference}`,
+        projectRoot,
+        cwd: projectRoot,
+        adapter: answeringLane("lane-b", "S", []),
+        credentialProfile: null,
+        authPreference,
+        laneEnv: {},
+        envInheritance: "clean",
+        processing: { processing_cost_basis: { nativeMode: null, kind: "included", source: "x" } },
+        processingAdmission: (spec) => {
+          seen.push([spec.extra["routeBillingKnowledge"], spec.processing_cost_basis?.kind]);
+        },
+        diagnosticGeneration: "forbidden",
+        quotaAdmission: { profile: null, pinnedNative: true },
+      });
+    // Only the pinned login's strict subscription spawn is included: "auto" may reach a key.
+    expect(seen).toEqual([
+      ["subscription_entitlement", "included"],
+      ["unknown", "unknown"],
+    ]);
+  });
+});

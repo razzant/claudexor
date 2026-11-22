@@ -1,6 +1,7 @@
 import type { AuthSourceReadiness, ConformanceReport } from "@claudexor/schema";
 import { ConformanceReport as ConformanceReportSchema } from "@claudexor/schema";
 import {
+  DIAGNOSTIC_GENERATION_WITHHELD,
   selectedAuthAvailable,
   selectedAuthReady,
   shouldVerifyApiKey,
@@ -68,30 +69,50 @@ export async function claudeDoctor(
       : requestedSource === "api_key_env"
         ? "api_key"
         : (_spec.authPreference ?? "auto");
-  const shouldSmokeOAuth =
+  // Both smokes are generation requests; a stored setup-token's diagnostic
+  // cost is unknown even when its source is a subscription.
+  const generationForbidden = _spec.diagnosticGeneration === "forbidden";
+  const oauthNeedsProof =
     probeOAuth && oauthToken !== null && !nativeCliReady && preference !== "api_key";
+  const shouldSmokeOAuth = oauthNeedsProof && !generationForbidden;
   const oauthSmoke =
     shouldSmokeOAuth && oauthToken
       ? await runtime.smokeIsolatedOAuthToken(oauthToken, _spec.abortSignal)
       : {
           ok: false,
           detail: oauthTokenAvailable
-            ? "verification not run for the unselected setup-token route"
+            ? oauthNeedsProof
+              ? DIAGNOSTIC_GENERATION_WITHHELD
+              : "verification not run for the unselected setup-token route"
             : "no Claude setup-token available",
         };
   const nativeAvailable = login.loggedIn || oauthTokenAvailable;
   const subscriptionReady = nativeCliReady || oauthSmoke.ok;
-  const shouldSmokeKey =
+  const keyNeedsProof =
     probeApi &&
     shouldVerifyApiKey({ preference, apiKeyAvailable: apiKey, nativeReady: subscriptionReady });
+  const shouldSmokeKey = keyNeedsProof && !generationForbidden;
   const apiSmoke = shouldSmokeKey
     ? await runtime.smokeIsolatedApiKey(_spec.abortSignal)
     : {
         ok: false,
         detail: apiKey
-          ? "verification not run for the unselected API-key route"
+          ? keyNeedsProof
+            ? DIAGNOSTIC_GENERATION_WITHHELD
+            : "verification not run for the unselected API-key route"
           : "no API key fallback available",
       };
+  // A withheld proof is "not run", never a failed smoke.
+  const oauthReason =
+    oauthNeedsProof && generationForbidden
+      ? `Claude setup-token ${oauthSmoke.detail}`
+      : `Claude setup-token verification failed: ${oauthSmoke.detail}`;
+  const apiReason =
+    keyNeedsProof && generationForbidden
+      ? `Claude API-key ${apiSmoke.detail}`
+      : `isolated Claude API-key smoke failed: ${apiSmoke.detail}`;
+  // A setup-token whose proof the $0 mode withheld stays "not run" in every Auto reason.
+  const tokenWithheld = oauthNeedsProof && generationForbidden;
   const ok = selectedAuthReady({
     preference,
     nativeReady: subscriptionReady,
@@ -153,28 +174,29 @@ export async function claudeDoctor(
             : login.probeError && !oauthTokenAvailable
               ? `Claude native-session probe failed: ${redactClaudeDoctorDetail(login.probeError)}`
               : oauthTokenAvailable
-                ? `Claude setup-token verification failed: ${oauthSmoke.detail}`
+                ? oauthReason
                 : `Claude subscription route is not ready: ${nativeLoginRemedy}`,
         ]
       : preference === "api_key"
-        ? [
-            apiKey
-              ? `isolated Claude API-key smoke failed: ${apiSmoke.detail}`
-              : "Claude API-key route is not configured",
-          ]
+        ? [apiKey ? apiReason : "Claude API-key route is not configured"]
         : login.stale
           ? [
               `Claude native-session auth-status probe is stale; using last-known-good session${
                 login.staleAgeMs === undefined ? "" : ` (${login.staleAgeMs}ms old)`
               }`,
+              ...(apiKey && keyNeedsProof && generationForbidden ? [apiReason] : []),
+              ...(tokenWithheld ? [oauthReason] : []),
             ]
           : apiKey
-            ? [`isolated Claude API-key smoke failed: ${apiSmoke.detail}`]
+            ? [apiReason, ...(tokenWithheld ? [oauthReason] : [])]
             : login.probeError
               ? [
                   `Claude native-session probe failed: ${redactClaudeDoctorDetail(login.probeError)}`,
+                  ...(tokenWithheld ? [oauthReason] : []),
                 ]
-              : [`not authenticated: ${nativeLoginRemedy}`];
+              : tokenWithheld
+                ? [oauthReason]
+                : [`not authenticated: ${nativeLoginRemedy}`];
   return ConformanceReportSchema.parse({
     harness_id: "claude",
     status: ok

@@ -23,7 +23,10 @@ function fakeIo(): { io: ChildStdin; written: string[] } {
 const SESSION = "ses-live";
 const MSG = "live-msg-1";
 
-function openSession(deadlineMs = 50, promptUuid?: string): {
+function openSession(
+  deadlineMs = 50,
+  promptUuid?: string,
+): {
   live: ClaudeLiveInput;
   written: string[];
   observe: (obj: unknown) => HarnessEvent[];
@@ -320,7 +323,10 @@ describe("Claude live input through the adapter and CLI run loop", () => {
               openAfterDeadline = end.mock.calls.length === 0;
               if (active) yield stdout(lifecycle("active", "cancelled"));
               // Only EOF allows a clean exit. This also checks the adapter before loop cleanup.
-              afterClose = adapter.message!(SESSION, { messageId: "after-eof", text: "Any notes?" });
+              afterClose = adapter.message!(SESSION, {
+                messageId: "after-eof",
+                text: "Any notes?",
+              });
               yield { type: "exit", code: end.mock.calls.length === 1 ? 0 : 1, signal: null };
             },
           }),

@@ -74,7 +74,11 @@ describe("raw model operation HTTP surface", () => {
       (op) => op.method === "POST" && op.path === "/v2/model-operations",
     );
     expect(post?.parameters).toContainEqual(
-      expect.objectContaining({ name: "typedRefusals", location: "query", enum: ["true", "false"] }),
+      expect.objectContaining({
+        name: "typedRefusals",
+        location: "query",
+        enum: ["true", "false"],
+      }),
     );
     const send = (query: string) =>
       f.request(`/model-operations${query}`, { request: ref }, { "Idempotency-Key": "display" });

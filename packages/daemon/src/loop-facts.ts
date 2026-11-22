@@ -10,6 +10,8 @@ import type { DaemonLoopFacts } from "@claudexor/schema";
 
 /** How often the daemon closes a measurement window. */
 export const LOOP_FACTS_WINDOW_MS = 10_000;
+/** A window is reported as delayed only when a measured fact reaches this. */
+export const LOOP_STALL_THRESHOLD_MS = 1_000;
 /** Event-loop delay sampling interval (the Node default). */
 const RESOLUTION_MS = 10;
 
@@ -90,10 +92,27 @@ let running: {
 } | null = null;
 
 /**
- * Start the process's windowed loop facts; idempotent. Returns the stop for
- * this start (a no-op when facts were already running).
+ * Whether a closed window measured a held loop: one delay sample of at least
+ * `thresholdMs`, or the window itself closing that late. A missing delay
+ * histogram is unknown, never evidence either way.
  */
-export function startLoopFacts(windowMs: number = LOOP_FACTS_WINDOW_MS): () => void {
+export function isDelayedLoopWindow(
+  facts: DaemonLoopFacts,
+  expectedMs: number,
+  thresholdMs: number = LOOP_STALL_THRESHOLD_MS,
+): boolean {
+  return (facts.delay?.maxMs ?? 0) >= thresholdMs || facts.windowMs - expectedMs >= thresholdMs;
+}
+
+/**
+ * Start the process's windowed loop facts; idempotent. Returns the stop for
+ * this start (a no-op when facts were already running). `onWindow` sees each
+ * closed window on the same timer; its failure never stops the facts.
+ */
+export function startLoopFacts(
+  windowMs: number = LOOP_FACTS_WINDOW_MS,
+  onWindow?: (facts: DaemonLoopFacts) => void,
+): () => void {
   if (running) return () => {};
   const window = new LoopFactsWindow();
   const state = {
@@ -102,6 +121,11 @@ export function startLoopFacts(windowMs: number = LOOP_FACTS_WINDOW_MS): () => v
     timer: setInterval(() => {
       state.last = window.roll();
       processTiming.roll(state.last.windowMs, state.last.windowEndedAt);
+      try {
+        onWindow?.(state.last);
+      } catch {
+        /* an observer never owns the measurement */
+      }
     }, windowMs),
   };
   state.timer.unref?.();

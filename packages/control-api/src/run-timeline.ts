@@ -393,12 +393,15 @@ export function timelineEvents(
     // A late adapter receipt can establish queueing or consumption after the
     // original request returned unknown. Keep those observations separate.
     const messageId = stringOrNull(payload["message_id"] ?? nested["message_id"]);
-    const receiptCode = type === "harness.event" && payload["type"] === "status" ? nested["code"] : null;
+    const receiptCode =
+      type === "harness.event" && payload["type"] === "status" ? nested["code"] : null;
     const outcome = type.startsWith("message.")
       ? stringOrNull(payload["outcome"])
       : receiptCode === "live_input_delivered"
         ? "delivered"
-        : receiptCode === "live_input_accepted" ? "accepted" : null;
+        : receiptCode === "live_input_accepted"
+          ? "accepted"
+          : null;
     const partialGitInitialization =
       type === "project.git.initialized" && payload["partial"] === true;
     // Its severity follows the payload: nothing copied or a selected path missing.

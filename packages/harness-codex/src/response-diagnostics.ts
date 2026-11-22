@@ -169,8 +169,19 @@ export function transportErrorCode(value: unknown): string | null {
 }
 
 const errorNames = new Set([
-  "Error", "TypeError", "SyntaxError", "RangeError", "ReferenceError", "EvalError", "URIError",
-  "AggregateError", "AbortError", "TimeoutError", "ZodError", "CodexModelError", "SocketError",
+  "Error",
+  "TypeError",
+  "SyntaxError",
+  "RangeError",
+  "ReferenceError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+  "AbortError",
+  "TimeoutError",
+  "ZodError",
+  "CodexModelError",
+  "SocketError",
 ]);
 
 export function errorClassName(name: unknown): string | null {

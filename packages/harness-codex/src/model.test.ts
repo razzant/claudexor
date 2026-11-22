@@ -758,43 +758,46 @@ describe("exact-profile Codex model catalog", () => {
 });
 
 describe("single-generation Codex adapter", () => {
-  it.each([false, true])("replays a refusal in the caller's turn (native=%s)", async (useNative) => {
-    const f = setup();
-    const catalog = await f.adapter.catalog(f.context);
-    const route = {
-      source: catalog.source,
-      accountFingerprint: catalog.accountFingerprint,
-      credentialProfileId: catalog.credentialProfileId,
-      model: f.request.model,
-    };
-    const refusal = { type: "refusal", refusal: "No picnic today." };
-    const output = [{ type: "output_text", text: "Menu. " }, refusal];
-    const native = { type: "message", id: "previous", role: "assistant", content: output };
-    const result = await f.adapter.invoke(
-      {
-        ...f.request,
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "Menu. " }, refusal],
-            ...(useNative && {
-              nativeContinuation: { route, format: "codex.responses.v1", payload: [native] },
-            }),
-          },
-        ],
-        nativeContinuation: { route, format: "codex.turn.v1", payload: { turnState: "picnic" } },
-      },
-      { ...f.context, catalog, typedRefusals: true },
-    );
-    expect(result.outcome).toBe("completed");
-    const sends = f.fetcher.mock.calls.filter(([, init]) => init?.method === "POST");
-    expect(sends).toHaveLength(1);
-    const sent = sends[0]![1]!;
-    expect(new Headers(sent.headers).get("x-codex-turn-state")).toBe("picnic");
-    expect(JSON.parse(String(sent.body)).input).toEqual([
-      useNative ? native : { type: "message", role: "assistant", content: output },
-    ]);
-  });
+  it.each([false, true])(
+    "replays a refusal in the caller's turn (native=%s)",
+    async (useNative) => {
+      const f = setup();
+      const catalog = await f.adapter.catalog(f.context);
+      const route = {
+        source: catalog.source,
+        accountFingerprint: catalog.accountFingerprint,
+        credentialProfileId: catalog.credentialProfileId,
+        model: f.request.model,
+      };
+      const refusal = { type: "refusal", refusal: "No picnic today." };
+      const output = [{ type: "output_text", text: "Menu. " }, refusal];
+      const native = { type: "message", id: "previous", role: "assistant", content: output };
+      const result = await f.adapter.invoke(
+        {
+          ...f.request,
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "Menu. " }, refusal],
+              ...(useNative && {
+                nativeContinuation: { route, format: "codex.responses.v1", payload: [native] },
+              }),
+            },
+          ],
+          nativeContinuation: { route, format: "codex.turn.v1", payload: { turnState: "picnic" } },
+        },
+        { ...f.context, catalog, typedRefusals: true },
+      );
+      expect(result.outcome).toBe("completed");
+      const sends = f.fetcher.mock.calls.filter(([, init]) => init?.method === "POST");
+      expect(sends).toHaveLength(1);
+      const sent = sends[0]![1]!;
+      expect(new Headers(sent.headers).get("x-codex-turn-state")).toBe("picnic");
+      expect(JSON.parse(String(sent.body)).input).toEqual([
+        useNative ? native : { type: "message", role: "assistant", content: output },
+      ]);
+    },
+  );
   it("omits transport state for legacy clients even when the server reports it", async () => {
     const fixture = setup(() => withHeader(terminal(), "first-token"));
     const result = await fixture.adapter.invoke(fixture.request, fixture.context);
@@ -2159,7 +2162,11 @@ describe("remembered catalog (INV-135, owner decision 2026-11-18)", () => {
   it.each([false, true])(
     "keeps the profile catalog after an HTTP 403 content refusal (typedRefusals=%s)",
     async (typedRefusals) => {
-      const error = { code: "cyber_policy", message: "The picnic menu is undecided." };
+      const error = {
+        type: "cyber_policy",
+        code: "invalid_request_error",
+        message: "The picnic menu is undecided.",
+      };
       const f = setup(() => Response.json({ error }, { status: 403 }), undefined, known());
       const context = { ...f.context, credentialGeneration: 1, reuseCatalog: true };
       const catalog = await f.adapter.catalog(context);
@@ -2169,7 +2176,7 @@ describe("remembered catalog (INV-135, owner decision 2026-11-18)", () => {
         problem: {
           code: typedRefusals ? "provider_content_refused" : "provider_refused",
           retryable: false,
-          context: { vendorCode: error.code, httpStatus: 403 },
+          context: { vendorCode: error.type, httpStatus: 403 },
         },
       });
       expect(await f.adapter.catalog(context)).toEqual(catalog);

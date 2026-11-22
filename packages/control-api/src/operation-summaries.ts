@@ -24,7 +24,7 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "GET /v2/quota": "Read cached per-profile harness quota snapshots.",
   "POST /v2/quota": "Refresh and read per-profile harness quota snapshots.",
   "GET /v2/account-pools":
-    "Read the per-harness account-pool routing verdict (who an unpinned run routes to next) under the unified account model.",
+    "Read the per-harness account-pool verdict under the unified account model: the informational first candidate in ordinary pool order for the configured default model.",
   "GET /v2/credential-profiles": "List credential profiles per harness.",
   "POST /v2/credential-profiles": "Create a credential profile for a harness.",
   "PATCH /v2/credential-profiles/:harness/:profileId":

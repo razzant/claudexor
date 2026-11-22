@@ -7,7 +7,8 @@
  * there so a socket-RPC stop gets the same bounded termination.
  */
 import { join } from "node:path";
-import { startLoopFacts } from "@claudexor/daemon";
+import { isDelayedLoopWindow, LOOP_FACTS_WINDOW_MS, startLoopFacts } from "@claudexor/daemon";
+import { loopStallMessage } from "./daemon-rare-history.js";
 import { logLine } from "./log-line.js";
 import { PidsSnapshotWriter, reapRecordedOrphans, writePidsSnapshot } from "./orphan-reaper.js";
 import { sweepOrphanWorkspaces } from "./orphan-sweeper.js";
@@ -110,7 +111,8 @@ export async function runStartupCrashGc(
 /**
  * Post-start: periodic live-children snapshots (the reap list a crash leaves
  * behind; written off the event loop and only when the children changed),
- * windowed event-loop facts for daemon status, and SIGTERM/SIGINT -> the
+ * windowed event-loop facts for daemon status (a measurably delayed window is
+ * also a `loop_stall` diagnostic), and SIGTERM/SIGINT -> the
  * shutdown state machine (abort children, persist, close, bounded escalation).
  * Returns the finalizer for main()'s tail; it awaits any in-flight periodic
  * write before the final snapshot, so the final snapshot is the last word.
@@ -150,19 +152,23 @@ export function armDaemonLifecycle(deps: LifecycleDeps): {
     // machine's deadline timer guarantees termination.
     if (stopping) return;
     stopping = true;
+    void deps.beginShutdown(sig).catch(() => {
+      // The machine logged the failure and keeps its deadline armed.
+    });
     lifecycleDiagnostic(deps, {
       stage: "shutdown_signal",
       message: `${sig} received; stopping daemon`,
-    });
-    void deps.beginShutdown(sig).catch(() => {
-      // The machine logged the failure and keeps its deadline armed.
     });
   };
   const onSigterm = () => onShutdownSignal("SIGTERM");
   const onSigint = () => onShutdownSignal("SIGINT");
   signals.on("SIGTERM", onSigterm);
   signals.on("SIGINT", onSigint);
-  const stopLoopFacts = startLoopFacts();
+  const stopLoopFacts = startLoopFacts(LOOP_FACTS_WINDOW_MS, (facts) => {
+    if (!isDelayedLoopWindow(facts, LOOP_FACTS_WINDOW_MS)) return;
+    const message = loopStallMessage(facts, LOOP_FACTS_WINDOW_MS);
+    lifecycleDiagnostic(deps, { stage: "loop_stall", message });
+  });
 
   return {
     beginPidSnapshots: () => {

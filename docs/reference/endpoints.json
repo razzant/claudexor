@@ -18,7 +18,7 @@
       "path": "/v2/account-pools",
       "mutating": false,
       "applicability": "global",
-      "summary": "Read the per-harness account-pool routing verdict (who an unpinned run routes to next) under the unified account model.",
+      "summary": "Read the per-harness account-pool verdict under the unified account model: the informational first candidate in ordinary pool order for the configured default model.",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [],
@@ -550,7 +550,7 @@
             "image"
           ],
           "schema_ref": null,
-          "description": "Select ImageCallRequest for the uploaded model-purpose JSON payload and ImageCallResult for the result bytes (generated payload schemas, not the query value). Omitted keeps ModelCallRequest/ModelCallResult byte-for-byte. Bound to idempotency; cannot be combined with the evidence-capture flags. Absent from this descriptor means the engine has no image operations."
+          "description": "Select ImageCallRequest for the uploaded model-purpose JSON payload and ImageCallResult for the result bytes (generated payload schemas, not the query value). Omitted keeps ModelCallRequest/ModelCallResult byte-for-byte. Bound to idempotency. Only text operations support evidence capture and typed refusals. Absent from this descriptor means the engine has no image operations."
         },
         {
           "name": "captureEffortEvidence",
@@ -587,6 +587,18 @@
           ],
           "schema_ref": null,
           "description": "Attach account-routing evidence (selection reason, differential outcome, pool events) to the result, receipt and detail. Omitted or false preserves the legacy shapes for strict clients; the choice is bound to idempotency. Capability refusal facts in problem.context are not gated."
+        },
+        {
+          "name": "typedRefusals",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "For text operations, report a failed Codex cyber_policy response as provider_content_refused with retryable=false. Assistant content containing a refusal preserves ordered {type:'text',text} and {type:'refusal',refusal} parts. Omitted or false keeps the legacy result shape. Bound to idempotency and independent of captureFailureEvidence."
         }
       ],
       "response_schema": "ControlModelOperationDetail",
@@ -1136,7 +1148,20 @@
       "summary": "Read a run's full detail snapshot.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "includeFinalMessages",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "Include the recorded final-messages outcome. Omission or false keeps the original run detail."
+        }
+      ],
       "response_schema": "ControlRunDetail",
       "error_schema": "ControlProblem"
     },

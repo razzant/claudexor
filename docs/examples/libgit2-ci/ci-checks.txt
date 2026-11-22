@@ -1,0 +1,20 @@
+libgit2/libgit2 — PR #7338, “Add read-only support for local Git bundle files”
+https://github.com/libgit2/libgit2/pull/7338
+
+main — CI Build, 2026-08-10 19:59:49 UTC
+https://github.com/libgit2/libgit2/actions/runs/31426845872
+Commit: 82249d1488f573f3bac3e6360e56eed6544b0ea2
+Result: failure (18 jobs). Failed jobs and steps:
+  Build: Windows (amd64, Visual Studio, Schannel, reftable) | Test
+  Build: macOS (reftable) | Test
+
+PR branch — CI Build, 2026-08-10 21:00:26 UTC
+https://github.com/libgit2/libgit2/actions/runs/31431787840
+Commit: dd783af831206a2e1dbf6d38a896325b3e9724cd
+Result: failure (18 jobs). Failed jobs and steps:
+  Build: Windows (amd64, Visual Studio, Schannel, reftable) | Test
+  Build: macOS (reftable) | Test
+
+On both runs the failure annotations report exit code 1; the Node 20
+deprecation annotation is a warning. The four job logs have expired
+(HTTP 410). No individual test names or assertion messages are available here.

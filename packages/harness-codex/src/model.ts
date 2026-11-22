@@ -291,7 +291,7 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
           const result = emptyModelResult({ ...route, model: null });
           const error = await capture.readRefusal(response);
           const problem = authenticatedProblem(response, error, auth, now());
-          const refusal = contentRefusalProblem(problem, refusals);
+          const refusal = contentRefusalProblem(problem, error, refusals);
           if (refusal) {
             result.problem = refusal;
           } else if (response.status === 408) {

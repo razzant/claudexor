@@ -229,7 +229,11 @@ describe("exact failed Responses evidence", () => {
       message: null,
       problem: {
         code: "transport_unknown",
-        context: { stage, receivedBytes: bytes.length, requestId: "00000000-0000-4000-8000-000000000005" },
+        context: {
+          stage,
+          receivedBytes: bytes.length,
+          requestId: "00000000-0000-4000-8000-000000000005",
+        },
       },
       failureEvidence: { stage, receivedBytes: bytes.length, bodyComplete: stage === "read" },
     });
@@ -316,7 +320,10 @@ describe("exact failed Responses evidence", () => {
   ] as const)("projects an incomplete reason (%s)", async (reason, expected) => {
     const wire = frame("incomplete", [], { incomplete_details: { reason } });
     const result = await readResponsesStream(new Response(wire), route, true);
-    expect(result.problem).toMatchObject({ code: "provider_incomplete", context: { reason: expected } });
+    expect(result.problem).toMatchObject({
+      code: "provider_incomplete",
+      context: { reason: expected },
+    });
     expect(result.failureEvidence?.bodyBase64).toBe(Buffer.from(wire).toString("base64"));
   });
 

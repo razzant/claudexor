@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#050709" />
     <meta
       name="description"
-      content="Claudexor keeps coding work moving across Claude Code, Codex, Cursor, and OpenCode, with quota-aware subscription routing and one auditable thread."
+      content="Claudexor keeps coding work moving across Claude Code, Codex, Cursor, OpenCode, Antigravity and Grok Build, with quota-aware subscription routing and one auditable thread."
     />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="Claudexor — keep coding across agents and subscriptions" />
@@ -15,10 +15,13 @@
       content="Connect the coding agents you already use, route around subscription limits, and keep the work in one auditable thread."
     />
     <meta property="og:url" content="https://claudexor.ai/" />
-    <meta property="og:image" content="https://claudexor.ai/assets/social-preview-v2.png" />
+    <meta property="og:image" content="https://claudexor.ai/assets/social-preview-v3.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
     <meta
       property="og:image:alt"
-      content="Claudexor connects Claude Code, Codex, Cursor, and OpenCode in one project thread."
+      content="Keep coding when a subscription hits its limit: a pixel-art eclipse with glass drops for Claude Code, Cursor, Codex and Antigravity."
     />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Claudexor — keep coding across agents and subscriptions" />
@@ -26,7 +29,7 @@
       name="twitter:description"
       content="Connect the coding agents you already use, route around subscription limits, and keep the work in one auditable thread."
     />
-    <meta name="twitter:image" content="https://claudexor.ai/assets/social-preview-v2.png" />
+    <meta name="twitter:image" content="https://claudexor.ai/assets/social-preview-v3.png" />
     <link rel="canonical" href="https://claudexor.ai/" />
     <link rel="icon" type="image/png" href="./assets/favicon.png" />
     <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
@@ -37,7 +40,7 @@
         "@type": "SoftwareApplication",
         "name": "Claudexor",
         "url": "https://claudexor.ai/",
-        "description": "A local-first control plane for coding work across Claude Code, Codex, Cursor, and OpenCode, with quota-aware subscription routing and one auditable thread.",
+        "description": "A local-first control plane for coding work across Claude Code, Codex, Cursor, OpenCode, Antigravity and Grok Build, with quota-aware subscription routing and one auditable thread.",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "macOS, Linux",
         "isAccessibleForFree": true,
@@ -47,7 +50,7 @@
           "priceCurrency": "USD"
         },
         "downloadUrl": "https://github.com/razzant/claudexor/releases/latest",
-        "image": "https://claudexor.ai/assets/social-preview-v2.png",
+        "image": "https://claudexor.ai/assets/social-preview-v3.png",
         "sameAs": [
           "https://github.com/razzant/claudexor",
           "https://www.npmjs.com/package/claudexor"
@@ -58,2288 +61,2166 @@
       document.documentElement.classList.add("js");
     </script>
     <style>
-      /* E3 — Deck. The round-1 Aurora the owner picked first, kept structurally:
-   floating 3D glass deck that follows the cursor, chips in space.
-   Recolored fully cold, technical sans, no serifs. */
       :root {
-        --void: #050709;
-        --rule: #161c24;
-        --rule-2: #232c38;
-        --ice: #dde6f0;
-        --ice-2: #a5b2c4;
-        --ice-3: #8a98ab;
-        --glint: #a8cdec;
-        --live: #7db8e6;
-        --spent: #5f6f82;
-        --sans: "Avenir Next", Avenir, "Segoe UI", sans-serif;
-        --data: "SF Mono", Menlo, ui-monospace, monospace;
-        --w: 1080px;
+        --black: #050608;
+        --ice: #e8f0f8;
+        --steel: #93a0b2;
+        --dim: #7e8b9c;
+        --warm: #ffc2ab;
+        --line: rgba(232, 240, 248, 0.14);
+        --sans: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", sans-serif;
+        --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
       }
       * {
         box-sizing: border-box;
-      }
-      html:not(.js) .track i {
-        width: var(--wv, 0);
-      }
-      .skip {
-        position: absolute;
-        left: -9999px;
-        top: 0;
-        z-index: 100;
-        background: var(--ice);
-        color: #0a1420;
-        padding: 10px 16px;
-        font-family: var(--data);
-        font-size: 13px;
-        text-decoration: none;
-      }
-      .skip:focus {
-        left: 12px;
-        top: 12px;
+        margin: 0;
       }
       html {
-        scroll-behavior: smooth;
-      }
-      body {
-        margin: 0;
-        background: var(--void);
+        background: var(--black);
         color: var(--ice);
         font-family: var(--sans);
-        font-size: 15.5px;
-        line-height: 1.62;
-        letter-spacing: -0.008em;
         -webkit-font-smoothing: antialiased;
+      }
+      body {
         overflow-x: hidden;
       }
-      canvas#field {
-        position: fixed;
-        inset: 0;
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+        border: 0;
+        background: none;
+        padding: 0;
+      }
+      /* Each part of the page that has a picture carries its own canvas, so the picture scrolls with the words exactly. */
+      .stage {
+        position: relative;
+      }
+      .stage > .gl {
+        position: absolute;
+        left: 0;
+        top: 0;
         width: 100%;
         height: 100%;
         z-index: 0;
-        will-change: transform;
-      }
-      .veil {
-        position: fixed;
-        inset: 0;
-        z-index: 1;
         pointer-events: none;
-        background: radial-gradient(
-          120% 85% at 50% 0%,
-          transparent 22%,
-          rgba(5, 7, 9, 0.64) 64%,
-          var(--void) 100%
-        );
+        display: block;
       }
-      .shell {
+      .stage > :not(.gl):not(.drops) {
         position: relative;
-        z-index: 5;
-      }
-
-      .g {
-        position: relative;
-        border-radius: 18px;
-        overflow: hidden;
-        background:
-          linear-gradient(
-            168deg,
-            rgba(190, 215, 240, 0.09),
-            rgba(190, 215, 240, 0.018) 42%,
-            rgba(190, 215, 240, 0.05)
-          ),
-          rgba(10, 14, 20, 0.5);
-        backdrop-filter: blur(22px) saturate(155%);
-        -webkit-backdrop-filter: blur(22px) saturate(155%);
-        box-shadow:
-          inset 0 1.2px 0 rgba(215, 235, 255, 0.4),
-          inset 0 0 0 1px rgba(186, 216, 248, 0.08),
-          0 34px 70px -30px rgba(0, 0, 0, 0.95);
-      }
-      .g::after {
-        content: "";
-        position: absolute;
-        top: 0;
-        left: 8%;
-        right: 38%;
-        height: 1px;
         z-index: 1;
-        background: linear-gradient(90deg, transparent, rgba(224, 242, 255, 0.85), transparent);
       }
-      .g > * {
-        position: relative;
-        z-index: 2;
+      .wrap {
+        width: min(1240px, calc(100vw - 40px));
+        margin: 0 auto;
       }
-      .flat {
-        position: relative;
-        border-radius: 16px;
-        background: rgba(12, 17, 26, 0.52);
-        box-shadow:
-          inset 0 0 0 1px rgba(186, 216, 248, 0.09),
-          inset 0 1px 0 rgba(215, 235, 255, 0.12);
+      .mark {
+        width: 1em;
+        height: 1em;
+        flex: none;
       }
 
-      nav {
-        position: fixed;
-        top: 14px;
-        left: 50%;
-        transform: translateX(-50%);
-        z-index: 40;
-        --r: 999px;
+      .nav .wrap {
         display: flex;
         align-items: center;
-        gap: 3px;
-        padding: 6px 6px 6px 15px;
-        border-radius: 14px;
-        font-family: var(--data);
-        font-size: 12px;
-        width: min(var(--w), calc(100vw - 28px));
+        gap: 30px;
+        height: 76px;
       }
-      nav .id {
+      .brand {
         margin-right: auto;
+        font-weight: 650;
+        font-size: 19px;
+        letter-spacing: -0.01em;
+      }
+      .links {
         display: flex;
-        align-items: baseline;
-        gap: 8px;
+        gap: 30px;
+        font-size: 15px;
+        color: var(--steel);
+      }
+      .links a:hover {
         color: var(--ice);
       }
-      nav .id b {
-        font-family: var(--sans);
-        font-weight: 600;
-        font-size: 14px;
-      }
-      nav .id span {
-        color: var(--ice-3);
-      }
-      nav a {
-        color: var(--ice-2);
-        text-decoration: none;
-        padding: 7px 11px;
-        border-radius: 9px;
-        transition: 0.18s;
-      }
-      nav a:hover {
-        color: var(--ice);
-        background: rgba(190, 220, 250, 0.08);
-      }
-      nav a:focus-visible {
-        outline: 2px solid var(--glint);
-        outline-offset: 2px;
-      }
-      nav a.dl {
-        color: #0a1420;
-        background: linear-gradient(180deg, #e6f1fb, #b9d3ea);
-        font-weight: 600;
-      }
-      @media (max-width: 760px) {
-        nav .opt {
-          display: none;
-        }
-      }
 
-      .col {
-        max-width: var(--w);
-        margin: 0 auto;
-        padding: 0 24px;
-      }
-      .plane {
-        perspective: 1400px;
-        perspective-origin: 50% 50%;
-      }
-      .plane > .z {
-        transform: translateZ(var(--z, 0px)) rotateX(var(--rx, 0deg));
-        opacity: var(--o, 1);
-        will-change: transform, opacity;
-      }
-
-      h1 {
+      h1,
+      h2 {
         font-weight: 700;
-        font-size: clamp(38px, 5.4vw, 64px);
-        line-height: 1;
-        letter-spacing: -0.032em;
-        margin: 0 0 22px;
-        max-width: 18ch;
-        text-wrap: balance;
+        font-stretch: 112%;
+        letter-spacing: -0.035em;
       }
-      h1 em {
-        font-style: normal;
-        color: var(--glint);
+      h1 {
+        font-size: clamp(38px, 4.4vw, 64px);
+        line-height: 1.04;
+      }
+      h1 span {
+        display: block;
       }
       h2 {
-        font-weight: 600;
-        font-size: clamp(24px, 3vw, 36px);
-        line-height: 1.08;
-        letter-spacing: -0.024em;
-        margin: 0 0 14px;
-        max-width: 24ch;
+        max-width: 17ch;
+        font-size: clamp(32px, 4vw, 56px);
+        line-height: 1.04;
         text-wrap: balance;
       }
-      h3 {
-        font-weight: 600;
-        font-size: 15.5px;
-        margin: 0 0 6px;
-      }
-      p {
-        margin: 0 0 14px;
-        color: var(--ice-2);
+      .sub {
         max-width: 58ch;
+        margin-top: 18px;
+        font-size: 17.5px;
+        line-height: 1.5;
+        color: var(--steel);
         text-wrap: pretty;
       }
-      p.lead {
-        font-size: 17px;
-        color: #c4cfdd;
-        max-width: 52ch;
-      }
-      .kick {
-        font-family: var(--data);
-        font-size: 11.5px;
-        color: var(--glint);
-        margin: 0 0 14px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-      .kick::after {
-        content: "";
-        width: 44px;
-        height: 1px;
-        background: var(--rule-2);
-      }
 
-      .hero {
-        min-height: 100svh;
+      /* the first screen: one face for everything but the one line of code */
+      .hero .wrap {
         display: grid;
-        grid-template-columns: 1.02fr 0.98fr;
-        gap: 44px;
+        grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
+        gap: 0 40px;
         align-items: center;
-        padding: 120px 0 60px;
+        min-height: calc(100vh - 76px);
+        padding-bottom: 46px;
       }
-      @media (max-width: 920px) {
-        .hero {
-          grid-template-columns: 1fr;
-          gap: 36px;
-          padding-top: 106px;
-        }
+      .motto {
+        margin-top: 24px;
+        font-size: 21px;
+        font-weight: 600;
+        letter-spacing: -0.012em;
+      }
+      .lede {
+        margin-top: 12px;
+        max-width: 44ch;
+        font-size: 17.5px;
+        line-height: 1.5;
+        color: var(--steel);
+        text-wrap: pretty;
+      }
+      .spot {
+        aspect-ratio: 1;
+        width: min(100%, 78vh);
+        justify-self: center;
       }
       .acts {
         display: flex;
-        gap: 10px;
         flex-wrap: wrap;
-        margin: 24px 0 14px;
+        align-items: center;
+        gap: 14px;
+        margin-top: 34px;
       }
-      .btn {
+      .install-choice {
+        display: grid;
+        gap: 6px;
+        justify-items: start;
+      }
+      .install-choice small {
+        font-size: 13px;
+        color: var(--steel);
+      }
+      .get {
+        --n: 4px;
         display: inline-flex;
         align-items: center;
-        gap: 10px;
-        text-decoration: none;
-        font-family: var(--data);
-        font-size: 13px;
-        padding: 12px 18px;
-        border-radius: 9px;
-        transition: 0.16s;
-      }
-      .btn small {
-        font-size: 11px;
-        opacity: 0.6;
-      }
-      .btn.p {
-        color: #0a1420;
-        background: linear-gradient(180deg, #e6f1fb, #b9d3ea);
-        font-weight: 600;
-        box-shadow: inset 0 1px 0 #fff;
-      }
-      .btn.p:hover {
-        background: #f2f8ff;
-        transform: translateY(-1px);
-      }
-      .btn.s {
-        color: var(--ice);
-        box-shadow: inset 0 0 0 1px var(--rule-2);
-      }
-      .btn.s:hover {
-        background: rgba(190, 220, 250, 0.07);
-      }
-      .btn:focus-visible {
-        outline: 2px solid var(--glint);
-        outline-offset: 2px;
-      }
-      .meta {
-        font-family: var(--data);
-        font-size: 12px;
-        color: var(--ice-3);
-      }
-      .aside {
-        font-family: var(--data);
-        font-size: 12.5px;
-        color: var(--ice-3);
-        line-height: 1.6;
-        max-width: 50ch;
-        min-height: 3.2em;
-        margin-top: 16px;
-        border-top: 1px solid var(--rule);
-        padding-top: 12px;
-      }
-      .aside i {
-        font-style: normal;
-        color: var(--glint);
-      }
-      .aside .m {
-        transition:
-          opacity 0.4s,
-          transform 0.4s;
-        display: block;
-      }
-      .aside .m.out {
-        opacity: 0;
-        transform: translateY(-5px);
-      }
-
-      /* ---- the deck: the aurora hero, cold ---- */
-      .stage {
-        perspective: 1400px;
-        perspective-origin: 50% 45%;
-        height: 520px;
-        position: relative;
-      }
-      .deck {
-        position: absolute;
-        inset: 0;
-        transform-style: preserve-3d;
-      }
-      .card {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        width: min(420px, 88%);
-        padding: 18px;
-        --r: 20px;
-      }
-      .hdr {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 14px;
-      }
-      .hdr b {
-        font-size: 13.5px;
-      }
-      .hdr span {
-        font-family: var(--data);
-        font-size: 10.5px;
-        color: var(--ice-3);
-      }
-      .row {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 11px 12px;
-        border-radius: 12px;
-        margin-bottom: 8px;
-        background: rgba(186, 216, 248, 0.05);
-        box-shadow: inset 0 0 0 1px rgba(186, 216, 248, 0.08);
-      }
-      .row.on {
-        background: rgba(125, 184, 230, 0.11);
-        box-shadow: inset 0 0 0 1px rgba(125, 184, 230, 0.3);
-      }
-      .row.dead {
-        opacity: 0.62;
-      }
-      .mk {
-        width: 26px;
-        height: 26px;
-        border-radius: 6px;
-        flex: none;
-      }
-      .row .nm {
-        flex: 1;
-        min-width: 0;
-      }
-      .row .nm b {
-        display: block;
-        font-size: 13px;
-        font-weight: 600;
-      }
-      .row .nm small {
-        font-size: 11px;
-        color: var(--ice-3);
-        font-family: var(--data);
-      }
-      .track {
-        height: 3px;
-        border-radius: 99px;
-        background: rgba(186, 216, 248, 0.13);
-        margin-top: 7px;
-        overflow: hidden;
-      }
-      .track i {
-        display: block;
-        height: 100%;
-        border-radius: 99px;
-        background: var(--live);
-        width: 0;
-      }
-      .row.dead .track i {
-        background: var(--spent);
-      }
-      .pct {
-        font-family: var(--data);
-        font-size: 12px;
-        color: var(--ice-2);
-        flex: none;
-      }
-      .chip {
-        position: absolute;
-        padding: 12px 15px;
-        font-size: 12.5px;
-        line-height: 1.4;
-        --r: 14px;
-      }
-      .chip b {
-        display: block;
-        font-size: 12.5px;
-        margin-bottom: 2px;
-      }
-      .chip small {
-        color: var(--ice-3);
-        font-family: var(--data);
-        font-size: 10.5px;
-      }
-      @media (max-width: 780px) {
-        .chip {
-          display: none;
-        }
-        .stage {
-          height: 400px;
-        }
-      }
-
-      .vlabel {
-        font-family: var(--data);
-        text-align: center;
-        color: var(--ice-3);
-        font-size: 11px;
-        margin-bottom: 18px;
-      }
-      .vendors {
-        display: flex;
-        gap: 12px;
-        flex-wrap: wrap;
-        justify-content: center;
-        padding-bottom: 20px;
-      }
-      .v {
-        display: flex;
-        align-items: center;
-        gap: 9px;
-        padding: 10px 17px;
-        font-size: 13.5px;
-        --r: 999px;
-        transition: 0.3s;
-      }
-      .v:hover {
-        transform: translateY(-3px);
-      }
-      .v img {
-        width: 19px;
-        height: 19px;
-        border-radius: 5px;
-      }
-
-      section {
-        padding: 92px 0;
-        border-top: 1px solid var(--rule);
-      }
-      .split {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 24px;
-        align-items: start;
-        margin-top: 38px;
-      }
-      @media (max-width: 880px) {
-        .split {
-          grid-template-columns: 1fr;
-        }
-      }
-      .cells {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 14px;
-      }
-      .cell {
-        padding: 22px;
-      }
-      .cell p {
-        font-size: 14px;
-        margin: 0;
-      }
-      figure {
-        margin: 0;
-        --r: 16px;
-      }
-      figure img {
-        width: 100%;
-        display: block;
-      }
-      .bar {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 11px 14px;
-        background: rgba(186, 216, 248, 0.05);
-        box-shadow: inset 0 -1px 0 rgba(186, 216, 248, 0.08);
-      }
-      .bar i {
-        width: 9px;
-        height: 9px;
-        border-radius: 99px;
-        background: rgba(186, 216, 248, 0.2);
-      }
-      .bar span {
-        margin-left: 8px;
-        font-family: var(--data);
-        font-size: 10.5px;
-        color: var(--ice-3);
-      }
-      figcaption {
-        padding: 12px 16px;
-        font-size: 12px;
-        color: var(--ice-3);
-        line-height: 1.5;
-      }
-
-      .pipe {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 13px;
-        margin-top: 36px;
-      }
-      @media (max-width: 860px) {
-        .pipe {
-          grid-template-columns: 1fr 1fr;
-        }
-      }
-      .step {
-        padding: 20px 19px;
-        transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-      }
-      .step:nth-child(2) {
-        padding: 26px 19px 20px;
-      }
-      .step:nth-child(4) {
-        padding: 26px 19px 20px;
-      }
-      .step:hover {
-        transform: translateY(-5px);
-      }
-      .step .ic {
-        display: flex;
-        gap: 5px;
-        margin-bottom: 13px;
-        align-items: center;
-        height: 24px;
-      }
-      .step .ic img {
-        width: 22px;
-        height: 22px;
-        border-radius: 6px;
-      }
-      .step .role {
-        font-family: var(--data);
-        font-size: 10.5px;
-        color: var(--ice-3);
-        display: block;
-        margin-bottom: 5px;
-      }
-      .step b {
-        font-size: 15px;
-        display: block;
-        margin-bottom: 5px;
-      }
-      .step p {
-        font-size: 13px;
-        margin: 0;
-      }
-
-      .ouroboros-flow {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 30px;
-        padding: 0;
-        margin: 34px 0 0;
-        list-style: none;
-      }
-      .ouroboros-flow li {
-        position: relative;
-        min-height: 126px;
-        padding: 22px;
-      }
-      .ouroboros-flow li:not(:last-child)::after {
-        content: "→";
-        position: absolute;
-        top: 50%;
-        right: -23px;
-        width: 16px;
-        color: var(--glint);
-        font-family: var(--data);
-        font-size: 18px;
-        line-height: 1;
-        text-align: center;
-        transform: translateY(-50%);
-      }
-      .ouroboros-flow strong {
-        display: block;
-        margin-bottom: 9px;
-        color: var(--ice);
-        font-size: 16px;
-      }
-      .ouroboros-flow span {
-        display: block;
-        color: var(--ice-3);
-        font-family: var(--data);
-        font-size: 11px;
-        line-height: 1.55;
-      }
-      @media (max-width: 860px) {
-        .ouroboros-flow {
-          grid-template-columns: 1fr;
-          gap: 28px;
-        }
-        .ouroboros-flow li {
-          min-height: 0;
-        }
-        .ouroboros-flow li:not(:last-child)::after {
-          content: "↓";
-          top: auto;
-          right: 50%;
-          bottom: -23px;
-          transform: translateX(50%);
-        }
-      }
-
-      dl.defs {
-        margin: 0;
-        display: grid;
-        gap: 2px;
-      }
-      dl.defs > div {
-        padding: 20px 22px;
-        border-radius: 14px;
-        transition: 0.3s;
-      }
-      dl.defs > div:hover {
-        background: rgba(186, 216, 248, 0.05);
-      }
-      dl.defs dt {
-        font-size: 12px;
-        font-family: var(--data);
-        color: var(--glint);
-        margin-bottom: 7px;
-      }
-      dl.defs dd {
-        margin: 0;
-        color: var(--ice-2);
-        font-size: 15px;
-        line-height: 1.6;
-      }
-
-      .term pre {
-        margin: 0;
-        padding: 22px;
-        font-family: var(--data);
-        font-size: 13px;
-        line-height: 1.85;
-        overflow-x: auto;
-        color: var(--ice);
-      }
-      .term .p {
-        color: var(--live);
-      }
-      .term .c {
-        color: var(--ice-3);
-      }
-      .term .s {
-        color: var(--glint);
-      }
-
-      footer {
-        padding: 60px 0 56px;
-        border-top: 1px solid var(--rule);
-        margin-top: 50px;
-      }
-      .fl {
-        display: flex;
-        gap: 22px;
-        flex-wrap: wrap;
-        margin: 16px 0;
-        font-family: var(--data);
-        font-size: 12.5px;
-      }
-      .fl a {
-        color: var(--ice-2);
-        text-decoration: none;
-      }
-      .fl a:hover {
-        color: var(--ice);
-      }
-      .note {
-        font-size: 11.5px;
-        color: #8593a5;
-        max-width: 70ch;
-        line-height: 1.6;
-        font-family: var(--data);
-      }
-
-      /* Refined landing shell: calm high-resolution light, readable navigation,
-   and a product-first connected-harness map. */
-      :root {
-        --w: 1180px;
-        --header-h: 76px;
-      }
-      body {
-        background:
-          radial-gradient(ellipse 80% 54% at 50% -8%, rgba(91, 154, 205, 0.1), transparent 68%),
-          linear-gradient(180deg, #070b10 0%, #050709 72%);
-        font-size: 16px;
-      }
-      .ambient {
-        position: fixed;
-        inset: -24%;
-        z-index: 0;
-        pointer-events: none;
-        overflow: hidden;
-        filter: saturate(122%);
-        opacity: 1;
-        will-change: transform;
-        transform: translate3d(0, 0, 0) scale(1.08);
-      }
-      .ambient::before,
-      .ambient::after {
-        content: "";
-        position: absolute;
-        border-radius: 43% 57% 61% 39% / 48% 42% 58% 52%;
-        filter: blur(82px);
-        will-change: transform;
-        transform: translate3d(0, 0, 0);
-      }
-      .ambient::before {
-        width: 66vw;
-        height: 52vw;
-        min-width: 700px;
-        min-height: 560px;
-        left: -4%;
-        top: -8%;
-        background: radial-gradient(
-          ellipse at 46% 45%,
-          rgba(77, 142, 194, 0.38) 0%,
-          rgba(42, 91, 129, 0.19) 36%,
-          transparent 72%
-        );
-        animation: ambient-drift-a 22s ease-in-out infinite;
-      }
-      .ambient::after {
-        width: 54vw;
-        height: 62vw;
-        min-width: 620px;
-        min-height: 720px;
-        right: -2%;
-        top: 2%;
-        background: radial-gradient(
-          ellipse at 52% 46%,
-          rgba(130, 188, 231, 0.26) 0%,
-          rgba(42, 85, 121, 0.14) 38%,
-          transparent 72%
-        );
-        animation: ambient-drift-b 29s ease-in-out infinite;
-      }
-      .ambient span {
-        position: absolute;
-        width: 44vw;
-        height: 34vw;
-        min-width: 520px;
-        min-height: 420px;
-        left: 29%;
-        bottom: -5%;
-        border-radius: 59% 41% 46% 54% / 44% 62% 38% 56%;
-        filter: blur(104px);
-        will-change: transform;
-        background: radial-gradient(
-          ellipse,
-          rgba(91, 151, 197, 0.19),
-          rgba(25, 57, 82, 0.08) 48%,
-          transparent 72%
-        );
-        animation: ambient-drift-c 25s ease-in-out infinite;
-      }
-      @keyframes ambient-drift-a {
-        0%,
-        100% {
-          transform: translate3d(-5vw, -3vh, 0) rotate(-4deg) scale(0.97);
-        }
-        45% {
-          transform: translate3d(14vw, 10vh, 0) rotate(7deg) scale(1.1);
-        }
-        72% {
-          transform: translate3d(6vw, 16vh, 0) rotate(2deg) scale(1.03);
-        }
-      }
-      @keyframes ambient-drift-b {
-        0%,
-        100% {
-          transform: translate3d(8vw, -5vh, 0) rotate(5deg) scale(1.06);
-        }
-        42% {
-          transform: translate3d(-13vw, 12vh, 0) rotate(-9deg) scale(0.94);
-        }
-        76% {
-          transform: translate3d(-4vw, -2vh, 0) rotate(-2deg) scale(1.02);
-        }
-      }
-      @keyframes ambient-drift-c {
-        0%,
-        100% {
-          transform: translate3d(-8vw, 8vh, 0) rotate(-6deg) scale(0.94);
-        }
-        50% {
-          transform: translate3d(11vw, -16vh, 0) rotate(11deg) scale(1.13);
-        }
-      }
-      .veil {
-        background:
-          linear-gradient(
-            180deg,
-            rgba(5, 7, 9, 0.03),
-            rgba(5, 7, 9, 0.18) 50%,
-            rgba(5, 7, 9, 0.72) 100%
-          ),
-          radial-gradient(
-            ellipse 110% 80% at 50% 10%,
-            transparent 28%,
-            rgba(5, 7, 9, 0.4) 78%,
-            rgba(5, 7, 9, 0.84) 100%
-          );
-      }
-
-      .g {
-        background:
-          linear-gradient(
-            168deg,
-            rgba(190, 215, 240, 0.13),
-            rgba(190, 215, 240, 0.025) 42%,
-            rgba(190, 215, 240, 0.07)
-          ),
-          rgba(7, 12, 18, 0.36);
-        backdrop-filter: blur(28px) saturate(165%);
-        -webkit-backdrop-filter: blur(28px) saturate(165%);
-      }
-      .card.g::after,
-      .chip.g::after {
-        left: -46%;
-        right: auto;
-        width: 44%;
-        opacity: 0.72;
-        animation: glass-sweep 8.5s ease-in-out infinite;
-      }
-      @keyframes glass-sweep {
-        0%,
-        28% {
-          transform: translateX(0);
-          opacity: 0;
-        }
-        50% {
-          opacity: 0.8;
-        }
-        72%,
-        100% {
-          transform: translateX(335%);
-          opacity: 0;
-        }
-      }
-      .flat {
-        background: rgba(9, 14, 21, 0.38);
-        backdrop-filter: blur(16px) saturate(140%);
-        -webkit-backdrop-filter: blur(16px) saturate(140%);
-      }
-
-      .site-header {
-        position: fixed;
-        inset: 0 0 auto;
-        z-index: 40;
-        height: var(--header-h);
-        background: linear-gradient(180deg, rgba(6, 10, 15, 0.62), rgba(6, 10, 15, 0.26));
-        border-bottom: 1px solid rgba(186, 216, 248, 0.11);
-        backdrop-filter: blur(24px) saturate(155%);
-        -webkit-backdrop-filter: blur(24px) saturate(155%);
-      }
-      .site-header::after {
-        content: "";
-        position: absolute;
-        inset: auto 0 -1px;
-        height: 1px;
-        background: linear-gradient(
-          90deg,
-          transparent 5%,
-          rgba(142, 196, 237, 0.26) 48%,
-          transparent 94%
-        );
-      }
-      .site-header nav.nav-inner {
-        position: relative;
-        inset: auto;
-        left: auto;
-        top: auto;
-        transform: none;
-        width: auto;
-        max-width: var(--w);
-        height: 100%;
-        margin: 0 auto;
+        height: 52px;
         padding: 0 24px;
-        border-radius: 0;
-        display: flex;
-        align-items: center;
-        gap: 28px;
-        background: none;
-        box-shadow: none;
-        overflow: visible;
-        font-family: var(--sans);
-        font-size: 13px;
+        background: var(--ice);
+        color: var(--black);
+        font-weight: 650;
+        font-size: 16px;
+        letter-spacing: -0.005em;
+        clip-path: polygon(
+          0 var(--n),
+          var(--n) var(--n),
+          var(--n) 0,
+          calc(100% - var(--n)) 0,
+          calc(100% - var(--n)) var(--n),
+          100% var(--n),
+          100% calc(100% - var(--n)),
+          calc(100% - var(--n)) calc(100% - var(--n)),
+          calc(100% - var(--n)) 100%,
+          var(--n) 100%,
+          var(--n) calc(100% - var(--n)),
+          0 calc(100% - var(--n))
+        );
       }
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 11px;
-        color: var(--ice);
-        text-decoration: none;
-        min-width: max-content;
+      .get:hover {
+        background: #fff;
       }
-      .site-header nav.nav-inner .brand {
-        padding: 0;
-        border-radius: 0;
+      .get:focus-visible {
+        clip-path: none;
+        outline: 2px solid var(--ice);
+        outline-offset: 4px;
       }
-      .brand img {
-        width: 34px;
-        height: 34px;
-        border-radius: 10px;
-        box-shadow: 0 8px 26px rgba(89, 151, 201, 0.2);
-      }
-      .brand-copy {
-        display: grid;
-        line-height: 1.15;
-      }
-      .brand-copy strong {
-        font-size: 15px;
-        letter-spacing: -0.01em;
-      }
-      .brand-copy small {
-        margin-top: 4px;
-        color: var(--ice-3);
-        font-family: var(--data);
-        font-size: 9.5px;
-        letter-spacing: 0.015em;
-      }
-      .nav-links {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-        margin-left: auto;
-      }
-      .site-header nav.nav-inner a.nav-link {
-        position: relative;
-        color: var(--ice-2);
-        padding: 10px 11px;
-        border-radius: 8px;
-        text-decoration: none;
-        transition:
-          color 0.2s,
-          background 0.2s;
-      }
-      .site-header nav.nav-inner a.nav-link:hover {
-        color: var(--ice);
-        background: rgba(190, 220, 250, 0.055);
-      }
-      .site-header nav.nav-inner a.nav-link:focus-visible,
-      .nav-actions a:focus-visible {
-        outline: 2px solid var(--glint);
-        outline-offset: 3px;
-      }
-      .nav-actions {
-        display: flex;
+      .cmd {
+        display: inline-flex;
         align-items: center;
         gap: 8px;
-      }
-      .site-header nav.nav-inner .nav-source {
-        color: var(--ice-2);
-        padding: 9px 10px;
-        text-decoration: none;
-      }
-      .site-header nav.nav-inner .nav-download {
-        display: inline-flex;
-        align-items: center;
-        gap: 9px;
-        color: #07111b;
-        padding: 10px 15px;
-        border-radius: 10px;
-        text-decoration: none;
-        font-weight: 650;
-        background: linear-gradient(180deg, #eaf5ff, #b9d6ed);
-        box-shadow:
-          inset 0 1px 0 #fff,
-          0 9px 28px rgba(96, 160, 211, 0.16);
-      }
-      .nav-download::after {
-        content: "↓";
-        font-family: var(--data);
-        font-size: 12px;
-      }
-
-      .hero {
-        padding-top: calc(var(--header-h) + 76px);
-      }
-      .hero h1 {
-        font-size: clamp(42px, 5.6vw, 70px);
-        max-width: 13ch;
-      }
-      .hero .lead {
-        max-width: 54ch;
-      }
-      .stage {
-        height: 540px;
-        animation: stage-float 6.4s ease-in-out infinite;
-      }
-      .deck {
-        transition: transform 0.18s ease-out;
-      }
-      @keyframes stage-float {
-        0%,
-        100% {
-          translate: 0 -5px;
-        }
-        50% {
-          translate: 0 9px;
-        }
-      }
-      .chip {
-        animation: chip-float 7.2s ease-in-out infinite;
-      }
-      .chip:nth-child(3) {
-        animation-delay: -2.4s;
-      }
-      .chip:nth-child(4) {
-        animation-delay: -4.8s;
-      }
-      @keyframes chip-float {
-        0%,
-        100% {
-          translate: 0 -4px;
-        }
-        50% {
-          translate: 0 8px;
-        }
-      }
-
-      .network-section {
-        padding: 112px 0 102px;
-        border-top: 1px solid var(--rule);
-      }
-      .network-heading {
-        text-align: center;
-        margin: 0 auto 42px;
-      }
-      .network-heading .kick {
-        justify-content: center;
-      }
-      .network-heading .kick::before,
-      .network-heading .kick::after {
-        content: "";
-        width: 44px;
-        height: 1px;
-        background: var(--rule-2);
-      }
-      .network-heading .kick::after {
-        display: block;
-      }
-      .network-heading h2 {
-        max-width: 19ch;
-        margin: 0 auto 16px;
-        font-size: clamp(32px, 4vw, 48px);
-      }
-      .network-heading .lead {
-        max-width: 66ch;
-        margin: 0 auto;
-      }
-      .network-map {
-        position: relative;
-        min-height: 590px;
-        overflow: hidden;
-        border-radius: 28px;
-        background:
-          radial-gradient(circle at 50% 50%, rgba(112, 177, 226, 0.18), transparent 31%),
-          linear-gradient(145deg, rgba(17, 27, 39, 0.52), rgba(7, 11, 17, 0.25));
-        backdrop-filter: blur(18px) saturate(140%);
-        -webkit-backdrop-filter: blur(18px) saturate(140%);
-        box-shadow:
-          inset 0 0 0 1px rgba(186, 216, 248, 0.15),
-          inset 0 1px 0 rgba(224, 241, 255, 0.19),
-          0 44px 100px -62px #000;
-      }
-      .network-map::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        opacity: 0.3;
-        background-image:
-          linear-gradient(rgba(186, 216, 248, 0.04) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(186, 216, 248, 0.04) 1px, transparent 1px);
-        background-size: 48px 48px;
-        mask-image: radial-gradient(circle at center, #000, transparent 76%);
-      }
-      .network-map::after {
-        content: "";
-        position: absolute;
-        z-index: 0;
-        width: 420px;
-        height: 300px;
-        left: calc(50% - 210px);
-        top: calc(50% - 150px);
-        border-radius: 50%;
-        background: radial-gradient(ellipse, rgba(116, 183, 231, 0.18), transparent 68%);
-        filter: blur(38px);
-        animation: network-aura 9s ease-in-out infinite;
-      }
-      @keyframes network-aura {
-        0%,
-        100% {
-          transform: translate3d(-70px, -34px, 0) scale(0.86);
-        }
-        50% {
-          transform: translate3d(72px, 42px, 0) scale(1.18);
-        }
-      }
-      .network-grid {
-        position: absolute;
-        z-index: 1;
-        inset: 46px 58px;
-        display: grid;
-        grid-template-columns: 1fr 220px 1fr;
-        grid-template-rows: 1fr 190px 1fr;
-        align-items: center;
-        justify-items: center;
-      }
-      .route {
-        position: absolute;
-        z-index: 0;
-        left: 50%;
-        top: 50%;
-        width: 37%;
-        height: 1px;
-        transform-origin: left center;
-        background: linear-gradient(90deg, rgba(139, 198, 243, 0.65), rgba(139, 198, 243, 0.08));
-      }
-      .route::after {
-        content: "";
-        position: absolute;
-        left: 0;
-        top: -2px;
-        width: 5px;
-        height: 5px;
-        border-radius: 50%;
-        background: #d7eeff;
-        box-shadow: 0 0 16px rgba(154, 211, 255, 0.9);
-        animation: route-signal 4.8s ease-in-out infinite;
-      }
-      .route-a {
-        transform: rotate(-151deg);
-      }
-      .route-b {
-        transform: rotate(-29deg);
-      }
-      .route-c {
-        transform: rotate(151deg);
-      }
-      .route-d {
-        transform: rotate(29deg);
-      }
-      .route-b::after {
-        animation-delay: -1.7s;
-      }
-      .route-c::after {
-        animation-delay: -3.4s;
-      }
-      .route-d::after {
-        animation-delay: -5.1s;
-      }
-      @keyframes route-signal {
-        0% {
-          left: 0;
-          opacity: 0;
-          transform: scale(0.65);
-        }
-        18% {
-          opacity: 1;
-        }
-        82% {
-          opacity: 1;
-        }
-        100% {
-          left: calc(100% - 5px);
-          opacity: 0;
-          transform: scale(1.2);
-        }
-      }
-      .harness-node {
-        position: relative;
-        z-index: 2;
-        width: min(248px, 94%);
-        min-height: 104px;
-        display: flex;
-        align-items: center;
-        gap: 16px;
-        padding: 18px 20px;
-        border-radius: 20px;
-        background: rgba(8, 13, 20, 0.54);
-        backdrop-filter: blur(20px) saturate(145%);
-        -webkit-backdrop-filter: blur(20px) saturate(145%);
-        box-shadow:
-          inset 0 0 0 1px rgba(186, 216, 248, 0.12),
-          inset 0 1px 0 rgba(225, 241, 255, 0.16),
-          0 24px 58px -34px #000;
-        transition:
-          transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
-          border-color 0.35s;
-      }
-      .harness-node:hover {
-        transform: translateY(-5px);
-      }
-      .harness-node {
-        animation: node-drift 7.4s ease-in-out infinite;
-      }
-      .node-codex {
-        animation-delay: -1.8s;
-      }
-      .node-cursor {
-        animation-delay: -3.7s;
-      }
-      .node-opencode {
-        animation-delay: -5.5s;
-      }
-      @keyframes node-drift {
-        0%,
-        100% {
-          translate: 0 -4px;
-        }
-        50% {
-          translate: 0 8px;
-        }
-      }
-      .harness-node img {
-        width: 52px;
         height: 52px;
-        border-radius: 13px;
-        flex: none;
-        image-rendering: auto;
+        padding: 0 6px 0 18px;
+        border: 1px solid rgba(232, 240, 248, 0.24);
+        font-size: 14px;
       }
-      .harness-node strong {
-        display: block;
-        color: var(--ice);
-        font-size: 17px;
-        line-height: 1.2;
-        margin-bottom: 6px;
+      .cmd code {
+        font-family: var(--mono);
+        font-size: 14px;
       }
-      .harness-node small {
-        display: block;
-        color: var(--ice-3);
-        font-family: var(--data);
-        font-size: 10.5px;
-        line-height: 1.45;
+      .cmd span {
+        padding: 7px 10px;
+        color: var(--steel);
       }
-      .node-claude {
-        grid-area: 1/1;
+      html:not(.js) .cmd span {
+        display: none;
       }
-      .node-codex {
-        grid-area: 1/3;
-      }
-      .node-cursor {
-        grid-area: 3/1;
-      }
-      .node-opencode {
-        grid-area: 3/3;
-      }
-      .network-core {
-        position: relative;
-        z-index: 3;
-        grid-area: 2/2;
-        width: 190px;
-        height: 190px;
-        border-radius: 38px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-        background:
-          linear-gradient(150deg, rgba(184, 218, 244, 0.19), rgba(30, 62, 86, 0.15)),
-          rgba(7, 12, 18, 0.67);
-        backdrop-filter: blur(24px) saturate(155%);
-        -webkit-backdrop-filter: blur(24px) saturate(155%);
-        box-shadow:
-          inset 0 0 0 1px rgba(189, 224, 251, 0.3),
-          inset 0 1px 0 rgba(238, 248, 255, 0.42),
-          0 0 84px rgba(79, 143, 193, 0.22);
-        animation: core-breathe 5.6s ease-in-out infinite;
-      }
-      @keyframes core-breathe {
-        50% {
-          box-shadow:
-            inset 0 0 0 1px rgba(189, 224, 251, 0.42),
-            inset 0 1px 0 rgba(238, 248, 255, 0.5),
-            0 0 132px rgba(79, 143, 193, 0.4);
-          transform: translateY(-7px) scale(1.025);
-        }
-      }
-      .network-core img {
-        width: 66px;
-        height: 66px;
-        border-radius: 18px;
-        margin-bottom: 12px;
-        box-shadow: 0 14px 34px rgba(79, 143, 193, 0.26);
-      }
-      .network-core strong {
-        font-size: 17px;
-        line-height: 1.1;
-      }
-      .network-core small {
-        margin-top: 7px;
-        max-width: 14ch;
-        color: var(--ice-3);
-        font-family: var(--data);
-        font-size: 10px;
-        line-height: 1.45;
-      }
-      .network-facts {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 12px;
-        margin-top: 14px;
-      }
-      .network-fact {
-        padding: 17px 18px;
-        border-radius: 14px;
-        background: rgba(9, 14, 21, 0.38);
-        backdrop-filter: blur(14px);
-        -webkit-backdrop-filter: blur(14px);
-        box-shadow: inset 0 0 0 1px rgba(186, 216, 248, 0.1);
-      }
-      .network-fact b {
-        display: block;
-        color: var(--ice);
-        font-size: 13px;
-        margin-bottom: 4px;
-      }
-      .network-fact span {
-        color: var(--ice-3);
-        font-size: 12px;
-      }
-
-      @media (max-width: 920px) {
-        .brand-copy small {
-          display: none;
-        }
-        .nav-links {
-          display: none;
-        }
-        .nav-actions {
-          margin-left: auto;
-        }
-        .hero {
-          padding-top: calc(var(--header-h) + 54px);
-        }
-      }
-      @media (max-width: 760px) {
-        :root {
-          --header-h: 66px;
-        }
-        .site-header nav.nav-inner {
-          padding: 0 16px;
-          gap: 14px;
-        }
-        .brand img {
-          width: 32px;
-          height: 32px;
-        }
-        .nav-source {
-          display: none;
-        }
-        .site-header nav.nav-inner .nav-download {
-          padding: 9px 12px;
-        }
-        .col {
-          padding: 0 18px;
-        }
-        .hero {
-          padding-top: 104px;
-        }
-        .hero h1 {
-          max-width: 15ch;
-        }
-        .stage {
-          height: 410px;
-        }
-        .network-section {
-          padding: 84px 0;
-        }
-        .network-map {
-          min-height: 640px;
-          border-radius: 22px;
-        }
-        .network-grid {
-          inset: 24px;
-          grid-template-columns: 1fr 1fr;
-          grid-template-rows: 180px repeat(2, 1fr);
-          gap: 14px;
-        }
-        .route {
-          display: none;
-        }
-        .network-core {
-          grid-area: 1/1/2/3;
-          width: 164px;
-          height: 164px;
-          border-radius: 32px;
-        }
-        .network-core img {
-          width: 54px;
-          height: 54px;
-        }
-        .harness-node {
-          width: 100%;
-          min-height: 132px;
-          padding: 16px;
-          align-items: flex-start;
-          flex-direction: column;
-          gap: 11px;
-        }
-        .harness-node img {
-          width: 42px;
-          height: 42px;
-        }
-        .harness-node strong {
-          font-size: 15px;
-        }
-        .node-claude {
-          grid-area: 2/1;
-        }
-        .node-codex {
-          grid-area: 2/2;
-        }
-        .node-cursor {
-          grid-area: 3/1;
-        }
-        .node-opencode {
-          grid-area: 3/2;
-        }
-        .network-facts {
-          grid-template-columns: 1fr;
-        }
-        .network-heading {
-          text-align: left;
-        }
-        .network-heading .kick {
-          justify-content: flex-start;
-        }
-        .network-heading .kick::before {
-          display: none;
-        }
-        .network-heading h2 {
-          margin-left: 0;
-        }
-        .network-heading .lead {
-          margin-left: 0;
-        }
-      }
-
-      /* Agent host packages: three-card install row with stable per-host anchors. */
-      .hosts {
-        grid-template-columns: repeat(3, 1fr);
-      }
-      .hosts .step {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        padding: 20px 19px;
-      }
-      .hosts .step p {
-        margin-bottom: 16px;
-      }
-      .hosts .btn {
-        margin-top: auto;
-        margin-bottom: 12px;
-      }
-      #agent-hosts .cell a,
-      .hosts .note a {
-        color: var(--ice-2);
-      }
-      #agent-hosts code {
-        font-family: var(--data);
+      .note code {
+        font-family: var(--mono);
         font-size: 0.92em;
         color: var(--ice);
       }
-      .plane[id],
-      #agent-hosts [id] {
-        scroll-margin-top: calc(var(--header-h) + 20px);
+      .cmd:hover {
+        border-color: rgba(232, 240, 248, 0.55);
       }
-      @media (max-width: 860px) {
-        .hosts {
-          grid-template-columns: 1fr;
+      .cmd:hover span {
+        color: var(--ice);
+      }
+      .cmd:focus-visible {
+        outline: 2px solid var(--ice);
+        outline-offset: 4px;
+      }
+      .fact {
+        margin-top: 30px;
+        min-height: 3em;
+        max-width: 46ch;
+        font-size: 15px;
+        line-height: 1.5;
+        color: #c9d4e0;
+      }
+      .fact::before {
+        content: "";
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        margin-right: 10px;
+        vertical-align: 0.08em;
+        background: var(--ice);
+        animation: blink 1.1s steps(2, start) infinite;
+      }
+      @keyframes blink {
+        to {
+          visibility: hidden;
         }
       }
 
-      @media (prefers-reduced-motion: reduce) {
-        * {
-          animation: none !important;
-          transition: none !important;
+      /* what each glass on the first screen holds; it hangs under its glass and moves with the page */
+      .drops {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        overflow: hidden;
+      }
+      .drop {
+        position: absolute;
+        left: 0;
+        top: 0;
+        display: grid;
+        justify-items: center;
+        gap: 2px;
+        opacity: 0;
+        transition: opacity 0.4s;
+        text-align: center;
+      }
+      .drop b {
+        padding: 1px 7px;
+        background: var(--black);
+        font-weight: 650;
+        font-size: clamp(14px, calc(var(--r, 60) * 0.24px), 21px);
+        line-height: 1.2;
+        letter-spacing: -0.01em;
+        font-variant-numeric: tabular-nums;
+      }
+      .drop small {
+        padding: 1px 6px;
+        background: var(--black);
+        font-size: 12.5px;
+        color: #c9d4e0;
+        white-space: nowrap;
+      }
+      .drop.spent b,
+      .drop.spent small {
+        color: var(--warm);
+      }
+
+      section.band {
+        padding: 120px 0;
+      }
+      .aside {
+        margin-top: 26px;
+        font-size: 21px;
+        font-weight: 600;
+        letter-spacing: -0.012em;
+      }
+      .lanes {
+        display: grid;
+        gap: 26px;
+        margin-top: 60px;
+      }
+      .lane {
+        display: grid;
+        grid-template-columns: 270px minmax(0, 1fr) 300px;
+        gap: 0 30px;
+        align-items: center;
+      }
+      .lane .who {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        font-weight: 700;
+        font-stretch: 112%;
+        font-size: 30px;
+        letter-spacing: -0.03em;
+      }
+      .lane .who .mark {
+        font-size: 28px;
+      }
+      .lane .bar {
+        height: 60px;
+      }
+      .stage:not(.lit) .lane .bar {
+        height: 2px;
+        border-bottom: 2px dotted var(--dim);
+      }
+      .lane .say {
+        font-size: 15px;
+        line-height: 1.4;
+        color: var(--steel);
+        font-variant-numeric: tabular-nums;
+      }
+      .lane.win .say {
+        color: var(--ice);
+      }
+
+      .sums {
+        display: grid;
+        gap: 54px;
+        margin-top: 64px;
+      }
+      .sums > div {
+        display: grid;
+        grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
+        gap: 0 60px;
+        align-items: center;
+      }
+      .sums p {
+        max-width: 46ch;
+        font-size: 17px;
+        line-height: 1.5;
+        color: var(--steel);
+      }
+      .pxword {
+        display: block;
+        font-weight: 800;
+        font-size: clamp(40px, 11vw, 64px);
+        line-height: 1;
+        white-space: nowrap;
+      }
+      .lit .pxword {
+        overflow: hidden;
+        color: transparent;
+      }
+      .stage:not(.lit) .spot {
+        display: none;
+      }
+      .host-name {
+        display: none;
+      }
+      html:not(.js) .tabs {
+        display: none;
+      }
+      html:not(.js) .host-name {
+        display: block;
+        margin-top: 18px;
+        font-size: 16px;
+        font-weight: 650;
+      }
+
+      .start {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 620px);
+        gap: 40px 70px;
+        align-items: start;
+        margin-top: 60px;
+      }
+      .start .for {
+        margin-top: 14px;
+        font-size: 15px;
+        color: var(--steel);
+      }
+      .term {
+        padding: 26px 30px;
+        border: 1px solid rgba(232, 240, 248, 0.24);
+        font-family: var(--mono);
+        font-size: 15px;
+        line-height: 2;
+        white-space: nowrap;
+        overflow-x: auto;
+      }
+      .term i {
+        font-style: normal;
+        color: var(--dim);
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      .acts .more {
+        flex-basis: 100%;
+        margin-top: 4px;
+        font-size: 15px;
+        color: var(--steel);
+        text-decoration: underline;
+        text-decoration-color: rgba(147, 160, 178, 0.4);
+        text-underline-offset: 4px;
+      }
+      .acts .more:hover {
+        color: var(--ice);
+        text-decoration-color: var(--ice);
+      }
+      #agent-hosts h3 {
+        font-size: 19px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+      }
+      #agent-hosts p {
+        max-width: 52ch;
+        margin-top: 10px;
+        font-size: 16px;
+        line-height: 1.55;
+        color: var(--steel);
+      }
+      #agent-hosts p a,
+      .credit a {
+        color: var(--ice);
+        text-decoration: underline;
+        text-decoration-color: rgba(232, 240, 248, 0.35);
+        text-underline-offset: 3px;
+      }
+      #agent-hosts code {
+        font-family: var(--mono);
+        font-size: 0.9em;
+        color: var(--ice);
+        overflow-wrap: anywhere;
+      }
+      #agent-hosts [id] {
+        scroll-margin-top: 24px;
+      }
+      .hosts {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 40px 70px;
+        align-items: start;
+        margin-top: 60px;
+      }
+      .hosts .term {
+        margin-top: 22px;
+        font-size: 14px;
+      }
+      .tabs {
+        display: flex;
+        gap: 26px;
+        margin-top: 14px;
+        border-bottom: 1px solid rgba(232, 240, 248, 0.14);
+      }
+      .tabs button {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 10px 2px 12px;
+        margin-bottom: -1px;
+        border-bottom: 2px solid transparent;
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--steel);
+      }
+      .tabs button[aria-selected="true"] {
+        color: var(--ice);
+        border-bottom-color: var(--ice);
+      }
+      .tabs button:hover {
+        color: var(--ice);
+      }
+      .tabs button:focus-visible {
+        outline: 2px solid var(--ice);
+        outline-offset: 4px;
+      }
+      .js .pane:not(.on) {
+        display: none;
+      }
+      .pane + .pane {
+        margin-top: 34px;
+      }
+      .js .pane + .pane {
+        margin-top: 0;
+      }
+      .credit {
+        margin-top: 50px;
+        font-size: 14.5px;
+        color: var(--steel);
+      }
+      .skip {
+        position: absolute;
+        left: 16px;
+        top: -64px;
+        z-index: 10;
+        padding: 10px 14px;
+        background: var(--ice);
+        color: var(--black);
+        font-weight: 600;
+      }
+      .skip:focus {
+        top: 12px;
+      }
+      .brand:focus-visible,
+      .links a:focus-visible,
+      .more:focus-visible,
+      #agent-hosts a:focus-visible,
+      footer a:focus-visible,
+      .note a:focus-visible {
+        outline: 2px solid var(--ice);
+        outline-offset: 3px;
+      }
+      .agents {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0 40px;
+        margin-top: 56px;
+        padding: 0;
+        list-style: none;
+      }
+      .agents li {
+        display: grid;
+        align-content: start;
+        gap: 6px;
+        padding: 22px 0 24px;
+        border-top: 1px solid var(--line);
+      }
+      .agents b {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 21px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+      }
+      .agents span,
+      .facts dd,
+      .steps li > span:last-child,
+      .chain span,
+      .defs dd {
+        font-size: 16px;
+        line-height: 1.55;
+        color: var(--steel);
+      }
+      .facts {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 24px 40px;
+        margin-top: 44px;
+      }
+      .facts dt {
+        font-size: 17px;
+        font-weight: 650;
+      }
+      .facts dd {
+        margin-top: 6px;
+      }
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 30px;
+        margin-top: 56px;
+        padding: 0;
+        list-style: none;
+        counter-reset: step;
+      }
+      .steps li {
+        display: grid;
+        align-content: start;
+        gap: 8px;
+        padding-top: 16px;
+        border-top: 2px solid var(--ice);
+        counter-increment: step;
+      }
+      .steps li::before {
+        content: counter(step);
+        font-size: 15px;
+        font-weight: 650;
+        color: var(--steel);
+        font-variant-numeric: tabular-nums;
+      }
+      .steps .who {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 15px;
+        color: var(--steel);
+      }
+      .steps b {
+        font-size: 26px;
+        font-weight: 700;
+        font-stretch: 112%;
+        letter-spacing: -0.03em;
+      }
+      .chain {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 30px 40px;
+        margin-top: 48px;
+        padding: 0;
+        list-style: none;
+      }
+      .chain li {
+        display: grid;
+        align-content: start;
+        gap: 6px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+      }
+      .chain b {
+        font-size: 21px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 34px;
+      }
+      .ghost {
+        display: inline-flex;
+        align-items: center;
+        height: 52px;
+        padding: 0 22px;
+        border: 1px solid rgba(232, 240, 248, 0.32);
+        font-weight: 600;
+        font-size: 16px;
+      }
+      .ghost:hover {
+        border-color: var(--ice);
+      }
+      .ghost:focus-visible {
+        outline: 2px solid var(--ice);
+        outline-offset: 4px;
+      }
+      .defs {
+        margin-top: 48px;
+      }
+      .defs > div {
+        display: grid;
+        grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+        gap: 8px 40px;
+        padding: 22px 0;
+        border-top: 1px solid var(--line);
+      }
+      .defs > div:last-child {
+        border-bottom: 1px solid var(--line);
+      }
+      .defs dt {
+        font-size: 18px;
+        font-weight: 650;
+      }
+      .defs dd {
+        max-width: 62ch;
+      }
+      .start .sub {
+        margin-top: 0;
+      }
+      .note {
+        max-width: 56ch;
+        margin-top: 24px;
+        font-size: 15px;
+        line-height: 1.55;
+        color: var(--steel);
+      }
+      @media (max-width: 1100px) {
+        .agents,
+        .facts,
+        .chain {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
-        .plane > .z {
-          transform: none !important;
-          opacity: 1 !important;
+        .steps {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      footer {
+        padding: 40px 0 60px;
+        font-size: 14.5px;
+        line-height: 1.6;
+        color: var(--steel);
+      }
+      footer .wrap {
+        display: grid;
+        gap: 14px;
+      }
+      footer nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 26px;
+        color: var(--ice);
+      }
+      footer small {
+        max-width: 90ch;
+        font-size: 12.5px;
+        color: var(--dim);
+      }
+
+      @media (max-width: 860px) {
+        .links a:not(.keep) {
+          display: none;
+        }
+        .links {
+          gap: 22px;
+        }
+        .hero .wrap {
+          grid-template-columns: minmax(0, 1fr);
+          min-height: 0;
+          padding-top: 10px;
+        }
+        .hero .copy {
+          display: contents;
+        }
+        h1 {
+          order: 1;
+        }
+        .spot {
+          order: 2;
+          width: 100%;
+          aspect-ratio: 1.12;
+          max-height: 70vh;
+          margin: 6px 0 2px;
+        }
+        .motto {
+          order: 3;
+          margin-top: 8px;
+        }
+        .lede {
+          order: 4;
+        }
+        .acts {
+          order: 5;
+        }
+        .fact {
+          order: 6;
+        }
+        .drops {
+          display: none;
+        }
+        .get,
+        .cmd {
+          height: 48px;
+        }
+        section.band {
+          padding: 76px 0;
+        }
+        .lane {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 8px;
+        }
+        .lane .who {
+          font-size: 24px;
+        }
+        .lane .bar {
+          height: 44px;
+        }
+        .sums > div {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 16px;
+        }
+        .start {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .term {
+          font-size: 12.5px;
+          padding: 18px 16px;
+        }
+        .hosts {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .agents,
+        .facts,
+        .steps,
+        .chain,
+        .defs > div {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .row .get,
+        .row .ghost {
+          height: 48px;
+        }
+        .hosts .term {
+          font-size: 12px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .fact::before {
+          animation: none;
         }
       }
     </style>
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>
-    <div class="ambient" aria-hidden="true"><span></span></div>
-    <div class="veil"></div>
-
-    <header class="site-header">
-      <nav class="nav-inner" aria-label="Primary navigation">
-        <a class="brand" href="#main" aria-label="Claudexor home">
-          <img src="./assets/claudexor-app.png" alt="" />
-          <span class="brand-copy"
-            ><strong>Claudexor</strong><small>Coding agents, one control plane</small></span
-          >
-        </a>
-        <div class="nav-links">
-          <a class="nav-link" href="#subscriptions">Subscriptions</a>
-          <a class="nav-link" href="#network">Connected agents</a>
-          <a class="nav-link" href="#workflow">How it works</a>
-          <a class="nav-link" href="#trust">Limits &amp; privacy</a>
-        </div>
-        <div class="nav-actions">
-          <a class="nav-source" href="https://github.com/razzant/claudexor">GitHub</a>
-          <a class="nav-download" href="#install">Get Claudexor</a>
-        </div>
-      </nav>
+    <header class="nav">
+      <div class="wrap">
+        <a class="brand" href="#main">Claudexor</a>
+        <nav class="links" aria-label="Primary navigation">
+          <a href="#subscriptions">Subscriptions</a><a href="#network">Agents</a
+          ><a href="#workflow">How it works</a><a href="#trust">Limits &amp; privacy</a
+          ><a class="keep" href="#install">Install</a
+          ><a class="keep" href="https://github.com/razzant/claudexor">GitHub</a>
+        </nav>
+      </div>
     </header>
 
-    <div class="shell">
-      <main class="col" id="main">
-        <div class="plane">
-          <div class="z">
-            <section class="hero" style="border-top: 0">
-              <div>
-                <p class="kick">local-first control plane</p>
-                <h1>Keep coding when a subscription <em>hits its limit.</em></h1>
-                <p class="lead">
-                  Connect the accounts and coding agents you already use. Claudexor reads real quota
-                  for supported subscriptions, switches on confirmed limits when you enable
-                  rotation, and keeps every run in one auditable thread.
-                </p>
-                <div class="acts">
-                  <a class="btn p" href="https://github.com/razzant/claudexor/releases/latest"
-                    >Download for macOS <small>signed</small></a
-                  >
-                  <a class="btn s" href="#install">Install the CLI <small>npm</small></a>
-                  <a class="btn s" href="#agent-hosts">Install in Hermes, Pi or OpenClaw</a>
-                </div>
-                <p class="meta">MIT · no telemetry · macOS 26+ app · macOS/Linux CLI</p>
-                <p class="aside">
-                  <span class="m" id="aside"
-                    >Your five-hour window resets at <i>14:02</i>. Your deadline does not.</span
-                  >
-                </p>
+    <main id="main">
+      <section class="hero stage" id="top">
+        <div class="wrap">
+          <div class="copy">
+            <h1>
+              <span>Keep coding</span> <span>when a</span> <span>subscription</span>
+              <span>hits its limit.</span>
+            </h1>
+            <p class="motto">A limit is an eclipse, not a sunset.</p>
+            <p class="lede">
+              Connect the accounts and coding agents you already use. Claudexor reads real quota
+              where the vendor reports it, moves an unpinned run off an account that hit its limit,
+              and keeps the work in one auditable thread.
+            </p>
+            <div class="acts">
+              <div class="install-choice">
+                <a
+                  class="get"
+                  aria-describedby="mac-requirements"
+                  data-mac-installer
+                  href="https://github.com/razzant/claudexor/releases/latest"
+                  >Choose the Claudexor .dmg</a
+                >
+                <small id="mac-requirements">Apple Silicon · macOS 26+</small>
               </div>
+              <div class="install-choice">
+                <button
+                  class="cmd"
+                  type="button"
+                  aria-describedby="cli-requirements"
+                  data-copy="npm install -g claudexor"
+                >
+                  <code>npm install -g claudexor</code><span aria-live="polite">Copy</span>
+                </button>
+                <small id="cli-requirements">CLI · macOS / Linux · Node.js 24.15+</small>
+              </div>
+              <a class="more" href="#agent-hosts">Install in Hermes, Pi or OpenClaw</a>
+            </div>
+            <p class="fact" id="fact" aria-hidden="true"></p>
+          </div>
+          <div class="spot" id="spot" aria-hidden="true"></div>
+        </div>
+        <div class="drops" id="drops" aria-hidden="true"></div>
+      </section>
 
-              <div class="stage" id="stage">
-                <div class="deck" id="deck">
-                  <div
-                    class="card g router"
-                    style="transform: translate(-50%, -50%) translateZ(70px)"
-                  >
-                    <div class="hdr"><b>Subscription routing</b><span>on your Mac</span></div>
-                    <div class="row dead">
-                      <img class="mk" src="./assets/vendor/claude-code.png" alt="" />
-                      <div class="nm">
-                        <b>Claude Code · personal</b><small>limit reached · resets 14:02</small>
-                        <div class="track"><i data-w="100" style="--wv: 100%"></i></div>
-                      </div>
-                      <span class="pct">100%</span>
-                    </div>
-                    <div class="row on">
-                      <img class="mk" src="./assets/vendor/claude-code.png" alt="" />
-                      <div class="nm">
-                        <b>Claude Code · work</b><small>next ready account</small>
-                        <div class="track"><i data-w="31" style="--wv: 31%"></i></div>
-                      </div>
-                      <span class="pct">31%</span>
-                    </div>
-                    <div class="row">
-                      <img class="mk" src="./assets/vendor/codex.png" alt="" />
-                      <div class="nm">
-                        <b>Codex · personal</b><small>ready</small>
-                        <div class="track"><i data-w="18" style="--wv: 18%"></i></div>
-                      </div>
-                      <span class="pct">18%</span>
-                    </div>
-                  </div>
-                  <div
-                    class="chip g"
-                    style="left: -2%; top: 12%; transform: translateZ(190px); width: 210px"
-                  >
-                    <b>Thread context</b><small>carried into the next run</small>
-                  </div>
-                  <div
-                    class="chip g"
-                    style="right: -2%; bottom: 13%; transform: translateZ(150px); width: 206px"
-                  >
-                    <b>cross-family review</b><small>claude ✓ · cursor ✓ · codex ✗</small>
-                  </div>
-                  <div
-                    class="chip g"
-                    style="
-                      right: 6%;
-                      top: 2%;
-                      transform: translateZ(-90px);
-                      width: 170px;
-                      opacity: 0.72;
-                    "
-                  >
-                    <b>7-day window</b><small>resets in 2d 6h</small>
-                  </div>
-                </div>
-              </div>
-            </section>
+      <section class="band" id="network">
+        <div class="wrap">
+          <h2>One project thread across every agent.</h2>
+          <p class="sub">
+            Claudexor connects the coding agents you already use, routes each run to one that is
+            ready, and brings the result back into one history you can inspect.
+          </p>
+          <ul class="agents" aria-label="Coding agents Claudexor runs">
+            <li>
+              <b><i data-logo="claude"></i>Claude Code</b
+              ><span>Its own CLI, with named subscription accounts.</span>
+            </li>
+            <li>
+              <b><i data-logo="codex"></i>Codex</b
+              ><span>Its own CLI, with named subscription accounts.</span>
+            </li>
+            <li>
+              <b><i data-logo="antigravity"></i>Antigravity</b
+              ><span>Its CLI, for a Gemini subscription.</span>
+            </li>
+            <li>
+              <b><i data-logo="cursor"></i>Cursor</b
+              ><span>The Cursor CLI, an editor-native coding agent.</span>
+            </li>
+            <li><b>OpenCode</b><span>An open harness for many model providers.</span></li>
+            <li><b>Grok Build</b><span>A grok.com subscription, no API key.</span></li>
+          </ul>
+          <dl class="facts">
+            <div>
+              <dt>One task history</dt>
+              <dd>Plans, runs, reviews and results stay connected.</dd>
+            </div>
+            <div>
+              <dt>Ready-agent routing</dt>
+              <dd>Choose the agent yourself, or route from live readiness and quota.</dd>
+            </div>
+            <div>
+              <dt>Cross-family verification</dt>
+              <dd>
+                Ask for a review and Claudexor picks a panel from other model families to read the
+                work before it is delivered.
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="band" id="subscriptions">
+        <div class="wrap">
+          <h2>Use the headroom you already pay for.</h2>
+          <p class="sub">
+            Add separate accounts for the same agent without mixing credentials. Where the vendor
+            reports quota, for Claude Code, Codex and Antigravity, Claudexor shows each account's
+            live windows and moves an unpinned run off an account that hit a confirmed limit. An
+            ordinary network error never moves it, and a pinned run stays where you put it.
+          </p>
+          <dl class="facts">
+            <div>
+              <dt>Separate profiles</dt>
+              <dd>
+                Each account is a named profile with its own scoped state. Where its credentials are
+                kept follows the vendor and the platform.
+              </dd>
+            </div>
+            <div>
+              <dt>Real quota facts</dt>
+              <dd>
+                The windows a vendor reports, with their resets, stay with the account that reported
+                them: five-hour and seven-day for Claude Code and Codex, per model for Antigravity.
+              </dd>
+            </div>
+            <div>
+              <dt>One holder at a time</dt>
+              <dd>
+                When an Agent or Ask run that already did work moves to the next account, its
+                session moves with it where the agent supports that. Otherwise the work continues
+                from a recorded packet.
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="band stage" id="cost">
+        <div class="wrap">
+          <h2>What it cannot know, it does not invent.</h2>
+          <div class="sums" id="sums">
+            <div>
+              <span class="pxword">$0.41</span>
+              <p>
+                Claude Code on an API key. Its CLI reported what the run cost, so the record keeps
+                that amount and says where it came from.
+              </p>
+            </div>
+            <div>
+              <span class="pxword">Included</span>
+              <p>Codex on a subscription. The window it used is on the record instead.</p>
+            </div>
+            <div>
+              <span class="pxword" data-level=".5">Unknown</span>
+              <p>
+                A run whose price nobody reported. It is printed as unknown, never as zero. Budgets
+                die of confident zeroes.
+              </p>
+            </div>
           </div>
         </div>
+      </section>
 
-        <div class="plane" id="network">
-          <div class="z">
-            <section class="network-section">
-              <div class="network-heading">
-                <p class="kick">your coding stack, connected</p>
-                <h2>One project thread across every agent.</h2>
-                <p class="lead">
-                  Claudexor connects the tools you already use, routes each run to a ready harness,
-                  and brings the result back into one inspectable history.
+      <section class="band" id="workflow">
+        <div class="wrap">
+          <h2>Use each agent for the part it's actually good at.</h2>
+          <p class="sub">
+            Plan in Claude Code, implement in Codex, let Cursor and Claude attack the patch, apply
+            only what survives. The thread stays one auditable chain even when the agent underneath
+            it changes.
+          </p>
+          <ol class="steps">
+            <li>
+              <span class="who"><i data-logo="claude"></i>Claude Code</span><b>Plan</b
+              ><span>Shape the task and freeze it as a content-hashed contract.</span>
+            </li>
+            <li>
+              <span class="who"><i data-logo="codex"></i>Codex</span><b>Implement</b
+              ><span>Work in an isolated lane and produce a patch you can inspect.</span>
+            </li>
+            <li>
+              <span class="who"><i data-logo="cursor"></i>A panel from another family</span
+              ><b>Review</b
+              ><span>A model won't forgive itself if the reviewer is from another family.</span>
+            </li>
+            <li>
+              <span class="who">A typed gate</span><b>Deliver</b
+              ><span>Apply, commit, branch, or stop with the reason attached.</span>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="band stage" id="race">
+        <div class="wrap">
+          <h2>Three agents race. One patch lands.</h2>
+          <p class="sub">
+            Ask for a race and each agent works in its own isolated copy of your tree. A model from
+            another family reads every patch and the gates run. In this race the winner's patch is
+            adopted into the thread's working tree, with the record that says why. A patch that
+            touches a protected path waits for you.
+          </p>
+          <div class="lanes" id="lanes">
+            <div class="lane">
+              <div class="who"><i data-logo="codex"></i>Codex</div>
+              <div class="bar"></div>
+              <div class="say">212 of 214 tests, 1 finding</div>
+            </div>
+            <div class="lane win">
+              <div class="who"><i data-logo="claude"></i>Claude Code</div>
+              <div class="bar"></div>
+              <div class="say">214 of 214 tests, adopted into the thread</div>
+            </div>
+            <div class="lane">
+              <div class="who"><i data-logo="antigravity"></i>Antigravity</div>
+              <div class="bar"></div>
+              <div class="say">214 of 214 tests, 2 findings</div>
+            </div>
+          </div>
+          <p class="aside">First is not the same as right.</p>
+        </div>
+      </section>
+
+      <div class="plane" id="ouroboros">
+        <section class="band">
+          <div class="wrap">
+            <h2>Claudexor powers delegated coding in Ouroboros.</h2>
+            <p class="sub">
+              Ouroboros owns its tasks, memory, review and final integration. It runs an
+              exact-pinned Claudexor build to do the work through connected coding agents and to
+              receive durable evidence of what ran.
+            </p>
+            <ol class="chain" aria-label="Who does what">
+              <li>
+                <b>Ouroboros</b
+                ><span>Decides what to do and what to keep: tasks, memory, review.</span>
+              </li>
+              <li>
+                <b>Claudexor</b
+                ><span
+                  >Routes and runs the selected agent, then returns the evidence needed for review
+                  and integration.</span
+                >
+              </li>
+              <li>
+                <b>Coding agents</b
+                ><span>Claude Code, Codex, Cursor, OpenCode, Antigravity, Grok Build.</span>
+              </li>
+            </ol>
+            <div class="row">
+              <a class="get" href="https://ouroboros-agent.ai/">Explore Ouroboros</a
+              ><a class="ghost" href="https://github.com/razzant/ouroboros">View source</a>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section class="band" id="agent-hosts">
+        <div class="wrap">
+          <h2>Use Claudexor in Hermes, Pi or OpenClaw.</h2>
+          <p class="sub">
+            Ask a second model to explain a passage or draft an edit for review. Your agent calls
+            the Claudexor CLI on its machine and brings the answer, or the proposed change, back to
+            the same chat.
+          </p>
+          <div class="hosts">
+            <div id="host-setup">
+              <h3>First, the CLI</h3>
+              <p>
+                On the machine that runs your agent: macOS or Linux with Node.js 24.15 or newer, and
+                the agent's own CLI installed. The host process must find <code>node</code> and
+                <code>claudexor</code> on its PATH. Use the account you already connected, and sign
+                in only if this machine has none; switching accounts during a Codex sign-in can
+                revoke other sessions. <code>claudexor doctor</code> may check other configured
+                providers besides the one you intend to use, consuming quota or incurring charges.
+                <a href="https://github.com/razzant/claudexor#set-up-the-cli-and-account"
+                  >CLI and account setup</a
+                >
+              </p>
+              <div class="term">
+                <i>$</i> npm install -g claudexor<br /><i># Open the Codex sign-in link</i><br /><i
+                  ># in a private window.</i
+                ><br /><i>$</i> claudexor auth login codex<br /><i>$</i> claudexor doctor
+              </div>
+            </div>
+            <div>
+              <h3>Then, your agent</h3>
+              <div class="tabs" role="tablist" aria-label="Agent host">
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-hermes"
+                  aria-controls="install-in-hermes"
+                  aria-selected="true"
+                >
+                  Hermes
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-pi"
+                  aria-controls="install-in-pi"
+                  aria-selected="false"
+                  tabindex="-1"
+                >
+                  Pi
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-openclaw"
+                  aria-controls="install-in-openclaw"
+                  aria-selected="false"
+                  tabindex="-1"
+                >
+                  OpenClaw
+                </button>
+              </div>
+              <div
+                class="pane on"
+                role="tabpanel"
+                id="install-in-hermes"
+                aria-labelledby="tab-hermes"
+              >
+                <h4 class="host-name">Hermes</h4>
+                <div class="term">
+                  <i># Hermes 0.23.1+: reviewed full SHA</i><br /><i>$</i> printf 'Reviewed source
+                  commit SHA: ' &amp;&amp;<br />IFS= read -r sha &amp;&amp;<br />hermes plugins
+                  install \<br />razzant/claudexor/plugins/hermes \<br />--ref "${sha:?Full SHA
+                  required}" --enable
+                </div>
+                <p>
+                  Needs Hermes 0.23.1 or later. Use the SHA of a source commit whose manifest
+                  declares the Claudexor server <code>trust: untrusted</code>; older releases may
+                  not. Check that the plugin is enabled with <code>hermes plugins list</code> in the
+                  same profile.
+                  <a href="https://github.com/razzant/claudexor#install-in-hermes">All steps</a>
+                  shows how to verify the full source commit and get your first answer.
+                </p>
+              </div>
+              <div class="pane" role="tabpanel" id="install-in-pi" aria-labelledby="tab-pi">
+                <h4 class="host-name">Pi</h4>
+                <div class="term">
+                  <i># Does the npm package carry the extension?</i><br /><i>$</i> npm view
+                  claudexor@latest \<br />pi.extensions --json
+                </div>
+                <p>
+                  If it lists <code>./pi/index.js</code>, install with
+                  <code>pi install npm:claudexor</code>. If not,
+                  <a href="https://github.com/razzant/claudexor#get-a-package-checkout"
+                    >get a checkout</a
+                  >
+                  and run <code>pi install "$HOME/claudexor-hosts/packages/claudexor"</code>.
+                </p>
+                <p>
+                  Use a Pi version with built-in MCP and <code>registerMcpServer</code>, such as
+                  1.5.2. After <code>/reload</code>, check that Claudexor is connected in
+                  <code>/mcp</code>.
+                  <a href="https://github.com/razzant/claudexor#install-in-pi">All steps</a>
                 </p>
               </div>
               <div
-                class="network-map"
-                role="img"
-                aria-label="Claude Code, Codex, Cursor, and OpenCode connected through Claudexor"
+                class="pane"
+                role="tabpanel"
+                id="install-in-openclaw"
+                aria-labelledby="tab-openclaw"
               >
-                <div class="network-grid">
-                  <span class="route route-a" aria-hidden="true"></span>
-                  <span class="route route-b" aria-hidden="true"></span>
-                  <span class="route route-c" aria-hidden="true"></span>
-                  <span class="route route-d" aria-hidden="true"></span>
-                  <div class="harness-node node-claude">
-                    <img src="./assets/vendor/claude-code.png" alt="" /><span
-                      ><strong>Claude Code</strong
-                      ><small>Native CLI + subscription profiles</small></span
-                    >
-                  </div>
-                  <div class="harness-node node-codex">
-                    <img src="./assets/vendor/codex.png" alt="" /><span
-                      ><strong>Codex</strong><small>Native CLI + subscription profiles</small></span
-                    >
-                  </div>
-                  <div class="harness-node node-cursor">
-                    <img src="./assets/vendor/cursor.png" alt="" /><span
-                      ><strong>Cursor</strong><small>Editor-native coding harness</small></span
-                    >
-                  </div>
-                  <div class="harness-node node-opencode">
-                    <img src="./assets/vendor/opencode.png" alt="" /><span
-                      ><strong>OpenCode</strong><small>Open multi-provider harness</small></span
-                    >
-                  </div>
-                  <div class="network-core">
-                    <img src="./assets/claudexor-app.png" alt="" /><strong>Claudexor</strong
-                    ><small>routes work · carries context · records proof</small>
-                  </div>
+                <h4 class="host-name">OpenClaw</h4>
+                <div class="term">
+                  <i># On the Gateway machine, from a checkout</i><br /><i>$</i> openclaw plugins
+                  install \<br />"$HOME/claudexor-hosts/plugins/claude"<br /><i>$</i> openclaw
+                  plugins inspect claudexor
                 </div>
-              </div>
-              <div class="network-facts">
-                <div class="network-fact">
-                  <b>One task history</b
-                  ><span>Plans, runs, reviews, and results stay connected.</span>
-                </div>
-                <div class="network-fact">
-                  <b>Ready-agent routing</b
-                  ><span>Choose manually or route from live readiness and quota.</span>
-                </div>
-                <div class="network-fact">
-                  <b>Cross-family verification</b
-                  ><span>Review work with a different model family before delivery.</span>
-                </div>
-              </div>
-            </section>
-          </div>
-        </div>
-
-        <div class="plane" id="subscriptions">
-          <div class="z">
-            <section>
-              <p class="kick">quota-aware rotation</p>
-              <h2>Use the headroom you already pay for.</h2>
-              <p class="lead">
-                Add separate Claude Code and Codex profiles without mixing credentials. Claudexor
-                shows live subscription windows and, when you enable rotation, moves work only after
-                a confirmed limit — never an ordinary network error.
-              </p>
-              <div class="split">
-                <figure class="flat" style="overflow: hidden">
-                  <div class="bar"><i></i><i></i><i></i><span>accounts &amp; quota</span></div>
-                  <img
-                    src="./assets/screenshots/accounts-quota.png"
-                    alt="Accounts and quota view"
-                  />
-                  <figcaption>
-                    Live 5-hour and 7-day windows per account. Rotation is opt-in.
-                  </figcaption>
-                </figure>
-                <div class="cells">
-                  <div class="cell flat">
-                    <h3>Isolated profiles</h3>
-                    <p>
-                      Separate Claude config dirs and Codex homes. No shared credential jar, no
-                      cross-talk.
-                    </p>
-                  </div>
-                  <div class="cell flat">
-                    <h3>Real quota facts</h3>
-                    <p>
-                      Five-hour, seven-day, reset and per-model windows stay attributed to the
-                      profile that reported them.
-                    </p>
-                  </div>
-                  <div class="cell flat">
-                    <h3>Typed handoff</h3>
-                    <p>
-                      The next profile receives bounded task context — not a pretend migration of
-                      the vendor session.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </section>
-          </div>
-        </div>
-
-        <div class="plane" id="workflow">
-          <div class="z">
-            <section>
-              <p class="kick">cross-harness orchestration</p>
-              <h2>Use each agent for the part it's actually good at.</h2>
-              <p class="lead">
-                Plan in Claude Code, implement in Codex, let Cursor and Claude attack the patch,
-                apply only what survives. The thread stays one auditable chain even when the harness
-                underneath it changes.
-              </p>
-              <div class="pipe">
-                <div class="step flat">
-                  <div class="ic"><img src="./assets/vendor/claude-code.png" alt="" /></div>
-                  <span class="role">plan</span><b>Claude Code</b>
-                  <p>Shape the task, freeze it as a content-hashed contract.</p>
-                </div>
-                <div class="step flat">
-                  <div class="ic"><img src="./assets/vendor/codex.png" alt="" /></div>
-                  <span class="role">implement</span><b>Codex</b>
-                  <p>Work in an isolated lane and produce an inspectable patch.</p>
-                </div>
-                <div class="step flat">
-                  <div class="ic">
-                    <img src="./assets/vendor/cursor.png" alt="" /><img
-                      src="./assets/vendor/opencode.png"
-                      alt=""
-                    />
-                  </div>
-                  <span class="role">review</span><b>Cross-family panel</b>
-                  <p>A model won't forgive itself if the reviewer is from another family.</p>
-                </div>
-                <div class="step flat">
-                  <div class="ic" style="font-size: 18px; color: var(--glint)">↳</div>
-                  <span class="role">deliver</span><b>Typed gate</b>
-                  <p>Apply, commit, branch — or stop, with the reason attached.</p>
-                </div>
-              </div>
-              <div class="split" style="margin-top: 20px">
-                <div class="cell flat" style="padding: 26px">
-                  <h3>Race independent approaches</h3>
-                  <p>
-                    best-of-N runs isolated candidates, reviews across model families, and
-                    arbitrates a winner with evidence — not with vibes.
-                  </p>
-                </div>
-                <figure class="flat" style="overflow: hidden">
-                  <div class="bar"><i></i><i></i><i></i><span>result receipt</span></div>
-                  <img src="./assets/screenshots/review-receipt.jpg" alt="Review receipt" />
-                  <figcaption>
-                    Finished is not the same as verified. The receipt says which one you got.
-                  </figcaption>
-                </figure>
-              </div>
-            </section>
-          </div>
-        </div>
-
-        <div class="plane" id="ouroboros">
-          <div class="z">
-            <section>
-              <p class="kick">running in production</p>
-              <div class="split" style="align-items: center; margin-top: 0">
-                <div>
-                  <h2>Claudexor powers delegated coding in Ouroboros.</h2>
-                  <p class="lead">
-                    Ouroboros owns its tasks, memory, review, and final integration. It runs an
-                    exact-pinned Claudexor build to execute work through connected coding harnesses
-                    and receive durable execution evidence.
-                  </p>
-                  <div class="acts">
-                    <a class="btn p" href="https://ouroboros-agent.ai/">Explore Ouroboros</a>
-                    <a class="btn s" href="https://github.com/razzant/ouroboros">View source</a>
-                  </div>
-                </div>
-                <div class="cell flat" style="padding: 26px">
-                  <h3>One clear ownership boundary</h3>
-                  <p>
-                    Ouroboros decides what to do and what to keep. Claudexor routes and runs the
-                    selected harness, then returns the evidence needed for review and integration.
-                  </p>
-                </div>
-              </div>
-              <ol class="ouroboros-flow" aria-label="Ouroboros delegated coding flow">
-                <li class="flat">
-                  <strong>Ouroboros</strong>
-                  <span>tasks · memory · review</span>
-                </li>
-                <li class="flat">
-                  <strong>Claudexor</strong>
-                  <span>routing · execution · evidence</span>
-                </li>
-                <li class="flat">
-                  <strong>Connected harnesses</strong>
-                  <span>Claude Code · Codex · Cursor · OpenCode</span>
-                </li>
-              </ol>
-            </section>
-          </div>
-        </div>
-
-        <div class="plane" id="agent-hosts">
-          <div class="z">
-            <section>
-              <p class="kick">agent host packages</p>
-              <h2>Use Claudexor in Hermes, Pi or OpenClaw.</h2>
-              <p class="lead">
-                Ask a second model to explain a passage or draft an edit for review. Your agent
-                brings the answer or proposed changes back to the same chat.
-              </p>
-              <div class="split" id="host-setup">
-                <div class="cell flat">
-                  <h3>Set up the CLI and account first</h3>
-                  <p>
-                    On the machine running your agent, install Claudexor with Node.js 24.15+ on
-                    macOS or Linux. Use the account you already connected. For a first Codex login,
-                    open the CLI's sign-in link in a private window or a browser profile signed in
-                    to no other OpenAI account. Switching accounts can revoke other sessions.
-                    <a href="https://github.com/razzant/claudexor#set-up-the-cli-and-account"
-                      >CLI and account setup</a
-                    >
-                  </p>
-                </div>
-                <div class="flat term" style="overflow: hidden">
-                  <div class="bar"><i></i><i></i><i></i><span>terminal</span></div>
-                  <pre><span class="p">$</span> npm install -g claudexor
-<span class="c"># First Codex connection only</span>
-<span class="p">$</span> claudexor auth login codex
-<span class="p">$</span> claudexor doctor</pre>
-                </div>
-              </div>
-              <div class="pipe hosts">
-                <div class="step flat" id="install-in-hermes">
-                  <h3>Hermes</h3>
-                  <p>
-                    Enable the Git plugin at the commit you inspected. Start a new Hermes session in
-                    that profile to use its skill and tools.
-                  </p>
-                  <a class="btn s" href="https://github.com/razzant/claudexor#install-in-hermes"
-                    >Install in Hermes</a
-                  >
-                  <div class="note">
-                    <a href="#host-setup">CLI setup</a> ·
-                    <a href="#host-first-result">First answer</a>
-                  </div>
-                  <small class="note"
-                    >Integration by
-                    <a href="https://github.com/razzant/ouroboros">Ouroboros</a></small
-                  >
-                </div>
-                <div class="step flat" id="install-in-pi">
-                  <h3>Pi</h3>
-                  <p>
-                    Install the Pi extension with <code>pi install npm:claudexor</code> once your
-                    release includes it, or use a Git checkout. After <code>/reload</code>, look for
-                    Claudexor in <code>/mcp</code>.
-                  </p>
-                  <a class="btn s" href="https://github.com/razzant/claudexor#install-in-pi"
-                    >Install in Pi</a
-                  >
-                  <div class="note">
-                    <a href="#host-setup">CLI setup</a> ·
-                    <a href="https://github.com/razzant/claudexor#get-a-package-checkout"
-                      >Git checkout</a
-                    >
-                    ·
-                    <a href="#host-first-result">First answer</a>
-                  </div>
-                  <small class="note"
-                    >Pi integration by
-                    <a href="https://github.com/razzant/ouroboros">Ouroboros</a></small
-                  >
-                </div>
-                <div class="step flat" id="install-in-openclaw">
-                  <h3>OpenClaw</h3>
-                  <p>
-                    Install the bundle on your Gateway and allow its tools for your embedded agent.
-                    OpenClaw 2026.11.5 needs Node 24.16.0–24.x or 26.1.0+.
-                  </p>
-                  <a class="btn s" href="https://github.com/razzant/claudexor#install-in-openclaw"
-                    >Install in OpenClaw</a
-                  >
-                  <div class="note">
-                    <a href="#host-setup">CLI setup</a> ·
-                    <a href="#host-first-result">First answer</a>
-                  </div>
-                  <small class="note"
-                    >Integration by
-                    <a href="https://github.com/razzant/ouroboros">Ouroboros</a></small
-                  >
-                </div>
-              </div>
-              <div class="cell flat" id="host-first-result" style="margin-top: 20px">
-                <h3>Get your first answer</h3>
                 <p>
-                  Compare the host's status with <code>claudexor doctor</code>. If you use a
-                  <a
-                    href="https://github.com/razzant/claudexor/blob/main/docs/INTEGRATIONS.md#custom-claudexor-configuration-directory"
-                    >custom Claudexor store</a
-                  >, verify it first. With no project selected and a CLI that supports projectless
-                  Ask, try “Use Claudexor's read-only Ask without a project. If I chose a named
-                  account, pass its profile_id from Claudexor Accounts as credentialProfileId and
-                  its harness_id as harness. Leave Auto unpinned. The shop opens at 09:00 and closes
-                  at 17:00. When does it close? Show me Claudexor's answer and the run ID.”
-                  <a href="https://github.com/razzant/claudexor#first-delegation-from-any-host"
-                    >Read the result or use the repository example for older CLIs</a
+                  Put <code>node</code> and <code>claudexor</code> on the Gateway service's PATH and
+                  allow the tools for your embedded agent. OpenClaw 2026.11.5 needs Node 24.16.0 to
+                  24.x, or 26.1.0 and newer.
+                  <a href="https://github.com/razzant/claudexor#get-a-package-checkout"
+                    >Get a checkout</a
                   >
+                  · <a href="https://github.com/razzant/claudexor#install-in-openclaw">All steps</a>
                 </p>
               </div>
-            </section>
+            </div>
           </div>
+          <p class="credit">
+            Integration by <a href="https://github.com/razzant/ouroboros">Ouroboros</a>.
+          </p>
         </div>
+      </section>
 
-        <div class="plane" id="trust">
-          <div class="z">
-            <section>
-              <p class="kick">exact boundaries</p>
-              <h2>No magic session teleportation.</h2>
-              <div class="flat" style="margin-top: 30px; padding: 8px">
-                <dl class="defs">
-                  <div>
-                    <dt>where rotation applies</dt>
-                    <dd>
-                      Multi-subscription quota telemetry and automatic profile rotation are
-                      available for Claude Code and Codex.
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>where each harness can participate</dt>
-                    <dd>
-                      Claude Code, Codex, Cursor and OpenCode can join the same thread wherever
-                      Doctor has enabled the requested role; unavailable roles stay disabled with
-                      the reason attached.
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>what "shared context" means</dt>
-                    <dd>
-                      Bounded continuation packets travel between lanes. Native vendor-session
-                      resume never crosses a credential profile.
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>what this page collects</dt>
-                    <dd>
-                      Nothing. No analytics, no trackers, no remote fonts, no external requests of
-                      any kind.
-                    </dd>
-                  </div>
-                </dl>
-              </div>
-            </section>
-          </div>
+      <section class="band" id="trust">
+        <div class="wrap">
+          <h2>No magic session teleportation.</h2>
+          <dl class="defs">
+            <div>
+              <dt>Where rotation applies</dt>
+              <dd>
+                Live quota and moving a run off a spent account cover Claude Code, Codex and
+                Antigravity, the agents whose vendors report quota.
+              </dd>
+            </div>
+            <div>
+              <dt>Where each agent can take part</dt>
+              <dd>
+                Every connected agent can join the same thread wherever Doctor has enabled the
+                requested role. A role that is not available stays off, with the reason attached.
+              </dd>
+            </div>
+            <div>
+              <dt>What “shared context” means</dt>
+              <dd>
+                Between different agents, bounded continuation packets carry the thread. Between two
+                accounts of the same agent, a session has one holder at a time: when an Agent or Ask
+                run that already did work moves, its session moves too where the agent supports
+                that, or the work continues from a recorded packet.
+              </dd>
+            </div>
+            <div>
+              <dt>What this page collects</dt>
+              <dd>
+                Nothing. No analytics, no trackers, no remote fonts, no external requests of any
+                kind.
+              </dd>
+            </div>
+          </dl>
         </div>
+      </section>
 
-        <div class="plane" id="install">
-          <div class="z">
-            <section>
-              <div class="split" style="align-items: center; margin-top: 0">
-                <div>
-                  <p class="kick">install</p>
-                  <h2>Start with the app, or stay in the terminal.</h2>
-                  <p class="lead">
-                    On macOS 26 or newer, download the app and drag it to Applications; it brings
-                    its own runtime, so you need no Node or pnpm. In a terminal on macOS or Linux,
-                    install the npm package with Node.js 24.15 or newer (use the latest Node 24
-                    release), or build it from source.
-                  </p>
-                  <div class="acts">
-                    <a class="btn p" href="https://github.com/razzant/claudexor/releases/latest"
-                      >Download macOS app</a
-                    >
-                    <a class="btn s" href="https://github.com/razzant/claudexor#quickstart"
-                      >First steps</a
-                    >
-                    <a
-                      class="btn s"
-                      href="https://github.com/razzant/claudexor#from-a-source-checkout"
-                      >Build from source</a
-                    >
-                  </div>
-                  <p class="note">
-                    Connect one coding agent through Claudexor, choose a project and try an Ask
-                    question. A subscription login counts against that plan; an API key is a paid
-                    fallback. Git and the selected coding agent are checked during setup.
-                  </p>
-                </div>
-                <div class="flat term" style="overflow: hidden">
-                  <div class="bar"><i></i><i></i><i></i><span>terminal</span></div>
-                  <pre><span class="p">$</span> npm install -g claudexor
-<span class="p">$</span> claudexor doctor
-
-<span class="c"># Open the Codex sign-in link in a private window.</span>
-<span class="p">$</span> claudexor auth login codex
-<span class="p">$</span> cd /path/to/your/project
-<span class="p">$</span> claudexor ask <span class="s">"map this repo"</span>
-<span class="p">$</span> claudexor inspect &lt;run_id&gt;</pre>
-                </div>
-              </div>
-            </section>
-
-            <footer>
-              <div style="display: flex; align-items: center; gap: 12px">
-                <img
-                  src="./assets/claudexor-app.png"
-                  width="28"
-                  height="28"
-                  alt=""
-                  style="border-radius: 8px"
-                /><b>Claudexor</b>
-              </div>
-              <div class="fl">
-                <a href="https://github.com/razzant/claudexor">GitHub</a>
-                <a href="https://www.npmjs.com/package/claudexor">npm</a>
-                <a href="https://github.com/razzant/claudexor/releases">Releases</a>
-                <a href="#agent-hosts">Agent hosts</a>
-                <a href="https://github.com/razzant/claudexor/blob/main/LICENSE">MIT</a>
+      <section class="band" id="install">
+        <div class="wrap">
+          <h2>Start with the app, or stay in the terminal.</h2>
+          <div class="start" id="start">
+            <div>
+              <p class="sub">
+                On an Apple Silicon Mac with macOS 26 or newer, download the signed and notarized
+                app and drag it to Applications. It brings its own runtime, so you need no Node or
+                pnpm. In a terminal on macOS or Linux, install the npm package with Node.js 24.15 or
+                newer (use the latest Node 24 release), or build it from source.
+              </p>
+              <div class="row">
+                <a
+                  class="get"
+                  data-mac-installer
+                  href="https://github.com/razzant/claudexor/releases/latest"
+                  >Choose the Claudexor .dmg</a
+                ><a class="ghost" href="https://github.com/razzant/claudexor#quickstart"
+                  >First steps</a
+                ><a class="ghost" href="https://github.com/razzant/claudexor#from-a-source-checkout"
+                  >Build from source</a
+                >
               </div>
               <p class="note">
-                Claude Code, Codex, Cursor, OpenCode, Hermes, Pi and OpenClaw names and marks belong
-                to their respective owners and identify compatibility only. Claudexor is independent
-                and is not endorsed by the named vendors or projects.
+                Connect one coding agent through Claudexor, choose a project and try an Ask
+                question. When a run ends, the CLI prints its run ID, and
+                <code>claudexor inspect</code> with that ID shows what it did. A subscription login
+                counts against that plan; an API key is a paid fallback. Setup checks Git and coding
+                agents. On a cold cache, <code>claudexor doctor</code> can contact other configured
+                providers and incur charges even when you select a subscription for Ask.
               </p>
-            </footer>
+            </div>
+            <div class="term">
+              <i>$</i> npm install -g claudexor<br /><i>$</i> claudexor doctor<br /><i
+                ># Open the Codex sign-in link</i
+              ><br /><i># in a private window.</i><br /><i>$</i> claudexor auth login codex<br /><i
+                ># Then, in your project directory:</i
+              ><br /><i>$</i> claudexor ask "map this repo"
+            </div>
           </div>
         </div>
-      </main>
-    </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap">
+        <p>
+          No telemetry. Everything runs on your machine, and files are the source of truth. MIT
+          licensed, which means the bugs are yours now too.
+        </p>
+        <nav aria-label="Project links">
+          <a href="https://github.com/razzant/claudexor">GitHub</a
+          ><a href="https://www.npmjs.com/package/claudexor">npm</a
+          ><a href="https://github.com/razzant/claudexor/releases">Releases</a
+          ><a href="#agent-hosts">Agent hosts</a
+          ><a href="https://github.com/razzant/claudexor/blob/main/LICENSE">MIT</a>
+        </nav>
+        <small
+          >Claude Code, Codex, Cursor, OpenCode, Antigravity, Grok Build, Hermes, Pi and OpenClaw
+          names and marks belong to their respective owners and identify compatibility only.
+          Claudexor is independent and is not endorsed by the named vendors or projects.</small
+        >
+      </div>
+    </footer>
 
     <script>
-      /* Small progressive enhancements. The ambient field is CSS-rendered at the
-   browser's native resolution; JavaScript is reserved for content feedback. */
-      (function () {
-        const REDUCED = matchMedia("(prefers-reduced-motion:reduce)").matches;
+      const LOGOS = {
+        codex: {
+          viewBox: "0 0 256 260",
+          path: "M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z",
+        },
+        claude: {
+          viewBox: "0 0 24 24",
+          path: "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z",
+        },
+        cursor: {
+          viewBox: "0 0 24 24",
+          path: "M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23",
+        },
+        antigravity: {
+          viewBox: "0 0 16 15",
+          path: "M14.0777 13.984C14.945 14.6345 16.2458 14.2008 15.0533 13.0084C11.476 9.53949 12.2349 0 7.79033 0C3.34579 0 4.10461 9.53949 0.527295 13.0084C-0.773543 14.3092 0.635692 14.6345 1.50293 13.984C4.86344 11.7076 4.64663 7.69664 7.79033 7.69664C10.934 7.69664 10.7172 11.7076 14.0777 13.984Z",
+        },
+      };
+      document.querySelectorAll("[data-logo]").forEach((el) => {
+        const mark = LOGOS[el.dataset.logo];
+        if (!mark) return;
+        el.outerHTML = `<svg viewBox="${mark.viewBox}" aria-hidden="true" class="mark"><path fill="currentColor" fill-rule="evenodd" d="${mark.path}"/></svg>`;
+      });
+      const $ = (id) => document.getElementById(id);
+      const fact = $("fact"),
+        spot = $("spot"),
+        dropsEl = $("drops");
+      const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+      let still = motion.matches;
+      const HUE = {
+        claude: [1.0, 0.83, 0.72],
+        codex: [0.72, 0.97, 0.87],
+        cursor: [0.87, 0.81, 1.0],
+        antigravity: [0.74, 0.9, 1.0],
+      }; // light tints of each agent's colour
+      const LOGO_INDEX = { claude: 0, codex: 1, cursor: 2, antigravity: 3 };
+      // a 5 by 7 face for the words that are made of pixels
+      const FONT = {
+        A: "01110 10001 10001 11111 10001 10001 10001",
+        B: "11110 10001 10001 11110 10001 10001 11110",
+        C: "01110 10001 10000 10000 10000 10001 01110",
+        D: "11110 10001 10001 10001 10001 10001 11110",
+        E: "11111 10000 10000 11110 10000 10000 11111",
+        F: "11111 10000 10000 11110 10000 10000 10000",
+        G: "01110 10001 10000 10111 10001 10001 01111",
+        H: "10001 10001 10001 11111 10001 10001 10001",
+        I: "01110 00100 00100 00100 00100 00100 01110",
+        J: "00111 00010 00010 00010 00010 10010 01100",
+        K: "10001 10010 10100 11000 10100 10010 10001",
+        L: "10000 10000 10000 10000 10000 10000 11111",
+        M: "10001 11011 10101 10101 10001 10001 10001",
+        N: "10001 10001 11001 10101 10011 10001 10001",
+        O: "01110 10001 10001 10001 10001 10001 01110",
+        P: "11110 10001 10001 11110 10000 10000 10000",
+        Q: "01110 10001 10001 10001 10101 10010 01101",
+        R: "11110 10001 10001 11110 10100 10010 10001",
+        S: "01111 10000 10000 01110 00001 00001 11110",
+        T: "11111 00100 00100 00100 00100 00100 00100",
+        U: "10001 10001 10001 10001 10001 10001 01110",
+        V: "10001 10001 10001 10001 10001 01010 00100",
+        W: "10001 10001 10001 10101 10101 10101 01010",
+        X: "10001 10001 01010 00100 01010 10001 10001",
+        Y: "10001 10001 10001 01010 00100 00100 00100",
+        Z: "11111 00001 00010 00100 01000 10000 11111",
+        0: "01110 10001 10011 10101 11001 10001 01110",
+        1: "00100 01100 00100 00100 00100 00100 01110",
+        2: "01110 10001 00001 00010 00100 01000 11111",
+        3: "11111 00010 00100 00010 00001 10001 01110",
+        4: "00010 00110 01010 10010 11111 00010 00010",
+        5: "11111 10000 11110 00001 00001 10001 01110",
+        6: "00110 01000 10000 11110 10001 10001 01110",
+        7: "11111 00001 00010 00100 01000 01000 01000",
+        8: "01110 10001 10001 01110 10001 10001 01110",
+        9: "01110 10001 10001 01111 00001 00010 01100",
+        $: "00100 01111 10100 01110 00101 11110 00100",
+        ".": "00000 00000 00000 00000 00000 01100 01100",
+        ":": "00000 01100 01100 00000 01100 01100 00000",
+        "%": "11000 11001 00010 00100 01000 10011 00011",
+      };
+      // the four accounts of the first screen's story
+      const ACC = [
+        { mark: "claude", key: "claude / personal", used: 64, ang: -2.25 },
+        { mark: "claude", key: "claude / work", used: 31, ang: -0.78 },
+        { mark: "codex", key: "codex / personal", used: 18, ang: 0.3 },
+        { mark: "antigravity", key: "antigravity / personal", used: 44, ang: 1.62 },
+      ].map((a) => ({ ...a, start: a.used }));
+      /* Every glass on the page: the part it belongs to, what it rests on (an element and a point in it), whose it is, its size and its depth.
+   Depth is z: above 1 the glass is nearer, larger and slides with the pointer; below 1 it is further, smaller and softer. */
+      const BUBBLES = [
+        ...ACC.map((a, i) => ({
+          stage: "top",
+          hero: i,
+          mark: a.mark,
+          k: 1,
+          z: [1.16, 0.88, 1.24, 0.82][i],
+        })),
+      ].map((b) => ({ ...b, x: 0, y: 0, r: 0, glow: 0, hot: 0, blur: 0 }));
+      /* The parts that carry a picture. "text" lists the words of the part: the sky never reaches under them and no glass touches them. */
+      const PARTS = [
+        { id: "top", root: "#top", text: "h1, .motto, .lede, .acts, .fact", stars: true },
+        {
+          id: "race",
+          root: "#race",
+          text: "#race h2, #race .sub, .lane .who, .lane .say, #race .aside",
+        },
+        { id: "cost", root: "#cost", words: true, text: "#cost h2, #sums p" },
+      ];
 
-        /* ---- ambient camera: self-moving light plus pointer and scroll parallax ---- */
-        const ambient = document.querySelector(".ambient");
-        if (ambient && !REDUCED) {
-          let targetX = 0,
-            targetY = 0,
-            currentX = 0,
-            currentY = 0,
-            targetScroll = 0,
-            currentScroll = 0,
-            lastAmbient = 0;
-          addEventListener(
-            "pointermove",
-            (e) => {
-              targetX = (e.clientX / innerWidth - 0.5) * 64;
-              targetY = (e.clientY / innerHeight - 0.5) * 44;
-            },
-            { passive: true },
-          );
-          addEventListener("pointerleave", () => {
-            targetX = 0;
-            targetY = 0;
+      const VS = "attribute vec2 a; void main() { gl_Position = vec4(a, 0.0, 1.0); }";
+      const FS = `#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform vec2 uRes; uniform float uPx; uniform float uCell; uniform float uT; uniform vec2 uDocF; uniform vec2 uDocN;
+uniform sampler2D uFar; uniform sampler2D uNear; uniform sampler2D uLogo;
+uniform vec4 uSun; uniform vec4 uPhase; uniform vec3 uLight; uniform float uN; uniform float uQN;
+uniform vec3 uB[8]; uniform vec4 uTint[8]; uniform vec4 uS[8]; uniform vec2 uL[8]; uniform vec4 uBars[3]; uniform vec2 uBarP[3]; uniform vec4 uQuiet[8];
+float b2(vec2 a) { a = floor(a); return fract(a.x / 2.0 + a.y * a.y * 0.75); }
+float b4(vec2 a) { return b2(0.5 * a) * 0.25 + b2(a); }
+float b8(vec2 a) { return b4(0.5 * a) * 0.25 + b2(a); }
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+vec2 tone(vec4 t) { float w = step(0.5, t.g); return vec2(step(0.5, t.r) * clamp((t.g - mix(0.05, 0.55, w)) / 0.4, 0.0, 1.0), w); }
+// 0 on the words of this part, 1 a little away from all of them: the sky fades before it reaches text
+float quiet(vec2 q) {
+  float k = 1.0;
+  for (int i = 0; i < 8; i++) { if (float(i) >= uQN) break; vec4 r = uQuiet[i]; vec2 e = max(max(r.xy - q, q - r.zw), 0.0); k *= smoothstep(6.0 * uPx, 44.0 * uPx, length(e)); }
+  return k;
+}
+// the picture as it really is: x is brightness, y is warmth. near is 1 under the glass
+vec2 scene(vec2 q, float near) {
+  float b = 0.0, warm = 0.0;
+  if (uSun.w > 0.5) {
+    float R = uSun.z; vec2 m = uSun.xy;
+    if (length(q - m) >= R) {
+      float left = uPhase.x, far = left * 2.05 * R;
+      vec2 way = vec2(uPhase.y * 0.7, -0.71), s = m + way * far;
+      float ds = length(q - s), rs = R * 0.975, vis = 0.16 + 0.84 * min(1.0, left * 5.0);
+      if (ds < rs) b = 1.0 - 0.2 * (ds / rs) * (ds / rs);
+      else { float th = atan(q.y - s.y, q.x - s.x); b = vis * exp(-(ds - rs) / (R * 0.42)) * 0.7 * (0.74 + 0.26 * sin(th * 11.0 + uT * 0.5) * sin(th * 5.0 - uT * 0.3)); b = max(0.0, b - 0.08) / 0.92; }   // faint light ends, so no lone dots far out
+      if (left > 0.002 && left < 0.14) { float fv = exp(-length(q - (m + normalize(way) * R)) / (R * 0.13)) * (1.0 - left / 0.14) * 1.5; if (fv > b) { b = fv; warm = step(0.22, fv); } }
+      b *= quiet(q) * clamp(q.y / uPx / 40.0, 0.0, 1.0);
+    }
+  }
+  vec2 d = q / uPx;
+  vec4 t = near > 0.5 ? texture2D(uNear, d / uDocN) : texture2D(uFar, d / uDocF);
+  if (t.a > 0.5) { vec2 v = tone(t); b = v.x; warm = v.y; }
+  for (int i = 0; i < 3; i++) {
+    vec4 r = uBars[i];
+    if (r.z > 0.0 && d.x >= r.x && d.x <= r.x + r.z && d.y >= r.y && d.y <= r.y + r.w) {
+      float k = (d.x - r.x) / r.z, pr = uBarP[i].x, st = uBarP[i].y;
+      float e = uCell / uPx, edge = min(min(d.x - r.x, r.x + r.z * pr - d.x), min(d.y - r.y, r.y + r.w - d.y));
+      if (k <= pr) b = st > 0.5 && st < 1.5 ? step(edge, e) : 1.0;      // a patch that was read and not applied keeps only its outline
+      else b = d.y > r.y + r.w - uCell / uPx ? 0.5 : 0.0;            // the rest of the track is one dotted line
+      warm = 0.0;
+    }
+  }
+  return vec2(b, warm);
+}
+vec3 paper(float on, float warm) { return mix(vec3(0.02, 0.024, 0.031), mix(vec3(0.91, 0.94, 0.97), vec3(1.0, 0.48, 0.33), warm), on); }
+// the same picture as one-bit dots of a given size; the grid belongs to the part, so it moves with the words
+vec3 dots(vec2 q, float cellpx, float near) {
+  vec2 c = floor(q / cellpx), qc = (c + 0.5) * cellpx;
+  vec2 v = scene(qc, near);
+  if (uPhase.z > 0.5 && v.x < 0.05) { float h = hash(c); if (h > 0.9982) v.x = (0.45 + 0.5 * sin(uT * 1.8 + h * 900.0)) * quiet(qc) * clamp(qc.y / uPx / 40.0, 0.0, 1.0); }   // no stars at the very top
+  return paper(step(b8(c) + 0.008, v.x), v.y);
+}
+float mark(float idx, vec2 uv) { if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 0.0; return texture2D(uLogo, vec2((idx + uv.x) * 0.25, uv.y)).r; }
+void main() {
+  vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  float f = 0.0, fs = 0.0, logo = 0.0, halo = 0.0;
+  vec2 g = vec2(0.0), cw = vec2(0.0); vec3 tint = vec3(0.0); vec4 st = vec4(0.0);
+  for (int i = 0; i < 8; i++) {
+    if (float(i) >= uN) break;
+    vec2 d = p - uB[i].xy; float r = uB[i].z, d2 = dot(d, d) + 1.0, q = r * r / d2, w = q * q;
+    f += w; g += -4.0 * w * d / d2; cw += w * uB[i].xy; tint += w * uTint[i].rgb; st += w * uS[i];
+    vec2 away = uB[i].xy - uLight.xy; away /= max(length(away), 1.0);  // its shadow falls away from the light, further the nearer the glass
+    vec2 ds = d - away * r * (0.12 + 0.6 * max(uTint[i].a - 0.7, 0.0)); float q2 = r * r / (dot(ds, ds) + 1.0); fs += q2 * q2;
+    vec2 lu = (d + vec2(0.0, r * uL[i].y)) / (2.0 * r * uL[i].x) + 0.5;   // the agent's mark: large in the middle, or small near the top
+    if (lu.x > -0.06 && lu.x < 1.06 && lu.y > -0.06 && lu.y < 1.06) {
+      float m0 = mark(uS[i].z, lu), e = 0.035;
+      float mh = max(max(mark(uS[i].z, lu + vec2(e, 0.0)), mark(uS[i].z, lu - vec2(e, 0.0))), max(mark(uS[i].z, lu + vec2(0.0, e)), mark(uS[i].z, lu - vec2(0.0, e))));
+      logo += w * m0; halo += w * max(m0, mh);
+    }
+  }
+  float inv = 1.0 / max(f, 1e-4); cw *= inv; tint *= inv; st *= inv; logo *= inv; halo *= inv;
+  float gm = length(g) + 1e-7; vec2 dir = g / gm;
+  float ew = gm * 1.3 * uPx, inside = smoothstep(1.0 - ew, 1.0 + ew, f);
+  float shade = 0.42 * smoothstep(0.3, 1.0, fs) * (1.0 - inside);
+  vec3 c = vec3(0.0);
+  if (inside > 0.0) {
+    float s = clamp((f - 1.0) / 1.5, 0.0, 1.0), rim = (1.0 - s) * (1.0 - s);
+    vec2 tm = uLight.xy - cw;                                        // the light comes from the pointer, always at the same height,
+    float wm = uLight.z * smoothstep(8.0 * uPx, 60.0 * uPx, length(tm));   // so the highlight stays on the rim
+    vec2 az = normalize(mix(normalize(vec2(-0.55, -0.75)), normalize(tm + vec2(1e-3)), wm) + vec2(1e-4, 0.0));
+    vec3 Ld = normalize(vec3(az * 0.6, 0.86));
+    vec2 c0 = mix(p, cw, 0.3);                                       // the glass magnifies
+    vec2 sh = (cw - uLight.xy) * 0.06; c0 += sh * min(1.0, 22.0 * uPx / max(length(sh), 1e-3)) * clamp((uLight.z - 0.6) / 0.4, 0.0, 1.0);   // and the picture inside shifts as the light moves
+    float bend = 56.0 * uPx * rim, disp = 0.14 * (1.0 - st.w);
+    vec2 a0 = c0 + dir * bend * (1.0 - disp), a1 = c0 + dir * bend, a2 = c0 + dir * bend * (1.0 + disp);
+    float fine = max(2.0 * uPx, uCell * mix(0.3, 0.62, st.w)); c = vec3(dots(a0, fine, 1.0).r, dots(a1, fine, 1.0).g, dots(a2, fine, 1.0).b);
+    c += vec3(0.012, 0.018, 0.028);
+    vec3 hue = mix(vec3(1.0), tint, 0.85);
+    c = mix(c, c * hue + hue * 0.05, 0.6);       // a light tint of the agent's colour
+    float lg = step(b8(floor(p / max(2.0 * uPx, uCell * 0.3))) + 0.01, logo * 0.95) * smoothstep(0.04, 0.26, s);
+    c = mix(c, c * 0.1 + hue * 0.02, smoothstep(0.1, 0.5, halo) * 0.75 * smoothstep(0.04, 0.26, s));   // a dark outline around the mark
+    c = mix(c, mix(vec3(1.0), hue, 0.5), lg * 0.92);                 // the mark
+    c = mix(c, c * vec3(0.72, 0.88, 1.0) + vec3(0.0, 0.025, 0.06), st.x * 0.6);   // the account serving the run is lit
+    c = mix(c, c * vec3(1.0, 0.62, 0.5) + vec3(0.07, 0.0, 0.0), st.y * 0.85);      // the spent one is warm
+    vec3 n = normalize(vec3(-dir * rim * 1.5, 1.0));
+    float sp1 = pow(max(dot(n, Ld), 0.0), 70.0);
+    float sp2 = pow(max(dot(n, normalize(vec3(-Ld.xy, Ld.z))), 0.0), 22.0);
+    float fres = pow(1.0 - n.z, 1.5);
+    float edge = 1.0 - smoothstep(0.0, 0.24, s), ang = atan(dir.y, dir.x + 1e-7);
+    vec3 rainbow = 0.5 + 0.5 * cos(6.2832 * (vec3(0.0, 0.33, 0.67) + ang * 0.16 + s * 2.4 + uT * 0.02));
+    float far = 0.3 + 0.7 * max(0.0, dot(dir, normalize(Ld.xy + 1e-5)));
+    c += sp1 * 0.95 + sp2 * hue * 0.3 + fres * hue * 0.75 + rainbow * edge * far * 0.45;   // the highlight, the colour of the rim, the light split on the far side
+  }
+  gl_FragColor = vec4(mix(dots(p, uCell, 0.0) * (1.0 - shade), c, inside), 1.0);
+}`;
+      let dpr = 1,
+        VW = 0,
+        VH = 0,
+        cell = 5,
+        wide = true;
+      const STAGES = [];
+      // the agents' marks, side by side, white on nothing
+      const atlas = document.createElement("canvas");
+      atlas.width = 512;
+      atlas.height = 128;
+      function buildAtlas() {
+        const x = atlas.getContext("2d");
+        x.fillStyle = "#fff";
+        ["claude", "codex", "cursor", "antigravity"].forEach((name, i) => {
+          const m = LOGOS[name];
+          if (!m) return;
+          const [vx, vy, vw, vh] = String(m.viewBox)
+              .split(/[\s,]+/)
+              .map(Number),
+            k = 112 / Math.max(vw, vh);
+          x.save();
+          x.translate(i * 128 + 64 - (vx + vw / 2) * k, 64 - (vy + vh / 2) * k);
+          x.scale(k, k);
+          x.fill(new Path2D(m.path), "evenodd");
+          x.restore();
+        });
+      }
+      function makeStage(part) {
+        const root = document.querySelector(part.root);
+        if (!root) return null;
+        const cv = document.createElement("canvas");
+        cv.className = "gl";
+        cv.setAttribute("aria-hidden", "true");
+        const gl = cv.getContext("webgl", {
+          antialias: false,
+          alpha: false,
+          premultipliedAlpha: true,
+          preserveDrawingBuffer: true,
+          depth: false,
+          stencil: false,
+        });
+        if (!gl) return null;
+        const sh = (type, src) => {
+          const x = gl.createShader(type);
+          gl.shaderSource(x, src);
+          gl.compileShader(x);
+          if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x));
+          return x;
+        };
+        const prog = gl.createProgram();
+        gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+        gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+          throw new Error(gl.getProgramInfoLog(prog));
+        gl.useProgram(prog);
+        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+        const a = gl.getAttribLocation(prog, "a");
+        gl.enableVertexAttribArray(a);
+        gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+        const U = {};
+        for (const n of [
+          "uRes",
+          "uPx",
+          "uCell",
+          "uT",
+          "uDocF",
+          "uDocN",
+          "uFar",
+          "uNear",
+          "uLogo",
+          "uSun",
+          "uPhase",
+          "uLight",
+          "uN",
+          "uQN",
+          "uB",
+          "uTint",
+          "uS",
+          "uL",
+          "uBars",
+          "uBarP",
+          "uQuiet",
+        ])
+          U[n] = gl.getUniformLocation(prog, n);
+        [0, 1, 2].forEach((unit) => {
+          gl.activeTexture(gl.TEXTURE0 + unit);
+          gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+          const f = unit === 2 ? gl.LINEAR : gl.NEAREST;
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        });
+        gl.uniform1i(U.uFar, 0);
+        gl.uniform1i(U.uNear, 1);
+        gl.uniform1i(U.uLogo, 2);
+        gl.activeTexture(gl.TEXTURE2);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
+        const far = document.createElement("canvas"),
+          near = document.createElement("canvas"),
+          F = far.getContext("2d"),
+          N = near.getContext("2d");
+        if (!F || !N) return null; // without its painting surfaces this part stays plain text
+        root.prepend(cv);
+        root.classList.add("lit");
+        const s = {
+          ...part,
+          root,
+          cv,
+          gl,
+          U,
+          far,
+          near,
+          F,
+          N,
+          bubbles: BUBBLES.filter((b) => b.stage === part.id),
+          rects: [],
+          w: 1,
+          h: 1,
+          key: "",
+          fresh: true,
+        };
+        cv.addEventListener("webglcontextlost", () => {
+          // the browser took the picture back: show this part as plain text again
+          const i = STAGES.indexOf(s);
+          if (i >= 0) STAGES.splice(i, 1);
+          root.classList.remove("lit");
+          cv.remove();
+          root.querySelectorAll(".pxword").forEach((el) => {
+            el.style.width = el.style.height = "";
           });
-          addEventListener(
-            "scroll",
-            () => {
-              targetScroll = Math.max(-72, -scrollY * 0.024);
-            },
-            { passive: true },
-          );
-          (function ambientFrame(now) {
-            requestAnimationFrame(ambientFrame);
-            if (now - lastAmbient < 32) return;
-            lastAmbient = now;
-            currentX += (targetX - currentX) * 0.055;
-            currentY += (targetY - currentY) * 0.055;
-            currentScroll += (targetScroll - currentScroll) * 0.04;
-            ambient.style.transform = `translate3d(${currentX.toFixed(1)}px,${(currentY + currentScroll).toFixed(1)}px,0) scale(1.08)`;
-          })(0);
-        }
+          if (part.id === "top") dropsEl.hidden = true;
+          if (part.id === "race") {
+            raceT = 6.5;
+            race(0);
+          } // the race stops where it would have ended
+        });
+        return s;
+      }
 
-        /* ---- depth camera: sections move through a shared three-dimensional field ---- */
-        const planes = [...document.querySelectorAll(".plane")]
-          .map((p) => ({ p, z: p.querySelector(".z") }))
-          .filter((o) => o.z);
-        if (planes.length && !REDUCED) {
-          let queued = false;
-          function depthFrame() {
-            queued = false;
-            const vh = innerHeight,
-              mid = vh / 2;
-            for (const { p, z } of planes) {
-              const r = p.getBoundingClientRect();
-              if (r.bottom < -vh * 0.7 || r.top > vh * 1.7) {
-                z.style.setProperty("--o", "1");
-                continue;
+      /* Painting the picture of a part, in the part's own coordinates */
+      const snap = (v) => Math.round(v / cell) * cell;
+      const ink = (level, warm) =>
+        `rgb(255,${Math.round(((warm ? 0.55 : 0.05) + level * 0.4) * 255)},0)`;
+      function glyphs(s, word, X, Y, u, style) {
+        s.F.fillStyle = s.N.fillStyle = style;
+        [...word].forEach((ch, i) => {
+          (FONT[ch] || "").split(" ").forEach((row, r) => {
+            for (let c = 0; c < 5; c++)
+              if (row[c] === "1") {
+                const x = X + (i * 6 + c) * u,
+                  y = Y + r * u;
+                s.F.fillRect(x, y, u, u);
+                s.N.fillRect(x, y, u, u);
               }
-              const k = Math.max(-1.2, Math.min(1.2, (r.top + r.height / 2 - mid) / vh));
-              const dead = 0.25,
-                amount = Math.max(0, (Math.abs(k) - dead) / (1 - dead)),
-                sign = Math.sign(k);
-              z.style.setProperty("--z", (-amount * 215).toFixed(1) + "px");
-              z.style.setProperty("--rx", (sign * amount * 2.45).toFixed(2) + "deg");
-              z.style.setProperty("--o", Math.max(0.67, 1 - amount * 0.33).toFixed(3));
+          });
+        });
+      }
+      function layout() {
+        // the words made of pixels get the size their pixels need
+        const words = [...document.querySelectorAll(".lit .pxword")];
+        if (!words.length) return;
+        words.forEach((el) => {
+          el.style.width = "";
+        });
+        const column = (el) =>
+          parseFloat(getComputedStyle(el.parentElement).gridTemplateColumns) ||
+          el.parentElement.clientWidth; // the word's own column
+        const k = Math.max(
+          1,
+          Math.min(
+            2,
+            ...words.map((el) =>
+              Math.floor(column(el) / ((el.textContent.trim().length * 6 - 1) * cell)),
+            ),
+          ),
+        );
+        words.forEach((el) => {
+          const n = el.textContent.trim().length;
+          el._s = k;
+          el.style.width = (n * 6 - 1) * k * cell + "px";
+          el.style.height = 7 * k * cell + "px";
+        });
+      }
+      function paintStage(s) {
+        const gl = s.gl,
+          sr = s.root.getBoundingClientRect();
+        const key = [Math.round(sr.width), Math.round(sr.height), dpr, cell].join(":");
+        if (key === s.key) return; // nothing moved: keep the picture
+        s.key = key;
+        s.w = Math.max(1, Math.round(sr.width));
+        s.h = Math.max(1, Math.round(sr.height));
+        s.cv.width = Math.round(s.w * dpr);
+        s.cv.height = Math.round(s.h * dpr);
+        gl.viewport(0, 0, s.cv.width, s.cv.height);
+        const max = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096, 8192);
+        s.near.width = s.words ? Math.min(s.w, max) : 1;
+        s.near.height = s.words ? Math.min(s.h, max) : 1; // only the words need a painted picture
+        s.far.width = Math.max(1, Math.ceil(s.near.width / cell));
+        s.far.height = Math.max(1, Math.ceil(s.near.height / cell));
+        s.F.setTransform(1 / cell, 0, 0, 1 / cell, 0, 0);
+        if (s.words)
+          s.root.querySelectorAll(".pxword").forEach((el) => {
+            const r = el.getBoundingClientRect();
+            glyphs(
+              s,
+              el.textContent.trim().toUpperCase(),
+              snap(r.left - sr.left),
+              snap(r.top - sr.top),
+              (el._s || 1) * cell,
+              ink(el._s > 1 ? parseFloat(el.dataset.level || "1") : 1),
+            );
+          });
+        gl.activeTexture(gl.TEXTURE0);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s.far);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, s.near);
+        s.rects = [...s.root.querySelectorAll(s.text)]
+          .map((el) => {
+            const r = el.getBoundingClientRect();
+            return [r.left - sr.left, r.top - sr.top, r.right - sr.left, r.bottom - sr.top];
+          })
+          .filter((r) => r[2] > r[0] && r[3] > r[1]);
+        s.fresh = true;
+      }
+      function size() {
+        VW = window.innerWidth;
+        VH = window.innerHeight;
+        dpr = Math.min(2, window.devicePixelRatio || 1);
+        wide = VW > 860;
+        cell = Math.max(4, Math.min(10, Math.round(VW / 290)));
+        layout();
+        STAGES.forEach(paintStage); // dots stop growing on very wide screens
+      }
+      // how much room a glass has here: the distance to the nearest word of its part, or to the part's edge
+      function room(s, x, y) {
+        let d = Math.min(x, y, s.w - x, s.h - y);
+        for (const [x0, y0, x1, y1] of s.rects)
+          d = Math.min(d, Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(y0 - y, 0, y - y1)));
+        return d;
+      }
+
+      ACC.forEach((a) => {
+        const el = document.createElement("div");
+        el.className = "drop";
+        el.innerHTML = `<b></b><small></small>`;
+        dropsEl.appendChild(el);
+        a.el = el;
+      });
+      const put = (el, text) => {
+        if (el.textContent !== text) el.textContent = text;
+      };
+      function label(a) {
+        a.el.classList.toggle("spent", a.used >= 100);
+        put(a.el.querySelector("b"), Math.round(a.used) + "%");
+        put(a.el.querySelector("small"), a.used >= 100 ? "resets 14:02" : a.key);
+      }
+      function say(text) {
+        if (fact.textContent !== text) fact.textContent = text;
+      }
+
+      // the story of the first screen: an account runs out, the run comes out on the next one
+      let serving = 0,
+        pull = null,
+        side = -1,
+        left = 1 - ACC[0].used / 100,
+        st = { phase: "use", t: 0, from: ACC[0].used };
+      const ease = (k) => k * k * (3 - 2 * k);
+      function story(dt) {
+        st.t += dt;
+        const a = ACC[serving];
+        if (st.phase === "use") {
+          a.used = Math.min(100, st.from + (100 - st.from) * (st.t / 7));
+          left = 1 - a.used / 100;
+          say(`Run 7f3a is working on ${a.key}.`);
+          if (a.used >= 100) st = { phase: "dark", t: 0 };
+        } else if (st.phase === "dark") {
+          left = 0;
+          say(`${a.key} reached its five-hour limit. From outside, the sun is gone.`);
+          if (st.t > 1.7) {
+            const to = ACC.findIndex((x) => x.mark === a.mark && x.used < 100);
+            if (to < 0) {
+              ACC.forEach((x) => {
+                x.used = x.start;
+              });
+              serving = 0;
+              side = -1;
+              left = 1 - ACC[0].used / 100;
+              st = { phase: "reset", t: 0 };
+            } else {
+              st = { phase: "out", t: 0, to };
+              pull = { from: serving, to, t: 0 };
+              side = -side;
             }
           }
-          addEventListener(
-            "scroll",
-            () => {
-              if (!queued) {
-                queued = true;
-                requestAnimationFrame(depthFrame);
-              }
-            },
-            { passive: true },
-          );
-          addEventListener("resize", depthFrame);
-          depthFrame();
+        } else if (st.phase === "reset") {
+          say("14:02. The windows have reset.");
+          if (st.t > 2.2) st = { phase: "use", t: 0, from: ACC[0].used };
+        } else {
+          const k = Math.min(1, st.t / 5);
+          left = ease(k) * (1 - ACC[st.to].used / 100);
+          if (pull) {
+            pull.t += dt / 1.5;
+            if (pull.t >= 0.5) serving = st.to;
+            if (pull.t >= 1) pull = null;
+          }
+          if (k > 0.25) say(`The run came out on ${ACC[st.to].key}, and its session went with it.`);
+          if (k >= 1) {
+            serving = st.to;
+            pull = null;
+            st = { phase: "use", t: 0, from: ACC[serving].used };
+          }
         }
+        ACC.forEach(label);
+      }
+      // the race, while it is on screen
+      const RACE = [
+        { dur: 3.1, tests: 212, verdict: "1 finding" },
+        { dur: 4.4, tests: 214, verdict: "adopted into the thread", win: true },
+        { dur: 2.2, tests: 214, verdict: "2 findings" },
+      ];
+      const lanes = [...document.querySelectorAll(".lane")],
+        barP = new Float32Array(6);
+      let raceT = 0;
+      function race(dt) {
+        raceT = (raceT + dt) % 10.5;
+        RACE.forEach((r, i) => {
+          const k = Math.min(1, raceT / r.dur),
+            judged = raceT > r.dur + 1.1 && (!r.win || raceT > 5.6);
+          barP[i * 2] = 1 - Math.pow(1 - k, 1.7);
+          barP[i * 2 + 1] = judged ? (r.win ? 2 : 1) : 0;
+          lanes[i].classList.toggle("win", judged && !!r.win);
+          put(
+            lanes[i].querySelector(".say"),
+            judged
+              ? `${r.tests} of 214 tests, ${r.verdict}`
+              : k >= 1
+                ? `${r.tests} of 214 tests, read by another family`
+                : `${Math.round(r.tests * k)} of 214 tests`,
+          );
+        });
+      }
 
-        /* ---- meter fills: any [data-w] bar inside an observed .router/.meters block ---- */
-        const meterHost = document.querySelector(".router, .meters");
-        if (meterHost) {
-          const fills = [...meterHost.querySelectorAll("[data-w]")];
-          const go = () =>
-            fills.forEach((n, i) =>
-              setTimeout(() => (n.style.width = n.dataset.w + "%"), REDUCED ? 0 : 140 + i * 150),
-            );
-          fills.forEach((n) => {
-            if (!REDUCED) n.style.transition = "width 1.1s cubic-bezier(.2,.8,.2,1)";
+      const mouse = { x: 0, y: 0, on: false },
+        sm = { x: 0, y: 0, on: 0 };
+      let last = null;
+      function draw(s, sr, t, dt) {
+        const gl = s.gl,
+          U = s.U;
+        let sun = null;
+        if (s.id === "top") {
+          const r = spot.getBoundingClientRect();
+          sun = {
+            x: r.left - sr.left + r.width / 2,
+            y: r.top - sr.top + r.height * (wide ? 0.5 : 0.54),
+            R: Math.min(r.width, r.height) * (wide ? 0.25 : 0.18),
+          };
+        }
+        const vis = [];
+        for (const b of s.bubbles) {
+          const hero = b.hero !== undefined,
+            a = hero ? ACC[b.hero] : null;
+          let ax, ay, R;
+          if (hero) {
+            const ang = a.ang + Math.sin(t * 0.21 + b.hero * 1.7) * 0.02,
+              ring = sun.R * (1.1 + 0.12 * (b.hero % 2));
+            ax = sun.x + Math.cos(ang) * ring * 1.08;
+            ay = sun.y + Math.sin(ang) * ring * 0.96;
+            R = sun.R * (wide ? 0.44 : 0.5) * (0.62 + 0.38 * (1 - a.used / 100));
+            if (pull && b.hero === pull.from) {
+              const o = s.bubbles[pull.to],
+                k = Math.sin(Math.PI * Math.min(1, pull.t)) * 0.72;
+              ax += (o.x - ax) * k;
+              ay += (o.y - ay) * k;
+            } // the run pours into the next account
+          } else {
+            if (!b.el || !b.el.isConnected) b.el = s.root.querySelector(b.at);
+            if (!b.el) continue;
+            const r = b.el.getBoundingClientRect();
+            ax = r.left - sr.left + r.width * b.fx;
+            ay = r.top - sr.top + r.height * b.fy;
+            R = Math.min(VW, VH) * (wide ? 0.066 : 0.09) * b.k;
+          }
+          const m = (hero ? 0.3 : 0.18) * sm.on; // depth: the near glass slides with the pointer, the far glass against it
+          ax += (sm.x - VW / 2) * (b.z - 1) * m;
+          ay += (sm.y - VH / 2) * (b.z - 1) * m;
+          R = Math.min(R * b.z, room(s, ax, ay) - 8);
+          if (R < (hero || wide ? 12 : 22)) R = 0; // and no glass ever lies on words
+          b.x = ax;
+          b.y = ay;
+          b.r = b.r && !still ? b.r + (R - b.r) * (1 - Math.exp(-dt * 6)) : R;
+          b.blur = Math.max(0, Math.min(0.7, (1 - b.z) * 2.2));
+          const glow = hero && b.hero === serving && a.used < 100 ? 1 : 0,
+            hot = hero && a.used >= 100 ? 1 : 0;
+          const ease4 = still ? 1 : 1 - Math.exp(-dt * 4);
+          b.glow += (glow - b.glow) * ease4;
+          b.hot += (hot - b.hot) * ease4;
+          if (hero) {
+            const el = a.el,
+              up = Math.sin(a.ang) < -0.5;
+            el.style.setProperty("--r", b.r.toFixed(1));
+            el.style.opacity = b.r > 3 ? 1 : 0;
+            el.style.transform = `translate(${b.x.toFixed(1)}px, ${(up ? b.y - b.r - 8 : b.y + b.r + 8).toFixed(1)}px) translate(-50%, ${up ? -100 : 0}%)`;
+          }
+          if (b.r > 3) vis.push(b);
+        }
+        const B = new Float32Array(24),
+          TI = new Float32Array(32),
+          S = new Float32Array(32),
+          L = new Float32Array(16),
+          bars = new Float32Array(12),
+          Q = new Float32Array(32);
+        vis.slice(0, 8).forEach((b, i) => {
+          B.set([b.x * dpr, b.y * dpr, b.r * dpr], i * 3);
+          TI.set([...HUE[b.mark], b.z], i * 4);
+          S.set([b.glow, b.hot, LOGO_INDEX[b.mark], b.blur], i * 4);
+          L.set(b.hero !== undefined ? [0.53, 0] : [0.3, 0.44], i * 2);
+        });
+        if (s.id === "race")
+          lanes.forEach((l, i) => {
+            const r = l.querySelector(".bar").getBoundingClientRect();
+            bars.set([r.left - sr.left, r.top - sr.top, r.width, r.height], i * 4);
           });
-          const io = new IntersectionObserver(
-            (es) =>
-              es.forEach((e) => {
-                if (e.isIntersecting) {
-                  go();
-                  io.disconnect();
-                }
-              }),
-            { threshold: 0.3 },
+        const quiet = s.stars ? s.rects.slice(0, 8) : [];
+        quiet.forEach((r, i) =>
+          Q.set(
+            r.map((v) => v * dpr),
+            i * 4,
+          ),
+        );
+        // the light: the pointer, or, with no pointer, a lamp above the top left of the screen
+        const lx = VW * 0.2 + (sm.x - VW * 0.2) * sm.on,
+          ly = -VH * 0.35 + (sm.y + VH * 0.35) * sm.on;
+        gl.uniform2f(U.uRes, s.cv.width, s.cv.height);
+        gl.uniform1f(U.uPx, dpr);
+        gl.uniform1f(U.uCell, cell * dpr);
+        gl.uniform1f(U.uT, t);
+        gl.uniform2f(U.uDocF, s.far.width * cell, s.far.height * cell);
+        gl.uniform2f(U.uDocN, s.near.width, s.near.height);
+        gl.uniform4f(
+          U.uSun,
+          sun ? sun.x * dpr : 0,
+          sun ? sun.y * dpr : 0,
+          sun ? sun.R * dpr : 0,
+          sun ? 1 : 0,
+        );
+        gl.uniform4f(U.uPhase, left, side, s.stars ? 1 : 0, 0);
+        gl.uniform3f(U.uLight, (lx - sr.left) * dpr, (ly - sr.top) * dpr, 0.6 + 0.4 * sm.on);
+        gl.uniform1f(U.uN, Math.min(8, vis.length));
+        gl.uniform3fv(U.uB, B);
+        gl.uniform4fv(U.uTint, TI);
+        gl.uniform4fv(U.uS, S);
+        gl.uniform2fv(U.uL, L);
+        gl.uniform4fv(U.uBars, bars);
+        gl.uniform2fv(U.uBarP, barP);
+        gl.uniform1f(U.uQN, quiet.length);
+        gl.uniform4fv(U.uQuiet, Q);
+        // only the part of the picture that is on screen is drawn again; the rest keeps what it had
+        if (s.fresh) {
+          gl.disable(gl.SCISSOR_TEST);
+          s.fresh = false;
+        } else {
+          const y0 = Math.max(0, -sr.top),
+            y1 = Math.min(s.h, VH - sr.top);
+          gl.enable(gl.SCISSOR_TEST);
+          gl.scissor(
+            0,
+            Math.max(0, Math.floor((s.h - y1) * dpr) - 2),
+            s.cv.width,
+            Math.ceil((y1 - y0) * dpr) + 4,
           );
-          io.observe(meterHost);
-          setTimeout(() => {
-            if (!fills[0]?.style.width) go();
-          }, 2400);
         }
-
-        /* ---- rotating aside ---- */
-        const el = document.getElementById("aside");
-        if (el && !REDUCED) {
-          const L = [
-            "Your five-hour window resets at <i>14:02</i>. Your deadline does not.",
-            "Rate limits are code review with worse timing.",
-            "Best of three: two agents agreed, one was right — not necessarily the same two.",
-            "It does not teleport sessions. It forwards the paperwork.",
-            "The agent said <i>done</i>. The gate asked it to define done.",
-            "Quota exhausted is a state, not a personality.",
-            "A reviewer from the same model family will forgive anything.",
-            "An unknown cost is reported as <i>unknown</i>. Budgets die of confident zeroes.",
-            "MIT licensed, which means the bugs are yours now too.",
-          ];
-          let i = 0;
-          const o = [...L.keys()].sort(() => Math.random() - 0.5);
-          setInterval(() => {
-            el.classList.add("out");
-            setTimeout(() => {
-              i = (i + 1) % o.length;
-              el.innerHTML = L[o[i]];
-              el.classList.remove("out");
-            }, 430);
-          }, 6000);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+      function frame(ms) {
+        if (last === null) last = ms;
+        const dt = Math.min(0.05, (ms - last) / 1000 || 0.016),
+          t = ms / 1000;
+        last = ms;
+        if (mouse.on) {
+          const e = 1 - Math.exp(-dt * 8);
+          sm.x += (mouse.x - sm.x) * e;
+          sm.y += (mouse.y - sm.y) * e;
         }
-      })();
-    </script>
-    <script>
-      /* Responsive glass deck with a pronounced but controlled depth response. */
-      (function () {
-        const REDUCED = matchMedia("(prefers-reduced-motion:reduce)").matches;
-        if (REDUCED) return;
-        const stage = document.getElementById("stage"),
-          deck = document.getElementById("deck");
-        if (!stage) return;
-        let tx = 0,
-          ty = 0,
-          cx = 0,
-          cy = 0,
-          idle = 0,
-          vis = true,
-          last = 0;
-        stage.addEventListener("pointermove", (e) => {
-          const r = stage.getBoundingClientRect();
-          tx = ((e.clientX - r.left) / r.width - 0.5) * 2;
-          ty = ((e.clientY - r.top) / r.height - 0.5) * 2;
+        sm.on += ((mouse.on ? 1 : 0) - sm.on) * (1 - Math.exp(-dt * 5));
+        for (const s of STAGES) {
+          const sr = s.cv.getBoundingClientRect(),
+            on = sr.bottom > 0 && sr.top < VH;
+          if (!s.fresh && (!on || s.id === "cost")) continue; // off screen, or a picture that never changes
+          if (on && !still && s.id === "top") story(dt);
+          if (on && !still && s.id === "race") race(dt);
+          draw(s, sr, t, dt);
+        }
+        if (!still) requestAnimationFrame(frame);
+      }
+      (() => {
+        const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
+        if (!tabs.length) return;
+        document.documentElement.classList.add("js");
+        const pick = (t, focus) => {
+          tabs.forEach((x) => {
+            const on = x === t;
+            x.setAttribute("aria-selected", on);
+            x.tabIndex = on ? 0 : -1;
+            document.getElementById(x.getAttribute("aria-controls")).classList.toggle("on", on);
+          });
+          if (focus) t.focus();
+        };
+        const choose = (t, focus) => {
+          pick(t, focus);
+          history.replaceState(null, "", "#" + t.getAttribute("aria-controls"));
+        }; // a chosen host is the address you share
+        tabs.forEach((t, i) => {
+          t.addEventListener("click", () => choose(t));
+          t.addEventListener("keydown", (e) => {
+            const n = tabs.length,
+              to =
+                e.key === "ArrowRight"
+                  ? (i + 1) % n
+                  : e.key === "ArrowLeft"
+                    ? (i + n - 1) % n
+                    : e.key === "Home"
+                      ? 0
+                      : e.key === "End"
+                        ? n - 1
+                        : -1;
+            if (to >= 0) {
+              e.preventDefault();
+              choose(tabs[to], true);
+            }
+          });
         });
-        stage.addEventListener("pointerleave", () => {
-          tx = 0;
-          ty = 0;
-        });
-        new IntersectionObserver((es) => {
-          vis = es[0].isIntersecting;
-        }).observe(stage);
-        (function loop(now) {
-          requestAnimationFrame(loop);
-          if (!vis || now - last < 32) return;
-          last = now;
-          idle += 0.02;
-          cx += (tx + Math.sin(idle) * 0.23 - cx) * 0.075;
-          cy += (ty + Math.cos(idle * 0.8) * 0.16 - cy) * 0.075;
-          deck.style.transform = `rotateY(${(cx * 13).toFixed(2)}deg) rotateX(${(-cy * 9).toFixed(2)}deg) translateZ(-18px)`;
-        })(0);
+        const follow = () => {
+          const t = tabs.find((x) => x.getAttribute("aria-controls") === location.hash.slice(1));
+          if (t) {
+            pick(t);
+            document.getElementById(location.hash.slice(1)).scrollIntoView();
+          }
+        };
+        window.addEventListener("hashchange", follow);
+        pick(
+          tabs.find((x) => x.getAttribute("aria-controls") === location.hash.slice(1)) || tabs[0],
+        );
       })();
+      document.querySelectorAll("[data-copy]").forEach((b) => {
+        let back = null;
+        b.addEventListener("click", () => {
+          const tell = (text) => {
+            b.querySelector("span").textContent = text;
+            clearTimeout(back);
+            back = setTimeout(() => {
+              b.querySelector("span").textContent = "Copy";
+            }, 2200);
+          };
+          const manual = () => {
+            const r = document.createRange();
+            r.selectNodeContents(b.querySelector("code"));
+            const sel = getSelection();
+            sel.removeAllRanges();
+            sel.addRange(r);
+            tell(/Mac/.test(navigator.platform) ? "Press ⌘C" : "Press Ctrl+C");
+          };
+          (navigator.clipboard
+            ? navigator.clipboard.writeText(b.dataset.copy)
+            : Promise.reject()
+          ).then(() => tell("Copied"), manual);
+        });
+      });
+      try {
+        buildAtlas();
+      } catch (err) {
+        console.error(err);
+      }
+      PARTS.forEach((p) => {
+        try {
+          const s = makeStage(p);
+          if (s) STAGES.push(s);
+        } catch (err) {
+          console.error(err);
+        }
+      }); // one part failing leaves the others
+      if (still || !STAGES.some((s) => s.id === "race")) raceT = 6.5; // nothing will run the race: show how it ended
+      if (STAGES.length) {
+        size();
+        ACC.forEach(label);
+        say(`Run 7f3a is working on ${ACC[0].key}.`);
+        race(0);
+        let again = null;
+        const all = () => {
+          clearTimeout(again);
+          again = setTimeout(() => {
+            size();
+            if (still) requestAnimationFrame(frame);
+          }, 120);
+        };
+        window.addEventListener("resize", all);
+        window.addEventListener("load", all);
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(all);
+        window.addEventListener("pointermove", (e) => {
+          if (e.pointerType === "touch") return;
+          mouse.x = e.clientX;
+          mouse.y = e.clientY;
+          if (sm.on < 0.05) {
+            sm.x = mouse.x;
+            sm.y = mouse.y;
+          }
+          mouse.on = true;
+        });
+        document.documentElement.addEventListener("pointerleave", () => {
+          mouse.on = false;
+        });
+        motion.addEventListener("change", () => {
+          // the reader asked for less motion, or for motion again
+          const was = still;
+          still = motion.matches;
+          if (still) {
+            raceT = 6.5;
+            race(0);
+            STAGES.forEach((s) => {
+              s.fresh = true;
+            });
+          }
+          if (was && !still) {
+            last = null;
+            requestAnimationFrame(frame);
+          } else requestAnimationFrame(frame);
+        });
+        requestAnimationFrame(frame);
+      } else {
+        dropsEl.remove();
+        say(`Run 7f3a is working on ${ACC[0].key}.`);
+        race(0);
+      }
     </script>
   </body>
 </html>

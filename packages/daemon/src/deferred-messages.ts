@@ -166,10 +166,10 @@ export class DeferredMessages {
     const held = (draft?.state === "waiting" && latest?.state === "held") || reheld;
     return { held, draft: latest };
   }
-  /** The closing fence is set first. Holds that cannot be saved are returned
-   * for the shutdown report and never stop the remaining holds or the abort. */
-  shutdown(): unknown[] {
+  /** Refuse dispatch and start all aborts before persisting any draft holds. */
+  shutdown(abortRuns?: () => void): unknown[] {
     this.closing = true;
+    abortRuns?.();
     const unsaved: unknown[] = [];
     for (const id of this.waiting)
       try {

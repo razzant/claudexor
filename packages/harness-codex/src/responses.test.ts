@@ -560,10 +560,10 @@ describe("Codex native SSE outcomes", () => {
       );
       const { failureEvidence, ...visible } = result;
       expect(visible.problem).toMatchObject({
-        code: "provider_failed",
-        context: { parameter: "[redacted]" },
+        code: "provider_content_refused",
+        retryable: false,
+        context: { vendorCode: "cyber_policy", parameter: "[redacted]" },
       });
-      expect(visible.problem?.context).not.toHaveProperty("vendorCode");
       expect(visible.problem?.context).not.toHaveProperty("requestId");
       expect(JSON.stringify(visible)).not.toContain(value);
       expect(failureEvidence?.bodyBase64).toBe(Buffer.from(wire).toString("base64"));

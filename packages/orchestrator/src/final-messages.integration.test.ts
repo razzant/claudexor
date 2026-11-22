@@ -21,13 +21,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { AnswerAssembly } from "@claudexor/core";
-import { writeFinalMessages } from "@claudexor/event-log";
+import { RETAINED_OUTPUT_PATH, writeFinalMessages } from "@claudexor/event-log";
 import {
   FINAL_MESSAGES_PATH,
   FinalMessagesHeader,
   RunEvent,
   type HarnessEvent,
 } from "@claudexor/schema";
+import { readArtifact } from "../../control-api/src/artifact-read.js";
 import { detailFor } from "../../control-api/src/run-projection.js";
 import type { DaemonRunRecord } from "../../control-api/src/run-record.js";
 import { createClaudeParser } from "../../harness-claude/src/parse.js";
@@ -196,6 +197,60 @@ describe("final messages (#307) through the run terminal", () => {
     expect(
       log.rows.filter((row) => row.type === "output.ready").map((row) => row.payload.path),
     ).not.toContain(FINAL_MESSAGES_PATH);
+  });
+
+  it("ask: an unmarked paragraph is retained, not promoted, when a later final repeats the next one", async () => {
+    const earlier =
+      "Synthetic sample: the first unmarked paragraph describes a plain blue notebook.";
+    const result =
+      "Synthetic sample: the second unmarked paragraph describes a plain green notebook.";
+    const o = await run({
+      mode: "ask",
+      profiles: ["a"],
+      script: function* ({ emit }) {
+        yield emit({ type: "started" });
+        yield emit({ type: "message", text: earlier });
+        yield emit({ type: "message", text: result });
+        yield emit({
+          type: "message",
+          text: result,
+          final: true,
+          payload: { final_source: "result" },
+        });
+        yield emit({ type: "completed" });
+      },
+    });
+    expect(o.result.lifecycle, o.result.summary).toBe("succeeded");
+    const runDir = o.result.runDir;
+    expect(readFileSync(join(runDir, "final/answer.md"), "utf8")).toBe(`# Answer\n\n${result}\n`);
+    const log = logOf(runDir);
+    const { header, records } = documentOf(runDir);
+    expect(log.finals).toHaveLength(1);
+    expect(records).toEqual(log.finals);
+    expect(records.map((line) => JSON.parse(line).payload.text)).toEqual([result]);
+    expect(header).toMatchObject({ state: "complete", count: 1 });
+    expect(log.terminal.payload.final_messages).toMatchObject({
+      path: FINAL_MESSAGES_PATH,
+      state: "complete",
+      count: 1,
+    });
+    expect(
+      log.rows.filter(
+        (row) => row.type === "output.ready" && row.payload.path === RETAINED_OUTPUT_PATH,
+      ),
+    ).toHaveLength(1);
+    const served = readArtifact({
+      kind: "fetch",
+      root: runDir,
+      relative: RETAINED_OUTPUT_PATH,
+      runArtifact: true,
+    });
+    if (served.kind !== "body") throw new Error("retained output artifact was not served");
+    const retained = Buffer.from(served.body).toString("utf8");
+    expect(retained).toBe(readFileSync(join(runDir, RETAINED_OUTPUT_PATH), "utf8"));
+    const earlierAt = retained.indexOf(earlier);
+    expect(earlierAt).toBeGreaterThanOrEqual(0);
+    expect(retained.indexOf(result)).toBeGreaterThan(earlierAt);
   });
 
   it("ask: identical, empty and envelope-only finals all stay; fragments, snapshots and another turn's result never enter", async () => {

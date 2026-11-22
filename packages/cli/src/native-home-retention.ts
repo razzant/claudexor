@@ -175,9 +175,15 @@ export function createNativeHomeRetention(deps: {
                 }
               },
             });
-            Object.assign(report, pruned, { status: "checked", reason: lifetime.preserves });
-            if (vetoed)
-              hold("native_home_veto", `${report.home}: ownership or setup changed during pruning`);
+            const { holdReason, ...counts } = pruned;
+            const reason =
+              holdReason ??
+              (vetoed ? `ownership or setup changed during pruning: ${report.home}` : undefined);
+            Object.assign(report, counts, {
+              status: "checked",
+              reason: reason ?? lifetime.preserves,
+            });
+            if (reason) hold("native_home_veto", reason);
             remaining -= pruned.deleted_files.length;
             result.freedBytes += pruned.freed_bytes;
             result.errors.push(...pruned.errors);

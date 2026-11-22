@@ -325,12 +325,14 @@ async function* runCliHarnessObserved(
   }
   if (!sawError && !aborted && exitCode !== null && exitCode !== 0) {
     const tail = stderrTail();
-    yield (tail ? opts.parseStderrFailure?.(tail, spec.session_id) : null) ?? {
-      type: "error",
-      session_id: spec.session_id,
-      ts: ts(),
-      error: `${label} exited with code ${exitCode}${tail ? `: ${tail}` : ""}`,
-    };
+    yield (
+      (tail ? opts.parseStderrFailure?.(tail, spec.session_id) : null) ?? {
+        type: "error",
+        session_id: spec.session_id,
+        ts: ts(),
+        error: `${label} exited with code ${exitCode}${tail ? `: ${tail}` : ""}`,
+      }
+    );
   } else if (!sawError && !aborted && exitCode === null && exitSignal) {
     yield {
       type: "error",

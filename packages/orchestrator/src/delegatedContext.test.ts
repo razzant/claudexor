@@ -64,11 +64,10 @@ describe("delegated execution content", () => {
     expect(failure).toMatchObject({
       phase: "context",
       category: "project",
-      // The refusal's open-vocabulary code stays on the HTTP problem surfaces;
-      // the durable RunFailure keeps the released 6.2.0 enum closed so strict
-      // old readers keep the WHOLE record. The safeMessage names the facts.
+      // Keep the released 6.2.0 failure code enum closed. The untracked file vanished
+      // before the atlas listed paths, so there is no per-path read error to report.
       code: null,
-      safeMessage: expect.stringContaining("REQUIRED.md (ENOENT)"),
+      safeMessage: expect.stringContaining("REQUIRED.md (not present in the context inventory)"),
     });
   });
 

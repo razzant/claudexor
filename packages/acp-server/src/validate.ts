@@ -3,6 +3,7 @@
  * (mode/harness/n/booleans), then the SHARED semantic run-control rules
  * (one owner in @claudexor/schema). Pure functions, no server state.
  */
+import { RequestError } from "@agentclientprotocol/sdk";
 import {
   ModeKind,
   validateOptionalNonEmptyString,
@@ -13,17 +14,20 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Validate our extension after the SDK has decoded the optional _meta envelope. */
 export function runControlsFromMeta(meta: unknown): Record<string, unknown> {
   if (meta === undefined || meta === null) return {};
-  if (!isPlainRecord(meta)) throw new Error("_meta must be an object");
+  if (!isPlainRecord(meta)) throw RequestError.invalidParams(undefined, "_meta must be an object");
   const controls = meta.claudexor;
   if (controls === undefined) return {};
-  if (!isPlainRecord(controls)) throw new Error("_meta.claudexor must be an object");
+  if (!isPlainRecord(controls)) {
+    throw RequestError.invalidParams(undefined, "_meta.claudexor must be an object");
+  }
   if (
     controls.includeFinalMessages !== undefined &&
     typeof controls.includeFinalMessages !== "boolean"
   ) {
-    throw new Error("includeFinalMessages must be a boolean");
+    throw RequestError.invalidParams(undefined, "includeFinalMessages must be a boolean");
   }
   return controls;
 }

@@ -616,7 +616,11 @@ describe("AcpServer official SDK projection", () => {
     await withRawClient(
       async (params) => {
         calls.push(params);
-        return { sessionId: "notes", cwd, turns: [] };
+        return {
+          sessionId: "notes",
+          cwd,
+          turns: [{ run: { runId: "run-note", finalMessages: null } }],
+        };
       },
       async (exchange) => {
         let id = 1;
@@ -627,44 +631,58 @@ describe("AcpServer official SDK projection", () => {
           params: { protocolVersion: 1, clientCapabilities: {} },
         });
         expect(handshake).toMatchObject({ id, result: { protocolVersion: 1 } });
+        const namespaceError = "_meta.claudexor must be an object";
+        const optionError = "includeFinalMessages must be a boolean";
         for (const method of ["session/load", "session/prompt"]) {
           const params =
             method === "session/load"
               ? { cwd, mcpServers: [] }
               : { prompt: [{ type: "text", text: "Read the note." }] };
-          for (const _meta of [
-            "notes",
-            [],
-            { claudexor: null },
-            { claudexor: [] },
-            { claudexor: { includeFinalMessages: "true" } },
-            { claudexor: { includeFinalMessages: null } },
-          ]) {
+          for (const [_meta, message] of [
+            [{ claudexor: null }, namespaceError],
+            [{ claudexor: [] }, namespaceError],
+            [{ claudexor: { includeFinalMessages: "true" } }, optionError],
+            [{ claudexor: { includeFinalMessages: null } }, optionError],
+          ] as const) {
             const reply = await exchange({
               jsonrpc: "2.0",
               id: ++id,
               method,
               params: { ...params, sessionId: "notes", _meta },
             });
-            expect(reply.id).toBe(id);
-            expect(reply.error).toBeDefined();
+            expect(reply, `${method}: ${JSON.stringify(_meta)}`).toMatchObject({
+              jsonrpc: "2.0",
+              id,
+              error: { code: -32602, message: `Invalid params: ${message}` },
+            });
             expect(reply).not.toHaveProperty("result");
           }
         }
         expect(calls).toEqual([]);
-        const ordinary = await exchange({
-          jsonrpc: "2.0",
-          id: ++id,
-          method: "session/load",
-          params: {
-            cwd,
-            sessionId: "notes",
-            mcpServers: [],
-            _meta: { claudexor: { includeFinalMessages: false } },
-          },
-        });
-        expect(ordinary).toMatchObject({ id, result: {} });
-        expect(calls).toHaveLength(1);
+        // The SDK normalizes a non-record outer envelope to absent metadata.
+        // Neither that normalization nor an explicit false can opt into addresses.
+        for (const _meta of [
+          undefined,
+          null,
+          "notes",
+          [],
+          { claudexor: { includeFinalMessages: false } },
+        ]) {
+          const previousCalls = calls.length;
+          const ordinary = await exchange({
+            jsonrpc: "2.0",
+            id: ++id,
+            method: "session/load",
+            params: { cwd, sessionId: "notes", mcpServers: [], _meta },
+          });
+          expect(ordinary, `_meta = ${JSON.stringify(_meta)}`).toEqual({
+            jsonrpc: "2.0",
+            id,
+            result: {},
+          });
+          expect(calls).toHaveLength(previousCalls + 1);
+          expect(calls.at(-1)).not.toHaveProperty("includeFinalMessages");
+        }
       },
     );
   });

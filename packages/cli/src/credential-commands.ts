@@ -117,7 +117,7 @@ export async function accountsCommandWithDeps(
         : next.kind === "api_key_route"
           ? "API key route"
           : `none (${next.reason})`;
-    print(`  next up (default model) ${pool.harness_id}: ${label}`);
+    print(`  pool order (default model) ${pool.harness_id}: ${label}`);
   }
   if (evidence.routingEvidenceProblem) print(`  ${evidence.routingEvidenceProblem}`);
   return 0;
@@ -506,14 +506,14 @@ export async function profilesCommandWithDeps(
       for (const line of routingEvidenceLines(evidence, harnessId, profile.profile_id))
         print(`    ${line}`);
     }
-    // Informational: who an UNPINNED run of the configured DEFAULT model routes
-    // to next (never a user setting, never a forecast for another model).
+    // Informational: the first candidate in ordinary pool order for the configured
+    // DEFAULT model (never a user setting, a run's promise or another model's forecast).
     const nextUp = result.accountPools.find((pool) => pool.harness_id === harnessId)?.next_up;
-    if (nextUp?.kind === "profile") print(`  next up (default model): ${nextUp.profileId}`);
+    if (nextUp?.kind === "profile") print(`  pool order (default model): ${nextUp.profileId}`);
     else if (nextUp?.kind === "api_key_route")
-      print(`  next up (default model): API key (paid route)`);
+      print(`  pool order (default model): API key (paid route)`);
     else if (nextUp?.kind === "none")
-      print(`  next up (default model): nothing routable (${nextUp.reason})`);
+      print(`  pool order (default model): nothing routable (${nextUp.reason})`);
   }
   if (evidence.routingEvidenceProblem) print(evidence.routingEvidenceProblem);
   return 0;

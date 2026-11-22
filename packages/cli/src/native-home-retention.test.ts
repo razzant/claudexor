@@ -24,6 +24,10 @@ let root: string;
 let before: string | undefined;
 let sql: Awaited<ReturnType<typeof sqlFixture>>;
 const id = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+/** An independent rollout's header: the Codex adapter reads each rollout's first line. */
+const header = (n: number) =>
+  `${JSON.stringify({ type: "session_meta", payload: { id: id(n) } })}\n`;
+const ROLLOUT_BYTES = Buffer.byteLength(header(0));
 const old = new Date("2020-01-01");
 let busy = false;
 beforeEach(async () => {
@@ -62,7 +66,7 @@ function seed(n: number) {
     `rollout-2020-01-01T00-00-00-${id(n)}.jsonl`,
   );
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `rollout ${n}`);
+  writeFileSync(file, header(n));
   utimesSync(file, old, old);
   return file;
 }
@@ -178,7 +182,7 @@ it("protects archived SQL sessions, retained run capsules and resumable pins, an
   expect(existsSync(discard)).toBe(true);
   const result = await gc(request());
   expect(result.errors).toEqual([]);
-  expect(result.freedBytes).toBe(9);
+  expect(result.freedBytes).toBe(ROLLOUT_BYTES);
   expect(existsSync(discard)).toBe(false);
   for (const file of [held, heldRun, pinned]) expect(existsSync(file)).toBe(true);
 });
@@ -208,7 +212,7 @@ it("keeps homes during setup work, then retires after setup settles", async () =
   expect((await gc(request())).reports.every((row) => row.status === "not_pruned")).toBe(true);
   expect(existsSync(cold)).toBe(true);
   busy = false;
-  expect((await gc(request())).freedBytes).toBe(9);
+  expect((await gc(request())).freedBytes).toBe(ROLLOUT_BYTES);
 });
 
 it.each(["SQL session", "new project session", "completed run capsule", "active setup"])(
@@ -254,7 +258,7 @@ it.each(["SQL session", "new project session", "completed run capsule", "active 
     expect(admitted).toBe(true);
     if (kind === "active setup") expect(interrupted.errors.join()).toContain("changed");
     else expect(interrupted.errors).toEqual([]);
-    expect(interrupted.freedBytes).toBe(kind === "active setup" ? 0 : 9);
+    expect(interrupted.freedBytes).toBe(kind === "active setup" ? 0 : ROLLOUT_BYTES);
     expect(existsSync(held)).toBe(true);
     expect(existsSync(neighbor)).toBe(kind === "active setup");
     busy = false;
@@ -280,7 +284,7 @@ it("integrates native cleanup with GC even without opt-in and discloses it only 
     preview.native_homes?.find((row) => row.profile_id === "disabled")?.deleted_files,
   ).toHaveLength(1);
   const result = await make()({ dry_run: false });
-  expect(result.freed_bytes).toBe(9);
+  expect(result.freed_bytes).toBe(ROLLOUT_BYTES);
   expect(result).not.toHaveProperty("native_homes");
 });
 it("declares unsupported vendor contracts instead of guessing database ownership", () => {
@@ -340,6 +344,124 @@ it("keeps foreign Codex entries informational across repeated passes", async () 
     expect(existsSync(foreign)).toBe(true);
   }
 });
+
+it("records an unreadable retained header as a home veto until the header is complete", async () => {
+  const cold = seed(1);
+  const fork = seed(2);
+  const line = JSON.stringify({
+    type: "session_meta",
+    payload: { id: id(2), history_base: { thread_id: id(1) } },
+  });
+  writeFileSync(fork, line);
+  const other = seed(3);
+  const run = recordedNative(native());
+  const request = { dry_run: false, native_home_report: true };
+  const receipt = await run(request);
+  const profileReport = receipt.native_homes!.find((home) => home.profile_id === "disabled")!;
+  expect(profileReport.reason).toContain("no complete first line");
+  expect(profileReport.reason).toContain(fork);
+  expect(profileReport).toMatchObject({ deleted_files: [], freed_bytes: 0, truncated: false });
+  expect(receipt.held.native_homes).toBe(1);
+  expect(receipt.holds).toEqual([
+    { class: "native_home_veto", count: 1, example: profileReport.reason },
+  ]);
+  expect(readLastRetention(sql.store)).toMatchObject({
+    outcome: "held",
+    held: { native_homes: 1 },
+    holds: [
+      {
+        class: "native_home_veto",
+        count: 1,
+        example: expect.stringContaining("no complete first line"),
+      },
+    ],
+  });
+  expect([cold, fork, other].every(existsSync)).toBe(true);
+  writeFileSync(fork, line + "\n");
+  const released = await run(request);
+  expect(released.native_homes!.find((home) => home.profile_id === "disabled")).toMatchObject({
+    errors: [],
+    deleted_files: [other],
+    freed_bytes: ROLLOUT_BYTES,
+  });
+  expect(released.holds).toEqual([]);
+  expect(readLastRetention(sql.store)).toMatchObject({
+    outcome: "completed",
+    held: { native_homes: 0 },
+    holds: [],
+  });
+  expect([cold, fork].every(existsSync)).toBe(true);
+  expect(existsSync(other)).toBe(false);
+});
+
+it.each([false, true])(
+  "records a referenced fork and its unreadable base (unrelated cold file: %s)",
+  async (deferred) => {
+    const base = seed(1);
+    writeFileSync(base, "torn");
+    utimesSync(base, old, old);
+    const fork = seed(2);
+    const payload = { id: id(2), history_base: { thread_id: id(1) } };
+    writeFileSync(fork, JSON.stringify({ type: "session_meta", payload }) + "\n");
+    const thread = sql.graph.threads.createThread({ title: "Fork", workspace: "in_place" });
+    sql.graph.threads.recordSession(thread.id, "codex", id(2), null, "disabled");
+    const other = deferred ? seed(3) : undefined;
+    const receipt = await recordedNative(native())({ dry_run: false, native_home_report: true });
+    const report = receipt.native_homes!.find((home) => home.profile_id === "disabled")!;
+    expect(report).toMatchObject({
+      deleted_files: [],
+      kept_referenced: 2,
+      freed_bytes: 0,
+      truncated: false,
+      errors: deferred ? [expect.stringContaining(base)] : [],
+    });
+    expect(readLastRetention(sql.store)).toMatchObject({
+      outcome: deferred ? "held" : "completed",
+      held: { native_homes: deferred ? 1 : 0 },
+    });
+    expect(receipt.holds).toEqual(
+      deferred ? [{ class: "native_home_veto", count: 1, example: report.reason }] : [],
+    );
+    if (other) {
+      expect(report.reason).toContain(base);
+      expect(existsSync(other)).toBe(true);
+    }
+    expect([base, fork].every(existsSync)).toBe(true);
+  },
+);
+
+it.each([false, true])(
+  "records the sole unreadable candidate's bytes and outcome (another candidate deferred: %s)",
+  async (deferred) => {
+    const bad = seed(1);
+    writeFileSync(bad, "bad\n");
+    utimesSync(bad, old, old);
+    const other = deferred ? seed(2) : undefined;
+    const run = recordedNative(native());
+    const held = { native_homes: deferred ? 1 : 0 };
+    const holds = deferred
+      ? [{ class: "native_home_veto", count: 1, example: expect.stringContaining(bad) }]
+      : [];
+    for (const dry_run of [true, false]) {
+      const receipt = await run({ dry_run, native_home_report: true });
+      expect(receipt).toMatchObject({ held, truncated: deferred, freed_bytes: 4, errors: [] });
+      expect(receipt.holds).toEqual(holds);
+      expect(receipt.native_homes!.find((home) => home.profile_id === "disabled")).toMatchObject({
+        deleted_files: [bad],
+        freed_bytes: 4,
+        truncated: deferred,
+      });
+      expect(existsSync(bad)).toBe(dry_run);
+      if (other) expect(existsSync(other)).toBe(true);
+    }
+    expect(readLastRetention(sql.store)).toMatchObject({
+      outcome: deferred ? "truncated" : "completed",
+      freed_bytes: 4,
+      held,
+      holds: deferred ? [{ class: "native_home_veto", count: 1 }] : [],
+    });
+  },
+);
 
 it("preserves native hold history when cancelled as native evaluation starts", async () => {
   const repo = join(root, "repo");

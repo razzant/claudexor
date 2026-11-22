@@ -116,10 +116,12 @@ async function cursorSpawn(
       return catalog;
     },
     runCliHarness: async function* (opts) {
-      yield* opts.parseEvent(
-        { type: "system", subtype: "init", model: initModel },
-        opts.spec.session_id,
-      ) ?? [];
+      yield* (
+        opts.parseEvent(
+          { type: "system", subtype: "init", model: initModel },
+          opts.spec.session_id,
+        ) ?? []
+      );
       yield { type: "completed", session_id: opts.spec.session_id, ts: new Date(0).toISOString() };
     },
   });

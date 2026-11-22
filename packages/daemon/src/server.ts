@@ -10,6 +10,7 @@ import {
   normalizeCancelReasonCode,
   isTerminalLifecycle,
   type CancelReasonCode,
+  type DaemonStopSender,
   type DeferredMessageStopReport,
   type RuntimeConcurrencyCaps,
   type DaemonStoreFacts,
@@ -43,12 +44,17 @@ import {
 } from "./serving-admission.js";
 import { socketAlive } from "./socket-probe.js";
 import { isWindowsPipePath } from "./token.js";
-import { dispatchShutdownRpc, type RuntimeReplacementAuthority } from "./daemon-shutdown-rpc.js";
+import {
+  JobAbortController,
+  dispatchShutdownRpc,
+  type RuntimeReplacementAuthority,
+} from "./daemon-shutdown-rpc.js";
 export { jobStateFromResult, socketAlive, type JobRecord };
 
 export interface RunContext {
   jobId: string;
   signal: AbortSignal;
+  stopSender?: () => DaemonStopSender | undefined;
   registerTimeLimit?: (timer: RunTimeLimit) => void;
   onRunStart: (info: { runId: string; taskId: string; runDir: string }) => void;
 }
@@ -81,7 +87,7 @@ export interface DaemonOptions extends RuntimeReplacementAuthority {
    * The observer persists one sanitized typed problem on the turn so it is
    * never a silent orphan bubble and no recovery field is dropped. */
   onTurnEnqueueFailed?: (turnId: string, problem: TurnEnqueueProblemValue) => void;
-  onShutdownRequested?: () => Promise<void>;
+  onShutdownRequested?: (sender: DaemonStopSender) => Promise<void>;
   onRuntimeReplacementRequested?: () => Promise<void>;
   /** Issue #165 D5 admission snapshot; absent embedders always serve normal. */
   servingMode?: DaemonServingModeSnapshot;
@@ -99,7 +105,7 @@ export class DaemonServer {
   private readonly queue: AdmissionJob[] = [];
   private readonly activeJobs = new Map<string, AdmissionJob>();
   private readonly cancelled = new Set<string>();
-  private readonly controllers = new Map<string, AbortController>();
+  private readonly controllers = new Map<string, JobAbortController>();
   private readonly timeLimits = new RunTimeLimits();
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly taskFailures: unknown[] = [];
@@ -172,9 +178,9 @@ export class DaemonServer {
     await listenOnDaemonEndpoint(this.server, this.opts.socketPath, pipeEndpoint);
   }
 
-  stop(): Promise<void> {
+  stop(sender?: DaemonStopSender): Promise<void> {
     this.stopping = true;
-    this.stopPromise ??= this.stopOnce();
+    this.stopPromise ??= this.stopOnce(false, sender);
     return this.stopPromise;
   }
 
@@ -186,16 +192,10 @@ export class DaemonServer {
     return this.stopPromise;
   }
 
-  private async stopOnce(recoverStore = false): Promise<void> {
-    // Unsaved next-message holds join the drain report; they never block the abort.
-    const unsaved = this.deferred.shutdown();
-    for (const controller of this.controllers.values()) {
-      try {
-        controller.abort("host_cancelled" satisfies CancelReasonCode);
-      } catch {
-        /* already gone */
-      }
-    }
+  private async stopOnce(recoverStore = false, sender?: DaemonStopSender): Promise<void> {
+    const unsaved = this.deferred.shutdown(() => {
+      for (const controller of this.controllers.values()) controller.shutdown(sender);
+    });
 
     const settled = await Promise.allSettled([...this.activeTasks, this.deferred.drained()]);
     const rejected = settled.filter(
@@ -291,7 +291,7 @@ export class DaemonServer {
       params,
       this.queue.length + this.active + this.activeTasks.size,
       () => this.commands.queries.active(),
-      this.opts.onShutdownRequested ?? (() => this.stop()),
+      this.opts.onShutdownRequested ?? ((sender) => this.stop(sender)),
       this.opts.onRuntimeReplacementRequested,
       this.opts.runtimeIdentity,
       this.opts.runtimeLeaseOwner,
@@ -399,9 +399,7 @@ export class DaemonServer {
       if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, rec.id);
     }
     if (rec.runId) this.opts.delegationAuthority?.beginParentClose(rec.runId);
-    // The abort reason is the one channel a cancel's provenance rides into
-    // the terminal writers. Only enum members reach this parameter: RunControl
-    // validates the HTTP boundary, normalizeCancelReasonCode the raw RPC.
+    // The validated reason reaches the terminal through the first abort.
     this.controllers.get(jid)?.abort(reasonCode || undefined);
     // The ordinary stop above never waits on this write. If the hold cannot be
     // saved, its typed failure follows the stop and the fences keep the next
@@ -484,13 +482,14 @@ export class DaemonServer {
   }
 
   private async runJob(id: string, rec: JobRecord): Promise<void> {
-    const controller = new AbortController();
+    const controller = new JobAbortController();
     this.controllers.set(id, controller);
     rec = this.updateRecord(rec, { state: "running", startedAt: nowIso() });
     try {
       const result = await this.opts.runner(rec.params, {
         jobId: id,
         signal: controller.signal,
+        stopSender: () => controller.stopSender,
         registerTimeLimit: (timer) =>
           this.timeLimits.register(id, timer, () => !controller.signal.aborted),
         onRunStart: (info) => {

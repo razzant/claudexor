@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -11,14 +12,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import type { HarnessAdapter } from "@claudexor/core";
+import { RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
 import {
   ConformanceReport,
+  FINAL_MESSAGES_PATH,
+  FinalMessagesHeader,
   HarnessManifest,
   type HarnessRunSpec,
   type QuotaSnapshot,
+  type RunEvent,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { AcpServer } from "../../acp-server/src/index.js";
+import { detailFor } from "../../control-api/src/run-projection.js";
 import { readRunEventsWithIntegrity } from "../../control-api/src/run-timeline.js";
 import { codexNativeWarningEvents } from "../../harness-codex/src/app-server-warnings.js";
 import { Orchestrator } from "./orchestrator.js";
@@ -246,7 +252,7 @@ const inJson = (text: string) => JSON.stringify(text).slice(1, -1);
 
 describe("Events read after Stop are exact evidence with masked diagnostics (INV-146, #337)", () => {
   it.each(["ask", "plan", "agent"] as const)(
-    "%s journals the drained working text exactly, masks its diagnostics and publishes none of it",
+    "%s retains exact drained finals as evidence, not as the cancelled run's answer",
     async (mode) => {
       // The working text is one the diagnostic masking would change.
       expect(redactSecrets(DRAINED_WORKING)).not.toBe(DRAINED_WORKING);
@@ -269,6 +275,7 @@ describe("Events read after Stop are exact evidence with masked diagnostics (INV
         },
       });
       expect(out.result.lifecycle).toBe("cancelled");
+      expect(out.result.facts.reason).toBe("user_cancelled");
       expect(out.callbacks.some((c) => !c.aborted && c.event.text === TRIGGER)).toBe(true);
       // Nothing read after Stop reaches the live callback or an ACP client.
       expect(out.callbacks.filter((c) => c.aborted)).toEqual([]);
@@ -281,7 +288,8 @@ describe("Events read after Stop are exact evidence with masked diagnostics (INV
         after_stop: true,
       });
       expect(JSON.stringify(out.acp)).not.toContain(inJson(DRAINED_WORKING));
-      const files = readdirSync(out.result.runDir, { recursive: true, withFileTypes: true })
+      const { runDir, runId, taskId } = out.result;
+      const files = readdirSync(runDir, { recursive: true, withFileTypes: true })
         .filter((entry) => entry.isFile())
         .map((entry) => join(entry.parentPath, entry.name));
       const journals = files.filter((file) => file.endsWith("events.jsonl"));
@@ -295,11 +303,63 @@ describe("Events read after Stop are exact evidence with masked diagnostics (INV
         expect(text, file).not.toContain(DRAINED_VENDOR);
         expect(text, file).not.toContain(DRAINED_WARNING);
       }
-      // Evidence only: no answer, summary or plan carries it. The retained-output
-      // projection replays the journal's assistant text, so it is evidence too.
+      // #307 keeps both complete final events in journal order, with timing and
+      // provenance untouched. Other drained events do not become finals.
+      const journal = readFileSync(join(runDir, "events.jsonl"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => ({ line, event: JSON.parse(line) as RunEvent }));
+      const finals = journal.filter(({ event }) => {
+        const text = event.payload["text"];
+        return event.type === "harness.event" && (text === TRIGGER || text === DRAINED_WORKING);
+      });
+      expect(finals.map(({ event }) => event.payload["text"])).toEqual([TRIGGER, DRAINED_WORKING]);
+      const finalMessagesPath = join(runDir, FINAL_MESSAGES_PATH);
+      const bytes = readFileSync(finalMessagesPath);
+      const [first, ...records] = bytes.toString("utf8").split("\n");
+      const header = FinalMessagesHeader.parse(JSON.parse(first!));
+      expect(header).toMatchObject({ runId, state: "complete", count: 2 });
+      expect(records).toEqual([...finals.map(({ line }) => line), ""]);
+      const terminal = journal.find(({ event }) => event.type === "run.failed")!.event;
+      expect(header.throughEventSeq).toBeGreaterThanOrEqual(finals[1]!.event.seq!);
+      expect(header.throughEventSeq).toBeLessThan(terminal.seq!);
+      expect(terminal.payload["final_messages"]).toEqual({
+        path: FINAL_MESSAGES_PATH,
+        state: "complete",
+        count: 2,
+        throughEventSeq: header.throughEventSeq,
+        bytes: bytes.length,
+        sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+      });
+
+      const outputPaths = journal
+        .filter(({ event }) => event.type === "output.ready")
+        .map(({ event }) => event.payload["path"]);
+      expect(outputPaths).not.toContain(FINAL_MESSAGES_PATH);
+      const record = {
+        id: "stop-fixture",
+        state: "cancelled",
+        runId,
+        taskId,
+        runDir,
+        params: { mode },
+      };
+      const ordinary = detailFor(record);
+      const withEvidence = detailFor(record, [], undefined, null, [], {
+        includeFinalMessages: true,
+      });
+      expect(ordinary).not.toHaveProperty("finalMessages");
+      expect(withEvidence.finalMessages).toEqual(terminal.payload["final_messages"]);
+      expect(withEvidence.primaryOutput).toEqual(ordinary.primaryOutput);
+      expect(withEvidence.summary.outputReadyState).toBe("diagnostic");
+      expect(withEvidence.primaryOutput?.path).not.toBe(FINAL_MESSAGES_PATH);
+
+      // The pre-existing retained report is diagnostic too. No other file,
+      // including any answer, summary or plan, may contain the drained text.
+      const retainedPath = join(runDir, RETAINED_OUTPUT_PATH);
+      expect(readFileSync(retainedPath, "utf8")).toContain(DRAINED_WORKING);
       const others = files.filter(
-        (file) =>
-          !file.endsWith("events.jsonl") && !file.endsWith(join("final", "retained-output.md")),
+        (file) => !journals.includes(file) && file !== retainedPath && file !== finalMessagesPath,
       );
       expect(others.filter((file) => readFileSync(file, "utf8").includes(DRAINED_TOKEN))).toEqual(
         [],

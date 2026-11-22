@@ -69,6 +69,7 @@ export * from "./workspace-preparation.js";
 export * from "./thread.js";
 export * from "./project.js";
 export * from "./cancel-reason.js";
+export * from "./daemon-stop-sender.js";
 export * from "./control.js";
 export * from "./control-pending-interaction.js";
 export * from "./control-process-scope.js";

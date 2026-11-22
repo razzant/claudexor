@@ -111,14 +111,8 @@ export function hasMoreReleasePages(batch: unknown, pageSize = 100): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// npm downloads authority: lifetime seed + idempotent daily deltas + gap repair
+// npm downloads authority: current cumulative counts from complete daily ranges
 // ---------------------------------------------------------------------------
-
-/** One day of the npm range payload (`downloads: [{ day, downloads }]`). */
-export interface NpmDailyPoint {
-  day?: string;
-  downloads?: number;
-}
 
 /** UTC day string (YYYY-MM-DD) so cron time zone never splits a run in two. */
 export function utcDate(d: Date = new Date()): string {
@@ -132,26 +126,61 @@ export function addDaysUtc(dateStr: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-/**
- * Sum npm daily downloads for days strictly after `afterDate` through `through`
- * inclusive. This is the daily-delta engine: extending a cumulative total by
- * only the untallied tail, so a same-day rerun (afterDate = the prior row's
- * date) never double-counts and a missed cron day is recovered (gap repair)
- * without recomputing lifetime from scratch.
- */
-export function sumNpmDeltaAfter(
-  daily: readonly NpmDailyPoint[] | null | undefined,
-  afterDate: string,
+/** npm can revise any closed day; build one prefix sum from freshly validated ranges. */
+export async function fetchNpmTotals(
+  pkg: string,
+  first: string,
   through: string,
-): number {
+  readRange: (
+    from: string,
+    to: string,
+  ) => Promise<{
+    package?: string;
+    start?: string;
+    end?: string;
+    downloads?: { day: string; downloads: number }[];
+  }>,
+): Promise<Map<string, number>> {
+  const totals = new Map<string, number>();
   let sum = 0;
-  for (const point of daily ?? []) {
-    if (typeof point?.day !== "string") continue;
-    if (point.day > afterDate && point.day <= through) {
-      sum += typeof point.downloads === "number" ? point.downloads : 0;
+  for (let from = first; from <= through;) {
+    const limit = addDaysUtc(from, 364);
+    const to = limit < through ? limit : through;
+    const range = await readRange(from, to);
+    if (
+      range?.package !== pkg ||
+      range.start !== from ||
+      range.end !== to ||
+      !Array.isArray(range.downloads)
+    ) {
+      throw new Error(`npm returned an incomplete or mismatched range for ${pkg} ${from}:${to}`);
     }
+    const counts = new Map<string, number>();
+    for (const point of range.downloads) {
+      if (
+        !point ||
+        point.day < from ||
+        point.day > to ||
+        counts.has(point.day) ||
+        !Number.isSafeInteger(point.downloads) ||
+        point.downloads < 0
+      ) {
+        throw new Error(`invalid or duplicate npm daily point in ${from}:${to}`);
+      }
+      counts.set(point.day, point.downloads);
+    }
+    for (let day = from; day <= to; day = addDaysUtc(day, 1)) {
+      const n = counts.get(day);
+      if (n === undefined) throw new Error(`npm range is missing ${day}`);
+      sum += n;
+      if (!Number.isSafeInteger(sum)) throw new Error("invalid cumulative npm count");
+      totals.set(day, sum);
+      counts.delete(day);
+    }
+    if (counts.size) throw new Error(`npm range contains unexpected dates in ${from}:${to}`);
+    from = addDaysUtc(to, 1);
   }
-  return sum;
+  return totals;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,16 +257,29 @@ export function upsertRow(rows: readonly MetricsRow[], row: MetricsRow): Metrics
   return next;
 }
 
-/**
- * The latest persisted row at or before `date`. Same-day reruns reuse its npm
- * closed-day watermark while refreshing the live GitHub cumulative count.
- */
-export function latestRowAtOrBefore(rows: readonly MetricsRow[], date: string): MetricsRow | null {
-  let latest: MetricsRow | null = null;
-  for (const r of rows) {
-    if (r.date <= date && (latest === null || r.date > latest.date)) latest = r;
-  }
-  return latest;
+/** Refresh today's live GitHub observation, but preserve every earlier GitHub snapshot. */
+export function reconcileMetrics(
+  existing: readonly MetricsRow[],
+  today: string,
+  githubDownloads: number,
+  npmTotals: ReadonlyMap<string, number>,
+): MetricsRow[] {
+  const snapshot = {
+    date: today,
+    npm_through: addDaysUtc(today, -1),
+    github_release_downloads: githubDownloads,
+    npm_total: 0,
+    total_downloads: 0,
+  };
+  return upsertRow(existing, snapshot).map((row) => {
+    const npm_total = npmTotals.get(row.npm_through);
+    if (npm_total === undefined)
+      throw new Error(`no complete npm history through ${row.npm_through}`);
+    const total_downloads = npm_total + row.github_release_downloads;
+    if (!Number.isSafeInteger(total_downloads))
+      throw new Error(`invalid download total on ${row.date}`);
+    return { ...row, npm_total, total_downloads };
+  });
 }
 
 export function formatThousands(n: number): string {

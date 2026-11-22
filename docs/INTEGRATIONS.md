@@ -202,7 +202,9 @@ Package-manager copies whose own verb only advises retain that sentence in the
 result; the host must not invent a package-manager action. Windows routes cover
 Claude, Codex, Antigravity, Grok and Copilot. Cursor Windows (#667), OpenCode's
 second line and unattended Windows installation (#668) remain unsupported.
-OpenCode commands and conversion replacements stay on 1.x. Copilot's Windows MSI
+OpenCode commands and conversion replacements stay on 1.x; an Update that leaves
+another major selected returns `program_unsupported_major` with its change kept.
+Copilot's Windows MSI
 folder is declared for runs, probes and inventory, so it is found without
 restarting the engine. Copilot Update can return GitHub's unauthenticated
 rate-limit refusal; that vendor sentence is the result. Vendor programs live in vendor directories and
@@ -303,11 +305,14 @@ gate's explicit exemptions):
   are kept as diagnostics. Consumers must use both
   facts: the process lifecycle is cancelled, while user-facing presentation is
   "Time limit reached" and ACP reports a refusal; an explicit Stop remains
-  `user_cancelled` / cancelled. A control may additionally carry the typed
-  `reason_code` (`user_cancelled` | `host_cancelled` | `owner_task_gone`), so
-  a host-initiated stop (daemon shutdown, MCP host teardown, an integrating
-  host whose owning task died) records its real provenance instead of
-  coercing to user intent; an absent code keeps the historical coercion.
+  `user_cancelled` / cancelled. A control's optional `reason_code`
+  (`user_cancelled` | `host_cancelled` | `owner_task_gone`) defaults to
+  `user_cancelled`. Ordinary authenticated `claudexor.shutdown` accepts optional
+  `params.sender` fields `name` (`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`), `version`
+  (three dot-separated groups of 1–10 digits), `pid` and `ppid` (positive int32).
+  The CLI sends `claudexor-cli`. Invalid fields and recognized secret formats
+  are dropped. The log and retained run timelines mark the sender as client-reported
+  or unknown. These fields do not affect Stop authorization.
 - Live timers: `GET /v2/runs/:id/time-limit` reads the current snapshot;
   `PATCH` accepts `set`, `extend`, or `disable`. MCP exposes the same controls
   through `claudexor_run_time_limit`. Mutations require `expectedRevision` from
@@ -553,8 +558,11 @@ cursor. A quota marker or a rejected/lost cursor invalidates the quota and
 and wait for an explicit Accounts Refresh rather than automatically fetching a
 new snapshot. The engine-default API-key fallback can appear as the native
 `next_up` route, but it never becomes an account row or changes the account
-count. `next_up` in either listing is the configured default model's verdict,
-never a forecast for another model.
+count. `next_up` in either listing is informational: the first candidate in ordinary
+pool order for the configured default model, which a run's own pin, thread
+binding, model, mode, paid budget or auth preference can change, and never a
+forecast for another model (see
+[Credential profiles](ARCHITECTURE.md#credential-profiles-inv-135-unified-account-model)).
 
 The MCP `claudexor_accounts` tool projects the structured Accounts response
 against its advertised union before returning it to the SDK. This is a
@@ -689,7 +697,8 @@ For opted-in reads, cache the serving daemon's valid `GET /v2/operations` catalo
 Add `?includeFinalMessages=true` only if `get:runs.id` advertises it. If catalog
 discovery fails, use the plain GET and retry discovery on the next opt-in.
 For a [recorded document](ARCHITECTURE.md#final-messages),
-fetch `GET /v2/runs/:id/artifacts/<finalMessages.path>` and verify `bytes` and `sha256`.
+use its `path` in `GET /v2/runs/:id/artifacts/<path>`. Before parsing the
+download, check its size and SHA-256 against the pointer.
 
 Each failed try can carry `vendorFailure` as `{code, message, source}`, even
 without an OS exit code. Code or message can be null. A null or absent record
@@ -2128,8 +2137,11 @@ host owns the conversation and tool permissions. The local engine selects a
 harness and retains the run and its result. [Set up the CLI and account](../README.md#set-up-the-cli-and-account).
 
 - **Hermes** reads `plugin.json`, `mcp.json`, and the `claudexor:claudexor`
-  skill from `plugins/hermes`. Its Git installer pins the plugin by full commit
-  SHA in the selected profile. [Install in Hermes](../README.md#install-in-hermes) · [Hermes plugin management](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins).
+  skill from `plugins/hermes`. [Install from a reviewed Git commit](../README.md#install-in-hermes)
+  by full SHA in the selected profile on Hermes 0.23.1 or later, the oldest
+  release tested; no catalog is required. Install by name
+  only if the reviewed entry appears in your Hermes catalog.
+  [Hermes plugin management](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins).
 - **Pi** can install the `claudexor` npm package when its published manifest lists
   the extension at `./pi/index.js`, or load `packages/claudexor` from a Git checkout
   containing it. The extension registers the server through `pi.registerMcpServer`
@@ -2148,6 +2160,33 @@ pass its `harness_id` as `harness` and its `profile_id` as `credentialProfileId`
 on the first `claudexor_ask`. Use the values from its `claudexor_accounts` row.
 For Auto, omit the profile pin and pass a harness only if the user chose one.
 [First request and result](../README.md#first-delegation-from-any-host) · [Validation status](FEATURES.md).
+
+#### Hermes tool approval and access
+
+Hermes starts `claudexor mcp serve` locally. That process can start the local
+Claudexor daemon, which starts the configured coding harness for a delegated run.
+The prompt behavior comes from the selected Hermes version, not from Claudexor.
+The Hermes manifest declares the server `untrusted`; Hermes' documentation says
+calls that can write then ask first, tools annotated read-only do not, and a call
+that needs approval where no user can answer (a scheduled job or single query) is
+refused. A remembered answer applies to a tool, not to one set of arguments, and
+an "always" answer stays in the profile's configuration. Prefer a one-time
+approval for sensitive actions and reserve a Hermes profile for Claudexor. Agent
+work can run commands within what that profile allows.
+
+Approval is not a budget. Ask and Plan can send the delegated prompt and selected
+files to the configured provider and spend money or subscription quota, whether
+or not a write prompt appears. `claudexor_status`, `claudexor_accounts`,
+`claudexor_capabilities` and `claudexor doctor` can contact providers on a cold
+cache, even without a fresh or refresh option, and may incur charges or use
+subscription quota. Reading a stored run's status or result does not start
+another model request.
+
+Direct or in-place work can write immediately once its call is approved.
+Approving an invocation is not approval to deliver an isolated change, and the
+MCP prompt does not govern the separate CLI delivery. The intended operator or
+skill behavior is that a person inspects the complete diff and consents
+explicitly first; Hermes does not enforce that, and the CLI does not prove it.
 
 #### Custom Claudexor configuration directory
 
@@ -2177,12 +2216,31 @@ The mapping is valid in JSON and YAML.
 }
 ```
 
+For Hermes, also keep `trust: untrusted`: a complete same-named entry replaces
+the plugin's entry and must not silently discard the fresh-install approval
+default:
+
+```json
+{
+  "command": "claudexor",
+  "args": ["mcp", "serve"],
+  "trust": "untrusted",
+  "env": { "CLAUDEXOR_CONFIG_DIR": "/absolute/path/to/your/existing/store" }
+}
+```
+
 Before delegating, compare the host's `claudexor_status` with `claudexor doctor`
 in the intended CLI configuration. For a named account, check the profile in
 `claudexor_accounts`. With the daemon running, compare the `storeId` from
 `claudexor store-identity --json` with the host's `claudexor_store_identity`.
 If they differ or the expected profile is missing, correct the connection
-and check again.
+and check again. The shipped skill asks for this comparison before a first
+delegation and may also read `claudexor_accounts` and `claudexor_capabilities`.
+Even without a fresh or refresh option, a cold or missing cached observation can
+make these reads and doctor contact other configured harness providers, not only
+the one chosen for Ask. That can use subscription quota or cost money, and
+skipping the manual check does not guarantee that no probes run. Reading an
+existing run's status or result is separate and does not start another.
 
 ## ACP
 
@@ -2278,6 +2336,9 @@ including `410 run_expired_by_retention`, the agent's turn shows
 Set `_meta.claudexor.includeFinalMessages: true` on `session/prompt` to receive
 `_meta.claudexor.finalMessages`, or on `session/load` to receive
 `_meta.claudexor.turns` with `{runId, finalMessages}` for run-backed turns.
+The ACP SDK treats a non-object `_meta` as absent. Within a decoded object,
+`claudexor` must be an object and `includeFinalMessages`, if present, a boolean;
+otherwise these methods return `Invalid params` before calling the runner.
 
 Questions the surface can answer:
 
@@ -2328,15 +2389,22 @@ receipt is never a model-read receipt.
   if it retains the ownership marker. Creation, `open(wx)`, and CLI display are
   file-operation evidence only; they do not prove that a model read the file.
 
-The envelope bridge covers only isolated Git envelopes. In-place, thread,
-directory and read-only runs get no generated bridge. If a Claude route must
-follow an `AGENTS.md`-only project, commit your own `CLAUDE.md` that imports
-it (`@AGENTS.md`) where that route loads project instructions, or put the
-required instructions in the prompt. Claude read-only routes pass
-`--setting-sources ""`. In a November 2026 check with Claude Code 2.1.322, such a
-route did not return an initial-context canary from either an `AGENTS.md`-only
-project or a `CLAUDE.md` importing it, so automatic loading was not confirmed.
-A `CLAUDE.md` you keep is never touched. Claudexor does not build a second instruction resolver.
+The envelope bridge covers only the isolated Git envelopes of writing runs: each
+candidate of a race (a multi-candidate thread turn included), synthesis, and a
+single candidate or convergence loop under the default `envelope` isolation. A
+single candidate that runs directly in the project or in a thread's worktree
+(`isolation: live`, which a single-candidate Agent thread turn uses), directory
+workspaces and read-only runs get no generated bridge; a thread's persistent
+worktree never receives one.
+For a writing Claude route there that must follow an `AGENTS.md`-only project,
+commit your own `CLAUDE.md` that imports it (`@AGENTS.md`) or put the required
+instructions in the prompt. For read-only runs, put required instructions in the
+prompt: Claude read-only routes pass `--setting-sources ""`, and in a November
+2026 check with Claude Code 2.1.322 such a route returned no initial-context
+canary from either an `AGENTS.md`-only project or a `CLAUDE.md` importing it.
+Claude's writing route was not probed live with the bridge either, so no route
+is promised to read the file. A `CLAUDE.md` you keep is never touched. Claudexor
+does not build a second instruction resolver.
 
 ## External Harness Adapters
 
@@ -2431,7 +2499,7 @@ the selected managed secret as `COPILOT_GITHUB_TOKEN`, with `HOME` and
 other provider credentials are removed. Native/device-code login is stage 2.
 
 Wire: one `copilot --acp --stdio` process per attempt, using the stable v1
-client exported by `@agentclientprotocol/sdk` 2.6.0. Startup flags live in the
+client exported by `@agentclientprotocol/sdk`. Startup flags live in the
 vendor row and were checked against the [official CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference),
 not a locally installed Copilot binary. The client negotiates `initialize`,
 creates `session/new {cwd, mcpServers: []}`, then sends one `session/prompt`.
@@ -2707,14 +2775,19 @@ When the rollout yields no record, the root turn's own wire record
 (`codexErrorInfo` and its words) stays as `vendor_failure` with
 `source: "codex_app_server"`; a readable rollout record replaces it.
 
-Every rollout reader (observed model, rollout quota, vendor failure, continuity
-locate and move) goes through one boundary in `rollout-file.ts`. `X.jsonl` and
+The Codex adapter uses `rollout-file.ts` for observed model, rollout quota, vendor
+failure, continuity locate and move, and retention's `readCodexRolloutHead`. `X.jsonl` and
 `X.jsonl.zst` are two representations of one logical part. The transcript
 readers read the thread's newest part through its plain `.jsonl`; when that part
 exists only compressed, or only as or below a link, the model, quota and vendor
 failure stay unknown and no older part is read in its place. Each lookup stops
 after the first day with a matching part, visits no older days and remembers no
-absence, so a plain copy written later is read by the next lookup. Nothing is decompressed. Locate names that
+absence, so a plain copy written later is read by the next lookup. Transcript
+readers do not decompress rollouts. Retention reads the first newline-terminated
+JSON record from each plain or zstd representation in the session and archive
+inventories. It limits the decoded header to 8 MiB and input to 8 MiB plus 16 KiB,
+even for compressed frames that produce no output. Vendor-native export has a
+separate zstd decoder in the control API. Locate names that
 newest part as the holder, and a move copies every part, compressed history
 included. The run's selected `CODEX_HOME` is canonicalized first, so a home
 that is a link or sits
@@ -2725,7 +2798,7 @@ inode it was opened as. A move compares the two homes by directory identity, so
 two spellings of one store (the default home through a link and a profile
 registered at its real path) are the same home and nothing is copied; the copy
 also refuses a destination that is its own source before truncating anything.
-Reads go in fixed 1 MiB chunks up to the size captured
+Transcript scans go in fixed 1 MiB chunks up to the size captured
 at open and carry at most one 8 MiB line. A longer line is never parsed; when it
 carries a reader's marker it counts as an unreadable record (the scanned model is
 unknown, a vendor failure is absent, the quota keeps its previous reading), the

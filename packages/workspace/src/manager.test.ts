@@ -242,6 +242,25 @@ describe("WorkspaceManager", () => {
     await mgr.dispose(env);
   });
 
+  it("generates no CLAUDE.md bridge for a direct in-place run or a thread worktree (#691)", async () => {
+    const repo = reapMk(join(tmpdir(), "claudexor-ws-bridge-direct-"));
+    await git(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "AGENTS.md"), "# project agents guidance\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
+
+    const mgr = new WorkspaceManager(repo);
+    const live = await mgr.create({ taskId: "task-bridge-live", attemptId: "a01", inPlace: true });
+    expect(existsSync(join(live.worktree_path, "CLAUDE.md"))).toBe(false);
+    expect(existsSync(join(repo, "CLAUDE.md"))).toBe(false);
+    await mgr.dispose(live);
+
+    // A single-candidate thread turn runs directly in this persistent tree.
+    const thread = await ensureThreadWorktree(repo, "th-bridge");
+    expect(existsSync(join(thread.path, "AGENTS.md"))).toBe(true);
+    expect(existsSync(join(thread.path, "CLAUDE.md"))).toBe(false);
+  });
+
   it("captures a candidate-authored CLAUDE.md (no bridge marker) in the patch", async () => {
     // No AGENTS.md -> no generated bridge; a candidate that authors its OWN
     // CLAUDE.md must have it captured like any real change (exact-path exclusion

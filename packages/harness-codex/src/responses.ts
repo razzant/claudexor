@@ -244,12 +244,17 @@ export function buildResponsesRequest(
   };
 }
 
+function providerError(value: unknown): Record<string, unknown> | null {
+  const envelope = record(value);
+  return record(envelope?.error) ?? envelope;
+}
+
 export function providerProblem(
   status: number | null,
   value: unknown,
   headers?: Headers,
 ): ControlProblem {
-  const error = record(record(value)?.error) ?? record(value);
+  const error = providerError(value);
   const vendorCode = vendorErrorCode(text(error?.code) ?? text(error?.type));
   // The backend's own usage refusal is `usage_limit_reached`; the CLI renames it
   // `usage_limit_exceeded` only on its rollout/app-server path (retry-signals.ts),
@@ -295,19 +300,23 @@ export function providerProblem(
   ).problem;
 }
 
-/** Only a failed inference can report a content refusal. Account and catalog
- * discovery use providerProblem independently and never enter this path. */
+/** Only for failed inference. Read both structured fields independently of
+ * the generic diagnostic projection, then publish only the known refusal code. */
 export function contentRefusalProblem(
   problem: ControlProblem,
+  value: unknown,
   options: RefusalOptions,
 ): ControlProblem | null {
-  if (problem.context.vendorCode !== "cyber_policy") return null;
+  const error = providerError(value);
+  const vendorCode = "cyber_policy";
+  if (error?.code !== vendorCode && error?.type !== vendorCode) return null;
   options.onContentRefusal?.();
   return {
     ...problem,
     ...(options.typedRefusals
       ? { code: "provider_content_refused", message: "Codex declined the content of this request." }
       : {}),
+    context: { ...problem.context, vendorCode },
     retryable: false,
   };
 }
@@ -398,7 +407,7 @@ export async function readResponsesStream(
   const done = new Map<number, Record<string, unknown>>();
   const failedProblem = (value: unknown) => {
     const problem = providerProblem(null, value);
-    return contentRefusalProblem(problem, refusals) ?? problem;
+    return contentRefusalProblem(problem, value, refusals) ?? problem;
   };
   const consume = () => {
     if (!data.length || terminal) {

@@ -265,6 +265,9 @@ export async function readyProfilesForRotation(args: {
   quota: VendorQuotaObservations;
   unusable?: readonly CredentialUnusableObservation[];
   model?: string | null;
+  /** Receives each probed row's composed status, the one judged below, so a caller can
+   * read that same evidence without probing the row again. */
+  observed?: Map<string, CredentialProfileStatus>;
 }): Promise<ReadonlySet<string>> {
   const profiles = staticRotationCandidates({
     registry: args.registry,
@@ -289,6 +292,7 @@ export async function readyProfilesForRotation(args: {
       ),
     })),
   );
+  for (const { profile, status } of entries) args.observed?.set(profile.profile_id, status);
   return new Set(
     entries
       .filter(({ profile, status }) =>

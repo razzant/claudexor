@@ -129,6 +129,7 @@ describe("armDaemonLifecycle", () => {
         snapshots += 1;
       },
       beginShutdown: async (reason) => {
+        expect(existsSync(join(root, "daemon.log"))).toBe(false);
         reasons.push(reason);
         throw new Error("drain failed"); // the machine owns failure handling
       },

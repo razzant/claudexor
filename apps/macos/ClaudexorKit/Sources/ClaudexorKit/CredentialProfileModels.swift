@@ -113,12 +113,12 @@ public struct CredentialProfileEntry: Codable, Sendable, Identifiable, Equatable
 /// decodes as `.unknown` instead of failing the whole accounts response (the
 /// legacy decoder threw on unknown kinds; that failure class dies here).
 public enum ControlPoolNextUp: Decodable, Sendable, Equatable {
-    /// An enabled account row is who an unpinned run routes to next.
+    /// An enabled account row, first in ordinary pool order for the default model.
     case profile(profileId: String)
     /// The pool is empty/exhausted; the unpinned route is the policy-governed
     /// API key (INV-061) — a route, never an account row.
     case apiKeyRoute
-    /// An unpinned run has nothing routable, with a human reason.
+    /// Nothing routable in ordinary pool order, with a human reason.
     case none(reason: String)
     /// A newer engine's kind this build does not know. Rendered as "no badge"
     /// rather than a decode failure.
@@ -150,7 +150,7 @@ public enum ControlPoolNextUp: Decodable, Sendable, Equatable {
 /// (snake_case).
 public struct HarnessAccountPool: Decodable, Sendable, Equatable {
     public let harnessId: String
-    /// Who an unpinned run of this harness routes to next (informational).
+    /// First candidate in ordinary pool order for the default model (informational).
     public let nextUp: ControlPoolNextUp
 
     enum CodingKeys: String, CodingKey {

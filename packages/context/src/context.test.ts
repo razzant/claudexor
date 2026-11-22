@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -229,7 +237,9 @@ describe("assertMandatoryContext (uniform preflight)", () => {
             {
               path: "present.md/child",
               reason:
-                process.platform === "win32" ? expect.stringMatching(/^(ENOTDIR|ENOENT)$/) : "ENOTDIR",
+                process.platform === "win32"
+                  ? expect.stringMatching(/^(ENOTDIR|ENOENT)$/)
+                  : "ENOTDIR",
             },
             { path: "directory", reason: "EISDIR" },
           ],
@@ -283,7 +293,10 @@ describe("assertMandatoryContext (uniform preflight)", () => {
           executionRoot: repo,
           unavailableFiles: [
             { path: "link.txt", reason: "symlink target is unavailable within the allowed root" },
-            { path: "dangling.txt", reason: "symlink target is unavailable within the allowed root" },
+            {
+              path: "dangling.txt",
+              reason: "symlink target is unavailable within the allowed root",
+            },
             { path: "../outside.txt", reason: "path escapes the repo" },
           ],
         },

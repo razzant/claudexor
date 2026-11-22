@@ -28,10 +28,10 @@ concurrency:
 env:
   # Public main sha the product branch started from (pinned independently;
   # never derived from HEAD~1 or any moving ref).
-  PRODUCT_BASE_SHA: 0ff3df717c2e807fdbd3a233487e35d81993fdea
+  PRODUCT_BASE_SHA: 5140960bb541002ea073b2eaeb064e3e48e829ea
   # Never defaults to HEAD~1: with repeated QA carrier commits HEAD~1 can
   # already be a previous carrier revision, not the product.
-  PRODUCT_HEAD_SHA: "167c787ee552ec304ad84c743537cc8eef276240"
+  PRODUCT_HEAD_SHA: "f536929eee1f751eef904db331e97a2022e2f4a6"
 
 jobs:
   qualify:

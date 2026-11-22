@@ -10,7 +10,12 @@ import {
 import { extname, isAbsolute, join, relative, sep } from "node:path";
 import type { ContextFileRef, OmissionEntry, ScopeAtlasEntry } from "@claudexor/schema";
 import { runCapture } from "@claudexor/core";
-import { errorCode, sensitiveResourcePolicy, sha256, type SymlinkTargetKind } from "@claudexor/util";
+import {
+  errorCode,
+  sensitiveResourcePolicy,
+  sha256,
+  type SymlinkTargetKind,
+} from "@claudexor/util";
 import { matchAny } from "./glob.js";
 
 const MANIFEST_ONLY = [

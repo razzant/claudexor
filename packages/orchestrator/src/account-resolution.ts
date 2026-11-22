@@ -20,7 +20,10 @@ import {
   credentialProfilePolicyProblem,
   HarnessUnavailableError,
   type CredentialProfilePolicyState,
+  type DiagnosticGeneration,
 } from "@claudexor/core";
+import { billingKnowledgeForAuthRoute } from "@claudexor/budget";
+import { profileBillingVerification } from "./auth-route-classification.js";
 import {
   credentialPoolExhausted,
   profileQuotaBlock,
@@ -60,7 +63,8 @@ import {
  *    row is ready, else switches to the pool with a DISCLOSED lane switch. A
  *    live typed `credential_unusable` observation (A7) condemns the bound row
  *    at this composition point too.
- * 4. Unbound runs take the best row of the quota-aware pool.
+ * 4. Unbound runs take the best row of the quota-aware pool; a withheld $0 Ask
+ *    takes the best row its own vendor proof entitles, when one exists.
  * 5. An empty/exhausted pool is the typed `credential_pool_exhausted`
  *    TERMINAL carrying the pool's earliest known reset (owner Q3=A: PR-A's
  *    semantics supersede Q2 — waiting for the reset is the default). The paid
@@ -120,6 +124,10 @@ export interface AccountResolutionContext {
   nativeCredentialsDisabled: boolean;
   /** Effective auth preference (run > harness > routing config). */
   authPreference: AuthPreference;
+  /** The probe mode the run's readiness admission sampled (readiness-probe.ts). Only
+   * `forbidden`, a withheld $0 Ask, changes anything: its unbound pool choice prefers a
+   * row its own vendor proof entitles. Absent keeps every choice as it was. */
+  diagnosticGeneration?: DiagnosticGeneration;
   /** Record that this harness's unpinned route fell to the PAID api_key route. */
   notePoolApiKeyRoute: () => void;
   emit: AccountResolutionEmit;
@@ -228,6 +236,19 @@ export class PoolRouteFlags {
   }
 }
 
+/** The rows whose own composed status proves subscription entitlement by the routing billing
+ * rule (#260): fresh vendor evidence on the vendor's login route (pool rows are never API keys).
+ * A row's credential kind, a local login file or a stale answer never proves it. */
+function entitledRows(observed: ReadonlyMap<string, CredentialProfileStatus>): Set<string> {
+  const entitled = new Set<string>();
+  for (const [profileId, status] of observed) {
+    const verification = profileBillingVerification(status);
+    const billing = billingKnowledgeForAuthRoute({ route: "vendor_native", verification });
+    if (billing === "subscription_entitlement") entitled.add(profileId);
+  }
+  return entitled;
+}
+
 export async function resolveAccountForRun(
   ctx: AccountResolutionContext,
 ): Promise<CredentialProfile | null> {
@@ -240,7 +261,9 @@ export async function resolveAccountForRun(
   }
   // A7-aware readiness (ONE composition point, `readyProfilesForRotation`):
   // probe wrapper + vendor overlay + admission predicate + the live
-  // `credential_unusable` refusal.
+  // `credential_unusable` refusal. Each row's composed status is kept for the
+  // withheld $0 choice below, so no row is probed again for it.
+  const observed = new Map<string, CredentialProfileStatus>();
   const readyIds = () =>
     readyProfilesForRotation({
       registry,
@@ -252,6 +275,7 @@ export async function resolveAccountForRun(
       unusable: ctx.unusable,
       excluded: ctx.excludedProfileIds,
       model,
+      observed,
     });
   if (ctx.pinnedProfile) {
     // D-U6: strict pin. A fresh exhausted window refuses with its reset time;
@@ -502,6 +526,11 @@ export async function resolveAccountForRun(
     substitutions: ctx.substitutions,
     refusals: ctx.refusals,
     lastService: ctx.lastService,
+    // A withheld $0 Ask is served only on a row's own proof (auth-route-classification.ts):
+    // a proven row goes first; with none, the ranked row stands and its lease refuses.
+    ...(ctx.diagnosticGeneration === "forbidden"
+      ? { entitledProfileIds: entitledRows(observed) }
+      : {}),
   });
   if (selection.outcome === "selected") {
     const chosen = selection.candidate.profile;

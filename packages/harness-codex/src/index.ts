@@ -60,7 +60,7 @@ import { parseCodexEvent, parseCodexStderrFailure, type CodexParseState } from "
 // prettier-ignore
 import { CODEX_ACCESS_PROFILES, probeCodexCredentialProfile, resolveCodexProfileRoute } from "./profile.js";
 import { codexPersistence } from "./native-home-retention.js";
-import { smokeIsolatedApiKey } from "./smoke.js";
+import { smokeIsolatedApiKey, unsmokedKeyDetail } from "./smoke.js";
 export { canonicalCodexProfileHome, codexAccountIdentity } from "./profile.js";
 import { codexExecInput, codexImageArgs, verifyCodexAttachments } from "./attachments.js";
 import { assertCodexExecSpec, codexExecSandboxArgs, codexNativeAccess } from "./sandbox.js";
@@ -452,16 +452,15 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           : requestedSource === "provider_auth_file"
             ? "api_key"
             : (_spec.authPreference ?? "auto");
-      const shouldSmokeKey =
+      const keyNeedsProof =
         probeApi && shouldVerifyApiKey({ preference, apiKeyAvailable: apiKey, nativeReady });
+      // A proof withheld by the $0 diagnostic mode is "not run", never a failed smoke.
+      const withheld = keyNeedsProof && _spec.diagnosticGeneration === "forbidden";
+      const shouldSmokeKey = keyNeedsProof && !withheld;
       const smoke = shouldSmokeKey
         ? await runtime.smokeIsolatedApiKey(_spec.abortSignal)
-        : {
-            ok: false,
-            detail: apiKey
-              ? "verification not run for the unselected API-key route"
-              : "no API key fallback available",
-          };
+        : { ok: false, detail: unsmokedKeyDetail(apiKey, withheld) };
+      const apiReason = `${withheld ? "Codex API-key" : "isolated Codex API-key smoke failed:"} ${smoke.detail}`;
       const ok = selectedAuthReady({ preference, nativeReady, apiKeyReady: smoke.ok });
       const selectedAvailable = selectedAuthAvailable({
         preference,
@@ -559,13 +558,9 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
                     : "Codex subscription route is not ready (run `claudexor auth login codex`)",
               ]
             : preference === "api_key"
-              ? [
-                  apiKey
-                    ? `isolated Codex API-key smoke failed: ${smoke.detail}`
-                    : "Codex API-key route is not configured",
-                ]
+              ? [apiKey ? apiReason : "Codex API-key route is not configured"]
               : apiKey
-                ? [`isolated Codex API-key smoke failed: ${smoke.detail}`]
+                ? [apiReason]
                 : [
                     "not authenticated (run `claudexor auth login codex` for native/subscription use, or store an openai API key fallback)",
                   ],
