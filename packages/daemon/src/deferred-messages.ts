@@ -14,6 +14,7 @@ import {
   type DeferredMessageStopReport,
 } from "@claudexor/schema";
 import {
+  newId,
   safeProblemContext,
   safeProblemMessage,
   safeProblemRequiredActions,
@@ -51,6 +52,11 @@ export class DeferredMessages {
       stopped: (id: string) => boolean;
       publish: (record: JobRecord) => void;
       custody?: (record: JobRecord) => DeferredMessageHold | null;
+      /** run-deadline/1: the successor's deadline record, written before it is committed. */
+      successorDeadline?: {
+        prepareSuccessor(jobId: string, request: unknown): Promise<void>;
+        release(jobId: string): void;
+      };
     },
   ) {}
 
@@ -228,9 +234,18 @@ export class DeferredMessages {
     }
     // The successor's large bodies are written off the request thread first;
     // promotion rechecks and decides everything synchronously after this await.
-    const stamp = owner.stagePromotion
+    const stamp = (owner.stagePromotion
       ? await owner.stagePromotion(id, draft.revision).catch(() => undefined)
-      : undefined;
+      : undefined) ?? { jobId: newId("job") };
+    try {
+      await this.deps.successorDeadline?.prepareSuccessor(stamp.jobId, request);
+    } catch (error) {
+      const current = owner.get(id);
+      if (current?.revision === draft.revision && current.state === "waiting")
+        owner.hold(id, admissionHold(error));
+      return;
+    }
+    let successorId: string | null = null;
     try {
       const accepted = owner.promote(
         id,
@@ -242,6 +257,7 @@ export class DeferredMessages {
         },
         stamp,
       );
+      successorId = accepted.record && !accepted.reused ? accepted.record.id : null;
       if (accepted.record && !accepted.reused) this.deps.publish(accepted.record);
     } catch (error) {
       // A notification may fail AFTER acceptance+freeze. Recover that same
@@ -254,6 +270,10 @@ export class DeferredMessages {
       if ((error as { code?: unknown })?.code === "draft_revision_conflict") return;
       if (owner.get(id)?.state === "waiting") owner.hold(id, admissionHold(error));
       else throw error;
+    } finally {
+      // A deadline record staged for a job that was not committed goes.
+      if ((successorId ?? owner.get(id)?.successorJobId) !== stamp.jobId)
+        this.deps.successorDeadline?.release(stamp.jobId);
     }
   }
   private fence(record: JobRecord, draftId: string): DeferredMessageHold | null {

@@ -6,20 +6,26 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ScopeReapOptions, ScopeReapOutcome } from "@claudexor/core";
 import { afterAll, describe, expect, it } from "vitest";
-import { cgroup2MountPoint, unifiedCgroupPath } from "./run-deadline-cgroup.js";
+import { cgroup2MountPoint, parsePopulated, unifiedCgroupPath } from "./run-deadline-cgroup.js";
 import { parseUptimeNs } from "./run-deadline-clock.js";
 import { RunDeadlines } from "./run-deadlines.js";
 import {
-  WARDEN_BUNDLE,
-  WARDEN_ENTRY_ROLE,
-  effectiveTarget,
+  RECORD_VERSION,
+  claimPath,
+  diskReader,
+  enforcementOf,
+  governingBound,
+  readRecord,
   readWardenOutcome,
-  readWardenState,
-  runWarden,
-  wardenCommand,
   wardenDonePath,
   writeJsonAtomic,
-  type WardenState,
+  type DeadlineRecord,
+} from "./run-deadline-record.js";
+import {
+  WARDEN_BUNDLE,
+  WARDEN_ENTRY_ROLE,
+  runWarden,
+  wardenCommand,
 } from "./run-deadline-warden.js";
 
 const dirs: string[] = [];
@@ -36,20 +42,22 @@ const point = (targetNs: bigint) => ({
   at: "2026-11-20T12:00:00.000Z",
   targetNs: targetNs.toString(),
 });
-const state = (patch: Partial<WardenState> = {}): WardenState => ({
-  version: 2,
+const record = (patch: Partial<DeadlineRecord> = {}): DeadlineRecord => ({
+  version: RECORD_VERSION,
   jobId: "job",
   clock: "monotonic",
   bootId: null,
-  own: point(1_000_000_000n),
+  state: "armed",
   revision: 0,
+  own: point(1_000_000_000n),
+  successorOf: null,
   parent: null,
+  parentJobId: null,
   inherited: null,
   frozen: null,
   markers: [MARKER],
   cgroup: null,
   runScopes: null,
-  released: false,
   ...patch,
 });
 const outcome = (patch: Partial<ScopeReapOutcome> = {}): ScopeReapOutcome =>
@@ -83,9 +91,9 @@ function clockDeps(stepMs = 200) {
 }
 
 describe("runWarden", () => {
-  it("acts only after target + head start, then leaves once the group is confirmed empty", async () => {
+  it("acts only after target + head start, claims the deadline before its first stop, then leaves once confirmed", async () => {
     const path = join(temp(), "job.json");
-    writeJsonAtomic(path, state());
+    writeJsonAtomic(path, record());
     const time = clockDeps();
     const reaps: ScopeReapOptions[] = [];
     const result = await runWarden(path, {
@@ -93,6 +101,7 @@ describe("runWarden", () => {
       reap: async (opts) => {
         reaps.push(opts);
         expect(time.now()).toBeGreaterThanOrEqual(2_000_000_000n); // 1 s target + 1 s head start
+        expect(existsSync(claimPath(path))).toBe(true); // claimed before the first stop
         return outcome({ ended: [{ pid: 7, startToken: "x" }] });
       },
     });
@@ -100,14 +109,14 @@ describe("runWarden", () => {
     expect(reaps).toHaveLength(1);
     expect(reaps[0]).toMatchObject({ marker: MARKER, scopeStartAt: null });
     expect(reaps[0]!.signal).toBeUndefined();
-    expect(readWardenOutcome(path)).toMatchObject({ reason: "reaped", ended: 1 });
+    expect(readWardenOutcome(path)).toMatchObject({ reason: "reaped", ended: 1, confirmed: true });
+    expect(enforcementOf(readWardenOutcome(path))).toEqual({ outcome: "confirmed", detail: null });
     expect(existsSync(wardenDonePath(path))).toBe(true);
   });
 
-  it("does not leave after one pass while survivors or an unprovable census remain", async () => {
+  it("does not leave after one pass while survivors remain", async () => {
     const path = join(temp(), "job.json");
-    writeJsonAtomic(path, state());
-    const time = clockDeps();
+    writeJsonAtomic(path, record());
     const answers = [
       outcome({
         settled: false,
@@ -118,40 +127,95 @@ describe("runWarden", () => {
       outcome(),
     ];
     let calls = 0;
-    const result = await runWarden(path, { ...time, reap: async () => answers[calls++]! });
+    const result = await runWarden(path, {
+      ...clockDeps(),
+      platform: "linux",
+      reap: async () => answers[calls++]!,
+    });
     expect(result).toBe("reaped");
     expect(calls).toBe(3);
   });
 
-  it("without a provable census (macOS) leaves after three passes that found nothing", async () => {
+  it("on Linux an unprovable census is retried past three passes and ends only as an explicit unresolved report", async () => {
     const path = join(temp(), "job.json");
-    writeJsonAtomic(path, state());
+    writeJsonAtomic(path, record());
     let calls = 0;
     const result = await runWarden(path, {
       ...clockDeps(),
+      platform: "linux",
+      unresolvedAfterMs: 60_000,
+      reap: async () => {
+        calls += 1;
+        return outcome({
+          completeness: "not_provable",
+          completenessReason: "2 same-uid process environments could not be read",
+        });
+      },
+    });
+    expect(result).toBe("unresolved");
+    expect(calls).toBeGreaterThan(3);
+    const report = readWardenOutcome(path);
+    expect(report).toMatchObject({ reason: "unresolved", confirmed: false });
+    expect(enforcementOf(report)).toEqual({
+      outcome: "unresolved",
+      detail: "2 same-uid process environments could not be read",
+    });
+  });
+
+  it("a census that becomes provable on a later pass confirms, on Linux", async () => {
+    const path = join(temp(), "job.json");
+    writeJsonAtomic(path, record());
+    let calls = 0;
+    const result = await runWarden(path, {
+      ...clockDeps(),
+      platform: "linux",
+      reap: async () => {
+        calls += 1;
+        return calls < 6
+          ? outcome({ completeness: "not_provable", completenessReason: "x" })
+          : outcome();
+      },
+    });
+    expect(result).toBe("reaped");
+    expect(calls).toBe(6);
+  });
+
+  it("without a provable census (macOS) leaves after three settled passes, reported unresolved", async () => {
+    const path = join(temp(), "job.json");
+    writeJsonAtomic(path, record());
+    let calls = 0;
+    const result = await runWarden(path, {
+      ...clockDeps(),
+      platform: "darwin",
       reap: async () => {
         calls += 1;
         return outcome({ completeness: "not_provable", completenessReason: "macOS" });
       },
     });
-    expect(result).toBe("unprovable_settled");
+    expect(result).toBe("unresolved");
     expect(calls).toBe(3);
+    expect(enforcementOf(readWardenOutcome(path))).toEqual({
+      outcome: "unresolved",
+      detail: "macOS",
+    });
   });
 
-  it("kills the run's cgroup and waits until it is empty", async () => {
+  it("kills the run's cgroup and waits until cgroup.events reports it unpopulated", async () => {
     const path = join(temp(), "job.json");
-    writeJsonAtomic(path, state({ cgroup: "/sys/fs/cgroup/x/claudexor-runs/job" }));
+    writeJsonAtomic(path, record({ cgroup: "/sys/fs/cgroup/x/claudexor-runs/job" }));
     const kills: string[] = [];
-    let populated = 2;
+    // A nested subgroup keeps the cgroup populated although its own procs list is empty.
+    let populated = 3;
     const result = await runWarden(path, {
       ...clockDeps(),
+      platform: "linux",
       reap: async () => outcome(),
       cgroup: {
         kill: async (dir) => {
           kills.push(dir);
           return true;
         },
-        members: async () => (populated-- > 0 ? [11] : []),
+        populated: async () => populated-- > 0,
         remove: async () => {},
       },
     });
@@ -159,11 +223,15 @@ describe("runWarden", () => {
     expect(kills.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("after a normal end leaves at once when the group is confirmed empty, without signalling", async () => {
+  it("after the terminal leaves at once when the boundary is confirmed empty, without signalling", async () => {
     const path = join(temp(), "job.json");
     writeJsonAtomic(
       path,
-      state({ own: point(3_600_000_000_000n), released: true, cgroup: "/sys/fs/cgroup/x/run" }),
+      record({
+        state: "closed",
+        frozen: { ...point(3_600_000_000_000n), inheritedFrom: null, successorOf: null },
+        cgroup: "/sys/fs/cgroup/x/run",
+      }),
     );
     const reaps: ScopeReapOptions[] = [];
     const removed: string[] = [];
@@ -175,9 +243,9 @@ describe("runWarden", () => {
       },
       cgroup: {
         kill: async () => {
-          throw new Error("a released, empty group is never killed");
+          throw new Error("a closed, empty group is never killed");
         },
-        members: async () => [],
+        populated: async () => false,
         remove: async (dir) => void removed.push(dir),
       },
     });
@@ -185,11 +253,18 @@ describe("runWarden", () => {
     expect(removed).toEqual(["/sys/fs/cgroup/x/run"]);
     expect(reaps).toHaveLength(1);
     expect(reaps[0]!.signal).toBeTypeOf("function"); // the probe never signals
+    expect(existsSync(claimPath(path))).toBe(false); // a closed run needs no claim
   });
 
-  it("after a normal end stays to the deadline while the group is not confirmed empty", async () => {
+  it("after the terminal stays to the deadline while the boundary is not confirmed empty", async () => {
     const path = join(temp(), "job.json");
-    writeJsonAtomic(path, state({ own: point(5_000_000_000n), released: true }));
+    writeJsonAtomic(
+      path,
+      record({
+        state: "closed",
+        frozen: { ...point(5_000_000_000n), inheritedFrom: null, successorOf: null },
+      }),
+    );
     const time = clockDeps();
     const kinds: string[] = [];
     const result = await runWarden(path, {
@@ -207,20 +282,79 @@ describe("runWarden", () => {
     expect(time.now()).toBeGreaterThanOrEqual(6_000_000_000n);
   });
 
-  it("follows a rewritten target and exits when its file is removed", async () => {
+  it("a closed child's survivors are stopped at its parent's current deadline when that came earlier", async () => {
+    const dir = temp();
+    writeJsonAtomic(
+      join(dir, "parent.json"),
+      record({ jobId: "parent", own: point(30_000_000_000n), markers: [] }),
+    );
+    const path = join(dir, "child.json");
+    writeJsonAtomic(
+      path,
+      record({
+        jobId: "child",
+        own: null,
+        parent: "parent.json",
+        parentJobId: "parent",
+        state: "closed",
+        // It ended under the parent's earlier, longer deadline (one hour).
+        frozen: { ...point(3_600_000_000_000n), inheritedFrom: "parent", successorOf: null },
+      }),
+    );
+    const time = clockDeps();
+    let firstStopAt: bigint | null = null;
+    const result = await runWarden(path, {
+      ...time,
+      reap: async (opts) => {
+        if (opts.signal) return outcome({ settled: false, unreadable: [{ pid: 4, reason: "x" }] });
+        firstStopAt ??= time.now();
+        return outcome();
+      },
+    });
+    expect(result).toBe("reaped");
+    expect(firstStopAt).not.toBeNull();
+    expect(firstStopAt!).toBeGreaterThanOrEqual(31_000_000_000n);
+    expect(firstStopAt!).toBeLessThan(40_000_000_000n);
+  });
+
+  it("follows a rewritten target and exits when its record is removed", async () => {
     const path = join(temp(), "job.json");
-    writeJsonAtomic(path, state());
+    writeJsonAtomic(path, record());
     let polls = 0;
     const result = await runWarden(path, {
       now: () => 0n,
       sleep: async () => {
         polls += 1;
-        if (polls === 1) writeJsonAtomic(path, state({ own: point(60_000_000_000n) }));
+        if (polls === 1) writeJsonAtomic(path, record({ own: point(60_000_000_000n) }));
         if (polls === 2) writeFileSync(path, "{torn");
         if (polls === 4) rmSync(path);
       },
       reap: async () => {
         throw new Error("must not reap");
+      },
+    });
+    expect(result).toBe("removed");
+  });
+
+  it("never decides on a record it read before its clock reading (an unreadable read waits for the next one)", async () => {
+    const path = join(temp(), "job.json");
+    writeJsonAtomic(path, record()); // due at 1 s (+1 s head start)
+    let clockReads = 0;
+    let sleeps = 0;
+    const result = await runWarden(path, {
+      // The first reading is before the deadline; every later one is long past it.
+      now: () => (++clockReads === 1 ? 0n : 10_000_000_000n),
+      sleep: async () => {
+        sleeps += 1;
+        // The next read fails; the read after it shows the extension that was
+        // published meanwhile. Only a fresh read may decide.
+        if (sleeps === 1) writeFileSync(path, "{torn");
+        if (sleeps === 2)
+          writeJsonAtomic(path, record({ revision: 1, own: point(60_000_000_000n) }));
+        if (sleeps === 3) rmSync(path);
+      },
+      reap: async () => {
+        throw new Error("must not act on the revision read before the clock");
       },
     });
     expect(result).toBe("removed");
@@ -248,7 +382,7 @@ describe("runWarden", () => {
       }),
     );
     const path = join(dir, "job.json");
-    writeJsonAtomic(path, state({ runScopes: index }));
+    writeJsonAtomic(path, record({ runScopes: index }));
     const reaps: ScopeReapOptions[] = [];
     await runWarden(path, {
       ...clockDeps(),
@@ -266,25 +400,37 @@ describe("runWarden", () => {
     });
   });
 
-  it("caps a child by its parent's current file, or by the cached value once that file is gone", () => {
+  it("caps a child by its parent's current record, or by the cached value once that record is gone", () => {
     const dir = temp();
-    writeJsonAtomic(join(dir, "parent.json"), state({ jobId: "parent", own: point(5n) }));
-    const child = state({
+    writeJsonAtomic(join(dir, "parent.json"), record({ jobId: "parent", own: point(5n) }));
+    const child = record({
       jobId: "child",
       own: point(9n),
       parent: "parent.json",
+      parentJobId: "parent",
       inherited: { ...point(7n), from: "parent" },
     });
-    expect(effectiveTarget(child, dir)).toBe(5n);
+    expect(governingBound(child, diskReader(dir))).toMatchObject({
+      target: 5n,
+      inheritedFrom: "parent",
+    });
     rmSync(join(dir, "parent.json"));
-    expect(effectiveTarget(child, dir)).toBe(7n);
-    expect(effectiveTarget({ ...child, frozen: { ...point(8n), inheritedFrom: null } }, dir)).toBe(
-      8n,
-    );
+    expect(governingBound(child, diskReader(dir))).toMatchObject({ target: 7n });
+    const frozen = { ...child, frozen: { ...point(8n), inheritedFrom: null, successorOf: null } };
+    expect(governingBound(frozen, diskReader(dir))).toMatchObject({ target: 7n });
   });
 });
 
 describe("RunDeadlines warden hand-off", () => {
+  const held = async (deadlines: RunDeadlines, jobId: string, ms: number) => {
+    await deadlines.stage(jobId, {
+      own: deadlines.toPoint(new Date(Date.now() + ms).toISOString()),
+      successorOf: null,
+      parentJobId: null,
+    });
+    deadlines.admit(jobId);
+  };
+
   it("refuses the run when its warden cannot start", async () => {
     const deadlines = new RunDeadlines({
       dir: temp(),
@@ -293,14 +439,14 @@ describe("RunDeadlines warden hand-off", () => {
       },
     });
     try {
-      deadlines.admit("job", deadlines.toPoint(new Date(Date.now() + 60_000).toISOString()), null);
+      await held(deadlines, "job", 60_000);
       await expect(deadlines.attachScope("job", MARKER)).rejects.toThrow("spawn refused");
     } finally {
-      deadlines.dispose();
+      await deadlines.dispose();
     }
   });
 
-  it("adds later markers to the same warden and hands back a released state", async () => {
+  it("adds later markers to the same warden and writes the terminal explicitly", async () => {
     const dir = temp();
     const started: string[] = [];
     const deadlines = new RunDeadlines({
@@ -311,26 +457,20 @@ describe("RunDeadlines warden hand-off", () => {
       },
     });
     try {
-      deadlines.admit("job", deadlines.toPoint(new Date(Date.now() + 60_000).toISOString()), null);
+      await held(deadlines, "job", 60_000);
       await deadlines.attachScope("job", MARKER);
       const second = `CLAUDEXOR_RUN_SCOPE_${"c".repeat(32)}`;
       await deadlines.attachScope("job", second);
       expect(started).toHaveLength(1);
-      const written = readWardenState(started[0]!) as WardenState;
-      expect(written).toMatchObject({ jobId: "job", markers: [MARKER, second], released: false });
+      const written = readRecord(started[0]!) as DeadlineRecord;
+      expect(written).toMatchObject({ jobId: "job", markers: [MARKER, second], state: "armed" });
       const remaining = BigInt(written.own!.targetNs) - process.hrtime.bigint();
       if (written.clock === "monotonic") expect(remaining).toBeGreaterThan(55_000_000_000n);
       deadlines.close("job");
-      // The hand-back is written off the main thread: wait for it to land.
-      const until = Date.now() + 5_000;
-      while ((readWardenState(started[0]!) as WardenState).released !== true && Date.now() < until)
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(readWardenState(started[0]!)).toMatchObject({
-        released: true,
-        frozen: expect.anything(),
-      });
+      await deadlines.read("job"); // after the job's pending transitions
+      expect(readRecord(started[0]!)).toMatchObject({ state: "closed", frozen: expect.anything() });
     } finally {
-      deadlines.dispose();
+      await deadlines.dispose();
     }
   });
 });
@@ -365,5 +505,8 @@ describe("host facts", () => {
     expect(
       unifiedCgroupPath("0::/user.slice/user-1000.slice/user@1000.service/app.slice/x.service\n"),
     ).toBe("/user.slice/user-1000.slice/user@1000.service/app.slice/x.service");
+    expect(parsePopulated("populated 1\nfrozen 0\n")).toBe(true);
+    expect(parsePopulated("populated 0\nfrozen 0\n")).toBe(false);
+    expect(parsePopulated("frozen 0\n")).toBe(null);
   });
 });

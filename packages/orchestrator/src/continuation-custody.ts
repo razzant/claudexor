@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { emitBestEffort, type EventLog } from "@claudexor/event-log";
 import {
   RunResumable,
+  engineClockAbortReason,
   type EnvelopeCustody,
   type ResumableCause,
   type RunOutcomeFacts,
@@ -150,7 +151,7 @@ function unfinishedCause(
   signal: AbortSignal | undefined,
   facts: RunOutcomeFacts,
 ): ResumableCause | null | undefined {
-  if (signal?.aborted) return signal.reason === "wall_clock_exceeded" ? "wall_clock" : "cancelled";
+  if (signal?.aborted) return engineClockAbortReason(signal.reason) ? "wall_clock" : "cancelled";
   const state = run?.telemetry.outcome?.workState?.state;
   if (state === "needs_input") return "input_required";
   if (facts.lifecycle !== "succeeded")

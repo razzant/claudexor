@@ -69,7 +69,7 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 30,
-                "description": "Seconds after a run's deadline by which every process inside its boundary is gone."
+                "description": "Seconds after a run's deadline by which every process inside its boundary is gone. Physical limits outside it: a suspended host stops the run when it wakes; a task in uninterruptible kernel I/O (D state) dies once that I/O returns; on the marker boundary a process running as another user, or one that cleared its environment after leaving the recorded tree, is not found; work handed to another service (a container engine, an already running tmux server, systemd-run) is outside the boundary."
               },
               "boundary": {
                 "type": "string",
@@ -86,7 +86,7 @@
               "boundary"
             ],
             "additionalProperties": false,
-            "description": "A capability this engine proves on this host: run-deadline/1 is declared only on Linux, after the daemon checked which boundary it can enforce; macOS and Windows do not declare it."
+            "description": "A capability this engine proves on this host: run-deadline/1 is declared only on Linux, after the daemon checked which boundary it can enforce; macOS and Windows do not declare it, and refuse an explicit deadline (run_deadline_unsupported) before accepting anything."
           },
           "description": "Capabilities this engine proves on this host. Returned only to a request sending `X-Claudexor-Capabilities: 1`; an empty list means none."
         }

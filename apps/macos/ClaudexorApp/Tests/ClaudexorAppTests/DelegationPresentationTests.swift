@@ -217,7 +217,8 @@ import Foundation
         let reasons = [
             "harness_failed", "no_changes", "review_blocked", "checks_failed", "budget_exhausted",
             "budget_overshoot", "cost_unverifiable", "not_converged", "stuck_no_progress",
-            "workspace_unavailable", "capture_refused", "wall_clock_exceeded", "turn_limit_reached",
+            "workspace_unavailable", "capture_refused", "wall_clock_exceeded", "run_deadline_expired",
+            "turn_limit_reached",
             "crash_interrupted", "context_capacity_exhausted", "work_report_contract",
             "user_cancelled", "host_cancelled", "owner_task_gone", "input_required", "work_incomplete",
         ]

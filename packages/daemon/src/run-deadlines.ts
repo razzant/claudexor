@@ -2,147 +2,126 @@
  * Scheduler-owned registry of server-enforced run deadlines (run-deadline/1).
  *
  * Ownership (INV-144, see ARCHITECTURE "Daemon lifecycle"):
- * - The accepted command holds revision 0: `params.deadline.at`, durable with
- *   the command itself. Each later revision is written durably to the run's
- *   state file (`daemon/run-deadlines/<job>.json`) BEFORE it is confirmed, and
- *   that file is also what the run's warden obeys.
- * - The daemon converts an absolute instant ONCE, when it accepts it, to the
- *   host clock (`run-deadline-clock.ts`: CLOCK_BOOTTIME on Linux), so neither a
- *   wall-clock step nor a host suspend postpones a stop.
- * - It holds from acceptance: queued, preparing and running. The daemon's own
- *   timer ends the job (a queued one never starts; a running one is cancelled);
- *   the warden (`run-deadline-warden.ts`), started before the run's first
- *   process, ends the run's processes even while the daemon is dead.
- * - A Delegate child's effective deadline is the earlier of its own and its
- *   parent's CURRENT one: the child's warden reads the parent's state file, so
- *   one durable write of the parent moves every dependent warden at once.
- * - A run that reached a terminal keeps the effective deadline it ended under
- *   (`frozen`): a later parent change or the parent's removal never moves it.
+ * - Each job with a deadline has ONE durable record (`run-deadline-record.ts`),
+ *   staged before its command is committed and replaced durably before any
+ *   change is confirmed; this registry caches the records of the jobs it
+ *   holds, with their timers. Every answer is a projection of a record.
+ * - An instant is converted ONCE, at acceptance, to the host clock; an
+ *   inherited deadline is copied from the parent's or predecessor's record.
+ * - Every transition of one job (acceptance, set, scopes, deadline, terminal)
+ *   runs on that job's chain, in order; a set and the warden's one transition,
+ *   its enforcement claim, are ordered by the host clock (record module doc).
+ * - The daemon's timer ends the job (a queued one never starts, a running one
+ *   is cancelled with `run_deadline_expired`); the warden ends the run's
+ *   processes even while the daemon is dead.
+ * - A Delegate child is capped by its parent's CURRENT deadline; a terminal
+ *   keeps the one the run ended under (`frozen`), while its survivors stay
+ *   capped by the parent's current one.
  */
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   RUN_DEADLINE_CAPABILITY,
   type ControlCapability,
   RunDeadlineSetRequest,
-  RunDeadlineStart,
   type RunDeadlineSnapshot,
-  type RunDeadlineState,
 } from "@claudexor/schema";
 import { registerScopeCgroup, unregisterScopeCgroup } from "@claudexor/core";
-import { hostClock, type HostClockKind } from "./run-deadline-clock.js";
+import { systemDeadlineClock, type RunDeadlineClock } from "./run-deadline-clock.js";
+import {
+  convertInstant,
+  deadlineExpired,
+  deadlineProblem,
+  recordUnavailable,
+  type DeadlinePoint,
+  type DeadlineSpec,
+} from "./run-deadline-problems.js";
+import { reconcileRecords } from "./run-deadline-reconcile.js";
 import {
   createRunCgroup,
   probeCgroupBoundary,
   type DeadlineBoundary,
 } from "./run-deadline-cgroup.js";
 import {
-  RUN_DEADLINE_STOP_GRACE_SEC,
-  effectiveTarget,
+  RECORD_VERSION,
+  claimPath,
+  enforcementClaimed,
+  frozenOf,
+  governingBound,
+  readRecord,
   readWardenOutcome,
-  readWardenState,
-  removeWardenFiles,
-  spawnWarden,
+  recordFileName,
+  removeRecordFiles,
+  snapshotOf,
   wardenDonePath,
   wardenReadyPath,
-  writeJsonAtomicAsync,
-  type WardenState,
-} from "./run-deadline-warden.js";
-
-export interface RunDeadlineClock {
-  /** Wall clock, ms since the epoch (injectable: a test steps it backwards). */
-  wallNow(): number;
-  /** Host clock, ns: the same clock every warden reads (`kind`). */
-  hostNow(): bigint;
-  kind: HostClockKind;
-  bootId(): string | null;
-}
-
-export function systemDeadlineClock(
-  platform: NodeJS.Platform = process.platform,
-): RunDeadlineClock {
-  const clock = hostClock(platform);
-  return { wallNow: () => Date.now(), hostNow: clock.now, kind: clock.kind, bootId: clock.bootId };
-}
-
-export function deadlineProblem(
-  message: string,
-  code: string,
-  status = 409,
-  retryable = false,
-): Error & { code: string; status: number; retryable: boolean } {
-  return Object.assign(new Error(message), { code, status, retryable });
-}
-
-/** An absolute deadline converted once to the host clock. */
-export interface DeadlinePoint {
-  at: string;
-  target: bigint;
-}
+  writeRecord,
+  type Bound,
+  type DeadlineRecord,
+  type RecordReader,
+} from "./run-deadline-record.js";
+import { RUN_DEADLINE_STOP_GRACE_SEC, spawnWarden } from "./run-deadline-warden.js";
 
 interface Entry {
   jobId: string;
-  own: DeadlinePoint | null;
-  revision: number;
-  parentJobId: string | null;
+  path: string;
+  record: DeadlineRecord;
   children: Set<string>;
-  state: RunDeadlineState;
-  /** The effective deadline fixed at the terminal (or at expiry). */
-  frozen: (DeadlinePoint & { from: string | null }) | null;
-  /** The parent's effective deadline when last seen (used if the parent is forgotten). */
-  lastParent: (DeadlinePoint & { from: string }) | null;
   timer?: ReturnType<typeof setTimeout>;
-  markers: string[];
-  /** The state file exists (written by a set or the warden hand-off). */
-  durable: boolean;
+  /** The job reached its terminal: no timer is armed again. */
+  closing: boolean;
   wardenStarted: boolean;
-  cgroup: string | null;
-  /** Serializes this run's durable writes and hand-offs. */
+  /** Serializes this job's transitions. */
   chain: Promise<unknown>;
 }
 
 export interface RunDeadlinesOptions {
-  /** Directory of state files; absent: in-process timers only, no warden. */
+  /** Directory of the durable records; without it no deadline is accepted. */
   dir?: string;
   /** The run-scope index the warden reads recorded process groups from. */
   runScopesPath?: string;
   clock?: RunDeadlineClock;
   stopGraceSec?: number;
-  spawnWarden?: (statePath: string) => Promise<{ pid: number }>;
+  spawnWarden?: (recordPath: string) => Promise<{ pid: number }>;
   /** Boundary probe (default: the delegated cgroup v2 probe on Linux). */
   probeBoundary?: () => Promise<DeadlineBoundary>;
+  /** The platform the capability is decided for (default: this host's). */
   platform?: NodeJS.Platform;
-  /** The effective deadline passed: the scheduler ends the job (queued or running). */
+  /** The governing deadline passed: the scheduler ends the job (queued or running). */
   onExpire?: (jobId: string) => void;
-}
-
-/** Parse an optional `deadline` from a run request; undefined when absent. */
-export function requestedDeadline(params: unknown): RunDeadlineStart | undefined {
-  if (!params || typeof params !== "object") return undefined;
-  const raw = (params as { deadline?: unknown }).deadline;
-  return raw === undefined ? undefined : RunDeadlineStart.parse(raw);
+  /** A durable write the daemon could not make, after it already decided. */
+  onFault?: (message: string, error: unknown) => void;
 }
 
 /** The longest single timer wait: a suspended host is re-checked at least this often. */
 const MAX_TIMER_MS = 1_000;
+const pointState = (point: DeadlinePoint) => ({ at: point.at, targetNs: point.target.toString() });
+const pointOf = (bound: Bound): DeadlinePoint => ({ at: bound.at, target: bound.target });
 
 export class RunDeadlines {
   private readonly entries = new Map<string, Entry>();
+  private readonly byFile = new Map<string, Entry>();
+  private readonly staged = new Map<string, DeadlineRecord>();
   protected readonly clock: RunDeadlineClock;
   readonly stopGraceSec: number;
   private readonly platform: NodeJS.Platform;
   private boundary: DeadlineBoundary | null = null;
   private boundaryProbe: Promise<DeadlineBoundary> | null = null;
+  /** Records by file name: the cache for jobs held here, else the disk. */
+  protected readonly reader: RecordReader;
 
   constructor(private readonly opts: RunDeadlinesOptions) {
     this.platform = opts.platform ?? process.platform;
-    this.clock = opts.clock ?? systemDeadlineClock(this.platform);
+    this.clock = opts.clock ?? systemDeadlineClock();
     this.stopGraceSec = opts.stopGraceSec ?? RUN_DEADLINE_STOP_GRACE_SEC;
     if (opts.dir) mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
+    this.reader = (file) =>
+      this.byFile.get(file)?.record ?? (opts.dir ? readRecord(join(opts.dir, file)) : null);
   }
 
   /** Prove the boundary once (Linux): needed before the capability is declared. */
-  prepare(): Promise<DeadlineBoundary> {
+  proveBoundary(): Promise<DeadlineBoundary> {
     this.boundaryProbe ??= (this.opts.probeBoundary ?? (() => probeCgroupBoundary(this.platform)))()
       .catch((error: unknown) => ({ kind: "marker" as const, reason: String(error) }))
       .then((boundary) => (this.boundary = boundary));
@@ -151,7 +130,7 @@ export class RunDeadlines {
 
   /**
    * The capability this host proves: Linux only, once the boundary probe has
-   * finished and a warden can run (a state directory exists). The boundary
+   * finished and records can be kept (a state directory exists). The boundary
    * names how the run's processes are delimited.
    */
   capabilities(): ControlCapability[] {
@@ -165,214 +144,205 @@ export class RunDeadlines {
     ];
   }
 
+  /** run-deadline/1 is declared here: only then is an explicit deadline accepted. */
+  declared(): boolean {
+    return this.capabilities().length > 0;
+  }
+
   has(jobId: string): boolean {
     return this.entries.has(jobId);
   }
 
   /** Convert an absolute instant now; refuse one that is not in the future. */
   toPoint(at: string): DeadlinePoint {
-    const wall = Date.parse(at);
-    const now = this.clock.wallNow();
-    if (!Number.isFinite(wall))
-      throw deadlineProblem("deadline.at is not a valid instant", "run_deadline_invalid", 400);
-    if (wall <= now)
-      throw deadlineProblem(
-        `deadline.at ${at} is not after the server time ${new Date(now).toISOString()}`,
-        "run_deadline_passed",
-      );
-    return {
-      at: new Date(wall).toISOString(),
-      target: this.clock.hostNow() + BigInt(wall - now) * 1_000_000n,
-    };
+    return convertInstant(at, this.clock);
   }
 
-  /** A held run's effective deadline and whether the run is still live (armed). */
-  pointOf(jobId: string): { point: DeadlinePoint; live: boolean } | null {
-    const entry = this.entries.get(jobId);
-    const point = entry ? this.effective(entry) : null;
-    return entry && point ? { point, live: entry.state === "armed" } : null;
+  /** A job's record: the cached one, else the durable one; null when it has none. */
+  recordOf(jobId: string): DeadlineRecord | null {
+    const cached = this.entries.get(jobId)?.record;
+    if (cached) return cached;
+    if (!this.opts.dir) return null;
+    const read = readRecord(this.path(jobId));
+    return read && read !== "unreadable" ? read : null;
   }
 
-  /** An instant converted without refusing one already past (it then expires). */
-  protected lenientPoint(at: string): DeadlinePoint {
-    const wall = Date.parse(at);
-    return {
-      at: new Date(wall).toISOString(),
-      target: this.clock.hostNow() + BigInt(wall - this.clock.wallNow()) * 1_000_000n,
-    };
+  /** The deadline that governs a record's processes now, on this host's clock. */
+  governing(record: DeadlineRecord): Bound | null {
+    return governingBound(record, this.reader);
+  }
+
+  /** The record's targets mean something on this host's clock (same boot and clock). */
+  sameClock(record: DeadlineRecord): boolean {
+    return record.bootId === this.clock.bootId() && record.clock === this.clock.kind;
+  }
+
+  /** The record lost its authority: its deadline was reached, claimed or is not on this clock. */
+  spent(record: DeadlineRecord): boolean {
+    if (record.state !== "armed" || enforcementClaimed(this.path(record.jobId))) return true;
+    if (!this.sameClock(record)) return true;
+    const bound = this.governing(record);
+    return bound !== null && this.clock.hostNow() >= bound.target;
+  }
+
+  hostNow(): bigint {
+    return this.clock.hostNow();
   }
 
   /**
-   * Register an accepted job. Never throws: the instant was checked before the
-   * command was committed (`toPoint`), and one that passed since expires here
-   * through the ordinary path. `parentJobId` names a Delegate parent whose
-   * effective deadline also caps the child.
+   * Write the record of a job about to be committed (before the command
+   * exists: a client is answered only after both). False when the spec holds
+   * no deadline. A Delegate parent's current deadline caps the child.
    */
-  admit(jobId: string, own: DeadlinePoint | null, parentJobId: string | null): void {
-    if (this.entries.has(jobId)) return;
-    const parent = parentJobId ? this.entries.get(parentJobId) : undefined;
-    if (!own && !parent) return;
+  async stage(jobId: string, spec: DeadlineSpec): Promise<boolean> {
+    if (!this.opts.dir)
+      throw deadlineProblem(
+        "this engine keeps no run-deadline/1 records",
+        "run_deadline_unsupported",
+      );
+    const parent = spec.parentJobId ? this.recordOf(spec.parentJobId) : null;
+    const cap = parent ? this.governing(parent) : null;
+    if (!spec.own && !cap) return false;
+    const record: DeadlineRecord = {
+      version: RECORD_VERSION,
+      jobId,
+      clock: this.clock.kind,
+      bootId: this.clock.bootId(),
+      state: "armed",
+      revision: 0,
+      own: spec.own ? pointState(spec.own) : null,
+      successorOf: spec.own ? spec.successorOf : null,
+      parent: parent && cap ? recordFileName(parent.jobId) : null,
+      parentJobId: parent && cap ? parent.jobId : null,
+      inherited:
+        parent && cap ? { ...pointState(cap), from: cap.inheritedFrom ?? parent.jobId } : null,
+      frozen: null,
+      markers: [],
+      cgroup: null,
+      runScopes: this.opts.runScopesPath ?? null,
+    };
+    try {
+      await writeRecord(this.path(jobId), record);
+    } catch (error) {
+      throw recordUnavailable(error);
+    }
+    this.staged.set(jobId, record);
+    return true;
+  }
+
+  /** A staged job was not committed (a replay won, or the commit failed): its record goes. */
+  unstage(jobId: string): void {
+    if (!this.staged.delete(jobId) || !this.opts.dir) return;
+    const path = this.path(jobId);
+    void Promise.all([path, claimPath(path)].map((file) => rm(file, { force: true }))).catch(
+      () => {},
+    );
+  }
+
+  /** The command of a staged job was committed: hold its record and arm it. Never throws. */
+  admit(jobId: string): void {
+    const record = this.staged.get(jobId);
+    if (!record || this.entries.has(jobId)) return;
+    this.staged.delete(jobId);
     const entry: Entry = {
       jobId,
-      own,
-      revision: 0,
-      parentJobId: parent ? parentJobId : null,
+      path: this.path(jobId),
+      record,
       children: new Set(),
-      state: "armed",
-      frozen: null,
-      lastParent: null,
-      markers: [],
-      durable: false,
+      closing: false,
       wardenStarted: false,
-      cgroup: null,
       chain: Promise.resolve(),
     };
     this.entries.set(jobId, entry);
-    parent?.children.add(jobId);
+    this.byFile.set(recordFileName(jobId), entry);
+    if (record.parentJobId) this.entries.get(record.parentJobId)?.children.add(jobId);
     this.arm(entry);
   }
 
-  /** Expire now when the effective deadline already passed; true when it did (or had). */
-  expireIfDue(jobId: string): boolean {
+  /**
+   * Before a queued job starts: true when it must not (its deadline was
+   * reached, claimed or it is no longer armed). Its expiry follows on its chain.
+   */
+  mustNotStart(jobId: string): boolean {
     const entry = this.entries.get(jobId);
     if (!entry) return false;
-    if (entry.state === "armed" && this.due(entry)) this.expire(entry);
-    return entry.state === "expired";
+    if (entry.record.state === "armed" && !this.due(entry) && !enforcementClaimed(entry.path))
+      return false;
+    void this.expireWhenDue(entry);
+    return true;
   }
 
-  private effective(entry: Entry): (DeadlinePoint & { from: string | null }) | null {
-    if (entry.frozen) return entry.frozen;
-    let best: (DeadlinePoint & { from: string | null }) | null = entry.own
-      ? { ...entry.own, from: null }
-      : null;
-    let parentId = entry.parentJobId;
-    const seen = new Set([entry.jobId]);
-    let parentBest: (DeadlinePoint & { from: string }) | null = null;
-    while (parentId && !seen.has(parentId)) {
-      seen.add(parentId);
-      const parent = this.entries.get(parentId);
-      if (!parent) break;
-      const point = parent.frozen ?? parent.own;
-      if (point && (!parentBest || point.target < parentBest.target))
-        parentBest = { at: point.at, target: point.target, from: parentId };
-      if (parent.frozen) break;
-      parentId = parent.parentJobId;
-    }
-    if (parentBest) entry.lastParent = parentBest;
-    const inherited = parentBest ?? entry.lastParent;
-    if (inherited && (!best || inherited.target < best.target)) best = inherited;
-    return best;
-  }
-
-  private due(entry: Entry): boolean {
-    const point = this.effective(entry);
-    return point !== null && this.clock.hostNow() >= point.target;
-  }
-
-  snapshot(jobId: string): RunDeadlineSnapshot | null {
+  /** The job's deadline as every answer reports it, after its pending transitions. */
+  read(jobId: string): Promise<RunDeadlineSnapshot | null> {
     const entry = this.entries.get(jobId);
-    if (!entry) return null;
-    if (entry.state === "armed" && this.due(entry)) this.expire(entry);
-    const point = this.effective(entry);
-    if (!point) return null;
-    return {
-      at: point.at,
-      revision: entry.revision,
+    if (!entry) return Promise.resolve(this.durableSnapshot(jobId));
+    return this.serialized(entry, async () => {
+      await this.enforceIfDue(entry);
+      return this.snapshotOfEntry(entry);
+    });
+  }
+
+  /** A record this daemon holds no entry for (an earlier generation's, or forgotten). */
+  durableSnapshot(jobId: string): RunDeadlineSnapshot | null {
+    const record = this.recordOf(jobId);
+    if (!record) return null;
+    const path = this.path(jobId);
+    return snapshotOf(record, {
+      read: this.reader,
+      claimed: enforcementClaimed(path),
+      outcome: readWardenOutcome(path),
       serverNow: new Date(this.clock.wallNow()).toISOString(),
-      state: entry.state,
       stopGraceSec: this.stopGraceSec,
-      inheritedFrom: point.from,
-    };
+    });
   }
 
   /**
-   * The deadline of a job this daemon holds no entry for (a previous
-   * generation's, or one pruned from memory): its state file when one was
-   * written (a later revision, or a warden hand-off), else revision 0 from the
-   * accepted request. `expired` tells whether the job ended by its deadline.
+   * Replace the job's own deadline. The new revision is published durably and
+   * confirmed only if the clock is still before the deadline it replaced;
+   * otherwise that deadline won while it was being published, and the replaced
+   * revision is restored as `enforcing`.
    */
-  durableSnapshot(
-    jobId: string,
-    accepted: { params: unknown; expired: boolean },
-  ): RunDeadlineSnapshot | null {
-    const state = this.opts.dir ? readWardenState(this.statePath(jobId)) : null;
-    const serverNow = new Date(this.clock.wallNow()).toISOString();
-    if (state && state !== "unreadable") {
-      const point = state.frozen ?? state.own ?? state.inherited;
-      if (!point) return null;
-      const sameBoot = state.bootId === this.clock.bootId() && state.clock === this.clock.kind;
-      const target = sameBoot ? effectiveTarget(state, this.opts.dir!) : null;
-      const reached =
-        readWardenOutcome(this.statePath(jobId)) !== null ||
-        (target !== null
-          ? this.clock.hostNow() >= target
-          : Date.parse(point.at) <= this.clock.wallNow());
-      return {
-        at: point.at,
-        revision: state.revision,
-        serverNow,
-        state: accepted.expired || (reached && !state.released) ? "expired" : "closed",
-        stopGraceSec: this.stopGraceSec,
-        inheritedFrom:
-          state.frozen?.inheritedFrom ?? (state.own ? null : (state.inherited?.from ?? null)),
-      };
-    }
-    const requested = requestedDeadline(accepted.params);
-    if (!requested) return null;
-    return {
-      at: new Date(Date.parse(requested.at)).toISOString(),
-      revision: 0,
-      serverNow,
-      state: accepted.expired ? "expired" : "closed",
-      stopGraceSec: this.stopGraceSec,
-      inheritedFrom: null,
-    };
-  }
-
-  /**
-   * Replace the job's own deadline. The new revision is written durably first
-   * (the file every dependent warden reads) and confirmed only after that.
-   * An effective deadline that already passed expires the run and refuses.
-   */
-  set(
-    jobId: string,
-    raw: unknown,
-    opts: { live: boolean; delegated: boolean },
-  ): Promise<RunDeadlineSnapshot> {
+  set(jobId: string, raw: unknown, opts: { delegated: boolean }): Promise<RunDeadlineSnapshot> {
     const request = RunDeadlineSetRequest.parse(raw);
     const entry = this.entries.get(jobId);
-    if (!opts.live || !entry)
-      return Promise.reject(
-        deadlineProblem("Run is terminal; its deadline is closed", "run_deadline_closed"),
-      );
+    if (!entry) return Promise.reject(this.terminalRefusal(this.recordOf(jobId)));
     return this.serialized(entry, async () => {
-      if (entry.state === "armed" && this.due(entry)) this.expire(entry);
-      if (entry.state === "expired")
-        throw deadlineProblem("Run deadline already passed", "run_deadline_expired");
-      if (entry.state !== "armed")
-        throw deadlineProblem("Run is terminal; its deadline is closed", "run_deadline_closed");
+      await this.enforceIfDue(entry);
+      if (entry.record.state !== "armed") throw this.terminalRefusal(entry.record);
       if (opts.delegated)
         throw deadlineProblem(
           "A Delegate child's deadline follows its parent; change the parent",
           "delegated_deadline_forbidden",
           403,
         );
-      if (request.expectedRevision !== entry.revision)
+      if (request.expectedRevision !== entry.record.revision)
         throw deadlineProblem(
-          `Deadline revision changed (expected ${request.expectedRevision}, current ${entry.revision}); read before retrying`,
+          `Deadline revision changed (expected ${request.expectedRevision}, current ${entry.record.revision}); read before retrying`,
           "run_deadline_revision_conflict",
         );
       const next = this.toPoint(request.at);
-      if (this.opts.dir) {
-        await this.writeState(entry, { own: next, revision: entry.revision + 1 });
-        entry.durable = true;
+      const previous = entry.record;
+      const replaced = this.governing(previous);
+      await this.commit(
+        entry,
+        {
+          ...previous,
+          own: pointState(next),
+          successorOf: null,
+          revision: previous.revision + 1,
+          inherited: this.freshCap(previous),
+        },
+        { strict: true },
+      );
+      if (replaced && this.clock.hostNow() >= replaced.target) {
+        // The replaced deadline was reached during the publication: it won.
+        await this.commit(entry, { ...previous, state: "enforcing" }, { strict: false });
+        this.stopTimer(entry);
+        this.expired(jobId);
+        throw deadlineExpired("Run deadline was reached while the new one was being written");
       }
-      if (entry.state !== "armed")
-        throw deadlineProblem("Run is terminal; its deadline is closed", "run_deadline_closed");
-      entry.own = next;
-      entry.revision += 1;
       this.rearmTree(entry);
-      return this.snapshot(jobId)!;
+      return this.snapshotOfEntry(entry);
     });
   }
 
@@ -381,108 +351,147 @@ export class RunDeadlines {
    * carries it (preparation first, then the run): the first hand-off starts the
    * warden, later ones add markers. On a cgroup boundary the marker is bound to
    * the run's cgroup, so every launch carrying it enters that cgroup. Throws when
-   * the warden cannot be started or the deadline passed meanwhile: then nothing
-   * may be launched.
+   * the warden cannot be started or the deadline was reached: then nothing may
+   * be launched.
    */
   attachScope(jobId: string, marker: string): Promise<void> {
     const entry = this.entries.get(jobId);
-    if (!entry || !this.opts.dir) return Promise.resolve();
+    if (!entry) return Promise.resolve();
     return this.serialized(entry, async () => {
-      this.refuseIfDue(entry);
+      await this.refuseUnlessArmed(entry);
+      let cgroup = entry.record.cgroup;
       if (this.boundary?.kind === "cgroup") {
-        entry.cgroup ??= await createRunCgroup(this.boundary.runsDir, jobId);
-        registerScopeCgroup(marker, join(entry.cgroup, "cgroup.procs"));
+        cgroup ??= await createRunCgroup(this.boundary.runsDir, jobId);
+        registerScopeCgroup(marker, join(cgroup, "cgroup.procs"));
       }
-      if (!entry.markers.includes(marker)) entry.markers.push(marker);
-      await this.writeState(entry);
-      entry.durable = true;
-      if (!entry.wardenStarted) {
-        await (this.opts.spawnWarden ?? spawnWarden)(this.statePath(jobId));
-        entry.wardenStarted = true;
+      const markers = entry.record.markers.includes(marker)
+        ? entry.record.markers
+        : [...entry.record.markers, marker];
+      try {
+        await this.commit(
+          entry,
+          { ...entry.record, markers, cgroup, inherited: this.freshCap(entry.record) },
+          { strict: true },
+        );
+        if (!entry.wardenStarted) {
+          await (this.opts.spawnWarden ?? spawnWarden)(entry.path);
+          entry.wardenStarted = true;
+        }
+        await this.refuseUnlessArmed(entry);
+      } catch (error) {
+        unregisterScopeCgroup(marker);
+        throw error;
       }
-      this.refuseIfDue(entry);
     });
   }
 
-  private refuseIfDue(entry: Entry): void {
-    if (entry.state === "armed" && this.due(entry)) this.expire(entry);
-    if (entry.state !== "armed")
-      throw deadlineProblem("Run deadline already passed", "run_deadline_expired");
-  }
-
   /**
-   * The job reached a terminal other than its deadline: stop the timer, fix the
-   * effective deadline and tell the warden the run ended (it leaves once the
-   * group is confirmed empty, else it stays to the deadline). An expired job's
-   * warden is told the same; it is already enforcing.
+   * The job reached its terminal: fix the deadline it ended under and tell
+   * the warden (it leaves once the boundary is confirmed empty, else it stays
+   * to the deadline). At or after the deadline, or once the deadline began its
+   * stop, the terminal is `expired`; before it, `closed`.
    */
   close(jobId: string): void {
     const entry = this.entries.get(jobId);
-    if (!entry || entry.state === "closed") return;
-    if (entry.state === "armed") {
-      entry.state = "closed";
-      entry.frozen = this.effective(entry);
-    }
-    if (entry.timer) clearTimeout(entry.timer);
-    entry.timer = undefined;
-    for (const marker of entry.markers) unregisterScopeCgroup(marker);
-    if (entry.durable)
-      void this.serialized(entry, () => this.writeState(entry, { released: true })).catch(() => {});
+    if (!entry || entry.closing) return;
+    const at = this.clock.hostNow();
+    entry.closing = true;
+    this.stopTimer(entry);
+    for (const marker of entry.record.markers) unregisterScopeCgroup(marker);
+    void this.serialized(entry, async () => {
+      const record = entry.record;
+      if (record.state === "closed" || record.state === "expired") return;
+      const bound = this.governing(record);
+      const won =
+        record.state === "enforcing" ||
+        enforcementClaimed(entry.path) ||
+        (bound !== null && at >= bound.target);
+      await this.commit(
+        entry,
+        { ...record, state: won ? "expired" : "closed", frozen: bound ? frozenOf(bound) : null },
+        { strict: false },
+      );
+    }).catch(() => {});
   }
 
   /**
-   * Retention forgot the job. Its state file goes with it unless a warden may
-   * still act on it (started and not yet done); the startup sweep removes those
+   * Retention forgot the job. Its files go with it unless a warden may still
+   * act on them (started and not yet done); the startup sweep removes those
    * once their warden finished.
    */
   forget(jobId: string): void {
     const entry = this.entries.get(jobId);
-    if (entry?.timer) clearTimeout(entry.timer);
-    if (entry?.parentJobId) this.entries.get(entry.parentJobId)?.children.delete(jobId);
-    for (const marker of entry?.markers ?? []) unregisterScopeCgroup(marker);
-    this.entries.delete(jobId);
+    this.staged.delete(jobId);
+    if (entry) {
+      this.stopTimer(entry);
+      if (entry.record.parentJobId)
+        this.entries.get(entry.record.parentJobId)?.children.delete(jobId);
+      for (const marker of entry.record.markers) unregisterScopeCgroup(marker);
+      this.entries.delete(jobId);
+      this.byFile.delete(recordFileName(jobId));
+    }
     if (!this.opts.dir) return;
-    const path = this.statePath(jobId);
+    const path = this.path(jobId);
     if (!existsSync(wardenReadyPath(path)) || existsSync(wardenDonePath(path)))
-      removeWardenFiles(path);
+      removeRecordFiles(path);
   }
 
   /**
-   * Startup: drop the files of finished wardens whose job is no longer
-   * retained, and every runtime file of a previous boot (no warden survives a
-   * reboot). Durable records of retained jobs stay.
+   * Startup, before any product request is served: the records of an earlier
+   * generation reach their terminal state (`run-deadline-reconcile.ts`).
    */
-  sweep(retained: (jobId: string) => boolean): void {
-    if (!this.opts.dir) return;
-    let names: string[];
-    try {
-      names = readdirSync(this.opts.dir).filter(
-        (name) => name.endsWith(".json") && !name.includes(".json."),
-      );
-    } catch {
-      return;
-    }
-    for (const name of names) {
-      const path = join(this.opts.dir, name);
-      const state = readWardenState(path);
-      const jobId = state && state !== "unreadable" ? state.jobId : name.slice(0, -5);
-      const otherBoot =
-        state &&
-        state !== "unreadable" &&
-        state.bootId !== null &&
-        state.bootId !== this.clock.bootId();
-      const wardenGone =
-        !existsSync(wardenReadyPath(path)) || existsSync(wardenDonePath(path)) || otherBoot;
-      if (wardenGone && !retained(jobId)) removeWardenFiles(path);
-    }
+  reconcile(states: (jobIds: string[]) => Map<string, string>): Promise<void> {
+    if (!this.opts.dir) return Promise.resolve();
+    return reconcileRecords({
+      dir: this.opts.dir,
+      clock: this.clock,
+      held: (jobId) => this.entries.has(jobId),
+      governing: (record) => this.governing(record),
+      states,
+      onFault: this.opts.onFault,
+    });
   }
 
-  dispose(): void {
-    for (const entry of this.entries.values()) if (entry.timer) clearTimeout(entry.timer);
+  /** Stop every timer and let pending record writes land (a clean stop leaves them durable). */
+  async dispose(): Promise<void> {
+    for (const entry of this.entries.values()) this.stopTimer(entry);
+    await Promise.all([...this.entries.values()].map((entry) => entry.chain));
   }
 
-  private statePath(jobId: string): string {
-    return join(this.opts.dir!, `${jobId.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`);
+  protected path(jobId: string): string {
+    return join(this.opts.dir!, recordFileName(jobId));
+  }
+
+  private snapshotOfEntry(entry: Entry): RunDeadlineSnapshot {
+    return snapshotOf(entry.record, {
+      read: this.reader,
+      claimed: enforcementClaimed(entry.path),
+      outcome: readWardenOutcome(entry.path),
+      serverNow: new Date(this.clock.wallNow()).toISOString(),
+      stopGraceSec: this.stopGraceSec,
+    })!;
+  }
+
+  private terminalRefusal(record: DeadlineRecord | null): Error {
+    if (!record) return deadlineProblem("Run has no deadline", "run_deadline_absent", 404);
+    return record.state === "enforcing" || record.state === "expired"
+      ? deadlineExpired()
+      : deadlineProblem("Run is terminal; its deadline is closed", "run_deadline_closed");
+  }
+
+  /** The parent's current deadline for the fallback copy in this record. */
+  private freshCap(record: DeadlineRecord): DeadlineRecord["inherited"] {
+    if (!record.parent) return record.inherited;
+    const parent = this.reader(record.parent);
+    const cap = parent && parent !== "unreadable" ? this.governing(parent) : null;
+    return cap
+      ? { ...pointState(pointOf(cap)), from: cap.inheritedFrom ?? record.parentJobId! }
+      : record.inherited;
+  }
+
+  private due(entry: Entry): boolean {
+    const bound = this.governing(entry.record);
+    return bound !== null && this.clock.hostNow() >= bound.target;
   }
 
   private serialized<T>(entry: Entry, work: () => Promise<T>): Promise<T> {
@@ -491,32 +500,56 @@ export class RunDeadlines {
     return next;
   }
 
-  private writeState(
+  /**
+   * Replace the cached record durably. strict: a failed write is not
+   * adopted (the cache is re-read from disk) and refuses, typed; otherwise the
+   * decision stands in memory and the fault is reported.
+   */
+  private async commit(
     entry: Entry,
-    patch: { own?: DeadlinePoint; revision?: number; released?: boolean } = {},
+    next: DeadlineRecord,
+    opts: { strict: boolean },
   ): Promise<void> {
-    const own = patch.own ?? entry.own;
-    const point = (value: DeadlinePoint) => ({ at: value.at, targetNs: value.target.toString() });
-    this.effective(entry); // refreshes `lastParent`
-    const parentPoint = entry.parentJobId ? entry.lastParent : null;
-    const state: WardenState = {
-      version: 2,
-      jobId: entry.jobId,
-      clock: this.clock.kind,
-      bootId: this.clock.bootId(),
-      own: own ? point(own) : null,
-      revision: patch.revision ?? entry.revision,
-      parent: entry.parentJobId
-        ? `${entry.parentJobId.replace(/[^A-Za-z0-9_.-]/g, "_")}.json`
-        : null,
-      inherited: parentPoint ? { ...point(parentPoint), from: parentPoint.from } : null,
-      frozen: entry.frozen ? { ...point(entry.frozen), inheritedFrom: entry.frozen.from } : null,
-      markers: [...entry.markers],
-      cgroup: entry.cgroup,
-      runScopes: this.opts.runScopesPath ?? null,
-      released: patch.released ?? entry.state !== "armed",
-    };
-    return writeJsonAtomicAsync(this.statePath(entry.jobId), state);
+    try {
+      await writeRecord(entry.path, next);
+    } catch (error) {
+      if (!opts.strict) {
+        entry.record = next;
+        this.opts.onFault?.(`run-deadline record of ${entry.jobId} not written`, error);
+        return;
+      }
+      const disk = readRecord(entry.path);
+      if (disk && disk !== "unreadable") entry.record = disk;
+      throw recordUnavailable(error);
+    }
+    entry.record = next;
+  }
+
+  /** On the chain: a claim of the warden, or a reached deadline, starts the stop. */
+  private async enforceIfDue(entry: Entry): Promise<void> {
+    if (entry.record.state !== "armed") return;
+    if (enforcementClaimed(entry.path) || this.due(entry)) await this.enforce(entry);
+  }
+
+  private async refuseUnlessArmed(entry: Entry): Promise<void> {
+    await this.enforceIfDue(entry);
+    if (entry.record.state !== "armed") throw this.terminalRefusal(entry.record);
+  }
+
+  private async enforce(entry: Entry): Promise<void> {
+    if (entry.record.state !== "armed") return;
+    this.stopTimer(entry);
+    await this.commit(entry, { ...entry.record, state: "enforcing" }, { strict: false });
+    if (!entry.closing) this.expired(entry.jobId);
+  }
+
+  private expireWhenDue(entry: Entry): Promise<void> {
+    return this.serialized(entry, async () => {
+      await this.enforceIfDue(entry);
+      if (entry.record.state === "armed" && !entry.closing) this.arm(entry);
+    }).catch((error: unknown) =>
+      this.opts.onFault?.(`run-deadline expiry of ${entry.jobId}`, error),
+    );
   }
 
   private rearmTree(entry: Entry): void {
@@ -534,15 +567,19 @@ export class RunDeadlines {
     }
   }
 
-  private arm(entry: Entry): void {
+  private stopTimer(entry: Entry): void {
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = undefined;
-    if (entry.state !== "armed") return;
-    const point = this.effective(entry);
-    if (!point) return;
-    const remainingNs = point.target - this.clock.hostNow();
+  }
+
+  private arm(entry: Entry): void {
+    this.stopTimer(entry);
+    if (entry.record.state !== "armed" || entry.closing) return;
+    const bound = this.governing(entry.record);
+    if (!bound) return;
+    const remainingNs = bound.target - this.clock.hostNow();
     if (remainingNs <= 0n) {
-      this.expire(entry);
+      void this.expireWhenDue(entry);
       return;
     }
     // Event-loop timers run on the monotonic clock, which stops while the host
@@ -552,17 +589,7 @@ export class RunDeadlines {
     entry.timer.unref?.();
   }
 
-  private expire(entry: Entry): void {
-    if (entry.state !== "armed") return;
-    entry.frozen = this.effective(entry);
-    entry.state = "expired";
-    if (entry.timer) clearTimeout(entry.timer);
-    entry.timer = undefined;
-    if (entry.durable) void this.serialized(entry, () => this.writeState(entry)).catch(() => {});
-    this.expired(entry.jobId);
-  }
-
-  /** The effective deadline passed (the scheduler subclass ends the job). */
+  /** The governing deadline passed (the scheduler subclass ends the job). */
   protected expired(jobId: string): void {
     this.opts.onExpire?.(jobId);
   }

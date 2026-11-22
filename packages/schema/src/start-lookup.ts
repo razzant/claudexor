@@ -2,6 +2,7 @@ import { z } from "zod/v3";
 import { ControlRunState, ControlThreadTurn } from "./control.js";
 import { ControlHandshakeResponse } from "./operation.js";
 import { Id } from "./primitives.js";
+import { RunDeadlineSnapshot } from "./run-deadline.js";
 
 /** Every lookup answer names the store it read; a read without one is unavailable, not empty. */
 const LookupStoreId = ControlHandshakeResponse.shape.storeId
@@ -57,6 +58,9 @@ export const ControlStartLookupHandle = z
     threadId: Id.optional().describe("Thread of an accepted turn."),
     turnId: Id.optional().describe("The accepted turn."),
     problem: ControlStartLookupProblem.optional(),
+    deadline: RunDeadlineSnapshot.optional().describe(
+      "The accepted run-deadline/1 deadline, read from its durable record; present only when the request set one.",
+    ),
   })
   .strict()
   .describe("Durable handle of the job a start request created, read without waiting for it.");

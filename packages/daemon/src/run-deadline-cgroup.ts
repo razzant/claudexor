@@ -11,7 +11,8 @@
  * marker census), with the reason.
  *
  * A run's cgroup is `claudexor-runs/<job id>`; the warden writes `1` to its
- * `cgroup.kill` at the deadline and reads `cgroup.procs` until it is empty.
+ * `cgroup.kill` at the deadline and reads `cgroup.events` until it reports the
+ * cgroup unpopulated (hierarchically: a nested subgroup counts too).
  * Children inherit their cgroup, and only a process with write access to the
  * delegated subtree could move itself out, so everything the run starts
  * stays inside. Work started through another service (a container engine, an
@@ -66,15 +67,25 @@ export function ownCgroupDir(
   return { dir: join(mount, path) };
 }
 
-function waitExit(child: ReturnType<typeof spawn>, ms: number): Promise<number | null> {
+/** How the probe child ended: its exit code (-1 for a signal), or the spawn error. */
+type ProbeEnd = { code: number } | { error: Error };
+
+/** One completion of the child, registered at spawn: exit, or an asynchronous spawn error. */
+function completion(child: ReturnType<typeof spawn>): Promise<ProbeEnd> {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(null), ms);
-    child.once("exit", (code, signal) => {
-      clearTimeout(timer);
-      resolve(signal ? -1 : (code ?? -1));
-    });
+    child.once("exit", (code, signal) => resolve({ code: signal ? -1 : (code ?? -1) }));
+    child.once("error", (error) => resolve({ error }));
   });
 }
+
+const within = <T>(work: Promise<T>, ms: number): Promise<T | null> =>
+  new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    void work.then((value) => {
+      clearTimeout(timer);
+      resolve(value);
+    });
+  });
 
 /**
  * Prove the per-run cgroup boundary in this process's own cgroup (see the
@@ -102,28 +113,33 @@ export async function probeCgroupBoundary(
         { [marker]: "1" },
         platform,
       );
+      // The daemon's own probe, before any run: not a run-owned launch.
       child = spawn(launch.binary, launch.args, { stdio: "ignore" });
     } finally {
       unregisterScopeCgroup(marker);
     }
+    // ONE completion, registered now: an exit that comes while a later write
+    // is still pending, or an asynchronous spawn error, is never missed.
+    let ended: ProbeEnd | undefined;
+    const done = completion(child).then((end) => (ended = end));
     // A loaded host may take a while to run the shim: wait for the child to land
     // (or to fail the move) instead of judging after a fixed pause.
-    const exit = waitExit(child, PROBE_LANDING_MS);
-    let exited: number | null | undefined;
-    void exit.then((code) => (exited = code));
     const landed = async () =>
+      child.pid !== undefined &&
       (await readFile(join(probe, "cgroup.procs"), "utf8")).split("\n").includes(String(child.pid));
     const until = Date.now() + PROBE_LANDING_MS;
-    while (exited === undefined && !(await landed()) && Date.now() < until)
+    while (ended === undefined && !(await landed()) && Date.now() < until)
       await new Promise((resolve) => setTimeout(resolve, 50));
-    if (exited === CGROUP_ENTRY_FAILED_EXIT)
+    if (ended && "error" in ended)
+      return { kind: "marker", reason: `the probe child could not start: ${ended.error.message}` };
+    if (ended?.code === CGROUP_ENTRY_FAILED_EXIT)
       return { kind: "marker", reason: "a child cannot be moved into a run cgroup" };
-    if (exited !== undefined || !(await landed())) {
-      child.kill("SIGKILL");
+    if (ended !== undefined || !(await landed())) {
+      if (ended === undefined) child.kill("SIGKILL");
       return { kind: "marker", reason: "the probe child did not land in its cgroup" };
     }
     await writeFile(join(probe, "cgroup.kill"), "1");
-    if ((await waitExit(child, 2_000)) === null) {
+    if ((await within(done, 2_000)) === null) {
       child.kill("SIGKILL");
       return { kind: "marker", reason: "cgroup.kill did not end the probe child" };
     }
@@ -150,16 +166,19 @@ export async function createRunCgroup(runsDir: string, jobId: string): Promise<s
   return dir;
 }
 
-/** Pids in the cgroup now; null when it is gone or unreadable. */
-export async function cgroupMembers(dir: string): Promise<number[] | null> {
+/** `populated` of cgroup.events text: hierarchical, nested subgroups included. */
+export function parsePopulated(events: string): boolean | null {
+  const row = events.split("\n").find((line) => line.startsWith("populated "));
+  const value = row?.slice("populated ".length).trim();
+  return value === "0" ? false : value === "1" ? true : null;
+}
+
+/** Whether any process is left in the cgroup or below it: false when it is gone; null when unreadable. */
+export async function cgroupPopulated(dir: string): Promise<boolean | null> {
   try {
-    const text = await readFile(join(dir, "cgroup.procs"), "utf8");
-    return text
-      .split("\n")
-      .filter(Boolean)
-      .map((pid) => Number(pid));
+    return parsePopulated(await readFile(join(dir, "cgroup.events"), "utf8"));
   } catch (error) {
-    return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? [] : null;
+    return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? false : null;
   }
 }
 

@@ -6214,35 +6214,53 @@ least one was born by `settled_at` when it is recorded (the kernel does not hand
 out a pid that is still a live process-group id).
 
 **Run deadlines (run-deadline/1).** A run started with `deadline.at` extends the
-INV-144 scope ownership past the daemon's life. Revision 0 of the authorization is
-the accepted command itself (`params.deadline`); every later revision is written
-to `daemon/run-deadlines/<job>.json` (fsync, then rename) before it is confirmed,
-and an answer after a restart reads that file, else the request. The daemon
-converts each instant once, at acceptance, to the host clock (CLOCK_BOOTTIME read
-from `/proc/uptime` on Linux, so a suspended host finds the deadline expired when it
-wakes; `process.hrtime` elsewhere) and re-reads that clock at least every second:
-a queued job never starts, a preparing or running one is cancelled
-(`wall_clock_exceeded`). The same file instructs the run's warden: a detached
-process (its own session, no run marker, outside every run cgroup) started before
-the first process of the run's scope — before the thread worktree preparation's
-first Git child, then given the run's own marker — and confirmed through
-`<job>.json.ready` before anything launches. The engine bundle starts the small
-`run-deadline-warden.cjs` beside it (its own `--run-deadline-warden <state file>`
-role when that file is missing); an installed package starts its sibling
-entry. The warden alone acts while the daemon is dead: one second after the target
-it kills the run's cgroup (`cgroup.kill`, when the startup probe proved a
-delegated cgroup v2 subtree: every launch carrying the run's marker enters
-`claudexor-runs/<job>` before exec) and ends every process carrying the run's
-markers plus the groups and descendants `daemon/run-scopes.json` recorded for
-them, repeating until the group is confirmed empty (an empty cgroup, or a complete
-census), its file is removed, or, where no census proves emptiness (macOS), three
-passes found nothing; `<job>.json.outcome.json` and `.done` record its exit. A
-Delegate child's warden also reads its parent's file, so one parent write moves
-every dependent warden; a terminal fixes the effective deadline (`frozen`). After
-a normal end the daemon marks the file `released`: the warden leaves once a
-non-signalling pass confirms the group empty, otherwise it stays to the deadline.
-Retention removes the files once their warden is done; startup removes finished
-ones of jobs no longer retained. The sweep covers orphaned envelopes (with their
+INV-144 scope ownership past the daemon's life. Every job with a deadline, its own
+or inherited (a Delegate parent's, or a predecessor's for a continuation or a next
+message), has ONE durable record, `daemon/run-deadlines/<job>.json`, written by the
+daemon alone (temporary file, fsync, rename, directory flush) under the job id the
+commit will use, before the command exists; a change is confirmed only after its
+write. Answers, receipts, lookups and the startup reconciliation are projections
+of it. The daemon converts each instant once, at acceptance, to the host clock:
+CLOCK_BOOTTIME read from `/proc/uptime` on Linux (it counts suspend, so a
+suspended host finds the deadline reached when it wakes), `process.hrtime`
+elsewhere; an inherited deadline is copied from the source record's host-clock
+target, never converted again. Per job, transitions are linear: `armed`, then
+`enforcing` (the deadline began its stop), then `expired`; or `closed` (a terminal
+before the deadline). They run on one per-job chain in the daemon. The warden's
+only transition is its enforcement claim (`<job>.json.enforcing`, exclusive
+create, before its first stop); a set and the warden are ordered by the shared
+host clock, not a lock a SIGKILLed daemon would leave held: the daemon publishes
+a new revision and confirms it only if, after the publication, the clock is
+still before the deadline it replaced (otherwise it restores that revision as
+`enforcing` and refuses); the warden reads the clock before the record and acts
+only one second after the deadline. The daemon re-reads the clock at least every
+second: a queued job never starts, a preparing or running one is cancelled
+(`run_deadline_expired`). The warden is a detached process (its own session, no
+run marker, outside every run cgroup) started before the first process of the
+run's scope — before the thread worktree preparation's first Git child, then given
+the run's own marker — and confirmed through `<job>.json.ready` before anything
+launches. The engine bundle starts the small `run-deadline-warden.cjs` beside it
+(its own `--run-deadline-warden <record>` role when that file is missing); an
+installed package starts its sibling entry. The warden alone acts while the
+daemon is dead: it kills the run's cgroup (`cgroup.kill`, when the startup probe
+proved a delegated cgroup v2 subtree: every launch carrying the run's marker
+enters `claudexor-runs/<job>` before exec) and ends every process carrying the
+run's markers plus the groups and descendants `daemon/run-scopes.json` recorded
+for them. It leaves, writing `<job>.json.outcome.json` (what `enforcement`
+reports) and `.done`: on the cgroup boundary once `cgroup.events` reports the
+cgroup unpopulated (nested subgroups included) and every marker reap settled; on
+the marker boundary on Linux once a census is complete and settled, while an
+unprovable census or a surviving member is retried with backoff and ends
+`unresolved` only after two minutes of enforcement; where no census proves
+emptiness (macOS, not declared) after three settled passes, `unresolved`; at once
+when its record is removed. A Delegate child's warden reads its ancestors'
+current records, so one parent write moves every dependent warden; a terminal
+fixes the deadline the run ended under (`frozen`), and a closed child's
+survivors stay capped by its parent's current deadline. After the terminal the
+warden leaves once a non-signalling pass confirms the boundary empty, otherwise
+it stays to that deadline. Retention removes the files once their warden is
+done; startup writes the terminal state of every earlier generation's retained
+record and removes finished ones of jobs no longer retained. The sweep covers orphaned envelopes (with their
 seeded-credential homes), dead per-attempt `claudexor/<task>/<attempt>`
 branches, leaked `claudexor/verify-*` branches, and stale
 `claudexor-ro-*`/`claudexor-verify-*` tmp dirs. Envelopes whose creating
@@ -9390,7 +9408,7 @@ existing signed manifest remains its upstream publication authority. There is
 no embed-only payload, manifest, updater authority, or runtime npm install. The
 portable archive root is fixed:
 `claudexord.bundle.cjs`, `claudexor.bundle.cjs`,
-`setup-login-runner.cjs`, `browser-mcp-runtime/`, and
+`setup-login-runner.cjs`, `run-deadline-warden.cjs`, `browser-mcp-runtime/`, and
 `native/claudexor-process-identity` plus
 `native/claudexor-conpty-helper.exe` and the darwin-arm64 and darwin-x64
 publication scanners under `native/betterleaks/`. It deliberately contains no

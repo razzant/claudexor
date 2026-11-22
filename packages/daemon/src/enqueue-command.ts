@@ -116,22 +116,26 @@ function acceptance(
 }
 
 /**
+ * State the commit depends on that is prepared before it, under the job id the
+ * commit will use (run-deadline/1: the job's durable deadline record exists
+ * before its command, so no client is answered before both are durable).
+ */
+export interface CommitReservation {
+  /** Before the commit, asynchronously; a refusal is kept for `reserve`. */
+  prepare(jobId: string, request: unknown): Promise<void>;
+  /** At the commit, synchronously: a kept refusal throws and nothing is accepted. */
+  reserve(jobId: string, request: unknown): void;
+  /** The commit did not create this job (a replay won or it failed): drop what was prepared. */
+  release(jobId: string): void;
+}
+
+/**
  * Stage an acceptance's large bodies off the request thread, then enqueue
  * synchronously exactly as `enqueueCommand` does, with the same job id and the
  * creation time those bodies carry. Staging is a dry run of the same plan; a
  * replay, Stop, refusal or any staging failure is left to the synchronous
  * enqueue, which decides and reports as before.
  */
-/**
- * A check that must run synchronously immediately before the commit, and whose
- * reservation the commit consumes (run-deadline/1 converts the deadline here,
- * once; a refusal throws before anything is accepted).
- */
-export interface CommitReservation {
-  reserve(jobId: string, request: unknown): void;
-  release(jobId: string): void;
-}
-
 export async function enqueueStaged(
   params: any,
   deps: Omit<EnqueueDeps, "accept" | "stopping"> & {
@@ -145,33 +149,35 @@ export async function enqueueStaged(
     if (!("replay" in plan)) {
       const { request, key, client, original, operation } = plan;
       const staged = acceptance(deps.commands, request, key, client, original, operation, stamp);
+      await deps.reservation?.prepare(stamp.id, staged.input.params);
       stamp.createdAt = await staged.store.stageAcceptance?.(staged.input);
     }
   } catch {
     // The synchronous enqueue below decides and reports.
   }
-  return enqueueCommand(params, {
-    ...deps,
-    stopping: deps.stopping(),
-    accept: (request, key, client, original, operation) => {
-      const { store, input } = acceptance(
-        deps.commands,
-        request,
-        key,
-        client,
-        original,
-        operation,
-        stamp,
-      );
-      deps.reservation?.reserve(stamp.id, input.params);
-      try {
-        const accepted = store.accept(input);
-        if (accepted.reused || accepted.record.id !== stamp.id) deps.reservation?.release(stamp.id);
-        return accepted;
-      } catch (error) {
-        deps.reservation?.release(stamp.id);
-        throw error;
-      }
-    },
-  });
+  let receipt: ReturnType<typeof enqueueCommand>;
+  try {
+    receipt = enqueueCommand(params, {
+      ...deps,
+      stopping: deps.stopping(),
+      accept: (request, key, client, original, operation) => {
+        const { store, input } = acceptance(
+          deps.commands,
+          request,
+          key,
+          client,
+          original,
+          operation,
+          stamp,
+        );
+        deps.reservation?.reserve(stamp.id, input.params);
+        return store.accept(input);
+      },
+    });
+  } catch (error) {
+    deps.reservation?.release(stamp.id);
+    throw error;
+  }
+  if (receipt.reused || receipt.id !== stamp.id) deps.reservation?.release(stamp.id);
+  return receipt;
 }

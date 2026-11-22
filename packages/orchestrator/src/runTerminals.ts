@@ -9,6 +9,7 @@
  */
 import { join } from "node:path";
 import {
+  cancelSummaryOf,
   makeOutcomeFacts,
   RunOutcomeFacts,
   type RunOutcomeFacts as RunOutcomeFactsType,
@@ -168,10 +169,7 @@ export async function guardAnnouncedRun(
         "cancelled",
         cancelReasonFromSignalToken(signal.reason),
       );
-      const cancelSummary =
-        signal.reason === "wall_clock_exceeded"
-          ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
-          : "run cancelled";
+      const cancelSummary = cancelSummaryOf(signal.reason);
       const attempts = a.attempts?.();
       // As on the Delegate cancel path: a kept capture-bearing record
       // carries the cancelled terminal's own statement.
@@ -427,10 +425,7 @@ export async function guardAnnouncedRun(
             "cancelled",
             cancelReasonFromSignalToken(signal.reason),
           );
-          const cancelSummary =
-            signal.reason === "wall_clock_exceeded"
-              ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
-              : "run cancelled";
+          const cancelSummary = cancelSummaryOf(signal.reason);
           const attempts = context.attempts?.();
           // A kept capture-bearing record is re-labelled with the same
           // statement the cancelled terminal below makes (cancel, then the

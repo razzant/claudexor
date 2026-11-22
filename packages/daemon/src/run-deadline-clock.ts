@@ -60,3 +60,20 @@ export function clockOfKind(kind: HostClockKind): () => bigint {
     ? () => parseUptimeNs(readFileSync("/proc/uptime", "utf8"))
     : () => process.hrtime.bigint();
 }
+
+/** The daemon's clocks for run-deadline/1: the wall (what clients name) and the host clock (what is enforced). */
+export interface RunDeadlineClock {
+  /** Wall clock, ms since the epoch (injectable: a test steps it backwards). */
+  wallNow(): number;
+  /** Host clock, ns: the same clock every warden reads (`kind`). */
+  hostNow(): bigint;
+  kind: HostClockKind;
+  bootId(): string | null;
+}
+
+export function systemDeadlineClock(
+  platform: NodeJS.Platform = process.platform,
+): RunDeadlineClock {
+  const clock = hostClock(platform);
+  return { wallNow: () => Date.now(), hostNow: clock.now, kind: clock.kind, bootId: clock.bootId };
+}

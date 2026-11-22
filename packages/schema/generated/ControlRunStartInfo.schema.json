@@ -36,7 +36,7 @@
             "at": {
               "type": "string",
               "format": "date-time",
-              "description": "The effective deadline the engine enforces: the run's own or, when earlier, its Delegate parent's current one."
+              "description": "The deadline the engine enforces: the run's own or, when earlier, its Delegate parent's current one; after the terminal, the one it ended under."
             },
             "revision": {
               "type": "integer",
@@ -52,23 +52,64 @@
               "type": "string",
               "enum": [
                 "armed",
+                "enforcing",
                 "expired",
                 "closed"
               ],
-              "description": "armed while the run is live; expired once the deadline ended it; closed after any other terminal."
+              "description": "Linear per run: armed while it is live; enforcing once its deadline was reached and the stop began (no set is accepted any more); expired once the run's terminal followed its deadline; closed after any other terminal."
             },
             "stopGraceSec": {
               "type": "integer",
               "minimum": 1,
               "maximum": 30,
-              "description": "Seconds after `at` by which every process inside the run's boundary is gone (see the capability's `boundary`). Work the run handed to another service (a container engine, an already running tmux server, systemd-run) is outside that boundary."
+              "description": "Seconds after `at` by which every process inside the run's boundary is gone (see the capability's `boundary`). Physical limits outside it: a suspended host stops the run when it wakes; a task in uninterruptible kernel I/O (D state) dies once that I/O returns; on the marker boundary a process running as another user, or one that cleared its environment after leaving the recorded tree, is not found; work handed to another service (a container engine, an already running tmux server, systemd-run) is outside the boundary."
             },
             "inheritedFrom": {
               "type": [
                 "string",
                 "null"
               ],
-              "description": "Job id of the Delegate parent whose deadline is the effective one, or null."
+              "description": "Job id of the Delegate parent (or further ancestor) whose deadline is the effective one, or null."
+            },
+            "successorOf": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Job id of the predecessor whose deadline this continuation took at acceptance (it had none of its own, or an earlier live one capped it), or null."
+            },
+            "enforcement": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "confirmed",
+                        "unresolved"
+                      ],
+                      "description": "confirmed: the warden proved the run's boundary empty and left. unresolved: it stopped trying without that proof (an unclassifiable process, or a member that would not die); `detail` names why."
+                    },
+                    "detail": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Why membership could not be established; null when confirmed."
+                    }
+                  },
+                  "required": [
+                    "outcome",
+                    "detail"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The warden's final report on the run's processes; null while it has none."
             }
           },
           "required": [
@@ -77,7 +118,9 @@
             "serverNow",
             "state",
             "stopGraceSec",
-            "inheritedFrom"
+            "inheritedFrom",
+            "successorOf",
+            "enforcement"
           ],
           "additionalProperties": false,
           "description": "The accepted run-deadline/1 deadline; present only when the request set one."

@@ -28,7 +28,7 @@ import { publicAcceptedCommand } from "./command-rpc.js";
 import { parseCommandListQuery } from "./command-list-select.js";
 import { clearStaleUnixSocketPath, listenOnDaemonEndpoint } from "./daemon-listen.js";
 import { type DelegationAdmissionAuthority } from "./delegation-admission.js";
-import { jobStateFromResult, publicJobRecord, type JobRecord } from "./job-record.js";
+import { jobStateFromResult, publicJobRecord, threadIdOf, type JobRecord } from "./job-record.js";
 import { settleJobError, settledJobPatch } from "./job-settlement.js";
 import {
   admissionActivity,
@@ -131,7 +131,7 @@ export class DaemonServer {
     this.concurrency = daemonConcurrencyCaps(opts);
     this.deadlines = new rd.SchedulerDeadlines(opts.runDeadlines, opts, {
       cancel: (id, patch) => void this.cancelJob(id, undefined, patch),
-      abort: (id) => this.controllers.get(id)?.abort("wall_clock_exceeded"),
+      abort: (id) => this.controllers.get(id)?.abort(rd.RUN_DEADLINE_EXPIRED),
     });
     this.commands = opts.commands;
     this.deferred = new DeferredMessages({
@@ -140,6 +140,7 @@ export class DaemonServer {
       active: (id) => this.activeJobs.has(id),
       stopped: (id) => this.cancelled.has(id),
       publish: (record) => this.publishQueued(this.deadlines.admitRecord(record)),
+      successorDeadline: this.deadlines,
     });
   }
 
@@ -250,7 +251,7 @@ export class DaemonServer {
       }
     });
 
-    this.deadlines.dispose();
+    await this.deadlines.dispose();
     // Existing local RPC sockets can otherwise keep server.close() pending
     // forever. They are destroyed only after every accepted command settled.
     this.followers.destroyAll();
@@ -461,11 +462,6 @@ export class DaemonServer {
     return next;
   }
 
-  private threadIdOf(rec: JobRecord): string | undefined {
-    const p = rec.params as { threadId?: unknown } | null | undefined;
-    return p && typeof p.threadId === "string" ? p.threadId : undefined;
-  }
-
   /** Admit eligible jobs with one runner per thread and the existing single
    * Delegate overflow. Completion retries admission without head-of-line blocking. */
   private drain(): void {
@@ -483,7 +479,7 @@ export class DaemonServer {
         this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
         continue;
       }
-      if (this.deadlines.expireIfDue(id)) continue;
+      if (this.deadlines.mustNotStart(id)) continue;
       this.activeJobs.set(id, job);
       const task = this.runJob(id, rec);
       this.activeTasks.add(task);
@@ -513,13 +509,16 @@ export class DaemonServer {
           rec = this.updateRecord(rec, info);
         },
       });
-      const patch = settledJobPatch(jobStateFromResult(result, controller.signal.aborted), result);
+      const patch = {
+        ...settledJobPatch(jobStateFromResult(result, controller.signal.aborted), result),
+        ...this.deadlines.unboundExpiry(controller.signal, rec),
+      };
       // The verdict is fixed above; only the result's large bodies are written off the loop.
       await commandStoreForId(this.commands, id)?.stageUpdate?.(id, patch);
       rec = this.updateRecord(rec, patch);
     } catch (thrown) {
       rec = settleJobError({
-        thrown,
+        thrown: this.deadlines.unboundExpiryError(controller.signal, rec) ?? thrown,
         record: rec,
         aborted: controller.signal.aborted,
         commands: this.commands,
@@ -539,7 +538,7 @@ export class DaemonServer {
       }
       if (rec.runId) {
         try {
-          this.opts.onRunTerminal?.(rec.runId, this.threadIdOf(rec));
+          this.opts.onRunTerminal?.(rec.runId, threadIdOf(rec));
         } catch {
           /* observer failure must not corrupt terminal bookkeeping */
         }

@@ -16,11 +16,14 @@ export function readFailure(rec: DaemonRunRecord, maxBytes?: number): RunFailure
   const fromArtifact = safeReadStructuredArtifact(rec, "final/failure.yaml", RunFailure, maxBytes);
   if (fromArtifact) return fromArtifact;
   if (!rec.error) return null;
-  // A queued run its deadline ended never produced artifacts: keep the typed reason.
+  // A job its deadline ended before any run (queued, or preparing its thread
+  // worktree) never produced artifacts: keep the typed reason and the phase.
   const deadlineExpired = rec.errorCode === "run_deadline_expired";
   return RunFailure.parse({
     category: deadlineExpired ? "cancelled" : "unknown",
-    ...(deadlineExpired ? { code: "run_deadline_expired", phase: "queued" } : {}),
+    ...(deadlineExpired
+      ? { code: "run_deadline_expired", phase: rec.startedAt ? "preparing" : "queued" }
+      : {}),
     safeMessage: rec.error,
     runDir: rec.runDir ?? null,
   });

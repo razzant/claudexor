@@ -6,7 +6,7 @@ import {
   promptWithPointers as renderPromptWithPointers,
   threadContextPointer,
 } from "./prompt-framing.js";
-import { requestRefusalFailure } from "./runTerminalResults.js";
+import { cancelledNextActions, requestRefusalFailure } from "./runTerminalResults.js";
 import {
   openRunScopeCustody,
   prepSignal,
@@ -711,9 +711,9 @@ export interface OrchestratorResult {
   /** Settled ledger spend for this run (USD); null when no ledger tracked it.
    * Consumer: the orchestrate executor's aggregate budget across sub-runs. */
   spendUsd?: number | null;
-  /** Why a `cancelled` run was cancelled, when it was NOT a plain user cancel —
-   * today only `wall_clock_exceeded` (the maxSeconds deadline). Absent for a
-   * user-initiated cancel. */
+  /** Why a `cancelled` run was cancelled, when it was NOT a plain user cancel:
+   * an engine clock (`wall_clock_exceeded` for maxSeconds, `run_deadline_expired`
+   * for run-deadline/1). Absent for a user-initiated cancel. */
   cancelReason?: string;
 }
 
@@ -5546,12 +5546,7 @@ export class Orchestrator {
         captureFailure: lastRun?.captureRefusal?.failure,
         nextActions: [
           ...(facts.lifecycle === "cancelled"
-            ? facts.reason === "wall_clock_exceeded"
-              ? [
-                  "Inspect the partial work kept from before the deadline",
-                  "Increase --max-seconds or narrow the scope, then re-run",
-                ]
-              : ["Retry if cancellation was accidental"]
+            ? cancelledNextActions(facts.reason)
             : convNeedsDecision
               ? [
                   "Review the blocking findings on the run's turn",

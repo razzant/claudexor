@@ -176,8 +176,7 @@ enum RunPhase: String, CaseIterable, Identifiable, Hashable {
     var color: Color { Theme.status(tone) }
     var isActive: Bool { self == .running || self == .queued }
     var isTerminal: Bool { !isActive && self != .unknown }
-    /// A failure-shaped terminal: the lifecycle itself ended badly (a `.reason`
-    /// on `RunOutcomeFacts` further qualifies it). Cancelled is NOT failure.
+    /// A failure-shaped terminal: the lifecycle ended badly (`RunOutcomeFacts.reason` qualifies it). Cancelled is NOT failure.
     var isFailureShaped: Bool { self == .failed || self == .interrupted || self == .unknown }
 }
 
@@ -198,6 +197,7 @@ enum RunReasonLabel {
         case "workspace_unavailable": return "Workspace unavailable"
         case "capture_refused": return "Changes not captured"
         case "wall_clock_exceeded": return "Time limit reached"
+        case "run_deadline_expired": return "Deadline reached"
         case "turn_limit_reached": return "Turn limit reached"
         case "crash_interrupted": return "Interrupted"
         case "context_capacity_exhausted": return "Context capacity exhausted"

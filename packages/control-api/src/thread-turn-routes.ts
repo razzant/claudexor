@@ -123,6 +123,8 @@ async function respondToTurnJob(
     // make embedders retry an unretryable refusal. Infra terminals (no typed
     // code) stay 5xx so genuine transient failures are still retried.
     const { storeId: _store, ...errorContext } = rec.errorContext ?? {};
+    // The durable deadline rides the refusal's context, as on the one-shot route.
+    const deadline = await receiptDeadline(ctx.daemon, rec);
     return ctx.json(res, preStartRefusalStatus(rec.errorCode, rec.errorStatus), {
       jobId: rec.id,
       turnId,
@@ -138,6 +140,7 @@ async function respondToTurnJob(
         turnId,
         threadId,
         ...store,
+        ...deadline,
       },
     });
   }

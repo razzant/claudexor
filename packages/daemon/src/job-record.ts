@@ -79,3 +79,9 @@ function resultString(result: unknown, key: string): string | null {
   const value = (result as Record<string, unknown>)[key];
   return typeof value === "string" ? value : null;
 }
+
+/** The thread a job's params bind it to, if any. */
+export function threadIdOf(rec: JobRecord): string | undefined {
+  const p = rec.params as { threadId?: unknown } | null | undefined;
+  return p && typeof p.threadId === "string" ? p.threadId : undefined;
+}

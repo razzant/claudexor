@@ -19,27 +19,29 @@ const deps = {
 };
 
 describe("claudexord --run-deadline-warden", () => {
-  it("runs the warden for a state file and never starts the daemon", async () => {
+  it("runs the warden for a deadline record and never starts the daemon", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cx-wre-"));
     dirs.push(dir);
     const state = join(dir, "job.json");
     writeFileSync(
       state,
       JSON.stringify({
-        version: 2,
+        version: 3,
         jobId: "job",
         clock: "monotonic",
         bootId: null,
-        own: { at: new Date().toISOString(), targetNs: "9000000000000000000" },
+        // The run ended and owns no marker: its boundary is confirmed empty at once.
+        state: "closed",
         revision: 0,
+        own: { at: new Date().toISOString(), targetNs: "9000000000000000000" },
+        successorOf: null,
         parent: null,
+        parentJobId: null,
         inherited: null,
         frozen: null,
         markers: [],
         cgroup: null,
         runScopes: null,
-        // The run ended and owns no marker: the group is confirmed empty at once.
-        released: true,
       }),
     );
     let daemonStarts = 0;

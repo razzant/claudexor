@@ -12,6 +12,7 @@
 import { CONTINUITY_IDENTITY_MISMATCH_CODE, acceptedTryOutput } from "@claudexor/core";
 import {
   HarnessRunSpec as HarnessRunSpecSchema,
+  engineClockAbortReason,
   type ContinuityIdentityCheck,
   type HarnessEvent,
   type HarnessRunSpec,
@@ -318,7 +319,7 @@ export class InRunContinuity {
         ? "input_required"
         : "other"
       : input.aborted
-        ? input.cancelReason === "wall_clock_exceeded"
+        ? engineClockAbortReason(input.cancelReason)
           ? "wall_clock"
           : "cancelled"
         : input.errored

@@ -12,8 +12,11 @@
  *   a second one with an empty environment (no marker: only a cgroup can reach
  *   it). Each harness line is appended raw to <dir>/pids.jsonl.
  * - `read`: open the same journal as a new daemon generation (no startup crash
- *   GC here), read the job in env CX_JOB_ID and its deadline into <dir>/read.json.
+ *   GC here; the deadline startup reconciles the earlier generation's records),
+ *   read the job in env CX_JOB_ID and its deadline into <dir>/read.json.
  *
+ * The capability is decided as on Linux (where macOS runs these trials the
+ * warden still enforces; only the proof of a complete census is missing).
  * <dir>/ready (JSON) carries this process's pid and the proven boundary.
  */
 import { appendFileSync, writeFileSync } from "node:fs";
@@ -48,7 +51,7 @@ const server = new DaemonServer({
   socketPath: join(dir, "unused.sock"),
   token: "token",
   commands: legacyCommandFixture({ current: () => store }),
-  runDeadlines: { dir: join(dir, "deadlines") },
+  runDeadlines: { dir: join(dir, "deadlines"), platform: "linux" },
   runner: async (_params, ctx) => {
     const marker = mintRunScopeMarker();
     await ctx.deadlineScope?.attach(marker);
@@ -65,7 +68,8 @@ const server = new DaemonServer({
   },
 });
 const client = new DaemonLocalClient(() => server);
-const boundary = await server.deadlines.prepare();
+await server.deadlines.startup();
+const boundary = await server.deadlines.proveBoundary();
 writeFileSync(join(dir, "ready"), JSON.stringify({ pid: process.pid, boundary: boundary.kind }));
 
 if (mode === "run") {

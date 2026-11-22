@@ -40,7 +40,8 @@ import {
   type KnownProcessIdentity,
 } from "@claudexor/core";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { RunDeadlines, systemDeadlineClock, type RunDeadlineClock } from "./run-deadlines.js";
+import { systemDeadlineClock, type RunDeadlineClock } from "./run-deadline-clock.js";
+import { RunDeadlines } from "./run-deadlines.js";
 import { RUN_DEADLINE_STOP_GRACE_SEC } from "./run-deadline-warden.js";
 
 const GRACE_MS = RUN_DEADLINE_STOP_GRACE_SEC * 1_000;
@@ -232,6 +233,21 @@ async function launchTree(marker: string): Promise<Tree> {
   return JSON.parse(first) as Tree;
 }
 
+/** Hold a job's record in a registry whose timers will not act (the "daemon" is gone). */
+async function hold(
+  deadlines: RunDeadlines,
+  jobId: string,
+  at: string | null,
+  parentJobId: string | null = null,
+) {
+  await deadlines.stage(jobId, {
+    own: at ? deadlines.toPoint(at) : null,
+    successorOf: null,
+    parentJobId,
+  });
+  deadlines.admit(jobId);
+}
+
 const members = (tree: Tree) => [tree.child, tree.grandchild, ...(tree.clean ? [tree.clean] : [])];
 const anyAlive = (tree: Tree) => members(tree).some(alive);
 const allAlive = (tree: Tree) => members(tree).every(alive);
@@ -294,13 +310,13 @@ describe.skipIf(process.platform === "win32")(
     it("trial 8: a Delegate child's processes end by the parent's deadline with the daemon unable to act", async () => {
       const dir = tempDir();
       const deadlines = new RunDeadlines({ dir: join(dir, "deadlines"), onExpire: () => {} });
-      const parent = deadlines.toPoint(inMs(WINDOW_MS + 2_000));
-      deadlines.admit("parent", parent, null);
-      deadlines.admit("child", deadlines.toPoint(inMs(120_000)), "parent");
+      const parent = { at: inMs(WINDOW_MS + 2_000) };
+      await hold(deadlines, "parent", parent.at);
+      await hold(deadlines, "child", inMs(120_000), "parent");
       const marker = mintRunScopeMarker();
       await deadlines.attachScope("child", marker);
       const tree = await launchTree(marker);
-      deadlines.dispose(); // the "daemon" is gone: no timer of it can act any more
+      await deadlines.dispose(); // the "daemon" is gone: no timer of it can act any more
       await sleep(Math.max(0, Date.parse(parent.at) - Date.now() - 500));
       expect(allAlive(tree)).toBe(true);
       const gone = await until(
@@ -314,20 +330,20 @@ describe.skipIf(process.platform === "win32")(
     it("trial 8: extending the parent past the child's creation-time deadline keeps the child running", async () => {
       const dir = tempDir();
       const deadlines = new RunDeadlines({ dir: join(dir, "deadlines"), onExpire: () => {} });
-      const first = deadlines.toPoint(inMs(WINDOW_MS));
-      deadlines.admit("parent", first, null);
+      const first = { at: inMs(WINDOW_MS) };
+      await hold(deadlines, "parent", first.at);
       await deadlines.attachScope("parent", mintRunScopeMarker());
-      deadlines.admit("child", null, "parent");
+      await hold(deadlines, "child", null, "parent");
       const marker = mintRunScopeMarker();
       await deadlines.attachScope("child", marker);
       const tree = await launchTree(marker);
       const extended = await deadlines.set(
         "parent",
         { at: inMs(WINDOW_MS + GRACE_MS + 12_000), expectedRevision: 0 },
-        { live: true, delegated: false },
+        { delegated: false },
       );
-      expect(deadlines.snapshot("child")?.at).toBe(extended.at);
-      deadlines.dispose();
+      expect((await deadlines.read("child"))?.at).toBe(extended.at);
+      await deadlines.dispose();
       // Past the old deadline AND the warden's whole old grace window: still running.
       await sleep(Date.parse(first.at) + GRACE_MS + 1_000 - Date.now());
       expect(allAlive(tree)).toBe(true);
@@ -353,14 +369,16 @@ describe.skipIf(process.platform === "win32")(
         clock,
         onExpire: () => {},
       });
-      const point = deadlines.toPoint(inMs(WINDOW_MS));
-      deadlines.admit("run", point, null);
+      const point = { at: inMs(WINDOW_MS) };
+      await hold(deadlines, "run", point.at);
       const marker = mintRunScopeMarker();
       await deadlines.attachScope("run", marker);
       const tree = await launchTree(marker);
       stepped = true;
-      expect(Date.parse(deadlines.snapshot("run")!.serverNow)).toBeLessThan(Date.now() - 3_000_000);
-      deadlines.dispose();
+      expect(Date.parse((await deadlines.read("run"))!.serverNow)).toBeLessThan(
+        Date.now() - 3_000_000,
+      );
+      await deadlines.dispose();
       const gone = await until(
         () => !anyAlive(tree),
         Date.parse(point.at) + GRACE_MS + 5_000,
