@@ -192,7 +192,7 @@ describe("run-deadline/1 at the scheduler", () => {
     const d = await daemon(slot.runner);
     try {
       await d.client.enqueue({ label: "blocker" }, { idempotencyKey: "b", clientId: "t" });
-      const request = { label: "late", deadline: { at: inMs(1_500) } };
+      const request = { label: "late", deadline: { at: inMs(3_000) } };
       // The caller never reads this answer ("lost"); it finds the run by its key.
       void d.client.enqueue(request, { idempotencyKey: "lost", clientId: "t" });
       const found = (await until(
@@ -244,7 +244,7 @@ describe("run-deadline/1 at the scheduler", () => {
     );
     try {
       const accepted = await d.client.enqueue(
-        { label: "prep", turnId: "turn-prep", deadline: { at: inMs(300) } },
+        { label: "prep", turnId: "turn-prep", deadline: { at: inMs(2_000) } },
         { idempotencyKey: "p", clientId: "t" },
       );
       const ended = await until(
@@ -598,7 +598,7 @@ describe("run-deadline/1 at the scheduler", () => {
     try {
       await d.client.enqueue({ label: "blocker" }, { idempotencyKey: "b", clientId: "t" });
       const accepted = await d.client.enqueue(
-        { label: "turn", turnId: "turn-1", deadline: { at: inMs(300) } },
+        { label: "turn", turnId: "turn-1", deadline: { at: inMs(2_000) } },
         { idempotencyKey: "t1", clientId: "t" },
       );
       await until(
@@ -803,7 +803,7 @@ describe("run-deadline/1: one durable record", () => {
       return { lifecycle: "cancelled" };
     });
     const accepted = await a.client.enqueue(
-      { label: "run", deadline: { at: inMs(400) } },
+      { label: "run", deadline: { at: inMs(2_000) } },
       { idempotencyKey: "r", clientId: "t" },
     );
     await until(

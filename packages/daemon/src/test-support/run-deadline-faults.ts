@@ -17,6 +17,7 @@ import {
   fileRecordIo,
   governingBound,
   priorPath,
+  readClaim,
   readRecord,
   type DeadlineRecord,
   type RecordIo,
@@ -65,7 +66,8 @@ export class ProcessDied extends Error {
   readonly code = "EPROCESSDIED";
 }
 
-export type Hook = "deadline" | "head-start" | "warden" | "terminal" | "child-terminal";
+export type Hook =
+  "requested" | "deadline" | "head-start" | "warden" | "terminal" | "child-terminal";
 export type Kind = Hook | "throw" | "crash";
 export interface Planned {
   at: number;
@@ -307,18 +309,22 @@ export interface SetRun {
   time: Clock;
 }
 
-/** One renewal (now+10 s → now+60 s) under a plan. */
-export function runSet(plan: Planned[]): Promise<SetRun> {
+/** One change of the deadline (now+10 s → now+`target` ms) under a plan. */
+export function runSet(plan: Planned[], target = 60_000): Promise<SetRun> {
   return withFakeTimers(async () => {
     const dir = temp();
     const time = frozenClock();
     const path = join(dir, "job.json");
     let deadlines!: RunDeadlines;
     let T0 = 0n;
+    let R = 0n;
     let t0At = "";
     let expireCalls = 0;
     let terminal: TerminalFacts | null = null;
     const apply = (kind: Kind) => {
+      // Just past the requested deadline (a shortening's), before the replaced one.
+      if (kind === "requested" && time.host() <= R)
+        time.advance(Number((R - time.host()) / 1_000_000n) + 500);
       if (kind === "deadline") time.advance(10_500); // past the replaced deadline, inside the head start
       if (kind === "head-start" || kind === "warden") time.advance(12_000); // past the head start too
       if (kind === "warden" && !existsSync(claimPath(path)))
@@ -346,7 +352,8 @@ export function runSet(plan: Planned[]): Promise<SetRun> {
     const t0 = wardenBound(dir, "job.json")!;
     T0 = t0.target;
     t0At = t0.at;
-    const rAt = time.iso(60_000);
+    const rAt = time.iso(target);
+    R = T0 + BigInt(target - 10_000) * 1_000_000n;
     ops.counting = true;
     const answer = await outcome(
       deadlines.set("job", { at: rAt, expectedRevision: 0 }, { delegated: false }),
@@ -364,7 +371,7 @@ export function runSet(plan: Planned[]): Promise<SetRun> {
       live,
       T0,
       t0At,
-      R: T0 + 50n * SEC,
+      R,
       rAt,
       terminal,
       dir,
@@ -396,18 +403,31 @@ export async function growPlans(
   return plans;
 }
 
-/** The four invariants over one finished renewal. */
+/** The set's commit: the prior removed while the new revision is the armed record. */
+export function commitOf(run: SetRun): number | undefined {
+  const path = join(run.dir, "job.json");
+  return run.ops.changes.find(
+    (c) =>
+      c.name === "remove" &&
+      c.path === priorPath(path) &&
+      c.record?.revision === 1 &&
+      c.record.state === "armed",
+  )?.op;
+}
+
+/** The four invariants over one finished change. */
 export function checkSet(run: SetRun) {
   const { ops, answer, live, T0, t0At, R, rAt, terminal, dir } = run;
   const path = join(dir, "job.json");
+  const earlier = R < T0 ? R : T0;
   ops.assertFired();
   const recordChanges = ops.changes.filter((c) => c.path === path);
   // 1. Publication: the new revision is renamed into place only before both
-  //    deadlines (the requested one is later here), with no claim and no terminal.
+  //    deadlines, with no claim and no terminal.
   for (const c of recordChanges.filter(
     (c) => c.name === "publish" && c.record?.revision === 1 && c.record.state === "armed",
   )) {
-    expect(c.host < T0, "renamed before the replaced deadline").toBe(true);
+    expect(c.host < earlier, "renamed before both deadlines").toBe(true);
     expect(c.claimed, "no claim at the rename").toBe(false);
     expect(c.terminal, "no terminal at the rename").toBe(false);
   }
@@ -416,17 +436,21 @@ export function checkSet(run: SetRun) {
   const raises = ops.changes.filter(
     (c) => c.before !== null && c.after !== null && c.after > c.before,
   );
-  expect(raises.length <= 1, "at most one commit").toBe(true);
-  for (const c of raises) {
-    expect(c.name).toBe("remove");
-    expect(c.path).toBe(priorPath(path));
-    expect(c.host < T0 + HEAD, "committed before the replaced deadline plus the head start").toBe(
-      true,
-    );
-    expect(c.claimed, "no claim at the commit").toBe(false);
-    expect(c.terminal, "no terminal at the commit").toBe(false);
+  const commitOp = commitOf(run);
+  expect(raises.filter((c) => c.after! > T0).length <= 1, "at most one commit").toBe(true);
+  // Past the replaced deadline only at the commit (a withdrawn, uncommitted
+  // shortening may go back up to the replaced deadline, never beyond it).
+  for (const c of raises)
+    if (c.after! > T0) expect(c.op, "the deadline rises only at the commit").toBe(commitOp);
+  const commit = ops.changes.find((c) => c.op === commitOp && c.name === "remove");
+  if (commit) {
+    expect(
+      commit.host < T0 + HEAD,
+      "committed before the replaced deadline plus the head start",
+    ).toBe(true);
+    expect(commit.claimed, "no claim at the commit").toBe(false);
+    expect(commit.terminal, "no terminal at the commit").toBe(false);
   }
-  const commitOp = raises[0]?.op;
   const bound = wardenBound(dir, "job.json");
   expect(bound, "the warden has a deadline").not.toBeNull();
   if (commitOp === undefined)
@@ -445,7 +469,10 @@ export function checkSet(run: SetRun) {
     expect(answer.value.revision).toBe(1);
     expect(answer.value.at).toBe(rAt);
     expect(live!.revision).toBe(1);
-    expect(existsSync(claimPath(path)) && !terminal, "no claim stands against it").toBe(false);
+    // A claim afterwards may only be the confirmed revision's own (its deadline won later).
+    const claim = readClaim(path);
+    if (!terminal)
+      expect(claim === null || claim.revision === 1, "no claim stands against it").toBe(true);
     if (!terminal) expect(bound!.target).toBe(R);
   } else if (answer.code === "run_deadline_outcome_unknown") {
     expect(commitOp, "outcome unknown only after a commit").toBeDefined();
@@ -458,9 +485,15 @@ export function checkSet(run: SetRun) {
       "run_deadline_passed",
       "run_deadline_record_unavailable",
     ]).toContain(answer.code);
-    if (commitOp === undefined) {
-      expect(live!.revision, "a refusal changes nothing").toBe(0);
-      expect(live!.at).toBe(t0At);
+    // A refusal changes nothing — except that a shortening which became visible
+    // and then won stays in force as enforcing (its earlier deadline).
+    const published = recordChanges.some(
+      (c) => c.name === "publish" && c.record?.revision === 1 && c.record.state === "armed",
+    );
+    if (commitOp === undefined && !terminal) {
+      const kept = answer.code === "run_deadline_expired" && R < T0 && published;
+      expect(live!.revision, "a refusal changes nothing").toBe(kept ? 1 : 0);
+      expect(live!.at).toBe(kept ? rAt : t0At);
     }
   }
   // 3. Terminal.
@@ -476,25 +509,27 @@ export function checkSet(run: SetRun) {
       expect(live!.revision).toBe(0);
       expect(live!.at).toBe(t0At);
     } else if (t.expiredBefore) {
-      // The warden acted on the prior; the daemon saw its claim after the commit
-      // and put the replaced revision back as enforcing before the terminal came.
+      // The earlier deadline won after the commit, before the terminal came: the
+      // record with that deadline (the replaced one of an extension the warden
+      // claimed, the new one of a shortening) is in force as enforcing.
       expect(live!.state).toBe("expired");
-      expect(live!.revision).toBe(0);
-      expect(live!.at).toBe(t0At);
-      expect(answer).toEqual({ ok: false, code: "run_deadline_expired" });
+      expect(live!.revision).toBe(R < T0 ? 1 : 0);
+      expect(live!.at).toBe(R < T0 ? rAt : t0At);
     } else {
       // After the commit the terminal ends the new revision; a claim it saw
       // (the warden acted on the prior) floors it at the replaced deadline.
       const expected = t.claim || t.at >= R ? "expired" : "closed";
       expect(live!.revision, "a terminal after the commit ends the new revision").toBe(1);
       expect(live!.state).toBe(expected);
-      expect(live!.at).toBe(t.claim ? t0At : rAt);
+      expect(live!.at).toBe(t.claim && T0 < R ? t0At : rAt);
       if (expected === "expired")
         expect(answer).toEqual({ ok: false, code: "run_deadline_expired" });
     }
   }
-  // Agreement: every answer and the warden name one deadline.
-  if (!existsSync(claimPath(path))) expect(live!.at).toBe(bound!.at);
+  // Agreement: every answer and the warden name one deadline (a prior left by
+  // a refused shortening only makes the warden's earlier, never later).
+  if (!existsSync(claimPath(path)) && !existsSync(priorPath(path)))
+    expect(live!.at).toBe(bound!.at);
 }
 
 /**
@@ -531,7 +566,12 @@ export async function checkRestarts(
     expect(patch).toEqual({ ok: false, code: `run_deadline_${snapshot.state}` });
     const bound = wardenBound(copy, "job.json")!;
     if (commitOp === undefined) expect(bound.target <= run.T0).toBe(true);
-    expect(snapshot.at).toBe(bound.at);
+    // A visible, uncommitted shortening left beside its prior (the reconcile's
+    // write failed) makes the warden earlier than the answers, never later.
+    const decided = BigInt(g.recordOf("job")!.frozen!.targetNs);
+    if (existsSync(priorPath(join(copy, "job.json"))))
+      expect(bound.target <= decided, "the warden never later than the answers").toBe(true);
+    else expect(snapshot.at).toBe(bound.at);
     labels.add(snapshot.state);
     await g.dispose();
     return ops;
@@ -545,7 +585,8 @@ export async function checkRestarts(
     const t = run.terminal as TerminalFacts;
     const terminalOp = run.plan.find((e) => e.kind === "terminal")!.at;
     const first = commitOp === undefined || terminalOp < commitOp;
-    const bound = first || t.claim ? run.T0 : run.R;
+    const floor = run.T0 < run.R ? run.T0 : run.R;
+    const bound = first ? run.T0 : t.claim ? floor : run.R;
     const expected = t.expiredBefore || t.claim || t.at >= bound ? "expired" : "closed";
     expect([...labels][0], "a restart keeps the terminal's label").toBe(expected);
   }
@@ -554,22 +595,29 @@ export async function checkRestarts(
 const KINDS: Kind[] = ["deadline", "head-start", "warden", "terminal", "throw", "crash"];
 
 /**
- * The renewal matrix for the plans whose first event is one of `first` (the
- * matrix is split over test files so they run side by side): every plan of up
- * to two events, the four invariants, and the restarts.
+ * The matrix of one change (an extension to 60 s by default) for the plans
+ * whose first event is one of `first` (the matrix is split over test files so
+ * they run side by side): every plan of up to `depth` events, the four
+ * invariants, and the restarts.
  */
-export async function setMatrix(first: Kind[], withEmpty: boolean) {
-  const plans = await growPlans(runSet, KINDS, 2, first);
+export async function setMatrix(
+  first: Kind[],
+  withEmpty: boolean,
+  {
+    target = 60_000,
+    depth = 2,
+    kinds = KINDS,
+  }: { target?: number; depth?: number; kinds?: Kind[] } = {},
+) {
+  const plans = await growPlans((plan) => runSet(plan, target), kinds, depth, first);
   return (withEmpty ? [[], ...plans] : plans).map((plan) => ({ name: label(plan), plan }));
 }
 
-/** One case of the renewal matrix. */
-export async function setCase(plan: Planned[]) {
-  const run = await runSet(plan);
+/** One case of the matrix. */
+export async function setCase(plan: Planned[], target = 60_000) {
+  const run = await runSet(plan, target);
   checkSet(run);
-  const commitOp = run.ops.changes.find(
-    (c) => c.before !== null && c.after !== null && c.after > c.before,
-  )?.op;
+  const commitOp = commitOf(run);
   const faultAtClaim = run.ops.fired.some(
     (e) => (e.kind === "throw" || e.kind === "crash") && run.ops.names[e.at] === "claim",
   );
