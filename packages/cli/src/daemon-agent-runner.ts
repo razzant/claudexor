@@ -35,7 +35,11 @@ import { threadRunResumeInputs, threadContinuityContext } from "./thread-continu
 import { continuationForRun } from "./continue-from-run.js";
 import { createRunTimeLimit } from "./run-time-limit.js";
 import { daemonRunScopeIndex } from "./run-scope-index.js";
-import { preparationGitCapability, threadPreparationScope } from "./thread-preparation-scope.js";
+import {
+  preparationGitCapability,
+  threadPreparationScope,
+  withinPreparationScope,
+} from "./thread-preparation-scope.js";
 import { exactRetryProcessingIntent } from "./retry-processing.js";
 import { oneShotRunInput } from "./one-shot-run-input.js";
 import { terminalCommitHook } from "./run-terminal-commit.js";
@@ -124,52 +128,53 @@ export function createDaemonAgentRunner(deps: {
         assertPlanImplementReady(planRef.runId, planRef.path);
       }
     }
-    // The preparation's own short process scope, opened only before its first
-    // Git child (this turn's preflight, or the tree); a deadline's warden takes
-    // it over before that child.
+    // The preparation's own short process scope. A job with a run-deadline/1
+    // record opens it first (its warden takes the marker over before any Git
+    // child) and runs its whole preparation inside it; any other job opens it
+    // only when a tree is really made, as before. Success settles it.
+    const deadlineHeld = ctx.deadlineScope?.holds() === true;
     const preparation = threadPreparationScope(
       daemonRunScopeIndex(),
       ctx.jobId,
-      ctx.deadlineScope && ((marker) => ctx.deadlineScope!.attach(marker)),
+      deadlineHeld ? (marker) => ctx.deadlineScope!.attach(marker) : undefined,
     );
-    // Thread turns own a durable job before this fresh Git check. A
-    // missing/stub installation therefore records a replayable refusal on
-    // the exact turn, and Retry re-runs this boundary without changing any
-    // request fields. No worktree or provider exists yet. Its Git child runs
-    // in the preparation scope and stops with the job.
-    if (turnId) {
-      await preflightRunGitRequirement(p, {
-        requiresGit: (request) =>
-          threadRunStartRequiresGit(
-            request,
-            threadId ? threads.getThread(threadId) : undefined,
-            runConfig.project.constraints.protected_paths,
-            runConfig.trust.access_default,
-          ),
-        gitCapability: preparationGitCapability(preparation, ctx.signal),
-      }).catch(async (error: unknown) => {
-        throw await preparation.closeAfter(error);
-      });
-    }
     const {
       executionRoot: threadExecutionRoot,
       inPlace,
       projectGitInitialization,
-    } = await resolveThreadExecutionWorkspace({
-      threadId,
-      repoRoot,
-      mode,
-      access: p.access,
-      accessDefault: runConfig.trust.access_default,
-      requestedInPlace: p.execution.isolation === "live",
-      workspaceKind: p.execution.workspaceKind,
-      protectedPaths: runConfig.project.constraints.protected_paths,
-      threads,
-      // This job is already running: Stop reaches its thread worktree preparation.
-      signal: ctx.signal,
-      preparation,
-    }).catch(async (error: unknown) => {
-      throw await preparation.closeAfter(error);
+    } = await withinPreparationScope(preparation, deadlineHeld, async () => {
+      // Thread turns own a durable job before this fresh Git check. A
+      // missing/stub installation therefore records a replayable refusal on
+      // the exact turn, and Retry re-runs this boundary without changing any
+      // request fields. No worktree or provider exists yet. Its Git child
+      // stops with the job (and joins the preparation scope of a deadline job).
+      if (turnId)
+        await preflightRunGitRequirement(p, {
+          requiresGit: (request) =>
+            threadRunStartRequiresGit(
+              request,
+              threadId ? threads.getThread(threadId) : undefined,
+              runConfig.project.constraints.protected_paths,
+              runConfig.trust.access_default,
+            ),
+          ...(deadlineHeld
+            ? { gitCapability: preparationGitCapability(preparation, ctx.signal) }
+            : {}),
+        });
+      return resolveThreadExecutionWorkspace({
+        threadId,
+        repoRoot,
+        mode,
+        access: p.access,
+        accessDefault: runConfig.trust.access_default,
+        requestedInPlace: p.execution.isolation === "live",
+        workspaceKind: p.execution.workspaceKind,
+        protectedPaths: runConfig.project.constraints.protected_paths,
+        threads,
+        // This job is already running: Stop reaches its thread worktree preparation.
+        signal: ctx.signal,
+        preparation,
+      });
     });
     const executionRoot = p.execution.workspaceRoot ?? threadExecutionRoot;
     const onRunStart = (info: { runId: string; taskId: string; runDir: string }): void => {

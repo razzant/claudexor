@@ -92,18 +92,19 @@ export function gateSpecsFromContract(
   }));
 }
 
-/** Fresh verification (INV-115) of the run's own result, its gates in the run's custody. */
+/** Fresh verification (INV-115) of the run's own result, its gates in the run's custody
+ * and under its stop (a stopped run launches no gate). */
 export function finalVerifyRun(
   execRoot: string,
   result: CandidateRun,
   contract: ActiveTaskContract,
   log: VerifyEventLog,
-  owner: { runScopeMarker?: string },
+  owner: { runScopeMarker?: string; signal?: AbortSignal },
 ): Promise<FinalVerifyRecord> {
   const specs = gateSpecsFromContract(contract, owner.runScopeMarker);
   // Its worktree's Git children join the run's boundary too, not only the gates.
   return withinRunScope(owner.runScopeMarker, () => {
-    if (result.files) return finalVerifyFiles(result.files, undefined, specs, log);
+    if (result.files) return finalVerifyFiles(result.files, undefined, specs, log, owner.signal);
     // An object result verifies its own trees at its base (#535); a legacy patch applies.
     return result.result && result.baseSha
       ? finalVerifyPatch(
@@ -116,8 +117,9 @@ export function finalVerifyRun(
           },
           specs,
           log,
+          owner.signal,
         )
-      : finalVerifyPatch(execRoot, result, specs, log);
+      : finalVerifyPatch(execRoot, result, specs, log, owner.signal);
   });
 }
 

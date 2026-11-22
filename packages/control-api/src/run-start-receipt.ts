@@ -111,15 +111,29 @@ export function unboundRunStartResponse(
   };
 }
 
-/** The run-deadline/1 snapshot a start receipt carries: only for a request that set one
- * (older strict clients never send `deadline`, so they never see the field). */
+/**
+ * The run-deadline/1 snapshot a start receipt, a pre-start refusal and a lookup
+ * carry: for every job that can hold a deadline record — one that set its own,
+ * a continuation (`continueFrom`) or a Delegate child (`delegatedFromRunId`)
+ * that may inherit one, and a job its deadline ended. A job without a record
+ * answers as before (a client that never used deadlines never sees the field).
+ */
 export async function receiptDeadline(
   daemon: Pick<DaemonFacadeClient, "runDeadline"> | undefined,
   rec: DaemonRunRecord,
 ): Promise<{ deadline?: RunDeadlineSnapshot }> {
-  const params = rec.params as { deadline?: unknown } | null | undefined;
-  if (!params || typeof params !== "object" || params.deadline === undefined) return {};
-  if (!daemon?.runDeadline) return {};
+  const params = rec.params as
+    | { deadline?: unknown; continueFrom?: unknown; delegatedFromRunId?: unknown }
+    | null
+    | undefined;
+  const mayHold =
+    rec.errorCode === "run_deadline_expired" ||
+    (!!params &&
+      typeof params === "object" &&
+      (params.deadline !== undefined ||
+        typeof params.continueFrom === "string" ||
+        typeof params.delegatedFromRunId === "string"));
+  if (!mayHold || !daemon?.runDeadline) return {};
   try {
     return { deadline: await daemon.runDeadline(rec.id, { action: "read" }) };
   } catch (error) {

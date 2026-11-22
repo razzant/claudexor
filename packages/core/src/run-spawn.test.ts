@@ -8,7 +8,15 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { spawnRunOwned, withinRunScope } from "./run-spawn.js";
+import {
+  RunScopeSpentError,
+  observeRunOwnedLaunches,
+  registerScopeFence,
+  sharedLaunch,
+  spawnRunOwned,
+  unregisterScopeFence,
+  withinRunScope,
+} from "./run-spawn.js";
 import { mintRunScopeMarker, withoutRunScopeMarkers } from "./process-scope.js";
 import { liveChildProcesses, unregisterChildProcess } from "./process-registry.js";
 
@@ -93,9 +101,10 @@ function sources(dir: string, out: string[] = []): string[] {
       if (name === "node_modules" || name === "dist" || name.startsWith("test-support")) continue;
       sources(path, out);
     } else if (
-      name.endsWith(".ts") &&
-      !name.endsWith(".d.ts") &&
-      !/\.(test|integration\.test|story|test-support)\.ts$/.test(name)
+      // Every TypeScript and JavaScript module kind the packages compile or load.
+      /\.(?:[cm]?ts|[cm]?js)$/.test(name) &&
+      !/\.d\.[cm]?ts$/.test(name) &&
+      !/\.(test|integration\.test|story|test-support)\.[cm]?[tj]s$/.test(name)
     )
       out.push(path);
   }
@@ -172,6 +181,51 @@ describe("spawnRunOwned", () => {
     );
     expect(calls[2]!.env).toEqual({ [enclosing]: "1", [marker]: "1" });
     expect(both.marker).toBe(marker);
+  });
+
+  it("a spent scope launches nothing; an active scope and other scopes launch as usual", () => {
+    const { calls, spawnFn } = fakeSpawn();
+    const marker = mintRunScopeMarker();
+    const other = mintRunScopeMarker();
+    let spent = false;
+    registerScopeFence(marker, () => spent);
+    try {
+      withinRunScope(marker, () => spawnRunOwned("git", ["status"], { env: {} }, { spawnFn }));
+      spent = true;
+      expect(() =>
+        withinRunScope(marker, () => spawnRunOwned("gate", [], { env: {} }, { spawnFn })),
+      ).toThrow(RunScopeSpentError);
+      // Through the env too: a harness spec carrying the marker is refused alike.
+      expect(() => spawnRunOwned("gate", [], { env: { [marker]: "1" } }, { spawnFn })).toThrow(
+        expect.objectContaining({ code: "run_scope_spent" }),
+      );
+      withinRunScope(other, () => spawnRunOwned("git", [], { env: {} }, { spawnFn }));
+      expect(calls.map((call) => call.binary)).toEqual(["git", "git"]);
+    } finally {
+      unregisterScopeFence(marker);
+    }
+  });
+
+  it("a shared launch carries no run marker, inside a run's scope included; every launch is observable", () => {
+    const { calls, spawnFn } = fakeSpawn();
+    const marker = mintRunScopeMarker();
+    const seen: Array<{ marker: string | undefined; shared: string | undefined }> = [];
+    const stop = observeRunOwnedLaunches(({ marker, shared }) => seen.push({ marker, shared }));
+    try {
+      withinRunScope(marker, () => {
+        spawnRunOwned("git", [], { env: { [marker]: "1" } }, { spawnFn });
+        sharedLaunch("status-cache", () =>
+          spawnRunOwned("probe", [], { env: { [marker]: "1", A: "1" } }, { spawnFn }),
+        );
+      });
+    } finally {
+      stop();
+    }
+    expect(calls[1]!.env).toEqual({ A: "1" });
+    expect(seen).toEqual([
+      { marker, shared: undefined },
+      { marker: undefined, shared: "status-cache" },
+    ]);
   });
 
   it("registers the child under its run's marker when asked", () => {

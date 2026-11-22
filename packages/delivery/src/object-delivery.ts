@@ -52,6 +52,8 @@ export interface ObjectDeliverOptions {
   protectedApply?: boolean;
   /** The rendered patch view, when one exists (pr inspects it before any push). */
   renderedPatch?: string | null;
+  /** The owning run's stop: its final verification launches no gate after it fired. */
+  signal?: AbortSignal;
   /** Project root owning the object store (defaults to the delivery target). */
   projectRoot?: string;
   /** Path whose existence keeps the delivery pair's objects (the run directory). */
@@ -306,6 +308,7 @@ async function composeAndVerify(
     { baseSha: onto.commit, baseTree: onto.tree, tree: composed.tree, projectRoot },
     gates,
     log,
+    options.signal,
   );
   let refusalText: string | null;
   if (finalVerify.applied_cleanly !== true)

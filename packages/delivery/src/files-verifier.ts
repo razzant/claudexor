@@ -17,11 +17,16 @@ export interface VerifiableWorkspaceFiles {
   artifactRoot: string;
 }
 
+/** What a verification the run's stop interrupted records: not verified, never passed. */
+export const VERIFY_STOPPED = "the run was stopped during final verification";
+
 export async function finalVerifyFiles(
   candidate: VerifiableWorkspaceFiles,
   paths: readonly string[] | undefined,
   specs: GateSpec[],
   log: VerifyEventLog,
+  /** The run's stop: once it fired no gate is launched (run-deadline/1 included). */
+  signal?: AbortSignal,
 ): Promise<FinalVerifyRecord & { base_manifest_sha256: string }> {
   const started = Date.now();
   const done = (fields: Record<string, unknown>) => ({
@@ -47,7 +52,9 @@ export async function finalVerifyFiles(
         gates_passed: null,
         reason: "no deterministic gates configured",
       });
-    const gates = await runGates(specs, { cwd: root });
+    if (signal?.aborted) return done({ applied_cleanly: null, reason: VERIFY_STOPPED });
+    const gates = await runGates(specs, { cwd: root, ...(signal ? { signal } : {}) });
+    if (signal?.aborted) return done({ applied_cleanly: null, reason: VERIFY_STOPPED });
     log.emit("gate.completed", { attempt_id: "final-verify", gates, passed: gatesPassed(gates) });
     return done({
       applied_cleanly: true,

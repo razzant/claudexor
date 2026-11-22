@@ -1,17 +1,23 @@
 /**
- * The short process scope of an isolated thread's worktree preparation, which
- * runs before any run exists (#694 r10): opened only when the tree is really
- * made or recovered, or a ready tree's project must be initialized (durably,
- * before the first spawn — a failed record refuses), its marker carried by the
- * preparation's Git children from the first one, and settled once (memoized
- * here) by the preparation itself: on success before the tree is handed over
- * (an unsettled scope holds the tree instead), after a failure before what it
- * made is released. Settlement ends what the scope still holds by measured
- * identity (background hook and filter processes included); the preparation's
- * one release then frees its resources, or the turn is refused with what stays
- * held and its next attempt releases them once a read proves the end
- * (`ensureThreadWorktree`). `closeAfter` settles a scope whose turn failed
- * anywhere else before a run existed.
+ * The short process scope of a thread turn's worktree preparation, which runs
+ * before any run exists (#694 r10). It is opened durably before its first
+ * spawn (a failed record refuses) and settled once (memoized here):
+ * - an ordinary turn opens it only when the tree is really made or recovered,
+ *   or a ready tree's project must be initialized; the preparation settles it
+ *   on success before the tree is handed over (an unsettled scope holds the
+ *   tree instead) and after a failure before what it made is released;
+ * - a turn whose job holds a run-deadline/1 record opens it first, hands its
+ *   marker to the warden before any Git child, and runs the whole preparation
+ *   (the Git preflight, a ready tree's checks) inside it
+ *   (`withinPreparationScope`);
+ * - every successful preparation settles a scope it opened that the tree's
+ *   preparation did not take over (`withinPreparationScope`), so no turn leaves
+ *   an open row in the run-scope index.
+ * Settlement ends what the scope still holds by measured identity (background
+ * hook and filter processes included); the preparation's one release then
+ * frees its resources, or the turn is refused with what stays held and its next
+ * attempt releases them once a read proves the end (`ensureThreadWorktree`).
+ * `closeAfter` settles a scope whose turn failed before a run existed.
  */
 import {
   noteCleanupFault,
@@ -81,6 +87,31 @@ export function threadPreparationScope(
       return error;
     },
   };
+}
+
+/**
+ * The preparation of a thread turn, from its Git preflight to the handed-over
+ * workspace. For a job with a deadline the scope is opened first and the whole
+ * preparation runs inside it; any failure settles the scope before it is
+ * thrown again; success settles a scope the tree's preparation did not take
+ * over (its settlement is memoized, so a settled one is not reaped twice).
+ */
+export async function withinPreparationScope<T>(
+  preparation: Pick<ThreadPreparationScope, "openScope" | "settleScope" | "closeAfter">,
+  deadlineHeld: boolean,
+  work: () => Promise<T>,
+): Promise<T> {
+  let result: T;
+  try {
+    if (deadlineHeld) {
+      const { marker } = await preparation.openScope();
+      result = await withinRunScope(marker, work);
+    } else result = await work();
+  } catch (error) {
+    throw await preparation.closeAfter(error);
+  }
+  await preparation.settleScope();
+  return result;
 }
 
 /**

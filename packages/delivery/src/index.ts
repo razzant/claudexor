@@ -111,6 +111,8 @@ export interface DeliverOptions {
   /** Config root holding the provisioned publication scanner; defaults to
    * Claudexor's own runtime root. */
   scannerConfigDir?: string;
+  /** The owning run's stop: its final verification launches no gate after it fired. */
+  signal?: AbortSignal;
 }
 
 export interface DeliverResult {
@@ -140,7 +142,7 @@ export interface VerifiedDeliverResult extends DeliverResult {
 export async function verifyAndDeliverFiles(
   targetRoot: string,
   candidate: VerifiableWorkspaceFiles,
-  options: { paths?: string[] } = {},
+  options: { paths?: string[]; signal?: AbortSignal } = {},
   gates: GateSpec[] = [],
   authorize?: (record: FinalVerifyRecord) => string | null,
   log: VerifyEventLog = { emit: () => undefined },
@@ -157,7 +159,13 @@ export async function verifyAndDeliverFiles(
       return sha256(JSON.stringify(entries));
     };
     const targetPreimageSha = await preimage();
-    const finalVerify = await finalVerifyFiles(candidate, options.paths, gates, log);
+    const finalVerify = await finalVerifyFiles(
+      candidate,
+      options.paths,
+      gates,
+      log,
+      options.signal,
+    );
     const refusal =
       (await realpath(targetRoot)) !== (await realpath(candidate.manifest.sourceRoot))
         ? "target does not match the work product source"
@@ -223,6 +231,7 @@ async function verifyAndDeliverUnlocked(
     { baseSha: targetPreimageSha, diff: patch },
     gates,
     log,
+    options.signal,
   );
   let refusal: string | null;
   if (finalVerify.applied_cleanly === false) {

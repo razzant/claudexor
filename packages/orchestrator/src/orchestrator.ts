@@ -4144,7 +4144,7 @@ export class Orchestrator {
             verifyAndDeliverFiles(
               execRoot,
               winnerRun.files!,
-              {},
+              { signal: input.signal },
               gateSpecsFromContract(contract, input.runScopeMarker),
               (freshVerify) =>
                 finalVerifyBlocks(freshVerify)
@@ -4216,7 +4216,13 @@ export class Orchestrator {
               verifyAndDeliver(
                 execRoot,
                 secretDiff.deliverableOf(winnerRun),
-                { mode: "apply", protectedApply: true, projectRoot, owner: paths.root },
+                {
+                  mode: "apply",
+                  protectedApply: true,
+                  projectRoot,
+                  owner: paths.root,
+                  signal: input.signal,
+                },
                 gateSpecsFromContract(contract, input.runScopeMarker),
                 (freshVerify) => {
                   finalVerify = freshVerify;
