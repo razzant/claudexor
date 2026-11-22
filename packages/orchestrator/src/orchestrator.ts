@@ -853,50 +853,56 @@ export class Orchestrator {
     const custody = await openRunScopeCustody(this.deps.runScopes, runId, input.onRunScopeOpened);
     resolved = custody.scope(resolved);
     try {
-      return await guardAnnouncedRun(
-        resolved.signal,
-        (announce) => {
-          const announced = custody.announced(announce);
-          switch (mode) {
-            case "ask":
-              // `--deep-scan` widens the answer into the bounded multi-scout
-              // research sweep with synthesis (the old `audit --swarm`/`explore`).
-              return resolved.deepScan
-                ? this.runDeepScan(resolved, announced)
-                : this.runAsk(resolved, announced);
-            case "agent":
-              // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
-              // and `--attempts` select the convergence loop; `--n` selects the race
-              // width; `--create` switches the candidate intent to create_from_scratch.
-              if (resolved.untilClean) return this.runConvergence(resolved, mode, null, announced);
-              if (resolved.attempts !== undefined && resolved.attempts !== null) {
-                return this.runConvergence(resolved, mode, resolved.attempts, announced);
-              }
-              return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode, announced);
-            case "plan":
-              return this.runPlan(resolved, announced);
-          }
-        },
-        // The whole-run barrier: drain delegated children, then end the run's
-        // process scope and record its outcome before ANY terminal is flushed
-        // (a child-drain rejection keeps its error). Bounded by the reap deadline.
-        ({ runId }) =>
-          custody.barrier(async () => {
-            const authority = this.deps.delegationBudgetAuthority;
-            if (!authority?.hasParent(runId)) return;
-            authority.beginParentClose(runId);
-            await authority.waitForChildren(runId);
-          }),
-        // Single per-run terminalization hook: the custody fallback for a path
-        // that never reached the barrier, then release per-run engine state
-        // (the delegated-child drain authority is released only AFTER
-        // settlement) on EVERY terminal.
-        async (settledRunId) => {
-          await custody.record();
-          this.routingRationaleByRun.delete(settledRunId);
-          this.deps.delegationBudgetAuthority?.releaseRun(settledRunId);
-        },
-        resolved.preparationSignal,
+      // The whole run, to its terminalization, is inside its launch scope: every
+      // process it starts carries its marker, whatever env the call site built
+      // (a shared vendor probe launches as `sharedLaunch` instead).
+      return await withinRunScope(custody.marker, () =>
+        guardAnnouncedRun(
+          resolved.signal,
+          (announce) => {
+            const announced = custody.announced(announce);
+            switch (mode) {
+              case "ask":
+                // `--deep-scan` widens the answer into the bounded multi-scout
+                // research sweep with synthesis (the old `audit --swarm`/`explore`).
+                return resolved.deepScan
+                  ? this.runDeepScan(resolved, announced)
+                  : this.runAsk(resolved, announced);
+              case "agent":
+                // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
+                // and `--attempts` select the convergence loop; `--n` selects the race
+                // width; `--create` switches the candidate intent to create_from_scratch.
+                if (resolved.untilClean)
+                  return this.runConvergence(resolved, mode, null, announced);
+                if (resolved.attempts !== undefined && resolved.attempts !== null) {
+                  return this.runConvergence(resolved, mode, resolved.attempts, announced);
+                }
+                return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode, announced);
+              case "plan":
+                return this.runPlan(resolved, announced);
+            }
+          },
+          // The whole-run barrier: drain delegated children, then end the run's
+          // process scope and record its outcome before ANY terminal is flushed
+          // (a child-drain rejection keeps its error). Bounded by the reap deadline.
+          ({ runId }) =>
+            custody.barrier(async () => {
+              const authority = this.deps.delegationBudgetAuthority;
+              if (!authority?.hasParent(runId)) return;
+              authority.beginParentClose(runId);
+              await authority.waitForChildren(runId);
+            }),
+          // Single per-run terminalization hook: the custody fallback for a path
+          // that never reached the barrier, then release per-run engine state
+          // (the delegated-child drain authority is released only AFTER
+          // settlement) on EVERY terminal.
+          async (settledRunId) => {
+            await custody.record();
+            this.routingRationaleByRun.delete(settledRunId);
+            this.deps.delegationBudgetAuthority?.releaseRun(settledRunId);
+          },
+          resolved.preparationSignal,
+        ),
       );
     } catch (error) {
       // A durable startup sink may refuse `run.created` before the strategy can

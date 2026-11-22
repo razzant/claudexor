@@ -1,4 +1,4 @@
-import { observeHarnessProgram } from "@claudexor/core";
+import { observeHarnessProgram, sharedLaunch } from "@claudexor/core";
 import { CLAUDE_PROGRAM } from "./program.js";
 import {
   selectProgramLauncher,
@@ -379,7 +379,8 @@ async function sharedHelpCapture(patchPath?: string): Promise<ClaudeHelpProbe> {
   const { key, spawn, cacheable } = await helpProbeIdentity(patchPath);
   const cached = helpProbes.get(key);
   if (cached) return cached;
-  const pending = (async (): Promise<ClaudeHelpProbe> => {
+  // Shared by every caller (property 1 below holds for the run marker too).
+  const pending = sharedLaunch("claude-help-probe", async (): Promise<ClaudeHelpProbe> => {
     try {
       const result = await runCapture(spawn, ["--help"], {
         ...(patchPath !== undefined ? { env: { PATH: patchPath } } : {}),
@@ -394,7 +395,7 @@ async function sharedHelpCapture(patchPath?: string): Promise<ClaudeHelpProbe> {
         error: redactSecrets(error instanceof Error ? error.message : String(error)),
       };
     }
-  })();
+  });
   helpProbes.set(key, pending);
   if (helpProbes.size > 16) helpProbes.delete(helpProbes.keys().next().value!);
   // Identity-guarded so a late settle can only ever clear its OWN memo, never a

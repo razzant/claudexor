@@ -2,6 +2,7 @@ import { rpcProblem, storageOnlyFailure } from "./rpc-problem.js";
 import { RunTimeLimits } from "./run-time-limits.js";
 import type { RunTimeLimit } from "./run-time-limit.js";
 import * as rd from "./run-deadline-scheduler.js";
+import { outsideRunScope } from "@claudexor/core";
 import { type Server, type Socket, createServer } from "node:net";
 
 import {
@@ -501,18 +502,21 @@ export class DaemonServer {
     this.controllers.set(id, controller);
     rec = this.updateRecord(rec, { state: "running", startedAt: nowIso() });
     try {
-      const result = await this.opts.runner(rec.params, {
-        jobId: id,
-        signal: controller.signal,
-        stopSender: () => controller.stopSender,
-        registerTimeLimit: (timer) =>
-          this.timeLimits.register(id, timer, () => !controller.signal.aborted),
-        deadlineScope: this.deadlines.scope(id),
-        onTerminalCommitted: () => this.deadlines.close(id),
-        onRunStart: (info) => {
-          rec = this.updateRecord(rec, info);
-        },
-      });
+      // A job starts outside any run's launch scope, whatever enqueued it.
+      const result = await outsideRunScope(() =>
+        this.opts.runner(rec.params, {
+          jobId: id,
+          signal: controller.signal,
+          stopSender: () => controller.stopSender,
+          registerTimeLimit: (timer) =>
+            this.timeLimits.register(id, timer, () => !controller.signal.aborted),
+          deadlineScope: this.deadlines.scope(id),
+          onTerminalCommitted: () => this.deadlines.close(id),
+          onRunStart: (info) => {
+            rec = this.updateRecord(rec, info);
+          },
+        }),
+      );
       const patch = {
         ...settledJobPatch(jobStateFromResult(result, controller.signal.aborted), result),
         ...this.deadlines.unboundExpiry(controller.signal, rec),
