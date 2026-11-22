@@ -56,7 +56,6 @@ const temp = () => {
 
 const SEC = 1_000_000_000n;
 const HEAD_MS = 1_000;
-const HEAD = BigInt(HEAD_MS) * 1_000_000n;
 
 /** A frozen clock the plan moves: host and wall together. */
 function frozenClock() {
@@ -222,11 +221,19 @@ describe("run-deadline/1 under faults: a set racing the deadline, the warden and
   // deadline may have won, the claim and the restoring write after them.
   const POINTS = [1, 2, 3, 4, 5, 6, 7];
   type Concurrent = "deadline" | "head-start" | "warden" | "terminal";
-  const cases: Array<{ name: string; hookAt: number | null; hook: Concurrent | null; fault: Event["kind"] | null; faultAt: number | null }> = [];
+  const cases: Array<{
+    name: string;
+    hookAt: number | null;
+    hook: Concurrent | null;
+    fault: "throw" | "crash" | null;
+    faultAt: number | null;
+  }> = [];
   for (const hook of [null, "deadline", "head-start", "warden", "terminal"] as const)
     for (const hookAt of hook ? [1, 2, 3] : [null])
       for (const fault of [null, "throw", "crash"] as const)
-        for (const faultAt of fault ? POINTS.filter((p) => hookAt === null || p !== hookAt) : [null])
+        for (const faultAt of fault
+          ? POINTS.filter((p) => hookAt === null || p !== hookAt)
+          : [null])
           cases.push({
             name: `${hook ? `${hook} after op ${hookAt}` : "no concurrent event"}, ${fault ? `${fault} at op ${faultAt}` : "no fault"}`,
             hookAt,
@@ -340,7 +347,11 @@ describe("run-deadline/1 under faults: removing a Delegate parent's record", () 
     const deadlines = registry(dir, time);
     await hold(deadlines, "a-parent", time.iso(100_000));
     await hold(deadlines, "b-child", null, "a-parent");
-    await deadlines.set("a-parent", { at: time.iso(40_000), expectedRevision: 0 }, { delegated: false });
+    await deadlines.set(
+      "a-parent",
+      { at: time.iso(40_000), expectedRevision: 0 },
+      { delegated: false },
+    );
     await deadlines.read("b-child"); // the child's refresh landed
     // The child's warden still guards survivors; the parent's is done.
     writeJsonAtomic(wardenReadyPath(join(dir, "b-child.json")), { pid: 1 });
@@ -373,7 +384,10 @@ describe("run-deadline/1 under faults: removing a Delegate parent's record", () 
         }
         check();
         if (readRecord(join(dir, "b-child.json")))
-          expect(readRecord(join(dir, "a-parent.json")), "the parent stays while the child's warden may act").not.toBeNull();
+          expect(
+            readRecord(join(dir, "a-parent.json")),
+            "the parent stays while the child's warden may act",
+          ).not.toBeNull();
         // The child's warden finishes; the next retention pass forgets the child.
         writeJsonAtomic(`${join(dir, "b-child.json")}.done`, { reason: "released" });
         try {
@@ -394,7 +408,11 @@ describe("run-deadline/1 under faults: removing a Delegate parent's record", () 
     const deadlines = registry(dir, time);
     await hold(deadlines, "a-parent", time.iso(100_000));
     await hold(deadlines, "b-child", null, "a-parent");
-    await deadlines.set("a-parent", { at: time.iso(40_000), expectedRevision: 0 }, { delegated: false });
+    await deadlines.set(
+      "a-parent",
+      { at: time.iso(40_000), expectedRevision: 0 },
+      { delegated: false },
+    );
     await deadlines.read("b-child");
     writeJsonAtomic(wardenReadyPath(join(dir, "b-child.json")), { pid: 1 });
     const cap = wardenBound(dir, "b-child.json")!.target;
@@ -472,7 +490,10 @@ describe("run-deadline/1 under faults: an acceptance racing its own deadline", (
           const answer = await outcome(
             d.client.enqueue(request, { idempotencyKey: "k", clientId: "t" }),
           );
-          const accepted = await d.client.findAccepted(request, { idempotencyKey: "k", clientId: "t" });
+          const accepted = await d.client.findAccepted(request, {
+            idempotencyKey: "k",
+            clientId: "t",
+          });
           if (kind === "deadline") {
             // The deadline passed before the commit: refused, the key stays free.
             expect(answer).toEqual({ ok: false, code: "run_deadline_passed" });
@@ -541,7 +562,11 @@ describe("run-deadline/1 under faults: the SQL terminal and a renewal", () => {
       );
       await terminalCommitted;
       const answer = await outcome(
-        client.runDeadline(accepted.id, { action: "set", at: time.iso(90_000), expectedRevision: 0 }),
+        client.runDeadline(accepted.id, {
+          action: "set",
+          at: time.iso(90_000),
+          expectedRevision: 0,
+        }),
       );
       expect(answer).toEqual({ ok: false, code: "run_deadline_closed" });
       expect(await client.runDeadline(accepted.id, { action: "read" })).toMatchObject({
