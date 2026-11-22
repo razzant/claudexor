@@ -108,6 +108,8 @@ export class RunDeadlines {
   private readonly platform: NodeJS.Platform;
   private boundary: DeadlineBoundary | null = null;
   private boundaryProbe: Promise<DeadlineBoundary> | null = null;
+  /** The daemon stopped: no timer is armed again. */
+  private disposed = false;
   /** Records by file name: the cache for jobs held here, else the disk. */
   protected readonly reader: RecordReader;
 
@@ -454,6 +456,7 @@ export class RunDeadlines {
 
   /** Stop every timer and let pending record writes land (a clean stop leaves them durable). */
   async dispose(): Promise<void> {
+    this.disposed = true;
     for (const entry of this.entries.values()) this.stopTimer(entry);
     await Promise.all([...this.entries.values()].map((entry) => entry.chain));
   }
@@ -574,7 +577,7 @@ export class RunDeadlines {
 
   private arm(entry: Entry): void {
     this.stopTimer(entry);
-    if (entry.record.state !== "armed" || entry.closing) return;
+    if (entry.record.state !== "armed" || entry.closing || this.disposed) return;
     const bound = this.governing(entry.record);
     if (!bound) return;
     const remainingNs = bound.target - this.clock.hostNow();
