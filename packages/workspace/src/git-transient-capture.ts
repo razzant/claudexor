@@ -24,7 +24,7 @@ import {
   untrackedNestedRepositories,
 } from "./git-nested-repositories.js";
 import { gitObserved, GitOperationError, proofStallMs, treeBlobBytes } from "./git-observed.js";
-import { addKeptPaths } from "./git-snapshot.js";
+import { addKeptPaths, addSparseNewFiles } from "./git-snapshot.js";
 import {
   makeGitObjectResult,
   repositoryObjectFormat,
@@ -148,6 +148,7 @@ export async function captureWorkingTreeTransient(
     if (read.code !== 0) {
       throw new WorkspaceError(`transient diff read-tree failed: ${read.stderr.trim()}`);
     }
+    await addSparseNewFiles(repo, env, baseSha, [".", ...pathExcludes], progress);
     const nested = await untrackedNestedRepositories(
       repo,
       env,

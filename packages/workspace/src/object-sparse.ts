@@ -6,6 +6,28 @@ import { classifyGitFailure, gitObserved, GitOperationError } from "./git-observ
  * usage error (exit 129: an unknown subcommand) instead. */
 const CHECK_RULES_UNKNOWN = 129;
 
+/** Whether the worktree's sparse-checkout patterns are in force: `core.sparseCheckout`
+ * set and a patterns file present (without one Git checks out everything). A worktree
+ * that is not sparse costs one `git config`. */
+export async function sparsePatternsApply(
+  worktree: string,
+  env: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const sparse = await gitObserved(
+    worktree,
+    ["config", "--type=bool", "--get", "core.sparseCheckout"],
+    { env, label: "config core.sparseCheckout", allowFailure: true, signal },
+  );
+  if (sparse.stdout.trim() !== "true") return false;
+  const patterns = await gitObserved(
+    worktree,
+    ["rev-parse", "--path-format=absolute", "--git-path", "info/sparse-checkout"],
+    { env, label: "rev-parse --git-path info/sparse-checkout", signal },
+  );
+  return lstatPresent(patterns.stdout.trim()) !== undefined;
+}
+
 /**
  * The paths among `paths` that the worktree's sparse-checkout patterns leave out
  * (none when it is not a sparse checkout), from one `check-rules` call, or null when
@@ -24,18 +46,7 @@ export async function outsideSparseCheckout(
   signal?: AbortSignal,
 ): Promise<string[] | null> {
   if (paths.length === 0) return [];
-  const sparse = await gitObserved(
-    worktree,
-    ["config", "--type=bool", "--get", "core.sparseCheckout"],
-    { env, label: "config core.sparseCheckout", allowFailure: true, signal },
-  );
-  if (sparse.stdout.trim() !== "true") return [];
-  const patterns = await gitObserved(
-    worktree,
-    ["rev-parse", "--path-format=absolute", "--git-path", "info/sparse-checkout"],
-    { env, label: "rev-parse --git-path info/sparse-checkout", signal },
-  );
-  if (!lstatPresent(patterns.stdout.trim())) return [];
+  if (!(await sparsePatternsApply(worktree, env, signal))) return [];
   const kept = await gitObserved(worktree, ["sparse-checkout", "check-rules", "-z"], {
     env,
     label: "sparse-checkout check-rules",
