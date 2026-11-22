@@ -585,3 +585,4 @@ export function initProjectConfig(repoRoot: string): InitResult {
   writeText(configPath, header + yamlStringify(config));
   return { configPath, created: true };
 }
+export { accountUsageAllowance } from "./usage-allowance.js";

@@ -176,6 +176,15 @@
           ],
           "description": "Routing objective: pace expiring quota, choose the highest declared quality tier, or minimize incremental paid spend."
         },
+        "complexity": {
+          "type": "string",
+          "enum": [
+            "easy",
+            "medium",
+            "hard"
+          ],
+          "description": "Complexity a run states for itself; selects the route candidates to consider."
+        },
         "model": {
           "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items",
           "description": "Scalar model convenience: expands to the resolved primary harness only (never the pool); rejected with a multi-harness pool and no primary — use models instead."

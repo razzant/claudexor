@@ -139,6 +139,7 @@ const MCP_TO_CLI = {
   },
   access: { cli: "access" },
   credentialProfileId: { cli: "profile" },
+  complexity: { cli: "complexity" },
   review: {
     cli: null,
     tools: AGENT_RUN_TOOL_NAMES,
@@ -565,6 +566,8 @@ const ACP_EQUIVALENT = {
   idempotencyKey: "caller-owned MCP transport identity; ACP does not expose launch replay keys",
   taskGroupId:
     "external one-shot correlation metadata; ACP session/prompt fields deliberately reject it",
+  complexity:
+    "one-shot routing control; an ACP prompt is a thread turn, routed by the thread's sticky pool and bound account",
 };
 for (const arg of mcpArgs) {
   if (arg in ACP_EQUIVALENT) continue;

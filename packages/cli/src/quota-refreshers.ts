@@ -5,6 +5,7 @@ import { refreshClaudeStatuslineQuota } from "./claude-statusline.js";
 import { refreshCodexQuota } from "./codex-quota-source.js";
 import { refreshAgyQuota } from "./agy-quota-source.js";
 import { refreshCursorQuota } from "./cursor-quota-source.js";
+import { refreshGrokUsageQuota } from "./grok-usage-source.js";
 import { refreshOpenRouterKeyAllowance } from "./openrouter-key-source.js";
 import type { QuotaDiagnosticSink } from "./quota-refresh-diagnostics.js";
 
@@ -54,6 +55,11 @@ export const QUOTA_REFRESHER_REGISTRATIONS = [
     vendor: "agy",
     refresh: (cycle?: QuotaRefreshCycle, diagnostic?: QuotaDiagnosticSink) =>
       refreshAgyQuota(diagnostic ? { diagnostic } : {}, cycle),
+  },
+  {
+    source: "grok_local_usage",
+    vendor: "grok",
+    refresh: (cycle?: QuotaRefreshCycle) => refreshGrokUsageQuota({}, cycle),
   },
   {
     source: "cursor_dashboard",

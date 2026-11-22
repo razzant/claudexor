@@ -23,6 +23,13 @@ export function grokFailure(value: unknown, sessionId: string): HarnessEvent {
     error: redactSecrets(message).slice(0, 2000),
   };
   const code = string(data.code) || string(data.type);
+  // The account's credits or monthly spending limit are used up. The vendor
+  // names no reopening time, so none is derived here (as for Codex and AGY).
+  if (/\bused all available credits\b|\bmonthly spending limit\b/i.test(message)) {
+    event.rate_limit = { resets_at: null, retry_delay_ms: null, reopening: "unknown" };
+    event.status = { kind: "api_retry", error_category: "rate_limit" };
+    return event;
+  }
   if (
     data.status === 429 ||
     data.status_code === 429 ||

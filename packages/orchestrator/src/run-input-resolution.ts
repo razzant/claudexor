@@ -1,6 +1,7 @@
 import type { EffortHint, ResolvedConfig, RoutingGoal } from "@claudexor/schema";
 import { HarnessUnavailableError, chosenModel, type AdapterRegistry } from "@claudexor/core";
 import { noProjectRepoRoot } from "@claudexor/util";
+import { resolveComplexityPool } from "./complexity-routing.js";
 import type { RunInput } from "./orchestrator.js";
 
 export interface RunInputResolutionDeps {
@@ -35,9 +36,23 @@ export function resolveRunInputDefaults(input: RunInput, deps: RunInputResolutio
     throw new Error("contextMode 'off' is only supported for Ask without a repoRoot");
   }
   const cfg = deps.config;
-  const harnesses = effectiveHarnessPool(input.harnesses, cfg.global.routing.eligible_harnesses);
+  // A stated complexity replaces the pool with its table candidates and names
+  // each candidate's model and effort (complexity-routing.ts).
+  const complexity = resolveComplexityPool(input, cfg.global.routing.complexity_routes);
+  if (complexity)
+    input = {
+      ...input,
+      model: undefined,
+      effort: undefined,
+      models: { ...input.models, ...complexity.models },
+      efforts: { ...input.efforts, ...complexity.efforts },
+    };
+  const harnesses =
+    complexity?.harnesses ??
+    effectiveHarnessPool(input.harnesses, cfg.global.routing.eligible_harnesses);
   const explicitPrimary = input.primaryHarness;
-  const configPrimary = cfg.global.routing.primary_harness;
+  // The table, not a saved default primary, orders a complexity run's candidates.
+  const configPrimary = complexity ? null : cfg.global.routing.primary_harness;
   const primaryHarness =
     explicitPrimary ??
     (input.harnesses?.length === 1 ? input.harnesses[0] : undefined) ??
@@ -112,6 +127,7 @@ export function resolveRunInputDefaults(input: RunInput, deps: RunInputResolutio
         }
       : input.continuation,
     harnesses,
+    ...(complexity ? { complexityRoutes: complexity.routes } : {}),
     primaryHarness,
     primaryHarnessExplicit: explicitPrimary !== undefined,
     model: undefined,

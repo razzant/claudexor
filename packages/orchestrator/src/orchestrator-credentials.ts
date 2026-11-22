@@ -33,6 +33,7 @@ import {
 import type { EventLog } from "@claudexor/event-log";
 import { accountPoolRows } from "./account-pool.js";
 import { PoolRouteFlags, resolveAccountForRun } from "./account-resolution.js";
+import * as tiers from "./account-tier-routing.js";
 import type { AttemptOutputMarkers } from "./attemptOutputMarkers.js";
 import { profileBillingVerification } from "./auth-route-classification.js";
 import {
@@ -236,11 +237,22 @@ export class OrchestratorCredentials {
     }
   }
 
-  profilePolicy(repoRoot: string, harnessId: string): ProfilePolicy {
-    const policy = this.host.config(repoRoot)?.global.harnesses?.[harnessId]?.profile_policy;
+  /** `complexity` set: in-run rotation follows the account tiers (auxiliary first). */
+  profilePolicy(repoRoot: string, harnessId: string, complexity?: unknown): ProfilePolicy {
+    const global = this.host.config(repoRoot)?.global;
     // A6: an ABSENT policy means `auto` (kind-aware: rotate for subscription
     // subjects, fail for metered) — resolved later by effectiveLimitAction.
-    return policy ?? { limit_action: "auto", rotation_eligible: [], headroom_threshold: 1 };
+    const policy = global?.harnesses?.[harnessId]?.profile_policy ?? {
+      limit_action: "auto" as const,
+      rotation_eligible: [],
+      headroom_threshold: 1,
+    };
+    if (!complexity) return policy;
+    const rows = global?.credential_profiles ?? [];
+    return {
+      ...policy,
+      rotation_eligible: tiers.tierRotationOrder(rows, harnessId, policy.rotation_eligible),
+    };
   }
 
   /** The quota poller's authenticated vendor evidence for THIS decision epoch,
@@ -266,12 +278,20 @@ export class OrchestratorCredentials {
     model: string | null = null,
   ): Promise<ReadonlySet<string>> {
     const adapter = this.host.registry().get(harnessId);
+    const global = this.host.config(input.repoRoot)?.global;
     return readyProfilesForRotation({
-      registry: this.host.config(input.repoRoot)?.global.credential_profiles ?? [],
+      registry: global?.credential_profiles ?? [],
       harnessId,
       policy: this.profilePolicy(input.repoRoot, harnessId),
       current,
-      excluded,
+      excluded: tiers.tierRotationExcluded(
+        tiers.tierRoutingFor(input.complexity, global?.routing.account_tiers),
+        global?.credential_profiles ?? [],
+        this.host.quotaSnapshots(),
+        harnessId,
+        excluded,
+        model,
+      ),
       probe: adapter?.probeCredentialProfile?.bind(adapter),
       quota: this.vendorQuotaObservations(),
       unusable: this.host.credentialUnusable(),
@@ -537,6 +557,10 @@ export class OrchestratorCredentials {
         input.authPreference,
       ),
       diagnosticGeneration,
+      tier: tiers.tierRoutingFor(
+        input.complexity,
+        this.host.config(input.repoRoot)?.global.routing.account_tiers,
+      ),
       notePoolApiKeyRoute: () => this.poolApiKeyRoutes.note(input, harnessId),
       emit: (type, payload) => log?.emit(type, payload),
     });

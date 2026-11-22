@@ -148,7 +148,23 @@ not established: the recorded fixtures are successful streams and a quota
 failure carrying `errors`, and no documented contract covers it. If it did,
 that text would be kept only in masked form. Vendor and stderr quota
 failures become typed `rate_limit` signals, stored as `grok_rate_limit`
-cooldowns for routing and rotation; remaining allowance stays unknown.
+cooldowns for routing and rotation. A failure saying the account used all
+available credits or reached its monthly spending limit is a usage refusal
+with no reopening time: the vendor names none, so none is derived here.
+
+Remaining allowance stays unknown unless the operator configures a
+`usage_allowance` for the account. `readGrokUsageSpend` then sums
+`costUsdTicks` over the turns that ended in the current period from the Grok
+CLI's own `sessions/<project>/<session>/usage.json` files under the profile's
+Grok home, at 10,000,000,000 ticks per US dollar (the unit xAI's API reference
+defines for `cost_in_usd_ticks`; the CLI's field is taken to be the same). It
+opens only `usage.json`, never the credential or a conversation, skips a
+record last modified before the period, and counts a record it cannot read
+whole as unreadable instead of as zero. The engine publishes the result as the
+`grok_local_usage` quota window described under
+[Complexity routing and account tiers](../../docs/ARCHITECTURE.md#complexity-routing-and-account-tiers).
+The sum is local bookkeeping, not a vendor answer: it covers only spend made
+through that profile's home on this machine.
 
 ## Access
 

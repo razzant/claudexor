@@ -24,6 +24,7 @@ import {
   ModeKind as ModeKindSchema,
   type PaidBudget,
   RoutingGoal,
+  ComplexityLevel,
   type ModeKind,
   type ProviderFamily,
   ControlThreadListResponse,
@@ -303,6 +304,20 @@ async function orchestrate(
       `claudexor: unknown --routing-goal '${routingGoalRaw}'`,
     );
   }
+  const complexityRaw = flagStr(args, "complexity");
+  const complexity = complexityRaw !== undefined ? ComplexityLevel.safeParse(complexityRaw) : null;
+  if (complexityRaw !== undefined && !complexity?.success) {
+    return renderOutputUsageFailure(
+      outputMode,
+      `claudexor: unknown --complexity '${complexityRaw}' (easy|medium|hard)`,
+    );
+  }
+  if (complexity && (flagStr(args, "thread") !== undefined || flagBool(args, "resume"))) {
+    return renderOutputUsageFailure(
+      outputMode,
+      "claudexor: --complexity routes a one-shot run; a thread turn keeps its thread's pool and account",
+    );
+  }
   let reviewerEffortOverrides: Partial<Record<ProviderFamily, EffortHint>> | undefined;
   let resolvedReviewerModels: Partial<Record<ProviderFamily, string>> | undefined;
   let resolvedReviewerPanel: ControlReviewerPanelEntry[] | undefined;
@@ -451,6 +466,7 @@ async function orchestrate(
     tests,
     paidBudget,
     routingGoal: routingGoal?.success ? routingGoal.data : undefined,
+    complexity: complexity?.success ? complexity.data : undefined,
     credentialProfileId,
     review,
     reviewerPanel: resolvedReviewerPanel,
@@ -490,6 +506,7 @@ interface DaemonRunParams {
   tests: TestCommandInvocation[] | undefined;
   paidBudget: PaidBudget | undefined;
   routingGoal: ReturnType<typeof RoutingGoal.parse> | undefined;
+  complexity: ComplexityLevel | undefined;
   credentialProfileId: string | undefined;
   review: boolean | undefined;
   reviewerPanel: ControlReviewerPanelEntry[] | undefined;
@@ -619,6 +636,7 @@ async function daemonRun(
     ...(p.resolvedHarnesses ? { harnesses: p.resolvedHarnesses } : {}),
     ...(p.resolvedPrimaryHarness ? { primaryHarness: p.resolvedPrimaryHarness } : {}),
     ...(p.routingGoal ? { routingGoal: p.routingGoal } : {}),
+    ...(p.complexity ? { complexity: p.complexity } : {}),
     ...(p.credentialProfileId ? { credentialProfileId: p.credentialProfileId } : {}),
     ...(p.forced.race === true ? { n: p.nFlag ?? 2 } : p.nFlag !== undefined ? { n: p.nFlag } : {}),
     ...(p.attemptsFlag !== undefined ? { attempts: p.attemptsFlag } : {}),

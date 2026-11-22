@@ -137,6 +137,120 @@
               },
               "default": {},
               "description": "Per-intent quality tiers ordered highest to lowest; no provider or benchmark priors are inferred."
+            },
+            "complexity_routes": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "harness": {
+                      "$ref": "#/definitions/GlobalConfig/properties/routing/properties/quality_tiers/additionalProperties/items/items/properties/harness"
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "effort": {
+                      "$ref": "#/definitions/GlobalConfig/properties/routing/properties/quality_tiers/additionalProperties/items/items/properties/effort",
+                      "description": "Cross-harness reasoning-effort level as a lowercase slug (open vocabulary, mirroring the vendor contract); adapters advertise the levels they accept per model, ordered weakest to strongest by the vendor itself, and a shared normalizer passes advertised levels through, clamps inside the vendor order, places a word the vendor order lacks by the shared preference order (none < minimal < low < medium < high < xhigh < max < ultra) onto an advertised level, and refuses words neither order places."
+                    }
+                  },
+                  "required": [
+                    "harness",
+                    "model"
+                  ],
+                  "additionalProperties": false,
+                  "description": "One route candidate: a harness, an exact model and an optional reasoning effort."
+                },
+                "minItems": 1
+              },
+              "propertyNames": {
+                "enum": [
+                  "easy",
+                  "medium",
+                  "hard"
+                ]
+              },
+              "default": {},
+              "description": "Ordered route candidates per complexity level; a harness appears at most once per level. Empty by default: nothing is built in."
+            },
+            "account_tiers": {
+              "type": "object",
+              "properties": {
+                "primary_reserve": {
+                  "type": "object",
+                  "properties": {
+                    "weekly_used_ratio": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1,
+                      "default": 0.85,
+                      "description": "A primary account serves a complexity run only while every long quota window is below this used ratio."
+                    },
+                    "short_window_used_ratio": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1,
+                      "default": 0.9,
+                      "description": "The same ceiling for short quota windows."
+                    },
+                    "short_window_max_seconds": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "default": 86400,
+                      "description": "A quota window at most this long is short; a longer one, or one of unknown length, is judged by weekly_used_ratio."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "default": {},
+                  "description": "The share of a primary account kept for runs that state no complexity."
+                },
+                "allowances": {
+                  "type": "object",
+                  "properties": {
+                    "primary": {
+                      "type": "object",
+                      "properties": {
+                        "usd": {
+                          "type": "number",
+                          "exclusiveMinimum": 0,
+                          "description": "Allowance in USD for one period."
+                        },
+                        "period_start": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "Start of the first period; later periods repeat every period_days from it."
+                        },
+                        "period_days": {
+                          "type": "number",
+                          "exclusiveMinimum": 0,
+                          "maximum": 366,
+                          "description": "Length of one period in days."
+                        }
+                      },
+                      "required": [
+                        "usd",
+                        "period_start",
+                        "period_days"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Configured spend allowance of one account: USD per fixed period. No allowance is built in."
+                    },
+                    "auxiliary": {
+                      "$ref": "#/definitions/GlobalConfig/properties/routing/properties/account_tiers/properties/allowances/properties/primary",
+                      "description": "Configured spend allowance of one account: USD per fixed period. No allowance is built in."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "default": {},
+                  "description": "Default spend allowance per tier, for account rows that carry none."
+                }
+              },
+              "additionalProperties": false,
+              "description": "How tiered accounts serve runs that state a complexity.",
+              "default": {}
             }
           },
           "additionalProperties": false,
@@ -369,6 +483,18 @@
                 "type": "boolean",
                 "default": true,
                 "description": "Disabled profiles are never routable."
+              },
+              "tier": {
+                "type": "string",
+                "enum": [
+                  "primary",
+                  "auxiliary"
+                ],
+                "description": "Routing tier of an account row for runs that state a complexity: auxiliary accounts are used first; a primary account serves only below the configured reserve."
+              },
+              "usage_allowance": {
+                "$ref": "#/definitions/GlobalConfig/properties/routing/properties/account_tiers/properties/allowances/properties/primary",
+                "description": "Configured spend allowance of one account: USD per fixed period. No allowance is built in."
               },
               "created_at": {
                 "anyOf": [

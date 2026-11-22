@@ -2,6 +2,7 @@ import paidBudgetSchemaRaw from "@claudexor/schema/generated/PaidBudget.schema.j
 import taskGroupIdSchemaRaw from "@claudexor/schema/generated/TaskGroupId.schema.json" with { type: "json" };
 import {
   AccessProfile,
+  ComplexityLevel,
   ExternalContextPolicy,
   ProviderFamily,
   effortJsonSchema,
@@ -55,6 +56,18 @@ export function effortProperties(): Record<string, unknown> {
       additionalProperties: effortJsonSchema("Reasoning effort for this harness id."),
       description:
         "Optional harness-scoped effort map (harness id to effort); an entry wins over effort and that harness's Settings default. The engine refuses an unregistered harness id.",
+    },
+  };
+}
+
+/** Launch tools only: a successor inherits its predecessor's route. */
+export function complexityProperty(): Record<string, unknown> {
+  return {
+    complexity: {
+      type: "string",
+      enum: ComplexityLevel.options,
+      description:
+        "Optional complexity of this run. The engine takes its harness, model and effort candidates from the operator's routing.complexity_routes table and picks the account by tier (auxiliary first, primary only below its reserve); it refuses typed when no candidate can serve. Do not combine with model or effort.",
     },
   };
 }

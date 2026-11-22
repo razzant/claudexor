@@ -679,6 +679,12 @@ per thread. An explicit one-harness pool infers that harness as primary unless
 `--primary-harness` is supplied; an explicit primary must belong to the pool.
 The thread remembers its primary, pool, and (since 2.1) its
 credential profile; the engine owns routing, surfaces only send the choice.
+A one-shot run can instead state `--complexity easy|medium|hard`: the engine
+takes its harness, model and effort candidates from your
+`routing.complexity_routes` table and picks the account by tier (auxiliary
+accounts first, a primary account only below its reserve), refusing typed when
+no candidate can serve. See
+[Complexity routing and account tiers](docs/ARCHITECTURE.md#complexity-routing-and-account-tiers).
 Model review is opt-in for ordinary Agent. An explicit panel (`--reviewer-panel
 "claude=claude-fable-5-1:max,codex=gpt-6-astra:ultra"` or the structured
 `--reviewer-panel-json` form) enables it. Requested review needs at least two

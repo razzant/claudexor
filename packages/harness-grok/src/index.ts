@@ -29,6 +29,7 @@ import { withGrokPromptFile } from "./prompt.js";
 import { GROK_STARTUP_REFUSALS, createGrokStartupCheck, grokNoInitNote } from "./startup.js";
 export { resolveGrokBin } from "./bin.js";
 export { canonicalGrokProfileHome, grokProfileEnv } from "./profile.js";
+export { readGrokUsageSpend, type GrokUsageSpend } from "./usage-meter.js";
 
 export const GROK_MANAGED_LOGIN = { stdin: "none" } as const;
 const INTENTS = [

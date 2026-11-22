@@ -210,6 +210,7 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       ...(p?.timeLimitMode !== undefined ? { timeLimitMode: p.timeLimitMode } : {}),
       ...(p?.credentialProfileId ? { credentialProfileId: String(p.credentialProfileId) } : {}),
       ...(p?.access ? { access: String(p.access) } : {}),
+      ...(p?.complexity ? { complexity: String(p.complexity) } : {}),
       // `externalContextPolicy` is the control-api-parity alias of `web`; the
       // validator already enforced equality when both are present. Honor the
       // alias alone too — dropping it would silently run the daemon default.

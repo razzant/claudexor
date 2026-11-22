@@ -8,6 +8,7 @@ import {
 } from "./primitives.js";
 import { EffortHint } from "./harness.js";
 import { CredentialProfile } from "./credential-profile.js";
+import { AccountTierPolicy, ComplexityRouteTable } from "./account-tier.js";
 import { PaidBudget, PaidFallback, QualityTierSet, RoutingGoal } from "./budget.js";
 import { TestCommandGrant, TestCommandInvocation } from "./task.js";
 
@@ -176,6 +177,8 @@ export const GlobalConfig = z
         goal: RoutingGoal.default("auto"),
         paid_fallback: PaidFallback.default("when_unavailable"),
         quality_tiers: QualityTierSet,
+        complexity_routes: ComplexityRouteTable,
+        account_tiers: AccountTierPolicy.default({}),
       })
       .strict()
       .default({})

@@ -169,6 +169,7 @@ describe("command registry — the one owner of the CLI surface", () => {
       "scope-path",
       "portfolio",
       "routing-goal",
+      "complexity",
       "profile",
       "instructions",
       "instructions-file",

@@ -16,7 +16,10 @@ import { logPath, type AccountEvidence, type QuotaRegistry } from "@claudexor/da
 import { Orchestrator, createCredentialExecutionObserver } from "@claudexor/orchestrator";
 import { buildRegistry } from "./registry.js";
 import type { RuntimeConcurrencyCaps, CapturedRunStart } from "@claudexor/schema";
+import { loadConfigCached } from "@claudexor/config";
+import { noProjectRepoRoot } from "@claudexor/util";
 import { logLine } from "./log-line.js";
+import { dateUsageRefusal } from "./usage-period-refusal.js";
 import { daemonRunScopeIndex } from "./run-scope-index.js";
 import type { ModelLoginReadiness } from "./model-login-readiness.js";
 
@@ -92,13 +95,23 @@ export function buildRunOrchestrator(args: {
               event.credential_route === undefined ||
               event.credential_route === subject.route;
             if (sameProfile && sameRoute) {
-              quotaStore().ingest(subject.harnessId, {
+              // An undated usage refusal on an account with a configured
+              // allowance lasts until that allowance's period ends.
+              const stamped = {
                 ...event,
                 ...(subject.profileId !== null ? { credential_profile_id: subject.profileId } : {}),
                 ...(event.credential_route === undefined && subject.route !== null
                   ? { credential_route: subject.route }
                   : {}),
-              });
+              };
+              quotaStore().ingest(
+                subject.harnessId,
+                dateUsageRefusal(
+                  subject.harnessId,
+                  stamped,
+                  loadConfigCached(noProjectRepoRoot()).global,
+                ),
+              );
             }
           }),
         finish: () => maintain(() => observer.finish()),

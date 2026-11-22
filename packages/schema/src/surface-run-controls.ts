@@ -5,6 +5,7 @@ import { ProcessingPreference } from "./processing.js";
 import { RunTimeLimitStart } from "./run-time-limit.js";
 import { TestCommandInvocation } from "./task.js";
 import { PaidBudget } from "./budget.js";
+import { ComplexityLevel } from "./account-tier.js";
 import { runStartStrategyViolations } from "./run-strategy.js";
 
 /**
@@ -37,6 +38,9 @@ export function validateSurfaceRunControls(obj: Record<string, unknown>): string
     !ProcessingPreference.safeParse(obj.processingPreference).success
   ) {
     return "processingPreference must be standard, fast, ultrafast, or economy";
+  }
+  if (obj.complexity !== undefined && !ComplexityLevel.safeParse(obj.complexity).success) {
+    return "complexity must be easy, medium, or hard";
   }
   if (obj.review !== undefined && typeof obj.review !== "boolean") {
     return "review must be a boolean";

@@ -33,6 +33,7 @@ import { inlineJsonSchemaRefs } from "./inline-json-schema-refs.js";
 import { processingPreferenceSchema } from "./reviewer-panel-schema.js";
 import {
   accessAndLimitProperties,
+  complexityProperty,
   externalContextProperties,
   reviewProperties,
   scalarEffortProperty,
@@ -267,6 +268,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       ...(mode === "ask" ? { noProject: noProjectSchema } : {}),
       execution: runExecutionSchema,
       ...accessAndLimitProperties(),
+      ...complexityProperty(),
       ...(runControlApplicability({ mode }).reviewerPanel.applicable ? reviewProperties() : {}),
       ...(runControlApplicability({ mode }).protectedPathApprovals.applicable
         ? {

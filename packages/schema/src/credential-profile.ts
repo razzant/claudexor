@@ -2,6 +2,7 @@ import { z } from "zod/v3";
 import { namespacedSecretRefBase } from "@claudexor/util";
 import { Id, IsoTimestamp } from "./primitives.js";
 import { AuthAvailability, AuthVerification, CredentialRoute } from "./auth.js";
+import { AccountTier, UsageAllowance } from "./account-tier.js";
 
 /** Exact profile-policy problem vocabulary shared by mutation and admission
  * surfaces. ControlProblem remains open for unrelated domain errors. */
@@ -61,6 +62,8 @@ export const CredentialProfile = z
         "Namespaced secret-store name (e.g. claude_oauth:work) for oauth_token/api_key profiles; null for config_dir_login.",
       ),
     enabled: z.boolean().default(true).describe("Disabled profiles are never routable."),
+    tier: AccountTier.optional(),
+    usage_allowance: UsageAllowance.optional(),
     created_at: IsoTimestamp.nullable()
       .default(null)
       .describe("When the profile was registered; null for hand-written config entries."),

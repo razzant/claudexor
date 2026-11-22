@@ -297,6 +297,8 @@ export function credentialPoolExhausted(args: {
     // serve this run until a window reopens (harness_unavailable).
     category: "harness_unavailable",
     resetsAt,
+    // Per-account evidence for a caller that states the whole decision.
+    candidates: args.candidates,
     problem: ControlProblem.parse({
       code: "credential_pool_exhausted",
       message: error.message,

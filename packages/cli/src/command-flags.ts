@@ -41,6 +41,7 @@ export const COMMON_RUN_FLAGS: readonly string[] = [
   "scope-path",
   "portfolio",
   "routing-goal",
+  "complexity",
   "profile",
   "instructions",
   "instructions-file",
@@ -292,6 +293,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   ),
   valueFlag("portfolio", "<id>", "Removed in v2; always errors (use --routing-goal)"),
   valueFlag("routing-goal", "<goal>", "Routing goal: auto|quality|economy"),
+  valueFlag(
+    "complexity",
+    "<level>",
+    "Route by the configured complexity table and account tiers: easy|medium|hard",
+  ),
   valueFlag(
     "profile",
     "<profile-id>",

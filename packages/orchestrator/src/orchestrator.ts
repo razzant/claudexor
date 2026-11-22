@@ -127,6 +127,8 @@ import type {
   DeepScanSynthesis,
   RouteRankingRationale,
   RouteDropStage,
+  ComplexityLevel,
+  ComplexityRoute,
   Attachment,
   ControlReviewerPanelEntry,
   EffortHint,
@@ -204,11 +206,7 @@ import type {
   InteractionChannel,
   PreparedHarnessProcessing,
 } from "@claudexor/core";
-import {
-  prepareRoutedProcessing,
-  processingCostEvidence,
-  prepareReviewerProcessing,
-} from "./processing-routing.js";
+import { prepareRoutedProcessing, prepareReviewerProcessing } from "./processing-routing.js";
 import {
   acceptedTryOutput,
   AccessProfileIncompatibleError,
@@ -228,12 +226,7 @@ import {
   runModelGovernedRoute,
   type DispatchRefusal,
 } from "./modelGovernance.js";
-import {
-  authModeForCredentialRoute,
-  authModeForPreference,
-  authRouteEvidenceFor,
-  pinnedNativeAdmission,
-} from "./auth-route-classification.js";
+import { authModeForPreference, pinnedNativeAdmission } from "./auth-route-classification.js";
 import { isFullAccess, RequestRequirementsResolver } from "./requestRequirements.js";
 import { DelegationBudgetAuthority } from "./delegationBudgetAuthority.js";
 import { activateDelegationParent } from "./delegation-parent-activation.js";
@@ -243,6 +236,9 @@ import { resolveReadOnlyCandidates, runParallelCandidates } from "./strategyConc
 import { planPrompt } from "./plan-prompt.js";
 import { verifiedPlanBrief, withPlanBrief } from "./planBrief.js";
 import { beginAnnouncedRun } from "./runEventLog.js";
+import { orderRoutedPool } from "./pool-ordering.js";
+import { ComplexityTrace } from "./complexity-routing.js";
+import { tierRoutingFor } from "./account-tier-routing.js";
 import { arbitrationBudgetOptions } from "./decisionBudget.js";
 import { buildRevisePrompt } from "./revisePrompt.js";
 import {
@@ -372,11 +368,8 @@ import {
   attemptUsageCostSettlement,
   BudgetLedger,
   isBudgetTerminal,
-  type RouterCandidate,
-  explainRanking,
   loadHarnessMetrics,
   promptFingerprint,
-  rankHarnesses,
 } from "@claudexor/budget";
 import {
   hashJson,
@@ -498,6 +491,10 @@ export interface RunInput extends Pick<AnnouncedRunContext, "stopSender"> {
    * single-lane preference. */
   primaryHarnessExplicit?: boolean;
   routingGoal?: RoutingGoal;
+  /** Complexity the run states for itself; its candidates come from the
+   * configured table, frozen here at input resolution (complexity-routing.ts). */
+  complexity?: ComplexityLevel;
+  complexityRoutes?: ComplexityRoute[];
   n?: number;
   baseRef?: string;
   attempts?: number | null;
@@ -1129,6 +1126,58 @@ export class Orchestrator {
     ledger?: BudgetLedger,
     log?: EventLog,
     routeContext?: ResolvedRouteContext,
+    runId?: string,
+    allowDuplicateFill = false,
+  ): Promise<RoutedAdapter[]> {
+    const global = this.config(input.repoRoot).global;
+    const tier = tierRoutingFor(input.complexity, global.routing.account_tiers);
+    if (!input.complexity || !tier)
+      return this.resolveCandidateLanes(
+        input,
+        intent,
+        ledger,
+        log,
+        routeContext,
+        runId,
+        allowDuplicateFill,
+      );
+    // A run that states a complexity: the same resolver, with every dropped
+    // lane noted so "nothing qualifies" is one typed refusal naming each cause.
+    const trace = new ComplexityTrace(
+      input.complexity,
+      input.complexityRoutes ?? [],
+      global.credential_profiles,
+      tier,
+      () => this.deps.quotaSnapshots?.() ?? [],
+    );
+    try {
+      return await this.resolveCandidateLanes(
+        input,
+        intent,
+        ledger,
+        log,
+        routeContext,
+        runId,
+        allowDuplicateFill,
+        trace,
+      );
+    } catch (err) {
+      const unavailable =
+        err instanceof HarnessUnavailableError ||
+        declaredFailure(err).category === "harness_unavailable";
+      if (!unavailable) throw err;
+      const refusal = trace.refusal(err, input.harnesses ?? []);
+      log?.emit("route.complexity.decided", refusal.complexityDecision);
+      throw refusal;
+    }
+  }
+
+  private async resolveCandidateLanes(
+    input: RunInput,
+    intent: Intent,
+    ledger?: BudgetLedger,
+    log?: EventLog,
+    routeContext?: ResolvedRouteContext,
     /** QA-034: when provided, the pool-ordering rationale is recorded under this
      * run id so the terminal telemetry writer can persist it. */
     runId?: string,
@@ -1138,9 +1187,12 @@ export class Orchestrator {
      * its width is distinct-harness diversity, so a dropped lane clamps rather
      * than self-races (QA-043). */
     allowDuplicateFill = false,
+    trace?: ComplexityTrace,
   ): Promise<RoutedAdapter[]> {
     let ids = input.harnesses;
-    const explicitPool = Boolean(ids && ids.length > 0);
+    // A pool derived from the complexity table is a candidate list, not a strict
+    // selection: an unavailable candidate is dropped and the next one serves.
+    const explicitPool = Boolean(ids && ids.length > 0) && !trace;
     const harnessSettings = this.config(input.repoRoot)?.global.harnesses ?? {};
     const { statuses, diagnosticGeneration } = await probeCandidateStatuses(
       this.gateway,
@@ -1216,6 +1268,7 @@ export class Orchestrator {
       }
       dropped.push(detail);
       droppedLanes.push({ harnessId, stage, detail });
+      trace?.dropped(harnessId, stage, detail);
     };
     // Initial lane readiness shares one quota observation. Selection and each
     // physical dispatch still consume the latest exact-profile evidence.
@@ -1574,10 +1627,14 @@ export class Orchestrator {
       ? quotaRefusals.find(({ routed }) => routed.adapter.id === input.primaryHarness)
       : undefined;
     if (quotaPreparedPool.length === 0 && quotaRefusals.length > 0) {
+      for (const { routed, error } of quotaRefusals)
+        trace?.accountRefused(routed.adapter.id, error);
       throw (primaryQuotaRefusal ?? quotaRefusals[0])!.error;
     }
-    for (const { routed, error } of quotaRefusals)
+    for (const { routed, error } of quotaRefusals) {
       dropLane(routed.adapter.id, "credential", safeErrorMessage(error));
+      trace?.accountRefused(routed.adapter.id, error);
+    }
     const processingConfig = this.config(input.repoRoot).global;
     await prepareRoutedProcessing(
       quotaPreparedPool,
@@ -1588,7 +1645,16 @@ export class Orchestrator {
       (id) => (routeContext ? (routeContext.envForHarness?.(id) ?? routeContext.env) : undefined),
       diagnosticGeneration,
     );
-    const ordered = this.orderPool(quotaPreparedPool, input, intent, statusById, ledger, runId);
+    const ordered = this.orderPool(
+      quotaPreparedPool,
+      input,
+      intent,
+      statusById,
+      ledger,
+      runId,
+      trace,
+      log,
+    );
     if (ordered.length === 0) {
       if (primaryQuotaRefusal) throw primaryQuotaRefusal.error;
       throw new HarnessUnavailableError(
@@ -1703,133 +1769,25 @@ export class Orchestrator {
     >,
     ledger?: BudgetLedger,
     runId?: string,
+    trace?: ComplexityTrace,
+    log?: EventLog,
   ): RoutedAdapter[] {
-    let ordered = pool;
-    let rationale: RouteRankingRationale | null = null;
-    let selectionReason: RouteRankingRationale["reason"] | null = null;
-    if (pool.length > 0) {
-      const routeLedger = ledger ?? new BudgetLedger();
-      const config = this.config(input.repoRoot).global;
-      const goal = input.routingGoal ?? this.deps.routingGoal ?? config.routing.goal;
-      const byId = new Map(pool.map((r) => [r.adapter.id, r]));
-      // Settled cost is evidence for economy routing, never a provider quality prior.
-      const metrics = loadHarnessMetrics(globalConfigDir());
-      const remaining: RouterCandidate[] = pool.map((r) => {
-        const status = statusById.get(r.adapter.id);
-        const authModes = status?.manifest?.auth_modes ?? [];
-        const metric = metrics[r.adapter.id];
-        // Auth mode for routing: prefer the ROUTE EVIDENCE from the
-        // last settled attempt (adapter-disclosed, persisted in metrics) over
-        // the manifest capability guess — auth_modes lists what a harness CAN
-        // use, not what it actually runs under.
-        const guessedAuthMode = authModes.includes("local_session")
-          ? ("local_session" as const)
-          : authModes.includes("api_key")
-            ? ("api_key" as const)
-            : ("unknown" as const);
-        // The FROZEN quota-admission route decides outright (round-18 #2):
-        // the admitted profile's credential_kind when a profile exists, else
-        // the config-aware estimate — an api_key lane must never inherit a
-        // subscription classification from the default store's metric. With
-        // no route fact, the RESOLVED preference (per-run > per-harness
-        // config > global config) speaks, never the raw run input (#121);
-        // only then the last settled metric / manifest guess.
-        const authMode =
-          authModeForCredentialRoute(r.quotaAdmission.route) ??
-          authModeForPreference(
-            this.authPreferenceForHarness(input.repoRoot, r.adapter.id, input.authPreference),
-          ) ??
-          metric?.last_auth_mode ??
-          guessedAuthMode;
-        // The exact quota subject selected before ranking: profile id or the
-        // engine default. Profile A's cooldown never excludes profile B or the
-        // default on the same harness and route.
-        const credentialSubjectId = r.quotaAdmission.profile?.profile_id ?? null;
-        // QA-034: the typed auth-route evidence (the admitted profile's own
-        // verification, else doctor source verification, x the resolved route)
-        // is AUTHORITATIVE for billing knowledge in the router — a VERIFIED
-        // native route proves subscription_entitlement, so it survives
-        // paid_fallback:never and ranks with a real economy tuple instead of
-        // reading as unknown/paid. Absent (unknown route) falls back to the
-        // metric-derived billingKnowledge below.
-        const authRoute = authRouteEvidenceFor(
-          authMode,
-          status?.authSources ?? [],
-          r.quotaAdmission.profileVerification,
-        );
-        const processingCost = processingCostEvidence(
-          r.processing,
-          authRoute ? billingKnowledgeForAuthRoute(authRoute) : "unknown",
-          [`harness:${r.adapter.id}`, `profile:${credentialSubjectId ?? "default"}`],
-        );
-        return {
-          harnessId: r.adapter.id,
-          available: true,
-          model: r.quotaAdmission.model,
-          effort:
-            input.efforts?.[r.adapter.id] ??
-            input.effort ??
-            config.harnesses[r.adapter.id]?.effort ??
-            undefined,
-          billingKnowledge: authMode === "api_key" ? "metered" : "unknown",
-          costEvidence: processingCost,
-          incrementalCostUsd: processingCost
-            ? processingCost.estimatedUsd
-            : authMode === "api_key"
-              ? (metric?.avg_cost_usd ?? null)
-              : null,
-          credentialRoute:
-            r.quotaAdmission.route ??
-            (authMode === "api_key"
-              ? "managed_api_key"
-              : authMode === "local_session"
-                ? "vendor_native"
-                : undefined),
-          ...(authRoute ? { authRoute } : {}),
-          credentialSubjectId,
-        };
-      });
-      const routeCtx = {
-        goal,
-        paidFallback: config.routing.paid_fallback,
-        intent,
-        qualityTiers: config.routing.quality_tiers,
-        ledger: routeLedger,
-        now: Date.now(), // ONE instant for the sort AND the rationale below
-      };
-      const ranked = rankHarnesses(remaining, routeCtx)
-        .map((candidate) => byId.get(candidate.harnessId))
-        .filter((candidate): candidate is RoutedAdapter => Boolean(candidate));
-      rationale = explainRanking(remaining, routeCtx);
-      ordered = ranked;
-    }
-    if (input.delegate === true && input.primaryHarnessExplicit !== true) {
-      const delegateFirst = [
-        ...ordered.filter((lane) => lane.delegationRequirement.effective),
-        ...ordered.filter((lane) => !lane.delegationRequirement.effective),
-      ];
-      if (delegateFirst.some((lane, index) => lane !== ordered[index])) {
-        ordered = delegateFirst;
-        selectionReason = "delegate_effective_first";
-      }
-    }
-    if (input.primaryHarness) {
-      const primary = ordered.find((r) => r.adapter.id === input.primaryHarness);
-      if (primary && primary !== ordered[0]) {
-        ordered = [primary, ...ordered.filter((r) => r !== primary)];
-        selectionReason = "explicit_primary";
-      }
-    }
-    // QA-034: persist the FINAL selected order, including request constraints
-    // that intentionally override the underlying cost/quota ranking. This is
-    // what keeps route evidence aligned with the lane actually executed.
-    if (runId && rationale) {
-      this.routingRationaleByRun.set(runId, {
-        ...rationale,
-        order: ordered.map((lane) => lane.adapter.id),
-        reason: selectionReason ?? rationale.reason,
-      });
-    }
+    const { ordered, rationale } = orderRoutedPool({
+      pool,
+      input,
+      intent,
+      statusById,
+      ledger,
+      trace,
+      config: this.config(input.repoRoot).global,
+      defaultGoal: this.deps.routingGoal,
+      authPreferenceForHarness: (id) =>
+        this.authPreferenceForHarness(input.repoRoot, id, input.authPreference),
+      headroomThreshold: (id) =>
+        this.credentials.profilePolicy(input.repoRoot, id).headroom_threshold,
+    });
+    if (rationale?.complexity) log?.emit("route.complexity.decided", rationale.complexity);
+    if (runId && rationale) this.routingRationaleByRun.set(runId, rationale);
     return ordered;
   }
 
@@ -2982,7 +2940,7 @@ export class Orchestrator {
       later: lane.later,
       explicitModel: lane.explicitModel,
       registry: this.config(repoRoot)?.global.credential_profiles ?? [],
-      policy: this.credentials.profilePolicy(repoRoot, adapter.id),
+      policy: this.credentials.profilePolicy(repoRoot, adapter.id, runInput?.complexity),
       quotaSnapshots: () => this.deps.quotaSnapshots?.() ?? [],
       retryPolicy: transientRetryPolicy(this.config(repoRoot)),
       pinned: runInput?.credentialProfileId != null, // D-U6: a pin never rotates

@@ -35,9 +35,9 @@ import { preflightDefaultSubject } from "./credential-preflight.js";
 import {
   effectiveLimitAction,
   limitSubjectRoute,
-  profileHeadroomBreach,
   type ProfilePolicy,
 } from "./credential-profile-rotation.js";
+import * as tiers from "./account-tier-routing.js";
 import {
   selectedProfileAvailability,
   vendorCredentialObservation,
@@ -117,6 +117,8 @@ export interface AccountResolutionContext {
   requestKind?: QuotaRequestKind;
   /** Model incompatibility exclusions for this unpinned selection epoch. */
   excludedProfileIds?: ReadonlySet<string>;
+  /** Account tiers, only for a run that states a complexity (account-tier-routing.ts). */
+  tier?: tiers.TierRouting | null;
   /** Default-route estimate of the legacy unprofiled ladder (no-rows harnesses). */
   defaultRoute: "local_session" | "api_key" | null;
   /** Whether the legacy native login is excluded (`native_credentials_enabled: false`). */
@@ -156,6 +158,7 @@ function pinnedCredentialUnusable(
  */
 function poolExhaustionCandidates(ctx: AccountResolutionContext, ready: ReadonlySet<string>) {
   const { harnessId, registry, policy, snapshots, model } = ctx;
+  const profileHeadroomBreach = tiers.tierHeadroomBreach(ctx.tier, registry);
   return registry
     .filter((row) => row.harness_id === harnessId && row.credential_kind !== "api_key")
     .map((row): PoolExhaustionCandidate => {
@@ -251,6 +254,7 @@ export async function resolveAccountForRun(
   ctx: AccountResolutionContext,
 ): Promise<CredentialProfile | null> {
   const { harnessId, registry, policy, snapshots, quota, model, emit } = ctx;
+  const profileHeadroomBreach = tiers.tierHeadroomBreach(ctx.tier, registry);
   // D13: persisted over-limit rows are not candidates to rank or probe. Fail
   // before the explicit pin, durable binding, paid preference, or pool can
   // choose one identity and make an OS-user-scoped credential look isolated.
@@ -313,6 +317,8 @@ export async function resolveAccountForRun(
       undefined,
       ctx.requestKind,
     );
+    if (!block && tiers.primaryQuotaUnknown(ctx.tier, pinned, snapshots, model, ctx.requestKind))
+      throw tiers.primaryQuotaUnknownRefusal(pinned);
     if (!breach && !block) return pinned;
     const refusal = block
       ? pinnedWindowBlocked(pinned.profile_id, harnessId, block, breach)
@@ -497,7 +503,8 @@ export async function resolveAccountForRun(
         undefined,
         ctx.requestKind,
       );
-      if (verdict === "available" && !breach && !block) return bound;
+      const unknown = tiers.primaryQuotaUnknown(ctx.tier, bound, snapshots, model, ctx.requestKind);
+      if (verdict === "available" && !breach && !block && !unknown) return bound;
       const reserveOnly = quotaRefusalBasis(breach, block)?.basis === "owner_reserve";
       const resetsAt = quotaRefusalResetsAt(breach, block);
       boundSwitchReason = block?.reopening
@@ -506,7 +513,9 @@ export async function resolveAccountForRun(
           ? `${reserveOnly ? "saved quota reserve reached" : "quota window exhausted"}${
               resetsAt ? ` (resets ${resetsAt})` : ""
             }`
-          : (verdict ?? "not ready");
+          : verdict === "available"
+            ? "the primary account's quota is unknown, so it cannot be shown to be below its reserve"
+            : (verdict ?? "not ready");
     } else {
       boundSwitchReason = "the bound account was disabled or removed";
     }
@@ -524,6 +533,7 @@ export async function resolveAccountForRun(
     substitutions: ctx.substitutions,
     refusals: ctx.refusals,
     lastService: ctx.lastService,
+    tier: ctx.tier,
     // A withheld $0 Ask is served only on a row's own proof (auth-route-classification.ts):
     // a proven row goes first; with none, the ranked row stands and its lease refuses.
     ...(ctx.diagnosticGeneration === "forbidden"
@@ -547,6 +557,7 @@ export async function resolveAccountForRun(
       harness_id: harnessId,
       profile_id: chosen.profile_id,
       quota: selection.candidate.verdict.kind,
+      ...(ctx.tier ? { tier: chosen.tier ?? null } : {}),
       ...(selection.candidate.verdict.kind === "fresh_headroom"
         ? { headroom: selection.candidate.verdict.headroom }
         : {}),
