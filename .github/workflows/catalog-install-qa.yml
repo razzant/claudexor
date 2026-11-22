@@ -1,0 +1,234 @@
+name: qa catalog installs hermes and openclaw
+
+# TEMPORARY post-release check for a docs PR. Lives only on its QA branch and
+# is never merged to main. Runs on ubuntu-24.04 with unauthenticated public
+# reads only (no actions/checkout, no credentials, no model calls, no gateway).
+on:
+  push:
+    branches: [qa/hermes-clawhub-install-a94b2739]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-catalog-install-hermes-openclaw
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CLAUDEXOR_VERSION: "6.3.0"
+  CLAUDEXOR_SHA: "0ff3df717c2e807fdbd3a233487e35d81993fdea" # razzant/claudexor v6.3.0
+  HERMES_PLUGIN_SHA: "6bc0ed57c0012bd6a636ab46865389df3269be9d" # NousResearch/hermes-agent plugin-catalog/claudexor.yaml
+  HERMES_SHA: "3b421578588243f920886e6fe79a6faa87ea026e" # NousResearch/hermes-agent v0.23.1
+  OPENCLAW_VERSION: "2026.11.5"
+  CLAWHUB_PACKAGE: "@ouroboros-agent/claudexor"
+  CLAWHUB_INTEGRITY: "sha256-eRyUIXj7SeXQxl3U/0YtFmlEO8ruzmn1V66aS77beg4=" # sha256 791c942178fb49e5d0c65dd4ff462d1669443bcaeece69f557ae9a4bbedb7a0e
+
+jobs:
+  catalog-installs:
+    name: Catalog installs in Hermes 0.23.1 and OpenClaw 2026.11.5
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.3
+
+      - name: Shared setup, public Git objects and claudexor CLI from npm
+        id: setup
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          git clone --quiet --bare --depth 1 --branch "v$CLAUDEXOR_VERSION" \
+            https://github.com/razzant/claudexor.git "$RUNNER_TEMP/claudexor.git"
+          test "$(git -C "$RUNNER_TEMP/claudexor.git" rev-parse "v$CLAUDEXOR_VERSION^{commit}")" = "$CLAUDEXOR_SHA"
+          git -C "$RUNNER_TEMP/claudexor.git" fetch --quiet --depth 1 origin "$HERMES_PLUGIN_SHA"
+          test "$(git -C "$RUNNER_TEMP/claudexor.git" rev-parse "$HERMES_PLUGIN_SHA^{commit}")" = "$HERMES_PLUGIN_SHA"
+
+          npm install -g "claudexor@$CLAUDEXOR_VERSION"
+          claudexor --version 2>&1 | tee "$RUNNER_TEMP/claudexor-version.txt" | grep -F "$CLAUDEXOR_VERSION"
+
+          cat > "$RUNNER_TEMP/same-as-git" <<'EOF'
+          # same-as-git <commit> <tree> <directory> <file>...
+          # Asserts that <commit>:<tree> holds exactly <file>... and every file in
+          # <directory> matches its Git blob hash byte-for-byte.
+          set -euo pipefail
+          repo="$(dirname "$0")/claudexor.git" commit="$1" tree="$2" dir="$3"
+          shift 3
+          test "$(git -C "$repo" ls-tree -r --name-only "$commit:$tree" | sort)" = "$(printf '%s\n' "$@" | sort)" ||
+            { echo "Git $commit:$tree does not hold exactly: $*"; exit 1; }
+          for f in "$@"; do
+            test "$(git hash-object --no-filters "$dir/$f")" = "$(git -C "$repo" rev-parse "$commit:$tree/$f")" ||
+              { echo "$dir/$f differs from Git $commit:$tree/$f"; exit 1; }
+          done
+          echo "$dir: $# files match Git $commit:$tree"
+          EOF
+
+      - name: Hermes 0.23.1 community catalog info, install and untrusted validate
+        id: hermes
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        timeout-minutes: 30
+        env:
+          HOME: ${{ runner.temp }}/home-hermes
+        run: |
+          set -euo pipefail
+          mkdir "$HOME"
+          plugin="$HOME/.hermes/plugins/claudexor"
+          meta="$HOME/.hermes/plugins/.install-metadata.json"
+          report="$RUNNER_TEMP/hermes-validate.json"
+          on_pin() { test "$(git -C "$HOME/.hermes/hermes-agent" rev-parse HEAD)" = "$HERMES_SHA"; }
+
+          test "$(git ls-remote https://github.com/NousResearch/hermes-agent.git \
+            refs/tags/v0.23.1 'refs/tags/v0.23.1^{}' | tail -n 1 | cut -f 1)" = "$HERMES_SHA"
+          curl -fsSL -o "$RUNNER_TEMP/hermes-install.sh" \
+            "https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_SHA/scripts/install.sh"
+          bash "$RUNNER_TEMP/hermes-install.sh" --commit "$HERMES_SHA" \
+            --non-interactive --skip-browser --skip-computer-use
+          export PATH="$HOME/.local/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$PATH"
+          on_pin
+          hermes --version 2>&1 | tee "$RUNNER_TEMP/hermes-version.txt" | grep -F "0.23.1"
+
+          # 1) Catalog discovery before install
+          NO_COLOR=1 COLUMNS=200 hermes plugins info claudexor | tee "$RUNNER_TEMP/hermes-info.txt"
+          grep -E '^Repo:[[:space:]]+https://github\.com/razzant/claudexor[[:space:]]*$' "$RUNNER_TEMP/hermes-info.txt"
+          grep -E '^Subdir:[[:space:]]+plugins/hermes[[:space:]]*$' "$RUNNER_TEMP/hermes-info.txt"
+          grep -E "^Pinned SHA:[[:space:]]+$HERMES_PLUGIN_SHA[[:space:]]*$" "$RUNNER_TEMP/hermes-info.txt"
+
+          # 2) Community catalog install by name + enable
+          hermes plugins install claudexor --enable
+          hermes plugins list | tee "$RUNNER_TEMP/hermes-list.txt"
+          hermes plugins list --json | jq -e --arg src "catalog:community@${HERMES_PLUGIN_SHA:0:8}" --arg v "$CLAUDEXOR_VERSION" \
+            'map(select(.name == "claudexor")) | length == 1 and .[0].status == "enabled" and .[0].version == $v and .[0].source == $src and .[0].removed == null'
+
+          jq .claudexor "$meta"
+          jq -e --arg sha "$HERMES_PLUGIN_SHA" '.claudexor |
+            .pinned == true and
+            .revision == $sha and
+            (.source | test("^https://github\\.com/razzant/claudexor(\\.git)?#plugins/hermes$")) and
+            .catalog.name == "claudexor" and
+            .catalog.tier == "community" and
+            .catalog.repo == "https://github.com/razzant/claudexor" and
+            .catalog.sha == $sha and
+            .catalog.pin == $sha' "$meta"
+
+          jq -e --arg sha "$HERMES_PLUGIN_SHA" \
+            '.catalog_name == "claudexor" and .repo == "https://github.com/razzant/claudexor" and .sha == $sha and .tier == "community"' \
+            "$plugin/.hermes-catalog.json"
+
+          files=(LICENSE README.md mcp.json plugin.json skills/claudexor/SKILL.md)
+          bash "$RUNNER_TEMP/same-as-git" "$HERMES_PLUGIN_SHA" plugins/hermes "$plugin" "${files[@]}"
+          test "$(cd "$plugin" && find . -type f ! -path './.git/*' ! -name '.hermes-catalog.json' | sed 's|^\./||' | sort)" = "$(printf '%s\n' "${files[@]}" | sort)"
+
+          # 3) Read-only validate in the clean profile, verifying untrusted approval gate
+          plain=0
+          hermes plugins validate "$plugin" 2>&1 | tee "$RUNNER_TEMP/hermes-validate-plain.txt" || plain=$?
+          status=0
+          hermes plugins validate "$plugin" --json | tee "$report" || status=$?
+          test "$plain" = "$status"
+          warnings="$(jq '.warnings | length' "$report")"
+          echo "warnings=$warnings" >> "$GITHUB_OUTPUT"
+          jq -e '(.ok == true) and (.warnings | type == "array")
+            and (.checks | type == "array") and (.checks | length > 0)
+            and (.checks | all(.[]; type == "object" and .ok == true and has("name")))
+            and ([.checks[].name] | contains(["portable manifest", "manifest fields", "config schema", "security scan", "server trust: claudexor"]))
+            and ([.checks[] | select(.name == "server trust: claudexor")][0].detail
+                 == "untrusted (Hermes asks before every write-capable tool call)")' "$report"
+          if [ "$warnings" -gt 0 ]; then
+            { echo "### Hermes validator diagnostics (claudexor)";
+              jq -r '.warnings[] | "- " + .' "$report"; } | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          lost="$(jq -r '[.warnings[] | select(startswith("mcp") or startswith("skill") or startswith("server")
+            or test("trust|newer Hermes"))] | join("; ")' "$report")"
+          test -z "$lost" || { echo "Plugin components or trust diagnostics failed: $lost"; exit 1; }
+          on_pin
+          exit "$status"
+
+      - name: OpenClaw 2026.11.5 ClawHub install and inspect
+        id: openclaw
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        timeout-minutes: 15
+        env:
+          HOME: ${{ runner.temp }}/home-openclaw
+        run: |
+          set -euo pipefail
+          mkdir "$HOME"
+          files=(.claude-plugin/plugin.json .mcp.json LICENSE README.md skills/claudexor/SKILL.md)
+          report="$RUNNER_TEMP/openclaw-inspect.json"
+
+          npm install -g "openclaw@$OPENCLAW_VERSION" --allow-scripts=openclaw
+          openclaw --version 2>&1 | grep -F "$OPENCLAW_VERSION"
+
+          # Non-TTY CI has no terminal to answer the capability-consent prompt for
+          # claudexor's skill + stdio MCP server; --force is omitted because ClawHub
+          # requires no non-ClawHub source confirmation.
+          openclaw plugins install "clawhub:$CLAWHUB_PACKAGE" --accept-capabilities
+          openclaw plugins inspect claudexor
+          openclaw plugins inspect claudexor --json | tee "$report"
+
+          jq -e --arg v "$CLAUDEXOR_VERSION" --arg pkg "$CLAWHUB_PACKAGE" --arg sri "$CLAWHUB_INTEGRITY" '
+            .plugin.id == "claudexor" and
+            .plugin.version == $v and
+            .plugin.format == "bundle" and
+            .plugin.bundleFormat == "claude" and
+            .plugin.enabled == true and
+            .plugin.status == "loaded" and
+            (.bundleCapabilities | sort) == ["mcpServers", "skills"] and
+            (.mcpServers | length) == 1 and
+            .mcpServers[0].name == "claudexor" and
+            .mcpServers[0].hasStdioTransport == true and
+            .lspServers == [] and
+            ([.diagnostics[] | select(.level == "error")] | length) == 0 and
+            .install.source == "clawhub" and
+            .install.spec == ("clawhub:" + $pkg) and
+            .install.clawhubPackage == $pkg and
+            .install.clawhubFamily == "bundle-plugin" and
+            .install.clawhubChannel == "community" and
+            .install.version == $v and
+            .install.clawhubTrustDisposition == "clean" and
+            .install.clawhubTrustScanStatus == "clean" and
+            .install.artifactKind == "legacy-zip" and
+            .install.artifactFormat == "zip" and
+            .install.integrity == $sri' "$report"
+
+          managed="$(jq -er '.install.installPath' "$report")"
+          managed="${managed/#\~/$HOME}"
+          case "$managed" in
+            "$HOME/.openclaw/"*) ;;
+            *) echo "The managed copy is not in the OpenClaw state directory: $managed"; exit 1 ;;
+          esac
+          test "$(jq -er '.plugin.rootDir' "$report")" = "$managed"
+
+          jq -e '. == {mcpServers: {claudexor: {command: "claudexor", args: ["mcp", "serve"]}}}' "$managed/.mcp.json"
+          jq -e --arg v "$CLAUDEXOR_VERSION" '.name == "claudexor" and .version == $v' "$managed/.claude-plugin/plugin.json"
+          bash "$RUNNER_TEMP/same-as-git" "$CLAUDEXOR_SHA" plugins/claude "$managed" "${files[@]}"
+          test "$(cd "$managed" && find . -type f ! -name '_meta.json' | sed 's|^\./||' | sort)" = "$(printf '%s\n' "${files[@]}" | sort)"
+          find "$managed" -type f | sort
+
+      - name: Verdict per host
+        if: ${{ always() }}
+        env:
+          SETUP: ${{ steps.setup.outcome }}
+          HERMES: ${{ steps.hermes.outcome }}
+          HERMES_WARNINGS: ${{ steps.hermes.outputs.warnings }}
+          OPENCLAW: ${{ steps.openclaw.outcome }}
+        run: |
+          set -euo pipefail
+          verdict() {
+            case "$1" in
+              success) echo "verified" ;;
+              failure) echo "FAILED in this host" ;;
+              *) [ "$SETUP" = success ] && echo "not completed ($1)" || echo "BLOCKED, the shared setup did not succeed" ;;
+            esac
+          }
+          {
+            echo "| Published catalog install | Result |"
+            echo "| --- | --- |"
+            echo "| Shared setup: Git objects ($CLAUDEXOR_SHA, $HERMES_PLUGIN_SHA) and claudexor@$CLAUDEXOR_VERSION CLI from npm | ${SETUP:-not run} |"
+            echo "| Hermes 0.23.1: info + install claudexor --enable + untrusted validate | $(verdict "$HERMES")${HERMES_WARNINGS:+, validator warnings: $HERMES_WARNINGS} |"
+            echo "| OpenClaw $OPENCLAW_VERSION: install clawhub:$CLAWHUB_PACKAGE --accept-capabilities + inspect + manifest/bytes | $(verdict "$OPENCLAW") |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
