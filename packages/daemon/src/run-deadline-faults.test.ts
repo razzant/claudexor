@@ -246,6 +246,43 @@ describe("run-deadline/1 under faults: a Delegate family", () => {
       });
     });
 
+  it("a child's terminal while its refresh is pending freezes the parent's deadline in force then, not a later one", async () => {
+    await withFakeTimers(async () => {
+      const dir = temp();
+      const time = frozenClock();
+      let gate: Promise<void> | null = null;
+      let open!: () => void;
+      const io: RecordIo = {
+        ...fileRecordIo,
+        // The child's record writes wait: its chain is busy when the terminal arrives.
+        stage: async (path, record) => {
+          if (gate && path.endsWith("b-child.json")) await gate;
+          return fileRecordIo.stage(path, record);
+        },
+      };
+      const deadlines = registry(dir, time, io);
+      await hold(deadlines, "a-parent", time.iso(40_000));
+      await hold(deadlines, "b-child", null, "a-parent");
+      gate = new Promise<void>((resolve) => (open = resolve));
+      await deadlines.set(
+        "a-parent",
+        { at: time.iso(50_000), expectedRevision: 0 },
+        { delegated: false },
+      ); // the child's refresh to 50 s waits on its chain
+      deadlines.close("b-child"); // ended under the parent's 50 s
+      await deadlines.set(
+        "a-parent",
+        { at: time.iso(100_000), expectedRevision: 1 },
+        { delegated: false },
+      );
+      open();
+      await deadlines.dispose();
+      const frozen = (readRecord(join(dir, "b-child.json")) as DeadlineRecord).frozen!;
+      expect(frozen.at, "the deadline in force when the child ended").toBe(time.iso(50_000));
+      expect(deadlines.peek("b-child")).toMatchObject({ state: "closed", at: time.iso(50_000) });
+    });
+  });
+
   /**
    * The parent renews (extension or shortening) with an event at each of the
    * child's refresh operations: the child's deadline as the warden enforces it
