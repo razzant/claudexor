@@ -4,7 +4,7 @@
  * credential, installed engine or live data root is involved.
  *
  * Every lookup runs in a tripwire window: a daemon call other than the
- * accepted-command and addressed-list reads, a thread-turn writer, a full thread
+ * accepted-command, addressed-list and deadline-record reads, a thread-turn writer, a full thread
  * read, preflight or resource admission throws, and the complete SQL row
  * inventory must be unchanged afterwards.
  */
@@ -34,7 +34,9 @@ const HOLD = "bind a run and hold";
 const WAIT = "stay unbound";
 const REFUSE = "refuse before a run";
 const PREFLIGHT_REFUSE = "refused by turn preflight";
-const READS = new Set(["findAccepted", "list"]);
+// The accepted-command and addressed-list reads, and the run-deadline/1 record read
+// (`handle.deadline`, also the inherited deadline of a continuation or Delegate child).
+const READS = new Set(["findAccepted", "list", "runDeadline"]);
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 const removals: Array<() => void> = [];
