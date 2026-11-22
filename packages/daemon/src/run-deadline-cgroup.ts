@@ -67,6 +67,18 @@ export function ownCgroupDir(
   return { dir: join(mount, path) };
 }
 
+/** Test seams of the probe's launch and cgroup files (production: the real ones). */
+export interface ProbeIo {
+  spawn?: (
+    binary: string,
+    args: string[],
+    options: { stdio: "ignore" },
+  ) => ReturnType<typeof spawn>;
+  readFile?: (path: string) => Promise<string>;
+  writeFile?: (path: string, data: string) => Promise<void>;
+  hasKill?: (path: string) => boolean;
+}
+
 /** How the probe child ended: its exit code (-1 for a signal), or the spawn error. */
 type ProbeEnd = { code: number } | { error: Error };
 
@@ -94,7 +106,12 @@ const within = <T>(work: Promise<T>, ms: number): Promise<T | null> =>
 export async function probeCgroupBoundary(
   platform: NodeJS.Platform = process.platform,
   own: () => { dir: string } | { reason: string } = ownCgroupDir,
+  io: ProbeIo = {},
 ): Promise<DeadlineBoundary> {
+  const launch = io.spawn ?? spawn;
+  const write = io.writeFile ?? writeFile;
+  const read = io.readFile ?? ((path: string) => readFile(path, "utf8"));
+  const killable = io.hasKill ?? existsSync;
   if (platform !== "linux") return { kind: "marker", reason: "cgroup v2 is Linux-only" };
   const self = own();
   if ("reason" in self) return { kind: "marker", reason: self.reason };
@@ -103,18 +120,18 @@ export async function probeCgroupBoundary(
   const marker = `CLAUDEXOR_RUN_SCOPE_${"0".repeat(31)}${process.pid % 10}`;
   try {
     await mkdir(probe, { recursive: true });
-    if (!existsSync(join(probe, "cgroup.kill")))
+    if (!killable(join(probe, "cgroup.kill")))
       return { kind: "marker", reason: "cgroup.kill is unavailable (kernel before 5.14)" };
     registerScopeCgroup(marker, join(probe, "cgroup.procs"));
     let child: ReturnType<typeof spawn>;
     try {
-      const launch = enterScopeCgroup(
+      const entry = enterScopeCgroup(
         { binary: "/bin/sh", args: ["-c", "exec sleep 30"] },
         { [marker]: "1" },
         platform,
       );
       // The daemon's own probe, before any run: not a run-owned launch.
-      child = spawn(launch.binary, launch.args, { stdio: "ignore" });
+      child = launch(entry.binary, entry.args, { stdio: "ignore" });
     } finally {
       unregisterScopeCgroup(marker);
     }
@@ -126,7 +143,7 @@ export async function probeCgroupBoundary(
     // (or to fail the move) instead of judging after a fixed pause.
     const landed = async () =>
       child.pid !== undefined &&
-      (await readFile(join(probe, "cgroup.procs"), "utf8")).split("\n").includes(String(child.pid));
+      (await read(join(probe, "cgroup.procs"))).split("\n").includes(String(child.pid));
     const until = Date.now() + PROBE_LANDING_MS;
     while (ended === undefined && !(await landed()) && Date.now() < until)
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -138,7 +155,7 @@ export async function probeCgroupBoundary(
       if (ended === undefined) child.kill("SIGKILL");
       return { kind: "marker", reason: "the probe child did not land in its cgroup" };
     }
-    await writeFile(join(probe, "cgroup.kill"), "1");
+    await write(join(probe, "cgroup.kill"), "1");
     if ((await within(done, 2_000)) === null) {
       child.kill("SIGKILL");
       return { kind: "marker", reason: "cgroup.kill did not end the probe child" };

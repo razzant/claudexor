@@ -13,7 +13,7 @@ import {
  * need no repository enum update. A missing CLI, unsupported query, timeout
  * or malformed answer falls back to the recorded snapshot below.
  */
-import { spawn } from "node:child_process";
+import { spawnRunOwned, unregisterChildProcess, type LiveChildProcess } from "@claudexor/core";
 import type { EffortResolution, ModelEffortCapability } from "@claudexor/schema";
 import { EffortHint, effortLevelsForModel, mergeEffortLadders } from "@claudexor/schema";
 import { effortLadders, resolveEffortEvidence } from "@claudexor/core";
@@ -205,23 +205,32 @@ export async function probeCodexEfforts(
 ): Promise<CodexEffortCatalog | null> {
   const timeoutMs = opts.timeoutMs ?? 10_000;
   return await new Promise<CodexEffortCatalog | null>((resolve) => {
-    let child: ReturnType<typeof spawn>;
+    let child: ReturnType<typeof spawnRunOwned>["child"];
+    let registration: LiveChildProcess | null = null;
     try {
       const command = prepareHarnessCommand(
         bin,
         ["app-server", "--stdio"],
         opts.env ?? harnessRuntimeEnv(),
       );
-      child = spawn(command.binary, command.args, {
-        stdio: ["pipe", "pipe", "ignore"],
-        env: command.env,
-        // A captured background probe: no console window for the direct child on Windows.
-        windowsHide: true,
-      });
+      // Run-owned: inside a run the env carries its marker, so the probe (and
+      // the MCP servers app-server starts) stay inside the run's boundary.
+      ({ child, registration } = spawnRunOwned(
+        command.binary,
+        command.args,
+        {
+          stdio: ["pipe", "pipe", "ignore"],
+          env: command.env,
+          // A captured background probe: no console window for the direct child on Windows.
+          windowsHide: true,
+        },
+        { register: bin },
+      ));
     } catch {
       resolve(null);
       return;
     }
+    child.once("exit", () => unregisterChildProcess(registration));
 
     let settled = false;
     const finish = (value: CodexEffortCatalog | null): void => {

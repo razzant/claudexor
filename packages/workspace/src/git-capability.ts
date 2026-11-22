@@ -17,6 +17,8 @@ export interface GitProbeDependencies {
   resolveGit?: () => string | null;
   runVersion?: (executable: string) => Promise<CaptureResult>;
   runXcodeSelect?: () => Promise<CaptureResult>;
+  /** Stops the probe's children with the work that asked (a job's abort). */
+  abortSignal?: AbortSignal;
 }
 
 export interface GitCapabilityProblem {
@@ -112,6 +114,7 @@ export async function probeGitCapability(
           runCaptureRaw("/usr/bin/xcode-select", ["--print-path"], {
             timeoutMs: 10_000,
             inheritEnv: "mirror_native",
+            abortSignal: dependencies.abortSignal,
           }))
       )();
       if (xcodeSelect.code !== 0 || !xcodeSelect.stdout.trim()) {
@@ -130,6 +133,7 @@ export async function probeGitCapability(
           timeoutMs: 10_000,
           inheritEnv: "mirror_native",
           windowsConsole: "none",
+          abortSignal: dependencies.abortSignal,
         }))
     )(executable);
     const detail = labelStreams(result.stderr, result.stdout);

@@ -221,6 +221,7 @@ import {
   ModelSelectionRequiredError,
   missingRouteModel,
   withInactivityWatchdog,
+  withinRunScope,
 } from "@claudexor/core";
 import {
   assertRouteModelsAllowed,
@@ -4139,16 +4140,18 @@ export class Orchestrator {
           facts.checks !== "failed" &&
           !workStateVetoes(facts);
         if (input.inPlace === true && !inPlaceWinner && directoryAdoptable) {
-          const delivered = await verifyAndDeliverFiles(
-            execRoot,
-            winnerRun.files,
-            {},
-            gateSpecsFromContract(contract, input.runScopeMarker),
-            (freshVerify) =>
-              finalVerifyBlocks(freshVerify)
-                ? (freshVerify.reason ?? "final verify failed before directory race adoption")
-                : null,
-            log,
+          const delivered = await withinRunScope(input.runScopeMarker, () =>
+            verifyAndDeliverFiles(
+              execRoot,
+              winnerRun.files!,
+              {},
+              gateSpecsFromContract(contract, input.runScopeMarker),
+              (freshVerify) =>
+                finalVerifyBlocks(freshVerify)
+                  ? (freshVerify.reason ?? "final verify failed before directory race adoption")
+                  : null,
+              log,
+            ),
           );
           await store.writeYamlAsync(join(paths.finalDir, "delivery_receipt.yaml"), delivered);
           directoryDeliveryReceipt = true;
@@ -4209,18 +4212,20 @@ export class Orchestrator {
             postTurnSha = earlyPostTurnSha;
           } else if (adoptable) {
             // Protected apply preserves the live tree or reports tree_mutated.
-            const applied = await verifyAndDeliver(
-              execRoot,
-              secretDiff.deliverableOf(winnerRun),
-              { mode: "apply", protectedApply: true, projectRoot, owner: paths.root },
-              gateSpecsFromContract(contract, input.runScopeMarker),
-              (freshVerify) => {
-                finalVerify = freshVerify;
-                return finalVerifyBlocks(freshVerify)
-                  ? (freshVerify.reason ?? "final verify failed before race adoption")
-                  : null;
-              },
-              log,
+            const applied = await withinRunScope(input.runScopeMarker, () =>
+              verifyAndDeliver(
+                execRoot,
+                secretDiff.deliverableOf(winnerRun),
+                { mode: "apply", protectedApply: true, projectRoot, owner: paths.root },
+                gateSpecsFromContract(contract, input.runScopeMarker),
+                (freshVerify) => {
+                  finalVerify = freshVerify;
+                  return finalVerifyBlocks(freshVerify)
+                    ? (freshVerify.reason ?? "final verify failed before race adoption")
+                    : null;
+                },
+                log,
+              ),
             );
             raceDeliveryReceipt = applied;
             await store.writeYamlAsync(join(paths.finalDir, "delivery_receipt.yaml"), applied);

@@ -1,4 +1,9 @@
-import { spawn, type ChildProcessByStdio, type SpawnOptionsWithoutStdio } from "node:child_process";
+import type {
+  ChildProcess,
+  ChildProcessByStdio,
+  SpawnOptions,
+  SpawnOptionsWithoutStdio,
+} from "node:child_process";
 import { extname, isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import {
@@ -8,6 +13,7 @@ import {
   reapProcessTree,
   registerChildProcess,
   resolveHarnessBinary,
+  spawnRunOwned,
   unregisterChildProcess,
   type LiveChildProcess,
   type ProcessGroupHandle,
@@ -53,13 +59,13 @@ export interface AgyPrintCommandOptions {
   drainMs?: number;
   /** Deterministic binary-resolution seam; production uses the shared exact resolver. */
   resolveBinary?: (bin: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform) => string | null;
-  /** Deterministic lifecycle seams. */
-  spawnProcess?: typeof spawn;
+  /** Deterministic lifecycle seams (the spawn under the run-owned launch point). */
+  spawnProcess?: (binary: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   reap?: typeof reapProcessTree;
   /** Deterministic passive-registry seam; production uses the shared registry.
    * `unregister` gets what `register` returned: exactly that registration. */
   processRegistry?: {
-    register(pid: number, command: string): unknown;
+    register(pid: number, command: string, scopeMarker?: string): unknown;
     unregister(registration: unknown): void;
   };
 }
@@ -183,12 +189,17 @@ export async function runAgyPrintCommand(
   }
 
   let child: ChildProcessByStdio<Writable, Readable, Readable>;
+  let marker: string | undefined;
   try {
     const args = command === "models" ? ["models"] : ["-p", command, "--output-format", "json"];
-    child = (options.spawnProcess ?? spawn)(resolved, args, {
-      ...agyPrintSpawnOptions(platform, env),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    // Run-owned: the run's marker in the env places the probe (and its
+    // detached group) inside the run's boundary; it is registered below.
+    ({ child, marker } = spawnRunOwned<ChildProcessByStdio<Writable, Readable, Readable>>(
+      resolved,
+      args,
+      { ...agyPrintSpawnOptions(platform, env), env, stdio: ["pipe", "pipe", "pipe"] },
+      options.spawnProcess ? { spawnFn: options.spawnProcess } : {},
+    ));
     // /dev/null is a character device, which agy treats as interactive input.
     // Match ordinary harness runs: pipe EOF, with early-exit EPIPE handled.
     child.stdin.on("error", () => {});
@@ -211,7 +222,7 @@ export async function runAgyPrintCommand(
   let registered = false;
   let registration: unknown;
   if (typeof pid === "number") {
-    registration = processRegistry.register(pid, resolved);
+    registration = processRegistry.register(pid, resolved, marker);
     registered = true;
   }
   const unregisterExitedChild = (): void => {

@@ -9,7 +9,7 @@
  * installed, so delivery and CI cannot drift into two detectors. Which binary
  * runs (the release pin and its location) is `publication-scanner-pin.ts`.
  */
-import { spawn } from "node:child_process";
+import { spawnRunOwned as launch } from "@claudexor/core"; // the run-owned launch point
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -568,11 +568,11 @@ function run(
   return new Promise((resolve) => {
     let stdout = "";
     let timedOut = false;
-    let child;
+    let child: ReturnType<typeof launch>["child"];
     let fd: number | undefined;
     try {
       if (stdoutPath !== undefined) fd = openSync(stdoutPath, "w", 0o600);
-      child = spawn(command, args, { cwd, env, stdio: ["ignore", fd ?? "pipe", "ignore"] });
+      child = launch(command, args, { cwd, env, stdio: ["ignore", fd ?? "pipe", "ignore"] }).child;
     } catch {
       resolve({ code: null, stdout: "", timedOut: false });
       return;

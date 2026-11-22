@@ -6,7 +6,13 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ScopeReapOptions, ScopeReapOutcome } from "@claudexor/core";
 import { afterAll, describe, expect, it } from "vitest";
-import { cgroup2MountPoint, parsePopulated, unifiedCgroupPath } from "./run-deadline-cgroup.js";
+import { EventEmitter } from "node:events";
+import {
+  cgroup2MountPoint,
+  parsePopulated,
+  probeCgroupBoundary,
+  unifiedCgroupPath,
+} from "./run-deadline-cgroup.js";
 import { parseUptimeNs } from "./run-deadline-clock.js";
 import { RunDeadlines } from "./run-deadlines.js";
 import {
@@ -508,5 +514,44 @@ describe("host facts", () => {
     expect(parsePopulated("populated 1\nfrozen 0\n")).toBe(true);
     expect(parsePopulated("populated 0\nfrozen 0\n")).toBe(false);
     expect(parsePopulated("frozen 0\n")).toBe(null);
+  });
+});
+
+describe("the cgroup boundary probe", () => {
+  const fakeChild = (pid: number | undefined) =>
+    Object.assign(new EventEmitter(), { pid, kill: () => true });
+
+  it("an exit delivered while the cgroup.kill write is pending is the probe's success", async () => {
+    const dir = temp();
+    let child!: EventEmitter;
+    const boundary = await probeCgroupBoundary("linux", () => ({ dir }), {
+      hasKill: () => true,
+      spawn: () => (child = fakeChild(4242)) as never,
+      readFile: async () => "4242\n",
+      // The kernel ends the child before the write's promise settles.
+      writeFile: async () => {
+        child.emit("exit", null, "SIGKILL");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      },
+    });
+    expect(boundary).toEqual({ kind: "cgroup", runsDir: join(dir, "claudexor-runs") });
+  });
+
+  it("an asynchronous spawn error answers marker with its reason, never an uncaught error", async () => {
+    const dir = temp();
+    const boundary = await probeCgroupBoundary("linux", () => ({ dir }), {
+      hasKill: () => true,
+      spawn: () => {
+        const child = fakeChild(undefined);
+        setImmediate(() => child.emit("error", new Error("spawn /bin/sh ENOENT")));
+        return child as never;
+      },
+      readFile: async () => "",
+      writeFile: async () => {},
+    });
+    expect(boundary).toEqual({
+      kind: "marker",
+      reason: "the probe child could not start: spawn /bin/sh ENOENT",
+    });
   });
 });

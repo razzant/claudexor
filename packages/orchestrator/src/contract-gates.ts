@@ -9,6 +9,7 @@ import type {
 } from "@claudexor/schema";
 import { finalVerifyFiles, finalVerifyPatch, type VerifyEventLog } from "@claudexor/delivery";
 import { canonicalProjectRoot, hashJson, sha256 } from "@claudexor/util";
+import { withinRunScope } from "@claudexor/core";
 import type { CandidateRun } from "./candidateEvidence.js";
 import { gateProtectedPaths } from "./runSupport.js";
 import { runScopeGateEnv } from "./runScope.js";
@@ -100,21 +101,24 @@ export function finalVerifyRun(
   owner: { runScopeMarker?: string },
 ): Promise<FinalVerifyRecord> {
   const specs = gateSpecsFromContract(contract, owner.runScopeMarker);
-  if (result.files) return finalVerifyFiles(result.files, undefined, specs, log);
-  // An object result verifies its own trees at its base (#535); a legacy patch applies.
-  return result.result && result.baseSha
-    ? finalVerifyPatch(
-        execRoot,
-        {
-          baseSha: result.baseSha,
-          baseTree: result.result.base_tree,
-          tree: result.result.candidate_tree,
-          projectRoot: contract.repo.root,
-        },
-        specs,
-        log,
-      )
-    : finalVerifyPatch(execRoot, result, specs, log);
+  // Its worktree's Git children join the run's boundary too, not only the gates.
+  return withinRunScope(owner.runScopeMarker, () => {
+    if (result.files) return finalVerifyFiles(result.files, undefined, specs, log);
+    // An object result verifies its own trees at its base (#535); a legacy patch applies.
+    return result.result && result.baseSha
+      ? finalVerifyPatch(
+          execRoot,
+          {
+            baseSha: result.baseSha,
+            baseTree: result.result.base_tree,
+            tree: result.result.candidate_tree,
+            projectRoot: contract.repo.root,
+          },
+          specs,
+          log,
+        )
+      : finalVerifyPatch(execRoot, result, specs, log);
+  });
 }
 
 export function renderTestsEvidence(contract: ActiveTaskContract, gates?: GateResult[]): string {

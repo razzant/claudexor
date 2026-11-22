@@ -12,6 +12,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { DaemonLocalClient } from "./daemon-local-client.js";
 import { systemDeadlineClock, type RunDeadlineClock } from "./run-deadline-clock.js";
 import { RunDeadlines } from "./run-deadlines.js";
+import { SchedulerDeadlines } from "./run-deadline-scheduler.js";
 import {
   claimEnforcement,
   governingBound,
@@ -1194,5 +1195,68 @@ describe("RunDeadlines registry: Delegate children", () => {
       await other.proveBoundary();
       expect(other.capabilities()).toEqual([]);
     }
+  });
+});
+
+describe("run-deadline/1 startup cost", () => {
+  it("reconciles and answers by job states read through the indexed scalar query, never hydrating command bodies", async () => {
+    const dir = temp();
+    const a = new RunDeadlines({ dir, spawnWarden: async () => ({ pid: 1 }) });
+    for (const id of ["job-a", "job-b"]) {
+      await a.stage(id, {
+        own: a.toPoint(inMs(600_000)),
+        successorOf: null,
+        parentJobId: null,
+      });
+      a.admit(id);
+    }
+    await a.dispose();
+    const queried: string[][] = [];
+    const commands = {
+      queries: {
+        observationRecords: (ids: readonly string[]) => {
+          queried.push([...ids]);
+          return ids
+            .filter((id) => id === "job-a")
+            .map((jobId) => ({
+              jobId,
+              runId: null,
+              partition: "global",
+              epoch: "e",
+              state: "interrupted",
+              createdAt: "x",
+            }));
+        },
+        getByRunId: () => {
+          throw new Error("hydrated a command by run id");
+        },
+        select: () => {
+          throw new Error("hydrated commands");
+        },
+      },
+      current: () => ({
+        get: () => {
+          throw new Error("hydrated a command body");
+        },
+      }),
+    };
+    const b = new SchedulerDeadlines(
+      {
+        dir,
+        spawnWarden: async () => ({ pid: 1 }),
+        platform: "linux",
+        probeBoundary: async () => ({ kind: "marker", reason: "t" }),
+      },
+      { commands: commands as never },
+      { cancel: () => {}, abort: () => {} },
+    );
+    await b.startup();
+    expect(queried[0]?.sort()).toEqual(["job-a", "job-b"]);
+    expect(readRecord(join(dir, "job-a.json"))).toMatchObject({ state: "closed" });
+    // job-b is not retained: its record went (no warden was ever ready).
+    expect(readRecord(join(dir, "job-b.json"))).toBe(null);
+    expect(await b.rpc({ id: "job-a", request: { action: "read" } })).toMatchObject({
+      state: "closed",
+    });
   });
 });

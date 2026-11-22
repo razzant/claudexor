@@ -6246,7 +6246,16 @@ daemon is dead: it kills the run's cgroup (`cgroup.kill`, when the startup probe
 proved a delegated cgroup v2 subtree: every launch carrying the run's marker
 enters `claudexor-runs/<job>` before exec) and ends every process carrying the
 run's markers plus the groups and descendants `daemon/run-scopes.json` recorded
-for them. It leaves, writing `<job>.json.outcome.json` (what `enforcement`
+for them. Every process a run starts launches through core's one run-owned launch point
+(`spawnRunOwned`; `spawnProcess` and `runCaptureRaw` use it): the run's marker in
+the spawn env places the child in the boundary and the registry. Vendor probes
+(the Codex effort probe, the Antigravity print probe) carry it in their env; an
+in-run delivery (its Git, `gh` and scanner children) and final verification run
+inside `withinRunScope(marker)`, and so does a thread turn's Git preflight, as
+the first child of its preparation scope; a source test refuses any other
+direct `node:child_process` launch outside its explained exceptions (host
+measurement, the daemon's warden and probe, operator commands). It leaves,
+writing `<job>.json.outcome.json` (what `enforcement`
 reports) and `.done`: on the cgroup boundary once `cgroup.events` reports the
 cgroup unpopulated (nested subgroups included) and every marker reap settled; on
 the marker boundary on Linux once a census is complete and settled, while an

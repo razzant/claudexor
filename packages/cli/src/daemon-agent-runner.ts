@@ -35,7 +35,7 @@ import { threadRunResumeInputs, threadContinuityContext } from "./thread-continu
 import { continuationForRun } from "./continue-from-run.js";
 import { createRunTimeLimit } from "./run-time-limit.js";
 import { daemonRunScopeIndex } from "./run-scope-index.js";
-import { threadPreparationScope } from "./thread-preparation-scope.js";
+import { preparationGitCapability, threadPreparationScope } from "./thread-preparation-scope.js";
 import { exactRetryProcessingIntent } from "./retry-processing.js";
 import { oneShotRunInput } from "./one-shot-run-input.js";
 import type { ModelLoginReadiness } from "./model-login-readiness.js";
@@ -123,10 +123,19 @@ export function createDaemonAgentRunner(deps: {
         assertPlanImplementReady(planRef.runId, planRef.path);
       }
     }
+    // The preparation's own short process scope, opened only before its first
+    // Git child (this turn's preflight, or the tree); a deadline's warden takes
+    // it over before that child.
+    const preparation = threadPreparationScope(
+      daemonRunScopeIndex(),
+      ctx.jobId,
+      ctx.deadlineScope && ((marker) => ctx.deadlineScope!.attach(marker)),
+    );
     // Thread turns own a durable job before this fresh Git check. A
     // missing/stub installation therefore records a replayable refusal on
     // the exact turn, and Retry re-runs this boundary without changing any
-    // request fields. No worktree or provider exists yet.
+    // request fields. No worktree or provider exists yet. Its Git child runs
+    // in the preparation scope and stops with the job.
     if (turnId) {
       await preflightRunGitRequirement(p, {
         requiresGit: (request) =>
@@ -136,15 +145,11 @@ export function createDaemonAgentRunner(deps: {
             runConfig.project.constraints.protected_paths,
             runConfig.trust.access_default,
           ),
+        gitCapability: preparationGitCapability(preparation, ctx.signal),
+      }).catch(async (error: unknown) => {
+        throw await preparation.closeAfter(error);
       });
     }
-    // The preparation's own short process scope, opened only if the tree is made;
-    // a deadline's warden takes it over before the first Git child.
-    const preparation = threadPreparationScope(
-      daemonRunScopeIndex(),
-      ctx.jobId,
-      ctx.deadlineScope && ((marker) => ctx.deadlineScope!.attach(marker)),
-    );
     const {
       executionRoot: threadExecutionRoot,
       inPlace,

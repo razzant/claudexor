@@ -3,8 +3,9 @@
  *
  * When the daemon proved it may manage a delegated cgroup v2 subtree, every
  * deadline-bearing run gets its own cgroup and the run's scope markers are
- * registered here with that cgroup's `cgroup.procs`. A child spawned through
- * `spawnProcess` or `runCaptureRaw` whose environment carries such a marker
+ * registered here with that cgroup's `cgroup.procs`. A child launched through
+ * the run-owned launch point (`run-spawn.ts`, which `spawnProcess` and
+ * `runCaptureRaw` use) whose environment carries such a marker
  * first moves itself into the cgroup, then execs the real program, so the
  * program and everything it ever forks (setsid, double fork, a cleaned
  * environment) stay inside the cgroup until it is killed whole with

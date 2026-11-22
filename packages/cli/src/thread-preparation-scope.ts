@@ -13,8 +13,12 @@
  * (`ensureThreadWorktree`). `closeAfter` settles a scope whose turn failed
  * anywhere else before a run existed.
  */
-import { noteCleanupFault, type PreparationQuietRead } from "@claudexor/workspace";
-import { preparationQuiet, type ScopeReapOutcome } from "@claudexor/core";
+import {
+  noteCleanupFault,
+  probeGitCapability,
+  type PreparationQuietRead,
+} from "@claudexor/workspace";
+import { preparationQuiet, withinRunScope, type ScopeReapOutcome } from "@claudexor/core";
 import type { RunScopeEntry } from "./run-scope-index-rows.js";
 import type { DaemonRunScopeIndex } from "./run-scope-index.js";
 import { reapSources } from "./run-scope-index-rows.js";
@@ -54,6 +58,7 @@ export function threadPreparationScope(
   const scopeId = `thread-preparation:${jobId}`;
   const quiet = daemonPreparationQuiet(index);
   let marker: string | null = null;
+  let opened: Promise<{ marker: string }> | null = null;
   let settlement: Promise<ScopeReapOutcome | null> | null = null;
   const settle = (): Promise<ScopeReapOutcome | null> => {
     if (marker === null) return Promise.resolve(null);
@@ -63,15 +68,34 @@ export function threadPreparationScope(
   return {
     quiet,
     settleScope: settle,
-    openScope: async () => {
-      ({ marker } = await index.open(scopeId, { requireDurable: true }));
-      await onOpened?.(marker);
-      return { marker };
-    },
+    // Once: the turn's Git preflight may open it before the worktree preparation.
+    openScope: () =>
+      (opened ??= (async () => {
+        ({ marker } = await index.open(scopeId, { requireDurable: true }));
+        await onOpened?.(marker);
+        return { marker };
+      })()),
     closeAfter: async (error) => {
       // A settlement that threw changes no verdict; its fault stays beside the error.
       await settle().catch((fault: unknown) => noteCleanupFault(error, fault));
       return error;
     },
+  };
+}
+
+/**
+ * A thread turn's Git preflight as the preparation's first child: the scope is
+ * opened first (a deadline's warden takes it over), the probe's Git child
+ * carries its marker (and so enters a run cgroup where one is proven), and the
+ * job's abort stops it.
+ */
+export function preparationGitCapability(
+  preparation: Pick<ThreadPreparationScope, "openScope">,
+  signal: AbortSignal,
+  probe: typeof probeGitCapability = probeGitCapability,
+): () => ReturnType<typeof probeGitCapability> {
+  return async () => {
+    const { marker } = await preparation.openScope();
+    return withinRunScope(marker, () => probe({ abortSignal: signal }));
   };
 }
