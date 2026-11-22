@@ -5646,8 +5646,9 @@ the current writer lease for a successor. The lease is acquired before the
 daemon publishes its socket or Control descriptor, so a present lease without
 a reachable socket remains a protected startup window unless its owner is
 proven stale. That proof is deliberately narrow: a missing pid, a birth-identity
-mismatch, or exact Linux `/proc` state `Z` is stale; a matching non-zombie
-owner, malformed or unreadable authority, and any unavailable identity/state
+mismatch, exact Linux `/proc` state `Z`, or a recorded-identity lease written
+before this system booted (below) is stale; a matching non-zombie owner,
+malformed or unreadable authority, and any other unavailable identity/state
 proof remain fail-closed. Recovery never signals the stale owner. Acquisition
 moves the exact stale generation to a deterministic, nonempty tombstone keyed
 by pid and a digest of its token, then preserves that tombstone so a delayed
@@ -5660,7 +5661,18 @@ than treated as a live legacy owner. Core defaults are unchanged. A birth read
 that fails at acquisition still writes a PID-only record with the legacy limits
 below. A recorded birth that cannot be read later stays
 `identity_unavailable` while the pid is present or inaccessible, so it blocks
-instead of proving anything. Existing PID-only records cannot acquire a
+instead of proving anything, with one exception: a lease whose `owner.json` was
+written more than five minutes before this operating system instance booted is
+`proven_stale` (`lease_predates_boot`). A daemon killed by a reboot leaves its
+lease behind, and afterwards its pid can belong to a protected system process
+whose birth nobody may read, which refused every later daemon. No process alive
+now existed before the boot, so that owner is gone whoever holds the pid. The
+rule reads the file's modification time and the boot time (the clock minus the
+system uptime) and needs both: an unreadable time, an unknown boot time, or
+either one ahead of the clock keeps the lease `identity_unavailable`, and the
+five-minute margin covers the boot time's resolution and a clock corrected
+around the boot. It applies only when the recorded owner cannot be read, so a
+readable live owner is never judged by a timestamp. Existing PID-only records cannot acquire a
 historical identity retrospectively: file timestamps are not process identity
 (a clock correction can reverse their ordering). Their recovery requires the
 independently established operator evidence described under
