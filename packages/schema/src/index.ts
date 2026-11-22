@@ -97,6 +97,7 @@ export * from "./control-secret.js";
 export * from "./agent-capabilities.js";
 export * from "./apply-eligibility.js";
 export * from "./run-facts.js";
+export * from "./final-messages.js";
 export * from "./mcp-run-result.js";
 export * from "./mcp-run-wait.js";
 export * from "./run-observation.js";

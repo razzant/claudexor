@@ -39,7 +39,11 @@ import type { OrchestratorResult } from "./orchestrator.js";
 import { prepareRunFactsFailureReceipt, prepareRunFactsReceipt } from "./runFacts.js";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
 import { flushContinuationTerminal, RunEventsLost } from "./continuation-custody.js";
-import { namingRetainedOutput, publishRetainedOutput } from "./retainedOutput.js";
+import {
+  namingRetainedOutput,
+  publishFinalMessages,
+  publishTerminalOutputs,
+} from "./retainedOutput.js";
 import {
   cancellationStatement,
   cancelledResult,
@@ -87,8 +91,8 @@ export async function guardAnnouncedRun(
   let canonicalOutcome: RunOutcomeFactsType | null = null;
   let committedCancel: CommittedCancellation | null = null;
   let terminalPreparationError: string | null = null;
-  /** The retained output this terminal's publication announced, if any. */
-  let retainedOutputPath: string | null = null;
+  let published: ReturnType<typeof publishTerminalOutputs> | undefined;
+  const finalMessagesFact = () => (published ? { final_messages: published.finalMessages } : {});
   let barrierAttempted = false;
   let barrierFailed = false;
   // The cancellation decision is frozen the moment the strategy's terminal is
@@ -307,6 +311,7 @@ export async function guardAnnouncedRun(
                   // Preparation may fail without a Stop. Keep the termination
                   // fact and observe its held paths after the scope's release.
                   ...preparationStopsOf(preparation),
+                  ...finalMessagesFact(),
                   lifecycle: prepared.facts.outcome.lifecycle,
                   facts: prepared.facts.outcome,
                   reason: prepared.facts.outcome.reason,
@@ -341,8 +346,8 @@ export async function guardAnnouncedRun(
                   category: "internal",
                   // Written after the publication: it names the announced
                   // retained output too, after its own cause.
-                  ...(retainedOutputPath
-                    ? namingRetainedOutput(terminalPreparationError, [], retainedOutputPath)
+                  ...(published?.retainedOutput
+                    ? namingRetainedOutput(terminalPreparationError, [], published.retainedOutput)
                     : { safeMessage: terminalPreparationError }),
                   poolAttempts: history.poolAttempts,
                   runDir: a.paths.root,
@@ -362,6 +367,7 @@ export async function guardAnnouncedRun(
                 return {
                   type: "run.failed",
                   payload: {
+                    ...finalMessagesFact(),
                     lifecycle: prepared.facts.outcome.lifecycle,
                     facts: prepared.facts.outcome,
                     reason: prepared.facts.outcome.reason,
@@ -385,6 +391,7 @@ export async function guardAnnouncedRun(
                 return {
                   type: "run.failed",
                   payload: {
+                    ...finalMessagesFact(),
                     lifecycle: failureOutcome.lifecycle,
                     facts: failureOutcome,
                     reason: failureOutcome.reason,
@@ -401,12 +408,16 @@ export async function guardAnnouncedRun(
             const lifecycle =
               RunOutcomeFacts.safeParse(payload["facts"]).data?.lifecycle ?? payload["lifecycle"];
             const cancelled = cancellationDecided();
-            retainedOutputPath = publishRetainedOutput(
+            published = publishTerminalOutputs(
               a,
               !cancelled && lifecycle === "succeeded",
               !cancelled && lifecycle === "failed",
             );
           },
+          () =>
+            published && published.finalMessages.state !== "unavailable"
+              ? publishFinalMessages(a)
+              : undefined,
         );
       });
       preparedResult = result;

@@ -8,6 +8,7 @@ import { releaseCommand } from "./release-command.js";
 import { serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
 import { dispatchAcpCommand } from "./acp-auth-command.js";
 import { initProjectConfig } from "@claudexor/config";
+import { readRunFinalMessages } from "@claudexor/control-api";
 import {
   commandOutcomeLabel,
   DecisionRecord,
@@ -1098,6 +1099,9 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
           )
         : [];
       const artifacts = listCliArtifacts(paths.root).filter((p) => !p.endsWith("/"));
+      const finalMessages = flagBool(args, "include-final-messages")
+        ? readRunFinalMessages({ runDir: paths.root })
+        : undefined;
       const outputReadyState =
         runFacts?.presentation?.state ??
         (primary?.kind === "diagnostic"
@@ -1123,6 +1127,7 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
           toolWarnings,
           reportedCommands,
           primaryOutput: primary,
+          ...(finalMessages !== undefined ? { finalMessages } : {}),
           decision,
           work_product: workProduct,
           artifacts,
@@ -1131,6 +1136,7 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
         return summary || primary ? 0 : 1;
       }
       print(`run ${runId} @ ${paths.root}`);
+      if (finalMessages !== undefined) print(`finalMessages: ${JSON.stringify(finalMessages)}`);
       const reason = runFacts?.outcome.reason;
       if (runFacts)
         print(`lifecycle: ${runFacts.outcome.lifecycle}${reason ? ` (${reason})` : ""}`);

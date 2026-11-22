@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import { processTiming } from "@claudexor/util";
-import { runCliHarness } from "./runloop.js";
+import { runCliHarness, type CloseStdinIf } from "./runloop.js";
 import { spawnProcess, type ChildStdin, type SpawnOptions } from "./proc.js";
 
 const spec = (): HarnessRunSpec =>
@@ -646,6 +646,44 @@ rl.on('close', () => process.exit(0));
 
 describe("runCliHarness session onIo + hold", () => {
   const userFrame = JSON.stringify({ type: "user", message: { content: [] } }) + "\n";
+
+  it.each([false, true])("rechecks stdin after a control reply (hold pending %s)", async (held) => {
+    const order: string[] = [];
+    let closeStdinIf: CloseStdinIf | undefined;
+    const run = runCliHarness({
+      bin: "scripted",
+      args: [],
+      spec: spec(),
+      spawn: async function* (_bin, _args, options) {
+        options?.onSpawn?.({
+          write: (data) => order.push(data),
+          end: () => order.push("EOF"),
+          closed: new Promise<void>(() => {}),
+        });
+        yield { type: "stdout", line: '{"type":"control_request"}' };
+        order.push("exit");
+        yield { type: "exit", code: 0, signal: null };
+      },
+      parseEvent: () => [],
+      session: {
+        matches: () => true,
+        handle: async function* (_frame, io) {
+          let ready = true;
+          closeStdinIf!(() => ready);
+          io.write("reply");
+          ready = !held;
+        },
+        onIo: (io, _id, close) => {
+          if (io) closeStdinIf = close;
+          else order.push("closed");
+        },
+      },
+    });
+    for await (const event of run) expect(event.type).not.toBe("error");
+    expect(order).toEqual(
+      held ? ["reply", "exit", "EOF", "closed"] : ["reply", "EOF", "closed", "exit"],
+    );
+  });
 
   it("hands the live handle to onIo after the initial frame and null exactly once when the result closes stdin", async () => {
     const calls: string[] = [];

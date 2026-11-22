@@ -81,6 +81,7 @@ describe("image model operations over HTTP", () => {
       "captureEffortEvidence",
       "captureFailureEvidence",
       "captureRoutingEvidence",
+      "typedRefusals",
     ]) {
       const refused = await request(
         `/model-operations?requestKind=image&${flag}=true`,

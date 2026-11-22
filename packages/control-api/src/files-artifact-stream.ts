@@ -13,6 +13,7 @@ export interface FilesArtifactTransfer {
   expectedHash: string;
   expectedSize: number;
   contentType: string;
+  kind?: "final_messages";
 }
 
 /** Manifest parsing and its digest can grow with the result. Resolve them in a
@@ -51,17 +52,18 @@ export async function streamFilesArtifact(
   signal?.throwIfAborted();
   const handle = await open(transfer.path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
+    const label = transfer.kind === "final_messages" ? "Final messages artifact" : "Files artifact";
     const stat = await handle.stat();
-    if (!stat.isFile()) throw new Error("Files artifact is not a regular file");
+    if (!stat.isFile()) throw new Error(`${label} is not a regular file`);
     const { expectedHash, expectedSize } = transfer;
-    if (stat.size !== expectedSize) throw new Error("Files artifact size mismatch");
+    if (stat.size !== expectedSize) throw new Error(`${label} size mismatch`);
     const hash = createHash("sha256");
     for await (const chunk of handle.createReadStream({ autoClose: false })) {
       signal?.throwIfAborted();
       hash.update(chunk);
     }
     if (`sha256:${hash.digest("hex")}` !== expectedHash)
-      throw new Error("Files artifact digest mismatch");
+      throw new Error(`${label} digest mismatch`);
     signal?.throwIfAborted();
     res.writeHead(200, {
       "Content-Type": transfer.contentType,

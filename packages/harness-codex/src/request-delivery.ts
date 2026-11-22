@@ -1,5 +1,6 @@
 import type { Dispatcher } from "undici";
 import { existingDispatcher } from "./dispatcher-accessor.cjs";
+import { transportErrorCode } from "./response-diagnostics.js";
 
 /** The bounds one inference dispatch sets on its own request (see `request`). */
 export interface ResponseBounds {
@@ -116,7 +117,7 @@ export class RequestDelivery {
                       const error = args[method === "onError" ? 0 : args.length - 1] as
                         { code?: unknown } | undefined;
                       observation.errored = true;
-                      observation.errorCode = typeof error?.code === "string" ? error.code : null;
+                      observation.errorCode = transportErrorCode(error?.code);
                     }
                     return fn.apply(original, args);
                   };

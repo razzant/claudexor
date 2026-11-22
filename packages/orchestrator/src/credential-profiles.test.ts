@@ -142,8 +142,53 @@ describe("selectedProfileAvailability", () => {
         };
       },
     });
-    expect(verdict).toContain("credential is unusable (auth_revoked)");
+    expect(verdict).toBe('credential profile "work" credential is unusable (auth_revoked)');
     expect(probes).toBe(0);
+  });
+
+  const verificationHold = {
+    harness_id: "claude",
+    profile_id: work.profile_id,
+    credential_route: "vendor_native",
+    model: null,
+    code: "capability_refused",
+    source: "attempt_stream",
+    detail: "verification_required",
+    observed_at: "2026-01-01T00:00:00.000Z",
+    expires_at: "2099-01-01T00:00:00.000Z",
+  } as const;
+
+  it("shows Claude's verification hold on the pinned row (#703)", async () => {
+    const selection = {
+      registry: [work],
+      profileId: work.profile_id,
+      harnessId: work.harness_id,
+      unusable: [verificationHold],
+    };
+    const base = 'credential profile "work" credential is unusable (capability_refused)';
+    await expect(selectedProfileAvailability(selection)).resolves.toBe(
+      `${base}: verification_required`,
+    );
+    await expect(selectedProfileAvailability({ ...selection, unpinned: true })).resolves.toBe(base);
+  });
+
+  it.each([
+    { source: "local_probe" },
+    { source: "vendor_poller" },
+    { code: "auth_revoked" },
+    { harness_id: "codex" },
+    { detail: "verification_required: fixture note" },
+    { detail: null },
+  ] as const)("keeps other ledger details out of the pin verdict (%o)", async (change) => {
+    const observation = { ...verificationHold, ...change };
+    await expect(
+      selectedProfileAvailability({
+        registry: [{ ...work, harness_id: observation.harness_id }],
+        profileId: work.profile_id,
+        harnessId: observation.harness_id,
+        unusable: [observation],
+      }),
+    ).resolves.toBe(`credential profile "work" credential is unusable (${observation.code})`);
   });
 
   it("fails closed and redacts both thrown and returned probe diagnostics", async () => {

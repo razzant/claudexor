@@ -28,20 +28,21 @@ extension AppModel {
 
     /// The server persisted a refusal on a recorded turn when the HTTP error
     /// body names its `turnId` (thread-turn create/replay paths attach it).
-    /// `retryable=false` means no job was recorded (enqueue itself threw), so
-    /// the composer should KEEP the draft — retry has nothing to replay.
-    static func refusedTurn(from error: Error) -> (turnId: String, retryable: Bool)? {
+    /// A refused turn may support manual replay after repair even when the HTTP
+    /// request cannot be retried unchanged. Older responses use the HTTP flag.
+    static func refusedTurn(from error: Error) -> (turnId: String, turnRetryable: Bool)? {
         guard case GatewayError.http(_, let body) = error,
               let data = body.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+              let obj = try? JSONDecoder().decode([String: JSONValue].self, from: data)
         else { return nil }
-        let context = obj["context"] as? [String: Any]
+        let context = obj["context"]
         // Current ControlProblem shape owns recovery identifiers in context;
         // keep the historical top-level field as a compatibility fallback.
-        guard let turnId = (context?["turnId"] as? String) ?? (obj["turnId"] as? String),
+        guard let turnId = context?["turnId"]?.stringValue ?? obj["turnId"]?.stringValue,
               !turnId.isEmpty
         else { return nil }
-        return (turnId, (obj["retryable"] as? Bool) ?? true)
+        let turnRetryable = context?["turnRetryable"]?.boolValue ?? obj["retryable"]?.boolValue ?? true
+        return (turnId, turnRetryable)
     }
 
     /// Decode a pending interaction from the interaction.requested event payload.

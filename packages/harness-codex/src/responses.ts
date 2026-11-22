@@ -1,3 +1,4 @@
+import type { ModelAdapterContext } from "@claudexor/core";
 import type {
   ControlProblem,
   ModelCallOptions,
@@ -9,9 +10,16 @@ import type {
 } from "@claudexor/schema";
 import { ModelMessage as ModelMessageSchema } from "@claudexor/schema";
 import { ResponseFailureCapture } from "./failure-evidence.js";
+import {
+  incompleteReason,
+  responseParameter,
+  responseRequestId,
+  vendorErrorCode,
+} from "./response-diagnostics.js";
 import { boundReached } from "./response-bounds.js";
 
 export const CODEX_CONTINUATION_FORMAT = "codex.responses.v1";
+type RefusalOptions = Pick<ModelAdapterContext, "typedRefusals" | "onContentRefusal">;
 
 /** Carries only deliberate public diagnostics, never a provider body or credentials. */
 export class CodexModelError extends Error {
@@ -93,6 +101,11 @@ function content(value: ModelMessage["content"], role: string): unknown[] {
     if (block.type === "text" || block.type === "input_text" || block.type === "output_text") {
       if (typeof block.text !== "string") invalid("Text content requires a string.");
       return { type: role === "assistant" ? "output_text" : "input_text", text: block.text };
+    }
+    if (block.type === "refusal") {
+      if (role !== "assistant" || typeof block.refusal !== "string")
+        invalid("A refusal must be an assistant content part with a string refusal.");
+      return { type: "refusal", refusal: block.refusal };
     }
     if (block.type === "image_url" || block.type === "input_image") {
       if (role !== "user" && role !== "tool")
@@ -231,13 +244,21 @@ export function buildResponsesRequest(
   };
 }
 
+function providerError(value: unknown): Record<string, unknown> | null {
+  const envelope = record(value);
+  return record(envelope?.error) ?? envelope;
+}
+
 export function providerProblem(
   status: number | null,
   value: unknown,
   headers?: Headers,
 ): ControlProblem {
-  const error = record(record(value)?.error) ?? record(value);
-  const vendorCode = text(error?.code) ?? text(error?.type);
+  const error = providerError(value);
+  const vendorCode = vendorErrorCode(text(error?.code) ?? text(error?.type));
+  // The backend's own usage refusal is `usage_limit_reached`; the CLI renames it
+  // `usage_limit_exceeded` only on its rollout/app-server path (retry-signals.ts),
+  // so that name is no code of this vocabulary and stays generic here.
   const quota =
     vendorCode === "usage_limit_reached" ||
     vendorCode === "quota_exceeded" ||
@@ -259,8 +280,8 @@ export function providerProblem(
                 : "invalid_request";
   const context: Record<string, unknown> = status === null ? {} : { httpStatus: status };
   if (vendorCode) context.vendorCode = vendorCode;
-  if (typeof error?.param === "string") context.parameter = error.param;
-  const requestId = headers?.get("x-request-id") ?? headers?.get("request-id");
+  if (typeof error?.param === "string") context.parameter = responseParameter(error.param);
+  const requestId = responseRequestId(headers);
   if (requestId) context.requestId = requestId;
   const retry = headers?.get("retry-after");
   if (retry && /^\d+(?:\.\d+)?$/.test(retry)) context.retryAfterMs = Number(retry) * 1000;
@@ -279,6 +300,27 @@ export function providerProblem(
   ).problem;
 }
 
+/** Only for failed inference. Read both structured fields independently of
+ * the generic diagnostic projection, then publish only the known refusal code. */
+export function contentRefusalProblem(
+  problem: ControlProblem,
+  value: unknown,
+  options: RefusalOptions,
+): ControlProblem | null {
+  const error = providerError(value);
+  const vendorCode = "cyber_policy";
+  if (error?.code !== vendorCode && error?.type !== vendorCode) return null;
+  options.onContentRefusal?.();
+  return {
+    ...problem,
+    ...(options.typedRefusals
+      ? { code: "provider_content_refused", message: "Codex declined the content of this request." }
+      : {}),
+    context: { ...problem.context, vendorCode },
+    retryable: false,
+  };
+}
+
 function appliedOptions(response: Record<string, unknown>): ModelCallOptions {
   const effort = text(record(response.reasoning)?.effort);
   const tier = text(response.service_tier);
@@ -293,34 +335,46 @@ function appliedOptions(response: Record<string, unknown>): ModelCallOptions {
   };
 }
 
-function responseMessage(items: Record<string, unknown>[], route: ModelRoute): ModelMessage {
-  const texts: string[] = [];
+function responseMessage(
+  items: Record<string, unknown>[],
+  route: ModelRoute,
+  options: RefusalOptions,
+): ModelMessage {
+  const parts: Array<{ type: "text"; text: string } | { type: "refusal"; refusal: string }> = [];
+  for (const item of items) {
+    if (item.type !== "message" || !Array.isArray(item.content)) continue;
+    for (const block of item.content) {
+      const part = record(block);
+      if (part?.type === "output_text" && typeof part.text === "string")
+        parts.push({ type: "text", text: part.text });
+      if (part?.type === "refusal" && typeof part.refusal === "string")
+        parts.push({ type: "refusal", refusal: part.refusal });
+    }
+  }
+  const refused = parts.some((part) => part.type === "refusal");
+  if (refused) options.onContentRefusal?.();
   const calls: NonNullable<ModelMessage["tool_calls"]> = [];
   for (const item of items) {
-    if (item.type === "message" && Array.isArray(item.content)) {
-      for (const block of item.content) {
-        const part = record(block);
-        if (part?.type === "output_text" && typeof part.text === "string") texts.push(part.text);
-        if (part?.type === "refusal" && typeof part.refusal === "string") texts.push(part.refusal);
-      }
-    }
-    if (item.type === "function_call") {
-      if (!text(item.call_id) || !text(item.name) || typeof item.arguments !== "string") {
-        throw new CodexModelError(
-          "response_rejected",
-          "Codex returned a malformed completed tool call.",
-        );
-      }
-      calls.push({
-        id: item.call_id as string,
-        type: "function",
-        function: { name: item.name as string, arguments: item.arguments },
-      });
-    }
+    if (item.type !== "function_call") continue;
+    if (!text(item.call_id) || !text(item.name) || typeof item.arguments !== "string")
+      throw new CodexModelError(
+        "response_rejected",
+        "Codex returned a malformed completed tool call.",
+      );
+    calls.push({
+      id: item.call_id as string,
+      type: "function",
+      function: { name: item.name as string, arguments: item.arguments },
+    });
   }
   return ModelMessageSchema.parse({
     role: "assistant",
-    content: texts.length ? texts.join("") : null,
+    content:
+      refused && options.typedRefusals
+        ? parts
+        : parts.length
+          ? parts.map((part) => (part.type === "text" ? part.text : part.refusal)).join("")
+          : null,
     ...(calls.length ? { tool_calls: calls } : {}),
     nativeContinuation: { route, format: CODEX_CONTINUATION_FORMAT, payload: items },
   });
@@ -331,6 +385,7 @@ export async function readResponsesStream(
   response: Response,
   selected: ModelRoute,
   captureFailureEvidence = false,
+  refusals: RefusalOptions = {},
 ): Promise<ModelCallResult> {
   const result = emptyModelResult({ ...selected, model: null });
   const capture = new ResponseFailureCapture(captureFailureEvidence);
@@ -350,6 +405,10 @@ export async function readResponsesStream(
   let data: string[] = [];
   let terminal = false;
   const done = new Map<number, Record<string, unknown>>();
+  const failedProblem = (value: unknown) => {
+    const problem = providerProblem(null, value);
+    return contentRefusalProblem(problem, value, refusals) ?? problem;
+  };
   const consume = () => {
     if (!data.length || terminal) {
       data = [];
@@ -370,7 +429,7 @@ export async function readResponsesStream(
       done.set(index, item);
     }
     if (event.type === "error") {
-      result.problem = providerProblem(null, event);
+      result.problem = failedProblem(event);
       result.outcome = "failed";
       capture.terminalStatus = "failed";
       terminal = true;
@@ -400,7 +459,7 @@ export async function readResponsesStream(
     terminal = true;
     capture.terminalStatus = result.outcome;
     if (result.outcome === "failed") {
-      result.problem = providerProblem(null, final);
+      result.problem = failedProblem(final);
       return;
     }
     capture.stage = "message";
@@ -415,12 +474,13 @@ export async function readResponsesStream(
     result.message = responseMessage(
       [...done].sort(([a], [b]) => a - b).map(([, item]) => item),
       result.route,
+      refusals,
     );
     if (result.outcome === "incomplete")
       result.problem = new CodexModelError(
         "provider_incomplete",
         "Codex returned an incomplete response.",
-        { reason: text(record(final.incomplete_details)?.reason) },
+        { reason: incompleteReason(record(final.incomplete_details)?.reason) },
       ).problem;
   };
   const lines = (flush = false) => {
