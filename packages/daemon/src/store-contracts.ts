@@ -45,8 +45,15 @@ export interface ProfileContinuityResult {
   skippedPartitions: string[];
 }
 
+/** Checks an acceptance runs inside its own transaction. */
+export interface AcceptHooks {
+  /** After replay resolution, immediately before the rows are written: a throw
+   * refuses the acceptance and nothing is written (run-deadline/1's last clock check). */
+  admit?(): void;
+}
+
 export interface CommandStorePort {
-  accept(input: AcceptCommand): { record: JobRecord; reused: boolean };
+  accept(input: AcceptCommand, hooks?: AcceptHooks): { record: JobRecord; reused: boolean };
   find(input: FindCommand): JobRecord | null;
   get(id: string): JobRecord | undefined;
   update(id: string, patch: Partial<JobRecord>): JobRecord;

@@ -158,12 +158,6 @@ async function respondToTurnJob(
   );
 }
 
-function withoutDeadline(params: unknown): unknown {
-  if (!params || typeof params !== "object" || !("deadline" in params)) return params;
-  const { deadline: _deadline, ...rest } = params as Record<string, unknown>;
-  return rest;
-}
-
 /** The durable key of a turn create. Its read-only lookup derives the same turn and command
  * bindings from it, so the two can never disagree about one request. */
 export function threadTurnCreateIdempotency(
@@ -473,7 +467,13 @@ export function handleThreadTurnRetry(
         { retryable?: unknown; code?: unknown } | null | undefined;
       // A released resource's refusal is the exception: its job exists, so a repeat
       // still resolves an accepted key and otherwise asks the owner that refused it.
-      if (!turn["run_id"] && recorded?.retryable === false && recorded.code !== RESOURCE_RELEASED) {
+      // So is a queued run-deadline/1 expiry: its job exists and is refused typed below.
+      if (
+        !turn["run_id"] &&
+        recorded?.retryable === false &&
+        recorded.code !== RESOURCE_RELEASED &&
+        recorded.code !== "run_deadline_expired"
+      ) {
         // No job exists to replay, and a purged thread takes no new message either.
         assertThreadAdmitsWork(threadId, detail.thread);
         throw Object.assign(
@@ -490,8 +490,10 @@ export function handleThreadTurnRetry(
         })
         .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
       const last = jobs[jobs.length - 1];
+      // Before any later refusal: a turn whose accepted job held a deadline is
+      // refused typed, with the start that carries a new deadline.
       const deadlineRefusal = last
-        ? await deadlineReplayRefusal(ctx.daemon, last, "A turn retry")
+        ? await deadlineReplayRefusal(ctx.daemon, last, "A turn retry", { threadId })
         : null;
       if (deadlineRefusal)
         throw Object.assign(new Error(deadlineRefusal.error), {
@@ -500,8 +502,7 @@ export function handleThreadTurnRetry(
           retryable: false,
           requiredActions: deadlineRefusal.requiredActions,
         });
-      // A run-deadline/1 instant binds the one accepted run: a retry replays without it.
-      const replayParams = last ? withoutDeadline(last.params) : undefined;
+      const replayParams = last?.params;
       if (last && ctx.daemon.findAccepted) {
         const prior = await ctx.daemon.findAccepted(replayParams, {
           idempotencyKey,

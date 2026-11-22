@@ -1,4 +1,4 @@
-import { deadlineReplayRefusal } from "./run-start-receipt.js";
+import { deadlineReplayRefusal, receiptDeadline } from "./run-start-receipt.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -96,8 +96,8 @@ async function exactRetry(
     const replay = await sourceReplayInput(ctx, source);
     sourceTurnProvenance = replay.turn;
     const recorded = restoreRecordedRunReviewRequest(decodeAcceptedRunStart(replay.params).request);
-    // A run-deadline/1 instant binds the one accepted run: a retry never replays it.
-    const { turnId: _turnId, retryOf: _retryOf, deadline: _deadline, ...original } = recorded;
+    // A source that held a deadline was refused above; none is replayed here.
+    const { turnId: _turnId, retryOf: _retryOf, ...original } = recorded;
     // QA-035: Exact Retry replays the IMMUTABLE original request. The stored
     // params omit any model/effort the caller left to settings, so re-reading
     // current settings would silently change the route after a settings edit.
@@ -347,6 +347,11 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
       deadline,
       ...request
     } = parsed;
+    // The deadline the source actually ran under, not only one its request set.
+    const inheritedDeadline =
+      !deadline &&
+      (source.errorCode === "run_deadline_expired" ||
+        (await receiptDeadline(ctx.daemon, source)).deadline !== undefined);
     const differences = [
       ...(accepted.deferredDefaults
         ? [
@@ -399,13 +404,14 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
             },
           ]
         : []),
-      ...(deadline
+      ...(deadline || inheritedDeadline
         ? [
             {
               field: "deadline",
               change: "omitted" as const,
-              reason:
-                "an absolute run deadline binds the source run; give the new run its own deadline",
+              reason: deadline
+                ? "an absolute run deadline binds the source run; give the new run its own deadline"
+                : "the source run inherited its deadline (its Delegate parent or the run it continued); give the new run its own deadline",
             },
           ]
         : []),

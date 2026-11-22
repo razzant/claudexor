@@ -60,8 +60,6 @@ export async function rerunWithFeedback(
     retryOf: _retryOf,
     protectedPathApprovals: _protectedPathApprovals,
     deferredDefaults: _deferredDefaults,
-    // A run-deadline/1 instant binds the one accepted run; a rerun gets none.
-    deadline: _deadline,
     ...original
   } = source;
   let params: ControlRunStartRequest;

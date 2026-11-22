@@ -23,6 +23,8 @@ const SHARED = new Set([
   "claude-auth-status",
   "claude-model-probe",
   "claude-help-probe",
+  "program-version",
+  "shared-read",
 ]);
 
 const cleanup: Array<() => void> = [];

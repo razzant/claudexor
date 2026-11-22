@@ -117,6 +117,9 @@ export function unboundRunStartResponse(
  * a continuation (`continueFrom`) or a Delegate child (`delegatedFromRunId`)
  * that may inherit one, and a job its deadline ended. A job without a record
  * answers as before (a client that never used deadlines never sees the field).
+ * The projection is read-only (`peek`): it awaits no pending change and starts
+ * no stop, so the receipt agrees with the handle it carries. A record that
+ * exists but cannot be read fails the answer (503, retryable).
  */
 export async function receiptDeadline(
   daemon: Pick<DaemonFacadeClient, "runDeadline"> | undefined,
@@ -133,10 +136,9 @@ export async function receiptDeadline(
         typeof params.delegatedFromRunId === "string"));
   if (!mayHold || !daemon?.runDeadline) return {};
   try {
-    return { deadline: await daemon.runDeadline(rec.id, { action: "read" }) };
+    return { deadline: await daemon.runDeadline(rec.id, { action: "peek" }) };
   } catch (error) {
-    // The handle is the receipt's authority; a deadline that cannot be read
-    // (an engine without the record) leaves the field out rather than the handle.
+    // No record (a job that inherited none): the field is left out, the handle stands.
     if ((error as { code?: unknown })?.code === "run_deadline_absent") return {};
     throw error;
   }
@@ -146,21 +148,29 @@ export async function receiptDeadline(
  * A replay of a run that held a run-deadline/1 deadline (its own or inherited)
  * would start an ordinary run with no deadline at all: Exact Retry, a decision
  * rerun and a thread turn retry refuse it, typed, and name the start that
- * carries a new deadline. Null when the source held none.
+ * carries a new deadline. Fail closed: a source whose request set a deadline,
+ * or that its deadline ended, is refused even when its record is gone; a
+ * record that cannot be read fails the request (503). Null when the source
+ * held none.
  */
 export async function deadlineReplayRefusal(
   daemon: Pick<DaemonFacadeClient, "runDeadline"> | undefined,
   source: DaemonRunRecord,
   route: string,
+  restart: { threadId: string } | null = null,
 ): Promise<{ error: string; code: string; retryable: false; requiredActions: string[] } | null> {
+  const params = source.params as { deadline?: unknown } | null | undefined;
+  const explicit = !!params && typeof params === "object" && params.deadline !== undefined;
   const { deadline } = await receiptDeadline(daemon, source);
-  if (!deadline) return null;
+  if (!deadline && !explicit && source.errorCode !== "run_deadline_expired") return null;
   return {
     error: `${route} would start this run again without its deadline; start it again with a new deadline instead`,
     code: "run_deadline_replay_refused",
     retryable: false,
     requiredActions: [
-      "Start a new run with deadline.at (POST /v2/runs), or take Run Again and give the draft its own deadline.",
+      restart
+        ? `Send a new turn with deadline.at (POST /v2/threads/${restart.threadId}/turns) under a new idempotency key.`
+        : "Start a new run with deadline.at (POST /v2/runs), or take Run Again and give the draft its own deadline.",
     ],
   };
 }

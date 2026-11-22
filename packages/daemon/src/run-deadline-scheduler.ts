@@ -8,7 +8,6 @@
  * for `claudexor.runDeadline`.
  */
 import {
-  TurnEnqueueProblem,
   delegatedParentOf,
   isTerminalLifecycle,
   type RunDeadlineSnapshot,
@@ -17,6 +16,7 @@ import {
 import type { CommandBackend } from "./command-authority.js";
 import { commandStoreForId } from "./command-authority.js";
 import type { JobRecord } from "./job-record.js";
+import { reportPreRunRefusal } from "./job-settlement.js";
 import { reportedBound, type DeadlineRecord } from "./run-deadline-record.js";
 import {
   RUN_DEADLINE_EXPIRED,
@@ -51,6 +51,8 @@ export interface DeadlineSchedulerPort {
   cancel(id: string, patch: Partial<JobRecord>): void;
   /** Cancel a preparing or running job with reason `run_deadline_expired`. */
   abort(id: string): void;
+  /** A queued job `mustNotStart` held was renewed meanwhile: offer it again. */
+  resume(id: string): void;
 }
 
 export interface DeadlineSchedulerHooks {
@@ -64,7 +66,8 @@ const EXPIRED_TERMINAL = {
   errorCode: RUN_DEADLINE_EXPIRED,
   errorStatus: 409,
   errorRetryable: false,
-} as const satisfies Partial<JobRecord>;
+  errorRequiredActions: ["Start the turn again with a new deadline."],
+} satisfies Partial<JobRecord>;
 
 type Prepared = { ok: true } | { error: unknown };
 
@@ -285,23 +288,11 @@ export class SchedulerDeadlines extends RunDeadlines {
     if (state !== "queued") return this.port.abort(id);
     const rec = commandStoreForId(this.hooks.commands, id)?.get(id);
     this.port.cancel(id, EXPIRED_TERMINAL);
-    const turnId = (rec?.params as { turnId?: unknown } | null)?.turnId;
-    if (typeof turnId === "string" && turnId && this.hooks.onTurnEnqueueFailed) {
-      try {
-        this.hooks.onTurnEnqueueFailed(
-          turnId,
-          TurnEnqueueProblem.parse({
-            message: EXPIRED_TERMINAL.error,
-            code: RUN_DEADLINE_EXPIRED,
-            retryable: false,
-            required_actions: ["Start the turn again with a new deadline."],
-            context: {},
-          }),
-        );
-      } catch {
-        /* observer failure must not corrupt terminal bookkeeping */
-      }
-    }
+    if (rec) reportPreRunRefusal({ ...rec, ...EXPIRED_TERMINAL }, this.hooks.onTurnEnqueueFailed);
+  }
+
+  protected override resumed(id: string): void {
+    this.port.resume(id);
   }
 
   /** `claudexor.runDeadline`: read or set one job's deadline, by job id or run id. */
@@ -312,8 +303,10 @@ export class SchedulerDeadlines extends RunDeadlines {
     const request = params?.request as { action?: unknown } | undefined;
     const jobId = id ? this.jobIdOf(id) : null;
     if (!jobId) throw deadlineProblem("No such run", "run_not_found", 404);
-    if (request?.action === "read") {
-      const snapshot = await this.read(jobId);
+    if (request?.action === "read" || request?.action === "peek") {
+      // `peek` is the read-only projection receipts and lookups use: it awaits
+      // no pending change and starts no stop (the timer and the warden do).
+      const snapshot = request.action === "peek" ? this.peek(jobId) : await this.read(jobId);
       if (!snapshot) throw deadlineProblem("Run has no deadline", "run_deadline_absent", 404);
       return snapshot;
     }

@@ -20,20 +20,21 @@
  * is published afterwards, the governing deadline is never later than the
  * claim's, so a failed restoring write or a daemon death cannot postpone it.
  *
- * Why a set and the warden cannot both win, without a lock a SIGKILLed daemon
- * would leave held: both read one host clock. The daemon decides a renewal
- * BEFORE anything is visible (no terminal, no claim, and the clock before the
- * replaced deadline), only then publishes it, and confirms it only when, after
- * the publication, the clock is still before the replaced deadline plus the
- * warden's head start and no claim of the replaced revision exists; otherwise
- * it claims the replaced deadline, restores it as `enforcing` and refuses. The
- * warden reads the clock BEFORE the record and acts only once the clock passed
- * the deadline plus its head start. So a warden acting on a revision read it
- * before a later one was published, which put that publication past the head
- * start: refused, with the claim keeping the replaced deadline in force; and a
- * confirmed revision was published before the head start ran out, so every
- * warden read after its acting reading sees it. A warden never sees a revision
- * the daemon had not first decided on the host clock.
+ * A change of the deadline is a small two-phase commit. Before the new
+ * revision can be seen, the record in force is kept durable beside it
+ * (`<record>.prior`, a full copy): every reader floors the governing deadline
+ * at the prior's, and answers report the prior while it names an older
+ * revision. The change commits when the prior is removed — synchronously right
+ * after its last check (no terminal, no claim, the clock before the replaced
+ * deadline plus the warden's head start) — and is confirmed once that removal
+ * is durable. Until then nothing can postpone the replaced deadline: neither a
+ * publication that outlasts its deadline, nor failed later writes, nor a daemon
+ * death. The warden reads the clock BEFORE the files and acts only once the
+ * clock passed the deadline plus its head start, so a warden acting on the
+ * prior read it before the commit; it then claims, and the daemon, seeing the
+ * claim, stops the run instead of confirming. A warden whose claim lands after
+ * that check stops the run at the replaced deadline although the change was
+ * confirmed: an early stop, never a late one.
  */
 import {
   closeSync,
@@ -53,6 +54,7 @@ import type {
   RunDeadlineState,
 } from "@claudexor/schema";
 import { fsyncDirectory, fsyncDirectoryAsync } from "@claudexor/util";
+import type { RunScopeEntry } from "@claudexor/core";
 import type { HostClockKind } from "./run-deadline-clock.js";
 
 export const RECORD_VERSION = 3;
@@ -86,6 +88,9 @@ export interface DeadlineRecord {
   markers: string[];
   cgroup: string | null;
   runScopes: string | null;
+  /** Run-scope rows the run's custody settled and the index retired: the warden
+   * keeps reading their recorded groups and descendants after the row is gone. */
+  scopes?: RunScopeEntry[];
 }
 
 /** A deadline with the source it came from. */
@@ -112,6 +117,8 @@ export const claimPath = (recordPath: string) => `${recordPath}.enforcing`;
 export const wardenOutcomePath = (recordPath: string) => `${recordPath}.outcome.json`;
 export const wardenReadyPath = (recordPath: string) => `${recordPath}.ready`;
 export const wardenDonePath = (recordPath: string) => `${recordPath}.done`;
+/** The record in force while a change of it is not committed (see the module doc). */
+export const priorPath = (recordPath: string) => `${recordPath}.prior`;
 
 /** The record files of a directory listing (no claim, outcome, marker or temporary file). */
 export const isRecordFileName = (name: string) =>
@@ -121,6 +128,7 @@ export function parseRecord(text: string): DeadlineRecord | "unreadable" {
   try {
     const value = JSON.parse(text) as DeadlineRecord;
     if (value?.version !== RECORD_VERSION || !Array.isArray(value.markers)) return "unreadable";
+    if (value.scopes !== undefined && !Array.isArray(value.scopes)) return "unreadable";
     for (const point of [value.own, value.frozen, value.inherited])
       if (point) BigInt(point.targetNs);
     return value;
@@ -138,6 +146,28 @@ export function readRecord(path: string): DeadlineRecord | null | "unreadable" {
   }
   return parseRecord(text);
 }
+
+/** The prior beside a record file (null when there is none, as for a claim: a
+ * directory that cannot be listed holds none; one present but unreadable is). */
+export const readPrior = (recordPath: string) =>
+  existsSync(priorPath(recordPath)) ? readRecord(priorPath(recordPath)) : null;
+
+/**
+ * The record in force: the prior while it names an older revision than the
+ * record file (a change not committed), else the record file. Unreadable when
+ * either part that decides it is.
+ */
+export function inForce(
+  record: DeadlineRecord | null | "unreadable",
+  prior: DeadlineRecord | null | "unreadable",
+): DeadlineRecord | null | "unreadable" {
+  if (!record || record === "unreadable") return record;
+  if (prior === "unreadable") return "unreadable";
+  return prior && prior.revision < record.revision ? prior : record;
+}
+
+/** The record in force of a record file, read from disk. */
+export const readRecordInForce = (path: string) => inForce(readRecord(path), readPrior(path));
 
 let tmpSequence = 0;
 
@@ -157,7 +187,7 @@ export interface RecordIo {
   discard(tmp: string): Promise<void>;
   /** The enforcement claim beside `path` (exclusive create, fsync, directory flush). */
   claim(path: string, claim: ClaimContent): boolean;
-  /** Remove every file of a record. */
+  /** Remove one file (absent is fine). A record's files go one by one (`removeRecordFiles`). */
   remove(path: string): void;
 }
 
@@ -182,7 +212,7 @@ export const fileRecordIo: RecordIo = {
   flush: (dir) => fsyncDirectoryAsync(dir),
   discard: (tmp) => rm(tmp, { force: true }).then(() => {}),
   claim: (path, claim) => claimEnforcement(path, claim),
-  remove: (path) => removeRecordFiles(path),
+  remove: (path) => rmSync(path, { force: true }),
 };
 
 /**
@@ -295,28 +325,48 @@ export function readWardenOutcome(recordPath: string): WardenOutcome | null {
   }
 }
 
-/** Every file of a record: the record, its claim and its warden's evidence. */
-export function removeRecordFiles(recordPath: string): void {
+/**
+ * Every file of a record, one by one, the record LAST: a removal cut short
+ * leaves the record, so a later sweep finds it and finishes (its `.ready`
+ * goes before `.done`, so a half-removed record never reads as guarded).
+ */
+export function removeRecordFiles(
+  recordPath: string,
+  io: Pick<RecordIo, "remove"> = fileRecordIo,
+): void {
   for (const path of [
-    recordPath,
+    priorPath(recordPath),
     claimPath(recordPath),
     wardenOutcomePath(recordPath),
     wardenReadyPath(recordPath),
     wardenDonePath(recordPath),
+    recordPath,
   ])
-    rmSync(path, { force: true });
+    io.remove(path);
+}
+
+/** A record's sidecar or temporary file, with the record file it belongs to. */
+export function sidecarOwner(name: string): string | null {
+  const match =
+    /^(.+\.json)\.(?:enforcing|outcome\.json|ready|done|prior|(?:prior\.)?\d+\.\d+\.tmp)$/.exec(
+      name,
+    );
+  return match ? match[1]! : null;
 }
 
 export interface RecordReader {
   (fileName: string): DeadlineRecord | null | "unreadable";
   /** The enforcement claim beside a record file (its floor); null when there is none. */
   claim?(fileName: string): EnforcementClaim | null;
+  /** The prior beside a record file (its floor while a change is in flight). */
+  prior?(fileName: string): DeadlineRecord | null | "unreadable";
 }
 
-/** Reads records of `dir` (the run's and its Delegate ancestors') and their claims from disk. */
+/** Reads records of `dir` (the run's and its Delegate ancestors'), claims and priors from disk. */
 export const diskReader = (dir: string): RecordReader =>
   Object.assign((fileName: string) => readRecord(join(dir, fileName)), {
     claim: (fileName: string) => readClaim(join(dir, fileName)),
+    prior: (fileName: string) => readPrior(join(dir, fileName)),
   });
 
 const MAX_CHAIN = 8;
@@ -325,33 +375,47 @@ const toBound = (
   inheritedFrom: string | null,
   successorOf: string | null,
 ): Bound => ({ at: point.at, target: BigInt(point.targetNs), inheritedFrom, successorOf });
+/** A record's own base: the frozen deadline after a terminal, else its own. */
+const ownBase = (record: DeadlineRecord): Bound | null =>
+  record.frozen
+    ? toBound(record.frozen, record.frozen.inheritedFrom, record.frozen.successorOf)
+    : record.own
+      ? toBound(record.own, null, record.successorOf)
+      : null;
 
 /**
  * The deadline that governs the run's processes now: its base (the frozen
  * deadline after a terminal, else its own) capped by its Delegate parent's
  * governing deadline, read from the parent's current record (the cached
  * `inherited` value when that record can no longer be read), and floored by
- * its enforcement claim (the deadline that already won). The warden obeys
- * this; for a live run it is also what every answer reports.
+ * its enforcement claim (the deadline that already won) and by its prior (the
+ * record in force while a change is not committed; an unreadable one floors at
+ * 0). The warden obeys this; for a live run it is also what every answer reports.
  */
 export function governingBound(
   record: DeadlineRecord,
   read: RecordReader,
   depth = 0,
 ): Bound | null {
-  let base = record.frozen
-    ? toBound(record.frozen, record.frozen.inheritedFrom, record.frozen.successorOf)
-    : record.own
-      ? toBound(record.own, null, record.successorOf)
-      : null;
-  const claim = read.claim?.(recordFileName(record.jobId)) ?? null;
-  if (claim && (!base || claim.target < base.target))
+  let base = ownBase(record);
+  const floor = (target: bigint, at: string | null, from: Bound | null) => {
+    if (base && target >= base.target) return;
     base = {
-      at: claim.at ?? base?.at ?? new Date(0).toISOString(),
-      target: claim.target,
-      inheritedFrom: base?.inheritedFrom ?? null,
-      successorOf: base?.successorOf ?? null,
+      at: at ?? from?.at ?? base?.at ?? new Date(0).toISOString(),
+      target,
+      inheritedFrom: from?.inheritedFrom ?? base?.inheritedFrom ?? null,
+      successorOf: from?.successorOf ?? base?.successorOf ?? null,
     };
+  };
+  const file = recordFileName(record.jobId);
+  const claim = read.claim?.(file) ?? null;
+  if (claim) floor(claim.target, claim.at, null);
+  const prior = read.prior?.(file) ?? null;
+  if (prior === "unreadable") floor(0n, null, null);
+  else if (prior) {
+    const kept = ownBase(prior);
+    if (kept) floor(kept.target, kept.at, kept);
+  }
   let cap: Bound | null = null;
   if (record.parent && depth < MAX_CHAIN) {
     const parent = read(record.parent);

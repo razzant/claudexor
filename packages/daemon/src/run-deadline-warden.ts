@@ -280,9 +280,13 @@ export async function runWarden(
   }
 
   const sources = (record: DeadlineRecord, marker: string): Partial<ScopeReapOptions> => {
-    const entry = record.runScopes
-      ? readRunScopeEntries(record.runScopes)?.find((row) => row.marker === marker)
-      : undefined;
+    // The index row while it lives; once settled and retired, the copy the
+    // daemon kept in the record. A failed index read with no kept copy gives
+    // no recorded sources (marker-only coverage: never a release).
+    const entry =
+      (record.runScopes
+        ? readRunScopeEntries(record.runScopes)?.find((row) => row.marker === marker)
+        : undefined) ?? record.scopes?.find((row) => row.marker === marker);
     if (!entry) return {};
     const recorded = reapSources(entry);
     // The census age filter is measured on the wall clock (macOS only); never

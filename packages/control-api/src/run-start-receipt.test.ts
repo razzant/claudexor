@@ -18,13 +18,21 @@ const snapshot = {
   enforcement: null,
 } as const;
 
-function daemon(found: boolean) {
+function daemon(found: boolean | "unreadable") {
   const asked: string[] = [];
+  const actions: string[] = [];
   return {
     asked,
+    actions,
     client: {
-      runDeadline: async (id: string) => {
+      runDeadline: async (id: string, request: { action: string }) => {
         asked.push(id);
+        actions.push(request.action);
+        if (found === "unreadable")
+          throw Object.assign(new Error("record unreadable"), {
+            code: "run_deadline_record_unavailable",
+            status: 503,
+          });
         if (!found) throw Object.assign(new Error("absent"), { code: "run_deadline_absent" });
         return snapshot;
       },
@@ -81,5 +89,46 @@ describe("receiptDeadline", () => {
         "Exact Retry",
       ),
     ).toBe(null);
+  });
+
+  it("reads with the read-only projection: no transition, no stop", async () => {
+    const d = daemon(true);
+    await receiptDeadline(d.client as never, record({ params: { deadline: { at: snapshot.at } } }));
+    expect(d.actions).toEqual(["peek"]);
+  });
+
+  it.each([
+    ["its request set a deadline", { params: { deadline: { at: snapshot.at } } }],
+    ["its deadline ended it", { errorCode: "run_deadline_expired", params: {} }],
+  ])("fails closed: a replay is refused when %s, even with no record left", async (_l, fields) => {
+    for (const client of [daemon(false).client, undefined])
+      expect(
+        await deadlineReplayRefusal(client as never, record(fields), "Exact Retry"),
+      ).toMatchObject({ code: "run_deadline_replay_refused", retryable: false });
+  });
+
+  it("an unreadable record is a storage failure, never an absent deadline", async () => {
+    const d = daemon("unreadable");
+    await expect(
+      deadlineReplayRefusal(
+        d.client as never,
+        record({ params: { continueFrom: "run-first" } }),
+        "Exact Retry",
+      ),
+    ).rejects.toMatchObject({ code: "run_deadline_record_unavailable" });
+    await expect(
+      receiptDeadline(d.client as never, record({ params: { deadline: { at: snapshot.at } } })),
+    ).rejects.toMatchObject({ code: "run_deadline_record_unavailable" });
+  });
+
+  it("a thread turn's refusal names the thread turn start with a new key", async () => {
+    const refusal = await deadlineReplayRefusal(
+      daemon(true).client as never,
+      record({ params: { deadline: { at: snapshot.at } } }),
+      "A turn retry",
+      { threadId: "thr-1" },
+    );
+    expect(refusal!.requiredActions[0]).toContain("POST /v2/threads/thr-1/turns");
+    expect(refusal!.requiredActions[0]).toContain("new idempotency key");
   });
 });

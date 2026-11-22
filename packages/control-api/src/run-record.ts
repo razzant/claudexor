@@ -57,10 +57,11 @@ export interface DaemonFacadeClient {
   list(query: CommandListQuery): Promise<DaemonRunRecord[]>;
   cancel(id: string, reasonCode?: CancelReasonCode): Promise<unknown>;
   runTimeLimit?(id: string, request: RunTimeLimitRequest): Promise<RunTimeLimitSnapshot>;
-  /** run-deadline/1 read or set (absent on an engine without the capability). */
+  /** run-deadline/1 read, read-only projection (`peek`: no transition), or set
+   * (absent on an engine without the capability). */
   runDeadline?(
     id: string,
-    request: { action: "read" } | ({ action: "set" } & RunDeadlineSetRequest),
+    request: { action: "read" | "peek" } | ({ action: "set" } & RunDeadlineSetRequest),
   ): Promise<RunDeadlineSnapshot>;
   fenceDelegationParent?(runId: string): Promise<unknown>;
   deferredMessage?(input: DeferredMessageCall): Promise<DeferredMessageReceipt>;

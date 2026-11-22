@@ -81,3 +81,44 @@ export function describe(entry: RunScopeEntry, outcome: ScopeReapOutcome): strin
     `${outcome.reusedGroups.length ? `, reused groups ${outcome.reusedGroups.join(",")}` : ""})`
   );
 }
+
+/**
+ * Retire or keep a settled-or-not row; returns the disclosure, which names a
+ * retirement without proof. A row whose settlement was proven is retired and
+ * handed (a copy, with its outcome) to every `retired` observer: a deadline
+ * warden still needs its recorded groups once it left the index.
+ */
+export function retireOrKeepRow(
+  entries: RunScopeEntry[],
+  entry: RunScopeEntry,
+  outcome: ScopeReapOutcome,
+  now: () => string,
+  retired: Iterable<(row: RunScopeEntry) => void>,
+): string {
+  // A host with no census at all (`unsupported`, Windows) can never settle
+  // an entry: keeping it would re-reap it at every start and grow the file
+  // without bound, so it is retired once its outcome has been disclosed.
+  if (outcome.settled || outcome.census === "unsupported") {
+    const at = entries.indexOf(entry);
+    if (at >= 0) entries.splice(at, 1);
+    if (outcome.settled)
+      for (const listener of retired)
+        try {
+          const settledAt = entry.settled_at ?? now();
+          listener({
+            ...structuredClone(entry),
+            settled_at: settledAt,
+            outcome: summarize(outcome),
+          });
+        } catch {
+          /* an observer never changes the index */
+        }
+    return outcome.settled
+      ? describe(entry, outcome)
+      : `${describe(entry, outcome)}; retired without proof (no environment census on this platform)`;
+  }
+  entry.state = "unresolved";
+  entry.settled_at ??= now();
+  entry.outcome = summarize(outcome);
+  return describe(entry, outcome);
+}

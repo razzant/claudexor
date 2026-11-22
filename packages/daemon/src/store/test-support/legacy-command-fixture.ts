@@ -16,7 +16,12 @@ export function legacyCommandFixture(authority: {
   const stores = () => authority.all?.() ?? (authority.current ? [authority.current()] : []);
   const records = () => stores().flatMap((store) => store.records());
   const port = (store: CommandStore): CommandStorePort => ({
-    accept: (input) => store.accept(input),
+    accept: (input, hooks) => {
+      const prior = store.find(input);
+      if (prior) return { record: prior, reused: true };
+      hooks?.admit?.();
+      return store.accept(input);
+    },
     find: (input) => store.find(input),
     get: (id) => store.get(id),
     update: (id, patch) => store.update(id, patch),

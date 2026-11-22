@@ -566,7 +566,8 @@ describe("run-deadline/1 at the scheduler", () => {
       { clock: time.clock },
     );
     try {
-      const at = inMs(600);
+      // Room for a durable acceptance on a loaded host (the deadline is judged inside it).
+      const at = inMs(2_000);
       const accepted = await d.client.enqueue(
         { label: "clock", deadline: { at } },
         { idempotencyKey: "c", clientId: "t" },
@@ -578,7 +579,7 @@ describe("run-deadline/1 at the scheduler", () => {
       const ended = await until(
         () => d.client.status(accepted.id),
         (record) => !live(record),
-        5_000,
+        8_000,
       );
       expect(ended.state).toBe("cancelled");
       // Seconds late at most on a loaded host, never the hour the clock stepped back.
@@ -641,7 +642,7 @@ describe("run-deadline/1: one durable record", () => {
     }
   });
 
-  it("Stop during a set: the terminal wins unless the set was published first; the answer, the live read and the record after a restart agree", async () => {
+  it("Stop during a set: a terminal that arrives before the set is confirmed wins (invariant 3), even after the new revision was published; the answer, the live read and the record after a restart agree", async () => {
     for (const order of ["terminal-first", "before-decision", "after-publication"] as const) {
       const slot = slotRunner();
       let onPublish: (() => void) | null = null;
@@ -685,10 +686,10 @@ describe("run-deadline/1: one durable record", () => {
         onPublish = () => a.server.cancelJob(accepted.id);
         answer = await set();
       }
-      if (order === "after-publication")
-        expect(answer).toEqual({ ok: true, revision: 1, state: "closed" });
-      else expect(answer).toEqual({ ok: false, code: "run_deadline_closed" });
-      const expected = answer.ok ? 1 : 0;
+      // Whatever the order, the terminal arrived before the confirmation: it
+      // freezes the revision in force (0); the published one is replaced back.
+      expect(answer).toEqual({ ok: false, code: "run_deadline_closed" });
+      const expected = 0;
       expect(await a.client.runDeadline(accepted.id, { action: "read" })).toMatchObject({
         revision: expected,
         state: "closed",
@@ -1300,7 +1301,7 @@ describe("run-deadline/1 startup cost", () => {
         probeBoundary: async () => ({ kind: "marker", reason: "t" }),
       },
       { commands: commands as never },
-      { cancel: () => {}, abort: () => {} },
+      { cancel: () => {}, abort: () => {}, resume: () => {} },
     );
     await b.startup();
     expect(queried[0]?.sort()).toEqual(["job-a", "job-b"]);

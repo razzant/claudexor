@@ -7,7 +7,7 @@ import {
 } from "../command-store.js";
 import { journaledRunEventCopy } from "../journaled-run-events.js";
 import type { JobRecord } from "../job-record.js";
-import type { CommandStorePort } from "../store-contracts.js";
+import type { AcceptHooks, CommandStorePort } from "../store-contracts.js";
 import {
   recoveredTerminalFacts,
   terminalCommandResult,
@@ -88,11 +88,11 @@ export class SqlCommandStore implements CommandStorePort {
     this.events = new SqlEventLedger(store, blobs, generation);
   }
 
-  accept(input: AcceptCommand): { record: JobRecord; reused: boolean } {
+  accept(input: AcceptCommand, hooks?: AcceptHooks): { record: JobRecord; reused: boolean } {
     const prior = this.find(input);
     if (prior) return { record: prior, reused: true };
     const prepared = this.prepareAcceptance(input);
-    return runMutation(this.store, (tx) => this.acceptInTx(tx, prepared));
+    return runMutation(this.store, (tx) => this.acceptInTx(tx, prepared, undefined, hooks?.admit));
   }
 
   /** All body preparation precedes the synchronous acceptance transaction. */
@@ -119,6 +119,7 @@ export class SqlCommandStore implements CommandStorePort {
     tx: MutationContext,
     acceptance: ReturnType<SqlCommandStore["prepareAcceptance"]>,
     resourcesFrom?: ResourceUseHolder,
+    admit?: () => void,
   ) {
     requireTransaction(tx);
     const { input, digests, record, prepared, event } = acceptance;
@@ -136,6 +137,8 @@ export class SqlCommandStore implements CommandStorePort {
       );
       if (prepared.row.turn_id) markTurnDispatchedInTx(tx, prepared.row.turn_id, record.createdAt);
     }
+    // The last check before the rows: a refusal rolls the whole acceptance back.
+    admit?.();
     applyCommandInTx(tx, prepared, "accept");
     bindIdempotencyInTx(tx, {
       owner: "command",
@@ -308,11 +311,15 @@ export class SqlCommandStore implements CommandStorePort {
 
   /** The synchronous EventLog hook: one SQL terminal then immediate file repair.
    * Returning pending means SQL committed; EventLog must never roll it back or
-   * emit another terminal. A second terminal INSERT is a constraint failure. */
+   * emit another terminal. A second terminal INSERT is a constraint failure.
+   * `onCommitted` is told at the SQL commit itself, before any file is
+   * materialized and also when a post-commit step fails (run-deadline/1: the
+   * job's deadline closes at that instant). Never when nothing committed. */
   persistTerminal(
     id: string,
     raw: RunEvent,
     telemetry: RunTelemetry | null,
+    onCommitted?: () => void,
   ): { state: "materialized" } | { state: "pending"; error: unknown } {
     const event = RunEvent.parse(raw);
     const row = commandRow(this.store, id, this.generation.pid);
@@ -323,6 +330,13 @@ export class SqlCommandStore implements CommandStorePort {
     const { params: _params, ...record } = next;
     const updated = this.events.prepare("command.updated", { record });
     const run = this.events.prepare("run.event", journaledRunEventCopy(event));
+    const committed = () => {
+      try {
+        onCommitted?.();
+      } catch {
+        /* the notice cannot undo or fail a committed terminal */
+      }
+    };
     try {
       runMutation(this.store, (tx) => {
         applyCommandInTx(tx, prepared, "update");
@@ -344,9 +358,13 @@ export class SqlCommandStore implements CommandStorePort {
     } catch (error) {
       // Notification failure cannot authorize EventLog's pre-COMMIT rollback.
       // The terminal and its pending file obligation are already durable rows.
-      if (error instanceof MutationPostCommitError) return { state: "pending", error };
+      if (error instanceof MutationPostCommitError) {
+        committed();
+        return { state: "pending", error };
+      }
       throw error;
     }
+    committed();
     try {
       this.options.terminalFiles.materialize(event.run_id);
     } catch {

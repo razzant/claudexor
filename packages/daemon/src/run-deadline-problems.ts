@@ -44,6 +44,17 @@ export function recordUnavailable(error: unknown): Error {
   );
 }
 
+/**
+ * A change became visible but could not be confirmed (its durability, or the
+ * earlier deadline it would replace, could not be recorded): the caller reads
+ * the deadline again (GET) before relying on either.
+ */
+export function outcomeUnknown(message: string, cause?: unknown): Error {
+  return Object.assign(deadlineProblem(message, "run_deadline_outcome_unknown", 503, true), {
+    cause,
+  });
+}
+
 /** Parse an optional `deadline` from a run request; undefined when absent. */
 export function requestedDeadline(params: unknown): RunDeadlineStart | undefined {
   if (!params || typeof params !== "object") return undefined;

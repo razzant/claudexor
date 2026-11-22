@@ -101,3 +101,20 @@ export function eligibleJobIndex(
   const child = queue.findIndex((job) => job.delegated && eligible(job));
   return child === -1 ? queue.findIndex(eligible) : child;
 }
+
+/**
+ * The next queued job to try. A job a pending run-deadline/1 transition holds
+ * keeps its place and counts as about to run (its thread stays serialized and
+ * it takes its slot) until the transition settles and it is offered again.
+ */
+export function nextAdmission(
+  queue: readonly AdmissionJob[],
+  held: ReadonlySet<string>,
+  active: Iterable<AdmissionJob>,
+  caps: RuntimeConcurrencyCaps,
+): AdmissionJob | undefined {
+  const holding = held.size ? queue.filter((job) => held.has(job.id)) : [];
+  const ready = holding.length ? queue.filter((job) => !held.has(job.id)) : queue;
+  const index = eligibleJobIndex(ready, [...active, ...holding], caps);
+  return index === -1 ? undefined : ready[index];
+}

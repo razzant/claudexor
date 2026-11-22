@@ -3265,7 +3265,7 @@ describe("DaemonControlApiServer", () => {
     const expired = {
       id: "job-dl",
       state: "cancelled",
-      params: { deadline: { at: snapshot.at } },
+      params: { deadline: { at: snapshot.at }, turnId: "tn-dl" },
       error: "run deadline passed before the run started",
       errorCode: "run_deadline_expired",
       errorStatus: 409,
@@ -3310,6 +3310,24 @@ describe("DaemonControlApiServer", () => {
           retryable: false,
           context: { jobId: "job-dl", deadline: { state: "expired", revision: 0 } },
         });
+        // The turn keeps its non-retryable refusal, and its job exists: a retry
+        // resolves that job first and is refused typed, naming a new turn.
+        turns[0]!["enqueue_error"] = {
+          message: expired.error,
+          code: "run_deadline_expired",
+          retryable: false,
+          required_actions: [],
+          context: {},
+        };
+        const retry = await apiFetch(`${base}/threads/th-dl/turns/tn-dl/retry`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "dl-retry" },
+          body: "{}",
+        });
+        expect(retry.status).toBe(409);
+        const refusal = (await retry.json()) as { code?: string; requiredActions?: string[] };
+        expect(refusal.code).toBe("run_deadline_replay_refused");
+        expect(refusal.requiredActions?.[0]).toContain("POST /v2/threads/th-dl/turns");
       },
       undefined,
       services,
@@ -12147,6 +12165,47 @@ describe("DaemonControlApiServer", () => {
         retryable: false,
       });
       expect(enqueued).toEqual([]);
+    });
+  });
+
+  it("Run Again of a Delegate child that inherited a deadline discloses the omitted deadline", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      delegatedFromRunId: "run-parent",
+    };
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async runDeadline() {
+        return {
+          at: "2026-01-01T00:00:00.000Z",
+          revision: 0,
+          serverNow: "2026-01-01T00:00:00.000Z",
+          state: "closed",
+          stopGraceSec: 15,
+          inheritedFrom: "job-parent",
+          successorOf: null,
+          enforcement: null,
+        };
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const draft = await apiFetch(`${base}/runs/run-d1/run-again`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(draft.status).toBe(200);
+      const body = (await draft.json()) as {
+        request: Record<string, unknown>;
+        differences: Array<{ field: string; reason: string }>;
+      };
+      expect(body.request).not.toHaveProperty("deadline");
+      expect(body.differences).toContainEqual(
+        expect.objectContaining({
+          field: "deadline",
+          change: "omitted",
+          reason: expect.stringContaining("inherited"),
+        }),
+      );
     });
   });
 

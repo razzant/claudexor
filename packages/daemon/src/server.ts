@@ -6,7 +6,6 @@ import { outsideRunScope } from "@claudexor/core";
 import { type Server, type Socket, createServer } from "node:net";
 
 import {
-  TurnEnqueueProblem,
   type TurnEnqueueProblem as TurnEnqueueProblemValue,
   delegatedParentOf,
   normalizeCancelReasonCode,
@@ -30,11 +29,11 @@ import { parseCommandListQuery } from "./command-list-select.js";
 import { clearStaleUnixSocketPath, listenOnDaemonEndpoint } from "./daemon-listen.js";
 import { type DelegationAdmissionAuthority } from "./delegation-admission.js";
 import { jobStateFromResult, publicJobRecord, threadIdOf, type JobRecord } from "./job-record.js";
-import { settleJobError, settledJobPatch } from "./job-settlement.js";
+import { reportPreRunRefusal, settleJobError, settledJobPatch } from "./job-settlement.js";
 import {
   admissionActivity,
   admissionJob,
-  eligibleJobIndex,
+  nextAdmission,
   queuedAdmission,
   type AdmissionJob,
 } from "./job-admission.js";
@@ -109,6 +108,8 @@ export class DaemonServer {
   private readonly queue: AdmissionJob[] = [];
   private readonly activeJobs = new Map<string, AdmissionJob>();
   private readonly cancelled = new Set<string>();
+  /** Queued jobs a pending deadline transition holds in place (`nextAdmission`). */
+  private readonly heldByDeadline = new Set<string>();
   private readonly controllers = new Map<string, JobAbortController>();
   private readonly timeLimits = new RunTimeLimits();
   readonly deadlines: rd.SchedulerDeadlines;
@@ -130,9 +131,12 @@ export class DaemonServer {
 
   constructor(private readonly opts: DaemonOptions) {
     this.concurrency = daemonConcurrencyCaps(opts);
+    // A job a deadline held or ended leaves its place: the queue is offered again.
+    const redrain = () => void (this.stopping || this.drain());
     this.deadlines = new rd.SchedulerDeadlines(opts.runDeadlines, opts, {
-      cancel: (id, patch) => void this.cancelJob(id, undefined, patch),
+      cancel: (id, patch) => (this.cancelJob(id, undefined, patch), redrain()),
       abort: (id) => this.controllers.get(id)?.abort(rd.RUN_DEADLINE_EXPIRED),
+      resume: (id) => (this.heldByDeadline.delete(id), redrain()),
     });
     this.commands = opts.commands;
     this.deferred = new DeferredMessages({
@@ -410,6 +414,7 @@ export class DaemonServer {
       this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso(), ...terminal });
       const index = this.queue.findIndex((job) => job.id === jid);
       if (index !== -1) this.queue.splice(index, 1);
+      this.heldByDeadline.delete(jid);
       const delegatedFrom = delegatedParentOf(rec.params);
       if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, rec.id);
     }
@@ -470,17 +475,21 @@ export class DaemonServer {
     while (this.queue.length > 0) {
       // Existing child precedence and one overflow remain; a blocked ordinary
       // class never prevents the next eligible job of another class from running.
-      const pickIdx = eligibleJobIndex(this.queue, this.activeJobs.values(), this.concurrency);
-      if (pickIdx === -1) break;
-      const job = this.queue.splice(pickIdx, 1)[0];
+      const active = this.activeJobs.values();
+      const job = nextAdmission(this.queue, this.heldByDeadline, active, this.concurrency);
+      if (!job) break;
       const id = job.id,
         rec = this.getRecord(id);
+      if (rec && !this.cancelled.has(id) && this.deadlines.mustNotStart(id)) {
+        this.heldByDeadline.add(id);
+        continue;
+      }
+      this.queue.splice(this.queue.indexOf(job), 1);
       if (!rec) continue;
       if (this.cancelled.has(id)) {
         this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
         continue;
       }
-      if (this.deadlines.mustNotStart(id)) continue;
       this.activeJobs.set(id, job);
       const task = outsideRunScope(() => this.runJob(id, rec)); // never an enqueuer's scope
       this.activeTasks.add(task);
@@ -543,28 +552,7 @@ export class DaemonServer {
         } catch {
           /* observer failure must not corrupt terminal bookkeeping */
         }
-      } else if (rec.error) {
-        // Failure-shaped terminal with NO run ever bound: the refusal happened
-        // before the run materialized. If this job carried a pre-created thread
-        // turn, persist the reason on it (honest inline refusal, INV-093).
-        const turnId = (rec.params as { turnId?: unknown } | null | undefined)?.turnId;
-        if (typeof turnId === "string" && turnId) {
-          try {
-            this.opts.onTurnEnqueueFailed?.(
-              turnId,
-              TurnEnqueueProblem.parse({
-                message: rec.error,
-                code: rec.errorCode ?? null,
-                retryable: rec.errorRetryable ?? true,
-                required_actions: rec.errorRequiredActions ?? [],
-                context: rec.errorContext ?? {},
-              }),
-            );
-          } catch {
-            /* observer failure must not corrupt terminal bookkeeping */
-          }
-        }
-      }
+      } else reportPreRunRefusal(rec, this.opts.onTurnEnqueueFailed);
       try {
         this.pruneHistory();
         if (!this.stopping) this.drain();

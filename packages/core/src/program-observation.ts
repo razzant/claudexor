@@ -5,6 +5,7 @@ import type {
 } from "@claudexor/schema";
 import { composeSpawnEnv } from "./env-scope.js";
 import { harnessBinaryIdentityOnPath } from "./runtime-env.js";
+import { sharedLaunch } from "./run-spawn.js";
 import {
   resolveSelectedProgramAsync,
   selectProgramEntry,
@@ -136,7 +137,11 @@ export async function observeHarnessProgram(
   if (entry.pending) return entry.pending;
   if (entry.known && !options.fresh) return read();
   const revision = (entry.sequence = ++sequence);
-  const pending = resolveSelectedProgramAsync(program, resolution)
+  // One version probe serves every concurrent caller: it launches outside the
+  // first caller's run scope, so no run's stop or deadline ends it for the others.
+  const pending = sharedLaunch("program-version", () =>
+    resolveSelectedProgramAsync(program, resolution),
+  )
     .then((answer) => {
       if (
         remembered.get(key) === entry &&

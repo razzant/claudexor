@@ -10,7 +10,7 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { RunDeadlineSnapshot } from "@claudexor/schema";
-import { unregisterScopeCgroup, unregisterScopeFence } from "@claudexor/core";
+import { unregisterScopeCgroup, unregisterScopeFence, type RunScopeEntry } from "@claudexor/core";
 import { systemDeadlineClock, type RunDeadlineClock } from "./run-deadline-clock.js";
 import {
   convertInstant,
@@ -25,12 +25,17 @@ import type { DeadlineBoundary } from "./run-deadline-cgroup.js";
 import {
   RECORD_VERSION,
   fileRecordIo,
+  frozenOf,
   governingBound,
   isRecordFileName,
+  priorPath,
   readClaim,
+  readPrior,
   readRecord,
+  readRecordInForce,
   readWardenOutcome,
   recordFileName,
+  removeRecordFiles,
   snapshotOf,
   writeRecord,
   type Bound,
@@ -43,13 +48,17 @@ import { RUN_DEADLINE_STOP_GRACE_SEC } from "./run-deadline-warden.js";
 export interface Entry {
   jobId: string;
   path: string;
+  /** The last confirmed record (or one in effect whose durability is unknown). */
   record: DeadlineRecord;
   children: Set<string>;
   timer?: ReturnType<typeof setTimeout>;
-  /** The job reached its terminal: no timer is armed again, no set is decided. */
+  /** The job reached its terminal: no timer is armed again, no set is confirmed. */
   closing: boolean;
-  /** The terminal's own facts, taken when it arrived (it decides closed or expired). */
-  terminal?: { at: bigint; claimed: boolean };
+  /** The terminal's own facts, taken the moment it arrived: they alone decide
+   * closed or expired and the deadline it ended under (its parent's cap included). */
+  terminal?: { at: bigint; claimed: boolean; won: boolean; bound: Bound | null };
+  /** The deadline won (claimed, the job aborted): no set is decided, nothing launches. */
+  won: boolean;
   wardenStarted: boolean;
   /** Serializes this job's transitions. */
   chain: Promise<unknown>;
@@ -91,6 +100,9 @@ export abstract class RunDeadlineStore {
   protected readonly staged = new Map<string, DeadlineRecord>();
   /** Record files whose job was forgotten but that a warden or a dependent may still need. */
   protected readonly orphans = new Set<string>();
+  /** Terminal records startup decided for an earlier generation (by file), even
+   * when the write failed: this generation's answers read the decision. */
+  protected readonly settled = new Map<string, DeadlineRecord>();
   protected readonly clock: RunDeadlineClock;
   readonly stopGraceSec: number;
   protected readonly io: RecordIo;
@@ -106,8 +118,16 @@ export abstract class RunDeadlineStore {
       (file: string) =>
         this.byFile.get(file)?.record ??
         this.stagedByFile(file) ??
+        this.settled.get(file) ??
         (opts.dir ? readRecord(join(opts.dir, file)) : null),
-      { claim: (file: string) => (opts.dir ? readClaim(join(opts.dir, file)) : null) },
+      {
+        claim: (file: string) => (opts.dir ? readClaim(join(opts.dir, file)) : null),
+        // A record held here is cached as the record in force: no prior applies.
+        prior: (file: string) =>
+          opts.dir && !this.byFile.has(file) && !this.stagedByFile(file)
+            ? readPrior(join(opts.dir, file))
+            : null,
+      },
     );
   }
 
@@ -120,13 +140,22 @@ export abstract class RunDeadlineStore {
     return convertInstant(at, this.clock);
   }
 
-  /** A job's record: the cached one, else the durable one; null when it has none. */
+  /**
+   * A job's record: the cached one, else the durable one; null when it has none.
+   * A record that exists but cannot be read is a storage failure (503,
+   * retryable), never an absent deadline: nothing falls open on an I/O error.
+   */
   recordOf(jobId: string): DeadlineRecord | null {
-    const cached = this.entries.get(jobId)?.record ?? this.staged.get(jobId);
+    const cached =
+      this.entries.get(jobId)?.record ??
+      this.staged.get(jobId) ??
+      this.settled.get(recordFileName(jobId));
     if (cached) return cached;
     if (!this.opts.dir) return null;
-    const read = readRecord(this.path(jobId));
-    return read && read !== "unreadable" ? read : null;
+    const read = readRecordInForce(this.path(jobId));
+    if (read === "unreadable")
+      throw recordUnavailable(new Error(`the deadline record of ${jobId} cannot be read`));
+    return read;
   }
 
   /** The deadline that governs a record's processes now, on this host's clock. */
@@ -190,7 +219,7 @@ export abstract class RunDeadlineStore {
     } catch (error) {
       this.staged.delete(jobId);
       try {
-        this.io.remove(this.path(jobId));
+        removeRecordFiles(this.path(jobId), this.io);
       } catch {
         /* nothing was accepted; the startup sweep removes an unretained record */
       }
@@ -203,7 +232,7 @@ export abstract class RunDeadlineStore {
   unstage(jobId: string): void {
     if (!this.staged.delete(jobId) || !this.opts.dir) return;
     try {
-      this.io.remove(this.path(jobId));
+      removeRecordFiles(this.path(jobId), this.io);
     } catch {
       /* the startup sweep removes a record of an unretained job */
     }
@@ -212,6 +241,32 @@ export abstract class RunDeadlineStore {
   /** The staged record of a job not yet committed (null when it holds none). */
   stagedRecord(jobId: string): DeadlineRecord | null {
     return this.staged.get(jobId) ?? null;
+  }
+
+  /**
+   * The deadline as it stands, without any transition: no pending change is
+   * awaited and a due deadline is not enforced here (the timer and the warden
+   * do that). What a read-only lookup and the receipts project.
+   */
+  peek(jobId: string): RunDeadlineSnapshot | null {
+    const entry = this.entries.get(jobId);
+    return entry ? this.snapshotOfEntry(entry) : this.durableSnapshot(jobId);
+  }
+
+  /**
+   * A run-scope row of one of this registry's runs was settled and retired from
+   * the index: its recorded groups and descendants stay in the record, so the
+   * warden can still prove them gone after a normal terminal.
+   */
+  keepRetiredScope(row: RunScopeEntry): void {
+    for (const entry of this.entries.values()) {
+      if (!entry.record.markers.includes(row.marker)) continue;
+      void this.serialized(entry, async () => {
+        const scopes = [...(entry.record.scopes ?? []).filter((s) => s.marker !== row.marker), row];
+        await this.commit(entry, { ...entry.record, scopes }, "keep");
+      }).catch(() => {});
+      return;
+    }
   }
 
   /** A record this daemon holds no entry for (an earlier generation's, or forgotten). */
@@ -259,6 +314,7 @@ export abstract class RunDeadlineStore {
       states,
       io: this.io,
       onFault: this.opts.onFault,
+      decided: (name, record) => this.settled.set(name, record),
     });
     for (const name of removable) this.orphans.add(name);
     this.sweep();
@@ -278,9 +334,10 @@ export abstract class RunDeadlineStore {
     return this.opts.dir ? existsSync(`${this.path(jobId)}.enforcing`) : false;
   }
 
-  /** The durable fact that `bound` won, before any stop or restoring write. */
-  protected claimFloor(entry: Entry, revision: number, bound: Bound | null): void {
-    if (!bound) return;
+  /** The durable fact that `bound` won, before any stop or restoring write. True
+   * when a claim stands afterwards (written now, or already there). */
+  protected claimFloor(entry: Entry, revision: number, bound: Bound | null): boolean {
+    if (!bound) return false;
     try {
       this.io.claim(entry.path, {
         revision,
@@ -288,8 +345,10 @@ export abstract class RunDeadlineStore {
         targetNs: bound.target.toString(),
         by: "daemon",
       });
+      return true;
     } catch (error) {
       this.opts.onFault?.(`run-deadline claim of ${entry.jobId} not written`, error);
+      return this.claimed(entry.jobId);
     }
   }
 
@@ -298,20 +357,32 @@ export abstract class RunDeadlineStore {
   }
 
   protected snapshotOfEntry(entry: Entry): RunDeadlineSnapshot {
-    const snapshot = snapshotOf(entry.record, {
+    let record = entry.record;
+    // A terminal that arrived before its write landed: report what it writes.
+    if (entry.terminal && (record.state === "armed" || record.state === "enforcing"))
+      record = this.terminalRecord(entry);
+    else if (entry.won && record.state === "armed") record = { ...record, state: "enforcing" };
+    return snapshotOf(record, {
       read: this.reader,
       claimed: this.claimed(entry.jobId),
       outcome: readWardenOutcome(entry.path),
       serverNow: new Date(this.clock.wallNow()).toISOString(),
       stopGraceSec: this.stopGraceSec,
     })!;
-    // A terminal that arrived after this answer was decided: report what it writes.
-    if (entry.terminal && snapshot.state === "armed") {
-      const bound = this.governing(entry.record);
-      const won = entry.terminal.claimed || (bound !== null && entry.terminal.at >= bound.target);
-      return { ...snapshot, state: won ? "expired" : "closed" };
-    }
-    return snapshot;
+  }
+
+  /** The record the terminal writes, from its captured facts alone. */
+  protected terminalRecord(entry: Entry): DeadlineRecord {
+    const terminal = entry.terminal!;
+    const expired =
+      terminal.won ||
+      terminal.claimed ||
+      (terminal.bound !== null && terminal.at >= terminal.bound.target);
+    return {
+      ...entry.record,
+      state: expired ? "expired" : "closed",
+      frozen: terminal.bound ? frozenOf(terminal.bound) : null,
+    };
   }
 
   protected terminalRefusal(record: DeadlineRecord | null): Error {
@@ -339,9 +410,12 @@ export abstract class RunDeadlineStore {
 
   /**
    * Replace the cached record durably. On a failed write:
-   * - refuse: the cache follows the disk and the change is refused, typed;
-   * - adopt: the cache follows the disk (what every reader sees), the fault is reported;
+   * - refuse: the cache follows what is in force on disk and the change is refused, typed;
+   * - adopt: the cache follows what is in force on disk, the fault is reported;
    * - keep: the decision stands in memory (a terminal), the fault is reported.
+   * Once written, the record file is the record in force: a prior left by a
+   * change that did not commit goes (best effort; it names an older revision
+   * or this one, so a prior left over only ever makes the deadline earlier).
    */
   protected async commit(
     entry: Entry,
@@ -353,7 +427,7 @@ export abstract class RunDeadlineStore {
     } catch (error) {
       if (onFailure === "keep") entry.record = next;
       else {
-        const disk = readRecord(entry.path);
+        const disk = readRecordInForce(entry.path);
         if (disk && disk !== "unreadable") entry.record = disk;
       }
       if (onFailure === "refuse") throw recordUnavailable(error);
@@ -361,7 +435,18 @@ export abstract class RunDeadlineStore {
       return false;
     }
     entry.record = next;
+    this.dropPrior(entry);
     return true;
+  }
+
+  /** Remove the prior beside a record when there is one (best effort, reported). */
+  protected dropPrior(entry: Entry): void {
+    if (!existsSync(priorPath(entry.path))) return;
+    try {
+      this.io.remove(priorPath(entry.path));
+    } catch (error) {
+      this.opts.onFault?.(`run-deadline prior of ${entry.jobId} not removed`, error);
+    }
   }
 
   /** Forget a job in memory; its files join the orphans the next sweep removes. */
@@ -379,6 +464,7 @@ export abstract class RunDeadlineStore {
       this.entries.delete(jobId);
       this.byFile.delete(recordFileName(jobId));
     }
+    this.settled.delete(recordFileName(jobId));
     if (this.opts.dir) this.orphans.add(recordFileName(jobId));
   }
 

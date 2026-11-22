@@ -150,10 +150,10 @@ export abstract class DaemonRpcMethods {
   runTimeLimit(id: string, request: RunTimeLimitRequest) {
     return this.call<RunTimeLimitSnapshot>("claudexor.runTimeLimit", { id, request });
   }
-  /** run-deadline/1: read, or set with the expected revision. */
+  /** run-deadline/1: read, project without any transition (`peek`), or set with the expected revision. */
   runDeadline(
     id: string,
-    request: { action: "read" } | ({ action: "set" } & RunDeadlineSetRequest),
+    request: { action: "read" | "peek" } | ({ action: "set" } & RunDeadlineSetRequest),
   ) {
     return this.call<RunDeadlineSnapshot>("claudexor.runDeadline", { id, request });
   }

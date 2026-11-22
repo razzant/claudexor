@@ -48,11 +48,10 @@ import {
 } from "@claudexor/core";
 import type { RunScopeCustodian } from "@claudexor/orchestrator";
 import {
-  describe,
   earlierBirth,
   orderCaptured,
   reapSources,
-  summarize,
+  retireOrKeepRow,
   type RunScopeEntry,
   type RunScopeRootGroup,
 } from "./run-scope-index-rows.js";
@@ -108,6 +107,8 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   /** Per capture pass in flight: the groups proven empty since its snapshot began. */
   private readonly capturePasses = new Set<Set<number>>();
   private unsubscribe: (() => void) | null = null;
+  /** Observers of rows retired once settled (run-deadline/1 keeps them in the run's record). */
+  private readonly retiredListeners = new Set<(entry: RunScopeEntry) => void>();
   /** Set when the index file had to be preserved aside; surfaced as a startup action. */
   private unreadableNotice: string | null = null;
   private readonly log: (message: string) => void;
@@ -168,6 +169,16 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   /** Observe later settlement attempts of finished runs (#613); returns the unsubscribe. */
   onLaterSettlement(listener: LaterSettlementListener): () => void {
     return this.late.subscribe(listener);
+  }
+
+  /**
+   * Observe every row retired because its settlement was proven (a copy, with
+   * its outcome): a deadline warden still needs the recorded groups after the
+   * row leaves the index. Returns the unsubscribe.
+   */
+  onRetired(listener: (entry: RunScopeEntry) => void): () => void {
+    this.retiredListeners.add(listener);
+    return () => this.retiredListeners.delete(listener);
   }
 
   /** Stop observing registrations (tests; the daemon's index lives as long as the daemon). */
@@ -542,23 +553,9 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     return compareProcessIdentity(entry.owner, observed) === "same";
   }
 
-  /** Retire or keep the entry; returns the disclosure, which names a retirement without proof. */
+  /** Retire or keep the entry (`retireOrKeepRow`); returns the disclosure. */
   private retireOrKeep(entry: RunScopeEntry, outcome: ScopeReapOutcome): string {
-    const entries = this.load();
-    // A host with no census at all (`unsupported`, Windows) can never settle
-    // an entry: keeping it would re-reap it at every start and grow the file
-    // without bound, so it is retired once its outcome has been disclosed.
-    if (outcome.settled || outcome.census === "unsupported") {
-      const at = entries.indexOf(entry);
-      if (at >= 0) entries.splice(at, 1);
-      return outcome.settled
-        ? describe(entry, outcome)
-        : `${describe(entry, outcome)}; retired without proof (no environment census on this platform)`;
-    }
-    entry.state = "unresolved";
-    entry.settled_at ??= this.now();
-    entry.outcome = summarize(outcome);
-    return describe(entry, outcome);
+    return retireOrKeepRow(this.load(), entry, outcome, this.now, this.retiredListeners);
   }
 
   private owner(): Promise<KnownProcessIdentity | null> {

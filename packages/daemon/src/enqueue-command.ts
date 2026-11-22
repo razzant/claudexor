@@ -123,7 +123,8 @@ function acceptance(
 export interface CommitReservation {
   /** Before the commit, asynchronously; a refusal is kept for `reserve`. */
   prepare(jobId: string, request: unknown): Promise<void>;
-  /** At the commit, synchronously: a kept refusal throws and nothing is accepted. */
+  /** Inside the acceptance transaction, after replay resolution, synchronously:
+   * a kept refusal (or a deadline reached meanwhile) throws and nothing is accepted. */
   reserve(jobId: string, request: unknown): void;
   /** The commit did not create this job (a replay won or it failed): drop what was prepared. */
   release(jobId: string): void;
@@ -170,8 +171,11 @@ export async function enqueueStaged(
           operation,
           stamp,
         );
-        deps.reservation?.reserve(stamp.id, input.params);
-        return store.accept(input);
+        // Judged inside the acceptance transaction, after replays: the key binds
+        // only if the deadline still holds when the rows are written.
+        return store.accept(input, {
+          admit: () => deps.reservation?.reserve(stamp.id, input.params),
+        });
       },
     });
   } catch (error) {

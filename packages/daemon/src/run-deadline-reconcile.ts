@@ -19,15 +19,19 @@
  * A dependent's deadline therefore never rises because its parent's record
  * went; removing a dependent can free its parent in the same sweep.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { RunDeadlineClock } from "./run-deadline-clock.js";
 import {
   enforcementClaimed,
+  fileRecordIo,
   frozenOf,
   isRecordFileName,
+  priorPath,
   readRecord,
-  removeRecordFiles as removeFiles,
+  readRecordInForce,
+  removeRecordFiles,
+  sidecarOwner,
   wardenDonePath,
   wardenReadyPath,
   writeRecord,
@@ -46,20 +50,39 @@ export interface ReconcileDeps {
   states(jobIds: string[]): Map<string, string>;
   io?: RecordIo;
   onFault?: (message: string, error: unknown) => void;
+  /** The terminal record decided for an earlier generation's job, written or not:
+   * every answer of this generation reads it, so they agree with each other. */
+  decided?: (name: string, record: DeadlineRecord) => void;
 }
 
 /** Reconcile (pass 1) and return the record files to offer for removal (pass 2). */
 export async function reconcileRecords(deps: ReconcileDeps): Promise<string[]> {
   const { dir, clock } = deps;
-  let names: string[];
+  let all: string[];
   try {
-    names = readdirSync(dir).filter(isRecordFileName);
+    all = readdirSync(dir);
   } catch {
     return [];
   }
+  const names = all.filter(isRecordFileName);
+  // No write is in flight at startup: a temporary file is a cut-short write, and
+  // a sidecar whose record is gone is the rest of a cut-short removal.
+  const present = new Set(names);
+  for (const name of all) {
+    const owner = sidecarOwner(name);
+    if (owner && (name.endsWith(".tmp") || !present.has(owner)))
+      try {
+        (deps.io ?? { remove: (path: string) => rmSync(path, { force: true }) }).remove(
+          join(dir, name),
+        );
+      } catch (error) {
+        deps.onFault?.(`run-deadline leftover ${name} not removed`, error);
+      }
+  }
   const records = names.map((name) => {
     const path = join(dir, name);
-    const record = readRecord(path);
+    // The record in force: a change the earlier generation did not commit is not.
+    const record = readRecordInForce(path);
     return {
       name,
       path,
@@ -86,12 +109,15 @@ export async function reconcileRecords(deps: ReconcileDeps): Promise<string[]> {
       record.state === "enforcing" ||
       enforcementClaimed(path) ||
       (state === "interrupted" && passed);
+    const terminal: DeadlineRecord = {
+      ...record,
+      state: won ? "expired" : "closed",
+      frozen: bound ? frozenOf(bound) : null,
+    };
+    deps.decided?.(name, terminal);
     try {
-      await writeRecord(
-        path,
-        { ...record, state: won ? "expired" : "closed", frozen: bound ? frozenOf(bound) : null },
-        deps.io,
-      );
+      await writeRecord(path, terminal, deps.io);
+      if (existsSync(priorPath(path))) (deps.io ?? fileRecordIo).remove(priorPath(path));
     } catch (error) {
       deps.onFault?.(`run-deadline record of ${jobId} not reconciled`, error);
     }
@@ -141,7 +167,7 @@ export function sweepRecords(deps: SweepDeps): string[] {
         }
       if (needed) continue;
       try {
-        (deps.io?.remove ?? removeFiles)(join(deps.dir, name));
+        removeRecordFiles(join(deps.dir, name), deps.io);
       } catch {
         continue;
       }

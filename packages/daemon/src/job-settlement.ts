@@ -4,6 +4,7 @@ import {
   safeProblemContext,
   safeProblemRequiredActions,
 } from "@claudexor/util";
+import { TurnEnqueueProblem } from "@claudexor/schema";
 import { commandStoreForId, type CommandAuthority } from "./command-authority.js";
 import { resultReason, resultSummary, type JobRecord, type JobState } from "./job-record.js";
 
@@ -89,4 +90,32 @@ function thrownField(thrown: unknown, field: string): unknown {
   return thrown && typeof thrown === "object" && field in thrown
     ? (thrown as Record<string, unknown>)[field]
     : undefined;
+}
+
+/**
+ * A failure-shaped terminal with NO run ever bound: the refusal happened
+ * before the run materialized. If the job carried a pre-created thread turn,
+ * its reason is persisted on the turn (honest inline refusal, INV-093).
+ */
+export function reportPreRunRefusal(
+  rec: Pick<JobRecord, "params" | "error" | "errorCode" | "errorRetryable"> &
+    Partial<Pick<JobRecord, "errorRequiredActions" | "errorContext">>,
+  report: ((turnId: string, problem: TurnEnqueueProblem) => void) | undefined,
+): void {
+  const turnId = (rec.params as { turnId?: unknown } | null | undefined)?.turnId;
+  if (!rec.error || !report || typeof turnId !== "string" || !turnId) return;
+  try {
+    report(
+      turnId,
+      TurnEnqueueProblem.parse({
+        message: rec.error,
+        code: rec.errorCode ?? null,
+        retryable: rec.errorRetryable ?? true,
+        required_actions: rec.errorRequiredActions ?? [],
+        context: rec.errorContext ?? {},
+      }),
+    );
+  } catch {
+    /* observer failure must not corrupt terminal bookkeeping */
+  }
 }

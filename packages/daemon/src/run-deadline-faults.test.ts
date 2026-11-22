@@ -1,349 +1,136 @@
 /**
- * run-deadline/1 protocol under faults: one systematic matrix instead of one
- * test per race. Every record file operation the daemon makes (stage, publish,
- * flush, discard, claim, remove — `RecordIo`) is numbered; a plan fails one of
- * them (an exception), "kills the process" at one (it and everything after it
- * never happens; a fresh registry then reconciles the directory), or runs a
- * concurrent event right after one (the host clock jumps, the warden claims,
- * the terminal arrives). The clock is frozen and moved only by the plan.
+ * run-deadline/1 under faults: the four invariants (ARCHITECTURE "Run
+ * deadlines"), checked over generated plans instead of one test per race.
  *
- * After every case the same invariants are checked against what the warden
- * itself would enforce (`governingBound` over the files on disk, the claim
- * floor included):
- * - agreement: the answer, the live read, the record on disk and the warden's
- *   deadline name the same deadline;
- * - no late deadline: what is enforced is never later than the last renewal
- *   decided in time (before the replaced deadline), and after a refusal never
- *   later than the replaced deadline;
- * - a terminal that arrived before a set was decided wins: the set is refused
- *   and the job's record is closed, never turned expired by the set;
- * - a Delegate child's deadline never rises because its parent's record went;
- * - an acceptance whose deadline passed before its commit is refused and
- *   takes no idempotency key.
+ * Every record file operation the daemon makes (stage, publish, flush, discard,
+ * claim, remove — `RecordIo`) is numbered. A plan is a sequence of events at
+ * operation numbers: a failure (the operation throws), a death (it and every
+ * later operation never happen; a fresh generation reconciles the directory,
+ * itself possibly with failing or dying writes), or a concurrent event right
+ * after the operation (the host clock passes the replaced deadline, passes the
+ * warden's head start too, the warden claims, the terminal arrives). Plans are
+ * grown from dry runs, so every planned event exists in its run, and every case
+ * asserts that each planned event fired. The clock is frozen and moves only by
+ * the plan; event-loop timers are faked inside a scenario.
+ *
+ * Invariants, checked against what the warden itself enforces (`governingBound`
+ * over the files on disk: the record, its claim and its prior):
+ * 1. publication: the new revision is renamed into place only before both the
+ *    replaced and the requested deadline, with no claim and no terminal;
+ * 2. confirmation: a set answered ok committed (the prior's removal, decided
+ *    before the replaced deadline plus the head start with no claim and no
+ *    terminal) and flushed that commit; a commit that was visible but not
+ *    flushed answers outcome unknown and GET reports it;
+ * 3. terminal: a terminal before the commit wins — the set is refused and every
+ *    answer reports the terminal's own facts (closed or expired, the revision
+ *    and deadline in force when it arrived); one after it ends the new revision;
+ * 4. floor: until a commit, the warden's deadline is never later than the one
+ *    replaced, whatever failed and whoever died; it rises only at the commit.
+ * After a restart (itself with failing or dying writes) every answer of the new
+ * generation agrees with the others and with the terminal's facts.
+ *
+ * The renewal matrix is split by its first event over this file,
+ * `run-deadline-faults-claims.test.ts` and `run-deadline-faults-io.test.ts`
+ * (they run side by side); the harness is `test-support/run-deadline-faults.ts`.
  */
-import { mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { RunFacts, SCHEMA_VERSION, makeOutcomeFacts } from "@claudexor/schema";
+import { RunScopeSpentError, SCOPE_MARKER_VALUE, spawnRunOwned } from "@claudexor/core";
 import { DaemonLocalClient } from "./daemon-local-client.js";
-import type { RunDeadlineClock } from "./run-deadline-clock.js";
 import {
-  diskReader,
   fileRecordIo,
-  governingBound,
-  readClaim,
+  priorPath,
   readRecord,
   wardenReadyPath,
   writeJsonAtomic,
   type DeadlineRecord,
   type RecordIo,
 } from "./run-deadline-record.js";
-import { RunDeadlines } from "./run-deadlines.js";
+import type { RunDeadlines } from "./run-deadlines.js";
 import { DaemonServer, type RunnerFn } from "./server.js";
 import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
 import { legacyCommandFixture } from "./store/test-support/legacy-command-fixture.js";
+import { sqlFixture } from "./store/test-support/sql-fixture.js";
+import {
+  MARKER,
+  Ops,
+  frozenClock,
+  generation,
+  hold,
+  outcome,
+  registry,
+  removeTemps,
+  setCase,
+  setMatrix,
+  temp,
+  wardenBound,
+  withFakeTimers,
+  type Clock,
+  type Kind,
+} from "./test-support/run-deadline-faults.js";
 
-const dirs: string[] = [];
-afterAll(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-}, 0);
-const temp = () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "d-rdf-")));
-  dirs.push(dir);
-  return dir;
-};
+afterAll(removeTemps, 0);
 
-const SEC = 1_000_000_000n;
-const HEAD_MS = 1_000;
+const CASES = await setMatrix(["deadline", "head-start"], true);
 
-/** A frozen clock the plan moves: host and wall together. */
-function frozenClock() {
-  let host = 1_000n * SEC;
-  let wall = Date.parse("2026-11-22T12:00:00.000Z");
-  const clock: RunDeadlineClock = {
-    kind: "boottime",
-    bootId: () => "boot-fault",
-    hostNow: () => host,
-    wallNow: () => wall,
-  };
-  return {
-    clock,
-    advance(ms: number) {
-      host += BigInt(ms) * 1_000_000n;
-      wall += ms;
-    },
-    host: () => host,
-    iso: (ms: number) => new Date(wall + ms).toISOString(),
-  };
-}
-
-class ProcessDied extends Error {
-  readonly code = "EPROCESSDIED";
-}
-
-type Event =
-  | { at: number; kind: "throw" }
-  | { at: number; kind: "crash" }
-  | { at: number; kind: "hook"; name: string; run: () => void };
-
-/**
- * Number every record operation from `start()` on; apply the plan's events to
- * them. `hostAfter[n]` is the host clock when operation n (and its hook) ended.
- */
-function faultyIo(events: Event[], now: () => bigint = () => 0n) {
-  let n = 0;
-  let counting = false;
-  let dead = false;
-  const ops: string[] = [];
-  const hostAfter: bigint[] = [];
-  const enter = (name: string): Event | undefined => {
-    if (dead) throw new ProcessDied(`${name} after the process died`);
-    if (!counting) return undefined;
-    n += 1;
-    ops.push(name);
-    const event = events.find((e) => e.at === n);
-    if (event?.kind === "throw")
-      throw Object.assign(new Error(`injected ${name} failure`), { code: "EIO" });
-    if (event?.kind === "crash") {
-      dead = true;
-      throw new ProcessDied(`the process died at ${name}`);
-    }
-    return event;
-  };
-  const after = (event: Event | undefined) => {
-    if (event?.kind === "hook") event.run();
-    if (counting) hostAfter[n] = now();
-  };
-  const io: RecordIo = {
-    async stage(path, record) {
-      const event = enter("stage");
-      const tmp = await fileRecordIo.stage(path, record);
-      after(event);
-      return tmp;
-    },
-    async publish(tmp, path) {
-      const event = enter("publish");
-      await fileRecordIo.publish(tmp, path);
-      after(event);
-    },
-    async flush(dir) {
-      const event = enter("flush");
-      await fileRecordIo.flush(dir);
-      after(event);
-    },
-    async discard(tmp) {
-      const event = enter("discard");
-      await fileRecordIo.discard(tmp);
-      after(event);
-    },
-    claim(path, claim) {
-      const event = enter("claim");
-      const made = fileRecordIo.claim(path, claim);
-      after(event);
-      return made;
-    },
-    remove(path) {
-      const event = enter("remove");
-      fileRecordIo.remove(path);
-      after(event);
-    },
-  };
-  return {
-    io,
-    ops,
-    hostAfter,
-    dead: () => dead,
-    start: () => {
-      counting = true;
-    },
-  };
-}
-
-/** What the warden enforces for a record file now (its own function over the disk). */
-function wardenBound(dir: string, file: string) {
-  const record = readRecord(join(dir, file));
-  if (!record || record === "unreadable") return null;
-  return governingBound(record, diskReader(dir));
-}
-
-const registry = (
-  dir: string,
-  time: ReturnType<typeof frozenClock>,
-  io: RecordIo = fileRecordIo,
-  onExpire: (jobId: string) => void = () => {},
-) =>
-  new RunDeadlines({
-    dir,
-    clock: time.clock,
-    io,
-    headStartMs: HEAD_MS,
-    spawnWarden: async () => ({ pid: 1 }),
-    platform: "linux",
-    onExpire,
-  });
-
-async function hold(
-  deadlines: RunDeadlines,
-  jobId: string,
-  at: string | null,
-  parentJobId: string | null = null,
-) {
-  await deadlines.stage(jobId, {
-    own: at ? deadlines.toPoint(at) : null,
-    successorOf: null,
-    parentJobId,
-  });
-  deadlines.admit(jobId);
-}
-
-const outcome = <T>(work: Promise<T>) =>
-  work.then(
-    (value) => ({ ok: true as const, value }),
-    (error: { code?: string }) => ({ ok: false as const, code: error.code ?? String(error) }),
-  );
-
-/** A fresh daemon generation over the same directory: reconcile with the job's state. */
-async function restart(
-  dir: string,
-  time: ReturnType<typeof frozenClock>,
-  states: Record<string, string>,
-) {
-  const next = registry(dir, time);
-  await next.reconcile(
-    (ids) => new Map(ids.filter((id) => states[id]).map((id) => [id, states[id]!])),
-  );
-  return next;
-}
-
-describe("run-deadline/1 under faults: a set racing the deadline, the warden and the terminal", () => {
-  // The renewal's own operations (stage, publish, flush) and, when the replaced
-  // deadline may have won, the claim and the restoring write after them.
-  const POINTS = [1, 2, 3, 4, 5, 6, 7];
-  type Concurrent = "deadline" | "head-start" | "warden" | "terminal";
-  const cases: Array<{
-    name: string;
-    hookAt: number | null;
-    hook: Concurrent | null;
-    fault: "throw" | "crash" | null;
-    faultAt: number | null;
-  }> = [];
-  for (const hook of [null, "deadline", "head-start", "warden", "terminal"] as const)
-    for (const hookAt of hook ? [1, 2, 3] : [null])
-      for (const fault of [null, "throw", "crash"] as const)
-        for (const faultAt of fault
-          ? POINTS.filter((p) => hookAt === null || p !== hookAt)
-          : [null])
-          cases.push({
-            name: `${hook ? `${hook} after op ${hookAt}` : "no concurrent event"}, ${fault ? `${fault} at op ${faultAt}` : "no fault"}`,
-            hookAt,
-            hook,
-            fault,
-            faultAt,
-          });
-
-  it.each(cases)("$name", async ({ hookAt, hook, fault, faultAt }) => {
-    const dir = temp();
-    const time = frozenClock();
-    const path = join(dir, "job.json");
-    let T0 = 0n;
-    let terminalAt: bigint | null = null;
-    const events: Event[] = [];
-    let deadlines!: RunDeadlines;
-    if (hook && hookAt !== null)
-      events.push({
-        at: hookAt,
-        kind: "hook",
-        name: hook,
-        run: () => {
-          if (hook === "deadline") time.advance(10_500); // past the replaced deadline, inside the head start
-          if (hook === "head-start") time.advance(12_000); // past it and the warden's head start
-          if (hook === "warden") {
-            // The warden judged the replaced revision due and claims it.
-            time.advance(12_000);
-            writeFileSync(
-              `${path}.enforcing`,
-              JSON.stringify({ revision: 0, at: "x", targetNs: T0.toString(), by: "warden" }),
-            );
-          }
-          if (hook === "terminal") {
-            terminalAt = time.host();
-            deadlines.close("job");
-          }
-        },
-      });
-    if (fault && faultAt !== null) events.push({ at: faultAt, kind: fault });
-    const faulty = faultyIo(events, time.host);
-    deadlines = registry(dir, time, faulty.io);
-    await hold(deadlines, "job", time.iso(10_000));
-    T0 = wardenBound(dir, "job.json")!.target;
-    const requestedTarget = T0 + 50n * SEC;
-    faulty.start();
-    const answer = await outcome(
-      deadlines.set("job", { at: time.iso(60_000), expectedRevision: 0 }, { delegated: false }),
-    );
-    // The renewal was decided right after its staging write (operation 1): in
-    // time when the clock was before the replaced deadline and neither the
-    // terminal nor a claim came first.
-    const decidedAt = faulty.ops[0] === "stage" ? faulty.hostAfter[1] : undefined;
-    const timely =
-      decidedAt !== undefined &&
-      decidedAt < T0 &&
-      !(hookAt === 1 && (hook === "terminal" || hook === "warden"));
-
-    if (faulty.dead()) {
-      // The process died: no answer stands. What the warden enforces is never
-      // later than a renewal decided in time, and a fresh generation agrees.
-      const enforced = wardenBound(dir, "job.json");
-      expect(enforced).not.toBeNull();
-      expect(enforced!.target <= (timely ? requestedTarget : T0)).toBe(true);
-      const next = await restart(dir, time, { job: "interrupted" });
-      expect(next.durableSnapshot("job")!.at).toBe(enforced!.at);
-      expect(wardenBound(dir, "job.json")!.target).toBe(enforced!.target);
-      await next.dispose();
-      await deadlines.dispose();
-      return;
-    }
-
-    const live = await deadlines.read("job");
-    const disk = readRecord(path);
-    const claim = readClaim(path);
-    const enforced = wardenBound(dir, "job.json");
-    expect(disk, "the record").not.toBe("unreadable");
-    expect(live, "the live read").not.toBeNull();
-    // Agreement: the live read, the record and the warden name one deadline.
-    expect(live!.at).toBe(enforced!.at);
-    if (answer.ok) {
-      expect(timely, "a confirmed renewal was decided in time").toBe(true);
-      expect(answer.value.at).toBe(live!.at);
-      expect(answer.value.revision).toBe(live!.revision);
-      expect(enforced!.target).toBe(requestedTarget);
-      expect(claim, "no claim stands against a confirmed renewal").toBeNull();
-    } else {
-      // A refusal keeps the replaced deadline in force.
-      expect(enforced!.target <= T0).toBe(true);
-      expect([
-        "run_deadline_expired",
-        "run_deadline_closed",
-        "run_deadline_record_unavailable",
-      ]).toContain(answer.code);
-      if (answer.code === "run_deadline_expired")
-        expect(["enforcing", "expired"]).toContain(live!.state);
-    }
-    if (hook === "terminal" && terminalAt !== null && terminalAt < T0) {
-      // The terminal arrived before the deadline: never expired by the set.
-      if (hookAt === 1) expect(answer).toEqual({ ok: false, code: "run_deadline_closed" });
-      const after = readRecord(path) as DeadlineRecord;
-      if (after.state !== "armed") expect(after.state).toBe("closed");
-      expect(live!.state).toBe("closed");
-    }
-    await deadlines.dispose();
-  });
+describe("run-deadline/1 under faults: one renewal, plans that start with the clock passing a deadline", () => {
+  it.each(CASES)("$name", ({ plan }) => setCase(plan));
 });
 
-describe("run-deadline/1 under faults: removing a Delegate parent's record", () => {
+// ---------------------------------------------------------------------------
+// A record's removal, file by file.
+// ---------------------------------------------------------------------------
+
+describe("run-deadline/1 under faults: a record's files go one by one", () => {
+  /** A finished, expired job with every file: prior, claim, warden outcome, ready, done. */
+  async function finished(dir: string, time: Clock) {
+    const deadlines = registry(dir, time);
+    await hold(deadlines, "job", time.iso(10_000));
+    const path = join(dir, "job.json");
+    const record = readRecord(path) as DeadlineRecord;
+    writeJsonAtomic(priorPath(path), record);
+    time.advance(11_000);
+    deadlines.close("job"); // after its deadline: claimed, expired
+    await deadlines.dispose();
+    for (const file of [`${path}.outcome.json`, wardenReadyPath(path), `${path}.done`])
+      writeJsonAtomic(file, { reason: "reaped" });
+    return deadlines;
+  }
+
+  for (const kind of ["throw", "crash"] as const)
+    for (const at of [1, 2, 3, 4, 5, 6])
+      it(`${kind} at removal ${at}`, async () => {
+        const dir = temp();
+        const time = frozenClock();
+        await finished(dir, time);
+        const ops = new Ops([{ at, kind }]);
+        ops.counting = true;
+        const deadlines = registry(dir, time, ops.io());
+        deadlines.forgetAll(["job"]);
+        ops.assertFired();
+        expect(ops.names.slice(1, at + 1).every((n) => n === "remove")).toBe(true);
+        if (readRecord(join(dir, "job.json"))) {
+          // What is left still answers the terminal's facts.
+          expect(deadlines.durableSnapshot("job")!.state).toBe("expired");
+          expect(wardenBound(dir, "job.json")!.target).toBeDefined();
+        }
+        // The next start removes what a cut-short removal left.
+        const next = await generation(dir, time, {});
+        expect(readdirSync(dir)).toEqual([]);
+        await next.dispose();
+      });
+});
+
+// ---------------------------------------------------------------------------
+// A Delegate family: removal, a pending close, the parent's renewal.
+// ---------------------------------------------------------------------------
+
+describe("run-deadline/1 under faults: a Delegate family", () => {
   /** Parent and child held; the parent shortened after the child was made, both finished. */
-  async function family(dir: string, time: ReturnType<typeof frozenClock>) {
+  async function family(dir: string, time: Clock) {
     const deadlines = registry(dir, time);
     await hold(deadlines, "a-parent", time.iso(100_000));
     await hold(deadlines, "b-child", null, "a-parent");
@@ -352,36 +139,29 @@ describe("run-deadline/1 under faults: removing a Delegate parent's record", () 
       { at: time.iso(40_000), expectedRevision: 0 },
       { delegated: false },
     );
-    await deadlines.read("b-child"); // the child's refresh landed
     // The child's warden still guards survivors; the parent's is done.
     writeJsonAtomic(wardenReadyPath(join(dir, "b-child.json")), { pid: 1 });
-    deadlines.close("b-child");
+    deadlines.close("b-child"); // while its refresh may still be pending
     deadlines.close("a-parent");
-    await deadlines.read("a-parent");
-    await deadlines.read("b-child");
+    await deadlines.dispose();
     return deadlines;
   }
 
   for (const fault of [null, "throw", "crash"] as const)
-    for (const faultAt of fault ? [1, 2, 3] : [null])
-      it(`retention forgets the parent first, then the child (${fault ? `${fault} at removal ${faultAt}` : "no fault"})`, async () => {
+    for (const at of fault ? [1, 2, 3, 4, 5, 6] : [null])
+      it(`retention forgets the parent first, then the child (${fault ? `${fault} at removal ${at}` : "no fault"})`, async () => {
         const dir = temp();
         const time = frozenClock();
-        const first = await family(dir, time);
+        await family(dir, time);
         const cap = wardenBound(dir, "b-child.json")!.target;
-        await first.dispose();
-        const faulty = faultyIo(fault && faultAt ? [{ at: faultAt, kind: fault }] : []);
-        faulty.start();
-        const deadlines = registry(dir, time, faulty.io);
+        const ops = new Ops(fault && at ? [{ at, kind: fault }] : []);
+        const deadlines = registry(dir, time, ops.io());
         const check = () => {
           const bound = wardenBound(dir, "b-child.json");
           if (bound) expect(bound.target <= cap, "the child's deadline never rises").toBe(true);
         };
-        try {
-          deadlines.forgetAll(["a-parent"]);
-        } catch {
-          /* an injected failure */
-        }
+        ops.counting = true;
+        deadlines.forgetAll(["a-parent"]);
         check();
         if (readRecord(join(dir, "b-child.json")))
           expect(
@@ -390,15 +170,12 @@ describe("run-deadline/1 under faults: removing a Delegate parent's record", () 
           ).not.toBeNull();
         // The child's warden finishes; the next retention pass forgets the child.
         writeJsonAtomic(`${join(dir, "b-child.json")}.done`, { reason: "released" });
-        try {
-          deadlines.forgetAll(["b-child"]);
-        } catch {
-          /* an injected failure */
-        }
+        deadlines.forgetAll(["b-child"]);
         check();
+        if (fault) ops.assertFired();
         // Whatever the faults left, a later generation's startup sweep removes both.
-        const next = await restart(dir, time, {});
-        expect(readdirSync(dir).filter((name) => name.endsWith(".json"))).toEqual([]);
+        const next = await generation(dir, time, {});
+        expect(readdirSync(dir)).toEqual([]);
         await next.dispose();
       });
 
@@ -417,94 +194,321 @@ describe("run-deadline/1 under faults: removing a Delegate parent's record", () 
     writeJsonAtomic(wardenReadyPath(join(dir, "b-child.json")), { pid: 1 });
     const cap = wardenBound(dir, "b-child.json")!.target;
     await deadlines.dispose(); // the daemon died with both live
-    // Only the child is retained.
-    const next = await restart(dir, time, { "b-child": "interrupted" });
+    const next = await generation(dir, time, { "b-child": "interrupted" });
     const child = readRecord(join(dir, "b-child.json")) as DeadlineRecord;
     expect(child.state).toBe("closed");
     expect(BigInt(child.frozen!.targetNs)).toBe(cap);
-    expect(wardenBound(dir, "b-child.json")!.target <= cap).toBe(true);
-    // The child's warden may still act: the parent stays.
     expect(readRecord(join(dir, "a-parent.json"))).not.toBeNull();
     await next.dispose();
   });
+
+  /**
+   * The parent extends 40 s → 100 s; the child's terminal arrives at one of the
+   * parent's renewal operations. The child freezes the parent's deadline in
+   * force at that instant: 40 s before the parent's commit, 100 s after it —
+   * never a value the parent confirmed later.
+   */
+  const RENEWAL_OPS = 8; // stage, prior (stage, publish, flush), publish, flush, commit, flush
+  for (let at = 1; at <= RENEWAL_OPS; at++)
+    it(`a child's terminal at the parent's renewal op ${at} freezes the parent's deadline in force then`, async () => {
+      await withFakeTimers(async () => {
+        const dir = temp();
+        const time = frozenClock();
+        let deadlines!: RunDeadlines;
+        let committedBefore = false;
+        const ops = new Ops([{ at, kind: "child-terminal" }], (kind) => {
+          if (kind !== "child-terminal") return;
+          committedBefore = !existsSync(priorPath(join(dir, "a-parent.json"))) && at > 4;
+          deadlines.close("b-child");
+        });
+        deadlines = registry(dir, time, ops.io());
+        await hold(deadlines, "a-parent", time.iso(40_000));
+        await hold(deadlines, "b-child", null, "a-parent");
+        ops.counting = true;
+        const answer = await deadlines.set(
+          "a-parent",
+          { at: time.iso(100_000), expectedRevision: 0 },
+          { delegated: false },
+        );
+        expect(answer.at).toBe(time.iso(100_000));
+        await deadlines.dispose();
+        ops.assertFired();
+        const child = deadlines.peek("b-child")!;
+        expect(child.state).toBe("closed");
+        expect(child.at).toBe(committedBefore ? time.iso(100_000) : time.iso(40_000));
+        const frozen = (readRecord(join(dir, "b-child.json")) as DeadlineRecord).frozen!;
+        expect(frozen.at).toBe(child.at);
+      });
+    });
+
+  /**
+   * The parent renews (extension or shortening) with an event at each of the
+   * child's refresh operations: the child's deadline as the warden enforces it
+   * never exceeds its parent's, whatever failed.
+   */
+  for (const target of [100_000, 20_000])
+    for (const kind of ["throw", "crash", "head-start"] as const)
+      for (let at = 9; at <= 11; at++)
+        it(`the child's refresh after the parent's renewal to ${target / 1000} s, ${kind} at op ${at}`, async () => {
+          await withFakeTimers(async () => {
+            const dir = temp();
+            const time = frozenClock();
+            const ops = new Ops([{ at, kind }], (k) => {
+              if (k === "head-start") time.advance(12_000);
+            });
+            const deadlines = registry(dir, time, ops.io());
+            await hold(deadlines, "a-parent", time.iso(40_000));
+            await hold(deadlines, "b-child", null, "a-parent");
+            ops.counting = true;
+            await outcome(
+              deadlines.set(
+                "a-parent",
+                { at: time.iso(target), expectedRevision: 0 },
+                { delegated: false },
+              ),
+            );
+            if (!ops.dead) await deadlines.dispose();
+            ops.assertFired();
+            const parent = wardenBound(dir, "a-parent.json")!.target;
+            const child = wardenBound(dir, "b-child.json")!.target;
+            expect(child <= parent, "the child never outlives its parent's deadline").toBe(true);
+          });
+        });
+});
+
+// ---------------------------------------------------------------------------
+// attachScope under faults.
+// ---------------------------------------------------------------------------
+
+describe("run-deadline/1 under faults: handing a scope marker to the warden", () => {
+  const ATTACH_OPS = 3; // the marker's record write: stage, publish, flush
+  const cases: Array<{ kind: Kind | "warden-spawn"; at: number }> = [
+    { kind: "warden-spawn", at: 0 },
+  ];
+  for (let at = 1; at <= ATTACH_OPS; at++)
+    for (const kind of ["throw", "crash", "head-start"] as const) cases.push({ kind, at });
+  it.each(cases)("$kind at op $at", async ({ kind, at }) => {
+    await withFakeTimers(async () => {
+      const dir = temp();
+      const time = frozenClock();
+      let spawned = 0;
+      const ops = new Ops(kind === "warden-spawn" ? [] : [{ at, kind: kind as Kind }], (k) => {
+        if (k === "head-start") time.advance(12_000);
+      });
+      const deadlines = registry(dir, time, ops.io(), {
+        spawnWarden: async () => {
+          if (kind === "warden-spawn") throw new Error("no warden");
+          spawned += 1;
+          return { pid: 1 };
+        },
+      });
+      await hold(deadlines, "job", time.iso(10_000));
+      ops.counting = true;
+      const answer = await outcome(deadlines.attachScope("job", MARKER));
+      if (kind !== "warden-spawn") ops.assertFired();
+      if (ops.dead) {
+        await deadlines.dispose();
+        // Whatever the death left, the next generation closes the record.
+        const next = await generation(dir, time, { job: "interrupted" });
+        expect(["closed", "expired"]).toContain(next.durableSnapshot("job")!.state);
+        await next.dispose();
+        return;
+      }
+      const record = readRecord(join(dir, "job.json")) as DeadlineRecord;
+      if (answer.ok) {
+        // Resolved: the marker is durable and its warden runs.
+        expect(record.markers).toContain(MARKER);
+        expect(spawned).toBe(1);
+      } else {
+        expect([
+          "run_deadline_record_unavailable",
+          "run_deadline_expired",
+          undefined,
+          "Error: no warden",
+        ]).toContain(answer.code);
+      }
+      // From the deadline on, nothing carrying the marker launches.
+      time.advance(20_000);
+      const launch = () =>
+        spawnRunOwned(
+          "/bin/true",
+          [],
+          { env: { [MARKER]: SCOPE_MARKER_VALUE } },
+          { spawnFn: () => ({ pid: undefined }) as never },
+        );
+      if (record.markers.includes(MARKER)) expect(launch).toThrow(RunScopeSpentError);
+      await deadlines.dispose();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The daemon: queue promotion, acceptance and the SQL terminal.
+// ---------------------------------------------------------------------------
+
+const CAPS = {
+  max_concurrent: 1,
+  max_concurrent_non_model_jobs: 1,
+  max_concurrent_model_operations: 1,
+  max_parallel_candidates: 1,
+  max_deep_scan_width: 1,
+  max_council_members: 2,
+};
+
+async function legacyDaemon(time: Clock, io: RecordIo, runner: RunnerFn) {
+  const dir = temp();
+  const journal = new DurableJournal({ rootDir: join(dir, "journal"), partition: "global" });
+  const store = new CommandStore(journal);
+  store.recoverAfterStartup();
+  const server = new DaemonServer({
+    socketPath: join(dir, "unused.sock"),
+    token: "token",
+    commands: legacyCommandFixture({ current: () => store }),
+    runtimeConcurrencyCaps: CAPS,
+    runDeadlines: {
+      dir: join(dir, "deadlines"),
+      clock: time.clock,
+      io,
+      spawnWarden: async () => ({ pid: 1 }),
+      platform: "linux",
+      probeBoundary: async () => ({ kind: "marker", reason: "test" }),
+    },
+    runner,
+  });
+  await server.deadlines.startup();
+  return {
+    dir: join(dir, "deadlines"),
+    server,
+    client: new DaemonLocalClient(() => server),
+    async close() {
+      await server.stop();
+      journal.close();
+    },
+  };
+}
+
+async function until<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
+  for (let i = 0; i < 400; i++) {
+    const value = await read();
+    if (done(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("condition not reached");
+}
+
+describe("run-deadline/1 under faults: a queued job promoted during a renewal", () => {
+  for (const late of [false, true])
+    it(`keeps its place while the renewal is pending; ${late ? "a late renewal expires it" : "a timely one starts it"}, and the job behind it is never lost`, async () => {
+      const time = frozenClock();
+      let release!: () => void;
+      let releaseFlush!: () => void;
+      const blocked = new Promise<void>((resolve) => (release = resolve));
+      let flushes: number | null = null;
+      const ran: string[] = [];
+      const io: RecordIo = {
+        ...fileRecordIo,
+        // The renewal's flush after its rename waits until the job was promoted.
+        flush: async (dir) => {
+          if (flushes !== null && (flushes += 1) === 2)
+            await new Promise<void>((resolve) => (releaseFlush = resolve));
+          await fileRecordIo.flush(dir);
+        },
+      };
+      const d = await legacyDaemon(time, io, async (params) => {
+        const name = (params as { label: string }).label;
+        ran.push(name);
+        if (name === "blocker") await blocked;
+        return { lifecycle: "succeeded" };
+      });
+      try {
+        await d.client.enqueue({ label: "blocker" }, { idempotencyKey: "b", clientId: "t" });
+        await until(
+          () => Promise.resolve(ran),
+          (r) => r.includes("blocker"),
+        );
+        const job = await d.client.enqueue(
+          { label: "job", deadline: { at: time.iso(10_000) } },
+          { idempotencyKey: "j", clientId: "t" },
+        );
+        await d.client.enqueue({ label: "behind" }, { idempotencyKey: "n", clientId: "t" });
+        // The renewal reaches the flush after its rename; the clock passes the old deadline.
+        flushes = 0;
+        const renewal = outcome(
+          d.client.runDeadline(job.id, {
+            action: "set",
+            at: time.iso(60_000),
+            expectedRevision: 0,
+          }),
+        );
+        await until(
+          () => Promise.resolve(releaseFlush),
+          (r) => typeof r === "function",
+        );
+        flushes = null;
+        time.advance(late ? 12_000 : 10_500);
+        release(); // the blocker ends: the queue is drained while the renewal is pending
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(ran, "the held job does not start, and nothing overtakes it").toEqual(["blocker"]);
+        releaseFlush();
+        const answer = await renewal;
+        const record = await until(
+          () => d.client.status(job.id),
+          (r) => r.state !== "queued" && r.state !== "running",
+        );
+        await until(
+          () => Promise.resolve(ran),
+          (r) => r.includes("behind"),
+        );
+        if (late) {
+          expect(answer).toEqual({ ok: false, code: "run_deadline_expired" });
+          expect(record).toMatchObject({ state: "cancelled", errorCode: "run_deadline_expired" });
+          expect(ran).toEqual(["blocker", "behind"]);
+        } else {
+          expect(answer.ok).toBe(true);
+          expect(record.state).toBe("succeeded");
+          expect(ran).toEqual(["blocker", "job", "behind"]);
+        }
+      } finally {
+        release();
+        releaseFlush?.();
+        await d.close();
+      }
+    });
 });
 
 describe("run-deadline/1 under faults: an acceptance racing its own deadline", () => {
-  const CAPS = {
-    max_concurrent: 1,
-    max_concurrent_non_model_jobs: 1,
-    max_concurrent_model_operations: 1,
-    max_parallel_candidates: 1,
-    max_deep_scan_width: 1,
-    max_council_members: 2,
-  };
-  async function daemon(time: ReturnType<typeof frozenClock>, io: RecordIo, runner: RunnerFn) {
-    const dir = temp();
-    const journal = new DurableJournal({ rootDir: join(dir, "journal"), partition: "global" });
-    const store = new CommandStore(journal);
-    store.recoverAfterStartup();
-    const server = new DaemonServer({
-      socketPath: join(dir, "unused.sock"),
-      token: "token",
-      commands: legacyCommandFixture({ current: () => store }),
-      runtimeConcurrencyCaps: CAPS,
-      runDeadlines: {
-        dir: join(dir, "deadlines"),
-        clock: time.clock,
-        io,
-        spawnWarden: async () => ({ pid: 1 }),
-        platform: "linux",
-        probeBoundary: async () => ({ kind: "marker", reason: "test" }),
-      },
-      runner,
-    });
-    await server.deadlines.startup();
-    return {
-      dir: join(dir, "deadlines"),
-      server,
-      client: new DaemonLocalClient(() => server),
-      async close() {
-        await server.stop();
-        journal.close();
-      },
-    };
-  }
-
   for (const kind of ["deadline", "throw", "crash"] as const)
     for (const at of [1, 2, 3])
       it(`${kind === "deadline" ? "the deadline passes after" : `${kind} at`} acceptance op ${at}`, async () => {
         const time = frozenClock();
-        const events: Event[] =
-          kind === "deadline"
-            ? [{ at, kind: "hook", name: "deadline", run: () => time.advance(6_000) }]
-            : [{ at, kind }];
-        const faulty = faultyIo(events);
-        faulty.start();
+        const ops = new Ops(
+          [{ at, kind: kind === "deadline" ? "head-start" : kind }],
+          (k) => k === "head-start" && time.advance(6_000),
+        );
         let ran = false;
-        const d = await daemon(time, faulty.io, async () => {
+        const d = await legacyDaemon(time, ops.io(), async () => {
           ran = true;
           return { lifecycle: "succeeded" };
         });
+        ops.counting = true;
         try {
           const request = { label: "edge", deadline: { at: time.iso(5_000) } };
           const answer = await outcome(
             d.client.enqueue(request, { idempotencyKey: "k", clientId: "t" }),
           );
+          ops.assertFired();
           const accepted = await d.client.findAccepted(request, {
             idempotencyKey: "k",
             clientId: "t",
           });
           if (kind === "deadline") {
-            // The deadline passed before the commit: refused, the key stays free.
+            // The deadline passed before the acceptance's transaction: refused, no key.
             expect(answer).toEqual({ ok: false, code: "run_deadline_passed" });
             expect(accepted).toBe(null);
-          } else if (!answer.ok) {
-            expect(accepted).toBe(null);
-          }
+          } else if (!answer.ok) expect(accepted).toBe(null);
           await new Promise((resolve) => setTimeout(resolve, 20));
           if (!answer.ok) {
-            // A dead process cannot remove what it staged: the next start's sweep does.
-            if (faulty.dead()) await (await restart(d.dir, time, {})).dispose();
+            if (ops.dead) await (await generation(d.dir, time, {})).dispose();
             expect(readdirSync(d.dir).filter((name) => name.endsWith(".json"))).toEqual([]);
           }
           if (kind === "deadline") expect(ran).toBe(false);
@@ -512,72 +516,149 @@ describe("run-deadline/1 under faults: an acceptance racing its own deadline", (
           await d.close();
         }
       });
-});
 
-describe("run-deadline/1 under faults: the SQL terminal and a renewal", () => {
-  it("a renewal after the run's terminal was committed is refused closed, never answered armed", async () => {
+  it("with the production SQL store: a deadline reached during preparation is refused inside the acceptance transaction and binds no key", async () => {
     const time = frozenClock();
-    const dir = temp();
-    const journal = new DurableJournal({ rootDir: join(dir, "journal"), partition: "global" });
-    const store = new CommandStore(journal);
-    store.recoverAfterStartup();
-    let committed!: () => void;
-    let release!: () => void;
-    const terminalCommitted = new Promise<void>((resolve) => (committed = resolve));
+    const root = temp();
+    const sql = await sqlFixture(root);
+    // The deadline passes right after the staged record's last write, before the transaction.
+    const ops = new Ops([{ at: 3, kind: "head-start" }], () => time.advance(6_000));
     const server = new DaemonServer({
-      socketPath: join(dir, "unused.sock"),
+      socketPath: join(root, "unused.sock"),
       token: "token",
-      commands: legacyCommandFixture({ current: () => store }),
-      runtimeConcurrencyCaps: {
-        max_concurrent: 1,
-        max_concurrent_non_model_jobs: 1,
-        max_concurrent_model_operations: 1,
-        max_parallel_candidates: 1,
-        max_deep_scan_width: 1,
-        max_council_members: 2,
-      },
+      commands: sql.graph.commands,
+      runtimeConcurrencyCaps: CAPS,
       runDeadlines: {
-        dir: join(dir, "deadlines"),
+        dir: join(root, "deadlines"),
         clock: time.clock,
+        io: ops.io(),
         spawnWarden: async () => ({ pid: 1 }),
         platform: "linux",
         probeBoundary: async () => ({ kind: "marker", reason: "test" }),
       },
-      // The runner's terminal is committed (as the SQL terminal hook does), then
-      // it still stages its final update before the scheduler settles it.
-      runner: async (_params, ctx) => {
-        ctx.onRunStart({ runId: `run-${ctx.jobId}`, taskId: "t", runDir: "/tmp/none" });
-        ctx.deadlineScope?.terminalCommitted();
-        committed();
-        await new Promise<void>((resolve) => (release = resolve));
-        return { lifecycle: "succeeded" };
-      },
+      runner: async () => ({ lifecycle: "succeeded" }),
     });
     await server.deadlines.startup();
     const client = new DaemonLocalClient(() => server);
+    ops.counting = true;
     try {
-      const accepted = await client.enqueue(
-        { label: "run", deadline: { at: time.iso(60_000) } },
-        { idempotencyKey: "r", clientId: "t" },
-      );
-      await terminalCommitted;
-      const answer = await outcome(
-        client.runDeadline(accepted.id, {
-          action: "set",
-          at: time.iso(90_000),
-          expectedRevision: 0,
-        }),
-      );
-      expect(answer).toEqual({ ok: false, code: "run_deadline_closed" });
-      expect(await client.runDeadline(accepted.id, { action: "read" })).toMatchObject({
-        state: "closed",
-        revision: 0,
-      });
-      release();
+      const request = { label: "sql", deadline: { at: time.iso(5_000) } };
+      const answer = await outcome(client.enqueue(request, { idempotencyKey: "s", clientId: "t" }));
+      ops.assertFired();
+      expect(answer).toEqual({ ok: false, code: "run_deadline_passed" });
+      expect(await client.findAccepted(request, { idempotencyKey: "s", clientId: "t" })).toBe(null);
+      expect(sql.records()).toEqual([]);
+      // A request in time is accepted by the same transaction.
+      const fresh = { label: "sql", deadline: { at: time.iso(60_000) } };
+      expect(
+        (await outcome(client.enqueue(fresh, { idempotencyKey: "f", clientId: "t" }))).ok,
+      ).toBe(true);
     } finally {
-      release?.();
       await server.stop();
-      journal.close();
+      await sql.close();
     }
   });
 });
+
+describe("run-deadline/1 under faults: the SQL terminal and the deadline", () => {
+  /** A run whose SQL terminal commits at 1 s; its materialization ends past its 2 s deadline. */
+  for (const materialization of ["slow", "failing"] as const)
+    it(`closes at the SQL commit, before a ${materialization} file materialization, never expired by it`, async () => {
+      const time = frozenClock();
+      const root = temp();
+      const sql = await sqlFixture(root);
+      let notified = 0;
+      let persisted: unknown;
+      const deadlineAt = time.iso(2_000);
+      const server = new DaemonServer({
+        socketPath: join(root, "unused.sock"),
+        token: "token",
+        commands: sql.graph.commands,
+        runtimeConcurrencyCaps: CAPS,
+        runDeadlines: {
+          dir: join(root, "deadlines"),
+          clock: time.clock,
+          spawnWarden: async () => ({ pid: 1 }),
+          platform: "linux",
+          probeBoundary: async () => ({ kind: "marker", reason: "test" }),
+        },
+        runner: async (_params, ctx) => {
+          const runId = `run-${ctx.jobId}`;
+          ctx.onRunStart({ runId, taskId: `task-${ctx.jobId}`, runDir: join(root, "run") });
+          const owner = sql.graph.commands.findById(ctx.jobId)!;
+          const files = (
+            owner as unknown as { options: { terminalFiles: { materialize(id: string): void } } }
+          ).options.terminalFiles;
+          const real = files.materialize.bind(files);
+          files.materialize = (id: string) => {
+            time.advance(1_500); // the materialization ends past the deadline
+            if (materialization === "failing") throw new Error("materialization failed");
+            real(id);
+          };
+          time.advance(1_000);
+          persisted = owner.persistTerminal(
+            ctx.jobId,
+            terminalEvent(runId, ctx.jobId),
+            null,
+            () => {
+              notified += 1;
+              ctx.deadlineScope?.terminalCommitted();
+            },
+          );
+          return { lifecycle: "succeeded" };
+        },
+      });
+      await server.deadlines.startup();
+      const client = new DaemonLocalClient(() => server);
+      try {
+        const job = await client.enqueue(
+          { label: "terminal", deadline: { at: deadlineAt } },
+          { idempotencyKey: "t", clientId: "t" },
+        );
+        await until(
+          () => client.status(job.id),
+          (r) => r.state !== "queued" && r.state !== "running",
+        );
+        expect(notified, "told once, at the commit").toBe(1);
+        if (materialization === "failing") expect(persisted).toMatchObject({ state: "pending" });
+        expect(await client.runDeadline(job.id, { action: "read" })).toMatchObject({
+          state: "closed",
+          at: deadlineAt,
+        });
+      } finally {
+        await server.stop();
+        await sql.close();
+      }
+    });
+});
+
+function terminalEvent(runId: string, jobId: string) {
+  const taskId = `task-${jobId}`;
+  const facts = RunFacts.parse({
+    schema_version: SCHEMA_VERSION,
+    run_id: runId,
+    task_id: taskId,
+    mode: "ask",
+    outcome: {
+      ...makeOutcomeFacts("succeeded"),
+      review_requested: false,
+      work_state: { state: "completed", source: "constrained" },
+    },
+    deliverable: { present: true, kind: "answer", path: "final/answer.md" },
+    presentation: { state: "ready", primary: { kind: "answer", path: "final/answer.md" } },
+    participants: { planners: 0, attempts: [] },
+    gates: { configured: false, required: 0, total: 0, executed: false, state: "not_configured" },
+    review: { state: "not_run", blockers: 0, blocker_ids: [] },
+    apply: { eligibility: null },
+    required_actions: [],
+    generated_at: new Date().toISOString(),
+  });
+  return {
+    seq: 1,
+    ts: new Date().toISOString(),
+    run_id: runId,
+    task_id: taskId,
+    type: "run.completed" as const,
+    payload: { run_facts: facts, facts: facts.outcome, lifecycle: "succeeded", reason: null },
+  };
+}

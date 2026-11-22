@@ -42,7 +42,6 @@ import {
 } from "./thread-preparation-scope.js";
 import { exactRetryProcessingIntent } from "./retry-processing.js";
 import { oneShotRunInput } from "./one-shot-run-input.js";
-import { terminalCommitHook } from "./run-terminal-commit.js";
 import type { ModelLoginReadiness } from "./model-login-readiness.js";
 
 /** Agent commands alone own projects, tool execution, and conversation continuity.
@@ -60,8 +59,10 @@ export function createDaemonAgentRunner(deps: {
   bus: RunEventBus;
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
   loginReadiness?: ModelLoginReadiness;
+  /** `onCommitted`: told at the SQL terminal commit itself (the run's deadline closes then). */
   terminalPersistence?: (
     jobId: string,
+    onCommitted?: () => void,
   ) => NonNullable<
     Parameters<ReturnType<typeof buildRunOrchestrator>["run"]>[0]["onTerminalPersist"]
   >;
@@ -211,7 +212,9 @@ export function createDaemonAgentRunner(deps: {
     return orchestrator
       .run({
         ...oneShotRunInput(p),
-        onTerminalPersist: terminalCommitHook(deps.terminalPersistence?.(ctx.jobId), ctx),
+        onTerminalPersist: deps.terminalPersistence?.(ctx.jobId, () =>
+          ctx.deadlineScope?.terminalCommitted(),
+        ),
         onTerminalStage: deps.terminalStaging?.(ctx.jobId),
         onEventPersist: (event) => {
           // The owning journal partition is the durable terminal

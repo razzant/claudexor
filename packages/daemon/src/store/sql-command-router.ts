@@ -156,10 +156,15 @@ export class SqlCommandRouter
       /* persistTerminal decides and reports */
     }
   }
-  persistTerminal(jobId: string, event: RunEvent, telemetry: RunTelemetry | null) {
+  persistTerminal(
+    jobId: string,
+    event: RunEvent,
+    telemetry: RunTelemetry | null,
+    onCommitted?: () => void,
+  ) {
     const owner = this.findById(jobId);
     if (!owner) throw new Error(`terminal authority lost command ${jobId}`);
-    return owner.persistTerminal(jobId, event, telemetry);
+    return owner.persistTerminal(jobId, event, telemetry, onCommitted);
   }
   beginDelivery(
     params: unknown,
