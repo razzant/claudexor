@@ -989,34 +989,51 @@ Choose [Hermes](#install-in-hermes), [Pi](#install-in-pi), or [OpenClaw](#instal
 
 #### Install in Hermes
 
-After [CLI and account setup](#set-up-the-cli-and-account), check that
-`hermes --version` in the profile you will use reports 0.23.1 or later, and that
-the Hermes process can find `node` and `claudexor` on its PATH. Both routes below
-need that version. The Git route needs no catalog listing: use the full
-40-character SHA of a reviewed source commit whose
-[Hermes manifest](plugins/hermes/plugin.json) declares the `claudexor` server
-`trust: untrusted`. Older commits and release tags may not. On GitHub, press **y**
-on that revision's manifest page to get its commit permalink. Use the commit SHA,
-not a branch or tag. In a terminal for your intended Hermes profile, paste it here:
+Claudexor is a Community plugin in the Hermes plugin catalog
+([entry](https://hermes-agent.nousresearch.com/marketplace/claudexor)) for macOS
+and Linux. After [CLI and account setup](#set-up-the-cli-and-account), check that
+`hermes --version` in the profile you will use reports 0.23.1 or later, that
+`claudexor --version` reports 6.3.0 or later, and that the Hermes process can find
+`node` (24.15 or later) and `claudexor` on its PATH. Do this before you install.
+
+In that profile, run `hermes plugins info claudexor` and note the full Pinned SHA,
+Repo and Subdir. The pin covers only the Hermes package, not your separately
+installed CLI or the vendor harnesses, and Hermes describes a catalog entry as a
+point-in-time review of that commit, not a security audit. Continue only if they
+match the source you reviewed (open `plugins/hermes` at that commit on GitHub),
+then verify the exact install as described below. This command installs the
+current catalog pin and enables the plugin immediately:
+
+```sh
+hermes plugins install claudexor --enable
+```
+
+The catalog can change between `info` and `install`. To verify the installed
+SHA before enabling a new plugin, omit `--enable`, answer No when prompted,
+and check the source, revision and `untrusted` setting below. Then run
+`hermes plugins enable claudexor`. Without a terminal, a new install without
+`--enable` stays disabled.
+
+An existing catalog install moves to the catalog's current pin with
+`hermes plugins update claudexor`; repeat the checks below afterwards. A Git
+install made with `--ref` stays on its commit and `hermes plugins update` does not
+move it: review the new full SHA as in the Git route, then follow Hermes' rule for
+[pinned plugins](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins).
+
+The advanced Git fallback needs no catalog entry: use the full 40-character SHA of
+a reviewed source commit whose [Hermes manifest](plugins/hermes/plugin.json)
+declares the `claudexor` server `trust: untrusted`. Older commits and release tags
+may not. On GitHub, press **y** on that revision's manifest page to get its commit
+permalink. Use the commit SHA, not a branch or tag. In a terminal for your
+intended Hermes profile, paste it here:
 
 ```sh
 printf 'Reviewed source commit SHA: ' && IFS= read -r claudexor_sha &&
   hermes plugins install razzant/claudexor/plugins/hermes --ref "${claudexor_sha:?Full SHA required}" --enable
 ```
 
-Only after Nous has accepted Claudexor into the Hermes catalog can you instead
-install by name. First run `hermes plugins info claudexor` in the intended
-profile and note the full Pinned SHA, Repo and Subdir. Continue only if they
-match the source you reviewed, then verify the exact install as described below;
-use `hermes plugins list` to check that the plugin is enabled. `--enable` is
-your explicit choice; without it Hermes asks and the default answer is No:
-
-```sh
-hermes plugins install claudexor --enable
-```
-
-If an older Claudexor is already installed, use the Git command above with the
-newly reviewed SHA and add `--force` to reinstall Claudexor.
+If an older Git-installed Claudexor is already installed, use the Git command
+above with the newly reviewed SHA and add `--force` to reinstall Claudexor.
 
 Both routes download the plugin over the network. Hermes separately fetches its
 own runtime on a first install. In that same profile, not only the default one,
@@ -1033,8 +1050,9 @@ so it needs `trust: untrusted` too (see the
 [custom store example](docs/INTEGRATIONS.md#custom-claudexor-configuration-directory)).
 If you restrict tools, allow the
 Claudexor MCP tools for that platform in `hermes tools`. Start a new session in
-that profile and ask Hermes to load `claudexor:claudexor`.
-[Get your first answer](#first-delegation-from-any-host).
+that profile and ask Hermes to load `claudexor:claudexor`, for example: “Load
+`claudexor:claudexor`, then use Claudexor's read-only Ask for a second opinion on
+this plan.” [Get your first answer](#first-delegation-from-any-host).
 
 Prompts come from the Hermes version you run, not from Claudexor. With
 `trust: untrusted`, Hermes' documentation says calls that can write ask first,
@@ -1053,16 +1071,15 @@ Use a [configured CLI and account](#set-up-the-cli-and-account) and a Pi version
 with built-in MCP and `registerMcpServer` (for example, 1.5.2).
 Pi integration by [Ouroboros](https://github.com/razzant/ouroboros).
 
-Check the published package with `npm view claudexor@latest pi.extensions --json`.
-If the result lists `./pi/index.js`, install from npm.
-
 ```sh
 pi install npm:claudexor
 ```
 
-If the entry is missing, as it is in `claudexor@6.2.0` on npm,
-[get a Git checkout containing the extension](#get-a-package-checkout).
-Keep the checkout in place so Pi can load it on each start.
+The package lists its extension at `./pi/index.js`, and the
+[Pi package page](https://pi.dev/packages/claudexor) shows the same command.
+The published npm 6.2.0 has no extension; 6.3.0 includes it. To load it from a Git checkout instead,
+[get a package checkout](#get-a-package-checkout) and keep it in place so Pi can
+load it on each start.
 
 ```sh
 pi install "$HOME/claudexor-hosts/packages/claudexor"
@@ -1080,14 +1097,29 @@ filter MCP tools, allow the tools listed for your first request under
 
 #### Install in OpenClaw
 
-After [CLI and account setup](#set-up-the-cli-and-account), [get a package checkout](#get-a-package-checkout)
-on the Gateway machine. Put `claudexor` and `node` on the Gateway **service's**
-PATH. OpenClaw 2026.11.5 needs Node 24.16.0–24.x or 26.1.0+.
+After [CLI and account setup](#set-up-the-cli-and-account), put `claudexor` and
+`node` on the Gateway **service's** PATH on the Gateway machine. OpenClaw 2026.11.5
+needs Node 24.16.0–24.x or 26.1.0+. The plugin is published on
+[ClawHub](https://clawhub.ai/ouroboros-agent/plugins/claudexor); the `clawhub:`
+prefix selects that source explicitly
+([OpenClaw install sources](https://docs.openclaw.ai/tools/plugin#choose-an-install-source)).
+
+```sh
+openclaw plugins install clawhub:@ouroboros-agent/claudexor
+openclaw plugins inspect claudexor
+```
+
+To install from a checkout instead, [get a package checkout](#get-a-package-checkout)
+on the Gateway machine and use its path:
 
 ```sh
 openclaw plugins install "$HOME/claudexor-hosts/plugins/claude"
-openclaw plugins inspect claudexor
 ```
+
+The installer asks you to confirm the bundled skill and the local MCP server
+(`claudexor mcp serve`) before it finishes; in a non-interactive shell,
+`--accept-capabilities` records that explicit consent. Installing from a
+checkout asks you to confirm that source separately.
 
 If disabled, run `openclaw plugins enable claudexor`. If you use a plugin
 allowlist, include `claudexor`. [OpenClaw plugin policy](https://docs.openclaw.ai/tools/plugin#configure-plugin-policy).
