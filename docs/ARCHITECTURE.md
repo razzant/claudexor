@@ -4057,7 +4057,8 @@ not retry automatically.
   record is pruned, its id is unknown and the successor can be pruned on a later
   pass. A successor refused before
   its run started holds no claim, one that ran and failed stays the head.
-  Exact Retry and `rerun_with_feedback` replay the original request, so for a
+  Exact Retry and `rerun_with_feedback` replay the original request (a source
+  that held a run-deadline/1 deadline is refused instead), so for a
   successor that ran they answer the same `continuation_superseded`: the
   caller continues the head instead. Omitted `mode`, `scope`, `execution`, `harnesses`, `primaryHarness`, `model`,
   `models` and `promptCacheTtl` come from the predecessor before request defaults. Setting either
@@ -4349,7 +4350,9 @@ not retry automatically.
   returns the original durable handles, while key reuse with another request
   returns typed `409 idempotency_conflict`. Retry refuses turns that already
   have a run, have no recorded refusal, or still have an active job (409).
-- Run-level `POST /v2/runs/:id/retry` is Exact Retry for any settled run: it
+- Run-level `POST /v2/runs/:id/retry` is Exact Retry for any settled run that
+  held no run-deadline/1 deadline (one that did is refused
+  `409 run_deadline_replay_refused`: Run Again, or a new start with `deadline.at`): it
   creates a new command/turn, links `retryOf`, reuses the immutable original
   request, and performs fresh normalization/preflight. Retained terminal
   product commands follow the global age/cap policy and continuation exemptions
@@ -6227,24 +6230,37 @@ suspended host finds the deadline reached when it wakes), `process.hrtime`
 elsewhere; an inherited deadline is copied from the source record's host-clock
 target, never converted again. Per job, transitions are linear: `armed`, then
 `enforcing` (the deadline began its stop), then `expired`; or `closed` (a terminal
-before the deadline). They run on one per-job chain in the daemon; from the terminal
-on (the SQL terminal commit, or the scheduler's settlement of a job that never ran)
-only the terminal's own facts decide `closed` or `expired`. The enforcement claim
+before the deadline). They run on one per-job chain in the daemon; the terminal
+(told at the SQL terminal commit itself, before its files, or the scheduler's
+settlement of a job that never ran) takes its facts at once — time, claim, a won
+deadline, the governing deadline with its parent's cap — and they alone decide
+`closed` or `expired` and the deadline it ended under. The enforcement claim
 (`<job>.json.enforcing`, exclusive create) is the one durable fact that a deadline
 won and names it: the warden makes it before its first stop, the daemon when it
-decides the deadline won; it floors the governing deadline, so no failed write or
-daemon death postpones it. A set and the warden are ordered by the shared host
-clock, not a lock a SIGKILLed daemon would leave held: the daemon decides a set
-before anything is visible (no terminal, no claim, the clock before the replaced
-deadline), then publishes it, and confirms it only if afterwards the clock is
-still before the replaced deadline plus the warden's one-second head start and no
-claim of the replaced revision exists (otherwise it claims the replaced deadline,
-restores it as `enforcing` and refuses); the warden reads the clock before the
-record and acts only one second after the deadline. The daemon re-reads the clock
-at least every second: a queued job never starts, a preparing or running one is
-cancelled (`run_deadline_expired`), an acceptance whose deadline passed before its
-commit is refused, and from the deadline on the run's scope launches nothing
-(`registerScopeFence`). The warden is a detached process (its own session, no
+decides the deadline won (and for a terminal at or after its deadline); it floors
+the governing deadline. A change is a two-phase commit ordered by the shared host
+clock, not a lock a SIGKILLed daemon would leave held: before the new revision can
+be seen, the record in force is kept durable beside it (`<job>.json.prior`, a floor
+every reader applies and the revision answers report while it is older); the
+rename comes only before both the replaced and the requested deadline, with no
+terminal and no claim; the change commits when the prior is removed, in the same
+synchronous step as its last check (no terminal, no claim, the clock before the
+replaced deadline plus the warden's one-second head start), and is confirmed once
+that removal is durable (visible but not flushed: `503 run_deadline_outcome_unknown`,
+read it again). Until the commit nothing — a publication outlasting its deadline,
+a failed write, a daemon death — postpones the replaced deadline; a terminal
+before the commit refuses the change. The warden reads the clock before the files
+and acts one second after the deadline, so one acting on the prior claims it and
+the daemon stops the run instead of confirming (a claim landing after that check
+stops it early, never late). The daemon re-reads the clock at least every second:
+a won deadline aborts the job before any write is awaited, a queued job never
+starts (one whose transition is pending keeps its place and its thread until it
+settles), a preparing or running one is cancelled (`run_deadline_expired`), an
+acceptance is judged again inside its SQL transaction after replay resolution, and
+from the deadline on the run's scope launches nothing (`registerScopeFence`),
+its own patch capture included. A replay of a run that held a deadline (Exact
+Retry, decision rerun, thread turn retry) is refused `409 run_deadline_replay_refused`,
+also when its record is gone; receipts and lookups project the record read-only. The warden is a detached process (its own session, no
 run marker, outside every run cgroup) started before the first process of the
 run's scope — before the thread worktree preparation's first Git child (a job
 with a deadline runs its whole preparation inside that scope), then given
@@ -6261,7 +6277,8 @@ point (`spawnRunOwned`; `spawnProcess` and `runCaptureRaw` use it), and the
 orchestrator runs the whole run inside `withinRunScope(marker)`: each launch
 carries the run's marker whatever env its call site built; the single-flight
 vendor probes several runs share (Claude auth status, model and `--help` probes,
-the Cursor status cache) launch as `sharedLaunch(name)` without one, and the
+the Cursor status cache, a program's `--version` probe, every keyed `SharedRead`
+acquisition such as a Codex login read) launch as `sharedLaunch(name)` without one, and the
 daemon starts every job outside any inherited scope. A source test refuses any
 other direct `node:child_process` launch outside its explained exceptions (host
 measurement, the daemon's warden and probe, operator commands, the dependency-free
@@ -6281,7 +6298,8 @@ survivors stay capped by its parent's current deadline. After the terminal the
 warden leaves once a non-signalling pass confirms the boundary empty (on the
 marker boundary on Linux, after a normal terminal, also once the recorded tree is
 empty and no readable environment carries the marker, reported `unresolved` with
-that residual), otherwise it stays to that deadline. A record goes only when
+that residual; a settled `run-scopes.json` row the index retired is kept in the
+record for this), otherwise it stays to that deadline. A record goes only when
 nothing may act on it: its warden is done and no record naming it as Delegate
 parent is held or has a warden that may act. Startup reconciles in two passes:
 the terminal state of every earlier generation's retained record, then the

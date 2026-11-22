@@ -120,7 +120,7 @@
                 "enforcement"
               ],
               "additionalProperties": false,
-              "description": "The accepted run-deadline/1 deadline; present only when the request set one."
+              "description": "The run-deadline/1 deadline the job holds, read without any transition from its durable record: one the request set, or one it inherited (a continuation of a run with a deadline, a Delegate child of one, or a job its deadline ended)."
             },
             "threadId": {
               "type": "string",
@@ -167,7 +167,7 @@
             },
             "deadline": {
               "$ref": "#/definitions/McpThreadTurnResult/anyOf/0/properties/deadline",
-              "description": "The accepted run-deadline/1 deadline; present only when the turn set one."
+              "description": "The run-deadline/1 deadline the turn's job holds, read without any transition from its durable record: one the turn set, or one it inherited."
             },
             "summary": {
               "$ref": "#/definitions/McpThreadTurnResult/anyOf/0/properties/summary"

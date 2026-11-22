@@ -59,8 +59,9 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "GET /v2/runs/:id/deadline":
     "Read a run's server-enforced run-deadline/1 deadline, revision and server time.",
   "PATCH /v2/runs/:id/deadline":
-    "Replace a run's absolute deadline while it is armed (not yet reached or claimed), with an expected revision (run-deadline/1).",
-  "POST /v2/runs/:id/retry": "Retry a run, returning a new durable handle.",
+    "Replace a run's absolute deadline while it is armed (not yet reached or claimed), with an expected revision (run-deadline/1); success only once the change is durable, 503 run_deadline_outcome_unknown when it took effect but could not be made durable (read it again).",
+  "POST /v2/runs/:id/retry":
+    "Retry a run, returning a new durable handle; a run that held a run-deadline/1 deadline is refused with 409 run_deadline_replay_refused.",
   "GET /v2/runs/:id/run-again": "Draft a run-again request from a prior run.",
   "POST /v2/runs/:id/apply":
     "Apply a run's work product to the live tree; replay of an already-delivered run is a typed idempotent no-op.",
@@ -71,7 +72,7 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "POST /v2/runs/:id/control":
     "Cancel a queued or running run and hold its pending next message, also after the run ended.",
   "POST /v2/runs/:id/decision":
-    "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, needs-decision, or non-patch results with typed reasons and is idempotent.",
+    "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, needs-decision, or non-patch results with typed reasons and is idempotent; a rerun of a run that held a run-deadline/1 deadline is refused with 409 run_deadline_replay_refused.",
   "GET /v2/runs/:id/events": "Replay + tail a run's event stream (SSE).",
   "POST /v2/runs/:id/interactions/:id/answer": "Answer a run's pending interactive question.",
   "POST /v2/runs/:id/messages":
@@ -89,7 +90,8 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "POST /v2/threads/:id/turns": "Enqueue a new turn on a thread.",
   "POST /v2/threads/:id/turns/lookup":
     "Read, without creating or waiting, the turn and job a turn create with this exact body and Idempotency-Key recorded: found, turn_only or not_found.",
-  "POST /v2/threads/:id/turns/:id/retry": "Retry a thread turn.",
+  "POST /v2/threads/:id/turns/:id/retry":
+    "Retry a refused thread turn; one whose job held a run-deadline/1 deadline is refused with 409 run_deadline_replay_refused (send a new turn with deadline.at).",
   "GET /v2/trust": "List protected-path trust state.",
   "POST /v2/trust": "Update protected-path trust state.",
   "GET /v2/settings": "Read the settings snapshot.",

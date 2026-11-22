@@ -472,7 +472,9 @@ export function cancelledNextActions(reason: RunReason | null | undefined): stri
       ];
     case "run_deadline_expired":
       return [
-        "Inspect the partial work kept from before the deadline",
+        // From the deadline on nothing is launched in the run's scope, its own
+        // patch capture included: the work stays in the retained envelope.
+        "Inspect the retained work area: no patch is captured after a run's deadline",
         "Start again with a later deadline, or renew it before it passes",
       ];
     default:

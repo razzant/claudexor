@@ -1228,7 +1228,7 @@
       "path": "/v2/runs/:id/deadline",
       "mutating": true,
       "applicability": "run",
-      "summary": "Replace a run's absolute deadline while it is armed (not yet reached or claimed), with an expected revision (run-deadline/1).",
+      "summary": "Replace a run's absolute deadline while it is armed (not yet reached or claimed), with an expected revision (run-deadline/1); success only once the change is durable, 503 run_deadline_outcome_unknown when it took effect but could not be made durable (read it again).",
       "auth": "loopback_bearer",
       "request_schema": "RunDeadlineSetRequest",
       "parameters": [],
@@ -1240,7 +1240,7 @@
       "path": "/v2/runs/:id/decision",
       "mutating": true,
       "applicability": "run",
-      "summary": "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, needs-decision, or non-patch results with typed reasons and is idempotent.",
+      "summary": "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, needs-decision, or non-patch results with typed reasons and is idempotent; a rerun of a run that held a run-deadline/1 deadline is refused with 409 run_deadline_replay_refused.",
       "auth": "loopback_bearer",
       "request_schema": "ControlRunDecisionRequest",
       "parameters": [
@@ -1385,7 +1385,7 @@
       "path": "/v2/runs/:id/retry",
       "mutating": true,
       "applicability": "run",
-      "summary": "Retry a run, returning a new durable handle.",
+      "summary": "Retry a run, returning a new durable handle; a run that held a run-deadline/1 deadline is refused with 409 run_deadline_replay_refused.",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [
@@ -2102,7 +2102,7 @@
       "path": "/v2/threads/:id/turns/:id/retry",
       "mutating": true,
       "applicability": "thread",
-      "summary": "Retry a thread turn.",
+      "summary": "Retry a refused thread turn; one whose job held a run-deadline/1 deadline is refused with 409 run_deadline_replay_refused (send a new turn with deadline.at).",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [

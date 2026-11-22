@@ -179,7 +179,7 @@ export const ControlThreadTurnResponse = z
         turnId: Id,
         state: z.string().min(1),
         deadline: RunDeadlineSnapshot.optional().describe(
-          "The accepted run-deadline/1 deadline; present only when the turn set one.",
+          "The run-deadline/1 deadline the turn's job holds, read without any transition from its durable record: one the turn set, or one it inherited.",
         ),
       })
       .strict(),

@@ -59,7 +59,7 @@ export const ControlStartLookupHandle = z
     turnId: Id.optional().describe("The accepted turn."),
     problem: ControlStartLookupProblem.optional(),
     deadline: RunDeadlineSnapshot.optional().describe(
-      "The accepted run-deadline/1 deadline, read from its durable record; present only when the request set one.",
+      "The run-deadline/1 deadline the job holds, read without any transition from its durable record: one the request set, or one it inherited (a continuation of a run with a deadline, a Delegate child of one, or a job its deadline ended).",
     ),
   })
   .strict()
