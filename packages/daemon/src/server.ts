@@ -58,6 +58,9 @@ export interface RunContext {
   stopSender?: () => DaemonStopSender | undefined;
   registerTimeLimit?: (timer: RunTimeLimit) => void;
   deadlineScope?: rd.DeadlineScope;
+  /** The run's terminal was durably committed (SQL; file materialization may still be
+   * pending): from here its deadline is closed, whatever the runner still writes. */
+  onTerminalCommitted?: () => void;
   onRunStart: (info: { runId: string; taskId: string; runDir: string }) => void;
 }
 
@@ -505,6 +508,7 @@ export class DaemonServer {
         registerTimeLimit: (timer) =>
           this.timeLimits.register(id, timer, () => !controller.signal.aborted),
         deadlineScope: this.deadlines.scope(id),
+        onTerminalCommitted: () => this.deadlines.close(id),
         onRunStart: (info) => {
           rec = this.updateRecord(rec, info);
         },
