@@ -31,7 +31,7 @@ env:
   PRODUCT_BASE_SHA: 5140960bb541002ea073b2eaeb064e3e48e829ea
   # Never defaults to HEAD~1: with repeated QA carrier commits HEAD~1 can
   # already be a previous carrier revision, not the product.
-  PRODUCT_HEAD_SHA: "f536929eee1f751eef904db331e97a2022e2f4a6"
+  PRODUCT_HEAD_SHA: "dfa8d9dc5e26231b28fdaa41adc0af3493eaa6ce"
 
 jobs:
   qualify:
@@ -114,11 +114,32 @@ jobs:
         run: node qa/p06/run-qa.mjs targeted
 
       - name: release:verify:node unmodified on the exact generated tree
+        id: release
         # Runs whenever export bound the product SHA and produced the generated
         # tree — even if a fixture lane failed — so the artifact keeps both
         # outcomes instead of silently skipping the product verification.
         if: ${{ !cancelled() && steps.gen_install.outcome == 'success' }}
         run: node qa/p06/run-qa.mjs release
+
+      - name: Identify late release failure from the existing log
+        if: ${{ !cancelled() && steps.release.outcome == 'failure' }}
+        run: |
+          cause=$(LC_ALL=C awk '
+            function mark(s) { if (f && f != s) conflict=1; f=s }
+            { gsub(/\033\[[0-9;]*m/, ""); sub(/\r$/, "") }
+            /^> claudexor-monorepo@/ { k=($3=="knip"); f=""; n=later=conflict=0; next }
+            !k { next }
+            /^Unused (files|dependencies|devDependencies|exports|exported types|exported enum members) \([1-9][0-9]*\)[[:space:]]*$/ { sub(/^[^(]*\(/, ""); n += $0+0; next }
+            /^(complexity-ratchet|model-hints|mcp-cli-parity|artifact-text-parity-check|fixture-freshness)[: ]|^\{"(summary|harness)":/ { later=1 }
+            /^complexity-ratchet FAILED:/         { mark("size") }
+            /^model-hints (FAILURE:|self-test FAILED)/ { mark("model-hints") }
+            /^\{"summary":\{"passed":[0-9]+,"skipped":[0-9]+,"failed":[1-9][0-9]*\}\}$/ { mark("harness-program") }
+            /^mcp-cli-parity check FAILED:/       { mark("mcp-cli-parity") }
+            /^artifact-text-parity-check FAILED/  { mark("artifact-text-parity") }
+            /^fixture-freshness check FAILED:/    { mark("fixture-freshness") }
+            END { if (k && !conflict && !n && f) print f; else if (k && n && !later) print "knip count=" n; else print "unknown" }
+          ' "$QA_RUN/logs/release-verify.log" 2>/dev/null) || cause=unknown
+          printf '[p06] late_cause=%s\n' "$cause"
 
       - name: Write the immutable final evidence manifest
         id: manifest

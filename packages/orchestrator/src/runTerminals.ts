@@ -102,6 +102,12 @@ export async function guardAnnouncedRun(
   let abortedAtStrategyEnd: boolean | null = null;
   const cancellationDecided = (): boolean =>
     abortedAtStrategyEnd !== null ? abortedAtStrategyEnd : signal?.aborted === true;
+  /** The cancelled terminal's one-line cause, read when the abort is observed
+   * (lazily: the wall-clock reason only exists after the signal fires). */
+  const cancelSummary = () =>
+    signal?.reason === "wall_clock_exceeded"
+      ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
+      : "run cancelled";
   const runBarrier = async (context: AnnouncedRunContext): Promise<void> => {
     if (barrierAttempted) return;
     barrierAttempted = true;
@@ -165,17 +171,13 @@ export async function guardAnnouncedRun(
     const budget = settledBudgetSnapshot(a);
     const spendUsd = budget.spendUsd;
     const delegateBarrierArmed = ownsDelegateDrain(a);
+    const priorFacts = preparedResult?.facts;
     if (signal?.aborted && terminalError === cause) {
-      const priorFacts = preparedResult?.facts;
       const cancelFacts = terminalOutcomeFacts(
         priorFacts,
         "cancelled",
         cancelReasonFromSignalToken(signal.reason),
       );
-      const cancelSummary =
-        signal.reason === "wall_clock_exceeded"
-          ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
-          : "run cancelled";
       const attempts = a.attempts?.();
       // As on the Delegate cancel path: a kept capture-bearing record
       // carries the cancelled terminal's own statement.
@@ -185,7 +187,7 @@ export async function guardAnnouncedRun(
         if (delegateBarrierArmed) reconcileDecisionBudget(a, budget);
         reconciledCancelFacts = reconcileDecisionTerminal(a, {
           facts: cancelFacts,
-          why: cancelSummary,
+          why: cancelSummary(),
           ...(preparedResult ? { preparedFacts: preparedResult.facts } : {}),
         });
         reconcileWorkProductTerminal(a, reconciledCancelFacts);
@@ -223,7 +225,6 @@ export async function guardAnnouncedRun(
           }
         : cancelled;
     } else {
-      const priorFacts = preparedResult?.facts;
       const pendingFacts = terminalOutcomeFacts(priorFacts, "failed", "harness_failed");
       const pendingSummary = redactSecrets(
         terminalError instanceof Error ? terminalError.message : String(terminalError),
@@ -438,10 +439,6 @@ export async function guardAnnouncedRun(
             "cancelled",
             cancelReasonFromSignalToken(signal.reason),
           );
-          const cancelSummary =
-            signal.reason === "wall_clock_exceeded"
-              ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
-              : "run cancelled";
           const attempts = context.attempts?.();
           // A kept capture-bearing record is re-labelled with the same
           // statement the cancelled terminal below makes (cancel, then the
@@ -457,7 +454,7 @@ export async function guardAnnouncedRun(
             reconcileDecisionBudget(context, budget);
             reconciledCancelFacts = reconcileDecisionTerminal(context, {
               facts: cancelFacts,
-              why: cancelSummary,
+              why: cancelSummary(),
               preparedFacts: result.facts,
             });
             reconcileWorkProductTerminal(context, reconciledCancelFacts);
