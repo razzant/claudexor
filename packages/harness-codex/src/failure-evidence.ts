@@ -1,5 +1,10 @@
 import type { ControlProblem, ModelFailureEvidence } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
+import {
+  errorClassName,
+  responseEventType,
+  responseRequestId,
+  transportErrorCode,
+} from "./response-diagnostics.js";
 
 /** The slice of a model or image result this capture annotates. */
 interface CapturedResult {
@@ -36,7 +41,7 @@ export class ResponseFailureCapture {
 
   response(response: Response): void {
     this.responseStartedAtMs = this.now();
-    this.requestId = response.headers.get("x-request-id") ?? response.headers.get("request-id");
+    this.requestId = responseRequestId(response.headers);
   }
 
   receive(chunk: Uint8Array): void {
@@ -53,7 +58,7 @@ export class ResponseFailureCapture {
 
   event(type: unknown): void {
     this.eventCount += 1;
-    this.lastEventType = typeof type === "string" ? type : null;
+    this.lastEventType = responseEventType(type);
     this.lastEventAtMs = this.now();
   }
 
@@ -88,8 +93,12 @@ export class ResponseFailureCapture {
 
   finish<T extends CapturedResult>(result: T): T {
     if (result.outcome === "completed" && result.problem === null) return result;
-    const first = this.errors[0];
-    const code = this.errors.find((error) => error.code !== null)?.code;
+    const errorName = errorClassName(this.errors[0]?.name);
+    let errorCode: string | number | null = null;
+    for (const { code } of this.errors) {
+      errorCode = typeof code === "string" ? transportErrorCode(code) : code;
+      if (errorCode !== null) break;
+    }
     const finishedAtMs = this.now();
     const trailingSilenceMs =
       this.lastChunkAtMs === null ? null : Math.max(0, finishedAtMs - this.lastChunkAtMs);
@@ -121,13 +130,11 @@ export class ResponseFailureCapture {
           stage: this.stage,
           receivedBytes: this.receivedBytes,
           eventCount: this.eventCount,
-          lastEventType: this.lastEventType === null ? null : redactSecrets(this.lastEventType),
+          lastEventType: this.lastEventType,
           terminalStatus: this.terminalStatus,
-          ...(this.requestId ? { requestId: redactSecrets(this.requestId) } : {}),
-          ...(first?.name ? { errorName: redactSecrets(first.name) } : {}),
-          ...(code !== undefined && code !== null
-            ? { errorCode: typeof code === "string" ? redactSecrets(code) : code }
-            : {}),
+          ...(this.requestId ? { requestId: this.requestId } : {}),
+          ...(errorName ? { errorName } : {}),
+          ...(errorCode != null ? { errorCode } : {}),
           ...timing,
         },
       };

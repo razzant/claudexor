@@ -190,6 +190,9 @@ export interface ContinuitySummaryInputs {
   credentialObserverFactory?: import("@claudexor/core").CredentialExecutionObserverFactory;
   billingVerificationForProfile?: import("./modelGovernance.js").ModelGovernedRoute["billingVerificationForProfile"];
   paidFallback?: import("./modelGovernance.js").ModelGovernedRoute["paidFallback"];
+  /** A withheld $0 Ask's mode and pin, carried to the summary's own send gate. */
+  diagnosticGeneration?: import("./modelGovernance.js").ModelGovernedRoute["diagnosticGeneration"];
+  quotaAdmission?: import("./modelGovernance.js").ModelGovernedRoute["quotaAdmission"];
 }
 
 /**
@@ -230,6 +233,8 @@ export async function resolveContinuitySummary(
       credentialObserverFactory: inputs.credentialObserverFactory,
       billingVerificationForProfile: inputs.billingVerificationForProfile,
       paidFallback: inputs.paidFallback,
+      diagnosticGeneration: inputs.diagnosticGeneration,
+      quotaAdmission: inputs.quotaAdmission,
     });
     if (!text) return null;
     writeThreadSummary(projectRoot, threadId, upToTurnId, text);

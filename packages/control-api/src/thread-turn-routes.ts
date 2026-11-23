@@ -257,10 +257,8 @@ export function handleThreadTurnCreate(
         // override on the turn for provenance; the turn is still created and the
         // run enqueued. When open questions remain and the override is absent,
         // the runner refuses the run PRE-START with a typed `plan_not_ready`,
-        // riding the SAME durable mechanism as the trust gate: the daemon
-        // persists `enqueue_error` on the turn (retryable — a job was recorded)
-        // and POST .../retry replays the recorded params through that fresh
-        // preflight once the plan is ready.
+        // and persists it on the turn. Exact Retry would still name this frozen
+        // plan, so the remedy is a new Implement turn after answering the questions.
         planOverridden = body["overridePlanReadiness"] === true;
         const digest = createHash("sha256").update(planText, "utf8").digest("hex");
         planHash = digest;
@@ -494,7 +492,7 @@ export function handleThreadTurnRetry(
         recorded.code !== RESOURCE_RELEASED &&
         recorded.code !== "run_deadline_expired"
       ) {
-        // No job exists to replay, and a purged thread takes no new message either.
+        // The stored refusal requires a new message. A purged thread admits none.
         assertThreadAdmitsWork(threadId, detail.thread);
         throw Object.assign(
           new Error(
@@ -567,7 +565,15 @@ export function handleThreadTurnRetry(
         // params remain in the registry, so the turn STAYS replayable, unless a
         // resource they name was released, which no replay can ever pass (#249).
         // Untyped throws are infra failures — 500 (matching POST /runs).
-        const problem = problemFromError(err, errCode(err) !== RESOURCE_RELEASED);
+        const { turnRetryable, retryable } = Object(err);
+        const problem = problemFromError(
+          err,
+          errCode(err) !== RESOURCE_RELEASED && turnRetryable !== false,
+        );
+        const requestRetryable =
+          typeof turnRetryable === "boolean" && typeof retryable === "boolean"
+            ? retryable
+            : problem.retryable;
         try {
           ctx.setTurnEnqueueError?.(turnId, problem);
         } catch {
@@ -576,7 +582,7 @@ export function handleThreadTurnRetry(
         return ctx.json(
           res,
           errStatus(err, 500),
-          turnEnqueueProblemResponse(problem, { threadId, turnId }),
+          turnEnqueueProblemResponse(problem, { threadId, turnId }, requestRetryable),
         );
       }
       return respondToTurnJob(ctx, res, job.id, threadId, turnId);

@@ -7,12 +7,20 @@ import { isMarkedAsUntransferable } from "node:worker_threads";
 import {
   ControlArtifactListResponse,
   ControlProjectOutputsResponse,
+  FINAL_MESSAGES_PATH,
   type ControlArtifactInfo,
 } from "@claudexor/schema";
 import { RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
-import { isVanishedErrno, safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
+import {
+  artifactRelativePath,
+  isVanishedErrno,
+  safeArtifactPath,
+  safeArtifactRoot,
+} from "./artifact-paths.js";
 import { readRunTombstone } from "./retention.js";
 import { locateFilesArtifact, type FilesArtifactTransfer } from "./files-artifact-stream.js";
+import { readFinalMessagesArtifact } from "./final-messages-projection.js";
+import { readRunEventFacts } from "./run-event-facts.js";
 
 const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
 const MAX_ARTIFACT_BINARY_FETCH_BYTES = 32 * 1024 * 1024;
@@ -57,15 +65,52 @@ export function readArtifact(request: ArtifactReadRequest): ArtifactReadResult {
     };
   }
   if (request.runArtifact) {
+    if (artifactRelativePath(request.relative) === FINAL_MESSAGES_PATH) {
+      return (
+        declaredFinalMessages(request.root) ??
+        readArtifactFile(safeArtifactPath(request.root, request.relative))
+      );
+    }
     const transfer = locateFilesArtifact(request.root, request.relative);
     if (transfer) return { kind: "files", transfer };
     const unrendered = unrenderedPatchView(request.root, request.relative);
     if (unrendered) return { kind: "error", status: 413, body: unrendered };
   }
+  const target = safeArtifactPath(request.root, request.relative);
+  if (request.runArtifact && target && isFinalMessagesFile(request.root, target)) {
+    const read = declaredFinalMessages(request.root);
+    if (read) return read;
+  }
   return readArtifactFile(
-    safeArtifactPath(request.root, request.relative),
+    target,
     request.runArtifact === true && request.relative === RETAINED_OUTPUT_PATH,
   );
+}
+
+function declaredFinalMessages(root: string): ArtifactReadResult | null {
+  return readFinalMessagesArtifact(root, readRunEventFacts({ runDir: root }).finalMessages);
+}
+
+/** Both paths passed the ordinary run-root checks. Let the filesystem decide
+ * whether the caller's spelling denotes the recorded file. */
+function isFinalMessagesFile(root: string, target: string): boolean {
+  const canonical = safeArtifactPath(root, FINAL_MESSAGES_PATH);
+  if (!canonical) return false;
+  if (canonical === target) return true;
+  try {
+    const file = lstatSync(canonical, { bigint: true });
+    const candidate = lstatSync(target, { bigint: true });
+    return (
+      file.isFile() &&
+      candidate.isFile() &&
+      file.ino !== 0n &&
+      file.dev === candidate.dev &&
+      file.ino === candidate.ino
+    );
+  } catch (error) {
+    if (isVanishedErrno(error)) return false;
+    throw error;
+  }
 }
 
 /** Shared artifact-file body: path checks and size caps, then the exact bytes

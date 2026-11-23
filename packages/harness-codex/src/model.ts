@@ -23,8 +23,8 @@ import { prepareCodexModelAuth, type CodexModelAuthDeps } from "./model-auth.js"
 import {
   buildResponsesRequest,
   CodexModelError,
+  contentRefusalProblem,
   emptyModelResult,
-  providerProblem,
   readResponsesStream,
   record,
   text,
@@ -116,13 +116,21 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
       let dispatched = false;
       let delivery: RequestDelivery | undefined;
       const capture = new ResponseFailureCapture(context.captureFailureEvidence);
+      let contentRefused = false;
+      const refusals = {
+        typedRefusals: context.typedRefusals === true,
+        onContentRefusal: () => {
+          contentRefused = true;
+          context.onContentRefusal?.();
+        },
+      };
       let processing: ProcessingReceipt | undefined;
       let effortResolution: EffortResolution | undefined;
       let nativeContinuation: ModelNativeContinuation | null | undefined =
         request.nativeContinuation === undefined ? undefined : null;
       const withTurnState = (result: ModelCallResult): ModelCallResult => {
         const problem = result.problem;
-        if (dispatched && problem) {
+        if (dispatched && problem && !contentRefused) {
           if (
             ["model_capability_refused", "model_unavailable"].includes(problem.code) ||
             (problem.code === "provider_failed" &&
@@ -282,7 +290,11 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
         if (!response.ok) {
           const result = emptyModelResult({ ...route, model: null });
           const error = await capture.readRefusal(response);
-          if (response.status === 408) {
+          const problem = authenticatedProblem(response, error, auth, now());
+          const refusal = contentRefusalProblem(problem, error, refusals);
+          if (refusal) {
+            result.problem = refusal;
+          } else if (response.status === 408) {
             // Request Timeout is the peer saying it did not receive a complete
             // request, so no generation began. An intermediary that answered 408
             // after the origin accepted the whole body would make this false.
@@ -291,7 +303,7 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
               "transport_not_delivered",
               "The provider did not receive the complete Codex request; generation did not start.",
               {
-                ...providerProblem(408, error, response.headers).context,
+                ...problem.context,
                 generationStarted: false,
                 requestDelivery: {
                   state: "not_delivered",
@@ -301,18 +313,13 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
               },
               true,
             ).problem;
-            return withTurnState(capture.finish(result));
+          } else {
+            result.problem = processingAdmissionProblem(
+              codexCapabilityRefusal(problem, response.status, error, request.model),
+              request.options,
+              processing,
+            );
           }
-          result.problem = processingAdmissionProblem(
-            codexCapabilityRefusal(
-              authenticatedProblem(response, error, auth, now()),
-              response.status,
-              error,
-              request.model,
-            ),
-            request.options,
-            processing,
-          );
           return withTurnState(capture.finish(result));
         }
         // Capture before reading the stream. A truncated body still owns this
@@ -322,7 +329,7 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
           nativeContinuation = { route, format: TURN_FORMAT, payload: { turnState } };
         }
         return withTurnState(
-          await readResponsesStream(response, route, context.captureFailureEvidence),
+          await readResponsesStream(response, route, context.captureFailureEvidence, refusals),
         );
       } catch (error) {
         const result = emptyModelResult({ ...route, model: null });

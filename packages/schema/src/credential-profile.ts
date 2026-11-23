@@ -353,20 +353,24 @@ export const ControlPoolNextUp = z
     z
       .object({ kind: z.literal("profile"), profileId: Id })
       .strict()
-      .describe("An enabled account row is who an unpinned run routes to next."),
+      .describe(
+        "An enabled account row: the first candidate in ordinary pool order for the configured default model.",
+      ),
     z
       .object({ kind: z.literal("api_key_route") })
       .strict()
       .describe(
-        "The account pool is empty or exhausted; the unpinned route is the policy-governed API key (INV-061) — a route, never an account row.",
+        "The account pool is empty or exhausted; ordinary default-model routing reports the policy-governed API-key route (INV-061), never an account row.",
       ),
     z
       .object({ kind: z.literal("none"), reason: z.string() })
       .strict()
-      .describe("An unpinned run has nothing routable, with a human reason."),
+      .describe(
+        "Nothing routable in ordinary pool order for the configured default model, with a human reason.",
+      ),
   ])
   .describe(
-    "Server-computed pool routing verdict for one harness's unpinned runs (unified account model).",
+    "Server-computed informational pool verdict for one harness (unified account model): the first candidate in ordinary pool order for the configured default model, which a run's own pin, thread binding, model, mode, paid budget or auth preference can change.",
   );
 export type ControlPoolNextUp = z.infer<typeof ControlPoolNextUp>;
 
@@ -379,7 +383,7 @@ export const ControlHarnessAccountPool = z
   })
   .strict()
   .describe(
-    "Per-harness pool authority (unified account model): who an unpinned run routes to next.",
+    "Per-harness pool authority (unified account model): the informational first candidate in ordinary pool order for the configured default model.",
   );
 export type ControlHarnessAccountPool = z.infer<typeof ControlHarnessAccountPool>;
 

@@ -19,6 +19,7 @@ import { MODEL_OPERATION_DRAFTS } from "./model-routes.js";
 import { MAINTENANCE_OPERATION_DRAFTS } from "./maintenance-routes.js";
 import { PROJECT_OPERATION_DRAFTS } from "./project-operation-descriptors.js";
 import { RUN_EVENT_PART_OPERATION_DRAFTS } from "./run-event-part-routes.js";
+import { RUN_DETAIL_OPERATION } from "./run-detail-route.js";
 import { START_OPERATION_DRAFTS, TURN_LOOKUP_OPERATION_DRAFTS } from "./run-start-routes.js";
 import { descriptor, jsonOperation as j } from "./operation-descriptor.js";
 import { TASK_GROUP_RUNS_OPERATION_DRAFTS } from "./task-group-routes.js";
@@ -232,7 +233,7 @@ const operations: ControlOperationDescriptor[] = [
   }),
   ...START_OPERATION_DRAFTS.map(descriptor),
   j("POST", "/v2/runs/wait-many", "read_only", "RunWaitManyInput", "RunWaitManyResult"),
-  j("GET", "/v2/runs/:id", "read_only", null, "ControlRunDetail"),
+  RUN_DETAIL_OPERATION,
   j("GET", "/v2/runs/:id/time-limit", "read_only", null, "RunTimeLimitSnapshot"),
   j("PATCH", "/v2/runs/:id/time-limit", "mutating", "RunTimeLimitRequest", "RunTimeLimitSnapshot"),
   j("GET", "/v2/runs/:id/deadline", "read_only", null, "RunDeadlineSnapshot"),

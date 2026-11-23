@@ -1,9 +1,13 @@
 import type { RouteAuthEvidence } from "@claudexor/budget";
+import type { DiagnosticGeneration } from "@claudexor/core";
 import type {
   AuthPreference,
   AuthSourceReadiness,
   AuthVerification,
+  CredentialProfile,
   CredentialProfileStatus,
+  HarnessRunSpec,
+  ProcessingCostBasis,
 } from "@claudexor/schema";
 
 /**
@@ -79,4 +83,59 @@ export function authRouteEvidenceFor(
           s.source === "provider_auth_file"),
   );
   return { route, verification: source?.verification ?? "not_run" };
+}
+
+/**
+ * The lane an ordinary read-only Ask may pin to its vendor-verified native session
+ * when no paid budget remains and paid diagnostics are withheld: no pinned account, the route resolved
+ * to the vendor's own login, and that login proven by the vendor in the run's own
+ * environment. A setup-token, an API key and every source this probe did not
+ * verify never qualify: a token's presence proves nothing and its proof is a
+ * generation request. The spawn then carries the route its billing was read from.
+ */
+export function pinnedNativeAdmission(
+  mode: DiagnosticGeneration,
+  profile: CredentialProfile | null,
+  route: "vendor_native" | "managed_api_key" | null,
+  sources: readonly AuthSourceReadiness[],
+): { pinnedNative?: true } {
+  const verified = sources.some(
+    (s) =>
+      s.source === "native_session" &&
+      s.availability === "available" &&
+      s.verification === "passed",
+  );
+  return mode === "forbidden" && profile === null && route === "vendor_native" && verified
+    ? { pinnedNative: true }
+    : {};
+}
+
+/** A profileless send keeps its admission's verified native pin only while it still spawns
+ * strictly on that login: no account row and the explicit subscription route. A later send
+ * whose effective route left it (another model's account, a pool API key) proves nothing. */
+export function pinnedNativeSpawn(
+  admission: { pinnedNative?: true } | undefined,
+  spec: Pick<HarnessRunSpec, "credential_profile" | "auth_preference">,
+): boolean {
+  return (
+    admission?.pinnedNative === true &&
+    !spec.credential_profile &&
+    spec.auth_preference === "subscription"
+  );
+}
+
+/**
+ * The one withheld-$0 reading of a Processing `included` class, at routing and at every send:
+ * it stands only on the route's own subscription proof (a named row's vendor verification, or
+ * the verified native pin on a `pinnedNativeSpawn`). Any other included receipt is unknown, so
+ * the ledger refuses it at $0. Other modes and every other class are returned unchanged.
+ */
+export function withheldCostBasis(
+  mode: DiagnosticGeneration | undefined,
+  entitled: boolean,
+  basis: ProcessingCostBasis,
+): ProcessingCostBasis {
+  return mode === "forbidden" && !entitled && basis.kind === "included"
+    ? { ...basis, kind: "unknown" }
+    : basis;
 }

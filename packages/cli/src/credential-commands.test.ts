@@ -781,7 +781,7 @@ describe("claudexor accounts snapshot (read-only agent doorway)", () => {
     });
     expect(code).toBe(0);
     expect(stdout).toContain("quota refresh skipped for claude/limited (vendor_native):");
-    expect(stdout).toContain("next up (default model) claude: work");
+    expect(stdout).toContain("pool order (default model) claude: work");
     expect(stdout).not.toContain("quota refresh skipped for claude/work");
     expect(stdout).not.toContain("routing evidence unavailable");
   });

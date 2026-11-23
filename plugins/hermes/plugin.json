@@ -2,10 +2,19 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "claudexor",
   "version": "6.3.0",
-  "description": "Delegate research and isolated file changes from Hermes to your local Claudexor installation.",
+  "description": "Delegate research and isolated or direct file changes from Hermes to your local Claudexor installation. Fresh installs request Hermes approval for non-read-only tools.",
   "author": { "name": "Ouroboros", "url": "https://github.com/ouroboros-agent" },
   "homepage": "https://claudexor.ai/",
   "repository": "https://github.com/razzant/claudexor",
   "license": "MIT",
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": {
+        "claudexor": {
+          "trust": "untrusted"
+        }
+      }
+    }
+  },
   "keywords": ["mcp", "coding", "delegation"]
 }

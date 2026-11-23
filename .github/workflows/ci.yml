@@ -377,6 +377,7 @@ jobs:
           packages/daemon/src/model-operations.test.ts
           packages/control-api/src/files-result.test.ts
           packages/workspace/src/directory-portable.test.ts
+          packages/workspace/src/sparse-new-file-capture.test.ts
           packages/daemon/src/resource-store.model.test.ts
           packages/daemon/src/command-retention.test.ts
           packages/control-api/src/model-routes.test.ts

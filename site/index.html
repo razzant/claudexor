@@ -209,6 +209,15 @@
         gap: 14px;
         margin-top: 34px;
       }
+      .install-choice {
+        display: grid;
+        gap: 6px;
+        justify-items: start;
+      }
+      .install-choice small {
+        font-size: 13px;
+        color: var(--steel);
+      }
       .get {
         --n: 4px;
         display: inline-flex;
@@ -886,12 +895,27 @@
               and keeps the work in one auditable thread.
             </p>
             <div class="acts">
-              <a class="get" href="https://github.com/razzant/claudexor/releases/latest"
-                >Download for macOS</a
-              >
-              <button class="cmd" type="button" data-copy="npm install -g claudexor">
-                <code>npm install -g claudexor</code><span aria-live="polite">Copy</span>
-              </button>
+              <div class="install-choice">
+                <a
+                  class="get"
+                  aria-describedby="mac-requirements"
+                  data-mac-installer
+                  href="https://github.com/razzant/claudexor/releases/latest"
+                  >Choose the Claudexor .dmg</a
+                >
+                <small id="mac-requirements">Apple Silicon · macOS 26+</small>
+              </div>
+              <div class="install-choice">
+                <button
+                  class="cmd"
+                  type="button"
+                  aria-describedby="cli-requirements"
+                  data-copy="npm install -g claudexor"
+                >
+                  <code>npm install -g claudexor</code><span aria-live="polite">Copy</span>
+                </button>
+                <small id="cli-requirements">CLI · macOS / Linux · Node.js 24.15+</small>
+              </div>
               <a class="more" href="#agent-hosts">Install in Hermes, Pi or OpenClaw</a>
             </div>
             <p class="fact" id="fact" aria-hidden="true"></p>
@@ -1120,7 +1144,8 @@
                 the agent's own CLI installed. The host process must find <code>node</code> and
                 <code>claudexor</code> on its PATH. Use the account you already connected, and sign
                 in only if this machine has none; switching accounts during a Codex sign-in can
-                revoke other sessions.
+                revoke other sessions. <code>claudexor doctor</code> may check other configured
+                providers besides the one you intend to use, consuming quota or incurring charges.
                 <a href="https://github.com/razzant/claudexor#set-up-the-cli-and-account"
                   >CLI and account setup</a
                 >
@@ -1172,36 +1197,38 @@
               >
                 <h4 class="host-name">Hermes</h4>
                 <div class="term">
-                  <i># Asks for the full SHA you inspected</i><br /><i>$</i> printf 'Inspected
-                  commit SHA: ' &amp;&amp;<br />IFS= read -r sha &amp;&amp;<br />hermes plugins
-                  install \<br />razzant/claudexor/plugins/hermes \<br />--ref "${sha:?Full SHA
-                  required}" --enable
+                  <i># Hermes 0.23.1+, macOS or Linux. Put node</i><br /><i
+                    ># and claudexor on the Hermes PATH first.</i
+                  ><br /><i>$</i> hermes plugins install claudexor --enable
                 </div>
                 <p>
-                  Confirm the pin with <code>hermes plugins list</code>, then start a new Hermes
-                  session in that profile and ask it to load <code>claudexor:claudexor</code>.
-                  <a href="https://github.com/razzant/claudexor#install-in-hermes">All steps</a>
+                  A Community plugin in the Hermes catalog; it needs Claudexor CLI 6.3.0 or later.
+                  Check its pinned source first with <code>hermes plugins info claudexor</code>. The
+                  catalog pin can change. To verify the installed SHA before enabling, omit
+                  <code>--enable</code> and answer No if prompted. Follow All steps below to check
+                  the installed files, then run <code>hermes plugins enable claudexor</code>.
+                </p>
+                <p>
+                  In a new session of the same profile, ask: “Load
+                  <code>claudexor:claudexor</code>, then use Claudexor's read-only Ask for a second
+                  opinion on this plan.” Approving a call is not a budget: even this Ask can use
+                  your quota or incur charges.
+                  <a href="https://hermes-agent.nousresearch.com/marketplace/claudexor"
+                    >Catalog entry</a
+                  >
+                  · <a href="https://github.com/razzant/claudexor#install-in-hermes">All steps</a>
+                  covers checking the pin, updating and installing from a reviewed Git commit.
                 </p>
               </div>
               <div class="pane" role="tabpanel" id="install-in-pi" aria-labelledby="tab-pi">
                 <h4 class="host-name">Pi</h4>
-                <div class="term">
-                  <i># Does the npm package carry the extension?</i><br /><i>$</i> npm view
-                  claudexor@latest \<br />pi.extensions --json
-                </div>
-                <p>
-                  If it lists <code>./pi/index.js</code>, install with
-                  <code>pi install npm:claudexor</code>. If not,
-                  <a href="https://github.com/razzant/claudexor#get-a-package-checkout"
-                    >get a checkout</a
-                  >
-                  and run <code>pi install "$HOME/claudexor-hosts/packages/claudexor"</code>.
-                </p>
+                <div class="term"><i>$</i> pi install npm:claudexor</div>
                 <p>
                   Use a Pi version with built-in MCP and <code>registerMcpServer</code>, such as
                   1.5.2. After <code>/reload</code>, check that Claudexor is connected in
                   <code>/mcp</code>.
-                  <a href="https://github.com/razzant/claudexor#install-in-pi">All steps</a>
+                  <a href="https://pi.dev/packages/claudexor">Pi package page</a>
+                  · <a href="https://github.com/razzant/claudexor#install-in-pi">All steps</a>
                 </p>
               </div>
               <div
@@ -1212,16 +1239,20 @@
               >
                 <h4 class="host-name">OpenClaw</h4>
                 <div class="term">
-                  <i># On the Gateway machine, from a checkout</i><br /><i>$</i> openclaw plugins
-                  install \<br />"$HOME/claudexor-hosts/plugins/claude"<br /><i>$</i> openclaw
-                  plugins inspect claudexor
+                  <i># On the Gateway machine</i><br /><i>$</i> openclaw plugins install \<br />clawhub:@ouroboros-agent/claudexor<br /><i
+                    >$</i
+                  >
+                  openclaw plugins inspect claudexor
                 </div>
                 <p>
                   Put <code>node</code> and <code>claudexor</code> on the Gateway service's PATH and
                   allow the tools for your embedded agent. OpenClaw 2026.11.5 needs Node 24.16.0 to
-                  24.x, or 26.1.0 and newer.
+                  24.x, or 26.1.0 and newer. The installer asks you to confirm the bundled skill and
+                  the local MCP server (<code>claudexor mcp serve</code>).
+                  <a href="https://clawhub.ai/ouroboros-agent/plugins/claudexor">ClawHub page</a>
+                  ·
                   <a href="https://github.com/razzant/claudexor#get-a-package-checkout"
-                    >Get a checkout</a
+                    >Install from a checkout instead</a
                   >
                   · <a href="https://github.com/razzant/claudexor#install-in-openclaw">All steps</a>
                 </p>
@@ -1278,14 +1309,17 @@
           <div class="start" id="start">
             <div>
               <p class="sub">
-                On macOS 26 or newer, download the signed and notarized app and drag it to
-                Applications. It brings its own runtime, so you need no Node or pnpm. In a terminal
-                on macOS or Linux, install the npm package with Node.js 24.15 or newer (use the
-                latest Node 24 release), or build it from source.
+                On an Apple Silicon Mac with macOS 26 or newer, download the signed and notarized
+                app and drag it to Applications. It brings its own runtime, so you need no Node or
+                pnpm. In a terminal on macOS or Linux, install the npm package with Node.js 24.15 or
+                newer (use the latest Node 24 release), or build it from source.
               </p>
               <div class="row">
-                <a class="get" href="https://github.com/razzant/claudexor/releases/latest"
-                  >Download for macOS</a
+                <a
+                  class="get"
+                  data-mac-installer
+                  href="https://github.com/razzant/claudexor/releases/latest"
+                  >Choose the Claudexor .dmg</a
                 ><a class="ghost" href="https://github.com/razzant/claudexor#quickstart"
                   >First steps</a
                 ><a class="ghost" href="https://github.com/razzant/claudexor#from-a-source-checkout"
@@ -1296,8 +1330,9 @@
                 Connect one coding agent through Claudexor, choose a project and try an Ask
                 question. When a run ends, the CLI prints its run ID, and
                 <code>claudexor inspect</code> with that ID shows what it did. A subscription login
-                counts against that plan; an API key is a paid fallback. Git and the selected coding
-                agent are checked during setup.
+                counts against that plan; an API key is a paid fallback. Setup checks Git and coding
+                agents. On a cold cache, <code>claudexor doctor</code> can contact other configured
+                providers and incur charges even when you select a subscription for Ask.
               </p>
             </div>
             <div class="term">

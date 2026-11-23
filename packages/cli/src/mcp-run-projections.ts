@@ -18,6 +18,7 @@ import {
   presentRunPrimaryOutput,
   projectRunFailure,
   projectRunCouncil,
+  projectRunFinalMessages,
   projectRunLineage,
   projectRunPrimaryOutput,
   projectRunSpendUsd,
@@ -132,12 +133,18 @@ function projectContinuationFacts(summary: Record<string, unknown>): Record<stri
   return facts;
 }
 
+/** #307: a recovery read may ask for the final-messages address; others keep the strict keys. */
+export interface RecoveryReadOptions {
+  includeFinalMessages?: boolean;
+}
+
 /** One typed read projection for inspect/status/result from a single detail snapshot. */
 export function projectRecoveryRunDetail(
   mode: string,
   requestedRunId: string,
   detail: Record<string, unknown>,
   delegationParentRunId?: string,
+  options: RecoveryReadOptions = {},
 ): Record<string, unknown> {
   const summary = (detail["summary"] ?? {}) as Record<string, unknown>;
   const runId = canonicalRunId(requestedRunId, summary);
@@ -216,7 +223,11 @@ export function projectRecoveryRunDetail(
           : primaryKind === "patch"
             ? "patch produced (see artifact handles)"
             : `run ${runId}: ${String(status ?? "unknown")}`;
-  return { summary: terminalSummary, ...base };
+  return {
+    summary: terminalSummary,
+    ...base,
+    ...(options.includeFinalMessages ? { finalMessages: projectRunFinalMessages(detail) } : {}),
+  };
 }
 
 /** Only canonical detail-integrity failures preserve a public recovery handle. */
@@ -234,6 +245,7 @@ export function isRecoverableRunDetailIntegrityProblem(error: unknown): boolean 
 export function projectDegradedRecoveryRunDetail(
   runId: string,
   error: unknown,
+  options: RecoveryReadOptions = {},
 ): Record<string, unknown> {
   return {
     summary: `run ${runId}: detail unavailable`,
@@ -255,6 +267,7 @@ export function projectDegradedRecoveryRunDetail(
     delegation: null,
     secretLike: null,
     objectResult: null,
+    ...(options.includeFinalMessages ? { finalMessages: null } : {}),
     detailProblem: describeRunDetailProblem(error),
   };
 }

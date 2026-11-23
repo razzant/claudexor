@@ -17,6 +17,7 @@ export interface SummarySnapshot {
 export interface DetailRead {
   record: DaemonRunRecord;
   cursor: number;
+  includeFinalMessages?: boolean | undefined;
   pending: ControlPendingInteraction[];
   operator: ControlOperatorDecisionRecord | null;
   /** Each child's question attention, derived by pendingQuestionAttention. */

@@ -138,7 +138,8 @@ Security → Open Anyway.)
 ### CLI from npm
 
 With **Node.js 24.15 or newer** (use the latest Node 24 release), install the
-CLI and daemon from npm:
+CLI and daemon from npm. On a cold cache, `claudexor doctor` can contact other configured providers and
+incur charges even when you select a subscription for Ask.
 
 ```bash
 npm install -g claudexor
@@ -597,9 +598,9 @@ same **Remove** (removal deletes the binding and any Claudexor-owned state or
 managed secret, provably: a partial cleanup is a typed retryable error, never a
 silent half-delete; a vendor credential for the OS user may be left unchanged).
 An UNPINNED run routes through the quota-aware **pool** of enabled,
-signed-in accounts: the freshest-headroom account wins, unknown-quota accounts
-rank after known headroom but before exhausted ones, and ties break
-deterministically. An unpinned chat thread is **sticky**: it stays on the
+signed-in accounts. In ordinary pool order the freshest-headroom account wins,
+unknown-quota accounts rank after known headroom but before exhausted ones, and
+ties break deterministically. An unpinned chat thread is **sticky**: it stays on the
 account it started with while that account is ready, and switches to a pool
 sibling only with a disclosed lane switch. An explicit pin (per-run
 `--profile`, or the composer's per-thread account chip) is STRICT — exactly
@@ -607,11 +608,15 @@ that account or a typed refusal (`subscription_window_exhausted` with the
 reset time when its quota window is spent, or when it reached a saved
 `headroom_threshold` below 100%; `quotaRefusal.basis` tells the two apart),
 never a silent rotation.
-`claudexor profiles` shows the informational **next-up** verdict — who an
-unpinned run of the configured default model would route to next — computed
+`claudexor profiles` shows the informational **next-up** verdict — the first
+candidate in ordinary pool order for the configured default model — computed
 server-side by the same routing owner (`accountPools`; also
 `GET /v2/account-pools`), plus each account's recent refusals, temporary capability marks and last
-service per requested model. Among accounts with unknown quota, the one that last
+service per requested model. A run's own pin or sticky thread, model, mode, paid
+budget or auth preference can still pick another account or route; a zero-paid
+Ask, for example, puts a vendor-verified account first
+([routing order](docs/ARCHITECTURE.md#credential-profiles-inv-135-unified-account-model)).
+Among accounts with unknown quota, the one that last
 served the requested model is tried first, also after a daemon restart. When the pool is empty
 or exhausted, the typed API-key fallback may serve the run as an explicit,
 disclosed **route** — never a synthetic account row; key management stays in
@@ -791,6 +796,7 @@ final/work_product.yaml
 final/summary.md
 final/failure.yaml?
 final/answer.md?
+final/final-messages.jsonl?
 final/explore.md?
 final/explore-findings.yaml?
 final/omissions.md?
@@ -799,12 +805,10 @@ final/plan.md?
 context/context_error.md?
 ```
 
-Files are the source of truth. Terminal output and UI rows are projections. The
-macOS thread workspace surfaces Changes, Artifacts, and Evidence (with each
-run's Outcome facts on top when a receipt is selected, and a remote-only
-Terminal tab on remote threads) directly from these
-artifacts/events, so successful answers and failed runs are inspectable instead
-of disappearing into logs.
+The macOS thread workspace shows the selected run's outcome in Changes,
+Artifacts and Evidence. Remote threads also have a Terminal tab.
+`claudexor inspect <run_id> --include-final-messages` reports whether the run's
+[ordered final messages](docs/ARCHITECTURE.md#final-messages) are available and where to read them.
 
 Standalone Agent runs use isolated envelopes by default, and Best-of candidates
 always use isolated envelopes. They live under the same external project
@@ -969,6 +973,9 @@ Claudexor with `claudexor auth login codex` or `claudexor auth login claude`.
 For Codex, open the sign-in link in a private window or a browser profile
 signed in to no other OpenAI account. Switching accounts during sign-in can
 revoke other sessions.
+
+On a cold cache, `claudexor doctor` can contact other configured providers and
+incur charges even when you select a subscription for Ask.
 Run `claudexor doctor` to check the harness. The host will launch the CLI
 directly. `command -v node` and `command -v claudexor` show the executable
 locations its PATH needs.
@@ -981,22 +988,81 @@ Choose [Hermes](#install-in-hermes), [Pi](#install-in-pi), or [OpenClaw](#instal
 
 #### Install in Hermes
 
-After [CLI and account setup](#set-up-the-cli-and-account), make sure the Hermes
-process can find `node` and `claudexor` on its PATH. Open the
-[Hermes manifest](plugins/hermes/plugin.json) at your chosen Git revision
-(for a release, select its tag). On GitHub press **y** to pin the page, inspect
-the plugin at that commit, and paste the full 40-character SHA from its URL:
+Claudexor is a Community plugin in the Hermes plugin catalog
+([entry](https://hermes-agent.nousresearch.com/marketplace/claudexor)) for macOS
+and Linux. After [CLI and account setup](#set-up-the-cli-and-account), check that
+`hermes --version` in the profile you will use reports 0.23.1 or later, that
+`claudexor --version` reports 6.3.0 or later, and that the Hermes process can find
+`node` (24.15 or later) and `claudexor` on its PATH. Do this before you install.
+
+In that profile, run `hermes plugins info claudexor` and note the full Pinned SHA,
+Repo and Subdir. The pin covers only the Hermes package, not your separately
+installed CLI or the vendor harnesses, and Hermes describes a catalog entry as a
+point-in-time review of that commit, not a security audit. Continue only if they
+match the source you reviewed (open `plugins/hermes` at that commit on GitHub),
+then verify the exact install as described below. This command installs the
+current catalog pin and enables the plugin immediately:
 
 ```sh
-printf 'Inspected commit SHA: ' && IFS= read -r claudexor_sha &&
+hermes plugins install claudexor --enable
+```
+
+The catalog can change between `info` and `install`. To verify the installed
+SHA before enabling a new plugin, omit `--enable`, answer No when prompted,
+and check the source, revision and `untrusted` setting below. Then run
+`hermes plugins enable claudexor`. Without a terminal, a new install without
+`--enable` stays disabled.
+
+An existing catalog install moves to the catalog's current pin with
+`hermes plugins update claudexor`; repeat the checks below afterwards. A Git
+install made with `--ref` stays on its commit and `hermes plugins update` does not
+move it: review the new full SHA as in the Git route, then follow Hermes' rule for
+[pinned plugins](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins).
+
+The advanced Git fallback needs no catalog entry: use the full 40-character SHA of
+a reviewed source commit whose [Hermes manifest](plugins/hermes/plugin.json)
+declares the `claudexor` server `trust: untrusted`. Older commits and release tags
+may not. On GitHub, press **y** on that revision's manifest page to get its commit
+permalink. Use the commit SHA, not a branch or tag. In a terminal for your
+intended Hermes profile, paste it here:
+
+```sh
+printf 'Reviewed source commit SHA: ' && IFS= read -r claudexor_sha &&
   hermes plugins install razzant/claudexor/plugins/hermes --ref "${claudexor_sha:?Full SHA required}" --enable
 ```
 
-The first install needs network access for Hermes' runtime. Confirm the pin
-and enabled state with `hermes plugins list`. If you restrict tools, allow
-the Claudexor MCP tools for that platform in `hermes tools`. Start a new
-session in that profile and ask Hermes to load `claudexor:claudexor`.
-[Get your first answer](#first-delegation-from-any-host).
+If an older Git-installed Claudexor is already installed, use the Git command
+above with the newly reviewed SHA and add `--force` to reinstall Claudexor.
+
+Both routes download the plugin over the network. Hermes separately fetches its
+own runtime on a first install. In that same profile, not only the default one,
+read the `claudexor` record in `plugins/.install-metadata.json` inside your
+selected Hermes profile home (default `~/.hermes`). Its `source` and `revision`
+must match the repository, the `plugins/hermes` subdirectory and the full
+40-character SHA you chose. For a catalog install, compare them with the full pin
+recorded from the catalog entry before you installed. Use `hermes plugins list` to check
+that `claudexor` is enabled. Run `hermes plugins validate` on
+`plugins/claudexor` in the same home; its `server trust: claudexor` entry should
+say `untrusted`, which confirms the portable package only. A same-named
+`claudexor` server entry in that profile's `config.yaml` replaces the package's,
+so it needs `trust: untrusted` too (see the
+[custom store example](docs/INTEGRATIONS.md#custom-claudexor-configuration-directory)).
+If you restrict tools, allow the
+Claudexor MCP tools for that platform in `hermes tools`. Start a new session in
+that profile and ask Hermes to load `claudexor:claudexor`, for example: “Load
+`claudexor:claudexor`, then use Claudexor's read-only Ask for a second opinion on
+this plan.” [Get your first answer](#first-delegation-from-any-host).
+
+Prompts come from the Hermes version you run, not from Claudexor. With
+`trust: untrusted`, Hermes' documentation says calls that can write ask first,
+tools annotated read-only do not, and a call that needs approval where nobody can
+answer is refused. A remembered answer applies to a tool, not to one set of
+arguments, so prefer a one-time approval for sensitive actions and give Claudexor
+its own Hermes profile. Approval is not a budget: Ask and Plan can send your
+prompt and selected files to your provider and spend money or quota. The MCP
+prompt does not cover delivering an isolated change, which is a separate manual
+CLI step: inspect the complete diff and consent explicitly first. See
+[Hermes tool approval and access](docs/INTEGRATIONS.md#hermes-tool-approval-and-access).
 
 #### Install in Pi
 
@@ -1004,16 +1070,15 @@ Use a [configured CLI and account](#set-up-the-cli-and-account) and a Pi version
 with built-in MCP and `registerMcpServer` (for example, 1.5.2).
 Pi integration by [Ouroboros](https://github.com/razzant/ouroboros).
 
-Check the published package with `npm view claudexor@latest pi.extensions --json`.
-If the result lists `./pi/index.js`, install from npm.
-
 ```sh
 pi install npm:claudexor
 ```
 
-If the entry is missing, as it is in `claudexor@6.2.0` on npm,
-[get a Git checkout containing the extension](#get-a-package-checkout).
-Keep the checkout in place so Pi can load it on each start.
+The package lists its extension at `./pi/index.js`, and the
+[Pi package page](https://pi.dev/packages/claudexor) shows the same command.
+The published npm 6.2.0 has no extension; 6.3.0 includes it. To load it from a Git checkout instead,
+[get a package checkout](#get-a-package-checkout) and keep it in place so Pi can
+load it on each start.
 
 ```sh
 pi install "$HOME/claudexor-hosts/packages/claudexor"
@@ -1031,14 +1096,29 @@ filter MCP tools, allow the tools listed for your first request under
 
 #### Install in OpenClaw
 
-After [CLI and account setup](#set-up-the-cli-and-account), [get a package checkout](#get-a-package-checkout)
-on the Gateway machine. Put `claudexor` and `node` on the Gateway **service's**
-PATH. OpenClaw 2026.11.5 needs Node 24.16.0–24.x or 26.1.0+.
+After [CLI and account setup](#set-up-the-cli-and-account), put `claudexor` and
+`node` on the Gateway **service's** PATH on the Gateway machine. OpenClaw 2026.11.5
+needs Node 24.16.0–24.x or 26.1.0+. The plugin is published on
+[ClawHub](https://clawhub.ai/ouroboros-agent/plugins/claudexor); the `clawhub:`
+prefix selects that source explicitly
+([OpenClaw install sources](https://docs.openclaw.ai/tools/plugin#choose-an-install-source)).
+
+```sh
+openclaw plugins install clawhub:@ouroboros-agent/claudexor
+openclaw plugins inspect claudexor
+```
+
+To install from a checkout instead, [get a package checkout](#get-a-package-checkout)
+on the Gateway machine and use its path:
 
 ```sh
 openclaw plugins install "$HOME/claudexor-hosts/plugins/claude"
-openclaw plugins inspect claudexor
 ```
+
+The installer asks you to confirm the bundled skill and the local MCP server
+(`claudexor mcp serve`) before it finishes; in a non-interactive shell,
+`--accept-capabilities` records that explicit consent. Installing from a
+checkout asks you to confirm that source separately.
 
 If disabled, run `openclaw plugins enable claudexor`. If you use a plugin
 allowlist, include `claudexor`. [OpenClaw plugin policy](https://docs.openclaw.ai/tools/plugin#configure-plugin-policy).
@@ -1050,15 +1130,27 @@ agent session. [Get your first answer](#first-delegation-from-any-host).
 
 #### First delegation from any host
 
-Before the first request, compare the host's `claudexor_status` with the
-harness reported by `claudexor doctor`. If you chose a named account, find
-its profile in `claudexor_accounts`. On the first Ask, pass that profile's
+Before the first request, the shipped skill asks the host to compare the host's
+`claudexor_status` with the harness reported by `claudexor doctor`, and it may
+also read `claudexor_accounts` and `claudexor_capabilities`. Even without a fresh
+or refresh option, a cold or missing cached observation can make these reads and
+`claudexor doctor` contact other configured harness providers, not only the one
+chosen for Ask. That can use subscription quota or cost money, and skipping the
+manual `claudexor doctor` check does not guarantee that no probes run. Ask and
+Plan are the intended model requests. Reading an existing run's status or result
+is separate and does not start another. If you chose a named account, find its profile in
+`claudexor_accounts`. On the first Ask, pass that profile's
 `harness_id` as `harness` and its `profile_id` as `credentialProfileId`.
 If the profile is missing, resolve that before asking. For Auto, omit the
 profile pin and pass a harness only if you chose one. For a custom store, also use
 `claudexor_store_identity` to [match the store IDs](docs/INTEGRATIONS.md#custom-claudexor-configuration-directory).
 If your host filters tools, allow these additional reads for the checks you need,
 using the same host prefix as for `claudexor_status`.
+
+The example below asks for a status check, and the skill may add its own
+readiness comparison. If the cache is already warm, that may need no provider
+contact; on a cold cache it may contact providers and use quota or incur charges as
+described above before the Ask itself.
 
 Try this self-contained question with no repository selected and a CLI whose
 `claudexor_ask` tool offers `noProject`.
@@ -1070,7 +1162,7 @@ Accounts on this Ask. Leave Auto unpinned. The shop opens at 09:00 and closes
 at 17:00. When does it close? Show me Claudexor's answer and the run ID.
 ```
 
-After `claudexor_status`, the host calls `claudexor_ask` with `noProject: true`
+After the status check, the host calls `claudexor_ask` with `noProject: true`
 and the account fields if you selected a profile. It follows the handle with
 `claudexor_run_status` and reads the answer from
 `claudexor_run_result`. If only a queued `jobId` is returned, use it as `runId`

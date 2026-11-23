@@ -4,12 +4,13 @@ import type {
   SpawnOptions,
   SpawnOptionsWithoutStdio,
 } from "node:child_process";
+import { constants } from "node:os";
 import { extname, isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
+import { getSystemErrorMap } from "node:util";
 import {
   composeBaseEnv,
   defaultProcessGroupService,
-  labelStreams,
   reapProcessTree,
   registerChildProcess,
   resolveHarnessBinary,
@@ -19,7 +20,7 @@ import {
   type ProcessGroupHandle,
   type ProcessTreeTerminationOutcome,
 } from "@claudexor/core";
-import { redactSecrets } from "@claudexor/util";
+import { redactSecrets, wholeCharPrefix } from "@claudexor/util";
 
 export const AGY_PRINT_TIMEOUT_MS = 30_000;
 export const AGY_PRINT_STREAM_LIMIT_BYTES = 256 * 1024;
@@ -121,6 +122,9 @@ function boundedBuffer(maxBytes: number, overflow: () => void) {
     overflow();
   };
   return {
+    get overflowed(): boolean {
+      return overflowed;
+    },
     push(chunk: Buffer): void {
       if (chunk.length === 0) return;
       // A prior chunk may have filled the cap exactly. The NEXT byte is still
@@ -151,6 +155,45 @@ function delay(ms: number): Promise<void> {
     const timer = setTimeout(resolve, ms);
     timer.unref();
   });
+}
+
+function boundedDiagnostic(text: string, limit = 300): string {
+  return wholeCharPrefix(redactSecrets(text), limit);
+}
+
+const KNOWN_STATUSES = new Set(["SUCCESS", "ERROR"]);
+/** Node's system error names: the only spawn error codes a detail names. */
+const SYSTEM_ERRORS = new Set([
+  ...Object.keys(constants.errno),
+  ...[...getSystemErrorMap().values()].map(([name]) => name),
+]);
+
+/** The probe's observed structural facts. A status is named only when known;
+ * a spawn error only by its system code. */
+interface AgyFailureFacts {
+  code?: number | null;
+  signal?: NodeJS.Signals | null;
+  status?: unknown;
+  error?: unknown;
+}
+
+/**
+ * One public detail (#709): the cause, the observed exit, signal, status and
+ * spawn error code, and at most a phrase this module recognizes. Stream bytes,
+ * the JSON envelope and any other vendor words stay in the result's private
+ * `stdout`/`stderr`, whatever went wrong (timeout, signal, cut or invalid
+ * output, spawn).
+ */
+function agyFailureDetail(cause: string, facts: AgyFailureFacts = {}, known?: string | null) {
+  const observed: string[] = [];
+  if (Number.isInteger(facts.code)) observed.push(`exit ${facts.code}`);
+  if (facts.signal) observed.push(`signal ${facts.signal}`);
+  if (typeof facts.status === "string")
+    observed.push(`status ${KNOWN_STATUSES.has(facts.status) ? facts.status : "unrecognized"}`);
+  const errno = (facts.error as { code?: unknown } | null | undefined)?.code;
+  if (typeof errno === "string" && SYSTEM_ERRORS.has(errno)) observed.push(errno);
+  const head = observed.length > 0 ? `${cause} (${observed.join("; ")})` : cause;
+  return boundedDiagnostic(known ? `${head}: ${known}` : head);
 }
 
 /**
@@ -208,7 +251,7 @@ export async function runAgyPrintCommand(
     return {
       kind: "failed",
       reason: "spawn_failed",
-      detail: redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 300),
+      detail: agyFailureDetail("agy print probe could not be spawned", { error }),
       stdout: "",
       stderr: "",
     };
@@ -242,6 +285,9 @@ export async function runAgyPrintCommand(
     | { kind: "exit"; code: number | null; signal: NodeJS.Signals | null }
     | { kind: "error"; error: Error }
     | { kind: "unconfirmed_wait" };
+  // The child can exit during the pipe drain or the reaper wait, after the
+  // cancellation deadline won the race. Only its exit event supplies these facts.
+  let observedExit: Extract<Terminal, { kind: "exit" }> | undefined;
   let cancellationDeadlineTimer: NodeJS.Timeout | undefined;
   let resolveCancellationDeadline!: (terminal: Terminal) => void;
   const cancellationDeadline = new Promise<Terminal>((resolve) => {
@@ -317,7 +363,8 @@ export async function runAgyPrintCommand(
     });
     child.once("exit", (code, signal) => {
       unregisterExitedChild();
-      settle({ kind: "exit", code, signal });
+      observedExit = { kind: "exit", code, signal };
+      settle(observedExit);
     });
   });
 
@@ -371,24 +418,36 @@ export async function runAgyPrintCommand(
 
   const capturedOut = stdout.text();
   const capturedErr = stderr.text();
-  const streamDetail = labelStreams(capturedErr, capturedOut, {
-    maxLen: 300,
-    transform: redactSecrets,
-  });
+  // Which bounded stream overflowed is structure; its bytes are not.
+  const overflowed = [stdout.overflowed && "stdout", stderr.overflowed && "stderr"].filter(Boolean);
+  const cancelCause = (why: NonNullable<typeof requested>): string =>
+    why === "timeout"
+      ? `agy did not answer ${command} within ${(options.timeoutMs ?? AGY_PRINT_TIMEOUT_MS) / 1000}s`
+      : why === "abort"
+        ? "agy print probe was aborted"
+        : `agy print output exceeded its bounded stream limit on ${overflowed.join(" and ")}`;
   if (outcome.kind === "error") {
     return {
       kind: "failed",
       reason: "spawn_failed",
-      detail: redactSecrets(outcome.error.message).slice(0, 300),
+      detail: agyFailureDetail("agy print probe could not be spawned", {
+        code: observedExit?.code,
+        signal: observedExit?.signal,
+        error: outcome.error,
+      }),
       stdout: capturedOut,
       stderr: capturedErr,
     };
   }
   if (outcome.kind === "unconfirmed_wait" || termination?.state === "unconfirmed") {
+    const unconfirmed = "agy print probe termination could not be confirmed";
     return {
       kind: "failed",
       reason: "termination_unconfirmed",
-      detail: streamDetail ?? "agy print probe termination could not be confirmed",
+      detail: agyFailureDetail(
+        requested ? `${cancelCause(requested)}; ${unconfirmed}` : unconfirmed,
+        observedExit,
+      ),
       stdout: capturedOut,
       stderr: capturedErr,
     };
@@ -399,13 +458,7 @@ export async function runAgyPrintCommand(
     return {
       kind: "failed",
       reason,
-      detail:
-        streamDetail ??
-        (reason === "timed_out"
-          ? `agy did not answer ${command} within ${(options.timeoutMs ?? AGY_PRINT_TIMEOUT_MS) / 1000}s`
-          : reason === "aborted"
-            ? "agy print probe was aborted"
-            : "agy print output exceeded its bounded stream limit"),
+      detail: agyFailureDetail(cancelCause(requested), observedExit),
       stdout: capturedOut,
       stderr: capturedErr,
     };
@@ -433,8 +486,9 @@ const RECOGNIZED_AUTH_REJECTIONS = [
   "token revoked",
   "token expired",
 ] as const;
-// "authentication failed or timed out" also covers failed silent-auth network
-// checks with a valid token; it is probe_failed, not credential-rejection proof.
+// Also a failed silent-auth network check with a valid token: a recognized
+// probe failure, never credential-rejection proof.
+const RECOGNIZED_PROBE_FAILURES = ["authentication failed or timed out"] as const;
 
 function vendorError(envelope: Record<string, unknown>): string | null {
   const error = envelope["error"];
@@ -446,57 +500,58 @@ function vendorError(envelope: Record<string, unknown>): string | null {
   return null;
 }
 
-function recognizedAuthRejection(detail: string): boolean {
-  const normalized = detail.trim().toLowerCase().replaceAll(/\s+/g, " ");
-  return RECOGNIZED_AUTH_REJECTIONS.some(
-    (prefix) =>
-      normalized === prefix ||
-      normalized.startsWith(`${prefix}.`) ||
-      normalized.startsWith(`${prefix}:`) ||
-      normalized.startsWith(`${prefix} `),
+/** The recognized phrase the vendor error opens with, never the rest of its words. */
+function recognizedPhrase(detail: string | null, phrases: readonly string[]): string | null {
+  const normalized = detail?.trim().toLowerCase().replaceAll(/\s+/g, " ") ?? "";
+  return (
+    phrases.find(
+      (prefix) =>
+        normalized === prefix ||
+        normalized.startsWith(`${prefix}.`) ||
+        normalized.startsWith(`${prefix}:`) ||
+        normalized.startsWith(`${prefix} `),
+    ) ?? null
   );
 }
 
 /** Shared exit/envelope/auth classifier for doctor and quota. */
 export function classifyAgyPrintResult(result: AgyPrintCommandResult): AgyPrintClassification {
   if (result.kind === "failed") {
-    return { kind: "probe_failed", detail: redactSecrets(result.detail).slice(0, 300) };
+    return { kind: "probe_failed", detail: boundedDiagnostic(result.detail) };
   }
-  const streams = labelStreams(result.stderr, result.stdout, {
-    maxLen: 300,
-    transform: redactSecrets,
+  const failed = (
+    cause: string,
+    facts: AgyFailureFacts = {},
+    known?: string | null,
+  ): AgyPrintClassification => ({
+    kind: "probe_failed",
+    detail: agyFailureDetail(cause, { code: result.code, ...facts }, known),
   });
-  if (result.signal !== null) {
-    return {
-      kind: "probe_failed",
-      detail: `agy exited by signal ${result.signal}${streams ? ` (${streams})` : ""}`,
-    };
-  }
-  if (!result.stdout.trim()) {
-    return { kind: "probe_failed", detail: streams ?? "agy returned empty stdout" };
-  }
+  if (result.signal !== null) return failed(`agy exited by signal ${result.signal}`);
+  if (!result.stdout.trim()) return failed("agy returned empty stdout");
   let envelope: unknown;
   try {
     envelope = JSON.parse(result.stdout);
   } catch {
-    return { kind: "probe_failed", detail: streams ?? "agy output was not valid JSON" };
+    return failed("agy output was not valid JSON");
   }
   if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
-    return { kind: "probe_failed", detail: "agy output was not a JSON object" };
+    return failed("agy output was not a JSON object");
   }
   const record = envelope as Record<string, unknown>;
+  const status = record["status"];
+  if (status === "SUCCESS" && result.code === 0) return { kind: "success", envelope: record };
   const error = vendorError(record);
-  if (record["status"] === "ERROR" && error && recognizedAuthRejection(error)) {
-    return { kind: "unauthenticated", detail: redactSecrets(error).slice(0, 300) };
+  const rejection = status === "ERROR" ? recognizedPhrase(error, RECOGNIZED_AUTH_REJECTIONS) : null;
+  if (rejection) return { kind: "unauthenticated", detail: rejection };
+  let cause = "agy returned an unsuccessful status";
+  if (status === "SUCCESS") {
+    cause = Number.isInteger(result.code)
+      ? "agy reported SUCCESS but exited nonzero"
+      : "agy reported SUCCESS without an exit code";
+  } else if (typeof status !== "string") {
+    cause =
+      status === undefined ? "agy response had no status" : "agy response had a non-string status";
   }
-  if (result.code !== 0 || record["status"] !== "SUCCESS") {
-    return {
-      kind: "probe_failed",
-      detail:
-        (error ? redactSecrets(error).slice(0, 300) : null) ??
-        streams ??
-        `agy returned unsupported status/exit combination (status ${String(record["status"])}; exit ${String(result.code)})`,
-    };
-  }
-  return { kind: "success", envelope: record };
+  return failed(cause, { status }, recognizedPhrase(error, RECOGNIZED_PROBE_FAILURES));
 }

@@ -115,6 +115,8 @@ interface Replay {
   questions: InteractionRequest[];
   /** The control responses the adapter wrote to the CLI. */
   responses: Array<Record<string, any>>;
+  /** The adapter's own close decision, still askable once the run ended. */
+  closeStdinOn: (obj: unknown) => boolean;
 }
 
 /** Record every frame the adapter writes; never change one. */
@@ -160,6 +162,7 @@ async function replay(name: string, options: ReplayOptions = {}): Promise<Replay
   const questions: InteractionRequest[] = [];
   const responses: Array<Record<string, any>> = [];
   let args: string[] = [];
+  let closeStdinOn: ((obj: unknown) => boolean) | undefined;
   // The REAL adapter path (runClaude -> runCliHarness with the adapter's own
   // argv, session hooks and live-input owner); only the binary is the replay.
   const adapter = createClaudeAdapter({
@@ -177,6 +180,7 @@ async function replay(name: string, options: ReplayOptions = {}): Promise<Replay
     runCliHarness: (loop: CliRunLoopOptions) => {
       args = loop.args;
       const session = loop.session!;
+      closeStdinOn = session.closeStdinOn;
       return runCliHarness({
         ...loop,
         bin: process.execPath,
@@ -231,6 +235,7 @@ async function replay(name: string, options: ReplayOptions = {}): Promise<Replay
     closedOn,
     questions,
     responses,
+    closeStdinOn: (obj) => closeStdinOn!(obj),
   };
 }
 
@@ -616,4 +621,58 @@ describe("claude questions read after the session's input closed (#622)", () => 
     expect(streamExpectationViolations(run.events, run.expectations)).toEqual([]);
     expectCleanEnd(run.events);
   }, 20_000);
+});
+
+describe("claude live input: the quota refusal of its own command closes stdin once (#627)", () => {
+  const name = "stream-json/scripted-quota-refusal.jsonl";
+  /** Only a session still remembered can close stdin on a frame that is no result. */
+  const notAResult = { type: "system", subtype: "init" };
+
+  it("closes stdin on the prompt's own 429 after this turn's typed refusal, despite the queued message and the background task, and reads the stream to the process's own end", async () => {
+    const run = await replay(name, { liveOn: "file_change" });
+    // Decided on the refused result itself: the base bytes held stdin here for
+    // the queued message and the background task, until the background report.
+    expect(run.closedOn.map((frame) => frame["uuid"])).toEqual(["result-quota-1"]);
+    expect(run.receipt).toEqual({ outcome: "accepted" });
+    // The CLI still runs the message it had read: its echo after EOF is receipted once.
+    const delivered = run.events.filter((e) => e.payload?.["code"] === LIVE_INPUT_DELIVERED);
+    expect(delivered.map((e) => e.payload?.["message_id"])).toEqual([run.liveMessageId]);
+    const refused = run.events.findIndex((e) => e.type === "error");
+    expect(run.events.indexOf(delivered[0]!)).toBeGreaterThan(refused);
+    // The partial work and each refused turn's own failure stay as parsed, and the
+    // stream ends with the process's own exit.
+    expect(run.events.filter((e) => e.type === "file_change")).toHaveLength(1);
+    const errors = run.events.filter((e) => e.type === "error");
+    expect(errors.map((e) => e.payload?.["api_error_status"])).toEqual([429, 429, 429]);
+    expect(terminal(run.events)?.payload?.["exit_code"]).toBe(0);
+    expect(streamExpectationViolations(run.events, run.expectations)).toEqual([]);
+    // The session ended with its stream.
+    expect(run.closeStdinOn(notAResult)).toBe(false);
+  }, 20_000);
+
+  const warning = {
+    rate_limit_info: {
+      status: "allowed_warning",
+      resetsAt: 1900000000,
+      rateLimitType: "seven_day",
+      utilization: 1,
+    },
+  };
+
+  it.each([
+    ["a warning-only frame at full use", { "rate-quota-1": warning, "rate-quota-2": warning }],
+    [
+      "an unrelated failure after the refusal",
+      { "result-quota-1": { api_error_status: 529 }, "result-quota-2": { api_error_status: 529 } },
+    ],
+  ] as const)(
+    "keeps every hold on %s: stdin closes on the background report",
+    async (_case, rewrite) => {
+      const run = await replay(name, { liveOn: "file_change", rewrite });
+      expect(run.closedOn.map((frame) => frame["uuid"])).toEqual(["task-report-quota"]);
+      expect(run.receipt).toEqual({ outcome: "accepted" });
+      expect(run.closeStdinOn(notAResult)).toBe(false);
+    },
+    20_000,
+  );
 });

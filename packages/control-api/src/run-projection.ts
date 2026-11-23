@@ -23,7 +23,7 @@ import { boundedArtifactText, outputReadyState, primaryOutput } from "./primary-
 
 import { controlWebEvidence, latestPlanProgress, timelineEvents } from "./run-timeline.js";
 import { projectRouteControls } from "./route-controls-projection.js";
-import { readRunEventFacts, type RunEventFacts } from "./run-event-facts.js";
+import { readRunEventFacts, readRunFinalMessages, type RunEventFacts } from "./run-event-facts.js";
 import {
   paramsRecord,
   type ControlOperatorDecisionRecord,
@@ -278,7 +278,13 @@ export function detailFor(
   cursor?: number,
   operator: ControlOperatorDecisionRecord | null = null,
   children: ControlRunSummary[] = [],
-  retentionProblem: string | null = null,
+  {
+    retentionProblem,
+    includeFinalMessages,
+  }: {
+    retentionProblem?: string | null;
+    includeFinalMessages?: boolean | undefined;
+  } = {},
 ): ControlRunDetail {
   // Capture the resume fence before projection. Events arriving during queued
   // work may appear in both detail and replay; clients reconcile duplicates.
@@ -338,6 +344,8 @@ export function detailFor(
     primaryOutput: retentionProblem
       ? { kind: "diagnostic", path: "events.jsonl", text: retentionProblem }
       : primaryOutput(rec, summary.mode, failure, runFacts),
+    // #307: the terminal's recorded outcome; a pointer only while its document has that size.
+    ...(includeFinalMessages ? { finalMessages: readRunFinalMessages(rec, facts) } : {}),
     timeline: timelineEvents(rec, facts.timeline, facts.integrity),
     budget: budgetSnapshot(rec, decision, facts),
     finalSummary: boundedArtifactText(rec, "final/summary.md"),

@@ -6,6 +6,7 @@ import type { CredentialProfile, CredentialProfileStatus, HarnessRunSpec } from 
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { isAgyProfileKeychainUnsafe } from "./keychain.js";
+import { AGY_KNOWN_MODELS } from "./known-models.js";
 import { classifyAgyPrintResult, runAgyPrintCommand } from "./print-command.js";
 
 type EnvMap = Record<string, string | null | undefined>;
@@ -178,6 +179,13 @@ export async function probeAgyCredentialProfile(
     ).slice(0, 300);
   }
   const probe = await deps.runModelProbe(route.env, abortSignal);
+  // The id comes from the vendor's stdout: the detail names it only when it is
+  // one of the adapter's own model hints, never an arbitrary value (#709).
+  const known: readonly string[] = AGY_KNOWN_MODELS;
+  const shownModel =
+    probe.kind === "authenticated" && probe.modelId !== null && known.includes(probe.modelId)
+      ? ` (model ${probe.modelId})`
+      : "";
   if (probe.kind === "authenticated")
     return CredentialProfileStatusSchema.parse({
       ...base,
@@ -185,7 +193,7 @@ export async function probeAgyCredentialProfile(
       verification: "passed",
       verification_source: "vendor",
       detail:
-        `Antigravity accepted the named binding${probe.modelId ? ` (model ${probe.modelId})` : ""}; whether the credential is backed by a keyring or file is not inferred` +
+        `Antigravity accepted the named binding${shownModel}; whether the credential is backed by a keyring or file is not inferred` +
         (keychainSetupWarning
           ? `; private profile keychain setup degraded: ${keychainSetupWarning}`
           : ""),

@@ -43,8 +43,8 @@ struct AccountRowModel: Identifiable {
     /// pseudo-row). This is the ONLY routing control.
     let enabled: Bool
     /// Server-computed NEXT-UP (the `accountPools` pool authority): true when
-    /// an unpinned run of this harness's configured DEFAULT model would route
-    /// to THIS row next. INFORMATIONAL only — rendered as a quiet
+    /// THIS row is first in ordinary pool order for this harness's configured
+    /// DEFAULT model. INFORMATIONAL only — rendered as a quiet
     /// "Next up · default model" badge, never a control and never a forecast
     /// for another model. false when the projection is absent (older daemon)
     /// or another row/route is next up.
@@ -297,7 +297,7 @@ enum AccountsPresentation {
         }
     }
 
-    /// The next-up badge copy: `next_up` is the configured default model's verdict.
+    /// The next-up badge copy: `next_up` is the configured default model's first pool candidate.
     static let nextUpLabel = "Next up · default model"
 
     /// "Recent refusal · <model> (<reason>, <age>), <model>, …": first the

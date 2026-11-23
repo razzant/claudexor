@@ -1,4 +1,5 @@
 import { assertCandidatePoolAvailable, resolveCandidateHarnessIds } from "./route-admission.js";
+import { effectivePaidBudget, probeCandidateStatuses } from "./readiness-probe.js";
 import { projectCandidateBrowserPool } from "./candidate-browser.js";
 import { emitPrimaryDivergence } from "./primary-divergence.js";
 import {
@@ -233,11 +234,12 @@ import {
   authModeForCredentialRoute,
   authModeForPreference,
   authRouteEvidenceFor,
+  pinnedNativeAdmission,
 } from "./auth-route-classification.js";
 import { isFullAccess, RequestRequirementsResolver } from "./requestRequirements.js";
 import { DelegationBudgetAuthority } from "./delegationBudgetAuthority.js";
 import { activateDelegationParent } from "./delegation-parent-activation.js";
-import { writeRoutingFailureTerminal } from "./routing-failure.js";
+import { writeReviewerPreflightFailure, writeRoutingFailureTerminal } from "./routing-failure.js";
 export { routingFailureClassification } from "./routing-failure.js";
 import { resolveReadOnlyCandidates, runParallelCandidates } from "./strategyConcurrency.js";
 import { planPrompt } from "./plan-prompt.js";
@@ -737,6 +739,8 @@ export interface RoutedAdapter {
    * Exact Retry keeps it (frozen in context/processing_intent.yaml). */
   processingIntent?: ProcessingReceipt;
   processingAllowPaid?: boolean;
+  /** The probe mode this lane was admitted under (see ModelGovernedRoute). */
+  diagnosticGeneration?: "allowed" | "forbidden";
   adapter: HarnessAdapter;
   adapterAccess: AccessProfile;
   /** Canonical auxiliary writable roots THIS lane applies; [] on read-only lanes. */
@@ -768,6 +772,9 @@ export interface RoutedAdapter {
     /** Billing verification of THAT profile (#260); null = no profile, so the
      * default doctor's sources classify the route. */
     profileVerification: AuthVerification | null;
+    /** Set when a withheld $0 mode admitted this profileless read-only lane on its
+     * vendor-verified native session: its spawn is pinned to that same route. */
+    pinnedNative?: true;
   };
   /** Exact-account verification for each physical dispatch, including rotation. */
   billingVerificationForProfile?: (profile: CredentialProfile) => Promise<AuthVerification>;
@@ -963,34 +970,12 @@ export class Orchestrator {
           withReviewerPromptCacheTtl(reviewers, input.promptCacheTtl, warn),
           input,
           config,
-          input.paidBudget ?? this.deps.paidBudget ?? config.budget.paid_budget_per_run,
+          effectivePaidBudget(input, this.deps, config),
         ),
       };
     } catch (err) {
       const message = safeErrorMessage(err);
-      await store.writeTextAsync(
-        join(paths.contextDir, "context_error.md"),
-        `# Reviewer Panel Error\n\n${message}\n`,
-      );
-      writeFailure(store, paths, {
-        phase: "review_preflight",
-        category: "harness_unavailable",
-        safeMessage: message,
-        runDir: paths.root,
-      });
-      await store.writeTextAsync(
-        join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: review preflight\n\n${message}\n`,
-      );
-      log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      log.emit("run.failed", {
-        lifecycle: "failed",
-        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
-        reason: "harness_failed",
-        phase: "review_preflight",
-        error: message,
-        failure_ref: "final/failure.yaml",
-      });
+      await writeReviewerPreflightFailure(store, paths, log, { runId, mode, message });
       return {
         failed: {
           runId,
@@ -1062,13 +1047,14 @@ export class Orchestrator {
     model: string | null,
     log?: EventLog,
     defaultRoute: "local_session" | "api_key" | null = null,
-    quotaAdmission?: RoutedAdapter["quotaAdmission"],
+    quotaAdmission?: RoutedAdapter["quotaAdmission"] & Pick<RoutedAdapter, "diagnosticGeneration">,
   ): Promise<Pick<HarnessRunSpec, "auth_preference" | "resume_session_id" | "credential_profile">> {
     const cfg = this.config(input.repoRoot)?.global;
+    const mode = quotaAdmission?.diagnosticGeneration;
     const profile =
       quotaAdmission?.model === model
         ? quotaAdmission.profile
-        : await this.credentials.preflightProfile(input, harnessId, model, log, defaultRoute);
+        : await this.credentials.preflightProfile(input, harnessId, model, log, defaultRoute, mode);
     // Q3=A: the PAID api_key route serves ONLY the EXPLICIT api_key
     // preference (the user's paid election, or the sole permitted service of
     // an empty/exhausted pool) — never silently under auto, which terminalizes
@@ -1078,13 +1064,14 @@ export class Orchestrator {
       (quotaAdmission?.model === model
         ? quotaAdmission.route === "managed_api_key"
         : this.credentials.poolApiKeyRoute(input, harnessId));
+    const pinned = profile === null && quotaAdmission?.pinnedNative === true;
     return {
       // "auto" at ANY level falls through (thread turns send the thread default
       // "auto" as a per-run value; it must not shadow a configured preference).
       auth_preference: forcedApiKeyRoute
         ? "api_key"
         : effectiveAuthPreference(
-            input.authPreference,
+            pinned ? "subscription" : input.authPreference,
             cfg?.harnesses?.[harnessId]?.auth_preference,
             cfg?.routing?.auth_preference,
           ),
@@ -1160,17 +1147,15 @@ export class Orchestrator {
     let ids = input.harnesses;
     const explicitPool = Boolean(ids && ids.length > 0);
     const harnessSettings = this.config(input.repoRoot)?.global.harnesses ?? {};
-    const disabledHarnessIds = new Set(
-      Object.entries(harnessSettings)
-        .filter(([, settings]) => settings.enabled === false)
-        .map(([id]) => id),
+    const { statuses, diagnosticGeneration } = await probeCandidateStatuses(
+      this.gateway,
+      this.deps.registry,
+      input,
+      this.deps,
+      this.config(input.repoRoot).global,
+      ids,
+      ledger,
     );
-    const probeIds =
-      ids && ids.length > 0
-        ? ids.filter((id) => !disabledHarnessIds.has(id))
-        : [...this.deps.registry.keys()].filter((id) => !disabledHarnessIds.has(id));
-    const statuses =
-      probeIds.length > 0 ? await this.gateway.statusAll({ cwd: input.repoRoot }, probeIds) : [];
     const statusById = new Map(statuses.map((s) => [s.id, s]));
     ids = resolveCandidateHarnessIds({
       harnesses: ids,
@@ -1179,6 +1164,7 @@ export class Orchestrator {
       registry: this.deps.registry,
       statuses,
       intent,
+      diagnosticGeneration,
     });
     const attachments = input.attachments ?? [];
     // Resolve the complete attachment pool once from manifest truth. If any
@@ -1295,6 +1281,7 @@ export class Orchestrator {
         id,
         this.authPreferenceForHarness(input.repoRoot, id, input.authPreference),
         statusById,
+        diagnosticGeneration,
       );
       const manifest = status?.manifest ?? null;
       if (!status || !manifest) {
@@ -1473,6 +1460,7 @@ export class Orchestrator {
               status.authSources,
             ),
           quotaAdmission: { model: null, profile: null, route: null, profileVerification: null },
+          diagnosticGeneration,
           supportsSynthesize: manifest.capabilities.synthesize,
           supportsInteractive: manifest.capabilities.interactive,
           liveInput: manifest.capability_profile.live_input,
@@ -1533,6 +1521,7 @@ export class Orchestrator {
             model,
             log,
             routed.authRouteEstimate,
+            diagnosticGeneration,
             admissionProbes,
           );
         } catch (err) {
@@ -1562,10 +1551,16 @@ export class Orchestrator {
         const profileVerification = profile
           ? await this.credentials.selectedProfileBillingVerification(profile, admissionProbes)
           : null;
+        const pin = pinnedNativeAdmission(
+          diagnosticGeneration,
+          profile,
+          route,
+          statusById.get(routed.adapter.id)?.authSources ?? [],
+        );
         return {
           prepared: {
             ...routed,
-            quotaAdmission: { model, profile, route, profileVerification },
+            quotaAdmission: { model, profile, route, profileVerification, ...pin },
             paidFallback: this.config(input.repoRoot).global.routing.paid_fallback,
             billingVerificationForProfile: (actual: CredentialProfile) =>
               this.credentials.selectedProfileBillingVerification(actual),
@@ -1594,8 +1589,9 @@ export class Orchestrator {
       input,
       this.execRootOf(input),
       processingConfig,
-      input.paidBudget ?? this.deps.paidBudget ?? processingConfig.budget.paid_budget_per_run,
+      effectivePaidBudget(input, this.deps, processingConfig),
       (id) => (routeContext ? (routeContext.envForHarness?.(id) ?? routeContext.env) : undefined),
+      diagnosticGeneration,
     );
     const ordered = this.orderPool(quotaPreparedPool, input, intent, statusById, ledger, runId);
     if (ordered.length === 0) {
@@ -2170,16 +2166,11 @@ export class Orchestrator {
     paths: RunPaths,
     repoRoot: string,
     log?: EventLog,
-    processing?: Pick<
-      HarnessRunSpec,
-      | "processing_preference"
-      | "processing"
-      | "processing_cost_basis"
-      | "processing_allow_paid"
-      | "prompt_cache_ttl"
-    >,
+    processing?: Parameters<typeof resolveContinuitySummary>[0]["processing"],
     processingAdmission?: import("@claudexor/core").ProcessingAdmission,
     physicalDispatchStarted?: () => void,
+    /** An Ask's withheld-$0 mode and pin: its summary send is priced like the lane's own. */
+    route?: Pick<RoutedAdapter, "diagnosticGeneration" | "quotaAdmission">,
   ): Promise<{ pointerLine: string | null } | null> {
     const ctx = runInput.threadContinuity;
     if (!runInput.threadId || !ctx) return null;
@@ -2221,6 +2212,8 @@ export class Orchestrator {
         billingVerificationForProfile: (profile) =>
           this.credentials.selectedProfileBillingVerification(profile),
         paidFallback: this.config(runInput.repoRoot).global.routing.paid_fallback,
+        diagnosticGeneration: route?.diagnosticGeneration,
+        quotaAdmission: route?.quotaAdmission,
       });
       const result = buildContinuation(req);
       // Disclose on every lane and stamp the turn (INV-137: never silent).
@@ -6179,6 +6172,11 @@ export class Orchestrator {
         verification: routed.quotaAdmission.profileVerification ?? "not_run",
       }) as "metered" | "subscription_entitlement" | "unknown";
     }
+    // A lane a withheld $0 mode admitted on its vendor-verified native session is spawned
+    // pinned to it (see sessionSpecFields): that entitlement is its billing. Any other
+    // profileless lane there has no verified route, so never preference or history.
+    if (routed?.quotaAdmission.pinnedNative) return "subscription_entitlement";
+    if (routed?.diagnosticGeneration === "forbidden") return "unknown";
     // A selected profile's credential_kind decides billing (round-18 #2).
     const profileRoute = this.credentials.profileAuthRoute(input, harnessId);
     if (profileRoute) return profileRoute === "api_key" ? "metered" : "subscription_entitlement";
@@ -6537,7 +6535,7 @@ export class Orchestrator {
           knobs.model,
           log,
           routed.authRouteEstimate,
-          routed.quotaAdmission,
+          { ...routed.quotaAdmission, diagnosticGeneration: routed.diagnosticGeneration },
         );
         const grantResume =
           sessionFields.resume_session_id !== null && !resumeGranted.has(adapter.id);
@@ -6560,6 +6558,7 @@ export class Orchestrator {
               this.harnessSpecKnobs(contract, knobs, opts.intent),
               processingAdmission,
               () => ledger.markPhysicalDispatchStarted(lease.lease!.lease_id),
+              routed,
             )
           : null;
         // D-16d: the continuation packet pointer rides after the lane pointer so

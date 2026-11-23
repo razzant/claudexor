@@ -58,6 +58,7 @@
 import { RoutingPreflightError, billingKnowledgeForAuthRoute } from "@claudexor/budget";
 import type { AuthVerification, EffortResolution, PaidFallback } from "@claudexor/schema";
 import type {
+  DiagnosticGeneration,
   HarnessAdapter,
   ModelCatalogFailure,
   ModelCatalogObservation,
@@ -98,6 +99,7 @@ import {
 } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
 import { ProcessingBudgetAdmissionError } from "./processing-dispatch.js";
+import { pinnedNativeSpawn, withheldCostBasis } from "./auth-route-classification.js";
 import { routeControlsEvent, type RouteControlSource } from "./routeControls.js";
 
 export interface ModelGovernedRoute extends Omit<RouteControlSource, "adapter"> {
@@ -135,12 +137,15 @@ export interface ModelGovernedRoute extends Omit<RouteControlSource, "adapter"> 
   authRouteEstimate: "local_session" | "api_key" | null;
   /** Effective account after profile preflight/rotation. Model truth must come
    * from this same identity, never the default credential store. */
-  quotaAdmission: { profile: CredentialProfile | null };
+  quotaAdmission: { profile: CredentialProfile | null; pinnedNative?: true };
   billingVerificationForProfile?: (profile: CredentialProfile) => Promise<AuthVerification>;
   paidFallback?: PaidFallback;
   settings: { defaultModel: string | null; fallbackModel: string | null } | null;
   /** Speed the lane chose without a preference (see RoutedAdapter). */
   processingIntent?: ProcessingReceipt;
+  /** The probe mode this admission ran under; every catalog read and preparation
+   * of this route keeps it (see RoutedAdapter). */
+  diagnosticGeneration?: DiagnosticGeneration;
 }
 
 type ModelCandidate = { role: string; model: string };
@@ -183,6 +188,8 @@ async function modelTruthForRoute(
   },
 ): Promise<ModelTruth> {
   const route = authRouteForProfile(query.profile, routed.authRouteEstimate);
+  // Every catalog read of this route carries the mode it was admitted under.
+  const forbidden = routed.diagnosticGeneration === "forbidden";
   if (
     hasModelInventoryForRoute(routed.adapter, routed.modelInventory?.model_inventory_routes, route)
   ) {
@@ -191,6 +198,7 @@ async function modelTruthForRoute(
       ...(query.env ? { env: query.env } : {}),
       ...(query.authPreference ? { authPreference: query.authPreference } : {}),
       ...(query.profile ? { credentialProfile: query.profile } : {}),
+      ...(forbidden ? { diagnosticGeneration: "forbidden" as const } : {}),
     });
     const profileId = query.profile?.profile_id ?? null;
     // The key this read sent travels with every observation the gate hands
@@ -220,6 +228,8 @@ async function modelTruthForRoute(
         observation: { status: "listed", models: earlier.models, credential },
         earlierRead: { failure: read.failure, observedAt: earlier.observedAt },
       };
+    // The harness's own declaration judges this read exactly as it judges an
+    // allowed one: a withheld mode never widens what an absence may refuse.
     return {
       list: read.status === "listed" ? read.models.map((model) => model.id) : [],
       source: "api",
@@ -340,7 +350,8 @@ export async function assertRouteModelsAllowed(
 
 /** Refresh account evidence and admit one send without replacing captured Processing. */
 export async function admitCurrentProfileDispatch(
-  routed: Pick<ModelGovernedRoute, "billingVerificationForProfile" | "paidFallback">,
+  routed: Pick<ModelGovernedRoute, "billingVerificationForProfile" | "paidFallback"> &
+    Partial<Pick<ModelGovernedRoute, "diagnosticGeneration" | "quotaAdmission">>,
   spec: HarnessRunSpec,
 ): Promise<void> {
   if (spec.credential_profile && routed.billingVerificationForProfile) {
@@ -351,6 +362,22 @@ export async function admitCurrentProfileDispatch(
         spec.credential_profile.credential_kind === "api_key" ? "managed_api_key" : "vendor_native",
       verification: await routed.billingVerificationForProfile(spec.credential_profile),
     });
+  }
+  // A withheld $0 Ask (readiness-probe.ts) prices THIS send by its own proof only: a named row by
+  // its fresh verification above, a profileless one by the verified native pin while it still
+  // spawns strictly on that login. Neither preference, history nor a receipt's "included" class
+  // stands for anything else, and preparedCost reprices even a send that carries no receipt.
+  if (routed.diagnosticGeneration === "forbidden") {
+    if (!spec.credential_profile)
+      spec.extra["routeBillingKnowledge"] = pinnedNativeSpawn(routed.quotaAdmission, spec)
+        ? "subscription_entitlement"
+        : "unknown";
+    if (spec.processing_cost_basis)
+      spec.processing_cost_basis = withheldCostBasis(
+        "forbidden",
+        spec.extra["routeBillingKnowledge"] === "subscription_entitlement",
+        spec.processing_cost_basis,
+      );
   }
   spec.extra["paidFallback"] = routed.paidFallback;
   await admitPreparedProcessing(spec);
@@ -416,6 +443,9 @@ export async function* runModelGovernedRoute(
       env: spec.env,
       authPreference: spec.auth_preference,
       allowPaid: spec.processing_allow_paid,
+      ...(routed.diagnosticGeneration === "forbidden"
+        ? { diagnosticGeneration: "forbidden" as const }
+        : {}),
       ...(spec.processing_preference === undefined && chosen ? { chosen } : {}),
     });
     nativeModel = prepared.model;

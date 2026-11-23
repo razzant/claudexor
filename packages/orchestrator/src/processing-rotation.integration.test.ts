@@ -172,6 +172,23 @@ it.each([
     const result = await new Orchestrator({
       registry: new Map([["limited", adapter]]),
       reviewers: [],
+      // The quota poller's authenticated read of A with A's own token: the real composer then
+      // reads A's login as vendor-verified, the proof a $0 Ask may be served on. B keeps only
+      // its login file, and its paid send is still what the zero cap refuses.
+      quotaSnapshots: () => [
+        {
+          subject: {
+            harness: "limited",
+            credential_route: "vendor_native",
+            plan_label: null,
+            subject_id: "a",
+          },
+          constraints: [],
+          source: "claude_oauth_usage",
+          observed_at: new Date().toISOString(),
+          freshness: "fresh",
+        },
+      ],
     }).run({
       repoRoot: root,
       ...(mode === "agent" ? { inPlace: true } : {}),

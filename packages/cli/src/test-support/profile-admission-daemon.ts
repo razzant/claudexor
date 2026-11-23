@@ -180,7 +180,7 @@ export async function openDaemon() {
     await graph.close();
     await store.close();
   });
-  return { graph, base: `http://${host}:${port}` };
+  return { graph, base: `http://${host}:${port}`, client: runtime.client };
 }
 type Daemon = Awaited<ReturnType<typeof openDaemon>>;
 

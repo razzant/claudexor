@@ -11,7 +11,7 @@ import { EventEmitter } from "node:events";
 import { spawnSync } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HarnessRunSpec, type CredentialProfile } from "@claudexor/schema";
 import { claudexorOwnedRoot } from "@claudexor/util";
 import { createAgyAdapter } from "./index.js";
@@ -22,11 +22,13 @@ import {
   defaultAgyModelProbe,
   probeAgyCredentialProfile,
   resolveAgyProfileRoute,
+  type AgyModelProbe,
 } from "./profile.js";
 import {
   agyPrintSpawnOptions,
   classifyAgyPrintResult,
   runAgyPrintCommand,
+  type AgyPrintCommandOptions,
 } from "./print-command.js";
 
 function profile(home: string): CredentialProfile {
@@ -115,7 +117,22 @@ describe("agy profile route and vendor probe", () => {
     });
     expect(status.last_verified_at).toBeTruthy();
     expect(status.detail).toContain("not inferred");
+    expect(status.detail).toContain("(model gemini-3.7-flash-high)");
   });
+
+  it.each(["fixture-private-tag-7", '{"fixture": "body"}'])(
+    "names the probed model only from the adapter's own hints, not %s",
+    async (modelId) => {
+      const { home } = fixture("#!/bin/sh\nexit 0\n");
+      const status = await probeAgyCredentialProfile(profile(home), {
+        runModelProbe: async (): Promise<AgyModelProbe> => ({ kind: "authenticated", modelId }),
+        prepareProfileKeychain: () => undefined,
+      });
+      expect(status).toMatchObject({ availability: "available", verification: "passed" });
+      expect(status.detail).not.toContain("fixture");
+      expect(status.detail).not.toContain("(model");
+    },
+  );
 
   it("lets explicit vendor auth rejection outrank a stale token file", async () => {
     const { home } = fixture(
@@ -140,7 +157,11 @@ describe("agy profile route and vendor probe", () => {
       runModelProbe: defaultAgyModelProbe,
       prepareProfileKeychain: () => undefined,
     });
-    expect(status).toMatchObject({ availability: "unknown", verification: "not_run" });
+    expect(status).toMatchObject({
+      availability: "unknown",
+      verification: "not_run",
+      detail: "agy output was not valid JSON (exit 7)",
+    });
   });
 
   it("refuses a probe when the profile keychain path is unsafe", async () => {
@@ -169,7 +190,8 @@ describe("agy profile route and vendor probe", () => {
     expect(status).toMatchObject({
       availability: "unknown",
       verification: "not_run",
-      detail: "authentication failed or timed out",
+      detail:
+        "agy returned an unsuccessful status (exit 1; status ERROR): authentication failed or timed out",
     });
   });
 
@@ -406,7 +428,11 @@ console.log(JSON.stringify({characterDevice, interactive, eof}));
         }) as never,
       },
     );
-    await expect(run).resolves.toMatchObject({ kind: "failed", reason: "aborted" });
+    await expect(run).resolves.toMatchObject({
+      kind: "failed",
+      reason: "aborted",
+      detail: "agy print probe was aborted (signal SIGKILL)",
+    });
   });
 
   it("keeps an unconfirmed live child in the passive process registry", async () => {
@@ -515,33 +541,206 @@ console.log(JSON.stringify({characterDevice, interactive, eof}));
           }) as never,
         },
       ),
-    ).resolves.toMatchObject({ kind: "failed", reason: "spawn_failed" });
+    ).resolves.toEqual({
+      kind: "failed",
+      reason: "spawn_failed",
+      detail: "agy print probe could not be spawned",
+      stdout: "",
+      stderr: "",
+    });
+    await expect(
+      runAgyPrintCommand(
+        "agy",
+        "/model",
+        {},
+        {
+          resolveBinary: () => "/fake/agy",
+          spawnProcess: (() => {
+            throw Object.assign(new Error("spawn /fake/agy fixture words"), { code: "EACCES" });
+          }) as never,
+        },
+      ),
+    ).resolves.toMatchObject({ detail: "agy print probe could not be spawned (EACCES)" });
   });
 });
 
 describe("shared agy print classifier", () => {
-  const completed = (stdout: string, code = 0, stderr = "") =>
+  const completed = (stdout: string, code: number | null = 0, stderr = "") =>
     classifyAgyPrintResult({ kind: "completed", code, signal: null, stdout, stderr });
+  const probeDetail = (stdout: string, code: number | null = 0, stderr = ""): string => {
+    const classified = completed(stdout, code, stderr);
+    if (classified.kind !== "probe_failed")
+      throw new Error(`expected a probe failure, got ${classified.kind}`);
+    return classified.detail;
+  };
 
-  it("accepts only supported SUCCESS + exit 0", () => {
-    expect(completed('{"status":"SUCCESS","command":{"data":{}}}').kind).toBe("success");
-    expect(completed('{"status":"SUCCESS","command":{"data":{}}}', 1).kind).toBe("probe_failed");
+  // The #709 shape: a SUCCESS envelope whose response, command and data are stdout.
+  const success709 = JSON.stringify({
+    conversation_id: "",
+    status: "SUCCESS",
+    response: "fixture-model\tFixture Model\n",
+    command: { name: "model", data: { id: "fixture-model" } },
   });
 
-  it("recognizes bounded vendor auth rejections without a broad auth substring", () => {
-    expect(
-      completed('{"status":"ERROR","error":"authentication required. Run agy to log in"}').kind,
-    ).toBe("unauthenticated");
-    expect(
-      completed('{"status":"ERROR","error":"authentication service network unavailable"}').kind,
-    ).toBe("probe_failed");
-    expect(
-      completed('{"status":"ERROR","error":"authentication failed or timed out"}', 1).kind,
-    ).toBe("probe_failed");
+  it("names a SUCCESS beside a nonzero or unknown exit without the envelope (#709)", () => {
+    expect(probeDetail(success709, 1, "late stderr")).toBe(
+      "agy reported SUCCESS but exited nonzero (exit 1; status SUCCESS)",
+    );
+    expect(probeDetail(success709, null)).toBe(
+      "agy reported SUCCESS without an exit code (status SUCCESS)",
+    );
   });
 
-  it.each(["", "not json", "{}", '{"status":"ERROR","error":"network down"}'])(
-    "keeps malformed/empty/unexpected output as probe_failed: %s",
-    (raw) => expect(completed(raw).kind).toBe("probe_failed"),
+  it("says that parsing failed, never what the cut or invalid stdout held (#709)", () => {
+    const token = `sk-${"a".repeat(48)}`;
+    for (const stdout of [success709.slice(0, 120), `${success709}\n${success709}`])
+      expect(probeDetail(stdout, 0, `fixture stderr ${token}`)).toBe(
+        "agy output was not valid JSON (exit 0)",
+      );
+    expect(probeDetail("", 3, "fixture stderr")).toBe("agy returned empty stdout (exit 3)");
+    expect(probeDetail('["fixture body"]')).toBe("agy output was not a JSON object (exit 0)");
+  });
+
+  it.each([
+    ["{}", "agy response had no status"],
+    ['{"status":{"toString":0,"valueOf":0}}', "agy response had a non-string status"],
+    ['{"status":["fixture body"]}', "agy response had a non-string status"],
+  ])("describes an invalid status without echoing its envelope (%s)", (raw, cause) => {
+    expect(probeDetail(raw, 2, "fixture stderr")).toBe(`${cause} (exit 2)`);
+  });
+
+  it("names a known status, marks any other, and quotes only a recognized vendor phrase", () => {
+    expect(probeDetail('{"status":"ERROR","error":"network down"}')).toBe(
+      "agy returned an unsuccessful status (exit 0; status ERROR)",
+    );
+    expect(probeDetail('{"status":"fixture picnic words","error":"fixture"}', 4)).toBe(
+      "agy returned an unsuccessful status (exit 4; status unrecognized)",
+    );
+    expect(
+      probeDetail('{"status":"ERROR","error":"Authentication failed or timed out: fixture"}', 1),
+    ).toBe(
+      "agy returned an unsuccessful status (exit 1; status ERROR): authentication failed or timed out",
+    );
+  });
+
+  it("reports a signal death by its signal alone", () => {
+    const classified = classifyAgyPrintResult({
+      kind: "completed",
+      code: null,
+      signal: "SIGKILL",
+      stdout: "partial",
+      stderr: "fixture stderr",
+    });
+    expect(classified).toEqual({ kind: "probe_failed", detail: "agy exited by signal SIGKILL" });
+  });
+
+  it("accepts SUCCESS with exit 0 and names only the recognized auth rejection", () => {
+    expect(completed('{"status":"SUCCESS","command":{"data":{}}}')).toEqual({
+      kind: "success",
+      envelope: { status: "SUCCESS", command: { data: {} } },
+    });
+    expect(
+      completed('{"status":"ERROR","error":"authentication required. Run agy to log in"}'),
+    ).toEqual({ kind: "unauthenticated", detail: "authentication required" });
+    expect(
+      completed('{"status":"ERROR","error":"authentication service network unavailable"}'),
+    ).toEqual({
+      kind: "probe_failed",
+      detail: "agy returned an unsuccessful status (exit 0; status ERROR)",
+    });
+    // A rejection phrase under another status proves nothing about the credential.
+    expect(completed('{"status":"SUCCESS","error":"token expired"}', 1).kind).toBe("probe_failed");
+  });
+});
+
+describe("agy print command failure diagnostics", () => {
+  function startProbe(command: "/model" | "/quota", options: AgyPrintCommandOptions = {}) {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: (): boolean => true,
+    });
+    const run = runAgyPrintCommand(
+      "agy",
+      command,
+      {},
+      {
+        ...options,
+        platform: "linux",
+        drainMs: 1,
+        resolveBinary: () => "/fake/agy",
+        spawnProcess: (() => child) as never,
+      },
+    );
+    return { child, run };
+  }
+
+  it("keeps the timeout and observed signal, never the partial stream, through classification", async () => {
+    const { child, run } = startProbe("/model", { timeoutMs: 25 });
+    child.kill = () => child.emit("exit", null, "SIGKILL");
+    child.stdout.write('{"status":"SUCCESS","response":"fixture-model');
+    const result = await run;
+    if (result.kind !== "failed") throw new Error("expected a failed print command");
+    expect(result.reason).toBe("timed_out");
+    expect(result.detail).toBe("agy did not answer /model within 0.025s (signal SIGKILL)");
+    expect(result.stdout).toContain("fixture-model");
+    expect(classifyAgyPrintResult(result)).toEqual({ kind: "probe_failed", detail: result.detail });
+  });
+
+  it.each([null, 17])(
+    "reports only exit facts observed after the abort deadline (late exit %s)",
+    async (lateExit) => {
+      vi.useFakeTimers();
+      try {
+        const controller = new AbortController();
+        const { child, run } = startProbe("/quota", {
+          cancelDeadlineMs: 25,
+          abortSignal: controller.signal,
+        });
+        child.stderr.write("fixture diagnostic");
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(25);
+        if (lateExit !== null) child.emit("exit", lateExit, null);
+        await vi.advanceTimersByTimeAsync(1);
+        const facts = lateExit === null ? "" : " (exit 17)";
+        await expect(run).resolves.toMatchObject({
+          kind: "failed",
+          reason: "termination_unconfirmed",
+          detail:
+            "agy print probe was aborted; agy print probe termination could not be confirmed" +
+            facts,
+          stderr: "fixture diagnostic",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
   );
+
+  it("keeps overflow and exit 0 without disclosing the cut token", async () => {
+    const { child, run } = startProbe("/quota", { maxStdoutBytes: 4 });
+    child.kill = () => child.emit("exit", 0, null);
+    child.stderr.write("fixture note");
+    child.stdout.write(`sk-${"x".repeat(48)}`);
+    const result = await run;
+    expect(result).toMatchObject({ kind: "failed", reason: "output_overflow" });
+    if (result.kind !== "failed") return;
+    expect(result.detail).toBe(
+      "agy print output exceeded its bounded stream limit on stdout (exit 0)",
+    );
+    expect(classifyAgyPrintResult(result).kind).toBe("probe_failed");
+  });
+
+  it("reports the asynchronous spawn error by its system code, without its words or streams", async () => {
+    const { child, run } = startProbe("/model");
+    child.emit("error", Object.assign(new Error("fixture spawn error"), { code: "ENOENT" }));
+    child.stdout.end("fixture payload");
+    child.stderr.end();
+    await expect(run).resolves.toMatchObject({
+      kind: "failed",
+      reason: "spawn_failed",
+      detail: "agy print probe could not be spawned (ENOENT)",
+    });
+  });
 });

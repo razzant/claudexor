@@ -17,6 +17,39 @@ export interface Alternatives {
   capable: boolean;
 }
 
+/** Even a legacy display can carry a failed response's vendor code. The
+ * adapter observes completed refusal parts before flattening them to text. */
+export function contentRefusalOutcome(
+  result: ModelCallResult,
+  observed: boolean,
+  routing: ModelRoutingEvidence,
+): ModelCallResult | null {
+  const { problem } = result;
+  const failed =
+    result.outcome === "failed" &&
+    (problem?.code === "provider_content_refused" ||
+      (result.route.source === "codex" && problem?.context.vendorCode === "cyber_policy"));
+  if (!observed && !failed) return null;
+  return {
+    ...result,
+    problem: problem?.retryable ? { ...problem, retryable: false } : problem,
+    routing: routing.retryOfOperationId
+      ? { ...routing, differentialOutcome: "inconclusive" }
+      : routing,
+  };
+}
+
+/** Only a terminal answer with an observed model establishes a substitution.
+ * Keep that fact even when a content refusal supplies no account evidence. */
+export function withModelMismatch(result: ModelCallResult, requested: string): ModelCallResult {
+  const observed = result.route.model;
+  return (result.outcome === "completed" || result.outcome === "incomplete") &&
+    observed !== null &&
+    observed !== requested
+    ? { ...result, modelMismatch: { requested, observed } }
+    : result;
+}
+
 /** Decorate one result, never invoke. The caller owns the next operation. */
 export async function modelCapabilityOutcome(args: {
   request: ModelCallRequest;

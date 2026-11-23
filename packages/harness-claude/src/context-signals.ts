@@ -44,6 +44,17 @@ export function claudeCompactBoundaryEvents(
   ];
 }
 
+/** The vendor statuses with which a rate-limit frame refuses the request. */
+const REFUSING_RATE_LIMIT_STATUSES = new Set<unknown>(["rejected", "blocked"]);
+
+/** A native `rate_limit_event` frame that refuses the request, read from its
+ * typed status alone: allowed and warning frames only measure, whatever their
+ * ratio. The live-input owner reads the same rule (live-input.ts, #627). */
+export function isClaudeRateLimitRefusal(obj: Json): boolean {
+  const info = obj?.type === "rate_limit_event" ? obj.rate_limit_info : null;
+  return !!info && typeof info === "object" && REFUSING_RATE_LIMIT_STATUSES.has(info.status);
+}
+
 /**
  * Numeric observations and rejection are independent. Allowed/warning frames
  * may report measured windows without arming a cooldown. A rejecting frame
@@ -54,7 +65,7 @@ export function claudeRateLimitEvents(obj: Json, sessionId: string, ts: string):
     obj.rate_limit_info && typeof obj.rate_limit_info === "object" ? obj.rate_limit_info : null;
   const status = info ? (info as Json).status : undefined;
   const measurements = claudeQuotaEvents(info, sessionId, ts);
-  if (status !== "rejected" && status !== "blocked") return measurements;
+  if (!REFUSING_RATE_LIMIT_STATUSES.has(status)) return measurements;
   const resetsRaw = info ? (info as Json).resetsAt : undefined;
   const resetsAt = claudeQuotaReset(resetsRaw);
   const rateLimitType = info ? (info as Json).rateLimitType : undefined;

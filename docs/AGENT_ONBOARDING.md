@@ -35,7 +35,8 @@ contract throughout these steps, including repair and connection recovery.
    acting on staleness matters, since the atomic snapshot probes every
    profile and fans out to the vendors). It is one daemon-authored view of
    registered profiles, readiness,
-   quota freshness, and `next_up` (the configured default model's verdict only;
+   quota freshness, and `next_up` (informational: the configured default model's first candidate in
+   ordinary pool order, not a promise for your run;
    `routingEvidence` carries model-scoped recent refusals, temporary per-model
    capability marks, model-scoped credential refusals, and last service);
    do not reconstruct a pool by joining

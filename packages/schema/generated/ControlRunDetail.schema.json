@@ -3191,7 +3191,7 @@
                             "retryable": {
                               "type": "boolean",
                               "default": true,
-                              "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay or a managed resource it names was released."
+                              "description": "Whether to offer manual Retry for this refused turn. Retry requires a recorded job with replayable parameters; it can succeed after the workspace is repaired."
                             },
                             "required_actions": {
                               "type": "array",
@@ -3854,6 +3854,91 @@
           "description": "The run's primary user-facing output; null while pending.",
           "default": null
         },
+        "finalMessages": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "const": "final/final-messages.jsonl",
+                      "description": "Run-relative artifact path; fetch it through the run artifact route."
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "complete",
+                        "partial"
+                      ],
+                      "description": "complete: every record of the run's event log up to the source high-water mark was readable; partial: at least one record before the run's terminal could not be read, so a final may be missing."
+                    },
+                    "count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Number of final-message records after the header line."
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Exact size of the served document, header and final LF included."
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$",
+                      "description": "sha256 of exactly the served bytes, written sha256:<hex>."
+                    },
+                    "throughEventSeq": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Inclusive seq of the last readable run event read before the run's first terminal; 0 when the checked log held no readable event."
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "state",
+                    "count",
+                    "bytes",
+                    "sha256",
+                    "throughEventSeq"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Address and exact size and digest of a run's saved final-messages document."
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "const": "unavailable"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "source_unreadable",
+                        "publication_failed",
+                        "artifact_unavailable"
+                      ],
+                      "description": "source_unreadable: the run's event log had no readable event when its terminal was prepared; publication_failed: the document could not be saved; artifact_unavailable: the saved document cannot be read with its recorded size and digest."
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "reason"
+                  ],
+                  "additionalProperties": false,
+                  "description": "A run's final messages that no confirmed document holds, with the typed reason."
+                }
+              ],
+              "description": "The saved final-message document's address or a typed gap. An explicit result read returns null when the outcome is unknown, including older runs and runs awaiting their terminal."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present on GET /v2/runs/:id with includeFinalMessages=true. Address of the run's ordered typed finals or a recorded gap. Null when no outcome is known."
+        },
         "timeline": {
           "type": "array",
           "items": {
@@ -3889,7 +3974,7 @@
                   "null"
                 ],
                 "default": null,
-                "description": "Live-message id on message.* receipt rows and on the adapter's live_input_delivered status row, when any."
+                "description": "Live-message id on message.* receipts and on the adapter's live-input status rows, when any."
               },
               "outcome": {
                 "type": [
@@ -3897,7 +3982,7 @@
                   "null"
                 ],
                 "default": null,
-                "description": "Typed live-message outcome on message.* rows (delivered | accepted | rejected | not_active | unsupported | delivery_unknown); `delivered` on the adapter's consumption status row; null elsewhere."
+                "description": "Typed live-message outcome on message.* rows (delivered | accepted | rejected | not_active | unsupported | delivery_unknown). An adapter's late queue receipt is accepted; its consumption receipt is delivered. Null elsewhere."
               },
               "title": {
                 "type": "string",

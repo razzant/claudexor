@@ -1,9 +1,62 @@
 import { randomUUID } from "node:crypto";
 import { renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { emitBestEffort, writeRetainedOutput } from "@claudexor/event-log";
+import { emitBestEffort, writeFinalMessages, writeRetainedOutput } from "@claudexor/event-log";
+import type { FinalMessagesOutcome, FinalMessagesUnavailableReason } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
+
+type LogRead = ReturnType<AnnouncedRunContext["log"]["readAll"]>;
+
+function readOutputSource(context: AnnouncedRunContext): LogRead | null {
+  try {
+    return context.log.readAll();
+  } catch {
+    return null;
+  }
+}
+
+/** Both derived terminal outputs from one read of the run's settled log. Each
+ * reports its own failure; neither undoes the other or the terminal. */
+export function publishTerminalOutputs(
+  context: AnnouncedRunContext,
+  succeeded: boolean,
+  failed: boolean,
+): { retainedOutput: string | null; finalMessages: FinalMessagesOutcome } {
+  const source = readOutputSource(context);
+  return {
+    finalMessages: publishFinalMessages(context, source),
+    retainedOutput: publishRetainedOutput(context, succeeded, failed, source ?? undefined),
+  };
+}
+
+/** #307: the run's typed finals in order, beside its primary output. Never
+ * announced with `output.ready`, so presentation and readiness keep their
+ * meaning; the terminal records the outcome instead: the document's pointer,
+ * or a typed gap whose diagnostic is only this run's own status event. An
+ * announced run always recorded `run.created`, so a log with no readable event
+ * was not read at all. */
+export function publishFinalMessages(
+  context: AnnouncedRunContext,
+  source = readOutputSource(context),
+): FinalMessagesOutcome {
+  const gap = (reason: FinalMessagesUnavailableReason, cause: unknown): FinalMessagesOutcome => {
+    status(
+      context,
+      "Final messages could not be saved",
+      `Final messages could not be saved: ${String(cause)}`,
+      { final_messages_failed: true },
+    );
+    return { state: "unavailable", reason };
+  };
+  if (!source || source.events.length === 0)
+    return gap("source_unreadable", "the run's event log had no readable event");
+  try {
+    return writeFinalMessages(context.paths.root, context.runId, source);
+  } catch (error) {
+    return gap("publication_failed", error);
+  }
+}
 
 /** A readable projection is independent of acceptance and never masks the original
  * terminal. Returns the path it announced (`output.ready`), else null. A failed
@@ -13,10 +66,11 @@ export function publishRetainedOutput(
   context: AnnouncedRunContext,
   succeeded: boolean,
   failed = false,
+  read?: LogRead,
 ): string | null {
   let path: string | null;
   try {
-    const source = context.log.readAll();
+    const source = read ?? context.log.readAll();
     path = writeRetainedOutput(context.paths.root, source, succeeded);
     if (!path) return null;
     const lastOutput = source.events.findLast((event) => event.type === "output.ready");

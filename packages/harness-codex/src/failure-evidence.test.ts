@@ -34,7 +34,7 @@ function brokenReader(bytes: Uint8Array, error: unknown, status = 200): Response
         } else controller.error(error);
       },
     }),
-    { status, headers: { "x-request-id": "wire-request" } },
+    { status, headers: { "x-request-id": "00000000-0000-4000-8000-000000000005" } },
   );
 }
 const socketError = () =>
@@ -219,7 +219,7 @@ describe("exact failed Responses evidence", () => {
   ] as const)("keeps every returned byte and the %s failure stage", async (stage, bytes) => {
     const result = await readResponsesStream(
       new Response(bytes, {
-        headers: { "x-request-id": "wire-request" },
+        headers: { "x-request-id": "00000000-0000-4000-8000-000000000005" },
       }),
       route,
       true,
@@ -229,7 +229,11 @@ describe("exact failed Responses evidence", () => {
       message: null,
       problem: {
         code: "transport_unknown",
-        context: { stage, receivedBytes: bytes.length, requestId: "wire-request" },
+        context: {
+          stage,
+          receivedBytes: bytes.length,
+          requestId: "00000000-0000-4000-8000-000000000005",
+        },
       },
       failureEvidence: { stage, receivedBytes: bytes.length, bodyComplete: stage === "read" },
     });
@@ -243,14 +247,14 @@ describe("exact failed Responses evidence", () => {
     const bytes = Buffer.from(
       'data: {"type":"response.output_text.delta","delta":"private body"}\n\n',
     );
-    const error = socketError();
+    const error = Object.assign(socketError(), { code: "notes/picnic.txt" });
     const result = await readResponsesStream(brokenReader(bytes, error), route, true);
     expect(result.failureEvidence).toMatchObject({
       receivedBytes: bytes.length,
       bodyComplete: false,
       causeCycle: false,
       errors: [
-        { name: "TypeError", message: error.message, stack: error.stack, code: null },
+        { name: "TypeError", message: error.message, stack: error.stack, code: error.code },
         {
           name: "Error",
           message: error.cause.message,
@@ -269,6 +273,58 @@ describe("exact failed Responses evidence", () => {
     });
     expect(Buffer.from(result.failureEvidence!.bodyBase64, "base64").equals(bytes)).toBe(true);
     expect(JSON.stringify(result.problem)).not.toContain("private");
+    expect(JSON.stringify(result.problem)).not.toContain(error.code);
+  });
+
+  it("keeps an unrecognized event and exception identifiers in private capture", async () => {
+    const bytes = Buffer.from('data: {"type":"response.picnic_notes"}\n\n');
+    const error = Object.assign(new Error("picnic notes"), {
+      name: "PicnicNotes",
+      code: "notes/picnic.txt",
+    });
+    const result = await readResponsesStream(brokenReader(bytes, error), route, true);
+    expect(result.problem).toMatchObject({
+      code: "transport_unknown",
+      context: { stage: "read", eventCount: 1, lastEventType: null },
+    });
+    expect(result.problem?.context).not.toHaveProperty("errorName");
+    expect(result.problem?.context).not.toHaveProperty("errorCode");
+    expect(JSON.stringify(result.problem)).not.toMatch(/picnic/i);
+    expect(result.failureEvidence).toMatchObject({
+      bodyBase64: bytes.toString("base64"),
+      errors: [{ name: error.name, code: error.code, message: error.message }],
+    });
+  });
+
+  it("keeps a recognized reasoning event and an undici error's class and code public", async () => {
+    const bytes = Buffer.from('data: {"type":"response.reasoning_summary_part.added"}\n\n');
+    const error = Object.assign(new Error("private library words"), {
+      name: "SocketError",
+      code: "UND_ERR_CLOSED",
+    });
+    const result = await readResponsesStream(brokenReader(bytes, error), route, false);
+    expect(result.problem).toMatchObject({
+      code: "transport_unknown",
+      context: {
+        lastEventType: "response.reasoning_summary_part.added",
+        errorName: "SocketError",
+        errorCode: "UND_ERR_CLOSED",
+      },
+    });
+    expect(JSON.stringify(result.problem)).not.toContain("private library words");
+  });
+
+  it.each([
+    ["lilac_napkins", null],
+    ["model_unavailable", "model_unavailable"],
+  ] as const)("projects an incomplete reason (%s)", async (reason, expected) => {
+    const wire = frame("incomplete", [], { incomplete_details: { reason } });
+    const result = await readResponsesStream(new Response(wire), route, true);
+    expect(result.problem).toMatchObject({
+      code: "provider_incomplete",
+      context: { reason: expected },
+    });
+    expect(result.failureEvidence?.bodyBase64).toBe(Buffer.from(wire).toString("base64"));
   });
 
   it.each([false, undefined])(
@@ -449,10 +505,11 @@ describe("inference HTTP and fetch failure evidence", () => {
   );
 
   it("keeps exact HTTP refusal bytes and the processing no-generation proof", async () => {
+    const requestId = "req_00000000000000000000000000000006";
     const raw =
       ' { "error": { "code": "resource_unavailable", "param": "service_tier", "message":"private refusal" } }\n';
     const f = adapterFixture(
-      () => new Response(raw, { status: 429, headers: { "x-request-id": "refusal-request" } }),
+      () => new Response(raw, { status: 429, headers: { "x-request-id": requestId } }),
     );
     f.request.options.processingPreference = "economy";
     const result = await f.adapter.invoke(f.request, f.context);
@@ -460,7 +517,7 @@ describe("inference HTTP and fetch failure evidence", () => {
       outcome: "failed",
       problem: {
         code: "processing_unavailable",
-        context: { generationStarted: false, httpStatus: 429, requestId: "refusal-request" },
+        context: { generationStarted: false, httpStatus: 429, requestId },
       },
       failureEvidence: { bodyComplete: true, errors: [] },
     });

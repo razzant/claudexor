@@ -190,15 +190,15 @@ describe("request delivery proof on the existing dispatcher", () => {
   });
 
   it.each([
-    "UND_ERR_CONNECT_TIMEOUT",
-    "ENOTFOUND",
-    "CERT_HAS_EXPIRED",
-    // Not on any list: the place in the callback order is the proof, not the code.
-    "EADDRNOTAVAIL",
-    "EHOSTUNREACH",
-    "ENETDOWN",
-    undefined,
-  ])("requires the pre-connect callback provenance for %s", async (code) => {
+    ["UND_ERR_CONNECT_TIMEOUT", "UND_ERR_CONNECT_TIMEOUT"],
+    ["ENOTFOUND", "ENOTFOUND"],
+    ["CERT_HAS_EXPIRED", "CERT_HAS_EXPIRED"],
+    ["EADDRNOTAVAIL", "EADDRNOTAVAIL"],
+    ["EHOSTUNREACH", "EHOSTUNREACH"],
+    ["ENETDOWN", "ENETDOWN"],
+    ["notes/picnic.txt", null],
+    [undefined, null],
+  ] as const)("requires the pre-connect callback provenance for %s", async (code, publicCode) => {
     setGlobalDispatcher(
       new Proxy(originalDispatcher, {
         get(target, key) {
@@ -215,7 +215,7 @@ describe("request delivery proof on the existing dispatcher", () => {
     await expect(send("http://localhost/", delivery)).rejects.toThrow();
     expect(delivery.notDelivered()).toMatchObject({
       basis: "connect_failure",
-      errorCodes: [code ?? null],
+      errorCodes: [publicCode],
     });
   });
 

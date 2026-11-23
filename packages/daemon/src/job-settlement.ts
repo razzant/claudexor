@@ -42,8 +42,13 @@ export function settleJobError({
   const code = thrownField(thrown, "code");
   const status = thrownField(thrown, "status");
   const retryable = thrownField(thrown, "retryable");
+  const turnRetryable = thrownField(thrown, "turnRetryable");
+  const turnId = (record.params as { turnId?: unknown } | null)?.turnId;
+  const refusedTurn = !aborted && !record.runId && typeof turnId === "string" && turnId.length > 0;
   const requiredActions = safeProblemRequiredActions(thrownField(thrown, "requiredActions"));
-  const context = safeProblemContext(thrownField(thrown, "context"));
+  const { turnRetryable: _reserved, ...context } = safeProblemContext(
+    thrownField(thrown, "context"),
+  );
   const typedStatus =
     typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
       ? status
@@ -81,7 +86,15 @@ export function settleJobError({
     // untyped refusal must preserve the refused-turn recorder's default.
     ...(typeof retryable === "boolean" ? { errorRetryable: retryable } : {}),
     errorRequiredActions: requiredActions,
-    errorContext: context,
+    // Only a confirmed job that failed to start its turn can carry this claim.
+    // Keeping it in bounded problem context also preserves it on receipt lookup.
+    // The turn recorder (reportPreRunRefusal below, called from server.ts) reads
+    // it back into the stored problem's own `retryable` and keeps it out of the
+    // stored context — the same shape the route recorder persists via
+    // problemFromError, so one refused turn stores one identical
+    // TurnEnqueueProblem whichever path recorded it.
+    errorContext:
+      refusedTurn && typeof turnRetryable === "boolean" ? { turnRetryable, ...context } : context,
     finishedAt: nowIso(),
   });
 }
@@ -96,6 +109,9 @@ function thrownField(thrown: unknown, field: string): unknown {
  * A failure-shaped terminal with NO run ever bound: the refusal happened
  * before the run materialized. If the job carried a pre-created thread turn,
  * its reason is persisted on the turn (honest inline refusal, INV-093).
+ * A boolean `errorContext.turnRetryable` decides the turn's retryability
+ * (manual replay may succeed after workspace repair) and is not stored in
+ * the turn's context.
  */
 export function reportPreRunRefusal(
   rec: Pick<JobRecord, "params" | "error" | "errorCode" | "errorRetryable"> &
@@ -104,15 +120,17 @@ export function reportPreRunRefusal(
 ): void {
   const turnId = (rec.params as { turnId?: unknown } | null | undefined)?.turnId;
   if (!rec.error || !report || typeof turnId !== "string" || !turnId) return;
+  const { turnRetryable, ...problemContext } = rec.errorContext ?? {};
   try {
     report(
       turnId,
       TurnEnqueueProblem.parse({
         message: rec.error,
         code: rec.errorCode ?? null,
-        retryable: rec.errorRetryable ?? true,
+        retryable:
+          typeof turnRetryable === "boolean" ? turnRetryable : (rec.errorRetryable ?? true),
         required_actions: rec.errorRequiredActions ?? [],
-        context: rec.errorContext ?? {},
+        context: problemContext,
       }),
     );
   } catch {
