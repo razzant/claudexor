@@ -14,6 +14,8 @@ import {
 } from "./run-detail-projections.js";
 import { projectRunOutcomeFacts } from "./daemon-outcome.js";
 import { readRunDetailResponse } from "./run-detail-response.js";
+import { runDetailPath } from "./run-detail-path.js";
+import type { EngineIdentity } from "./engine-skew.js";
 
 /** Daemon job state (= run lifecycle, D8) -> CLI exit code via the ONE
  * projection owner: a succeeded lifecycle is 0 (a "Done · needs review" run
@@ -108,11 +110,16 @@ export async function fetchCouncil(
 export async function fetchRunDetail(
   addr: ControlApiAddress,
   runId: string,
+  includeFinalMessages = false,
+  engine?: EngineIdentity,
 ): Promise<Record<string, unknown> | null> {
   if (!runId) return null;
   let res: Awaited<ReturnType<typeof controlApiFetch>>;
   try {
-    res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`);
+    res = await controlApiFetch(
+      addr,
+      await runDetailPath(addr, runId, includeFinalMessages, engine),
+    );
   } catch {
     return null;
   }

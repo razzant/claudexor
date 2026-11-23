@@ -97,7 +97,7 @@ import {
 } from "./artifact-serve-routes.js";
 import { runExecutionWorkspaceRoot } from "./run-execution-root.js";
 import { bearerCredential } from "./authorization.js";
-import { assertOnlyQueryParams, singleQuery } from "./query.js";
+import { assertOnlyQueryParams, optionalBooleanQuery, singleQuery } from "./query.js";
 import {
   parseCredentialProfilesSnapshotQuery,
   parseHarnessListQuery,
@@ -791,17 +791,7 @@ export class DaemonControlApiServer {
       return;
 
     if (method === "GET" && path === "/runs") {
-      return serveRunList(
-        {
-          daemon: this.opts.daemon,
-          summarize: (record) => this.summarizeRunOrDiagnostic(record),
-          requestError: (response, error) => this.requestError(response, error),
-          json: (response, status, body) => this.json(response, status, body),
-        },
-        url,
-        req,
-        res,
-      );
+      return serveRunList(dataRoutes, url, req, res);
     }
 
     if (
@@ -863,6 +853,12 @@ export class DaemonControlApiServer {
 
     const runDetailMatch = /^\/runs\/([^/]+)$/.exec(path);
     if (method === "GET" && runDetailMatch) {
+      let includeFinalMessages: boolean | undefined;
+      try {
+        includeFinalMessages = optionalBooleanQuery(url, "includeFinalMessages");
+      } catch (error) {
+        return this.requestError(res, error);
+      }
       return serveRunDetail(
         {
           findRun: (id) => this.findRun(id),
@@ -886,6 +882,7 @@ export class DaemonControlApiServer {
                 input: {
                   record: rec,
                   cursor,
+                  includeFinalMessages,
                   pending: this.pendingInteractionsFor(rec),
                   operator: this.operatorDecisionFor(rec),
                   children: children.map((record) => ({

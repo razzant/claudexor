@@ -4,8 +4,28 @@ import {
   type DeferredMessageProjection,
 } from "@claudexor/schema";
 import type { DaemonRunRecord } from "./run-record.js";
+import { jsonOperation } from "./operation-descriptor.js";
+import { queryParam } from "./operation-parameters.js";
 import { requestGone } from "./request-liveness.js";
 import { servingStore } from "./run-start-receipt.js";
+
+export const RUN_DETAIL_OPERATION = jsonOperation(
+  "GET",
+  "/v2/runs/:id",
+  "read_only",
+  null,
+  "ControlRunDetail",
+  {
+    parameters: [
+      queryParam({
+        name: "includeFinalMessages",
+        enum: ["true", "false"],
+        description:
+          "Include the recorded final-messages outcome. Omission or false keeps the original run detail.",
+      }),
+    ],
+  },
+);
 
 interface RunDetailContext {
   findRun(id: string): Promise<DaemonRunRecord | null>;

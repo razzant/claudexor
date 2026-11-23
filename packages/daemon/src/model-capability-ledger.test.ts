@@ -91,6 +91,17 @@ describe("temporary model capability evidence", () => {
     f.ledger.served(c);
     expect(f.ledger.live()).toEqual([]);
   });
+  it("releases an expiry probe without extending the mark after a content refusal", () => {
+    const f = fixture();
+    f.refuse();
+    f.tick(MODEL_CAPABILITY_TTL_MS);
+    const before = f.ledger.live();
+    const binding = f.bind();
+    expect(f.ledger.reserve(binding, "probe")).toBe(true);
+    f.ledger.release(binding, "probe", false);
+    expect(f.ledger.live()).toEqual(before);
+    expect(f.ledger.state("codex", "a", "m")).toBe("probe_due");
+  });
   it("a late refusal cannot release a newer operation's probe", () => {
     const f = fixture();
     const old = f.refuse();

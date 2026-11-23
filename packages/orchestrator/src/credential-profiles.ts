@@ -51,6 +51,17 @@ export function resolveCredentialProfile(
   return match;
 }
 
+/** credentialStreamRefusal stores the adapter code in detail. Poller and
+ * probe observations use the same field for free text. */
+export function pinnedVerificationSuffix(observation: CredentialUnusableObservation): string {
+  return observation.harness_id === "claude" &&
+    observation.source === "attempt_stream" &&
+    observation.code === "capability_refused" &&
+    observation.detail === "verification_required"
+    ? ": verification_required"
+    : "";
+}
+
 export async function selectedProfileAvailability(input: {
   registry: readonly CredentialProfile[];
   profileId?: string | null;
@@ -93,7 +104,10 @@ export async function selectedProfileAvailability(input: {
     evidence,
   );
   if (dead) {
-    return `credential profile "${profile.profile_id}" credential is unusable (${dead.code})`;
+    return (
+      `credential profile "${profile.profile_id}" credential is unusable (${dead.code})` +
+      (input.unpinned ? "" : pinnedVerificationSuffix(dead))
+    );
   }
   if (!input.probe) return `harness "${input.harnessId}" has no profile probe`;
   const result = composeCredentialProfileEvidence(

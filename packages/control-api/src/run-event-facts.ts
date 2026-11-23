@@ -7,6 +7,12 @@ import {
   type ExecutionFold,
 } from "@claudexor/workspace";
 import { addBudgetEvent, emptyBudgetFold, type BudgetEventFold } from "./budget-valuation.js";
+import {
+  addFinalMessagesEvent,
+  emptyFinalMessagesFold,
+  projectedFinalMessages,
+  type FinalMessagesFold,
+} from "./final-messages-projection.js";
 import { inProjectionScope, projectionRead } from "./projection-context.js";
 import { continuityReceiptOf } from "./run-continuation-projection.js";
 import {
@@ -38,6 +44,8 @@ export interface RunEventFacts {
   continuity: RunContinuityReceipt[];
   budget: BudgetEventFold;
   execution: ExecutionFold;
+  /** #307: the final-messages outcome the run's first terminal recorded. */
+  finalMessages: FinalMessagesFold;
 }
 
 const CHUNK_BYTES = 64 * 1024;
@@ -78,6 +86,11 @@ export function readRunEventFacts(rec: RunDirCarrier): RunEventFacts {
   );
 }
 
+/** The same terminal outcome for an offline inspect and a served detail. */
+export function readRunFinalMessages(rec: RunDirCarrier, facts = readRunEventFacts(rec)) {
+  return projectedFinalMessages(rec.runDir, facts.finalMessages.outcome);
+}
+
 /** Test observability of the retention bounds. */
 export function retainedRunEventFactsForTests(): { runs: number; bytes: number } {
   return { runs: retained.size, bytes: retainedBytes };
@@ -91,6 +104,7 @@ function emptyFacts(integrity: RunEventsIntegrity): RunEventFacts {
     continuity: [],
     budget: emptyBudgetFold(),
     execution: emptyExecutionFold(),
+    finalMessages: emptyFinalMessagesFold(),
   };
 }
 
@@ -103,6 +117,7 @@ function copyFacts(facts: RunEventFacts): RunEventFacts {
     continuity: [...facts.continuity],
     budget: { ...facts.budget },
     execution: copyExecutionFold(facts.execution),
+    finalMessages: { ...facts.finalMessages },
   };
 }
 
@@ -113,6 +128,7 @@ function addRunEvent(facts: RunEventFacts, ev: Record<string, unknown>, size: nu
   if (receipt) facts.continuity.push(receipt);
   addBudgetEvent(facts.budget, ev);
   addExecutionEvent(facts.execution, ev);
+  addFinalMessagesEvent(facts.finalMessages, ev);
 }
 
 function foldRunEvents(rec: RunDirCarrier, reuse: boolean): RunEventFacts {
@@ -214,9 +230,20 @@ function bytesAt(fd: number, at: number, length: number): Buffer {
 }
 
 /** Source bytes of the kept rows, plus the plan, continuity and execution values. */
-function retainedSize({ timeline, plans, continuity, execution }: RunEventFacts): number {
+function retainedSize({
+  timeline,
+  plans,
+  continuity,
+  execution,
+  finalMessages,
+}: RunEventFacts): number {
   let bytes = timeline.bytes + 2 * GUARD_BYTES;
-  for (const value of [plans.last, ...plans.byAttempt.values(), ...continuity])
+  for (const value of [
+    plans.last,
+    ...plans.byAttempt.values(),
+    ...continuity,
+    finalMessages.outcome,
+  ])
     bytes += value ? JSON.stringify(value).length : 0;
   const { starts, receipts, attempts } = execution;
   return bytes + JSON.stringify([starts, receipts, attempts]).length;

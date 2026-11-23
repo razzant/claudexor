@@ -145,7 +145,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     positionalPatterns: [{ min: 1, max: 1 }],
     usageArgs: "<run_id>",
     summary: "Inspect a run's decision + artifacts",
-    flags: ["json"],
+    flags: ["json", "include-final-messages"],
     mutability: "read",
     stability: "stable",
     recovery: true,

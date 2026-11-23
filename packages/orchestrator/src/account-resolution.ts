@@ -39,6 +39,7 @@ import {
   type ProfilePolicy,
 } from "./credential-profile-rotation.js";
 import {
+  pinnedVerificationSuffix,
   selectedProfileAvailability,
   vendorCredentialObservation,
   type VendorQuotaObservations,
@@ -142,7 +143,8 @@ function pinnedCredentialUnusable(
 ): Error {
   return new HarnessUnavailableError(
     `credential profile "${profileId}" (${harnessId}) credential is unusable ` +
-      `(${observation.code}; a pinned account never rotates)`,
+      `(${observation.code}; a pinned account never rotates)` +
+      pinnedVerificationSuffix(observation),
   );
 }
 

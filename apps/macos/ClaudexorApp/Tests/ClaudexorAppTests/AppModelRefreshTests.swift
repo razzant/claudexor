@@ -2969,14 +2969,41 @@ struct AppModelRefreshTests {
     }
 
     @MainActor
-    @Test func refusedTurnReadsTypedContextAndKeepsLegacyFallback() {
+    @Test func refusedTurnReadsTypedContextAndKeepsLegacyFallback() throws {
         let typed = GatewayError.http(status: 503, body: #"{"code":"git_missing","message":"Git unavailable","retryable":true,"context":{"turnId":"tn-context"}}"#)
         #expect(AppModel.refusedTurn(from: typed)?.turnId == "tn-context")
-        #expect(AppModel.refusedTurn(from: typed)?.retryable == true)
+        #expect(AppModel.refusedTurn(from: typed)?.turnRetryable == true)
 
         let legacy = GatewayError.http(status: 400, body: #"{"error":"old","turnId":"tn-legacy","retryable":false}"#)
         #expect(AppModel.refusedTurn(from: legacy)?.turnId == "tn-legacy")
-        #expect(AppModel.refusedTurn(from: legacy)?.retryable == false)
+        #expect(AppModel.refusedTurn(from: legacy)?.turnRetryable == false)
+
+        let missing = #"""
+        {"code":"mandatory_context_unavailable","message":"README.md (ENOENT)","retryable":false,
+         "fieldErrors":{},"requiredActions":["Restore the file"],"evidenceRefs":[],
+         "context":{"jobId":"job-1","turnId":"tn-1","turnRetryable":true,"executionRoot":"/workspace",
+                    "unavailableFiles":[{"path":"README.md","reason":"ENOENT"}]}}
+        """#
+        let problem = try JSONDecoder().decode(ControlProblem.self, from: Data(missing.utf8))
+        #expect(problem.retryable == false)
+        #expect(problem.context["executionRoot"]?.stringValue == "/workspace")
+        #expect(problem.context["unavailableFiles"] == .array([.object([
+            "path": .string("README.md"), "reason": .string("ENOENT")
+        ])]))
+        #expect(AppModel.refusedTurn(from: GatewayError.http(status: 409, body: missing))?.turnRetryable == true)
+
+        let frozen = GatewayError.http(status: 409, body: #"""
+        {"code":"plan_not_ready","retryable":false,"context":{"turnId":"tn-plan","jobId":"job-plan"}}
+        """#)
+        #expect(AppModel.refusedTurn(from: frozen)?.turnRetryable == false)
+        let preEnqueue = GatewayError.http(status: 400, body: #"""
+        {"code":"attachment_pool_unsupported","retryable":false,"context":{"turnId":"tn-orphan"}}
+        """#)
+        #expect(AppModel.refusedTurn(from: preEnqueue)?.turnRetryable == false)
+        let malformed = GatewayError.http(status: 409, body: #"""
+        {"retryable":false,"context":{"turnId":"tn-1","turnRetryable":1}}
+        """#)
+        #expect(AppModel.refusedTurn(from: malformed)?.turnRetryable == false)
     }
 
     @Test(arguments: [

@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RunEvent } from "@claudexor/schema";
+import { FINAL_MESSAGES_PATH, type RunEvent } from "@claudexor/schema";
 import { orderedAppender } from "@claudexor/util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -20,6 +20,7 @@ import {
   lastRunEventSeq,
   liveRunEventSeq,
   readRunEvents,
+  writeFinalMessages,
 } from "./index.js";
 
 const APPLIED_POOL = Symbol.for("claudexor.libuvPoolSize");
@@ -558,6 +559,50 @@ describe("a queued EventLog", () => {
       }
   });
 
+  it("includes a final that lands while a document refresh drains, staging the terminal once", async () => {
+    const { dir, path } = runDir();
+    const message = (text: string) => ({ type: "message", final: true, text });
+    const log = queuedLog(path, {
+      onPublish(event) {
+        if (event.payload["type"] === "status") log.emit("harness.event", message("Done."));
+      },
+    });
+    const save = () => writeFinalMessages(dir, "run-1", log.readAll());
+    const refresh = vi.fn(save).mockImplementationOnce(() => {
+      const pointer = save();
+      log.emit("harness.event", { type: "status", text: "Notes saved." });
+      return pointer;
+    });
+    log.setBeforeTerminal(
+      (type, payload) => ({ type, payload: { ...payload, final_messages: save() } }),
+      undefined,
+      refresh,
+    );
+    const stage = vi
+      .fn(async () => {})
+      .mockImplementationOnce(async () => {
+        log.emit("harness.event", message("Review notes."));
+      });
+    log.setTerminalStaging(stage);
+    try {
+      log.emit("run.created");
+      const terminal = await log.emitTerminal("run.completed");
+      expect(stage).toHaveBeenCalledTimes(1);
+      expect(refresh).toHaveBeenCalledTimes(2);
+      expect(terminal.seq).toBe(5);
+      expect(terminal.payload["final_messages"]).toMatchObject({
+        state: "complete",
+        count: 2,
+        throughEventSeq: 4,
+      });
+      const rows = readFileSync(join(dir, FINAL_MESSAGES_PATH), "utf8").trimEnd().split("\n");
+      const texts = rows.slice(1).map((row) => JSON.parse(row).payload.text);
+      expect(texts).toEqual(["Review notes.", "Done."]);
+    } finally {
+      log.dispose();
+    }
+  });
+
   it("lets an out-of-band append neither take the run's held failure nor leave its own for the run", async () => {
     const { path } = runDir();
     const lost = new Error("journal refused the run's line");
@@ -617,7 +662,7 @@ describe("a queued EventLog", () => {
   });
 
   it("consumes no seq for a failed write, failing the lines queued behind it", async () => {
-    const { path } = runDir();
+    const { dir, path } = runDir();
     const log = queuedLog(path);
     log.emit("run.created", {});
     await orderedAppender.settled(path);
@@ -639,6 +684,9 @@ describe("a queued EventLog", () => {
       [2, "harness.event"],
     ]);
     expect(readRunEvents(path).events.at(-1)?.payload["text"]).toBe("d");
+    const source = log.readAll();
+    expect(source.malformed).toBe(0);
+    expect(writeFinalMessages(dir, "run-1", source)).toMatchObject({ state: "partial", count: 0 });
     expect(unhandled).toEqual([]);
   });
 

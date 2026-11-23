@@ -109,12 +109,9 @@ export function createDaemonAgentRunner(deps: {
     const { threadId, turnId } = threads.assertKnownIds(p.threadId, p.turnId);
     assertThreadExecutionBinding(threadId ? threads.getThread(threadId) : undefined, p);
     // Plan readiness gate (QA-045 / D17): refuse an Implement whose frozen
-    // plan still has open questions BEFORE any worktree, spawn, or spend —
-    // so the refusal is a durable, replayable refused turn (the daemon
-    // records enqueue_error=plan_not_ready on the turn; retry replays
-    // through this fresh preflight). Skipped when the operator explicitly
-    // overrode readiness (recorded on the turn at create time). The gate
-    // lives at run-start, not in the control API, so retry re-runs it.
+    // plan still has open questions before workspace preparation or spending.
+    // The daemon records plan_not_ready. Only an explicit readiness override
+    // recorded at turn creation bypasses this run-start check.
     if (p.planRef && typeof p.planRef === "object") {
       const overridden =
         turnId != null && threads.getTurn(turnId)?.plan_readiness_overridden === true;

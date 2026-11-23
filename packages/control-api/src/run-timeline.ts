@@ -381,7 +381,7 @@ export function timelineEvents(
       typeof payload["text"] === "string"
         ? payload["type"]
         : null;
-    const textDelta = textKind !== null && eventPayload(payload)["delta"] === true;
+    const nested = eventPayload(payload);
     // The adapter-issued speech identity (typed only) and text-row finality.
     const speech = HarnessSpeech.safeParse(payload["speech"]).data;
     const textFinal = textKind !== null && payload["final"] === true;
@@ -390,18 +390,18 @@ export function timelineEvents(
       payload["tool"] && typeof payload["tool"] === "object" && !Array.isArray(payload["tool"])
         ? (payload["tool"] as Record<string, unknown>)
         : {};
-    const harnessId = stringOrNull(payload["harness_id"] ?? payload["harness"]);
-    const attemptId = stringOrNull(payload["attempt_id"] ?? payload["attemptId"]);
-    // Live-message receipts (message.*) and the adapter's consumption status
-    // (harness.event status live_input_delivered) carry the message id so a
-    // caller can reconcile delivery on the timeline (CONTRACT A26).
-    const nested = eventPayload(payload);
+    // A late adapter receipt can establish queueing or consumption after the
+    // original request returned unknown. Keep those observations separate.
     const messageId = stringOrNull(payload["message_id"] ?? nested["message_id"]);
+    const receiptCode =
+      type === "harness.event" && payload["type"] === "status" ? nested["code"] : null;
     const outcome = type.startsWith("message.")
       ? stringOrNull(payload["outcome"])
-      : nested["code"] === "live_input_delivered"
+      : receiptCode === "live_input_delivered"
         ? "delivered"
-        : null;
+        : receiptCode === "live_input_accepted"
+          ? "accepted"
+          : null;
     const partialGitInitialization =
       type === "project.git.initialized" && payload["partial"] === true;
     // Its severity follows the payload: nothing copied or a selected path missing.
@@ -432,8 +432,6 @@ export function timelineEvents(
             errorSummary);
     const stop = preparationStopSummary(payload);
     const detail = stop ? [eventDetail, stop].filter(Boolean).join("\n") : eventDetail;
-    const toolName = stringOrNull(tool["name"]);
-    const target = stringOrNull(tool["target"]);
     // INV-105 disclosure (QA-070): unsupported per-harness knobs the route could
     // not honor ride harness.started as `ignored_settings`. Project them (exact,
     // bounded) so the row renders a visible warning instead of a benign start; a
@@ -451,20 +449,20 @@ export function timelineEvents(
       ControlTimelineEvent.parse({
         type,
         ts: typeof ev["ts"] === "string" ? ev["ts"] : undefined,
-        harnessId,
-        attemptId,
+        harnessId: stringOrNull(payload["harness_id"] ?? payload["harness"]),
+        attemptId: stringOrNull(payload["attempt_id"] ?? payload["attemptId"]),
         messageId,
         outcome,
         title,
         detail,
         textKind,
-        textDelta,
+        textDelta: textKind !== null && nested["delta"] === true,
         speechKey: speech ? stringOrNull(speech.key) : null,
         speechOp: speech?.op ?? null,
         textFinal,
         severity: stop && severity === "info" ? "warning" : severity,
-        toolName,
-        target,
+        toolName: stringOrNull(tool["name"]),
+        target: stringOrNull(tool["target"]),
         errorSummary,
         ignoredSettings,
         rawRef: "events.jsonl",

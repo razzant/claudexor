@@ -3403,46 +3403,30 @@ only there. A marked or refusing one yields, and the selected account rejects
 the history locally with `invalid_continuation`. The resolver retains catalog hashes for invalidation. The adapter owns the dated
 catalogs used by later raw-model selections.
 
-A Codex inference HTTP 400/404 with an explicit model-not-found code or a narrowly
-recognized model refusal becomes `model_capability_refused`. Explicit vendor
-`model_not_found` after dispatch retains the existing model-scoped unusable
-verdict (`capability_refused`); both Agent and model selection still read it.
-Text evidence and `model_not_supported` demote through capability marks and the
-shared observation; they never make an account unusable or disabled. Quota, authentication and
-billing retain their existing channels. A pinned operation returns the typed
-refusal without a retry signal or new mark. The host may submit one separate,
-identical auto request with `retryOfOperationId`; the engine keeps one dispatch
-and one route per operation. Success on the other account confirms the original
-mark. An equivalent refusal retains both accounts' provisional evidence and
-returns the first problem with both accounts' reasons; the next request can then
-reach an unmarked third account. The host retry signal requires an unmarked
-eligible alternative, so known deficiencies cannot authorize another retry. Correlation requires the same
-source, model, messages, tools, options and continuation, and can be claimed once.
-History continuation bound to the refusing account withholds the signal
-(`retryBlockedBy=native_continuation`): another account rejects it before inference.
+A pre-generation Codex HTTP 400/404 that identifies an unavailable model
+returns `model_capability_refused`. An explicit vendor `model_not_found` after
+dispatch also retains the model-scoped unusable verdict read by Agent and
+model selection. Recognized wording and `model_not_supported` use capability
+marks and the shared pre-progress observation without disabling the account.
+Eligible unclassified refusals keep their own error code and initially record
+only the observation. Both paths bind evidence to the account and requested
+model so an older refusal cannot undo newer service.
 
-Any other definite refusal before generation on an auto operation (HTTP 4xx
-other than 401, 408, 409 and 429; not a code that sign-in, quota, rate limits or
-the processing fallback own; not a typed request fault such as a named non-model
-parameter, `unsupported_parameter` or an exceeded context length) keeps its own
-code and gains the same retry context with `capabilityKind=unclassified`. Both
-kinds record the shared pre-progress refusal observation at once (Agent runs read
-it too); an older in-flight refusal never undoes a newer model operation's
-service. Its correlated
-retry settles an unrecognized refusal: service elsewhere creates an ordinary
-confirmed mark with the refusal's structural diagnostic as reason; another
-refusal marks nothing for the first account, because the request itself may be
-at fault. Every capability-attributed refusal also carries `modelMarks[]`, the
-live marks of that harness and model with each mark's episode start (`since`),
-and, for auto, `alternativeRemains`, whether another eligible account without a
-capability mark is left (one sweep answers this and the retry grant), so a host
-can tell an ongoing case from a new one without a timer.
+Only `retryOnOtherAccount=true` authorizes one separate, identical Auto request
+on an eligible unmarked account. Pinned operations and history bound to the
+refusing account receive no grant. The [host contract](MODEL_CAPABILITY_ROUTING.md)
+defines the qualifying failures, correlation, mark settlement, episode start
+(`modelMarks[].since`) and remaining alternatives. An explicit
+[content refusal](MODEL_CAPABILITY_ROUTING.md#content-refusals) ends the request
+without changing account evidence or granting a retry. Each operation still
+dispatches at most once.
 
 The process-local capability ledger has a four-hour TTL
-(`MODEL_CAPABILITY_TTL_MS`). Expiry admits one concurrent probe; success clears
-it, a refusal renews it, and an uncertain/cancelled probe delays the next probe
-by four hours. An in-flight probe sorts last, but never makes the last account
-unreachable: a concurrent operation may dispatch there without owning the probe.
+(`MODEL_CAPABILITY_TTL_MS`). Expiry admits one concurrent probe. Service clears
+the mark, a capability refusal renews it, and an uncertain or cancelled probe
+delays the next probe by four hours. A content refusal leaves the existing
+deadline in place. An in-flight probe sorts last. Another operation may still
+dispatch on the last eligible account without owning its probe.
 Correlated retries prefer any unmarked comparator over all capability rows,
 including expired marks. Changed catalog content, account identity or managed credential
 generation clears marks early. Codex computes a separate opaque capability
@@ -4353,31 +4337,26 @@ not retry automatically.
   config-dir login profiles, Antigravity and Grok Build, which keep sessions
   in the account's directory), and project files are untouched. (ACP's view of
   trashed threads is in INTEGRATIONS.)
-- Refused turns are honest end-to-end: when a turn's run dies BEFORE it starts
-  (the trust gate refusing `access: full`, preflight validation, an enqueue
-  throw, or an Implement whose plan still has open questions and no explicit
-  override — a typed `plan_not_ready`; a delegated thread whose bound workspace
-  is missing — `delegated_workspace_unavailable`; a daemon restart after the
-  turn's command was accepted but before its run started —
-  `daemon_restarted_before_start`, recorded at restart recovery from the
-  interrupted command), the daemon persists the reason on the
-  turn (`ThreadTurn.enqueue_error`, projected as `enqueueError`) as one typed,
-  sanitized problem: message, machine code, retryability, bounded required
-  actions, bounded structured context, and failure time. String leaves are
-  redacted before bounded persistence; arbitrary provider output and environment
-  values are not admitted. Surfaces render the message and recovery actions,
-  not the context object wholesale, so every refusal stays useful without
-  becoming a raw-data disclosure. The readiness refusal is enforced at
-  run-start (not by a bespoke early return in the control API), so it rides this
-  exact mechanism and stays durable, idempotent, and replayable. `POST
-  /v2/threads/:id/turns/:turnId/retry`
-  creates a new command attempt for that SAME turn by replaying the immutable
-  original command params through fresh preflight (no duplicate turn); a
-  successful run binding clears the error, a repeat refusal replaces it.
-  Turn create and Exact Retry require `Idempotency-Key`; the same key/request
-  returns the original durable handles, while key reuse with another request
-  returns typed `409 idempotency_conflict`. Retry refuses turns that already
-  have a run, have no recorded refusal, or still have an active job (409).
+- A turn refused before run start retains a sanitized `ThreadTurn.enqueue_error`
+  (API `enqueueError`) with its message, machine code, retryability, failure
+  time, bounded actions and redacted structured context. Clients show the
+  message and actions. Causes include the full-access trust gate, preflight,
+  enqueue failure, `plan_not_ready` (open questions without an explicit
+  override), `delegated_workspace_unavailable` (missing bound workspace) and
+  `daemon_restarted_before_start` (an accepted command interrupted before
+  start). Plan readiness is enforced at run start through the same durable
+  path. Missing or unreadable mandatory files report the execution root and
+  affected paths. The caller must repair the files before retrying.
+- Turn create and Exact Retry require `Idempotency-Key`. Replaying a key returns
+  its recorded outcome. Changing the request under that key returns
+  `409 idempotency_conflict`. With a fresh key,
+  `POST /v2/threads/:id/turns/:turnId/retry` replays the saved command for the
+  same refused tail turn through fresh preflight. It requires a settled job
+  with replayable parameters and a turn with no run bound. Purged threads
+  and released input resources retain their own admission errors. Binding the
+  new run clears the error. A second refusal replaces it. See the
+  [thread recovery contract](INTEGRATIONS.md#refused-turns) for the HTTP and
+  stored-turn retry fields.
 - Run-level `POST /v2/runs/:id/retry` is Exact Retry for any settled run: it
   creates a new command/turn, links `retryOf`, reuses the immutable original
   request, and performs fresh normalization/preflight. Retained terminal
@@ -7298,41 +7277,43 @@ of `GET /v2/agent-capabilities`, and an adapter that declares a channel implemen
 `mid_turn` (app-server `turn/steer` against the snapshotted active turn; a
 turn gap answers `not_active`/`no_active_turn`, an app-server without
 `turn/steer` answers `rejected`/`rpc_refused`). Claude Code declares
-`next_tool_boundary` through the native queue fold of its stream-json stdin
-(`packages/harness-claude/src/live-input.ts`, recorded on Claude Code 2.1.283
-through the real adapter path: `fixtures/stream-json/recorded-live-fold-2.1.283.jsonl`
-and `recorded-live-final-text-2.1.283.jsonl`, replayed 1:1 by the conformance
-tests): the message is written to the live stdin as a user frame whose `uuid`
-is the message id, Claude Code queues it at once (`command_lifecycle queued`
-within ~10 ms = `accepted`) and picks it up inside the same turn right after
-the current tool batch (the replay echo, `command_lifecycle started` or
-`completed`, or the result's `user_message_uuids` = `delivered`, surfaced once
-as the `live_input_delivered` status event keyed by `message_id`). The managed
-vendor pin (2.1.281) carries the same frames and flag; the pickup itself is
-recorded on 2.1.283. A
-message that arrives while the model composes its final text stays queued
-and runs as the NEXT native turn inside the same run: the run loop's
-`session.onIo` seam hands the adapter the live handle (the adapter's own
-wrapper adds the uuid of the prompt frame it wrote), `closeStdinOn` returns
-false while that prompt is running (Claude Code identified commands, by a
-lifecycle frame naming the prompt or a result naming only commands the session
-never sent, and neither a result naming the prompt nor its own terminal state
-has arrived, so a resumed session's earlier result cannot close stdin in either
-order and, usage aside, reaches the run only as `foreign_result` status events,
-never as its error or answer; an error result naming no command ends it as the
-first result does on a CLI that names none), while a message is
-written-but-unreceipted, `queued` or `started`, or a
-run-owned background task is open (`system/task_started` with
-`is_backgrounded: true` … `system/task_notification`, so a background
-continuation is kept too), the second `system/init` folds into the one
-`started` (a `native_turn_started` status marks the turn), each result's
-`usage.cost_usd` is the delta of the cumulative `total_cost_usd`, and the last
-result's final text is the run's answer. No `queued` frame within 2 s answers
-`delivery_unknown`/`response_timeout` (the message write is fire-and-forget,
-so a dead pipe surfaces this way), a session closed with the message still
-unreceipted `delivery_unknown`/`transport_lost`, and a `cancelled|discarded|
-refused` lifecycle state before consumption is typed `live_input_refused`
-without failing the run. A one-shot argv run (no interaction channel; never
+`next_tool_boundary`. The adapter writes a user frame with the message id as
+`uuid`. A `command_lifecycle queued` frame means accepted (about 10 ms in the
+2.1.283 recording). A replay echo, a started or completed lifecycle frame, or
+a result naming the id in `user_message_uuids` confirms delivery once through
+`live_input_delivered` with `message_id`. The managed 2.1.281 pin carries the
+same frames and flag. The two recordings under
+`packages/harness-claude/fixtures/stream-json/recorded-live-*` cover pickup
+after a tool batch and a message sent during final text that runs as the
+next native turn. Its `system/init` emits `native_turn_started`. Each result
+reports the increment in cumulative `total_cost_usd`. The last accepted
+result supplies the primary answer.
+
+The adapter holds stdin open for a written message awaiting a receipt, a
+queued or started command, or a run-owned background task between
+`system/task_started` (`is_backgrounded: true`) and `system/task_notification`.
+Once command identity is known from a lifecycle frame naming the prompt or a
+result naming only foreign commands, an earlier session result contributes
+usage and a `foreign_result` status even after stdin closes. The adapter waits for the prompt's own
+result or terminal lifecycle. An unnamed error ends an open prompt. On CLIs
+that supply no command identities, the first result ends it.
+
+One quota case closes stdin even with pending work. The native turn's latest
+`rate_limit_event` must be `rejected` or `blocked`, followed by the session's
+own command result with `is_error: true` and `api_error_status: 429`. A
+warning, stale limit or foreign result neither closes stdin nor authorizes an
+automatic continuation. EOF stops new
+input. The adapter still drains output and collects late receipts until the
+stream ends. Already-written commands can still run. EOF alone establishes
+neither process exit nor completion of a background task.
+
+If no queued frame arrives within two seconds, the write has unknown delivery
+(`delivery_unknown` / `response_timeout`). An unreceipted write at session
+close yields `delivery_unknown` / `transport_lost`. A later `queued` frame for that write
+adds one `live_input_accepted` status to the timeline; only `live_input_delivered`
+confirms consumption. Neither receipt sends the message again. A cancelled, discarded or
+refused lifecycle before consumption emits `live_input_refused` and leaves
+the run active. A one-shot argv run (no interaction channel; never
 the daemon's shape) has no live session and answers `not_active`/`no_live_session`. Cursor declares `none` (no
 persistent live-input channel: its prompt is piped once, then EOF); agy,
 grok, opencode, copilot and raw-api declare `none`. MCP exposes the existing channel
@@ -8728,6 +8709,7 @@ final/work_product.yaml?
 final/summary.md
 final/failure.yaml?
 final/answer.md?
+final/final-messages.jsonl?
 final/retained-output.md?          # received text and captured-media handles, not acceptance
 final/retained-changes.md?         # separate unselected candidate patches
 final/explore.md?            (legacy deep-scan output; current runs write final/report.md)
@@ -8888,10 +8870,39 @@ Reviewer scratch may initialize its own disposable Git metadata for native
 read-only tooling; this never initializes the source directory or changes its
 execution geometry.
 
-Files are the source of truth. UI and terminal output are projections. The
-control API also projects `primaryOutput`, `timeline`, and `budget` from these
-files/events so clients do not have to guess which artifact is the main result or
-show fake zero spend/quota values.
+The control API derives `primaryOutput`, `timeline` and `budget` from the
+files and events. Missing spend or quota stays unknown.
+
+### Final messages
+
+The first schema-valid terminal records the outcome for the preceding journal
+prefix. A published `final/final-messages.jsonl` uses UTF-8 and ends every
+line with LF. Its header gives `schemaVersion: 1`, `runId`, `state`, `count`
+and `throughEventSeq` (highest readable sequence examined). Each later line is
+one complete `RunEvent` for a harness message typed `final: true`, including
+its recorded attempt, session and native identifiers. Journal order, repeated
+messages and empty finals survive. Deltas and buffered snapshots are excluded.
+`complete` describes the collection of records explicitly typed `final: true`; it
+does not promote unmarked assistant text. When `final/retained-output.md` is
+published, read that report to recover other recorded assistant text.
+
+When requested, `finalMessages` gives the document's `path`, `state`, `count`,
+`bytes`, `sha256` (`sha256:<hex>`) and `throughEventSeq`. The digest covers
+the whole file in both states. A `complete` document with count zero confirms an empty
+collection. A malformed record or known loss in the run's own journal makes it `partial`.
+
+An explicit read returns `null` for unknown coverage. An `unavailable`
+outcome carries `source_unreadable` for no readable event, `publication_failed`
+for a failed save, or `artifact_unavailable` for a lost or changed document.
+The artifact GET checks size and digest before sending bytes. It returns HTTP
+409 for an unavailable or mismatched document. A legacy terminal without a
+declaration retains ordinary capped file access.
+
+The selected run output supplies the primary answer. A final event marked
+`after_stop: true` records a message drained during Stop. It stays in the
+collection as evidence and is not delivered as the cancelled attempt's answer.
+Machine consumers read `final/output.json` and WorkReport from their respective
+envelopes. Completion of a background action requires its own evidence.
 
 ## 9. macOS App
 

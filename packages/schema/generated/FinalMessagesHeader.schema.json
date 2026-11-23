@@ -1,0 +1,47 @@
+{
+  "$ref": "#/definitions/FinalMessagesHeader",
+  "definitions": {
+    "FinalMessagesHeader": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Run whose event log the records come from."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial"
+          ],
+          "description": "complete: every record of the run's event log up to the source high-water mark was readable; partial: at least one record before the run's terminal could not be read, so a final may be missing."
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of final-message records after the header line."
+        },
+        "throughEventSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Inclusive seq of the last readable run event read before the run's first terminal; 0 when the checked log held no readable event."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "runId",
+        "state",
+        "count",
+        "throughEventSeq"
+      ],
+      "additionalProperties": false,
+      "description": "Header line of final/final-messages.jsonl (UTF-8, every line LF-terminated). Each following line is one complete run event exactly as the run's event log serializes it: a harness message its adapter typed final, neither a fragment nor a buffered snapshot, in event order with its own attempt, session and native identity."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
