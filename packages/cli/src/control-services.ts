@@ -1,6 +1,7 @@
 /** Bind typed control operations to daemon stores and engine entrypoints. */
 import { mkdirSync } from "node:fs";
 import {
+  BoundProjectRegistrationPort,
   type OperatorDecisionRecord,
   PartitionControlPort,
   InteractionRegistry,
@@ -66,6 +67,7 @@ import { threadTurnServices } from "./thread-turn-services.js";
 import { threadPurgeOwner, type ThreadPurgeDurability } from "./thread-purge.js";
 import { laneCredentialStores, threadExportService } from "./thread-export-services.js";
 import { projectRemovalService } from "./project-removal.js";
+import { projectRegistryServices } from "./project-registry-services.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
 type SetupBinding = Pick<
@@ -75,7 +77,7 @@ type SetupBinding = Pick<
 export function controlServices(
   interactions: InteractionRegistry,
   liveInputs: LiveInputRegistry,
-  projects: () => ProjectStorePort,
+  projects: () => ProjectStorePort & Partial<BoundProjectRegistrationPort>,
   threads: ProjectControlPort,
   setupBinding: SetupBinding,
   journalManager: PartitionControlPort,
@@ -172,18 +174,11 @@ export function controlServices(
         isBusy: () => setupBinding.hasActiveWork(),
       }),
     }),
-    // Nested projects are disclosed, never refused.
-    listProjects: async () => ({ projects: projects().listWithNesting() as unknown[] }),
+    // Nested projects are disclosed, never refused. The registry services also
+    // carry the opt-in paired-custody probe and release when the store has them.
+    ...projectRegistryServices(projects),
     // Filesystem routes are available only on the remote runtime.
     ...remoteFilesystemServices(projects),
-    registerProject: async (input: Parameters<ProjectStorePort["register"]>[0]) => {
-      const { project, created } = threads.registerProject(input);
-      return { ...project, nesting: projects().nestingFor(project.id), created };
-    },
-    relinkProject: async (id: string, root: string) => {
-      const project = threads.relinkProject(id, root);
-      return { ...project, nesting: projects().nestingFor(project.id) };
-    },
     // QA-049/#333: project remove and its explicit trashed-thread purge opt-in.
     removeProject: projectRemovalService(threads, daemonJobs, finishPurge),
     createThread: async (input: unknown) => {

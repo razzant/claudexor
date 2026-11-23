@@ -1,17 +1,22 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isAbsolute } from "node:path";
 import {
   ControlProject,
+  ControlProjectBinding,
   ControlProjectListResponse,
+  ControlProjectRegistrationState,
   ControlProjectRegisterRequest,
   ControlProjectRegisterResponse,
+  ControlProjectReleaseReceipt,
   ControlProjectRelinkRequest,
   ControlProjectRemoveReceipt,
   ControlProjectRemoveTrashedThreads,
   ControlDirectoryListing,
 } from "@claudexor/schema";
 import type { DaemonRunRecord } from "./daemon-server.js";
-import { singleQuery } from "./query.js";
+import { assertOnlyQueryParams, singleQuery } from "./query.js";
 import { requiredIdempotencyKey } from "./run-start.js";
+import { wantsStoreIdentity } from "./run-start-receipt.js";
 import { routeValue, serviceResponse } from "./route-stages.js";
 import { runWorkspaceBinding, type RunWorkspaceBinding } from "./run-execution-root.js";
 
@@ -21,7 +26,17 @@ export interface ProjectRouteServices {
     root: string;
     idempotencyKey: string;
     clientId: string;
+    includeStoreId?: boolean;
   }) => Promise<unknown>;
+  /** `GET /v2/projects/:id/registration` — the bound paired-custody probe; the
+   * optional candidate adds the one folder comparison's verdict to the answer. */
+  inspectProjectRegistration?: (
+    id: string,
+    binding: ControlProjectBinding,
+    candidate?: string,
+  ) => Promise<unknown>;
+  /** `POST /v2/projects/:id/release` — the confirming side's one bound archival. */
+  releaseProject?: (id: string, binding: ControlProjectBinding) => Promise<unknown>;
   relinkProject?: (id: string, root: string) => Promise<unknown>;
   /** `trashedThreads` is present only on the explicit #333 opt-in. */
   removeProject?: (
@@ -104,7 +119,12 @@ export async function handleProjectRoute(
       const idempotencyKey = requiredIdempotencyKey(req);
       const raw = await ctx.readBody(req);
       const body = ControlProjectRegisterRequest.parse(raw);
-      return { root: body.root, idempotencyKey, clientId: "control-api" };
+      return {
+        root: body.root,
+        idempotencyKey,
+        clientId: "control-api",
+        ...(wantsStoreIdentity(req) ? { includeStoreId: true } : {}),
+      };
     });
     if (!input.ok) return true;
     const project = await routeValue(ctx, res, 500, () => service(input.value));
@@ -116,8 +136,67 @@ export async function handleProjectRoute(
         ControlProjectRegisterResponse.parse({
           ...projectWire(project.value),
           created: (project.value as Record<string, unknown>)["created"],
+          ...(input.value.includeStoreId
+            ? { storeId: (project.value as Record<string, unknown>)["storeId"] }
+            : {}),
         }),
       ),
+    );
+  }
+
+  // Paired custody: the bound address probe. `absent` is one state covering
+  // archived, missing and never-existed rows; the query parameters are exactly
+  // the pair the registration receipt gave the confirming caller.
+  const projectRegistrationMatch = /^\/projects\/([^/]+)\/registration$/.exec(path);
+  if (method === "GET" && projectRegistrationMatch) {
+    res.setHeader("cache-control", "private, no-store");
+    const inspect = ctx.services?.inspectProjectRegistration;
+    if (!inspect) return unsupported(ctx, res);
+    const input = await routeValue(ctx, res, 400, () => {
+      const url = new URL(req.url ?? "", "http://localhost");
+      assertOnlyQueryParams(url, ["expectedStoreId", "expectedRoot", "candidate"]);
+      const candidate = singleQuery(url, "candidate");
+      if (candidate !== undefined && !isAbsolute(candidate))
+        throw new Error("candidate must be an absolute path");
+      return {
+        binding: ControlProjectBinding.parse({
+          expectedStoreId: singleQuery(url, "expectedStoreId"),
+          expectedRoot: singleQuery(url, "expectedRoot"),
+        }),
+        candidate,
+      };
+    });
+    if (!input.ok) return true;
+    const result = await routeValue(ctx, res, 500, () =>
+      inspect(
+        decodeURIComponent(projectRegistrationMatch[1]!),
+        input.value.binding,
+        input.value.candidate,
+      ),
+    );
+    if (!result.ok) return true;
+    return serviceResponse(ctx, res, "inspectProjectRegistration", () =>
+      ctx.json(res, 200, ControlProjectRegistrationState.parse(result.value)),
+    );
+  }
+
+  // Paired custody: the confirming side's one bound release. The body is the
+  // same binding pair; a mismatch archives nothing and answers 409.
+  const projectReleaseMatch = /^\/projects\/([^/]+)\/release$/.exec(path);
+  if (method === "POST" && projectReleaseMatch) {
+    const release = ctx.services?.releaseProject;
+    if (!release) return unsupported(ctx, res);
+    const input = await routeValue(ctx, res, 400, async () => {
+      assertOnlyQueryParams(new URL(req.url ?? "", "http://localhost"), []);
+      return ControlProjectBinding.parse(await ctx.readBody(req));
+    });
+    if (!input.ok) return true;
+    const result = await routeValue(ctx, res, 500, () =>
+      release(decodeURIComponent(projectReleaseMatch[1]!), input.value),
+    );
+    if (!result.ok) return true;
+    return serviceResponse(ctx, res, "releaseProject", () =>
+      ctx.json(res, 200, ControlProjectReleaseReceipt.parse(result.value)),
     );
   }
 

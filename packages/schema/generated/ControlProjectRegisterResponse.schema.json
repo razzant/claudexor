@@ -61,9 +61,14 @@
           "default": [],
           "description": "Disclosed nesting relations with other registered projects (F3) — informational, never a refusal."
         },
+        "storeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Durable store serving this registration. Returned on store identity opt-in when known."
+        },
         "created": {
           "type": "boolean",
-          "description": "True when this registration created the project; false when the root was already registered. An Idempotency-Key replay repeats its original answer."
+          "description": "True when this registration created the project; false when the root was already registered. An Idempotency-Key replay retains that key's creation provenance."
         }
       },
       "required": [

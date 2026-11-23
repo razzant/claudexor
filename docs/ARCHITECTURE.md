@@ -3961,6 +3961,8 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `GET /v2/projects/:id/file`
 - `GET /v2/projects/:id/outputs`
 - `GET /v2/projects/:id/outputs/<path>`
+- `GET /v2/projects/:id/registration`
+- `POST /v2/projects/:id/release`
 - `POST /v2/projects/:id/relink`
 - `GET /v2/quota`
 - `POST /v2/quota`
@@ -5727,6 +5729,38 @@ project register` prints `created` or `existing`). Each project
 discloses its nesting relations with other registered roots (`inside` /
 `contains`, never a refusal); the list computes them for the whole registry in
 one pass, each root checked only against its own registered ancestors.
+A registration requested with `X-Claudexor-Store-Identity: 1` also answers the
+durable store identity (`storeId`) that served it. A caller holding that
+receipt — the confirming side of a paired custody record — can quote it back:
+`GET /v2/projects/:id/registration` answers `present` or `absent` (one state
+covering archived, missing and never-existed rows; never an existence oracle)
+for exactly `(expectedStoreId, expectedRoot)`, and, with an optional
+`candidate` folder, the one folder comparison's verdict `same` / `different` /
+`unknown` against the registration's recorded root. The comparison is
+canonical-root equality first, then the registry's own realpath, and only the
+two named directories' own filesystem identity (device and inode, one stat of
+each, compared exactly) may prove two resolved spellings the same folder or
+distinct objects — a string difference alone is never `different`, a path that
+no longer names a directory on either side is not that evidence, an
+unresolvable candidate is `unknown` (never `different`), no case normalization
+is promised on any volume, and the resolved form is never returned.
+`POST /v2/projects/:id/release` with the same binding archives the registration
+exactly once, inside the same SQL transaction that decides it: it refuses with
+the shared thread fence (`project_has_threads`, the thread untouched), and with
+`project_has_active_run` while the folder's own served partition holds a live
+command or a waiting/held reserved slot, or while any live command's recorded
+execution workspace or one-off project root — or any served reserved draft's
+captured ones — is not proven `different` from the registered root by that one
+comparison (`unknown` holds; unavailability is never independence, recorded
+facts that cannot be read included). A reserved slot of a retired generation
+cannot dispatch and does not hold; a NAMED project's scope is a registry key,
+never a workspace fact, and is never compared. The partition membership
+recorded at acceptance is the accounting tie, so a workspace spelling never has
+to match to count. A binding that names another store or another root archives
+nothing; repeat and unknown ids answer `absent`; a released id is never reused.
+Release never deletes a file: the row is archived and the partition journal
+moved out, exactly like unregister; run artifacts and the project directory
+stay with normal GC.
 `DELETE /v2/projects/:id` retires a project — it removes the registry entry and
 archives its current partition generation through a SQL status/visibility
 transition, retaining its rows and leaving run artifacts to normal GC. The typed

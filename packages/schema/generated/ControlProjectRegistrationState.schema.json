@@ -1,0 +1,48 @@
+{
+  "$ref": "#/definitions/ControlProjectRegistrationState",
+  "definitions": {
+    "ControlProjectRegistrationState": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "storeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Observed canonical root, or the requested root when absent."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "present",
+            "absent"
+          ]
+        },
+        "candidateMatch": {
+          "type": "string",
+          "enum": [
+            "same",
+            "different",
+            "unknown"
+          ],
+          "description": "Present only when the probe named a candidate folder and the registration is present. same: the candidate is the registration's recorded folder (equal spelling, or resolved to it by the registry's own canonicalization, or the two directories' filesystem identity proves them one). different: the candidate resolved to another directory AND the two directories' own identity proves them distinct — a mere string difference is never enough, and no case normalization is promised on any volume. unknown: the comparison cannot be decided now (unresolvable candidate or unavailable identity evidence); never treated as different. The resolved form is never returned."
+        }
+      },
+      "required": [
+        "projectId",
+        "storeId",
+        "root",
+        "state"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

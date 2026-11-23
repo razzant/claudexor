@@ -510,6 +510,7 @@ describe("the operation catalog", () => {
     expect(optedIn).toEqual(
       [
         "POST /v2/handshake",
+        "POST /v2/projects",
         "POST /v2/runs",
         "POST /v2/runs/:id/decision",
         "POST /v2/runs/:id/retry",

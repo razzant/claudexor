@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { ControlHandshakeResponse } from "./operation.js";
 import { Id, IsoTimestamp, SchemaVersion } from "./primitives.js";
 
 /** Durable v2 registration for a local project root. */
@@ -49,15 +50,60 @@ export type ControlProject = z.infer<typeof ControlProject>;
 
 /** `POST /v2/projects` answer: the project plus whether THIS registration made it. */
 export const ControlProjectRegisterResponse = ControlProject.extend({
+  storeId: ControlHandshakeResponse.shape.storeId.describe(
+    "Durable store serving this registration. Returned on store identity opt-in when known.",
+  ),
   created: z
     .boolean()
     .describe(
-      "True when this registration created the project; false when the root was already registered. An Idempotency-Key replay repeats its original answer.",
+      "True when this registration created the project; false when the root was already registered. An Idempotency-Key replay retains that key's creation provenance.",
     ),
 })
   .strict()
   .describe("A registered project and whether this registration created it.");
 export type ControlProjectRegisterResponse = z.infer<typeof ControlProjectRegisterResponse>;
+
+/** The exact pair a paired-custody caller must quote back: the durable store it
+ * registered on and the canonical root the registration named. A caller that
+ * cannot reproduce this pair never owned the record it is asking about. */
+export const ControlProjectBinding = z
+  .object({
+    expectedStoreId: ControlHandshakeResponse.shape.storeId.unwrap(),
+    expectedRoot: ControlProject.shape.root,
+  })
+  .strict();
+export type ControlProjectBinding = z.infer<typeof ControlProjectBinding>;
+
+const boundRegistration = z
+  .object({
+    projectId: Id,
+    storeId: ControlHandshakeResponse.shape.storeId.unwrap(),
+    root: ControlProject.shape.root.describe(
+      "Observed canonical root, or the requested root when absent.",
+    ),
+  })
+  .strict();
+
+/** `GET /v2/projects/:id/registration` — the paired-custody address probe. `absent`
+ * covers archived, missing and never-existed rows alike: it is a state, never an
+ * existence oracle, and it never distinguishes whose release archived the row. */
+export const ControlProjectRegistrationState = boundRegistration.extend({
+  state: z.enum(["present", "absent"]),
+  candidateMatch: z
+    .enum(["same", "different", "unknown"])
+    .optional()
+    .describe(
+      "Present only when the probe named a candidate folder and the registration is present. same: the candidate is the registration's recorded folder (equal spelling, or resolved to it by the registry's own canonicalization, or the two directories' filesystem identity proves them one). different: the candidate resolved to another directory AND the two directories' own identity proves them distinct — a mere string difference is never enough, and no case normalization is promised on any volume. unknown: the comparison cannot be decided now (unresolvable candidate or unavailable identity evidence); never treated as different. The resolved form is never returned.",
+    ),
+});
+export type ControlProjectRegistrationState = z.infer<typeof ControlProjectRegistrationState>;
+
+/** `POST /v2/projects/:id/release` — the confirming side's one bound archival.
+ * `released` marks the single transition; every later call answers `absent`. */
+export const ControlProjectReleaseReceipt = boundRegistration.extend({
+  state: z.enum(["released", "absent"]),
+});
+export type ControlProjectReleaseReceipt = z.infer<typeof ControlProjectReleaseReceipt>;
 
 export const ControlProjectListResponse = z.object({ projects: z.array(ControlProject) }).strict();
 export type ControlProjectListResponse = z.infer<typeof ControlProjectListResponse>;

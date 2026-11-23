@@ -1,0 +1,39 @@
+{
+  "$ref": "#/definitions/ControlProjectReleaseReceipt",
+  "definitions": {
+    "ControlProjectReleaseReceipt": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "storeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Observed canonical root, or the requested root when absent."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "released",
+            "absent"
+          ]
+        }
+      },
+      "required": [
+        "projectId",
+        "storeId",
+        "root",
+        "state"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
