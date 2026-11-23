@@ -409,9 +409,15 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
             {
               field: "deadline",
               change: "omitted" as const,
-              reason: deadline
-                ? "an absolute run deadline binds the source run; give the new run its own deadline"
-                : "the source run inherited its deadline (its Delegate parent or the run it continued); give the new run its own deadline",
+              reason:
+                (deadline
+                  ? "an absolute run deadline binds the source run; give the new run its own deadline"
+                  : "the source run inherited its deadline (its Delegate parent or the run it continued); give the new run its own deadline") +
+                // The draft still continues that run: without its own deadline the
+                // new run takes that run's again (refused once it has passed).
+                (request.continueFrom
+                  ? `; the draft still continues ${request.continueFrom}, so without its own deadline it takes that run's deadline again while it is ahead`
+                  : ""),
             },
           ]
         : []),

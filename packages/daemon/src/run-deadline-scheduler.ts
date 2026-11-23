@@ -47,8 +47,9 @@ export type RunDeadlineOptions = Omit<RunDeadlinesOptions, "onExpire">;
 export { RUN_DEADLINE_EXPIRED };
 
 export interface DeadlineSchedulerPort {
-  /** Cancel a queued job exactly as a Stop does, with this terminal patch. */
-  cancel(id: string, patch: Partial<JobRecord>): void;
+  /** Cancel a queued job exactly as a Stop does, with this terminal patch; held
+   * (never started) and retried until it is written, then `cancelled`. */
+  cancel(id: string, patch: Partial<JobRecord>, cancelled: () => void): void;
   /** Cancel a preparing or running job with reason `run_deadline_expired`. */
   abort(id: string): void;
   /** A queued job `mustNotStart` held was renewed meanwhile: offer it again. */
@@ -250,6 +251,14 @@ export class SchedulerDeadlines extends RunDeadlines {
     });
   }
 
+  /** For a command store's update: a terminal it commits closes the job's
+   * deadline at that commit, before any observer runs (repeats are no-ops). */
+  closeAtCommit(jobId: string): (record: JobRecord) => void {
+    return (record) => {
+      if (isTerminalLifecycle(record.state)) this.close(jobId);
+    };
+  }
+
   scope(jobId: string): DeadlineScope {
     return {
       attach: (marker) => this.attachScope(jobId, marker),
@@ -287,8 +296,9 @@ export class SchedulerDeadlines extends RunDeadlines {
     if (!state || isTerminalLifecycle(state as JobRecord["state"])) return;
     if (state !== "queued") return this.port.abort(id);
     const rec = commandStoreForId(this.hooks.commands, id)?.get(id);
-    this.port.cancel(id, EXPIRED_TERMINAL);
-    if (rec) reportPreRunRefusal({ ...rec, ...EXPIRED_TERMINAL }, this.hooks.onTurnEnqueueFailed);
+    this.port.cancel(id, EXPIRED_TERMINAL, () => {
+      if (rec) reportPreRunRefusal({ ...rec, ...EXPIRED_TERMINAL }, this.hooks.onTurnEnqueueFailed);
+    });
   }
 
   protected override resumed(id: string): void {

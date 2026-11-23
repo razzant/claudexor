@@ -3334,6 +3334,113 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("threads: a retry of a turn whose job held a deadline and failed its preparation non-retryably resolves that job first and is refused typed", async () => {
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-prep-deadline-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-pd",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "preparation thread",
+      mode: "agent",
+      workspace: { mode: "isolated", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      routingGoal: "auto",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    // A non-retryable preparation refusal is recorded on the turn, yet its job exists.
+    const turns: Record<string, unknown>[] = [
+      {
+        id: "tn-pd",
+        thread_id: "th-pd",
+        run_id: null,
+        prompt: "remote work",
+        created_at: now,
+        enqueue_error: {
+          message: "the isolated worktree could not be prepared",
+          code: "isolated_worktree_unavailable",
+          retryable: false,
+          required_actions: [],
+          context: {},
+        },
+      },
+    ];
+    const at = new Date(Date.now() + 600_000).toISOString();
+    let jobs: Record<string, unknown>[] = [
+      {
+        id: "job-pd",
+        state: "cancelled",
+        params: { deadline: { at }, turnId: "tn-pd" },
+        error: "the isolated worktree could not be prepared",
+        errorCode: "isolated_worktree_unavailable",
+        errorStatus: 409,
+        errorRetryable: false,
+      },
+    ];
+    let enqueued = 0;
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        enqueued += 1;
+        return { id: "job-again", state: "queued" };
+      },
+      async status() {
+        return jobs[0] as never;
+      },
+      async list() {
+        return jobs as never;
+      },
+      async cancel() {
+        return { ok: true };
+      },
+      async runDeadline() {
+        return {
+          at,
+          revision: 0,
+          serverNow: now,
+          state: "closed",
+          stopGraceSec: 15,
+          inheritedFrom: null,
+          successorOf: null,
+          enforcement: null,
+        } as never;
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const retry = (key: string) =>
+          apiFetch(`${base}/threads/th-pd/turns/tn-pd/retry`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "Idempotency-Key": key },
+            body: "{}",
+          });
+        const refused = await retry("pd-retry");
+        expect(refused.status).toBe(409);
+        const body = (await refused.json()) as { code?: string; requiredActions?: string[] };
+        expect(body.code).toBe("run_deadline_replay_refused");
+        expect(body.requiredActions?.[0]).toContain("POST /v2/threads/th-pd/turns");
+        // Without a job the earlier refusal stands: nothing to replay.
+        jobs = [];
+        const none = await retry("pd-retry-2");
+        expect(none.status).toBe(409);
+        const plain = (await none.json()) as { code?: string; error?: string; message?: string };
+        expect(plain.code).not.toBe("run_deadline_replay_refused");
+        expect(JSON.stringify(plain)).toContain("has no recorded enqueue attempt to replay");
+        expect(enqueued, "nothing was enqueued again").toBe(0);
+      },
+      undefined,
+      services,
+    );
+  });
+
   it("threads: refusal status is born at the throw — persisted errorStatus wins, a bare errno code stays 500 (W24)", async () => {
     const repo = reapMk(join(tmpdir(), "claudexor-thread-status-"));
     const now = new Date().toISOString();
@@ -3509,7 +3616,7 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("threads: retry 409s IMMEDIATELY for a retryable:false refusal (no registry lookup for params that were never recorded)", async () => {
+  it("threads: retry of a retryable:false refusal with no recorded job 409s as before (the job lookup comes first: a refusal on the turn does not prove that no job exists)", async () => {
     const repo = reapMk(join(tmpdir(), "claudexor-thread-norep-"));
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
@@ -3571,7 +3678,7 @@ describe("DaemonControlApiServer", () => {
         });
         expect(res.status).toBe(409);
         expect(((await res.json()) as { message: string }).message).toContain("send a new message");
-        expect(listCalls).toBe(0); // short-circuited before the registry lookup
+        expect(listCalls).toBe(1); // one lookup found no job to replay
       },
       undefined,
       services,
@@ -12233,6 +12340,45 @@ describe("DaemonControlApiServer", () => {
           field: "deadline",
           change: "omitted",
           reason: expect.stringContaining("inherited"),
+        }),
+      );
+    });
+  });
+
+  it("Run Again of a continuation that took its deadline from the run it continues names that the draft takes it again", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = { ...(record.params as Record<string, unknown>), continueFrom: "run-prev" };
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async runDeadline() {
+        return {
+          at: "2026-01-01T00:00:00.000Z",
+          revision: 0,
+          serverNow: "2026-01-01T00:00:00.000Z",
+          state: "closed",
+          stopGraceSec: 15,
+          inheritedFrom: null,
+          successorOf: "job-prev",
+          enforcement: null,
+        };
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const draft = await apiFetch(`${base}/runs/run-d1/run-again`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(draft.status).toBe(200);
+      const body = (await draft.json()) as {
+        request: Record<string, unknown>;
+        differences: Array<{ field: string; reason: string }>;
+      };
+      expect(body.request).toMatchObject({ continueFrom: "run-prev" });
+      expect(body.request).not.toHaveProperty("deadline");
+      expect(body.differences).toContainEqual(
+        expect.objectContaining({
+          field: "deadline",
+          change: "omitted",
+          reason: expect.stringContaining("the draft still continues run-prev"),
         }),
       );
     });

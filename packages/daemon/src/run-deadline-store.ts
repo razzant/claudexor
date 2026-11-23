@@ -59,6 +59,8 @@ export interface Entry {
   terminal?: { at: bigint; claimed: boolean; won: boolean; bound: Bound | null };
   /** The deadline won (claimed, the job aborted): no set is decided, nothing launches. */
   won: boolean;
+  /** The terminal's record (its frozen deadline) was written durably. */
+  terminalDurable?: boolean;
   wardenStarted: boolean;
   /** Serializes this job's transitions. */
   chain: Promise<unknown>;
@@ -116,7 +118,7 @@ export abstract class RunDeadlineStore {
     if (opts.dir) mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
     this.reader = Object.assign(
       (file: string) =>
-        this.byFile.get(file)?.record ??
+        this.decidedByFile(file) ??
         this.stagedByFile(file) ??
         this.settled.get(file) ??
         (opts.dir ? readRecord(join(opts.dir, file)) : null),
@@ -146,8 +148,9 @@ export abstract class RunDeadlineStore {
    * retryable), never an absent deadline: nothing falls open on an I/O error.
    */
   recordOf(jobId: string): DeadlineRecord | null {
+    const entry = this.entries.get(jobId);
     const cached =
-      this.entries.get(jobId)?.record ??
+      (entry && this.decided(entry)) ??
       this.staged.get(jobId) ??
       this.settled.get(recordFileName(jobId));
     if (cached) return cached;
@@ -356,12 +359,53 @@ export abstract class RunDeadlineStore {
     return deadlineProblem("Run is terminal; its deadline is closed", "run_deadline_closed");
   }
 
+  /**
+   * A held job's record as decided: once its terminal arrived, the record it
+   * writes (its frozen deadline), even before that write landed or when it
+   * failed — what every reader of an ended job sees (answers, a continuation's
+   * admission, its Delegate children's cap).
+   */
+  protected decided(entry: Entry): DeadlineRecord {
+    const record = entry.record;
+    return entry.terminal && (record.state === "armed" || record.state === "enforcing")
+      ? this.terminalRecord(entry)
+      : record;
+  }
+
+  private decidedByFile(file: string): DeadlineRecord | undefined {
+    const entry = this.byFile.get(file);
+    return entry && this.decided(entry);
+  }
+
+  /** An ended Delegate descendant whose frozen deadline is not durable yet. */
+  protected endedPending(entry: Entry, seen = new Set<string>()): boolean {
+    for (const id of entry.children) {
+      const child = this.entries.get(id);
+      if (!child || seen.has(id)) continue;
+      seen.add(id);
+      if ((child.terminal && !child.terminalDurable) || this.endedPending(child, seen)) return true;
+    }
+    return false;
+  }
+
+  /** Write the terminal record of every ended descendant that lacks it, each on its chain. */
+  protected async settleEnded(entry: Entry): Promise<void> {
+    for (const id of entry.children) {
+      const child = this.entries.get(id);
+      if (!child) continue;
+      if (child.terminal && !child.terminalDurable)
+        await this.serialized(child, async () => {
+          if (!child.terminalDurable) await this.commit(child, this.decided(child), "keep");
+        });
+      if (child.terminal && !child.terminalDurable)
+        throw new Error(`the ended Delegate child ${id}'s deadline could not be made durable`);
+      await this.settleEnded(child);
+    }
+  }
+
   protected snapshotOfEntry(entry: Entry): RunDeadlineSnapshot {
-    let record = entry.record;
-    // A terminal that arrived before its write landed: report what it writes.
-    if (entry.terminal && (record.state === "armed" || record.state === "enforcing"))
-      record = this.terminalRecord(entry);
-    else if (entry.won && record.state === "armed") record = { ...record, state: "enforcing" };
+    let record = this.decided(entry);
+    if (entry.won && record.state === "armed") record = { ...record, state: "enforcing" };
     return snapshotOf(record, {
       read: this.reader,
       claimed: this.claimed(entry.jobId),
@@ -435,6 +479,7 @@ export abstract class RunDeadlineStore {
       return false;
     }
     entry.record = next;
+    if (next.state === "closed" || next.state === "expired") entry.terminalDurable = true;
     this.dropPrior(entry);
     return true;
   }

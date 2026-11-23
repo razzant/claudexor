@@ -233,10 +233,14 @@ export class SqlCommandStore implements CommandStorePort {
     return this.store.flushed();
   }
 
-  update(id: string, patch: Partial<JobRecord>): JobRecord {
+  update(
+    id: string,
+    patch: Partial<JobRecord>,
+    onCommitted?: (record: JobRecord) => void,
+  ): JobRecord {
     const row = commandRow(this.store, id, this.generation.pid);
     if (!row) throw new Error(`no such job: ${id}`);
-    return this.writeUpdate(row, this.nextRecord(row, patch));
+    return this.writeUpdate(row, this.nextRecord(row, patch), false, onCommitted);
   }
 
   /** The record an update writes: the patch over the row, with a durable
@@ -312,9 +316,10 @@ export class SqlCommandStore implements CommandStorePort {
   /** The synchronous EventLog hook: one SQL terminal then immediate file repair.
    * Returning pending means SQL committed; EventLog must never roll it back or
    * emit another terminal. A second terminal INSERT is a constraint failure.
-   * `onCommitted` is told at the SQL commit itself, before any file is
-   * materialized and also when a post-commit step fails (run-deadline/1: the
-   * job's deadline closes at that instant). Never when nothing committed. */
+   * `onCommitted` is told at the SQL commit itself, before any owner, observer
+   * or post-commit callback runs and before any file is materialized, also when
+   * a post-commit step then fails (run-deadline/1: the job's deadline closes at
+   * that instant, with that instant's facts). Never when nothing committed. */
   persistTerminal(
     id: string,
     raw: RunEvent,
@@ -330,41 +335,35 @@ export class SqlCommandStore implements CommandStorePort {
     const { params: _params, ...record } = next;
     const updated = this.events.prepare("command.updated", { record });
     const run = this.events.prepare("run.event", journaledRunEventCopy(event));
-    const committed = () => {
-      try {
-        onCommitted?.();
-      } catch {
-        /* the notice cannot undo or fail a committed terminal */
-      }
-    };
     try {
-      runMutation(this.store, (tx) => {
-        applyCommandInTx(tx, prepared, "update");
-        applyTerminalInTx(tx, this.generation.pid, event);
-        this.options.obligations.create("terminal_files", event.run_id, this.generation.pid, {});
-        this.events.appendInTx(tx, updated);
-        this.events.appendInTx(tx, run);
-        tx.changes.blobChanged(
-          row.params_sha,
-          row.result_sha,
-          prepared.row.params_sha,
-          prepared.row.result_sha,
-        );
-        if (row.result_sha && row.result_sha !== prepared.row.result_sha)
-          tx.changes.afterCommit(() =>
-            collectReleasedBodies(this.store, this.blobs, [row.result_sha!]),
+      runMutation(
+        this.store,
+        (tx) => {
+          applyCommandInTx(tx, prepared, "update");
+          applyTerminalInTx(tx, this.generation.pid, event);
+          this.options.obligations.create("terminal_files", event.run_id, this.generation.pid, {});
+          this.events.appendInTx(tx, updated);
+          this.events.appendInTx(tx, run);
+          tx.changes.blobChanged(
+            row.params_sha,
+            row.result_sha,
+            prepared.row.params_sha,
+            prepared.row.result_sha,
           );
-      });
+          if (row.result_sha && row.result_sha !== prepared.row.result_sha)
+            tx.changes.afterCommit(() =>
+              collectReleasedBodies(this.store, this.blobs, [row.result_sha!]),
+            );
+        },
+        onCommitted,
+      );
     } catch (error) {
       // Notification failure cannot authorize EventLog's pre-COMMIT rollback.
-      // The terminal and its pending file obligation are already durable rows.
-      if (error instanceof MutationPostCommitError) {
-        committed();
-        return { state: "pending", error };
-      }
+      // The terminal and its pending file obligation are already durable rows
+      // (`onCommitted` was told at the commit).
+      if (error instanceof MutationPostCommitError) return { state: "pending", error };
       throw error;
     }
-    committed();
     try {
       this.options.terminalFiles.materialize(event.run_id);
     } catch {
@@ -462,26 +461,36 @@ export class SqlCommandStore implements CommandStorePort {
     );
   }
 
-  private writeUpdate(row: CommandRow, next: JobRecord, recreateTerminalFiles = false): JobRecord {
+  private writeUpdate(
+    row: CommandRow,
+    next: JobRecord,
+    recreateTerminalFiles = false,
+    onCommitted?: (record: JobRecord) => void,
+  ): JobRecord {
     const prepared = this.prepare(next, row);
     const { params: _params, ...record } = next;
     const event = this.events.prepare("command.updated", { record });
-    runMutation(this.store, (tx) => {
-      applyCommandInTx(tx, prepared, "update");
-      if (
-        recreateTerminalFiles &&
-        next.runId &&
-        !this.options.obligations.get("terminal_files", next.runId)
-      )
-        this.options.obligations.create("terminal_files", next.runId, this.generation.pid, {});
-      this.events.appendInTx(tx, event);
-      tx.changes.blobChanged(
-        row.params_sha,
-        row.result_sha,
-        prepared.row.params_sha,
-        prepared.row.result_sha,
-      );
-    });
+    const committed = onCommitted && (() => onCommitted(next));
+    runMutation(
+      this.store,
+      (tx) => {
+        applyCommandInTx(tx, prepared, "update");
+        if (
+          recreateTerminalFiles &&
+          next.runId &&
+          !this.options.obligations.get("terminal_files", next.runId)
+        )
+          this.options.obligations.create("terminal_files", next.runId, this.generation.pid, {});
+        this.events.appendInTx(tx, event);
+        tx.changes.blobChanged(
+          row.params_sha,
+          row.result_sha,
+          prepared.row.params_sha,
+          prepared.row.result_sha,
+        );
+      },
+      committed,
+    );
     if (row.result_sha && row.result_sha !== prepared.row.result_sha)
       collectReleasedBodies(this.store, this.blobs, [row.result_sha]);
     return next;

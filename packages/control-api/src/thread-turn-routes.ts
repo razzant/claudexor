@@ -465,9 +465,29 @@ export function handleThreadTurnRetry(
         throw Object.assign(new Error(`no such turn on this thread: ${turnId}`), { status: 404 });
       const recorded = turn["enqueue_error"] as
         { retryable?: unknown; code?: unknown } | null | undefined;
+      const jobs = (await ctx.daemon.list({ turnId }))
+        .filter((record) => {
+          const params = record.params as { turnId?: unknown } | null | undefined;
+          return Boolean(params && typeof params === "object" && params.turnId === turnId);
+        })
+        .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
+      const last = jobs[jobs.length - 1];
+      // Before any other refusal, even a non-retryable one recorded on the turn (a
+      // failed preparation's job exists): a turn whose accepted job held a
+      // deadline is refused typed, with the start that carries a new deadline.
+      const deadlineRefusal = last
+        ? await deadlineReplayRefusal(ctx.daemon, last, "A turn retry", { threadId })
+        : null;
+      if (deadlineRefusal)
+        throw Object.assign(new Error(deadlineRefusal.error), {
+          status: 409,
+          code: deadlineRefusal.code,
+          retryable: false,
+          requiredActions: deadlineRefusal.requiredActions,
+        });
       // A released resource's refusal is the exception: its job exists, so a repeat
       // still resolves an accepted key and otherwise asks the owner that refused it.
-      // So is a queued run-deadline/1 expiry: its job exists and is refused typed below.
+      // So is a queued run-deadline/1 expiry whose job is gone (refused below).
       if (
         !turn["run_id"] &&
         recorded?.retryable === false &&
@@ -483,25 +503,6 @@ export function handleThreadTurnRetry(
           { status: 409 },
         );
       }
-      const jobs = (await ctx.daemon.list({ turnId }))
-        .filter((record) => {
-          const params = record.params as { turnId?: unknown } | null | undefined;
-          return Boolean(params && typeof params === "object" && params.turnId === turnId);
-        })
-        .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
-      const last = jobs[jobs.length - 1];
-      // Before any later refusal: a turn whose accepted job held a deadline is
-      // refused typed, with the start that carries a new deadline.
-      const deadlineRefusal = last
-        ? await deadlineReplayRefusal(ctx.daemon, last, "A turn retry", { threadId })
-        : null;
-      if (deadlineRefusal)
-        throw Object.assign(new Error(deadlineRefusal.error), {
-          status: 409,
-          code: deadlineRefusal.code,
-          retryable: false,
-          requiredActions: deadlineRefusal.requiredActions,
-        });
       const replayParams = last?.params;
       if (last && ctx.daemon.findAccepted) {
         const prior = await ctx.daemon.findAccepted(replayParams, {

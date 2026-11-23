@@ -353,7 +353,8 @@ gate's explicit exemptions):
   began, then `expired`; or `closed` after any other terminal. `PATCH` with
   `{at, expectedRevision}` replaces the run's own deadline while it is `armed`.
   A success means the new revision is in force and durable; until it commits the
-  replaced deadline stays in force for the warden, whatever fails. A renewal (the
+  replaced deadline stays in force for the warden and every answer alike, whatever
+  fails (a change that became visible and was refused moves nothing). A renewal (the
   "renewable permission" a controller sends while it stays connected) therefore
   either succeeds, or is refused with the previous deadline unchanged: stale
   revision `run_deadline_revision_conflict`; `enforcing` or `expired`, or a
@@ -361,8 +362,9 @@ gate's explicit exemptions):
   a terminal that arrived first, `run_deadline_closed` (or `run_deadline_expired`
   when that terminal came at or after the deadline); a requested instant reached
   meanwhile, `run_deadline_passed`; no deadline `run_deadline_absent`; an
-  unwritable record `503 run_deadline_record_unavailable` (retryable, nothing
-  changed). One case is undecided: `503 run_deadline_outcome_unknown` — the new
+  unwritable record, or an extension whose finished Delegate children's deadlines
+  could not be made durable first, `503 run_deadline_record_unavailable`
+  (retryable, nothing changed). One case is undecided: `503 run_deadline_outcome_unknown` — the new
   deadline took effect but could not be made durable; GET tells what is in force
   before relying on it (the same holds for a reply lost in transit). A warden that
   judged the old deadline at the very moment of a renewal may still stop the run
@@ -389,10 +391,13 @@ gate's explicit exemptions):
   from that record (`successorOf`), never converted again; one already spent
   (passed, claimed, or of another boot) refuses the continuation
   (`run_deadline_passed`) or ends the next message before it starts. Run Again
-  drops the source's deadline, its own or inherited (named in `differences`);
+  drops the source's deadline, its own or inherited (named in `differences`; a
+  continuation's draft still continues its run, so without its own deadline it
+  takes that run's again, which the difference names);
   Exact Retry, a decision rerun and a thread-turn retry of a run that held a
   deadline refuse `409 run_deadline_replay_refused` (they would run it again with
-  none; also when its record is gone, and an unreadable record is a `503`): start
+  none; also when its record is gone or the turn recorded a non-retryable
+  refusal, and an unreadable record is a `503`): start
   it again with its own `deadline.at` (`POST /v2/runs`, or a new thread turn).
   Before the run's first process the daemon starts a detached warden that,
   independent of the daemon, ends every process inside the run's boundary by

@@ -3,7 +3,8 @@
  * (the invariants are stated in `run-deadline-faults.test.ts`).
  */
 import { afterAll, describe, it } from "vitest";
-import { removeTemps, setCase, setMatrix } from "./test-support/run-deadline-faults.js";
+import { setCase, setMatrix } from "./test-support/run-deadline-fault-checks.js";
+import { removeTemps } from "./test-support/run-deadline-faults.js";
 
 afterAll(removeTemps, 0);
 

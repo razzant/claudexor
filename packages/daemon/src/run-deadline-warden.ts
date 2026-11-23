@@ -58,17 +58,19 @@ import {
   type ScopeReapOptions,
   type ScopeReapOutcome,
 } from "@claudexor/core";
-import { clockOfKind, hostClock, type HostClockKind } from "./run-deadline-clock.js";
+import { clockOfKind, type HostClockKind } from "./run-deadline-clock.js";
 import { cgroupPopulated, killCgroup, removeRunCgroup } from "./run-deadline-cgroup.js";
 import {
   claimEnforcement,
   diskReader,
   governingBound,
+  inForceOf,
   readRecord,
   wardenDonePath,
   wardenOutcomePath,
   wardenReadyPath,
   writeJsonAtomic,
+  type Bound,
   type DeadlineRecord,
   type WardenOutcome,
 } from "./run-deadline-record.js";
@@ -273,6 +275,11 @@ export async function runWarden(
     }
     return reason;
   };
+  // The deadline is read BEFORE the warden reports itself ready: one that
+  // cannot read what it guards never passes for enforcement (the run is refused).
+  const first = readRecord(recordPath);
+  if (first === null) return "removed";
+  if (first === "unreadable") return "unresolved";
   try {
     writeJsonAtomic(wardenReadyPath(recordPath), { pid: process.pid });
   } catch {
@@ -328,32 +335,42 @@ export async function runWarden(
     return { settled, confirmed, outcomes, cgroupPopulated: populated };
   };
 
-  // Waiting: the clock is read BEFORE the record (see the record module).
-  let last: DeadlineRecord | null = null;
+  // Waiting: the clock is read BEFORE the record (see the record module), and
+  // the record judged is the one in force (a change not committed is not).
+  // A deadline is acted on only from a read after the clock reading — except
+  // when the record stays unreadable for the head start: then the last
+  // deadline read governs (a renewal it could not read may make that stop
+  // early; nothing makes it late).
+  let last: DeadlineRecord = inForceOf(first, read);
+  let lastBound: Bound | null = governingBound(first, read);
+  let unreadableSince: bigint | null = null;
   let probeAt = 0n;
   let probeBackoffMs = 1_000;
   for (;;) {
-    const clockNow = now(last?.clock ?? hostClock(platform).kind);
-    const current = readRecord(recordPath);
-    if (current === null) return finish("removed");
-    if (current !== "unreadable") {
-      last = current;
-      const bound = governingBound(current, read);
-      if (bound !== null && clockNow >= bound.target + headStartNs) break;
-      if (terminal(current) && clockNow >= probeAt) {
-        const probe = await pass(current, true);
-        if (probe.confirmed) {
-          if (current.cgroup) await cgroups.remove(current.cgroup);
-          return finish("released", probe);
-        }
-        if (current.state === "closed" && releasableAfterTerminal(current, probe, platform))
-          return finish("released", {
-            ...probe,
-            detail: TERMINAL_RELEASE_DETAIL,
-          });
-        probeAt = now(current.clock) + BigInt(probeBackoffMs) * 1_000_000n;
-        probeBackoffMs = Math.min(probeBackoffMs * 2, 30_000);
+    const clockNow = now(last.clock);
+    const live = readRecord(recordPath);
+    if (live === null) return finish("removed");
+    if (live === "unreadable") unreadableSince ??= clockNow;
+    else {
+      unreadableSince = null;
+      last = inForceOf(live, read);
+      lastBound = governingBound(live, read);
+    }
+    const stale = unreadableSince !== null && clockNow - unreadableSince < headStartNs;
+    if (!stale && lastBound !== null && clockNow >= lastBound.target + headStartNs) break;
+    if (live !== "unreadable" && terminal(last) && clockNow >= probeAt) {
+      const probe = await pass(last, true);
+      if (probe.confirmed) {
+        if (last.cgroup) await cgroups.remove(last.cgroup);
+        return finish("released", probe);
       }
+      if (last.state === "closed" && releasableAfterTerminal(last, probe, platform))
+        return finish("released", {
+          ...probe,
+          detail: TERMINAL_RELEASE_DETAIL,
+        });
+      probeAt = now(last.clock) + BigInt(probeBackoffMs) * 1_000_000n;
+      probeBackoffMs = Math.min(probeBackoffMs * 2, 30_000);
     }
     await sleep(deps.pollMs ?? WARDEN_POLL_MS);
   }
@@ -383,7 +400,7 @@ export async function runWarden(
   for (;;) {
     const current = readRecord(recordPath);
     if (current === null) return finish("removed");
-    if (current !== "unreadable") last = current;
+    if (current !== "unreadable") last = inForceOf(current, read);
     const result = await pass(last, false);
     if (result.confirmed) {
       if (last.cgroup) await cgroups.remove(last.cgroup);

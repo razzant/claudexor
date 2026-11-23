@@ -15,10 +15,14 @@
  *    time, a claim, a won deadline, the governing bound with the parent's cap)
  *    and they alone decide closed or expired and the frozen deadline; a set not
  *    committed when the terminal arrives is refused.
- * 4. Floor. The warden always has a durable deadline no later than the one a
- *    change replaces: the prior (written before the change can be seen, removed
- *    only by its commit), then a claim. A deadline that won aborts the job
- *    before any write is awaited, so no failed or pending write postpones it.
+ * 4. In force. Until its commit a change moves no deadline for anyone: the
+ *    prior (written before the change can be seen, removed only by its commit
+ *    or the next durable write) is the record in force for every reader, the
+ *    warden included; after it, a claim floors the new one. A deadline that won
+ *    aborts the job before any write is awaited, so no failed or pending write
+ *    postpones it. A terminal's frozen deadline is what every reader sees of an
+ *    ended job at once, and an extension commits only once its ended Delegate
+ *    descendants' frozen deadlines are durable, so nothing raises them.
  * Every transition of one job runs on that job's chain, in order.
  */
 import { dirname, join } from "node:path";
@@ -171,10 +175,12 @@ export class RunDeadlines extends RunDeadlineStore {
    *    (it ends the run under the new revision).
    * 4. Confirmed once that removal is durable (invariant 2); a removal that is
    *    visible but not durable answers outcome unknown, GET tells.
-   * Refusals before the commit leave the previous record in force, durably:
-   * a terminal first (`run_deadline_closed`), a deadline that won
-   * (`run_deadline_expired`, then claimed and the run stopped), a requested
-   * instant reached (`run_deadline_passed`), a failed write (503).
+   * Refusals before the commit leave the previous record in force, durably
+   * (its prior stays until the next durable write): a terminal first
+   * (`run_deadline_closed`), a deadline that won (`run_deadline_expired`, then
+   * claimed and the run stopped), a requested instant reached
+   * (`run_deadline_passed`), a failed write, or an ended Delegate descendant
+   * whose frozen deadline cannot be made durable before an extension (503).
    */
   set(jobId: string, raw: unknown, opts: { delegated: boolean }): Promise<RunDeadlineSnapshot> {
     const request = RunDeadlineSetRequest.parse(raw);
@@ -208,8 +214,9 @@ export class RunDeadlines extends RunDeadlineStore {
       const tmp = await this.prepareChange(entry, previous, candidate);
       const before = this.verdict(entry, replaced, next, 0n);
       if (before) {
+        // The prior stays: the record file may be an earlier change that never
+        // committed, and only the prior keeps the record in force there.
         await this.io.discard(tmp).catch(() => {});
-        this.dropPrior(entry);
         if (before === "closed") throw this.refusal(entry)!;
         if (before === "passed")
           throw deadlineProblem(
@@ -222,16 +229,20 @@ export class RunDeadlines extends RunDeadlineStore {
       try {
         await this.io.publish(tmp, entry.path);
       } catch (error) {
-        await this.io.discard(tmp).catch(() => {});
-        this.dropPrior(entry);
+        await this.io.discard(tmp).catch(() => {}); // the prior stays (as above)
         throw recordUnavailable(error);
       }
       try {
         await this.io.flush(dirname(entry.path));
+        // An extension raises its Delegate descendants' caps: one that already
+        // ended keeps the deadline it ended under only once that is durable.
+        if (!replaced || next.target > replaced.target)
+          while (this.endedPending(entry)) await this.settleEnded(entry);
       } catch (error) {
         // Not committed: the prior keeps the previous record in force.
         throw recordUnavailable(error);
       }
+      // From here to the commit nothing is awaited: no terminal can come between.
       const after = this.verdict(entry, replaced, next, this.headStartNs);
       // The terminal arrived first and wins: the prior is the record it froze.
       if (after === "closed") throw this.refusal(entry)!;
@@ -417,6 +428,9 @@ export class RunDeadlines extends RunDeadlineStore {
     entry.won = true;
     this.stopTimer(entry);
     this.claimFloor(entry, entry.record.revision, this.governing(entry.record));
+    // A shortening that won is in force on disk too: its prior goes (an
+    // extension's stays, it holds the previous record that won).
+    if (shortened) this.dropPrior(entry);
     this.stopJob(entry);
     await this.commit(entry, { ...entry.record, state: "enforcing" }, "keep");
     throw deadlineExpired("Run deadline was reached while the new one was being written");

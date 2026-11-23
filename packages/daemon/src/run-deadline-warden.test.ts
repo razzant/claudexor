@@ -410,6 +410,76 @@ describe("runWarden", () => {
     expect(result).toBe("removed");
   });
 
+  for (const change of ["extension", "shortening"] as const)
+    it(`judges the record in force: a visible ${change} that did not commit moves nothing`, async () => {
+      // The prior names an older revision: the change is not committed.
+      const path = join(temp(), "job.json");
+      const replaced = change === "extension" ? 1_000_000_000n : 60_000_000_000n;
+      const requested = change === "extension" ? 60_000_000_000n : 1_000_000_000n;
+      writeJsonAtomic(`${path}.prior`, record({ own: point(replaced) }));
+      writeJsonAtomic(path, record({ revision: 1, own: point(requested) }));
+      const time = clockDeps();
+      let firstStopAt: bigint | null = null;
+      const result = await runWarden(path, {
+        ...time,
+        reap: async () => {
+          firstStopAt ??= time.now();
+          return outcome();
+        },
+        sleep: async (ms) => {
+          await time.sleep(ms);
+          if (time.now() > 70_000_000_000n) rmSync(path);
+        },
+      });
+      if (change === "extension") {
+        // The replaced 1 s deadline governs (+1 s head start), not the 60 s one.
+        expect(result).toBe("reaped");
+        expect(firstStopAt!).toBeGreaterThanOrEqual(2_000_000_000n);
+        expect(firstStopAt!).toBeLessThan(3_000_000_000n);
+      } else {
+        // Nothing stops the run at the 1 s instant of a shortening that never committed.
+        expect(firstStopAt === null || firstStopAt >= 61_000_000_000n).toBe(true);
+      }
+    });
+
+  it("reads its deadline before it reports itself ready: an unreadable record is never guarded", async () => {
+    const path = join(temp(), "job.json");
+    writeFileSync(path, "{torn");
+    const result = await runWarden(path, {
+      ...clockDeps(),
+      reap: async () => {
+        throw new Error("must not reap");
+      },
+    });
+    expect(result).toBe("unresolved");
+    expect(existsSync(`${path}.ready`), "never ready: the run is refused").toBe(false);
+  });
+
+  it("a record that stays unreadable for the head start is enforced at the last deadline read", async () => {
+    const path = join(temp(), "job.json");
+    writeJsonAtomic(path, record()); // due at 1 s (+1 s head start)
+    const time = clockDeps();
+    let sleeps = 0;
+    let firstStopAt: bigint | null = null;
+    const result = await runWarden(path, {
+      ...time,
+      sleep: async (ms) => {
+        await time.sleep(ms);
+        if ((sleeps += 1) === 1) writeFileSync(path, "{torn"); // unreadable from now on
+        if (sleeps === 400) rmSync(path); // a warden that never acts leaves "removed"
+      },
+      reap: async () => {
+        firstStopAt ??= time.now();
+        return outcome({ ended: [{ pid: 7, startToken: "x" }] });
+      },
+    });
+    expect(result).toBe("reaped");
+    // Not at the first unreadable read past the deadline: only once it stayed
+    // unreadable for the head start (1 s).
+    expect(firstStopAt!).toBeGreaterThanOrEqual(2_000_000_000n);
+    expect(firstStopAt!).toBeLessThan(4_000_000_000n);
+  });
+
   it("feeds the run's recorded process groups and descendants from the run-scope index", async () => {
     const dir = temp();
     const index = join(dir, "run-scopes.json");

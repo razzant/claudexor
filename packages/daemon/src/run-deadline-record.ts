@@ -22,19 +22,23 @@
  *
  * A change of the deadline is a small two-phase commit. Before the new
  * revision can be seen, the record in force is kept durable beside it
- * (`<record>.prior`, a full copy): every reader floors the governing deadline
- * at the prior's, and answers report the prior while it names an older
- * revision. The change commits when the prior is removed — synchronously right
- * after its last check (no terminal, no claim, the clock before the replaced
- * deadline plus the warden's head start) — and is confirmed once that removal
- * is durable. Until then nothing can postpone the replaced deadline: neither a
- * publication that outlasts its deadline, nor failed later writes, nor a daemon
- * death. The warden reads the clock BEFORE the files and acts only once the
- * clock passed the deadline plus its head start, so a warden acting on the
- * prior read it before the commit; it then claims, and the daemon, seeing the
- * claim, stops the run instead of confirming. A warden whose claim lands after
- * that check stops the run at the replaced deadline although the change was
- * confirmed: an early stop, never a late one.
+ * (`<record>.prior`, a full copy). While the prior names an older revision
+ * than the record file, the prior IS the record in force for every reader —
+ * every answer and the warden alike (`inForce`, `governingBound`): a visible
+ * change that did not commit moves no deadline, earlier or later. The change
+ * commits when the prior is removed — synchronously right after its last check
+ * (no terminal, no claim, the clock before the replaced deadline plus the
+ * warden's head start) — and is confirmed once that removal is durable. Until
+ * then nothing can postpone the replaced deadline: neither a publication that
+ * outlasts its deadline, nor failed later writes, nor a daemon death; a refused
+ * change leaves its prior in place (the record file may be an earlier change
+ * that never committed), and the next durable write of the record removes it.
+ * The warden reads the clock BEFORE the files and acts only once the clock
+ * passed the deadline plus its head start, so a warden acting on the prior read
+ * it before the commit; it then claims, and the daemon, seeing the claim, stops
+ * the run instead of confirming. A warden whose claim lands after that check
+ * stops the run at the replaced deadline although the change was confirmed: an
+ * early stop, never a late one.
  */
 import {
   closeSync,
@@ -358,7 +362,7 @@ export interface RecordReader {
   (fileName: string): DeadlineRecord | null | "unreadable";
   /** The enforcement claim beside a record file (its floor); null when there is none. */
   claim?(fileName: string): EnforcementClaim | null;
-  /** The prior beside a record file (its floor while a change is in flight). */
+  /** The prior beside a record file (the record in force while a change is not committed). */
   prior?(fileName: string): DeadlineRecord | null | "unreadable";
 }
 
@@ -383,42 +387,50 @@ const ownBase = (record: DeadlineRecord): Bound | null =>
       ? toBound(record.own, null, record.successorOf)
       : null;
 
+/** The prior beside a record file read live, and the record in force (`inForce`). */
+function judged(record: DeadlineRecord, read: RecordReader) {
+  const prior = read.prior?.(recordFileName(record.jobId)) ?? null;
+  const current =
+    prior && prior !== "unreadable" && prior.revision < record.revision ? prior : record;
+  return { current, unreadablePrior: prior === "unreadable" };
+}
+
+/** The record in force for a record file read live: its prior while that names an older revision. */
+export const inForceOf = (record: DeadlineRecord, read: RecordReader) =>
+  judged(record, read).current;
+
 /**
- * The deadline that governs the run's processes now: its base (the frozen
+ * The deadline that governs the run's processes now, judged on the record in
+ * force (a change not committed is not: its prior is): its base (the frozen
  * deadline after a terminal, else its own) capped by its Delegate parent's
  * governing deadline, read from the parent's current record (the cached
  * `inherited` value when that record can no longer be read), and floored by
- * its enforcement claim (the deadline that already won) and by its prior (the
- * record in force while a change is not committed; an unreadable one floors at
- * 0). The warden obeys this; for a live run it is also what every answer reports.
+ * its enforcement claim (the deadline that already won). A prior that cannot
+ * be read floors it at 0: what is in force is unknown. The warden obeys this;
+ * for a live run it is also what every answer reports.
  */
 export function governingBound(
   record: DeadlineRecord,
   read: RecordReader,
   depth = 0,
 ): Bound | null {
-  let base = ownBase(record);
-  const floor = (target: bigint, at: string | null, from: Bound | null) => {
+  const { current, unreadablePrior } = judged(record, read);
+  let base = ownBase(current);
+  const floor = (target: bigint, at: string | null) => {
     if (base && target >= base.target) return;
     base = {
-      at: at ?? from?.at ?? base?.at ?? new Date(0).toISOString(),
+      at: at ?? base?.at ?? new Date(0).toISOString(),
       target,
-      inheritedFrom: from?.inheritedFrom ?? base?.inheritedFrom ?? null,
-      successorOf: from?.successorOf ?? base?.successorOf ?? null,
+      inheritedFrom: base?.inheritedFrom ?? null,
+      successorOf: base?.successorOf ?? null,
     };
   };
-  const file = recordFileName(record.jobId);
-  const claim = read.claim?.(file) ?? null;
-  if (claim) floor(claim.target, claim.at, null);
-  const prior = read.prior?.(file) ?? null;
-  if (prior === "unreadable") floor(0n, null, null);
-  else if (prior) {
-    const kept = ownBase(prior);
-    if (kept) floor(kept.target, kept.at, kept);
-  }
+  const claim = read.claim?.(recordFileName(record.jobId)) ?? null;
+  if (claim) floor(claim.target, claim.at);
+  if (unreadablePrior) floor(0n, null);
   let cap: Bound | null = null;
-  if (record.parent && depth < MAX_CHAIN) {
-    const parent = read(record.parent);
+  if (current.parent && depth < MAX_CHAIN) {
+    const parent = read(current.parent);
     if (parent && parent !== "unreadable") {
       const bound = governingBound(parent, read, depth + 1);
       if (bound)
@@ -430,7 +442,7 @@ export function governingBound(
         };
     }
   }
-  if (!cap && record.inherited) cap = toBound(record.inherited, record.inherited.from, null);
+  if (!cap && current.inherited) cap = toBound(current.inherited, current.inherited.from, null);
   return cap && (!base || cap.target < base.target) ? cap : base;
 }
 

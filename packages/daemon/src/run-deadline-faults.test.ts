@@ -14,7 +14,8 @@
  * the plan; event-loop timers are faked inside a scenario.
  *
  * Invariants, checked against what the warden itself enforces (`governingBound`
- * over the files on disk: the record, its claim and its prior):
+ * over the files on disk: the record in force — its prior while a change is not
+ * committed — and its claim):
  * 1. publication: the new revision is renamed into place only before both the
  *    replaced and the requested deadline, with no claim and no terminal;
  * 2. confirmation: a set answered ok committed (the prior's removal, decided
@@ -24,8 +25,10 @@
  * 3. terminal: a terminal before the commit wins — the set is refused and every
  *    answer reports the terminal's own facts (closed or expired, the revision
  *    and deadline in force when it arrived); one after it ends the new revision;
- * 4. floor: until a commit, the warden's deadline is never later than the one
- *    replaced, whatever failed and whoever died; it rises only at the commit.
+ * 4. in force: until a commit, the warden enforces the deadline replaced (the
+ *    prior is the record in force; a claim only floors it), whatever failed and
+ *    whoever died, and every answer names the same one; it moves only at the
+ *    commit.
  * After a restart (itself with failing or dying writes) every answer of the new
  * generation agrees with the others and with the terminal's facts.
  *
@@ -36,7 +39,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { RunFacts, SCHEMA_VERSION, makeOutcomeFacts } from "@claudexor/schema";
 import {
   RunScopeSpentError,
   SCOPE_MARKER_VALUE,
@@ -54,11 +56,9 @@ import {
   type RecordIo,
 } from "./run-deadline-record.js";
 import type { RunDeadlines } from "./run-deadlines.js";
-import { DaemonServer, type RunnerFn } from "./server.js";
-import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
-import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
-import { legacyCommandFixture } from "./store/test-support/legacy-command-fixture.js";
+import { DaemonServer } from "./server.js";
 import { sqlFixture } from "./store/test-support/sql-fixture.js";
+import { CAPS, legacyDaemon, terminalEvent, until } from "./test-support/run-deadline-daemon.js";
 import {
   MARKER,
   Ops,
@@ -68,14 +68,13 @@ import {
   outcome,
   registry,
   removeTemps,
-  setCase,
-  setMatrix,
   temp,
   wardenBound,
   withFakeTimers,
   type Clock,
   type Kind,
 } from "./test-support/run-deadline-faults.js";
+import { setCase, setMatrix } from "./test-support/run-deadline-fault-checks.js";
 
 afterAll(removeTemps, 0);
 
@@ -270,12 +269,14 @@ describe("run-deadline/1 under faults: a Delegate family", () => {
         { delegated: false },
       ); // the child's refresh to 50 s waits on its chain
       deadlines.close("b-child"); // ended under the parent's 50 s
-      await deadlines.set(
+      // The extension commits only once the child's frozen deadline is durable.
+      const extension = deadlines.set(
         "a-parent",
         { at: time.iso(100_000), expectedRevision: 1 },
         { delegated: false },
       );
       open();
+      await extension;
       await deadlines.dispose();
       const frozen = (readRecord(join(dir, "b-child.json")) as DeadlineRecord).frozen!;
       expect(frozen.at, "the deadline in force when the child ended").toBe(time.iso(50_000));
@@ -387,56 +388,6 @@ describe("run-deadline/1 under faults: handing a scope marker to the warden", ()
 // ---------------------------------------------------------------------------
 // The daemon: queue promotion, acceptance and the SQL terminal.
 // ---------------------------------------------------------------------------
-
-const CAPS = {
-  max_concurrent: 1,
-  max_concurrent_non_model_jobs: 1,
-  max_concurrent_model_operations: 1,
-  max_parallel_candidates: 1,
-  max_deep_scan_width: 1,
-  max_council_members: 2,
-};
-
-async function legacyDaemon(time: Clock, io: RecordIo, runner: RunnerFn) {
-  const dir = temp();
-  const journal = new DurableJournal({ rootDir: join(dir, "journal"), partition: "global" });
-  const store = new CommandStore(journal);
-  store.recoverAfterStartup();
-  const server = new DaemonServer({
-    socketPath: join(dir, "unused.sock"),
-    token: "token",
-    commands: legacyCommandFixture({ current: () => store }),
-    runtimeConcurrencyCaps: CAPS,
-    runDeadlines: {
-      dir: join(dir, "deadlines"),
-      clock: time.clock,
-      io,
-      spawnWarden: async () => ({ pid: 1 }),
-      platform: "linux",
-      probeBoundary: async () => ({ kind: "marker", reason: "test" }),
-    },
-    runner,
-  });
-  await server.deadlines.startup();
-  return {
-    dir: join(dir, "deadlines"),
-    server,
-    client: new DaemonLocalClient(() => server),
-    async close() {
-      await server.stop();
-      journal.close();
-    },
-  };
-}
-
-async function until<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
-  for (let i = 0; i < 400; i++) {
-    const value = await read();
-    if (done(value)) return value;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error("condition not reached");
-}
 
 describe("run-deadline/1 under faults: a queued job promoted during a renewal", () => {
   for (const late of [false, true])
@@ -743,34 +694,3 @@ describe("run-deadline/1 under faults: the SQL terminal and the deadline", () =>
       }
     });
 });
-
-function terminalEvent(runId: string, jobId: string) {
-  const taskId = `task-${jobId}`;
-  const facts = RunFacts.parse({
-    schema_version: SCHEMA_VERSION,
-    run_id: runId,
-    task_id: taskId,
-    mode: "ask",
-    outcome: {
-      ...makeOutcomeFacts("succeeded"),
-      review_requested: false,
-      work_state: { state: "completed", source: "constrained" },
-    },
-    deliverable: { present: true, kind: "answer", path: "final/answer.md" },
-    presentation: { state: "ready", primary: { kind: "answer", path: "final/answer.md" } },
-    participants: { planners: 0, attempts: [] },
-    gates: { configured: false, required: 0, total: 0, executed: false, state: "not_configured" },
-    review: { state: "not_run", blockers: 0, blocker_ids: [] },
-    apply: { eligibility: null },
-    required_actions: [],
-    generated_at: new Date().toISOString(),
-  });
-  return {
-    seq: 1,
-    ts: new Date().toISOString(),
-    run_id: runId,
-    task_id: taskId,
-    type: "run.completed" as const,
-    payload: { run_facts: facts, facts: facts.outcome, lifecycle: "succeeded", reason: null },
-  };
-}

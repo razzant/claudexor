@@ -6231,36 +6231,46 @@ elsewhere; an inherited deadline is copied from the source record's host-clock
 target, never converted again. Per job, transitions are linear: `armed`, then
 `enforcing` (the deadline began its stop), then `expired`; or `closed` (a terminal
 before the deadline). They run on one per-job chain in the daemon; the terminal
-(told at the SQL terminal commit itself, before its files, or the scheduler's
-settlement of a job that never ran) takes its facts at once — time, claim, a won
+(told at the SQL commit itself — a run's terminal or a command update, such as a
+Stop or the settlement of a job that never ran — before that mutation's observers,
+post-commit callbacks and files) takes its facts at once — time, claim, a won
 deadline, the governing deadline with its parent's cap — and they alone decide
-`closed` or `expired` and the deadline it ended under. The enforcement claim
+`closed` or `expired` and the deadline it ended under; every reader of an ended
+job (answers, a continuation's admission, its children's cap) sees that frozen
+deadline at once, and an extension commits only once its ended Delegate
+descendants' frozen deadlines are durable, so nothing later raises them. The enforcement claim
 (`<job>.json.enforcing`, exclusive create) is the one durable fact that a deadline
 won and names it: the warden makes it before its first stop, the daemon when it
 decides the deadline won (and for a terminal at or after its deadline); it floors
 the governing deadline. A change is a two-phase commit ordered by the shared host
 clock, not a lock a SIGKILLed daemon would leave held: before the new revision can
-be seen, the record in force is kept durable beside it (`<job>.json.prior`, a floor
-every reader applies and the revision answers report while it is older); the
-rename comes only before both the replaced and the requested deadline, with no
-terminal and no claim; the change commits when the prior is removed, in the same
+be seen, the record in force is kept durable beside it (`<job>.json.prior`; while it
+names an older revision it is the record in force for every reader, the warden
+included, so a change that became visible without committing moves no deadline;
+a refused change leaves it, the next durable write removes it); the rename comes
+only before both the replaced and the requested deadline, with no terminal and
+no claim; the change commits when the prior is removed, in the same
 synchronous step as its last check (no terminal, no claim, the clock before the
 replaced deadline plus the warden's one-second head start), and is confirmed once
 that removal is durable (visible but not flushed: `503 run_deadline_outcome_unknown`,
 read it again). Until the commit nothing — a publication outlasting its deadline,
 a failed write, a daemon death — postpones the replaced deadline; a terminal
-before the commit refuses the change. The warden reads the clock before the files
-and acts one second after the deadline, so one acting on the prior claims it and
-the daemon stops the run instead of confirming (a claim landing after that check
-stops it early, never late). The daemon re-reads the clock at least every second:
+before the commit refuses the change. The warden reads its deadline before it reports
+itself ready, then the clock before the files, and acts one second after the
+deadline, so one acting on the prior claims it and the daemon stops the run
+instead of confirming (a claim landing after that check stops it early, never
+late); a record that stays unreadable for that second is enforced at the last
+deadline read (early at most). The daemon re-reads the clock at least every second:
 a won deadline aborts the job before any write is awaited, a queued job never
 starts (one whose transition is pending keeps its place and its thread until it
-settles), a preparing or running one is cancelled (`run_deadline_expired`), an
+settles, and counts in admission answers; its cancel is retried while it cannot be
+written; a hold that ends offers the queue again), a preparing or running one is cancelled (`run_deadline_expired`), an
 acceptance is judged again inside its SQL transaction after replay resolution, and
 from the deadline on the run's scope launches nothing (`registerScopeFence`),
 its own patch capture included. A replay of a run that held a deadline (Exact
-Retry, decision rerun, thread turn retry) is refused `409 run_deadline_replay_refused`,
-also when its record is gone; receipts and lookups project the record read-only. The warden is a detached process (its own session, no
+Retry, decision rerun, thread turn retry — which looks its job up before any refusal
+the turn recorded) is refused `409 run_deadline_replay_refused`, also when its record
+is gone; receipts and lookups project the record read-only. The warden is a detached process (its own session, no
 run marker, outside every run cgroup) started before the first process of the
 run's scope — before the thread worktree preparation's first Git child (a job
 with a deadline runs its whole preparation inside that scope), then given
