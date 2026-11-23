@@ -7,6 +7,7 @@ import { RunOutcomeFacts } from "./decision.js";
 import { RunDelegationInfo } from "./delegation.js";
 import { CouncilProjection, PlanReadiness } from "./plan.js";
 import { RunFacts } from "./run-facts.js";
+import { FinalMessagesOutcome } from "./final-messages.js";
 import { AttemptExecutionEvidence } from "./attempt-execution.js";
 import { Id } from "./primitives.js";
 import { RunContinuityReceipt, RunResumable } from "./run-continuity.js";
@@ -321,6 +322,15 @@ export const McpRunHandleResult = z
   .strict()
   .describe("Structured MCP result for Claudexor durable-run read tools (inspect/status/result).");
 export type McpRunHandleResult = z.infer<typeof McpRunHandleResult>;
+
+export const McpRunResultRead = McpRunHandleResult.extend({
+  finalMessages: FinalMessagesOutcome.nullable()
+    .optional()
+    .describe(
+      "Present when includeFinalMessages is true. The recorded final-message document or a typed gap, with null for unknown coverage.",
+    ),
+}).describe("Structured response from claudexor_run_result.");
+export type McpRunResultRead = z.infer<typeof McpRunResultRead>;
 
 const threadTurnSummary = {
   summary: z

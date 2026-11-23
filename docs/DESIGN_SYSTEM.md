@@ -1453,20 +1453,17 @@ views in the shared design-system files; screens compose them.
   reason) next to the route-proof badge, plus an orange `observed ≠ requested`
   model-mismatch badge when the vendor served a different model than requested.
   A route or model downgrade is visible evidence, never quiet.
-- **Refused-turn card + one-click trust.** A turn whose run was refused before
-  it started (server-persisted `enqueueError` — e.g. the trust gate rejecting
-  `access: full`) renders an inline "Not started" card with the engine's exact
-  sanitized refusal text and up to three server-provided required actions. The
-  bounded typed context remains recovery evidence and is never dumped wholesale
-  into the card. A non-retryable problem explains that a new message is needed;
-  Retry is shown only when the durable job can replay the exact turn. The TRUST
-  refusal carries a one-click remedy — "Allow full
-  access & Retry": no confirmation sheet by design; the button label + hover
-  help state the persistent user-level grant it performs, then the SAME turn is
-  retried (`POST /trust` → `POST /threads/:id/turns/:turnId/retry`, no
-  duplicate bubble). Other refusals get a plain Retry. A repeat refusal
-  replaces the card's reason; a successful retry replaces the card with the
-  live run.
+- **Refused turns and one-click trust.** The inline "Not started" card shows
+  the saved `enqueueError` message and up to three required actions. Structured
+  context stays in the receipt. Retry appears only for a saved job that can
+  replay this turn. For missing required files, correct them in the named
+  workspace first. If the turn cannot be retried, the composer keeps the draft
+  for a new message. For a trust refusal, "Allow full access & Retry" grants
+  persistent user-level access and retries the same turn. The label and hover
+  help explain the grant without a confirmation sheet (`POST /trust`, then
+  `POST /threads/:id/turns/:turnId/retry`). Other replayable jobs show Retry.
+  A second refusal updates the reason. A successful retry replaces the card
+  with the live run.
 - **Trust section (Settings → Secrets tab).** Lists the projects with
   full access (user-level trust files) with per-row Revoke; legacy
   pre-provenance grants (no recorded repo root) are disclosed as revocable only

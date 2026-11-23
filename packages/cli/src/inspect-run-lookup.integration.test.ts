@@ -54,6 +54,7 @@ import {
   type DaemonRunRecord,
 } from "@claudexor/control-api";
 import { canonicalDefaultSocketPath } from "@claudexor/daemon";
+import { writeFinalMessages } from "../../event-log/src/final-messages.js";
 import { CONTROL_PROTOCOL_MAJOR } from "@claudexor/schema";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -328,7 +329,44 @@ describe("claudexor inspect lookup outcomes (built CLI, #235)", () => {
     const result = await inspect(["run-local", "--json"]);
     expect(result).toMatchObject({ status: 0, stderr: "" });
     expect(JSON.parse(result.stdout)).toMatchObject({ runId: "run-local", runDir });
+    expect(JSON.parse(result.stdout)).not.toHaveProperty("finalMessages");
     expect(existsSync(join(root, "daemon"))).toBe(false);
+  });
+
+  it("reads a terminal's recorded final-messages address on explicit inspect (including text)", async () => {
+    const runId = "run-notes";
+    const runDir = materializeRun(cwd, runId);
+    const args = [runId, "--include-final-messages"];
+    expect(JSON.parse((await inspect([...args, "--json"])).stdout).finalMessages).toBeNull();
+    const created = {
+      seq: 1,
+      ts: "2026-11-17T00:00:00Z",
+      run_id: runId,
+      task_id: "task-note",
+      type: "run.created" as const,
+      payload: { mode: "ask" },
+    };
+    const pointer = writeFinalMessages(runDir, runId, { events: [created], malformed: 0 });
+    const terminal = {
+      ...created,
+      seq: 2,
+      type: "run.completed",
+      payload: { final_messages: pointer },
+    };
+    writeFileSync(
+      join(runDir, "events.jsonl"),
+      [created, terminal].map((row) => JSON.stringify(row) + "\n").join(""),
+    );
+    const result = JSON.parse((await inspect([...args, "--json"])).stdout);
+    expect(result.finalMessages).toEqual(pointer);
+    expect(result.finalMessages).toMatchObject({ state: "complete", count: 0 });
+    const line = (await inspect(args)).stdout
+      .split("\n")
+      .find((item) => item.startsWith("finalMessages: "));
+    expect(JSON.parse(line!.slice("finalMessages: ".length))).toEqual(pointer);
+    expect(JSON.parse((await inspect([runId, "--json"])).stdout)).not.toHaveProperty(
+      "finalMessages",
+    );
   });
 
   it("does not describe a found run without output as possibly absent", async () => {

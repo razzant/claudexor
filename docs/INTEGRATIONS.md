@@ -27,20 +27,18 @@ Browser navigation or rendered app behavior.
 
 ## Caller-Owned Model Operations
 
-The model capability uses the same negotiated, authenticated control API and
-managed accounts as Agents. Codex is the current raw-model source; other harness
-connections remain Agent capabilities. This is an engine operation for a caller
-that owns its conversation and tools, not an OpenAI-compatible server or an
-Agent Run. The operation catalog and generated schemas describe upload purpose,
-request/response shapes, exact account metadata, status, cancellation and ACK.
+Callers that own their conversation and tools use the authenticated model
+operation API. Codex supplies raw-model inference. Other harnesses expose Agent
+capabilities. The catalog and generated schemas define upload purpose, account
+metadata, request and result shapes, status, cancellation and ACK. Discover
+`typedRefusals` on the create operation before requesting
+[typed content refusals](MODEL_CAPABILITY_ROUTING.md#content-refusals).
 
-Use the stable operation identity to recover a lost local reply within 30 days
-of its end; a later miss is unknown, never proof it did not run. Accept the
-digest-bound result into the caller's own history before acknowledging it;
-reading alone does not acknowledge custody. See
-[Caller-owned model operations](ARCHITECTURE.md#caller-owned-model-operations)
-for lifecycle, retention, continuation and capacity semantics, and the
-[feature ledger](FEATURES.md) for transport and acceptance limitations.
+Keep the operation id to recover a lost reply within 30 days of settlement.
+A later miss leaves dispatch unknown. Accept the digest-bound result into
+local history before acknowledging custody. See [lifecycle and
+capacity](ARCHITECTURE.md#caller-owned-model-operations) and [transport
+limitations](FEATURES.md).
 
 For images, discover `requestKind=image` on the create operation and the
 source's `imageGeneration` facet in the accounts view. The query value is the
@@ -593,15 +591,12 @@ retried: a 500 or any other failure leaves the listing authoritative with one
 diagnostic. Last service is a routing observation, never a quota or authentication
 verdict.
 
-The requested `capabilities[]` array lists temporary account/model demotions.
-Each entry includes `harness_id`, `profile_id`, `requested_model`,
-`account_fingerprint`, redacted `provider_reason`, `observed_at`, `expires_at`,
-and `state` (`provisional`, `confirmed`, `probe_due`, `probing`). Join it by
-harness/profile to show one line per model. It does not change account
-availability or quota. Model operations expose a separate `retryOnOtherAccount`
-signal and, when created with `captureRoutingEvidence=true`, their routing
-receipt; [the host retry contract](MODEL_CAPABILITY_ROUTING.md) describes the one
-allowed correlated re-send and the receipt fields.
+Join `capabilities[]` by `harness_id` and `profile_id` to show a temporary
+demotion for each `requested_model`. Each row carries `account_fingerprint`,
+`provider_reason`, `observed_at`, `expires_at` and `state`. Account availability and
+quota have their own evidence. The [host retry contract](MODEL_CAPABILITY_ROUTING.md)
+defines the fields, the one permitted correlated retry and the optional
+`captureRoutingEvidence` receipt.
 
 The requested `credentialUnusable[]` array lists live typed refusals of one model
 on one registered account: `harness_id`, `profile_id`, `model` (exactly as the run
@@ -687,29 +682,32 @@ smoke — are engine internals owned by `docs/ARCHITECTURE.md` (native login
 and setup jobs); API-key fallback goes through `/secrets` as a separate
 operation, never through setup jobs.
 
-`GET /v2/runs/:id` includes `lastSeq` (the snapshot's event cursor for
-gap-free `Last-Event-ID` subscriptions), `pendingInteractions`,
-`summary.waitingOnUser`, `summary.route` (requested vs stream-observed model;
-verified only on observed evidence), `primaryOutput`, `timeline`, `budget`,
-`summary.outputReadyState`, requested/effective access, external context policy,
-`summary.webEvidence`, and terminal `runFacts` for clients that need the main
-answer/report, streamed activity, known spend state, tool/web status, and the
-immutable terminal receipt without scraping artifacts. `runFacts` is null for
-active and legacy runs; terminal clients consume it verbatim rather than
-reconstructing outcome, deliverable, presentation, participant, gate, review,
-or required-action facts. Its optional `presentation` member is the shared
-terminal authority for output-ready state and the primary artifact; only older
-receipts without that member use the legacy artifact/failure fallback.
-A failed run's `summary.failure` may carry `vendorFailure`: the vendor's own
-typed failure as `{ code, message, source }` (any of `code`/`message` may be
-null), or `null` — also the meaning of an absent key from an older engine —
-when no vendor-typed evidence exists. It is the evidence of the last try of the
-attempt the record speaks for, whether or not that try ended with an OS exit
-code, and each `poolAttempts` row carries its own try's evidence the same way.
-Display the code beside the message as a fact; never branch on its value or map
-it to a remedy, so codes a vendor adds later flow through with no release on
-either side. The record's `safeMessage` already quotes it beside the error it
-explains, and an untyped `harness_error` record names it in its first next action. A pinned account the vendor refused with no reopening time
+`GET /v2/runs/:id` includes the event cursor `lastSeq` for gap-free
+`Last-Event-ID` subscriptions, `pendingInteractions`, `summary.waitingOnUser`,
+`summary.route` (requested and stream-observed model), requested/effective
+access, external context policy and `summary.webEvidence`. Read the primary
+answer, activity and spend state from `primaryOutput`, `timeline` and `budget`.
+`summary.outputReadyState` and the immutable `runFacts.presentation` describe
+output readiness. Use the recorded `runFacts` for outcome, deliverable,
+participant, gate, review and required actions. Active and legacy runs have
+null `runFacts`. Older receipts lacking presentation use the artifact/failure
+fallback.
+
+For opted-in reads, cache the serving daemon's valid `GET /v2/operations` catalog.
+Add `?includeFinalMessages=true` only if `get:runs.id` advertises it. If catalog
+discovery fails, use the plain GET and retry discovery on the next opt-in.
+For a [recorded document](ARCHITECTURE.md#final-messages),
+use its `path` in `GET /v2/runs/:id/artifacts/<path>`. Before parsing the
+download, check its size and SHA-256 against the pointer.
+
+Each failed try can carry `vendorFailure` as `{code, message, source}`, even
+without an OS exit code. Code or message can be null. A null or absent record
+means no typed vendor evidence. The run's `summary.failure` describes the last
+try of the named attempt, and `poolAttempts` retains each try's own evidence.
+Display the vendor code with its message. Branching on a vendor code to
+suggest a remedy would misinterpret new codes. The record quotes it in
+`safeMessage` and in the first next action for an untyped `harness_error`.
+A pinned account the vendor refused with no reopening time
 (`usage_limit_exceeded` also means a workspace out of credits, which no timer
 reopens) is therefore never `subscription_window_exhausted`, the code that means
 waiting cures it: its record has `code: null`, `category: harness_unavailable`,
@@ -722,12 +720,13 @@ A vendor-dated window with no such refusal beside it keeps
 `subscription_window_exhausted` and its `resetsAt`. No quota read retires the
 refusal (#318): only the engine's own bounded recheck lets a later run try the account.
 
-An account the vendor holds for verification is a `capability_refused` try row
-whose `vendorFailure` (`verification_required`) carries the vendor's own next
-step: do not prompt a login or schedule a timed retry from it. Strict event
-readers must accept `verification_required` in `status.error_category`. The
-mark's clearing rules are separate from the usage refusal above; see
-[account observations](ARCHITECTURE.md#credential-profiles-inv-135-unified-account-model).
+When Claude reports `verification_required` on an attempt, admission of that
+pinned profile shows the code alongside `capability_refused`. Other ledger
+detail is not copied into the pin refusal. Use the
+vendor's stated next step. A login prompt or timed retry would misrepresent a
+verification hold. Event readers must accept `verification_required` in
+`status.error_category`. See [account observations](ARCHITECTURE.md#credential-profiles-inv-135-unified-account-model)
+for when a hold clears.
 
 The failure's `poolAttempts` (on `summary.failure`, the run detail, the run list
 and MCP run results) lists every failed execution try in order, each with its account row,
@@ -851,34 +850,26 @@ unresolved questions instead of presenting a stale prompt as live. Storage
 acknowledgement and power-loss barriers follow the
 [engine-store contract](ARCHITECTURE.md#sqlite-engine-store).
 
-Live messages into a RUNNING attempt are the separate `POST /v2/runs/:id/messages`
-verb (protocol major stays 3; clients discover the route by its row in
-`GET /v2/operations`). Send `{text, expectedAttemptId?}` with an
-`Idempotency-Key` that is the message id. Every typed outcome answers HTTP 200:
-`delivered` (a correlated native consumption event was observed), `accepted`
-(the harness's acceptance boundary was observed, consumption unproved),
-`rejected`, `not_active`, `unsupported`, `delivery_unknown`, each with a typed
-`reason`; only `delivered` and `accepted` set `accepted:true`. A replay under
-the same key returns the stored receipt instead of delivering twice, so reuse a
-key ONLY after `delivery_unknown` and mint a new one for a new message. Read
-the harness's declared channel from the `liveInput` field of its
-`GET /v2/agent-capabilities` row (`mid_turn` | `next_tool_boundary` | `none`; an
-engine older than 3.16.0 omits both the field and the route): Codex declares
-`mid_turn` (app-server `turn/steer` into the active turn); Claude Code declares
-`next_tool_boundary` (the message is queued on the live stream-json stdin and
-picked up right after the current tool batch, or as the next native turn of
-the same run when it arrives during the final text; recorded on Claude Code
-2.1.283); Cursor, Antigravity, Grok Build, OpenCode, GitHub Copilot and raw-api declare `none` and answer
-`unsupported` without any native write. The message is admitted journal-first
-(`message.accepted`) and closed with `message.delivered` or `message.refused`
-on the run's event stream and timeline, where the text shows as the row detail;
-a consumption echo that arrives after an `accepted` receipt surfaces there as
-the adapter's status event with code live_input_delivered carrying the `message_id`.
+Send `{text, expectedAttemptId?}` to `POST /v2/runs/:id/messages` with the
+message id as `Idempotency-Key` (protocol major 3). Discover the operation
+in `GET /v2/operations` and the harness's `liveInput` in
+`GET /v2/agent-capabilities`. Engines before 3.16.0 omit both. The six typed
+outcomes are HTTP 200. Only `delivered` (native consumption observed) and
+`accepted` (harness acceptance observed) set `accepted:true`. Read the
+`reason` for `rejected`, `not_active`, `unsupported` or `delivery_unknown`.
+Reuse the key after unknown delivery to recover the stored receipt. Use a new
+key for a new message.
 
-A pre-start refusal (trust gate, preflight) persists on the turn as sanitized
-`enqueueError`: message, code, retryability, bounded required actions and bounded
-structured context. Show message/actions, not wholesale context.
-`POST /v2/threads/:id/turns/:turnId/retry` re-enqueues that turn.
+Codex declares `mid_turn` via `turn/steer`. Claude Code declares
+`next_tool_boundary` via its stdin queue (pickup after a tool batch or as the
+next native turn, recorded on 2.1.283). Cursor, Antigravity, Grok Build,
+OpenCode, GitHub Copilot and raw-api declare `none` and return `unsupported`
+without a native write. The journal records `message.accepted` before delivery
+and closes it with `message.delivered` or `message.refused`. The timeline shows
+the message text. After acceptance, a late consumption echo emits
+`live_input_delivered` with its `message_id`. See the [adapter rules](ARCHITECTURE.md#live-messages-into-a-running-run)
+for quota refusal and input closure.
+
 Held preparations can make thread Apply, turn and file-read routes return
 retryable HTTP 409 `termination_unconfirmed` (end unproven) or
 `preparation_cleanup_failed` (cleanup failed); consume context and `requiredActions`.
@@ -920,6 +911,26 @@ the named store, as [ARCHITECTURE](ARCHITECTURE.md#7-control-api) defines.
 `not_found` never authorizes creating it again. A missing workspace makes the turn
 fail with a retryable `delegated_workspace_unavailable`; restore it and call
 `POST /v2/threads/:id/turns/:turnId/retry`.
+
+### Refused turns
+
+A pre-start refusal persists on the turn as sanitized `enqueueError`. Display
+its message and required actions. Missing, unreadable or out-of-bounds
+mandatory project files return HTTP 409 `mandatory_context_unavailable` with
+`retryable: false`. Read `context.executionRoot` for the directory checked,
+including a delegated workspace, and `context.unavailableFiles` for each
+affected path and reason. Repair the files in that root.
+
+Only a saved, replayable job allows manual Retry. In that case the HTTP
+problem adds `context.turnRetryable: true` and the stored turn has
+`enqueueError.retryable: true`. A fresh key on
+`POST /v2/threads/:id/turns/:turnId/retry` starts a new job and preflight for
+the same refused tail turn. The original create key replays its refusal.
+Without a replayable job, send a new message after repair. If a Plan loses a
+mandatory file after admission, its run failure records category `project`
+with `code: null` — the released run-failure code enum stays frozen so every
+reader keeps the whole record — and names the execution root, each file and
+reason in `safeMessage`.
 
 ## MCP
 
@@ -1414,8 +1425,10 @@ Observation requires an existing daemon and never starts one.
 Now pass the recovered job handles to `claudexor_runs_wait`. Save its per-target
 tokens and echo them as `seen` to suppress unchanged attention. Fetch a pending
 question with `claudexor_run_interactions` and answer it separately under the
-existing approval rules. Fetch output separately with `claudexor_run_result`;
-terminal attention does not prove readable output. Event replay has its own
+existing approval rules. Ordinary and Delegate `claudexor_run_result` accept
+`includeFinalMessages: true` and return the outcome in structured content and
+as JSON on the `finalMessages:` text line. Default reads and launches keep the
+6.2.0 keys. Fetch output after terminal attention. Event replay has its own
 `nextSeq`/`afterSeq` cursor, independent of group cursors and `seen` tokens.
 
 Every page declares `visibility: "current_served_generations"` and
@@ -2324,13 +2337,17 @@ own ACP client does, keeps the handoff text. A report that names no handoff its
 own try closed in this turn sends nothing, and `session/load` replays only
 prompts and answers, so it replays no tool calls.
 
-`session/load` replays the conversation on reopen by fetching one run detail
-per turn. That fan-out is bounded to the most recent 50 turns: an older thread
-replays only its tail, and the omitted count is disclosed as a leading
-diagnostic line rather than starting the conversation silently mid-stream. If a
-turn's run detail cannot be fetched (for example its artifacts were reclaimed by
-retention, a typed `410 run_expired_by_retention`), the agent half is rendered
-as `[output unavailable: <typed reason>]` instead of vanishing.
+`session/load` reads one run detail per replayed turn, up to the latest 50.
+A leading diagnostic gives the omitted count. If a detail cannot be read,
+including `410 run_expired_by_retention`, the agent's turn shows
+`[output unavailable: <typed reason>]`.
+
+Set `_meta.claudexor.includeFinalMessages: true` on `session/prompt` to receive
+`_meta.claudexor.finalMessages`, or on `session/load` to receive
+`_meta.claudexor.turns` with `{runId, finalMessages}` for run-backed turns.
+The ACP SDK treats a non-object `_meta` as absent. Within a decoded object,
+`claudexor` must be an object and `includeFinalMessages`, if present, a boolean;
+otherwise these methods return `Invalid params` before calling the runner.
 
 Questions the surface can answer:
 
@@ -2980,10 +2997,14 @@ not add a profile path to the host user's search list. It never
 bridges the host Keychain or copies credential bytes. On Windows the vendor
 credential is OS-user-scoped, so Claudexor permits one enabled binding and does
 not claim per-HOME Google identity isolation. Doctor `/model` and quota
-`/quota` share one bounded, console-free print runner with piped stdin closed
-immediately. These checks cannot enter interactive sign-in; explicit managed
-login retains its terminal input. Ambiguous authentication timeouts are probe
-failures, not credential revocation. Local token-file presence is not readiness.
+`/quota` use a bounded, console-free print command with stdin closed. Managed
+login retains its terminal input. A failed probe names the cause and reports
+observed exit, signal, envelope status or system error. Only recognized
+vendor phrases are shown; unknown stdout and stderr are not copied into the
+diagnostic. A `SUCCESS` envelope with a nonzero exit is a probe failure. Only a
+recognized authentication rejection indicates that sign-in is needed.
+A timeout leaves authentication unknown. A local token file cannot establish
+readiness.
 
 **Grok Build (`grok`)** — wire: `grok --no-auto-update --prompt-file <file>
 --cwd <cwd> --output-format streaming-messages-json` plus the access flags in

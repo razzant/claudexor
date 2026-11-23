@@ -52,16 +52,15 @@ describe("pre-generation Codex capability refusal", () => {
     const body = { error: { code: "model_not_found", message: exact("gpt-6.1-sol") } };
     expect(classify(body, status)).toEqual(providerProblem(status, body));
   });
-  it("redacts credentials from provider reason text", () => {
-    // Like util's redaction fixtures, assemble the credential only at runtime.
-    const token = "d".repeat(40);
+  it("keeps arbitrary prose out of a recognized capability reason", () => {
+    const privateDetail = "The fixture picnic has been postponed.";
     const result = classify({
       error: {
         code: "model_not_found",
-        message: "No model; Bearer " + token,
+        message: privateDetail,
       },
     });
-    expect(result.context.providerReason).not.toContain(token);
-    expect(result.context.providerReason).toContain("[redacted]");
+    expect(result.context.providerReason).toBe("model_not_found");
+    expect(JSON.stringify(result)).not.toContain(privateDetail);
   });
 });

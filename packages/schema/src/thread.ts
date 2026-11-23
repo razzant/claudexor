@@ -283,15 +283,13 @@ export const TurnEnqueueProblem = z
       .describe(
         "Machine-readable refusal code carried from the throwing gate; null when the failure had no typed code.",
       ),
-    /** Whether retry can REPLAY this turn: true when a job was recorded before
-     * the failure (the registry holds the params to replay); false when the
-     * enqueue itself threw and no job exists, or a managed resource it names was
-     * released — surfaces then offer "send a new message" instead of a doomed Retry. */
+    /** Eligibility for manual replay after repair; the retry route also checks
+     * the latest turn, its recorded job and resource custody. */
     retryable: z
       .boolean()
       .default(true)
       .describe(
-        "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay or a managed resource it names was released.",
+        "Whether to offer manual Retry for this refused turn. Retry requires a recorded job with replayable parameters; it can succeed after the workspace is repaired.",
       ),
     required_actions: z
       .array(z.string().min(1).max(512))

@@ -1,10 +1,24 @@
-import type { RunEvent, RunEventType } from "@claudexor/schema";
+import type { FinalMessagesOutcome, RunEvent, RunEventType } from "@claudexor/schema";
 import { RunEvent as RunEventSchema } from "@claudexor/schema";
-import { existsSync, statSync, truncateSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { appendLine, measureWork, nowIso, orderedAppender } from "@claudexor/util";
-import { lastSeqInFile, readEventFile, terminalEventInFile, withUnlanded } from "./event-file.js";
-import { activeEventLogs, terminalTypeOf } from "./live-writers.js";
+import {
+  lastSeqInFile,
+  readEventFile,
+  terminalEventInFile,
+  terminalTypeOf,
+  withUnlanded,
+} from "./event-file.js";
+import { isFinalMessage } from "./final-messages.js";
+import { activeEventLogs } from "./live-writers.js";
+import {
+  assertNoPendingEventWrites,
+  eventFileBytes,
+  stageTerminal,
+  terminalEventForCommit,
+  undoTerminalPreparation,
+  type PreparedTerminal,
+} from "./terminal-preparation.js";
 import type {
   EventLogOptions,
   PreparedTerminalEvent,
@@ -13,7 +27,8 @@ import type {
   TerminalStagingHook,
 } from "./types.js";
 export { RETAINED_OUTPUT_PATH, retainedOutput, writeRetainedOutput } from "./retained-output.js";
-export { lastSeqInFile } from "./event-file.js";
+export { writeFinalMessages } from "./final-messages.js";
+export { lastSeqInFile, terminalTypeOf } from "./event-file.js";
 export {
   appendRunEvent,
   appendRunEventLanded,
@@ -33,13 +48,8 @@ export type {
 
 /** Who awaits an event's landing: resolved with the event, or given its failure. */
 type Landing = { resolve(event: RunEvent): void; reject(error: unknown): void };
-
-interface PreparedTerminal {
-  event: RunEvent;
-  prepared: PreparedTerminalEvent | void;
-  /** The event file's size before preparation: the rollback boundary. */
-  previousBytes: number | null;
-}
+type TerminalHook<T> = (type: TerminalRunEventType, payload: Record<string, unknown>) => T;
+type RefreshFinalMessages = () => FinalMessagesOutcome | undefined;
 
 /**
  * Append-only JSONL event log for a single run. Terminal output and human
@@ -64,11 +74,11 @@ export class EventLog {
   private terminalStaging?: TerminalStagingHook;
   /** A terminal is being committed through `emitTerminal`; ordinary events may append. */
   private terminalStaged = false;
-  private prepareOutput?: (type: TerminalRunEventType, payload: Record<string, unknown>) => void;
-  private beforeTerminal?: (
-    type: TerminalRunEventType,
-    payload: Record<string, unknown>,
-  ) => PreparedTerminalEvent | void;
+  private prepareOutput?: TerminalHook<void>;
+  private beforeTerminal?: TerminalHook<PreparedTerminalEvent | void>;
+  private refreshFinalMessages?: RefreshFinalMessages;
+  private eventLoss = false;
+  private finalMessagesCurrent = false;
   /** Queued mode: stamped events whose lines have not landed, in seq order.
    * Null when lines are written inline. */
   private readonly unlanded: RunEvent[] | null;
@@ -151,14 +161,13 @@ export class EventLog {
    * terminal; commit runs afterward and before file-tail/live observers.
    */
   setBeforeTerminal(
-    hook: (
-      type: TerminalRunEventType,
-      payload: Record<string, unknown>,
-    ) => PreparedTerminalEvent | void,
-    prepareOutput?: (type: TerminalRunEventType, payload: Record<string, unknown>) => void,
+    hook: TerminalHook<PreparedTerminalEvent | void>,
+    prepareOutput?: TerminalHook<void>,
+    refreshFinalMessages?: RefreshFinalMessages,
   ): void {
     this.beforeTerminal = hook;
     this.prepareOutput = prepareOutput;
+    this.refreshFinalMessages = refreshFinalMessages;
   }
 
   /** Whether this writer has durably committed its exactly-once terminal. */
@@ -230,7 +239,14 @@ export class EventLog {
         throw new Error("run terminal event commit is already in progress");
       }
       // Report any unobserved queued failure once to this run’s producer.
-      if (this.unlanded && !landing?.aside) orderedAppender.throwHeld(this.path);
+      if (this.unlanded && !landing?.aside) {
+        try {
+          orderedAppender.throwHeld(this.path);
+        } catch (error) {
+          if (!terminalType) this.recordEventLoss();
+          throw error;
+        }
+      }
       if (this.deferTerminalEvents && terminalType) {
         if (this.deferredTerminal) throw new Error("run terminal event was emitted more than once");
         this.deferredTerminal = { type, payload };
@@ -239,53 +255,65 @@ export class EventLog {
       if (terminalType) return this.commitNow(terminalType, payload, publish);
       const event = this.stamp(type, payload);
       if (this.unlanded) {
-        orderedAppender.append(this.path, `${JSON.stringify(event)}\n`, {
-          landed: () => measureWork("journal.append", () => this.landed(event, publish)),
-          lost: () => this.lost(),
-          ...(landing
-            ? {
-                aside: landing.aside === true,
-                waiter: { resolve: () => landing.resolve(event), reject: landing.reject },
-              }
-            : {}),
-        });
+        try {
+          orderedAppender.append(this.path, `${JSON.stringify(event)}\n`, {
+            landed: () => measureWork("journal.append", () => this.persistEvent(event, publish)),
+            lost: () => this.lost(),
+            aside: landing?.aside === true,
+            waiter: landing && { resolve: () => landing.resolve(event), reject: landing.reject },
+          });
+        } catch (error) {
+          this.recordEventLoss();
+          throw error;
+        }
         this.nextSeq += 1;
         this.unlanded.push(event);
         return event;
       }
-      appendLine(this.path, JSON.stringify(event));
-      this.nextSeq += 1;
-      this.onPersist?.(event);
-      try {
-        if (publish) this.onPublish?.(event);
-      } catch {
-        /* best-effort live observer */
-      }
+      this.persistEvent(event, publish);
       return event;
     });
   }
 
-  /** A queued line landed: it counts, `onPersist` takes it, then `onPublish`
-   * (an `onPersist` throw is this landing's failure and skips `onPublish`). */
-  private landed(event: RunEvent, publish: boolean): void {
-    this.unlanded!.shift();
-    this.landedSeq = event.seq ?? this.landedSeq;
+  /** The file and its durable sink establish a landing; live observers are best effort. */
+  private persistEvent(event: RunEvent, publish: boolean): void {
     try {
-      this.onPersist?.(event);
-      try {
-        if (publish) this.onPublish?.(event);
-      } catch {
-        /* best-effort live observer */
+      if (this.unlanded) {
+        this.unlanded.shift();
+        this.landedSeq = event.seq ?? this.landedSeq;
+      } else {
+        appendLine(this.path, JSON.stringify(event));
+        this.nextSeq += 1;
       }
+      if (this.finalMessagesCurrent && isFinalMessage(event)) this.finalMessagesCurrent = false;
+      this.onPersist?.(event);
+      this.publish(event, publish);
+    } catch (error) {
+      this.recordEventLoss();
+      throw error;
     } finally {
       this.releaseWhenLanded();
     }
+  }
+
+  private publish(event: RunEvent, publish: boolean): void {
+    try {
+      if (publish) this.onPublish?.(event);
+    } catch {
+      /* durable replay remains authoritative */
+    }
+  }
+
+  private recordEventLoss(): void {
+    this.eventLoss = true;
+    this.finalMessagesCurrent = false;
   }
 
   /** A queued line did not reach the file whole: its write failed first, and
    * every later line fails with it. The counter continues after the last line
    * that landed, so a seq on disk is never reused, and these consume none. */
   private lost(): void {
+    this.recordEventLoss();
     this.unlanded!.shift();
     if (this.unlanded!.length === 0) this.nextSeq = this.landedSeq + 1;
     this.releaseWhenLanded();
@@ -334,29 +362,32 @@ export class EventLog {
       if (queued)
         do await this.runSettled();
         while (queued.length > 0);
+      this.finalMessagesCurrent = true;
       this.prepareOutput?.(type, payload);
       if (queued)
         do await this.runSettled();
         while (queued.length > 0);
       const terminal = this.prepareTerminal(type, payload);
       this.terminalCommitInProgress = false;
-      if (stage) {
-        try {
-          await stage(terminal.event, terminal.prepared?.telemetry ?? null);
-        } catch {
-          // Whatever was not staged, the synchronous commit writes itself.
-        }
-      }
-      if (queued) {
-        try {
+      if (stage) await stageTerminal(stage, terminal);
+      let revised: FinalMessagesOutcome | undefined;
+      try {
+        if (queued)
           do await this.runSettled();
           while (queued.length > 0);
-        } catch (error) {
-          this.rollbackTerminal(this.fileBytes(), terminal.prepared, error);
+        // A final can also land while a refresh's diagnostic drains. Refresh
+        // the document until its pointer is current, keeping the staged verdict.
+        while (!this.finalMessagesCurrent) {
+          this.finalMessagesCurrent = true;
+          revised = this.refreshFinalMessages?.();
+          while (queued?.length) await this.runSettled();
+          if (!revised || revised.state === "unavailable") break;
         }
+      } catch (error) {
+        this.rollbackTerminal(eventFileBytes(this.path), terminal.prepared, error);
       }
       this.terminalStaged = false;
-      return this.commitTerminal(terminal, publish);
+      return this.commitTerminal(terminal, publish, revised);
     } finally {
       this.terminalStaged = false;
     }
@@ -387,22 +418,14 @@ export class EventLog {
     payload: Record<string, unknown>,
     publish: boolean,
   ): RunEvent {
-    this.assertNothingInFlight();
+    assertNoPendingEventWrites(this.unlanded);
     // Derived output may announce its file before the terminal sequence/receipt
     // is frozen. Deferred terminals reach this only when they are flushed.
+    this.finalMessagesCurrent = true;
     this.prepareOutput?.(terminalType, payload);
-    this.assertNothingInFlight();
-    return this.commitTerminal(this.prepareTerminal(terminalType, payload), publish);
-  }
-
-  private assertNothingInFlight(): void {
-    if (!this.unlanded?.length) return;
-    throw Object.assign(
-      new Error(
-        "a queued event log commits a terminal synchronously only with no writes in flight",
-      ),
-      { code: "terminal_writes_in_flight" },
-    );
+    const revised = this.finalMessagesCurrent ? undefined : this.refreshFinalMessages?.();
+    assertNoPendingEventWrites(this.unlanded);
+    return this.commitTerminal(this.prepareTerminal(terminalType, payload), publish, revised);
   }
 
   private assertEmittable(): void {
@@ -429,10 +452,6 @@ export class EventLog {
     });
   }
 
-  private fileBytes(): number | null {
-    return existsSync(this.path) ? statSync(this.path).size : null;
-  }
-
   /** Freeze a terminal: its event and receipt. The fence stays up until the
    * commit; a failed preparation rolls back and rethrows. */
   private prepareTerminal(
@@ -443,7 +462,7 @@ export class EventLog {
     let event = this.stamp(terminalType, payload);
     // Snapshot before terminal preparation: the hook may materialize sibling
     // artifacts, but the event file rollback boundary is the pre-hook state.
-    const previousBytes = this.fileBytes();
+    const previousBytes = eventFileBytes(this.path);
     // Fence every re-entrant emit before the preparation hook, append, and
     // durable sink form one terminal commit. The fence is released only by
     // a complete rollback or after the terminal fully commits.
@@ -466,14 +485,16 @@ export class EventLog {
     return { event, prepared, previousBytes };
   }
 
-  private commitTerminal(terminal: PreparedTerminal, publish: boolean): RunEvent {
+  private commitTerminal(
+    terminal: PreparedTerminal,
+    publish: boolean,
+    revised: FinalMessagesOutcome | undefined,
+  ): RunEvent {
     const { prepared } = terminal;
     // Ordinary events appended while staging awaited precede the terminal.
     const moved = terminal.event.seq !== this.nextSeq;
-    const event = moved
-      ? RunEventSchema.parse({ ...terminal.event, seq: this.nextSeq })
-      : terminal.event;
-    const previousBytes = moved ? this.fileBytes() : terminal.previousBytes;
+    const event = terminalEventForCommit(terminal.event, this.nextSeq, revised);
+    const previousBytes = moved ? eventFileBytes(this.path) : terminal.previousBytes;
     this.terminalCommitInProgress = true;
     if (this.terminalPersistence) {
       let persisted: ReturnType<TerminalPersistenceHook>;
@@ -493,11 +514,6 @@ export class EventLog {
       }
       try {
         prepared?.commit?.();
-      } catch (error) {
-        if (durableAuthorityCommitted) this.poisonAfterDurableCommit(error);
-        this.rollbackTerminal(previousBytes, prepared, error);
-      }
-      try {
         appendLine(this.path, JSON.stringify(event));
       } catch (error) {
         if (durableAuthorityCommitted) this.poisonAfterDurableCommit(error);
@@ -513,11 +529,7 @@ export class EventLog {
     this.terminalCommitInProgress = false;
     this.beforeTerminal = undefined;
     this.dispose();
-    try {
-      if (publish) this.onPublish?.(event);
-    } catch {
-      /* durable replay remains authoritative */
-    }
+    this.publish(event, publish);
     return event;
   }
 
@@ -561,21 +573,7 @@ export class EventLog {
     prepared: PreparedTerminalEvent | void,
     originalError: unknown,
   ): never {
-    const rollbackErrors: unknown[] = [];
-    try {
-      if (previousBytes === null) {
-        if (existsSync(this.path)) unlinkSync(this.path);
-      } else if (existsSync(this.path) && statSync(this.path).size !== previousBytes) {
-        truncateSync(this.path, previousBytes);
-      }
-    } catch (error) {
-      rollbackErrors.push(error);
-    }
-    try {
-      prepared?.rollback?.();
-    } catch (error) {
-      rollbackErrors.push(error);
-    }
+    const rollbackErrors = undoTerminalPreparation(this.path, previousBytes, prepared);
     if (rollbackErrors.length > 0) {
       // A partial rollback means neither retry nor an out-of-band append can
       // safely infer the terminal boundary. Keep this live writer registered
@@ -592,8 +590,10 @@ export class EventLog {
   }
 
   /** Read and parse all events (skipping malformed lines, which are surfaced
-   * separately), followed by those stamped and not yet landed. */
-  readAll(): { events: RunEvent[]; malformed: number } {
-    return withUnlanded(readEventFile(this.path), this.unlanded ?? []);
+   * separately), followed by those stamped and not yet landed. A failed
+   * landing on this writer is evidence even when every surviving line parses. */
+  readAll(): { events: RunEvent[]; malformed: number; eventLoss?: boolean } {
+    const read = withUnlanded(readEventFile(this.path), this.unlanded ?? []);
+    return this.eventLoss ? { ...read, eventLoss: true } : read;
   }
 }

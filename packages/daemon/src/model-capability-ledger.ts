@@ -178,13 +178,14 @@ export class ModelCapabilityLedger {
     return true;
   }
 
-  release(binding: CapabilityBinding, operationId: string): void {
+  release(binding: CapabilityBinding, operationId: string, deferProbe = true): void {
     const row = this.rows.get(key(binding));
     if (row?.probe?.operationId !== operationId) return;
     row.probe = null;
     // Unknown/cancelled outcomes do not prove service. Bound another probe's
-    // cadence rather than immediately replaying an uncertain request.
-    row.expiresAt = this.now() + MODEL_CAPABILITY_TTL_MS;
+    // cadence rather than immediately replaying an uncertain request. A
+    // content refusal says nothing about the account: keep its original expiry.
+    if (deferProbe) row.expiresAt = this.now() + MODEL_CAPABILITY_TTL_MS;
   }
 
   refuse(

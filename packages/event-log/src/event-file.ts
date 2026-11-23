@@ -2,8 +2,13 @@ import type { RunEvent } from "@claudexor/schema";
 import { RunEvent as RunEventSchema } from "@claudexor/schema";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { readTextSafe } from "@claudexor/util";
+import type { TerminalRunEventType } from "./types.js";
 
 /* Readers of a run's events.jsonl file: no live writer state is consulted. */
+
+export function terminalTypeOf(type: unknown): TerminalRunEventType | null {
+  return type === "run.completed" || type === "run.failed" || type === "run.blocked" ? type : null;
+}
 
 export interface EventFileRead {
   events: RunEvent[];
@@ -135,13 +140,7 @@ export function terminalEventInFile(path: string): boolean {
     if (!trimmed) continue;
     try {
       const event = RunEventSchema.parse(JSON.parse(trimmed));
-      if (
-        event.type === "run.completed" ||
-        event.type === "run.failed" ||
-        event.type === "run.blocked"
-      ) {
-        return true;
-      }
+      if (terminalTypeOf(event.type)) return true;
     } catch {
       /* malformed evidence cannot establish a terminal fence */
     }

@@ -527,20 +527,20 @@ export class DaemonServer {
           /* observer failure must not corrupt terminal bookkeeping */
         }
       } else if (rec.error) {
-        // Failure-shaped terminal with NO run ever bound: the refusal happened
-        // before the run materialized. If this job carried a pre-created thread
-        // turn, persist the reason on it (honest inline refusal, INV-093).
+        // Manual replay of a refused turn may succeed after workspace repair (INV-093).
         const turnId = (rec.params as { turnId?: unknown } | null | undefined)?.turnId;
         if (typeof turnId === "string" && turnId) {
+          const { turnRetryable, ...problemContext } = rec.errorContext ?? {};
           try {
             this.opts.onTurnEnqueueFailed?.(
               turnId,
               TurnEnqueueProblem.parse({
                 message: rec.error,
                 code: rec.errorCode ?? null,
-                retryable: rec.errorRetryable ?? true,
+                retryable:
+                  typeof turnRetryable === "boolean" ? turnRetryable : (rec.errorRetryable ?? true),
                 required_actions: rec.errorRequiredActions ?? [],
-                context: rec.errorContext ?? {},
+                context: problemContext,
               }),
             );
           } catch {

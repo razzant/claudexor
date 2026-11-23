@@ -15,7 +15,7 @@
  * contract — absence must come from the lstat errno itself.
  */
 import { lstatSync, realpathSync } from "node:fs";
-import { normalize, resolve, sep } from "node:path";
+import { resolve, sep } from "node:path";
 
 /** Errno-scoped vanish check for filesystem races: ENOENT/ENOTDIR mean the
  * path (or a parent that a directory component turned out not to be) stopped
@@ -26,13 +26,19 @@ export function isVanishedErrno(err: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
-export function safeArtifactPath(root: string, requested: string): string | null {
+/** The same run-relative spelling for routing and confinement, on every OS. */
+export function artifactRelativePath(requested: string): string | null {
   if (requested.includes("\0")) return null;
   const parts = requested.split(/[\\/]+/).filter(Boolean);
   if (parts.includes("..")) return null;
+  return parts.filter((part) => part !== ".").join("/");
+}
+
+export function safeArtifactPath(root: string, requested: string): string | null {
+  const clean = artifactRelativePath(requested);
+  if (clean === null) return null;
   const base = safeArtifactRoot(root);
   if (!base) return null;
-  const clean = normalize(parts.join(sep));
   const abs = resolve(base, clean);
   try {
     const lst = lstatSync(abs);

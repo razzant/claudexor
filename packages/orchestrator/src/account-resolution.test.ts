@@ -5,7 +5,7 @@
  * refuse typed (or take the disclosed paid route) — never silently spawn back
  * into the same account through the default store the owner just toggled off.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   REOPENING_UNKNOWN_COOLDOWN_ID,
   type CredentialProfile,
@@ -13,6 +13,8 @@ import {
   type QuotaSnapshot,
 } from "@claudexor/schema";
 import { resolveAccountForRun, type AccountResolutionContext } from "./account-resolution.js";
+import { credentialStreamRefusal } from "./credential-differential.js";
+import { classifyStatusError } from "./transientClassify.js";
 
 function profileRow(overrides: Partial<CredentialProfile> = {}): CredentialProfile {
   return {
@@ -310,10 +312,49 @@ describe("explicit api_key preference (Q3=A paid election)", () => {
         },
       ],
     });
-    await expect(resolveAccountForRun(context)).rejects.toThrow(
-      /credential is unusable \(auth_revoked;/,
-    );
+    await expect(resolveAccountForRun(context)).rejects.toMatchObject({
+      message:
+        'credential profile "pinned" (claude) credential is unusable (auth_revoked; a pinned account never rotates)',
+    });
     expect(probes).toBe(0);
+  });
+
+  it("refuses exactly the pinned Claude row under verification_required (#703)", async () => {
+    const pinned = profileRow({ profile_id: "pinned" });
+    const other = profileRow({ profile_id: "other" });
+    const probe = vi.fn(async () => {
+      throw new Error("unexpected profile probe");
+    });
+    const refusal = classifyStatusError({
+      type: "status",
+      session_id: "fixture",
+      ts: new Date().toISOString(),
+      status: { kind: "api_retry", error_category: "verification_required" },
+      payload: { entitlement_denied: true },
+      text: "fixture vendor message",
+    });
+    const observation = credentialStreamRefusal({
+      harnessId: pinned.harness_id,
+      profileId: pinned.profile_id,
+      model: "fixture-model",
+      route: "vendor_native",
+      refusal: refusal!,
+    });
+    const context = ctx({
+      registry: [pinned, other],
+      pinnedProfile: pinned,
+      probe,
+      unusable: [observation!],
+    });
+    await expect(resolveAccountForRun(context)).rejects.toMatchObject({
+      name: "HarnessUnavailableError",
+      message:
+        'credential profile "pinned" (claude) credential is unusable ' +
+        "(capability_refused; a pinned account never rotates): verification_required",
+    });
+    expect(context.events).toEqual([]);
+    await expect(resolveAccountForRun({ ...context, pinnedProfile: other })).resolves.toBe(other);
+    expect(probe).not.toHaveBeenCalled();
   });
 });
 
