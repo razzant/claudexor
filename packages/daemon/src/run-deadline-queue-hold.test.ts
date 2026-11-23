@@ -163,4 +163,85 @@ describe("run-deadline/1: a queued job its deadline holds", () => {
       await d.close();
     }
   });
+  it("a manual Stop during a pending extension whose cancel write fails twice keeps the job queued and held until the write lands; it never starts and the queue moves on", async () => {
+    const time = frozenClock();
+    const slot = slotRunner();
+    let releaseFlush: (() => void) | null = null;
+    let flushes: number | null = null;
+    const io: RecordIo = {
+      ...fileRecordIo,
+      // The extension's flush after its rename waits: the job is held meanwhile.
+      flush: async (dir) => {
+        if (flushes !== null && (flushes += 1) === 2)
+          await new Promise<void>((resolve) => (releaseFlush = resolve));
+        await fileRecordIo.flush(dir);
+      },
+    };
+    const d = await legacyDaemon(time, io, slot.runner);
+    const update = d.store.update.bind(d.store);
+    let failures = 2;
+    d.store.update = (id: string, patch: Partial<JobRecord>) => {
+      if (patch.state === "cancelled" && failures > 0) {
+        failures -= 1;
+        throw Object.assign(new Error("injected cancel write failure"), { code: "EIO" });
+      }
+      return update(id, patch);
+    };
+    try {
+      const blocker = await d.client.enqueue(
+        { label: "blocker" },
+        { idempotencyKey: "b", clientId: "t" },
+      );
+      await until(
+        () => Promise.resolve(slot.ran),
+        (ran) => ran.includes("blocker"),
+      );
+      const job = await d.client.enqueue(
+        { label: "job", deadline: { at: time.iso(10_000) } },
+        { idempotencyKey: "j", clientId: "t" },
+      );
+      await d.client.enqueue({ label: "behind" }, { idempotencyKey: "n", clientId: "t" });
+      flushes = 0;
+      const renewal = outcome(
+        d.client.runDeadline(job.id, { action: "set", at: time.iso(60_000), expectedRevision: 0 }),
+      );
+      await until(
+        () => Promise.resolve(releaseFlush),
+        (r) => typeof r === "function",
+      );
+      flushes = null;
+      time.advance(10_500); // past the replaced deadline, inside the head start: held while the extension is pending
+      slot.release();
+      await until(
+        () => d.client.status(blocker.id),
+        (r) => r.state === "succeeded",
+      );
+      // A manual Stop while the extension is pending: its cancel write fails, so
+      // the job stays queued and held with the cancel marked in memory.
+      const stop = await outcome(d.client.cancel(job.id));
+      expect(stop.ok, "the Stop's terminal could not be written yet").toBe(false);
+      expect(await d.client.status(job.id)).toMatchObject({ state: "queued" });
+      // The extension lands and offers the queue again: the cancelled job leaves
+      // the queue only after its terminal is durable, never before.
+      releaseFlush!();
+      expect(await renewal).toMatchObject({ ok: true });
+      await until(
+        () => Promise.resolve(slot.ran),
+        (ran) => ran.includes("behind"),
+        2_000,
+      );
+      const record = await until(
+        () => d.client.status(job.id),
+        (r) => r.state !== "queued",
+        2_000,
+      );
+      expect(record).toMatchObject({ state: "cancelled" });
+      expect(failures, "both failed cancel writes were retried until one landed").toBe(0);
+      expect(slot.ran, "the cancelled job never started").toEqual(["blocker", "behind"]);
+    } finally {
+      slot.release();
+      (releaseFlush as (() => void) | null)?.();
+      await d.close();
+    }
+  });
 });

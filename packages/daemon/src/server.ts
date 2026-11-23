@@ -496,12 +496,12 @@ export class DaemonServer {
         this.holds.hold(id);
         continue;
       }
-      this.queue.splice(this.queue.indexOf(job), 1);
-      if (!rec) continue;
-      if (this.cancelled.has(id)) {
-        this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
+      if (this.cancelled.has(id) && rec) {
+        this.holds.cancelExpired(id, { state: "cancelled", finishedAt: nowIso() }, () => {});
         continue;
       }
+      this.queue.splice(this.queue.indexOf(job), 1);
+      if (!rec) continue;
       this.activeJobs.set(id, job);
       const task = outsideRunScope(() => this.runJob(id, rec)); // never an enqueuer's scope
       this.activeTasks.add(task);
