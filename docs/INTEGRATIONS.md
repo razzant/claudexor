@@ -1369,6 +1369,27 @@ CLI launch result names the store that accepted the run as `storeId`: keep it an
 compare it with the store that answered; see
 [the store identity contract](ARCHITECTURE.md#engine-store-identity).
 
+**Paired project registration and release.** A host that opens a folder through
+the daemon can hold the registration as its own custody record: request
+`POST /v2/projects` with `X-Claudexor-Store-Identity: 1` and keep the receipt's
+`(storeId, projectId, root)` triple, quoting `root` back verbatim. The bound
+probe `GET /v2/projects/:id/registration` requires both `expectedStoreId` and
+`expectedRoot` as query parameters and answers the record's `projectId`,
+`storeId`, `root` and `state` — `present` or `absent` (`absent` covers
+archived, missing and never-existed rows alike: a state, never an existence
+oracle, and `root` is then the requested one). An optional absolute `candidate`
+folder, the one the host already chose as its workspace, adds `candidateMatch`
+for a present registration only: the one folder comparison against the
+registered root — `same` / `different` / `unknown`, where `unknown` is never
+`different` (retry or hold, never decide independence from it) and a mere
+string difference is never `different`. The confirming side archives its record
+with `POST /v2/projects/:id/release` and the same `expectedStoreId` /
+`expectedRoot` binding in the body; a binding that names another store or root
+changes nothing, and every later call answers `absent` with no second archival.
+The normative semantics — the comparison, the busy fences and what release
+archives — live in [ARCHITECTURE.md](ARCHITECTURE.md#7-control-api) beside the
+registry; the user-facing `DELETE /v2/projects/:id` keeps its own contract.
+
 **Recovering a retained task group.** On supporting daemons, public one-shot
 launches accept an optional caller-generated UUID `taskGroupId` (CLI
 `--task-group-id`). It is immutable accepted metadata. Tagged receipts carry

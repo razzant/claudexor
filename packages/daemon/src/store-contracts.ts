@@ -7,7 +7,10 @@ import type {
   ControlJournalQuarantineReceipt,
   ControlJournalValidation,
   ControlPendingInteraction,
+  ControlProjectBinding,
   ControlProjectListingProblem,
+  ControlProjectRegistrationState,
+  ControlProjectReleaseReceipt,
   ControlResource,
   ControlResourceRelease,
   ControlUploadImport,
@@ -74,6 +77,19 @@ export interface ProjectStorePort {
   register(input: RegisterProject): ProjectRegistration;
   relink(id: string, rootInput: string): Project;
   unregister(id: string): Project | undefined;
+}
+
+/** Opt-in paired-custody operations supported by registry owners with a durable
+ * store identity: the bound address probe and the confirming side's single
+ * bound release. A store that does not support them simply omits the methods
+ * and the control API answers 501. */
+export interface BoundProjectRegistrationPort {
+  inspectRegistration(
+    id: string,
+    binding: ControlProjectBinding,
+    candidate?: string,
+  ): ControlProjectRegistrationState;
+  release(id: string, binding: ControlProjectBinding): ControlProjectReleaseReceipt;
 }
 
 export interface ResourceStorePort {

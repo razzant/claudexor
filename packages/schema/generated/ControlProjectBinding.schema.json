@@ -1,0 +1,24 @@
+{
+  "$ref": "#/definitions/ControlProjectBinding",
+  "definitions": {
+    "ControlProjectBinding": {
+      "type": "object",
+      "properties": {
+        "expectedStoreId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expectedRoot": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "expectedStoreId",
+        "expectedRoot"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

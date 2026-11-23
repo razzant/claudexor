@@ -6,6 +6,9 @@ import {
   type Project,
   type ProjectNesting,
   type Thread,
+  type ControlProjectBinding,
+  type ControlProjectRegistrationState,
+  type ControlProjectReleaseReceipt,
   type ControlProjectRemoveReceipt,
 } from "@claudexor/schema";
 import { hashJson, newId, nowIso } from "@claudexor/util";
@@ -13,11 +16,13 @@ import { reduceThreadLifecycle } from "../thread-lifecycle.js";
 import {
   canonicalRoot,
   assertNotClaudexorOwned,
+  compareFolder,
   parseMutation,
   projectNesting,
   validateKey,
   type ProjectMutation,
   type ProjectRegistration,
+  type RegisterProject,
 } from "../projects.js";
 import type { BlobFiles } from "./blob-files.js";
 import { prepareEvent, appendPreparedEventInTx } from "./event-store.js";
@@ -35,6 +40,7 @@ import {
 } from "./mutation.js";
 import type { Obligations } from "./obligations.js";
 import { insertPartitionInTx, partitionById, type PartitionGeneration } from "./partitions.js";
+import { registrationInUseInTx } from "./project-registration-holders.js";
 import type { EngineStore } from "./store.js";
 import { decodeBody, encodeBody } from "./thread-rows.js";
 import { SqlThreadStore } from "./threads.js";
@@ -51,6 +57,7 @@ export function applyProjectMutation(
   value: unknown,
   time: string,
   currentPid?: number | null,
+  fresh = false,
 ): ProjectMutation {
   requireTransaction(sql);
   const mutation = parseMutation(value);
@@ -65,6 +72,7 @@ export function applyProjectMutation(
         current_pid: number | null;
       }
     | undefined;
+  if (fresh && previous) throw new Error("fresh project ID is already in use");
   if (previous && previous.pid !== pid)
     throw new Error("project belongs to another global generation");
   if (type === "project.unregistered") {
@@ -157,7 +165,18 @@ export class SqlProjectStore {
     return row?.current_pid == null ? null : partitionById(this.store, row.current_pid);
   }
 
-  register(input: { root: string; idempotencyKey: string; clientId: string }): ProjectRegistration {
+  /** One registration id is never reused: a minted id that already names any row
+   * (an archived predecessor included) is discarded before the insert. */
+  private freshId(): string {
+    const used = this.store.prepare("SELECT 1 FROM project WHERE id=?");
+    let id: string;
+    do {
+      id = newId("prj");
+    } while (used.get(id));
+    return id;
+  }
+
+  register(input: RegisterProject): ProjectRegistration {
     validateKey(input.idempotencyKey);
     const root = canonicalRoot(input.root);
     assertNotClaudexorOwned(root);
@@ -169,6 +188,8 @@ export class SqlProjectStore {
       key: input.idempotencyKey,
     });
     const requestDigest = hashJson({ root });
+    const identity =
+      input.includeStoreId && this.store.storeId ? { storeId: this.store.storeId } : {};
     const saved = lookupIdempotency(
       this.store,
       { owner: "project", pid, keyDigest },
@@ -182,7 +203,12 @@ export class SqlProjectStore {
         .get(saved.targetId, pid) as
         { body: Uint8Array; creation_key_digest: string | null } | undefined;
       if (!row) throw new Error("project registration points to a missing project");
-      return { project: decodeBody<Project>(row), created: row.creation_key_digest === keyDigest };
+      const project = decodeBody<Project>(row);
+      // A store-identity caller binds to the exact registered folder, so its key
+      // no longer answers for a root that registration has since moved to (a
+      // relink); legacy callers keep the historical replay answer.
+      if (input.includeStoreId && project.root !== root) throw rootMismatch();
+      return { project, created: row.creation_key_digest === keyDigest, ...identity };
     }
     const existing = this.findByRoot(root);
     const now = nowIso();
@@ -190,7 +216,7 @@ export class SqlProjectStore {
       existing ??
       ProjectSchema.parse({
         schema_version: SCHEMA_VERSION,
-        id: newId("prj"),
+        id: this.freshId(),
         root,
         created_at: now,
         updated_at: now,
@@ -213,10 +239,10 @@ export class SqlProjectStore {
             projectId: project.id,
             createdAt: now,
           });
-      applyProjectMutation(tx, pid, "project.registered", mutation, now, partition?.pid);
+      applyProjectMutation(tx, pid, "project.registered", mutation, now, partition?.pid, !existing);
       appendPreparedEventInTx(tx, this.blobs, pid, event);
     });
-    return { project, created: !existing };
+    return { project, created: !existing, ...identity };
   }
 
   relink(id: string, rootInput: string): Project {
@@ -277,27 +303,108 @@ export class SqlProjectStore {
     appendPreparedEventInTx(tx, this.blobs, this.global().pid, event);
   }
 
+  private servedPartition(id: string): PartitionGeneration | null {
+    const partition = this.partition(id);
+    return partition ? requireServedGeneration(this.store, partition.pid) : null;
+  }
+
+  /** The bound record this caller may dispose of: the durable store must be this
+   * one, and the registration's current canonical root must be exactly the root
+   * the caller quoted back. A binding that names another store or another root
+   * describes a different record and never authorizes a mutation here. */
+  private boundRegistration(id: string, binding: ControlProjectBinding) {
+    const storeId = this.store.storeId;
+    if (!storeId)
+      throw Object.assign(new Error("durable store identity is unavailable"), {
+        code: "store_identity_unavailable",
+        status: 503,
+        retryable: true,
+      });
+    if (storeId !== binding.expectedStoreId)
+      throw Object.assign(new Error("this project binding names another durable store"), {
+        code: "store_mismatch",
+        status: 409,
+      });
+    const project = this.get(id);
+    if (project && project.root !== binding.expectedRoot) throw rootMismatch();
+    return { project, storeId, projectId: id, root: project?.root ?? binding.expectedRoot };
+  }
+
+  /** `GET /v2/projects/:id/registration` — the paired-custody address probe.
+   * `absent` is one state covering archived, missing and never-existed rows.
+   * With a candidate, the answer adds the one folder comparison's verdict
+   * against the registration's recorded root — the caller's pre-START fact for
+   * its already-admitted workspace choice. */
+  inspectRegistration(
+    id: string,
+    binding: ControlProjectBinding,
+    candidate?: string,
+  ): ControlProjectRegistrationState {
+    const { project, ...receipt } = this.boundRegistration(id, binding);
+    return {
+      ...receipt,
+      state: project ? ("present" as const) : ("absent" as const),
+      ...(project && candidate !== undefined
+        ? { candidateMatch: compareFolder(candidate, project.root) }
+        : {}),
+    };
+  }
+
+  /** `POST /v2/projects/:id/release` — the confirming side's one bound archival of
+   * a temporary registration, decided inside the same SQL transaction that
+   * archives it. Refuses with the thread fence (a non-purged thread, untouched,
+   * exactly like remove) and the typed busy error while accepted work still
+   * uses the folder; never deletes a file (the row is archived and the partition
+   * journal moved out exactly like unregister does); repeat and unknown id answer
+   * `absent` with no second mutation. */
+  release(id: string, binding: ControlProjectBinding): ControlProjectReleaseReceipt {
+    const { project: staged, ...bound } = this.boundRegistration(id, binding);
+    if (!staged) return { ...bound, state: "absent" };
+    const event = unregisteredEvent(this.blobs, staged);
+    return runMutation<ControlProjectReleaseReceipt>(this.store, (tx) => {
+      // The event was staged outside the lock; decide from the row under BEGIN IMMEDIATE.
+      const { project: current, ...held } = this.boundRegistration(id, binding);
+      if (!current) return { ...held, state: "absent" };
+      const partition = this.servedPartition(id);
+      if (!partition)
+        throw Object.assign(new Error(`project ${id} has no current partition to check`), {
+          code: "journal_recovery_required",
+          status: 409,
+        });
+      this.assertNoThreads(id, partition);
+      if (registrationInUseInTx(tx, { partition, root: current.root, blobs: this.blobs }))
+        throw activeRunRefusal(id, "has unfinished work or a reserved next message");
+      this.unregisterInTx(tx, current, event);
+      return { ...held, state: "released" };
+    });
+  }
+
   remove(id: string, activeRunRoots: ReadonlySet<string>): ControlProjectRemoveReceipt {
     const { project, partition } = this.removable(id);
-    if (partition) {
-      const n = Number(
-        (
-          this.store
-            .prepare("SELECT count(*) AS n FROM thread WHERE pid=? AND state<>'purged'")
-            .get(partition.pid) as { n: number }
-        ).n,
-      );
-      if (n)
-        throw Object.assign(
-          new Error(
-            `project ${id} still has ${n} thread(s); trash and purge them before removing it`,
-          ),
-          { code: "project_has_threads", status: 409 },
-        );
-    }
+    this.assertNoThreads(id, partition);
     if (activeRunRoots.has(project.root)) throw activeRunRefusal(id);
     this.unregister(id);
     return removalReceipt(project, partition);
+  }
+
+  /** The shared thread fence of removal and bound release: a non-purged thread
+   * in the partition refuses the operation without touching the thread. */
+  private assertNoThreads(id: string, partition: PartitionGeneration | null): void {
+    if (!partition) return;
+    const n = Number(
+      (
+        this.store
+          .prepare("SELECT count(*) AS n FROM thread WHERE pid=? AND state<>'purged'")
+          .get(partition.pid) as { n: number }
+      ).n,
+    );
+    if (n)
+      throw Object.assign(
+        new Error(
+          `project ${id} still has ${n} thread(s); trash and purge them before removing it`,
+        ),
+        { code: "project_has_threads", status: 409 },
+      );
   }
 
   /** #333 explicit opt-in: purge the threads already in the trash and retire
@@ -380,11 +487,21 @@ function unregisteredEvent(blobs: BlobFiles, project: Project) {
   });
 }
 
-function activeRunRefusal(id: string): Error {
-  return Object.assign(
-    new Error(`project ${id} has a live or queued run; wait for it to finish before removing it`),
-    { code: "project_has_active_run", status: 409 },
-  );
+function activeRunRefusal(
+  id: string,
+  reason = "has a live or queued run; wait for it to finish before removing it",
+): Error {
+  return Object.assign(new Error(`project ${id} ${reason}`), {
+    code: "project_has_active_run",
+    status: 409,
+  });
+}
+
+function rootMismatch(): Error {
+  return Object.assign(new Error("the registered project now has another canonical root"), {
+    code: "project_root_mismatch",
+    status: 409,
+  });
 }
 
 function removalReceipt(
