@@ -6,26 +6,35 @@
  * terminal an update commits (a Stop of a queued job).
  */
 import { afterAll, describe, expect, it } from "vitest";
-import { MutationDelta } from "./store/mutation.js";
 import { sqlDaemon, terminalEvent, until } from "./test-support/run-deadline-daemon.js";
 import { frozenClock, removeTemps, temp, type Clock } from "./test-support/run-deadline-faults.js";
 
 afterAll(removeTemps, 0);
 
-/** Once armed, the next mutation's publication takes 1.5 s of the clock first (slow observers). */
+interface Observed {
+  observations: { publish(changed?: ReadonlySet<string>): void };
+}
+
+/**
+ * Once armed, the next mutation's publication to the store's observers takes
+ * 1.5 s of the clock (slow observers). Patched on the store instance the
+ * daemon's SQL owners write through.
+ */
 function slowPublication(time: Clock) {
-  const publish = MutationDelta.prototype.publish;
   let armed = false;
-  MutationDelta.prototype.publish = function (this: MutationDelta, store) {
-    if (armed) {
-      armed = false;
-      time.advance(1_500);
-    }
-    return publish.call(this, store);
-  };
   return {
+    install(store: Observed) {
+      const publish = store.observations.publish.bind(store.observations);
+      store.observations.publish = (changed) => {
+        if (armed) {
+          armed = false;
+          time.advance(1_500);
+        }
+        publish(changed);
+      };
+    },
     arm: () => void (armed = true),
-    restore: () => void (MutationDelta.prototype.publish = publish),
+    fired: () => !armed,
   };
 }
 
@@ -38,6 +47,7 @@ describe("run-deadline/1: a terminal's facts are taken at its SQL commit", () =>
     const deadlineAt = time.iso(2_000);
     const runDir = temp();
     const d = await sqlDaemon(time, (sql) => async (_params, ctx) => {
+      slow.install(sql.store as unknown as Observed);
       const runId = `run-${ctx.jobId}`;
       ctx.onRunStart({ runId, taskId: `task-${ctx.jobId}`, runDir });
       time.advance(1_000);
@@ -58,12 +68,12 @@ describe("run-deadline/1: a terminal's facts are taken at its SQL commit", () =>
         () => d.client.status(job.id),
         (r) => finished(r.state),
       );
+      expect(slow.fired(), "the terminal's publication was slow").toBe(true);
       expect(await d.client.runDeadline(job.id, { action: "read" })).toMatchObject({
         state: "closed",
         at: deadlineAt,
       });
     } finally {
-      slow.restore();
       await d.close();
     }
   });
@@ -77,6 +87,7 @@ describe("run-deadline/1: a terminal's facts are taken at its SQL commit", () =>
       if ((params as { label: string }).label === "blocker") await blocked;
       return { lifecycle: "succeeded" };
     });
+    slow.install(d.sql.store as unknown as Observed);
     try {
       const blocker = await d.client.enqueue(
         { label: "blocker" },
@@ -94,13 +105,13 @@ describe("run-deadline/1: a terminal's facts are taken at its SQL commit", () =>
       time.advance(1_000);
       slow.arm(); // the Stop's update publishes slowly
       await d.client.cancel(job.id);
+      expect(slow.fired(), "the Stop's publication was slow").toBe(true);
       expect(await d.client.status(job.id)).toMatchObject({ state: "cancelled" });
       expect(await d.client.runDeadline(job.id, { action: "read" })).toMatchObject({
         state: "closed",
         at: deadlineAt,
       });
     } finally {
-      slow.restore();
       release();
       await d.close();
     }
