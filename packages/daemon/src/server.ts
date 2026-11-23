@@ -417,11 +417,12 @@ export class DaemonServer {
     const rec = this.getRecord(jid);
     if (!rec) throw new Error(`no such job: ${jid}`);
     this.cancelled.add(jid);
-    const index = this.queue.findIndex((job) => job.id === jid);
+    let index = this.queue.findIndex((job) => job.id === jid);
     if (rec.state === "queued" || (index !== -1 && isTerminalLifecycle(rec.state))) {
       try {
         if (rec.state === "queued")
           this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso(), ...terminal });
+        index = this.queue.findIndex((job) => job.id === jid);
         if (index !== -1) this.queue.splice(index, 1);
       } finally {
         if (!this.queue.some((job) => job.id === jid) && this.holds.release(jid))
@@ -433,9 +434,8 @@ export class DaemonServer {
     if (rec.runId) this.opts.delegationAuthority?.beginParentClose(rec.runId);
     // The validated reason reaches the terminal through the first abort.
     this.controllers.get(jid)?.abort(reasonCode || undefined);
-    // The ordinary stop above never waits on this write. If the hold cannot be
-    // saved, its typed failure follows the stop and the fences keep the next
-    // message unsent.
+    // The ordinary stop above never waits on this write. If the hold cannot be saved,
+    // its typed failure follows the stop and the fences keep the next message unsent.
     return { id: jid, cancelled: true, deferredMessageStop: this.deferred.stop(rec.id) };
   }
 
