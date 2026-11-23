@@ -473,16 +473,12 @@ export function handleThreadTurnRetry(
       // Before any other refusal, even a non-retryable one recorded on the turn (a
       // failed preparation's job exists): a turn whose accepted job held a
       // deadline is refused typed, with the start that carries a new deadline.
-      const deadlineRefusal = last
-        ? await deadlineReplayRefusal(ctx.daemon, last, "A turn retry", { threadId })
-        : null;
-      if (deadlineRefusal)
-        throw Object.assign(new Error(deadlineRefusal.error), {
-          status: 409,
-          code: deadlineRefusal.code,
-          retryable: false,
-          requiredActions: deadlineRefusal.requiredActions,
-        });
+      const deadlineRefusal =
+        last && (await deadlineReplayRefusal(ctx.daemon, last, "A turn retry", { threadId }));
+      if (deadlineRefusal) {
+        const { error: message, ...typed } = deadlineRefusal;
+        throw Object.assign(new Error(message), { status: 409, ...typed });
+      }
       // A released resource's refusal is the exception: its job exists, so a repeat
       // still resolves an accepted key and otherwise asks the owner that refused it.
       // So is a queued run-deadline/1 expiry whose job is gone (refused below).

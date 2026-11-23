@@ -8,12 +8,8 @@ import {
   type ControlOperationDescriptor,
   ControlHarnessSetupHarness,
 } from "@claudexor/schema";
-import {
-  CAPABILITIES_HEADER,
-  STORE_IDENTITY_HEADER,
-  queryParam,
-  resumeHeader,
-} from "./operation-parameters.js";
+import { CAPABILITIES_HEADER, STORE_IDENTITY_HEADER } from "./operation-parameters.js";
+import { queryParam, resumeHeader } from "./operation-parameters.js";
 import { REMOTE_OPERATION_DRAFTS } from "./remote-operation-descriptors.js";
 import { MODEL_OPERATION_DRAFTS } from "./model-routes.js";
 import { MAINTENANCE_OPERATION_DRAFTS } from "./maintenance-routes.js";
