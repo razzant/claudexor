@@ -47,6 +47,8 @@ export class DeadlineHolds {
       const next = Math.min(Math.max(delayMs * 2, FIRST_RETRY_MS), MAX_RETRY_MS);
       const timer = setTimeout(() => {
         this.retries.delete(timer);
+        // A Stop took the job meanwhile: nothing is left to cancel or report.
+        if (!this.deps.queued(id)) return void this.held.delete(id);
         this.cancelExpired(id, patch, cancelled, next);
       }, next);
       timer.unref?.();
