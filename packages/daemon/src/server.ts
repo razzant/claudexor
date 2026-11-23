@@ -408,7 +408,7 @@ export class DaemonServer {
   }
 
   /** Daemon-owned cancellation primitive used by RPC and the Delegate drain
-   * barrier. It is safe to repeat and preserves queued-admission cleanup. */
+   * barrier. Safe to repeat: a terminal already durable only owes the queued cleanup. */
   cancelJob(
     jid: string,
     reasonCode?: CancelReasonCode,
@@ -417,13 +417,13 @@ export class DaemonServer {
     const rec = this.getRecord(jid);
     if (!rec) throw new Error(`no such job: ${jid}`);
     this.cancelled.add(jid);
-    if (rec.state === "queued") {
+    const index = this.queue.findIndex((job) => job.id === jid);
+    if (rec.state === "queued" || (index !== -1 && isTerminalLifecycle(rec.state))) {
       try {
-        this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso(), ...terminal });
-        const index = this.queue.findIndex((job) => job.id === jid);
+        if (rec.state === "queued")
+          this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso(), ...terminal });
         if (index !== -1) this.queue.splice(index, 1);
       } finally {
-        // A held job that left the queue frees its slot: the queue is offered again.
         if (!this.queue.some((job) => job.id === jid) && this.holds.release(jid))
           void (this.stopping || this.drain());
       }
