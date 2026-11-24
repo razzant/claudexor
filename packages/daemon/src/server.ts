@@ -407,8 +407,8 @@ export class DaemonServer {
     return queued ? queuedAdmission(queued, ahead, this.concurrency, this.stopping) : null;
   }
 
-  /** Daemon-owned cancellation primitive used by RPC and the Delegate drain
-   * barrier. Safe to repeat: a terminal already durable only owes the queued cleanup. */
+  /** Daemon-owned cancellation primitive used by RPC and the Delegate drain barrier. Safe to
+   * repeat: a durable terminal owes the queued cleanup, even if a notice after its COMMIT threw. */
   cancelJob(
     jid: string,
     reasonCode?: CancelReasonCode,
@@ -417,19 +417,20 @@ export class DaemonServer {
     const rec = this.getRecord(jid);
     if (!rec) throw new Error(`no such job: ${jid}`);
     this.cancelled.add(jid);
-    let index = this.queue.findIndex((job) => job.id === jid);
+    const index = this.queue.findIndex((job) => job.id === jid);
     if (rec.state === "queued" || (index !== -1 && isTerminalLifecycle(rec.state))) {
       try {
         if (rec.state === "queued")
           this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso(), ...terminal });
-        index = this.queue.findIndex((job) => job.id === jid);
-        if (index !== -1) this.queue.splice(index, 1);
       } finally {
-        if (!this.queue.some((job) => job.id === jid) && this.holds.release(jid))
-          void (this.stopping || this.drain());
+        const durable = isTerminalLifecycle(this.getRecord(jid)?.state ?? "queued");
+        const at = durable ? this.queue.findIndex((job) => job.id === jid) : -1;
+        if (at !== -1) this.queue.splice(at, 1);
+        // Settle this job's own Delegate accounting before admission touches the next job.
+        const delegatedFrom = durable ? delegatedParentOf(rec.params) : null;
+        if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, jid);
+        if (durable && this.holds.release(jid)) void (this.stopping || this.drain());
       }
-      const delegatedFrom = delegatedParentOf(rec.params);
-      if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, rec.id);
     }
     if (rec.runId) this.opts.delegationAuthority?.beginParentClose(rec.runId);
     // The validated reason reaches the terminal through the first abort.
