@@ -407,8 +407,8 @@ export class DaemonServer {
     return queued ? queuedAdmission(queued, ahead, this.concurrency, this.stopping) : null;
   }
 
-  /** Daemon-owned cancellation primitive used by RPC and the Delegate drain barrier. Safe to
-   * repeat: a durable terminal owes the queued cleanup, even if a notice after its COMMIT threw. */
+  /** Daemon-owned cancel for RPC and the Delegate drain barrier. Safe to repeat: a durable terminal
+   * owes the queued cleanup (the next job's admission last) even if a notice after COMMIT threw. */
   cancelJob(
     jid: string,
     reasonCode?: CancelReasonCode,
@@ -426,7 +426,6 @@ export class DaemonServer {
         const durable = isTerminalLifecycle(this.getRecord(jid)?.state ?? "queued");
         const at = durable ? this.queue.findIndex((job) => job.id === jid) : -1;
         if (at !== -1) this.queue.splice(at, 1);
-        // Settle this job's own Delegate accounting before admission touches the next job.
         const delegatedFrom = durable ? delegatedParentOf(rec.params) : null;
         if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, jid);
         if (durable && this.holds.release(jid)) void (this.stopping || this.drain());
