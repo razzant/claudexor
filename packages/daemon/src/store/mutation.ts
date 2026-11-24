@@ -72,8 +72,14 @@ export class MutationDelta {
 
 /** Prepare file-backed bodies before calling this function, without an await
  * between preparation and commit. No nested transaction or async body. Failed
- * SQL discards the delta; successful SQL publishes every owner before callbacks. */
-export function runMutation<T>(store: EngineStore, body: (tx: MutationContext) => T): T {
+ * SQL discards the delta; successful SQL first tells `onCommit` (at the COMMIT
+ * itself, before any owner, observer or post-commit callback; it cannot fail
+ * the committed mutation), then publishes every owner before callbacks. */
+export function runMutation<T>(
+  store: EngineStore,
+  body: (tx: MutationContext) => T,
+  onCommit?: () => void,
+): T {
   const changes = new MutationDelta();
   const tx: MutationContext = {
     prepare: (sql) => store.prepare(sql),
@@ -92,6 +98,11 @@ export function runMutation<T>(store: EngineStore, body: (tx: MutationContext) =
     });
   } catch (error) {
     throw mapStoreError(error, "mutating engine rows");
+  }
+  try {
+    onCommit?.();
+  } catch {
+    /* the notice cannot undo or fail a committed mutation */
   }
   changes.publish(store);
   return result;

@@ -7,13 +7,14 @@ import {
   promptWithPointers as renderPromptWithPointers,
   threadContextPointer,
 } from "./prompt-framing.js";
-import { requestRefusalFailure } from "./runTerminalResults.js";
+import { cancelledNextActions, requestRefusalFailure } from "./runTerminalResults.js";
 import {
   openRunScopeCustody,
   prepSignal,
   scopedRouteContext,
   scopedSpecEnv,
   type RunScopeCustodian,
+  type RunScopeOpenedHook,
 } from "./runScope.js";
 import { delegationBeltFor } from "./delegationBelt.js";
 import { routePromptCacheTtl, withReviewerPromptCacheTtl } from "./prompt-cache-routing.js";
@@ -221,6 +222,7 @@ import {
   ModelSelectionRequiredError,
   missingRouteModel,
   withInactivityWatchdog,
+  withinRunScope,
 } from "@claudexor/core";
 import {
   assertRouteModelsAllowed,
@@ -459,7 +461,7 @@ export interface ThreadContinuityContext {
   laneCheckpoints: Array<{ harness: string; profileId: string | null; turnId: string }>;
 }
 
-export interface RunInput extends Pick<AnnouncedRunContext, "stopSender"> {
+export interface RunInput extends Pick<AnnouncedRunContext, "stopSender">, RunScopeOpenedHook {
   /** Frozen model-review intent from the accepting surface; optional for embedders. */
   review?: boolean;
   repoRoot: string;
@@ -712,9 +714,9 @@ export interface OrchestratorResult {
   /** Settled ledger spend for this run (USD); null when no ledger tracked it.
    * Consumer: the orchestrate executor's aggregate budget across sub-runs. */
   spendUsd?: number | null;
-  /** Why a `cancelled` run was cancelled, when it was NOT a plain user cancel —
-   * today only `wall_clock_exceeded` (the maxSeconds deadline). Absent for a
-   * user-initiated cancel. */
+  /** Why a `cancelled` run was cancelled, when it was NOT a plain user cancel:
+   * an engine clock (`wall_clock_exceeded` for maxSeconds, `run_deadline_expired`
+   * for run-deadline/1). Absent for a user-initiated cancel. */
   cancelReason?: string;
 }
 
@@ -855,10 +857,13 @@ export class Orchestrator {
     // recorded BEFORE the first launch, rides every spec env (`scopedSpecEnv`),
     // and every announced run HOLDS its terminal until the barrier has ended
     // what still carries it. The reap never changes the verdict.
-    const custody = await openRunScopeCustody(this.deps.runScopes, runId);
+    const custody = await openRunScopeCustody(this.deps.runScopes, runId, input.onRunScopeOpened);
     resolved = custody.scope(resolved);
     try {
-      return await guardAnnouncedRun(
+      // The whole run is inside its launch scope (shared probes: `sharedLaunch`).
+      return await withinRunScope(
+        custody.marker,
+        guardAnnouncedRun,
         resolved.signal,
         (announce) => {
           const announced = custody.announced(announce);
@@ -4133,8 +4138,8 @@ export class Orchestrator {
         if (input.inPlace === true && !inPlaceWinner && directoryAdoptable) {
           const delivered = await verifyAndDeliverFiles(
             execRoot,
-            winnerRun.files,
-            {},
+            winnerRun.files!,
+            { signal: input.signal },
             gateSpecsFromContract(contract, input.runScopeMarker),
             (freshVerify) =>
               finalVerifyBlocks(freshVerify)
@@ -4201,10 +4206,11 @@ export class Orchestrator {
             postTurnSha = earlyPostTurnSha;
           } else if (adoptable) {
             // Protected apply preserves the live tree or reports tree_mutated.
+            const { signal } = input;
             const applied = await verifyAndDeliver(
               execRoot,
               secretDiff.deliverableOf(winnerRun),
-              { mode: "apply", protectedApply: true, projectRoot, owner: paths.root },
+              { mode: "apply", protectedApply: true, projectRoot, owner: paths.root, signal },
               gateSpecsFromContract(contract, input.runScopeMarker),
               (freshVerify) => {
                 finalVerify = freshVerify;
@@ -5538,12 +5544,7 @@ export class Orchestrator {
         captureFailure: lastRun?.captureRefusal?.failure,
         nextActions: [
           ...(facts.lifecycle === "cancelled"
-            ? facts.reason === "wall_clock_exceeded"
-              ? [
-                  "Inspect the partial work kept from before the deadline",
-                  "Increase --max-seconds or narrow the scope, then re-run",
-                ]
-              : ["Retry if cancellation was accidental"]
+            ? cancelledNextActions(facts.reason)
             : convNeedsDecision
               ? [
                   "Review the blocking findings on the run's turn",

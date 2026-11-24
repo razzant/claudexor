@@ -131,6 +131,7 @@ shellTest(
       "claudexord.bundle.cjs",
       "claudexor.bundle.cjs",
       "setup-login-runner.cjs",
+      "run-deadline-warden.cjs",
     ]) {
       expect(readFileSync(join(f.out, name), "utf8")).toContain(f.env.CLAUDEXOR_BUILD_SHA);
     }
@@ -160,6 +161,7 @@ shellTest(
       "claudexord.bundle.cjs",
       "claudexor.bundle.cjs",
       "setup-login-runner.cjs",
+      "run-deadline-warden.cjs",
       "browser-mcp-runtime/dist/browser-mcp-launcher.js",
     ]) {
       expect(existsSync(join(f.out, name))).toBe(true);

@@ -1,4 +1,4 @@
-import { observeHarnessProgram } from "@claudexor/core";
+import { observeHarnessProgram, sharedLaunch } from "@claudexor/core";
 import { CLAUDE_PROGRAM } from "./program.js";
 import type { CaptureResult } from "@claudexor/core";
 import type { AuthSourceReadiness, HarnessEvent } from "@claudexor/schema";
@@ -333,7 +333,11 @@ export async function probeClaudeAuthStatus(
   // The underlying operation uses its own signal.  A caller cancelling its
   // wait must not cancel the child process shared with a second caller.
   const operationAbort = new AbortController();
-  const operation = probeUnshared(bin, { ...options, abortSignal: operationAbort.signal }, key);
+  // Shared by every caller, so it carries no caller's run marker either: the
+  // first caller's run ending must not end it for the others.
+  const operation = sharedLaunch("claude-auth-status", () =>
+    probeUnshared(bin, { ...options, abortSignal: operationAbort.signal }, key),
+  );
   const promise = operation.finally(() => {
     if (pending.get(key)?.promise === promise) pending.delete(key);
   });

@@ -1,17 +1,17 @@
 import { performance } from "node:perf_hooks";
 import { recordChildLaunch } from "@claudexor/util";
-import { spawn } from "node:child_process";
-import { registerChildProcess, unregisterChildProcess } from "./process-registry.js";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { unregisterChildProcess } from "./process-registry.js";
 import { readProcessLines, type ProcessStreamLimits } from "./process-lines.js";
 import { composeSpawnEnv } from "./env-scope.js";
 import { postExitDrain } from "./process-drain.js";
-import { runScopeMarkerOf } from "./process-scope.js";
 import type { CaptureTermination } from "./capture-raw.js";
 import {
   backgroundSpawnShape,
   prepareHarnessCommand,
   type WindowsConsolePolicy,
 } from "./runtime-env.js";
+import { spawnRunOwned } from "./run-spawn.js";
 import {
   reapProcessTree,
   type KillTreeStrategy,
@@ -178,21 +178,23 @@ export async function* spawnProcess(
     opts.cwd,
   );
   const env = invocation.env;
-  const child = spawn(invocation.binary, invocation.args, {
-    cwd: opts.cwd,
-    env,
-    stdio: ["pipe", "pipe", "pipe"],
-    // Fully piped background children; interactive login/attach own their terminal policy.
-    // POSIX: the child leads its own process group so a cancel/timeout signals the
-    // WHOLE tree (harnesses start shell tools and MCP servers that would otherwise
-    // leak, keep writing to the worktree, or hang the run). Windows: an invisible
-    // console the child's console programs inherit; the tree kill is taskkill /T.
-    ...backgroundSpawnShape(process.platform, opts.windowsConsole),
-  });
-  const registration =
-    typeof child.pid === "number"
-      ? registerChildProcess(child.pid, cmd, runScopeMarkerOf(env))
-      : null;
+  // The run-owned launch point: a run's marker places the child in its boundary.
+  const { child, registration } = spawnRunOwned<ChildProcessWithoutNullStreams>(
+    invocation.binary,
+    invocation.args,
+    {
+      cwd: opts.cwd,
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+      // Fully piped background children; interactive login/attach own their terminal policy.
+      // POSIX: the child leads its own process group so a cancel/timeout signals the
+      // WHOLE tree (harnesses start shell tools and MCP servers that would otherwise
+      // leak, keep writing to the worktree, or hang the run). Windows: an invisible
+      // console the child's console programs inherit; the tree kill is taskkill /T.
+      ...backgroundSpawnShape(process.platform, opts.windowsConsole),
+    },
+    { register: cmd },
+  );
   // Bounded post-exit output drain (#449 item 2): see `process-drain.ts`.
   // The reader is told to stop (never to discard) before the pipes are ended.
   const drain = postExitDrain(child, {

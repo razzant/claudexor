@@ -8,6 +8,7 @@ import {
   type createSqlDaemonServices,
 } from "@claudexor/daemon";
 import type { AuthReadinessService } from "@claudexor/gateway";
+import type { RunScopeEntry } from "@claudexor/core";
 import {
   isModelOperation,
   type JobAdmission,
@@ -35,7 +36,10 @@ type ModelOptions = Pick<
   "sources" | "registry" | "config" | "migrationGate"
 >;
 /** Later settlements of finished runs (#613); the daemon's run-scope index by default. */
-type LaterScopes = Parameters<typeof bindLaterScopeSettlements>[0];
+type LaterScopes = Parameters<typeof bindLaterScopeSettlements>[0] & {
+  /** Rows retired once settled (the index; a test double may offer none). */
+  onRetired?(listener: (entry: RunScopeEntry) => void): () => void;
+};
 
 /** Compose the existing queue and runners with one SQL graph. This factory
  * neither opens storage nor starts a listener; the startup owner admits it
@@ -108,7 +112,7 @@ export function createSqlDaemonExecutors(
     authority: DelegationBudgetAuthority;
     admission: (id: string) => JobAdmission | null;
     /** The serving queue owns deferred settlement and history/cancellation cleanup. */
-    daemon: () => Pick<DaemonServer, "deferred" | "pruneHistory">;
+    daemon: () => Pick<DaemonServer, "deferred" | "pruneHistory" | "deadlines">;
     authReadiness: () => Pick<AuthReadinessService, "invalidate">;
     bus: RunEventBus;
     runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
@@ -152,22 +156,26 @@ export function createSqlDaemonExecutors(
     bus: options.bus,
     runtimeConcurrencyCaps: options.runtimeConcurrencyCaps,
     loginReadiness: models.loginReadiness,
-    terminalPersistence: (jobId) => (event, telemetry) =>
-      graph.threads.persistTerminal(jobId, event, telemetry),
+    terminalPersistence: (jobId, onCommitted) => (event, telemetry) =>
+      graph.threads.persistTerminal(jobId, event, telemetry, onCommitted),
     terminalStaging: (jobId) => (event, telemetry) =>
       graph.threads.stageTerminal(jobId, event, telemetry),
   });
-  const unbindLaterScopes = bindLaterScopeSettlements(
-    options.laterScopes ?? daemonRunScopeIndex(),
-    {
-      run: (runId) => graph.commands.queries.getByRunId(runId),
-      settled: (jobId) => options.daemon().deferred.processScopeSettled(jobId),
-    },
+  const scopes: LaterScopes = options.laterScopes ?? daemonRunScopeIndex();
+  const unbindLaterScopes = bindLaterScopeSettlements(scopes, {
+    run: (runId) => graph.commands.queries.getByRunId(runId),
+    settled: (jobId) => options.daemon().deferred.processScopeSettled(jobId),
+  });
+  // run-deadline/1: a settled row leaves the index; its recorded groups stay in
+  // the run's deadline record, so its warden can prove them gone and leave.
+  const unbindRetired = scopes.onRetired?.((row) =>
+    options.daemon().deadlines.keepRetiredScope(row),
   );
   return {
     /** Ends what reads this graph, before its store closes. Repeating it changes nothing. */
     close() {
       unbindLaterScopes();
+      unbindRetired?.();
       models.close();
       harnessMaintenance.close();
     },

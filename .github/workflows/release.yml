@@ -682,7 +682,7 @@ jobs:
           else
             # Both consumers use the shared stage. Signing/notarization must not
             # mutate engine bytes after staging; compare every closure entry.
-            for entry in claudexord.bundle.cjs claudexor.bundle.cjs setup-login-runner.cjs browser-mcp-runtime native; do
+            for entry in claudexord.bundle.cjs run-deadline-warden.cjs claudexor.bundle.cjs setup-login-runner.cjs browser-mcp-runtime native; do
               diff -r "$CLAUDEXOR_ENGINE_RESOURCES/$entry" "apps/macos/dist/bundle.noindex/Claudexor.app/Contents/Resources/$entry"
             done
             CLAUDEXOR_REQUIRE_BETTERLEAKS=1 node scripts/build-runtime-closure.mjs \

@@ -1,10 +1,11 @@
 import { rpcProblem, storageOnlyFailure } from "./rpc-problem.js";
 import { RunTimeLimits } from "./run-time-limits.js";
 import type { RunTimeLimit } from "./run-time-limit.js";
+import * as rd from "./run-deadline-scheduler.js";
+import { outsideRunScope } from "@claudexor/core";
 import { type Server, type Socket, createServer } from "node:net";
 
 import {
-  TurnEnqueueProblem,
   type TurnEnqueueProblem as TurnEnqueueProblemValue,
   delegatedParentOf,
   normalizeCancelReasonCode,
@@ -27,15 +28,17 @@ import { publicAcceptedCommand } from "./command-rpc.js";
 import { parseCommandListQuery } from "./command-list-select.js";
 import { clearStaleUnixSocketPath, listenOnDaemonEndpoint } from "./daemon-listen.js";
 import { type DelegationAdmissionAuthority } from "./delegation-admission.js";
-import { jobStateFromResult, publicJobRecord, type JobRecord } from "./job-record.js";
-import { settleJobError, settledJobPatch } from "./job-settlement.js";
+import { jobStateFromResult, publicJobRecord, threadIdOf, type JobRecord } from "./job-record.js";
+import { reportPreRunRefusal, settleJobError, settledJobPatch } from "./job-settlement.js";
 import {
   admissionActivity,
   admissionJob,
-  eligibleJobIndex,
+  holdingJobs,
+  nextAdmission,
   queuedAdmission,
   type AdmissionJob,
 } from "./job-admission.js";
+import { DeadlineHolds } from "./deadline-holds.js";
 import {
   daemonTokenMatches,
   recoveryOnlyRefusal,
@@ -56,6 +59,7 @@ export interface RunContext {
   signal: AbortSignal;
   stopSender?: () => DaemonStopSender | undefined;
   registerTimeLimit?: (timer: RunTimeLimit) => void;
+  deadlineScope?: rd.DeadlineScope;
   onRunStart: (info: { runId: string; taskId: string; runDir: string }) => void;
 }
 
@@ -89,6 +93,7 @@ export interface DaemonOptions extends RuntimeReplacementAuthority {
   onTurnEnqueueFailed?: (turnId: string, problem: TurnEnqueueProblemValue) => void;
   onShutdownRequested?: (sender: DaemonStopSender) => Promise<void>;
   onRuntimeReplacementRequested?: () => Promise<void>;
+  runDeadlines?: rd.RunDeadlineOptions;
   /** Issue #165 D5 admission snapshot; absent embedders always serve normal. */
   servingMode?: DaemonServingModeSnapshot;
   /** Test-only barriers around command authority acquisition. */
@@ -105,8 +110,10 @@ export class DaemonServer {
   private readonly queue: AdmissionJob[] = [];
   private readonly activeJobs = new Map<string, AdmissionJob>();
   private readonly cancelled = new Set<string>();
+  private readonly holds: DeadlineHolds;
   private readonly controllers = new Map<string, JobAbortController>();
   private readonly timeLimits = new RunTimeLimits();
+  readonly deadlines: rd.SchedulerDeadlines;
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly taskFailures: unknown[] = [];
   private readonly commands: CommandBackend;
@@ -125,13 +132,26 @@ export class DaemonServer {
 
   constructor(private readonly opts: DaemonOptions) {
     this.concurrency = daemonConcurrencyCaps(opts);
+    // A job a deadline held or ended leaves its place: the queue is offered again.
+    const redrain = () => void (this.stopping || this.drain());
+    this.holds = new DeadlineHolds({
+      cancel: (id, patch) => void this.cancelJob(id, undefined, patch),
+      queued: (id) => this.queue.some((job) => job.id === id),
+      redrain,
+    });
+    this.deadlines = new rd.SchedulerDeadlines(opts.runDeadlines, opts, {
+      cancel: (id, patch, cancelled) => this.holds.cancelExpired(id, patch, cancelled),
+      abort: (id) => this.controllers.get(id)?.abort(rd.RUN_DEADLINE_EXPIRED),
+      resume: (id) => (this.holds.release(id), redrain()),
+    });
     this.commands = opts.commands;
     this.deferred = new DeferredMessages({
       commands: this.commands,
       preparation: () => this.opts.deferredStart?.(),
       active: (id) => this.activeJobs.has(id),
       stopped: (id) => this.cancelled.has(id),
-      publish: (record) => this.publishQueued(record),
+      publish: (record) => this.publishQueued(this.deadlines.admitRecord(record)),
+      successorDeadline: this.deadlines,
     });
   }
 
@@ -242,6 +262,8 @@ export class DaemonServer {
       }
     });
 
+    this.holds.dispose();
+    await this.deadlines.dispose();
     // Existing local RPC sockets can otherwise keep server.close() pending
     // forever. They are destroyed only after every accepted command settled.
     this.followers.destroyAll();
@@ -321,7 +343,8 @@ export class DaemonServer {
           commands: this.commands,
           stopping: () => this.stopping,
           delegation: this.opts.delegationAuthority,
-          publish: (record) => this.publishQueued(record),
+          reservation: this.deadlines,
+          publish: (record) => this.publishQueued(this.deadlines.admitRecord(record)),
         });
       case "claudexor.deferredMessage":
         return this.deferred.mutate(params);
@@ -346,6 +369,8 @@ export class DaemonServer {
       }
       case "claudexor.runTimeLimit":
         return this.timeLimits.dispatch(params, (id) => this.getRecord(id));
+      case "claudexor.runDeadline":
+        return this.deadlines.rpc(params);
       case "claudexor.delegationFence": {
         const runId = String(params?.runId ?? "");
         const rec = this.commands.queries.getByRunId(runId);
@@ -377,33 +402,40 @@ export class DaemonServer {
     const running = this.activeJobs.get(id);
     if (running) return { class: running.class, phase: "active", blockers: [] };
     const queued = this.queue.find((job) => job.id === id);
-    return queued
-      ? queuedAdmission(queued, this.activeJobs.values(), this.concurrency, this.stopping)
-      : null;
+    // Held jobs count as about to run, as in `nextAdmission` (the one asked about excepted).
+    const ahead = [...this.activeJobs.values(), ...holdingJobs(this.queue, this.holds.held, id)];
+    return queued ? queuedAdmission(queued, ahead, this.concurrency, this.stopping) : null;
   }
 
-  /** Daemon-owned cancellation primitive used by RPC and the Delegate drain
-   * barrier. It is safe to repeat and preserves queued-admission cleanup. */
+  /** Daemon-owned cancel for RPC and the Delegate drain barrier. Safe to repeat: a durable terminal
+   * owes the queued cleanup (the next job's admission last) even if a notice after COMMIT threw. */
   cancelJob(
     jid: string,
     reasonCode?: CancelReasonCode,
+    terminal?: Partial<JobRecord>,
   ): { id: string; cancelled: true; deferredMessageStop: DeferredMessageStopReport } {
     const rec = this.getRecord(jid);
     if (!rec) throw new Error(`no such job: ${jid}`);
     this.cancelled.add(jid);
-    if (rec.state === "queued") {
-      this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
-      const index = this.queue.findIndex((job) => job.id === jid);
-      if (index !== -1) this.queue.splice(index, 1);
-      const delegatedFrom = delegatedParentOf(rec.params);
-      if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, rec.id);
+    const index = this.queue.findIndex((job) => job.id === jid);
+    if (rec.state === "queued" || (index !== -1 && isTerminalLifecycle(rec.state))) {
+      try {
+        if (rec.state === "queued")
+          this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso(), ...terminal });
+      } finally {
+        const durable = isTerminalLifecycle(this.getRecord(jid)?.state ?? "queued");
+        const at = durable ? this.queue.findIndex((job) => job.id === jid) : -1;
+        if (at !== -1) this.queue.splice(at, 1);
+        const delegatedFrom = durable ? delegatedParentOf(rec.params) : null;
+        if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, jid);
+        if (durable && this.holds.release(jid)) void (this.stopping || this.drain());
+      }
     }
     if (rec.runId) this.opts.delegationAuthority?.beginParentClose(rec.runId);
     // The validated reason reaches the terminal through the first abort.
     this.controllers.get(jid)?.abort(reasonCode || undefined);
-    // The ordinary stop above never waits on this write. If the hold cannot be
-    // saved, its typed failure follows the stop and the fences keep the next
-    // message unsent.
+    // The ordinary stop above never waits on this write. If the hold cannot be saved,
+    // its typed failure follows the stop and the fences keep the next message unsent.
     return { id: jid, cancelled: true, deferredMessageStop: this.deferred.stop(rec.id) };
   }
 
@@ -430,6 +462,7 @@ export class DaemonServer {
       (this.opts.now ?? (() => new Date()))().getTime(),
     );
     for (const id of removed) this.cancelled.delete(id);
+    this.deadlines.forgetAll(removed);
   }
 
   private getRecord(id: string): JobRecord | undefined {
@@ -439,16 +472,12 @@ export class DaemonServer {
   private updateRecord(record: JobRecord, patch: Partial<JobRecord>): JobRecord {
     const store = commandStoreForId(this.commands, record.id);
     if (!store) throw new Error(`command authority lost job ${record.id}`);
-    const next = store.update(record.id, patch);
+    const next = store.update(record.id, patch, this.deadlines.closeAtCommit(record.id));
+    if (isTerminalLifecycle(next.state)) this.deadlines.close(record.id);
     if (isTerminalLifecycle(next.state) && !isTerminalLifecycle(record.state)) {
       this.opts.onCommandTerminal?.(next);
     }
     return next;
-  }
-
-  private threadIdOf(rec: JobRecord): string | undefined {
-    const p = rec.params as { threadId?: unknown } | null | undefined;
-    return p && typeof p.threadId === "string" ? p.threadId : undefined;
   }
 
   /** Admit eligible jobs with one runner per thread and the existing single
@@ -458,18 +487,23 @@ export class DaemonServer {
     while (this.queue.length > 0) {
       // Existing child precedence and one overflow remain; a blocked ordinary
       // class never prevents the next eligible job of another class from running.
-      const pickIdx = eligibleJobIndex(this.queue, this.activeJobs.values(), this.concurrency);
-      if (pickIdx === -1) break;
-      const job = this.queue.splice(pickIdx, 1)[0];
+      const active = this.activeJobs.values();
+      const job = nextAdmission(this.queue, this.holds.held, active, this.concurrency);
+      if (!job) break;
       const id = job.id,
         rec = this.getRecord(id);
-      if (!rec) continue;
-      if (this.cancelled.has(id)) {
-        this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
+      if (rec && !this.cancelled.has(id) && this.deadlines.mustNotStart(id)) {
+        this.holds.hold(id);
         continue;
       }
+      if (this.cancelled.has(id) && rec) {
+        this.holds.cancelExpired(id, { state: "cancelled", finishedAt: nowIso() }, () => {});
+        continue;
+      }
+      this.queue.splice(this.queue.indexOf(job), 1);
+      if (!rec) continue;
       this.activeJobs.set(id, job);
-      const task = this.runJob(id, rec);
+      const task = outsideRunScope(() => this.runJob(id, rec)); // never an enqueuer's scope
       this.activeTasks.add(task);
       void task.then(
         () => this.activeTasks.delete(task),
@@ -492,17 +526,21 @@ export class DaemonServer {
         stopSender: () => controller.stopSender,
         registerTimeLimit: (timer) =>
           this.timeLimits.register(id, timer, () => !controller.signal.aborted),
+        deadlineScope: this.deadlines.scope(id),
         onRunStart: (info) => {
           rec = this.updateRecord(rec, info);
         },
       });
-      const patch = settledJobPatch(jobStateFromResult(result, controller.signal.aborted), result);
+      const patch = {
+        ...settledJobPatch(jobStateFromResult(result, controller.signal.aborted), result),
+        ...this.deadlines.unboundExpiry(controller.signal, rec),
+      };
       // The verdict is fixed above; only the result's large bodies are written off the loop.
       await commandStoreForId(this.commands, id)?.stageUpdate?.(id, patch);
       rec = this.updateRecord(rec, patch);
     } catch (thrown) {
       rec = settleJobError({
-        thrown,
+        thrown: this.deadlines.unboundExpiryError(controller.signal, rec) ?? thrown,
         record: rec,
         aborted: controller.signal.aborted,
         commands: this.commands,
@@ -522,32 +560,11 @@ export class DaemonServer {
       }
       if (rec.runId) {
         try {
-          this.opts.onRunTerminal?.(rec.runId, this.threadIdOf(rec));
+          this.opts.onRunTerminal?.(rec.runId, threadIdOf(rec));
         } catch {
           /* observer failure must not corrupt terminal bookkeeping */
         }
-      } else if (rec.error) {
-        // Manual replay of a refused turn may succeed after workspace repair (INV-093).
-        const turnId = (rec.params as { turnId?: unknown } | null | undefined)?.turnId;
-        if (typeof turnId === "string" && turnId) {
-          const { turnRetryable, ...problemContext } = rec.errorContext ?? {};
-          try {
-            this.opts.onTurnEnqueueFailed?.(
-              turnId,
-              TurnEnqueueProblem.parse({
-                message: rec.error,
-                code: rec.errorCode ?? null,
-                retryable:
-                  typeof turnRetryable === "boolean" ? turnRetryable : (rec.errorRetryable ?? true),
-                required_actions: rec.errorRequiredActions ?? [],
-                context: problemContext,
-              }),
-            );
-          } catch {
-            /* observer failure must not corrupt terminal bookkeeping */
-          }
-        }
-      }
+      } else reportPreRunRefusal(rec, this.opts.onTurnEnqueueFailed);
       try {
         this.pruneHistory();
         if (!this.stopping) this.drain();

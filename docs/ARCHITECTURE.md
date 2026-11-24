@@ -2722,8 +2722,9 @@ including thread worktrees and directory scans; one waiter cannot stop shared
 store initialization. `harness.started` marks entry into the execution path.
 
 Preparation Git, snapshots and copies carry the run's stop. Hooks and filters
-(`core.fsmonitor=false`) join its scope, or `thread-preparation:<job>` opened before
-a new tree's first Git step; success also settles it. Raw-record seeding stays
+(`core.fsmonitor=false`) join its scope, or `thread-preparation:<job>`, opened before
+a new tree's first Git step (first of all for a job with a run deadline); every
+successful preparation settles it. Raw-record seeding stays
 inside envelope preparation, before handover, for candidates and synthesis.
 A caller Stop cancels preparation and releases its lease uncharged. A failure
 without that Stop stays failed with its existing unknown-cost settlement.
@@ -3879,7 +3880,7 @@ an answer). A route line keeps its counts; its rounded failed share reads
 
 #### Engine store identity
 
-`POST /v2/handshake` returns top-level `storeId`, the durable engine store's UUID (stable across restarts, absent when unavailable), only to a request sending `X-Claudexor-Store-Identity: 1`, so older strict same-major clients keep the legacy shape; a run 404 is meaningful only together with the same `storeId`.
+`POST /v2/handshake` returns top-level `storeId`, the durable engine store's UUID (stable across restarts, absent when unavailable), only to a request sending `X-Claudexor-Store-Identity: 1`, so older strict same-major clients keep the legacy shape; a run 404 is meaningful only together with the same `storeId`. Likewise `capabilities` only to a request sending `X-Claudexor-Capabilities: 1`: `[{name: "run-deadline/1", stopGraceSec, boundary}]` on Linux once the daemon's startup boundary probe finished (`boundary` is `cgroup` or `marker`), an empty list elsewhere.
 
 A run lookup and its admission can name that store, so another store's answer cannot pass for absence. `GET /v2/runs/:id` adds `context.storeId`, the store just read, to its `http_404` problem whenever that store has an identity. With the same request header, which leaves the shape older strict clients parse alone (the queued thread-turn handle is a strict object), `POST /v2/runs`, `POST /v2/runs/:id/retry`, the `rerun_with_feedback` decision, `POST /v2/threads/:id/turns` and its retry name the store that served the accepted job back: top level on a handle, in `context` on a pre-run refusal. A task-group receipt always does. An admission whose store has no identity is still accepted and claims nothing, and so is one whose start could not be read back. A caller keeps the receipt's store and compares it with the 404's. A different or missing store leaves the run unknown. The same store proves only that it retains no such record, never that the run did not start, because retention can remove a record. `claudexor inspect` reports the answering store in its message and `context`. The CLI and MCP send the header, so the CLI's `--json` and NDJSON results, MCP launch and continuation results and `claudexor_thread_turn` handles carry the accepting store. Other run-scoped 404 routes do not name a store, so only this lookup and the [start lookups](#7-control-api), whose answers always name their store, can speak for a store's absence.
 
@@ -3979,6 +3980,8 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `GET /v2/runs/:id/artifacts`
 - `GET /v2/runs/:id/artifacts/<path>`
 - `POST /v2/runs/:id/control`
+- `GET /v2/runs/:id/deadline`
+- `PATCH /v2/runs/:id/deadline`
 - `POST /v2/runs/:id/decision`
 - `GET /v2/runs/:id/events`
 - `GET /v2/runs/:id/events/:id`
@@ -4070,7 +4073,8 @@ not retry automatically.
   record is pruned, its id is unknown and the successor can be pruned on a later
   pass. A successor refused before
   its run started holds no claim, one that ran and failed stays the head.
-  Exact Retry and `rerun_with_feedback` replay the original request, so for a
+  Exact Retry and `rerun_with_feedback` replay the original request (a source
+  that held a run-deadline/1 deadline is refused instead), so for a
   successor that ran they answer the same `continuation_superseded`: the
   caller continues the head instead. Omitted `mode`, `scope`, `execution`, `harnesses`, `primaryHarness`, `model`,
   `models` and `promptCacheTtl` come from the predecessor before request defaults. Setting either
@@ -4357,7 +4361,9 @@ not retry automatically.
   new run clears the error. A second refusal replaces it. See the
   [thread recovery contract](INTEGRATIONS.md#refused-turns) for the HTTP and
   stored-turn retry fields.
-- Run-level `POST /v2/runs/:id/retry` is Exact Retry for any settled run: it
+- Run-level `POST /v2/runs/:id/retry` is Exact Retry for any settled run that
+  held no run-deadline/1 deadline (one that did is refused
+  `409 run_deadline_replay_refused`: Run Again, or a new start with `deadline.at`): it
   creates a new command/turn, links `retryOf`, reuses the immutable original
   request, and performs fresh normalization/preflight. Retained terminal
   product commands follow the global age/cap policy and continuation exemptions
@@ -6252,7 +6258,105 @@ with `pid == pgid` cannot be verified as the recorded leader, so the host
 skips that group; when no process with `pid == pgid` is alive, the group's
 remaining members born at or after the floor belong to the scope, provided at
 least one was born by `settled_at` when it is recorded (the kernel does not hand
-out a pid that is still a live process-group id). The sweep covers orphaned envelopes (with their
+out a pid that is still a live process-group id).
+
+**Run deadlines (run-deadline/1).** A run started with `deadline.at` extends the
+INV-144 scope ownership past the daemon's life. Every job with a deadline, its own
+or inherited (a Delegate parent's, or a predecessor's for a continuation or a next
+message), has ONE durable record, `daemon/run-deadlines/<job>.json`, written by the
+daemon alone (temporary file, fsync, rename, directory flush) under the job id the
+commit will use, before the command exists; a change is confirmed only after its
+write. Answers, receipts, lookups and the startup reconciliation are projections
+of it. The daemon converts each instant once, at acceptance, to the host clock:
+CLOCK_BOOTTIME read from `/proc/uptime` on Linux (it counts suspend, so a
+suspended host finds the deadline reached when it wakes), `process.hrtime`
+elsewhere; an inherited deadline is copied from the source record's host-clock
+target, never converted again. Per job, transitions are linear: `armed`, then
+`enforcing` (the deadline began its stop), then `expired`; or `closed` (a terminal
+before the deadline). They run on one per-job chain in the daemon; the terminal
+(told at the SQL commit itself — a run's terminal or a command update, such as a
+Stop or the settlement of a job that never ran — before that mutation's observers,
+post-commit callbacks and files) takes its facts at once — time, claim, a won
+deadline, the governing deadline with its parent's cap — and they alone decide
+`closed` or `expired` and the deadline it ended under; every reader of an ended
+job (answers, a continuation's admission, its children's cap) sees that frozen
+deadline at once, and an extension commits only once its ended Delegate
+descendants' frozen deadlines are durable, so nothing later raises them. The enforcement claim
+(`<job>.json.enforcing`, exclusive create) is the one durable fact that a deadline
+won and names it: the warden makes it before its first stop, the daemon when it
+decides the deadline won (and for a terminal at or after its deadline); it floors
+the governing deadline. A change is a two-phase commit ordered by the shared host
+clock, not a lock a SIGKILLed daemon would leave held: before the new revision can
+be seen, the record in force is kept durable beside it (`<job>.json.prior`; while it
+names an older revision it is the record in force for every reader, the warden
+included, so a change that became visible without committing moves no deadline;
+a refused change leaves it, the next durable write removes it); the rename comes
+only before both the replaced and the requested deadline, with no terminal and
+no claim; the change commits when the prior is removed, in the same
+synchronous step as its last check (no terminal, no claim, the clock before the
+replaced deadline plus the warden's one-second head start), and is confirmed once
+that removal is durable (visible but not flushed: `503 run_deadline_outcome_unknown`,
+read it again). Until the commit nothing — a publication outlasting its deadline,
+a failed write, a daemon death — postpones the replaced deadline; a terminal
+before the commit refuses the change. The warden reads its deadline before it reports
+itself ready, then the clock before the files, and acts one second after the
+deadline, so one acting on the prior claims it and the daemon stops the run
+instead of confirming (a claim landing after that check stops it early, never
+late); a record that stays unreadable for that second is enforced at the last
+deadline read (early at most). The daemon re-reads the clock at least every second:
+a won deadline aborts the job before any write is awaited, a queued job never
+starts (one whose transition is pending keeps its place and its thread until it
+settles, and counts in admission answers; its cancel is retried while it cannot be
+written; a hold that ends offers the queue again), a preparing or running one is cancelled (`run_deadline_expired`), an
+acceptance is judged again inside its SQL transaction after replay resolution, and
+from the deadline on the run's scope launches nothing (`registerScopeFence`),
+its own patch capture included. A replay of a run that held a deadline (Exact
+Retry, decision rerun, thread turn retry — which looks its job up before any refusal
+the turn recorded) is refused `409 run_deadline_replay_refused`, also when its record
+is gone; receipts and lookups project the record read-only. The warden is a detached process (its own session, no
+run marker, outside every run cgroup) started before the first process of the
+run's scope — before the thread worktree preparation's first Git child (a job
+with a deadline runs its whole preparation inside that scope), then given
+the run's own marker — and confirmed through `<job>.json.ready` before anything
+launches. The engine bundle starts the small `run-deadline-warden.cjs` beside it
+(its own `--run-deadline-warden <record>` role when that file is missing); an
+installed package starts its sibling entry. The warden alone acts while the
+daemon is dead: it kills the run's cgroup (`cgroup.kill`, when the startup probe
+proved a delegated cgroup v2 subtree: every launch carrying the run's marker
+enters `claudexor-runs/<job>` before exec) and ends every process carrying the
+run's markers plus the groups and descendants `daemon/run-scopes.json` recorded
+for them. Every process a run starts launches through core's one run-owned launch
+point (`spawnRunOwned`; `spawnProcess` and `runCaptureRaw` use it), and the
+orchestrator runs the whole run inside `withinRunScope(marker)`: each launch
+carries the run's marker whatever env its call site built; the single-flight
+vendor probes several runs share (Claude auth status, model and `--help` probes,
+the Cursor status cache, a program's `--version` probe, every keyed `SharedRead`
+acquisition such as a Codex login read) launch as `sharedLaunch(name)` without one, and the
+daemon starts every job outside any inherited scope. A source test refuses any
+other direct `node:child_process` launch outside its explained exceptions (host
+measurement, the daemon's warden and probe, operator commands, the dependency-free
+publication scanner, which delivery hands the run-owned launcher). It leaves,
+writing `<job>.json.outcome.json` (what `enforcement`
+reports) and `.done`: on the cgroup boundary once `cgroup.events` reports the
+cgroup unpopulated (nested subgroups included) and every marker reap settled; on
+the marker boundary on Linux once a census is complete and settled, while an
+unprovable census or a surviving member is retried with backoff and ends
+`unresolved` only after two minutes of enforcement; where no census proves
+emptiness (macOS, not declared) after three settled passes, `unresolved`; at once
+when its record is removed. A Delegate child's warden reads its ancestors'
+current records, so one parent write moves every dependent warden, and every
+confirmed parent change is copied into its descendants' `inherited`; a terminal
+fixes the deadline the run ended under (`frozen`), and a closed child's
+survivors stay capped by its parent's current deadline. After the terminal the
+warden leaves once a non-signalling pass confirms the boundary empty (on the
+marker boundary on Linux, after a normal terminal, also once the recorded tree is
+empty and no readable environment carries the marker, reported `unresolved` with
+that residual; a settled `run-scopes.json` row the index retired is kept in the
+record for this), otherwise it stays to that deadline. A record goes only when
+nothing may act on it: its warden is done and no record naming it as Delegate
+parent is held or has a warden that may act. Startup reconciles in two passes:
+the terminal state of every earlier generation's retained record, then the
+removal of what nothing needs. The sweep covers orphaned envelopes (with their
 seeded-credential homes), dead per-attempt `claudexor/<task>/<attempt>`
 branches, leaked `claudexor/verify-*` branches, and stale
 `claudexor-ro-*`/`claudexor-verify-*` tmp dirs. Envelopes whose creating
@@ -9432,7 +9536,7 @@ existing signed manifest remains its upstream publication authority. There is
 no embed-only payload, manifest, updater authority, or runtime npm install. The
 portable archive root is fixed:
 `claudexord.bundle.cjs`, `claudexor.bundle.cjs`,
-`setup-login-runner.cjs`, `browser-mcp-runtime/`, and
+`setup-login-runner.cjs`, `run-deadline-warden.cjs`, `browser-mcp-runtime/`, and
 `native/claudexor-process-identity` plus
 `native/claudexor-conpty-helper.exe` and the darwin-arm64 and darwin-x64
 publication scanners under `native/betterleaks/`. It deliberately contains no

@@ -5,7 +5,8 @@ import {
   ControlRunStartInfo,
   TaskGroupReceipt,
 } from "@claudexor/schema";
-import type { DaemonRunRecord } from "./run-record.js";
+import type { RunDeadlineSnapshot } from "@claudexor/schema";
+import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 
 /** The request opted in to `storeId`: some shipped same-major clients parse a receipt strictly. */
@@ -64,7 +65,7 @@ export function unboundRunStartResponse(
   rec: DaemonRunRecord,
   terminal: boolean,
   terminalContext: Record<string, unknown> = {},
-  metadata: Partial<TaskGroupReceipt> = {},
+  metadata: Partial<TaskGroupReceipt> & { deadline?: RunDeadlineSnapshot } = {},
 ): { status: number; body: Record<string, unknown> } {
   // errorStatus is served verbatim only inside the failure range; anything
   // else (absent, or a non-4xx/5xx value from a defective writer) must not
@@ -110,19 +111,87 @@ export function unboundRunStartResponse(
   };
 }
 
+/**
+ * The run-deadline/1 snapshot a start receipt, a pre-start refusal and a lookup
+ * carry: for every job that can hold a deadline record — one that set its own,
+ * a continuation (`continueFrom`) or a Delegate child (`delegatedFromRunId`)
+ * that may inherit one, and a job its deadline ended. A job without a record
+ * answers as before (a client that never used deadlines never sees the field).
+ * The projection is read-only (`peek`): it awaits no pending change and starts
+ * no stop, so the receipt agrees with the handle it carries. A record that
+ * exists but cannot be read fails the answer (503, retryable).
+ */
+export async function receiptDeadline(
+  daemon: Pick<DaemonFacadeClient, "runDeadline"> | undefined,
+  rec: DaemonRunRecord,
+): Promise<{ deadline?: RunDeadlineSnapshot }> {
+  const params = rec.params as
+    { deadline?: unknown; continueFrom?: unknown; delegatedFromRunId?: unknown } | null | undefined;
+  const mayHold =
+    rec.errorCode === "run_deadline_expired" ||
+    (!!params &&
+      typeof params === "object" &&
+      (params.deadline !== undefined ||
+        typeof params.continueFrom === "string" ||
+        typeof params.delegatedFromRunId === "string"));
+  if (!mayHold || !daemon?.runDeadline) return {};
+  try {
+    return { deadline: await daemon.runDeadline(rec.id, { action: "peek" }) };
+  } catch (error) {
+    // No record (a job that inherited none): the field is left out, the handle stands.
+    if ((error as { code?: unknown })?.code === "run_deadline_absent") return {};
+    throw error;
+  }
+}
+
+/**
+ * A replay of a run that held a run-deadline/1 deadline (its own or inherited)
+ * would start an ordinary run with no deadline at all: Exact Retry, a decision
+ * rerun and a thread turn retry refuse it, typed, and name the start that
+ * carries a new deadline. Fail closed: a source whose request set a deadline,
+ * or that its deadline ended, is refused even when its record is gone; a
+ * record that cannot be read fails the request (503). Null when the source
+ * held none.
+ */
+export async function deadlineReplayRefusal(
+  daemon: Pick<DaemonFacadeClient, "runDeadline"> | undefined,
+  source: DaemonRunRecord,
+  route: string,
+  restart: { threadId: string } | null = null,
+): Promise<{ error: string; code: string; retryable: false; requiredActions: string[] } | null> {
+  const params = source.params as { deadline?: unknown } | null | undefined;
+  const explicit = !!params && typeof params === "object" && params.deadline !== undefined;
+  const { deadline } = await receiptDeadline(daemon, source);
+  if (!deadline && !explicit && source.errorCode !== "run_deadline_expired") return null;
+  return {
+    error: `${route} would start this run again without its deadline; start it again with a new deadline instead`,
+    code: "run_deadline_replay_refused",
+    retryable: false,
+    requiredActions: [
+      restart
+        ? `Send a new turn with deadline.at (POST /v2/threads/${restart.threadId}/turns) under a new idempotency key.`
+        : "Start a new run with deadline.at (POST /v2/runs), or take Run Again and give the draft its own deadline.",
+    ],
+  };
+}
+
 /** Answer an accepted one-shot job: its bound handle, its queued handle or its pre-run refusal. */
 export async function respondToAcceptedJob(
   ctx: {
     waitForRunStart(jobId: string): Promise<DaemonRunRecord>;
     storeId?: () => string | undefined;
     json(res: ServerResponse, status: number, body: unknown): void;
+    daemon?: Pick<DaemonFacadeClient, "runDeadline">;
   },
   req: IncomingMessage,
   res: ServerResponse,
   jobId: string,
 ): Promise<void> {
   const rec = await ctx.waitForRunStart(jobId);
-  const metadata = acceptedRunReceipt(rec, ctx.storeId, wantsStoreIdentity(req));
+  const metadata = {
+    ...acceptedRunReceipt(rec, ctx.storeId, wantsStoreIdentity(req)),
+    ...(await receiptDeadline(ctx.daemon, rec)),
+  };
   if (rec.runId && rec.runDir) {
     return ctx.json(
       res,

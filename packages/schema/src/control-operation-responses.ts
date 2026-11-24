@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { RunDeadlineSnapshot } from "./run-deadline.js";
 import {
   ControlArtifactInfo,
   ControlQueuedRunInfo,
@@ -177,6 +178,9 @@ export const ControlThreadTurnResponse = z
         threadId: Id,
         turnId: Id,
         state: z.string().min(1),
+        deadline: RunDeadlineSnapshot.optional().describe(
+          "The run-deadline/1 deadline the turn's job holds, read without any transition from its durable record: one the turn set, or one it inherited.",
+        ),
       })
       .strict(),
   ])

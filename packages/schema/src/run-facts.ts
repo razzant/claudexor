@@ -433,6 +433,7 @@ export function validateRunFactsInvariants(value: unknown): RunFacts {
     cancelled: new Set([
       "user_cancelled",
       "wall_clock_exceeded",
+      "run_deadline_expired",
       "host_cancelled",
       "owner_task_gone",
     ]),

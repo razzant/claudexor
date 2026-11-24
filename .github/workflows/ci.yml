@@ -581,6 +581,9 @@ jobs:
           node "$resources/claudexord.bundle.cjs" --probe
           node "$resources/claudexor.bundle.cjs" help --json
           pnpm vitest run packages/core/src/process-identity.test.ts packages/schema/src/platform-auth-policy.test.ts
+          # run-deadline/1 trials on macOS: the scheduler, the warden loop and real
+          # detached wardens ending marked process trees (Linux runs them in pnpm test).
+          pnpm vitest run packages/daemon/src/run-deadlines.test.ts packages/daemon/src/run-deadline-warden.test.ts packages/daemon/src/run-deadline-process.test.ts packages/cli/src/claudexord-warden-entry.test.ts
 
       - name: Verify local macOS app signing, cleanup and boot smoke
         run: pnpm vitest run scripts/lib/build-app-local-signing.test.mjs scripts/lib/build-app-cleanup.test.mjs scripts/lib/build-app-boot-smoke.test.mjs

@@ -77,6 +77,8 @@ export function runOutcomeLabel(facts: RunOutcomeFacts): string {
       switch (facts.reason) {
         case "wall_clock_exceeded":
           return "Time limit reached";
+        case "run_deadline_expired":
+          return "Deadline reached";
         case "host_cancelled":
           return "Stopped by host";
         case "owner_task_gone":
@@ -368,6 +370,7 @@ export function acpStopReason(
   if (lifecycle === "cancelled") {
     const notUser =
       reason === "wall_clock_exceeded" ||
+      reason === "run_deadline_expired" ||
       reason === "host_cancelled" ||
       reason === "owner_task_gone";
     return notUser ? "refusal" : "cancelled";

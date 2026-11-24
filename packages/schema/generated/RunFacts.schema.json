@@ -86,6 +86,7 @@
                     "not_converged",
                     "stuck_no_progress",
                     "wall_clock_exceeded",
+                    "run_deadline_expired",
                     "user_cancelled",
                     "host_cancelled",
                     "owner_task_gone",

@@ -23,6 +23,7 @@ import {
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "@claudexor/control-api";
 import { createDaemonQuotaPoller, openStartupDiagnostics } from "./daemon-admission-runtime.js";
 import { armDaemonLifecycle, daemonRunScopeIndex, runStartupCrashGc } from "./daemon-lifecycle.js";
+import { runDeadlineOptions } from "./run-deadline-paths.js";
 import {
   bindRecoveryTransport,
   DaemonStartupAdmission,
@@ -122,6 +123,7 @@ export async function main(): Promise<void> {
         commands: sqlReads.deferredCommands(() => graph().commands),
         deferredStart: () => executors?.deferredStart,
         runtimeConcurrencyCaps: caps,
+        runDeadlines: runDeadlineOptions(daemonDir()),
         servingMode: admission.snapshot,
         storeFacts: () => storage!.facts(),
         delegationAuthority: delegation.authority,
@@ -248,6 +250,7 @@ export async function main(): Promise<void> {
         port: Number(process.env.CLAUDEXOR_CONTROL_PORT ?? 0),
         servingMode: admission.snapshot,
         storeId: () => storage.storeId(),
+        capabilities: () => server.deadlines.capabilities(),
         bus,
         services,
         ...sqlReads.sqlControlReadSources(graph, () => storage.storeId()),
@@ -343,6 +346,7 @@ export async function main(): Promise<void> {
             runScopes: daemonRunScopeIndex(),
             diagnostics: diagnostics.port,
           });
+          await server.deadlines.startup();
           if (shutdown!.requested()) return;
           for (const sweep of sweepRetiredConfigKeysAtStartup())
             log(`swept retired config keys from ${sweep.path}: ${sweep.removed.join(", ")}`);

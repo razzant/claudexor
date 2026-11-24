@@ -127,4 +127,28 @@ describe("directory delivery", () => {
     ).toMatchObject({ applied: false, treeMutated: false, finalVerify: { applied_cleanly: null } });
     expect(await readFile(join(f.source, "a.txt"), "utf8")).toBe("original");
   });
+
+  it("a run stopped before its final verification launches no gate and delivers nothing", async () => {
+    const f = await fixture();
+    const marker = join(f.root, "gate-ran");
+    const stop = new AbortController();
+    stop.abort("run_deadline_expired");
+    const delivered = await verifyAndDeliverFiles(f.source, f.candidate, { signal: stop.signal }, [
+      {
+        id: "would-run",
+        program: process.execPath,
+        args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`],
+      },
+    ]);
+    expect(delivered).toMatchObject({
+      applied: false,
+      treeMutated: false,
+      finalVerify: {
+        applied_cleanly: null,
+        reason: "the run was stopped during final verification",
+      },
+    });
+    expect(await readFile(marker, "utf8").catch(() => "never ran")).toBe("never ran");
+    expect(await readFile(join(f.source, "a.txt"), "utf8")).toBe("original");
+  });
 });

@@ -482,6 +482,52 @@ console.log(JSON.stringify({characterDevice, interactive, eof}));
     expect(unregistered).toEqual([42_424]);
   });
 
+  it("registers the print probe under the run's scope marker its env carries (run-deadline/1)", async () => {
+    const marker = `CLAUDEXOR_RUN_SCOPE_${"9".repeat(32)}`;
+    const child = Object.assign(new EventEmitter(), {
+      pid: 42_425,
+      stdin: Object.assign(new EventEmitter(), { end: () => {} }),
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: () => true,
+    });
+    const markers: Array<string | undefined> = [];
+    const envs: Array<NodeJS.ProcessEnv | undefined> = [];
+    // Hermetic: the daemon is launched without any enclosing run's marker.
+    const inherited = Object.keys(process.env).filter((key) =>
+      key.startsWith("CLAUDEXOR_RUN_SCOPE_"),
+    );
+    const saved = inherited.map((key) => [key, process.env[key]] as const);
+    for (const key of inherited) delete process.env[key];
+    const run = runAgyPrintCommand(
+      "agy",
+      "/model",
+      { [marker]: "1" },
+      {
+        timeoutMs: 30_000,
+        drainMs: 1,
+        resolveBinary: () => "/fake/agy",
+        spawnProcess: ((_binary: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+          envs.push(options.env);
+          return child;
+        }) as never,
+        processRegistry: {
+          register: (_pid, _command, scopeMarker) => {
+            markers.push(scopeMarker);
+            return 1;
+          },
+          unregister: () => {},
+        },
+      },
+    );
+    child.emit("exit", 0, null);
+    child.emit("close", 0, null);
+    await run.catch(() => null);
+    for (const [key, value] of saved) process.env[key] = value;
+    expect(markers).toEqual([marker]);
+    expect(envs[0]?.[marker]).toBe("1");
+  });
+
   it("normalizes a synchronous spawn throw to spawn_failed", async () => {
     await expect(
       runAgyPrintCommand(

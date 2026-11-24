@@ -3232,6 +3232,215 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("threads: a turn its run-deadline/1 deadline ended before it started is a typed 409 carrying the durable deadline", async () => {
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-deadline-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-dl",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "deadline thread",
+      mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      routingGoal: "auto",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    const turns: Record<string, unknown>[] = [];
+    const snapshot = {
+      at: new Date(Date.now() - 1_000).toISOString(),
+      revision: 0,
+      serverNow: now,
+      state: "expired",
+      stopGraceSec: 15,
+      inheritedFrom: null,
+      successorOf: null,
+      enforcement: null,
+    };
+    const expired = {
+      id: "job-dl",
+      state: "cancelled",
+      params: { deadline: { at: snapshot.at }, turnId: "tn-dl" },
+      error: "run deadline passed before the run started",
+      errorCode: "run_deadline_expired",
+      errorStatus: 409,
+      errorRetryable: false,
+    };
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "job-dl", state: "queued" };
+      },
+      async status() {
+        return expired;
+      },
+      async list() {
+        return [expired];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+      async runDeadline() {
+        return snapshot as never;
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+      createThreadTurn: async (id, prompt) => {
+        const turn = { id: "tn-dl", thread_id: id, run_id: null, prompt, created_at: now };
+        turns.push(turn);
+        return turn;
+      },
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const res = await apiFetch(`${base}/threads/th-dl/turns`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "remote work", deadline: { at: snapshot.at } }),
+        });
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({
+          code: "run_deadline_expired",
+          retryable: false,
+          context: { jobId: "job-dl", deadline: { state: "expired", revision: 0 } },
+        });
+        // The turn keeps its non-retryable refusal, and its job exists: a retry
+        // resolves that job first and is refused typed, naming a new turn.
+        turns[0]!["enqueue_error"] = {
+          message: expired.error,
+          code: "run_deadline_expired",
+          retryable: false,
+          required_actions: [],
+          context: {},
+        };
+        const retry = await apiFetch(`${base}/threads/th-dl/turns/tn-dl/retry`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "dl-retry" },
+          body: "{}",
+        });
+        expect(retry.status).toBe(409);
+        const refusal = (await retry.json()) as { code?: string; requiredActions?: string[] };
+        expect(refusal.code).toBe("run_deadline_replay_refused");
+        expect(refusal.requiredActions?.[0]).toContain("POST /v2/threads/th-dl/turns");
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("threads: a retry of a turn whose job held a deadline and failed its preparation non-retryably resolves that job first and is refused typed", async () => {
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-prep-deadline-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-pd",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "preparation thread",
+      mode: "agent",
+      workspace: { mode: "isolated", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      routingGoal: "auto",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    // A non-retryable preparation refusal is recorded on the turn, yet its job exists.
+    const turns: Record<string, unknown>[] = [
+      {
+        id: "tn-pd",
+        thread_id: "th-pd",
+        run_id: null,
+        prompt: "remote work",
+        created_at: now,
+        enqueue_error: {
+          message: "the isolated worktree could not be prepared",
+          code: "isolated_worktree_unavailable",
+          retryable: false,
+          required_actions: [],
+          context: {},
+        },
+      },
+    ];
+    const at = new Date(Date.now() + 600_000).toISOString();
+    let jobs: Record<string, unknown>[] = [
+      {
+        id: "job-pd",
+        state: "cancelled",
+        params: { deadline: { at }, turnId: "tn-pd" },
+        error: "the isolated worktree could not be prepared",
+        errorCode: "isolated_worktree_unavailable",
+        errorStatus: 409,
+        errorRetryable: false,
+      },
+    ];
+    let enqueued = 0;
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        enqueued += 1;
+        return { id: "job-again", state: "queued" };
+      },
+      async status() {
+        return jobs[0] as never;
+      },
+      async list() {
+        return jobs as never;
+      },
+      async cancel() {
+        return { ok: true };
+      },
+      async runDeadline() {
+        return {
+          at,
+          revision: 0,
+          serverNow: now,
+          state: "closed",
+          stopGraceSec: 15,
+          inheritedFrom: null,
+          successorOf: null,
+          enforcement: null,
+        } as never;
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const retry = (key: string) =>
+          apiFetch(`${base}/threads/th-pd/turns/tn-pd/retry`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "Idempotency-Key": key },
+            body: "{}",
+          });
+        const refused = await retry("pd-retry");
+        expect(refused.status).toBe(409);
+        const body = (await refused.json()) as { code?: string; requiredActions?: string[] };
+        expect(body.code).toBe("run_deadline_replay_refused");
+        expect(body.requiredActions?.[0]).toContain("POST /v2/threads/th-pd/turns");
+        // Without a job the earlier refusal stands: nothing to replay.
+        jobs = [];
+        const none = await retry("pd-retry-2");
+        expect(none.status).toBe(409);
+        const plain = (await none.json()) as { code?: string; error?: string; message?: string };
+        expect(plain.code).not.toBe("run_deadline_replay_refused");
+        expect(JSON.stringify(plain)).toContain("has no recorded enqueue attempt to replay");
+        expect(enqueued, "nothing was enqueued again").toBe(0);
+      },
+      undefined,
+      services,
+    );
+  });
+
   it("threads: refusal status is born at the throw — persisted errorStatus wins, a bare errno code stays 500 (W24)", async () => {
     const repo = reapMk(join(tmpdir(), "claudexor-thread-status-"));
     const now = new Date().toISOString();
@@ -3407,7 +3616,7 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("threads: retry 409s IMMEDIATELY for a retryable:false refusal (no registry lookup for params that were never recorded)", async () => {
+  it("threads: retry of a retryable:false refusal with no recorded job 409s as before (the job lookup comes first: a refusal on the turn does not prove that no job exists)", async () => {
     const repo = reapMk(join(tmpdir(), "claudexor-thread-norep-"));
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
@@ -3469,7 +3678,7 @@ describe("DaemonControlApiServer", () => {
         });
         expect(res.status).toBe(409);
         expect(((await res.json()) as { message: string }).message).toContain("send a new message");
-        expect(listCalls).toBe(0); // short-circuited before the registry lookup
+        expect(listCalls).toBe(1); // one lookup found no job to replay
       },
       undefined,
       services,
@@ -10341,6 +10550,37 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("rerun_with_feedback of a run whose request set a deadline is refused, typed, even with no record left", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "succeeded";
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      deadline: { at: "2026-01-01T00:00:00.000Z" },
+    };
+    let enqueued = 0;
+    // No runDeadline at all: the request's own field decides (fail closed).
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown, options) {
+        enqueued += 1;
+        return daemon.enqueue(params, options);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const res = await apiFetch(`${base}/runs/run-d1/decision`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "decision-rerun-dl" },
+        body: JSON.stringify({ action: "rerun_with_feedback", feedback: "Again." }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        code: "run_deadline_replay_refused",
+        retryable: false,
+      });
+      expect(enqueued).toBe(0);
+    });
+  });
+
   function concurrentDecisionRerunFixture() {
     const { daemon, record } = fakeDaemon();
     record.state = "succeeded";
@@ -12030,6 +12270,141 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("Run Again drops a source run's absolute deadline; Exact Retry of a run that held one refuses, typed", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      deadline: { at: "2026-01-01T00:00:00.000Z" },
+    };
+    const enqueued: Array<Record<string, unknown>> = [];
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params, options) {
+        enqueued.push(params as Record<string, unknown>);
+        return daemon.enqueue(params, options);
+      },
+      // The source's durable deadline record (run-deadline/1).
+      async runDeadline() {
+        return {
+          at: "2026-01-01T00:00:00.000Z",
+          revision: 0,
+          serverNow: "2026-01-01T00:00:00.000Z",
+          state: "closed",
+          stopGraceSec: 15,
+          inheritedFrom: null,
+          successorOf: null,
+          enforcement: null,
+        };
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const draft = await apiFetch(`${base}/runs/run-d1/run-again`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(draft.status).toBe(200);
+      const body = (await draft.json()) as {
+        request: Record<string, unknown>;
+        differences: Array<{ field: string; reason: string }>;
+      };
+      expect(body.request).not.toHaveProperty("deadline");
+      expect(body.differences).toContainEqual(
+        expect.objectContaining({ field: "deadline", change: "omitted" }),
+      );
+      const retry = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "deadline-retry" },
+        body: "{}",
+      });
+      // A replay would run it again with no deadline at all: refused, nothing enqueued.
+      expect(retry.status).toBe(409);
+      expect(await retry.json()).toMatchObject({
+        code: "run_deadline_replay_refused",
+        retryable: false,
+      });
+      expect(enqueued).toEqual([]);
+    });
+  });
+
+  it("Run Again of a Delegate child that inherited a deadline discloses the omitted deadline", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      delegatedFromRunId: "run-parent",
+    };
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async runDeadline() {
+        return {
+          at: "2026-01-01T00:00:00.000Z",
+          revision: 0,
+          serverNow: "2026-01-01T00:00:00.000Z",
+          state: "closed",
+          stopGraceSec: 15,
+          inheritedFrom: "job-parent",
+          successorOf: null,
+          enforcement: null,
+        };
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const draft = await apiFetch(`${base}/runs/run-d1/run-again`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(draft.status).toBe(200);
+      const body = (await draft.json()) as {
+        request: Record<string, unknown>;
+        differences: Array<{ field: string; reason: string }>;
+      };
+      expect(body.request).not.toHaveProperty("deadline");
+      expect(body.differences).toContainEqual(
+        expect.objectContaining({
+          field: "deadline",
+          change: "omitted",
+          reason: expect.stringContaining("inherited"),
+        }),
+      );
+    });
+  });
+
+  it("Run Again of a continuation that took its deadline from the run it continues names that the draft takes it again", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = { ...(record.params as Record<string, unknown>), continueFrom: "run-prev" };
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async runDeadline() {
+        return {
+          at: "2026-01-01T00:00:00.000Z",
+          revision: 0,
+          serverNow: "2026-01-01T00:00:00.000Z",
+          state: "closed",
+          stopGraceSec: 15,
+          inheritedFrom: null,
+          successorOf: "job-prev",
+          enforcement: null,
+        };
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const draft = await apiFetch(`${base}/runs/run-d1/run-again`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(draft.status).toBe(200);
+      const body = (await draft.json()) as {
+        request: Record<string, unknown>;
+        differences: Array<{ field: string; reason: string }>;
+      };
+      expect(body.request).toMatchObject({ continueFrom: "run-prev" });
+      expect(body.request).not.toHaveProperty("deadline");
+      expect(body.differences).toContainEqual(
+        expect.objectContaining({
+          field: "deadline",
+          change: "omitted",
+          reason: expect.stringContaining("the draft still continues run-prev"),
+        }),
+      );
+    });
+  });
+
   it("refuses Exact Retry of retired access and makes Run Again require an active choice", async () => {
     const { daemon, record } = fakeDaemon();
     record.state = "succeeded";
@@ -13190,5 +13565,196 @@ describe("operation catalog route descriptors (V12)", () => {
     expect(list?.responseSchema).toBe("ControlProjectOutputsResponse");
     expect(list?.mutability).toBe("read_only");
     expect(byKey.has("GET /v2/projects/:id/outputs/<path>")).toBe(true);
+  });
+});
+
+describe("run-deadline/1 over the mounted HTTP routes", () => {
+  it("answers a fresh deadline receipt, a renewal, a stale revision and a replay after a daemon restart", async () => {
+    const { DaemonServer } = await import("../../daemon/src/server.js");
+    const { DaemonLocalClient } = await import("../../daemon/src/daemon-local-client.js");
+    const { DurableJournal } =
+      await import("../../daemon/src/store/test-support/fixtures/legacy/journal/index.js");
+    const { CommandStore } =
+      await import("../../daemon/src/store/test-support/fixtures/legacy/daemon/command-store.js");
+    const { legacyCommandFixture } =
+      await import("../../daemon/src/store/test-support/legacy-command-fixture.js");
+    const dir = reapMk(join(tmpdir(), "cx-rdl-http-"));
+    const project = join(dir, "project");
+    mkdirSync(project);
+    const token = "deadline-token";
+    const generation = () => {
+      const journal = new DurableJournal({ rootDir: join(dir, "journal"), partition: "global" });
+      const store = new CommandStore(journal);
+      store.recoverAfterStartup();
+      const daemon = new DaemonServer({
+        socketPath: join(dir, "unused.sock"),
+        token,
+        commands: legacyCommandFixture({ current: () => store }),
+        runtimeConcurrencyCaps: {
+          max_concurrent: 1,
+          max_concurrent_non_model_jobs: 1,
+          max_concurrent_model_operations: 1,
+          max_parallel_candidates: 1,
+          max_deep_scan_width: 1,
+          max_council_members: 2,
+        },
+        runDeadlines: {
+          dir: join(dir, "deadlines"),
+          spawnWarden: async () => ({ pid: 1 }),
+          // Declared as on a proven Linux host.
+          platform: "linux",
+          probeBoundary: async () => ({ kind: "marker", reason: "test" }),
+        },
+        // The slot holder waits for Stop; nothing else is admitted while it runs.
+        runner: (_params, ctx) =>
+          new Promise((resolve) =>
+            ctx.signal.addEventListener("abort", () => resolve({ lifecycle: "cancelled" }), {
+              once: true,
+            }),
+          ),
+      });
+      const client = new DaemonLocalClient(() => daemon);
+      const api = new DaemonControlApiServer({
+        token,
+        daemon: client,
+        pollMs: 5,
+        runStartTimeoutMs: 50,
+        storeId: () => "store-deadline-http",
+      });
+      return { journal, daemon, client, api };
+    };
+    const call = (base: string, path: string, init: RequestInit = {}) =>
+      apiFetch(`${base}${path}`, {
+        ...init,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          ...init.headers,
+        },
+      });
+    const body = JSON.stringify({
+      prompt: "remote work",
+      mode: "agent",
+      scope: { kind: "project", root: project, ephemeral: true },
+      deadline: { at: new Date(Date.now() + 600_000).toISOString() },
+    });
+
+    const a = generation();
+    await a.daemon.deadlines.startup();
+    const { host, port } = await a.api.start();
+    const base = `http://${host}:${port}`;
+    let jobId: string;
+    let renewedAt: string;
+    try {
+      await a.client.enqueue({ label: "slot holder" }, { idempotencyKey: "holder", clientId: "t" });
+      const fresh = await call(base, "/v2/runs", {
+        method: "POST",
+        headers: { "Idempotency-Key": "deadline-start" },
+        body,
+      });
+      expect(fresh.status).toBe(202);
+      const receipt = (await fresh.json()) as { jobId: string; deadline: Record<string, unknown> };
+      expect(receipt.deadline).toMatchObject({ revision: 0, state: "armed", stopGraceSec: 15 });
+      jobId = receipt.jobId;
+      renewedAt = new Date(Date.now() + 1_200_000).toISOString();
+      const renewed = await call(base, `/v2/runs/${jobId}/deadline`, {
+        method: "PATCH",
+        body: JSON.stringify({ at: renewedAt, expectedRevision: 0 }),
+      });
+      expect(renewed.status).toBe(200);
+      expect(await renewed.json()).toMatchObject({ at: renewedAt, revision: 1, state: "armed" });
+      const stale = await call(base, `/v2/runs/${jobId}/deadline`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          at: new Date(Date.now() + 1_800_000).toISOString(),
+          expectedRevision: 0,
+        }),
+      });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ code: "run_deadline_revision_conflict" });
+      const read = await call(base, `/v2/runs/${jobId}/deadline`);
+      expect(await read.json()).toMatchObject({ at: renewedAt, revision: 1 });
+
+      // A start its deadline ends in the queue: its replay and its lookup answer
+      // the typed, non-retryable expiry with the durable deadline, never a 500.
+      const expiring = JSON.stringify({
+        prompt: "short remote work",
+        mode: "agent",
+        scope: { kind: "project", root: project, ephemeral: true },
+        // Room for a durable acceptance on a loaded host: the deadline is judged inside it.
+        deadline: { at: new Date(Date.now() + 2_000).toISOString() },
+      });
+      const queued = await call(base, "/v2/runs", {
+        method: "POST",
+        headers: { "Idempotency-Key": "deadline-expiring" },
+        body: expiring,
+      });
+      expect(queued.status).toBe(202);
+      const queuedJob = ((await queued.json()) as { jobId: string }).jobId;
+      for (let i = 0; i < 400; i += 1) {
+        const state = (await a.client.status(queuedJob)).state;
+        if (state !== "queued") break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const replayed = await call(base, "/v2/runs", {
+        method: "POST",
+        headers: { "Idempotency-Key": "deadline-expiring" },
+        body: expiring,
+      });
+      expect(replayed.status).toBe(409);
+      expect(await replayed.json()).toMatchObject({
+        code: "run_deadline_expired",
+        retryable: false,
+        context: { jobId: queuedJob, deadline: { state: "expired", revision: 0 } },
+      });
+      const lookup = await call(base, "/v2/runs/lookup", {
+        method: "POST",
+        headers: { "Idempotency-Key": "deadline-expiring" },
+        body: expiring,
+      });
+      expect(lookup.status).toBe(200);
+      expect(await lookup.json()).toMatchObject({
+        status: "found",
+        handle: {
+          jobId: queuedJob,
+          problem: { code: "run_deadline_expired", status: 409, retryable: false },
+          deadline: { state: "expired" },
+        },
+      });
+    } finally {
+      await a.api.stop();
+      await a.daemon.stop();
+      a.journal.close();
+    }
+
+    // The start's answer was lost; the daemon restarted; the caller replays.
+    const b = generation();
+    await b.daemon.deadlines.startup();
+    const next = await b.api.start();
+    const nextBase = `http://${next.host}:${next.port}`;
+    try {
+      const replay = await call(nextBase, "/v2/runs", {
+        method: "POST",
+        headers: { "Idempotency-Key": "deadline-start" },
+        body,
+      });
+      // An accepted start the restart interrupted before it ran keeps the engine's
+      // terminal answer for an unbound job: the handle and its durable deadline.
+      expect(replay.status).toBe(500);
+      expect(await replay.json()).toMatchObject({
+        context: {
+          jobId: jobId!,
+          state: "interrupted",
+          deadline: { at: renewedAt!, revision: 1, state: "closed" },
+        },
+      });
+      const read = await call(nextBase, `/v2/runs/${jobId!}/deadline`);
+      expect(read.status).toBe(200);
+      expect(await read.json()).toMatchObject({ at: renewedAt!, revision: 1 });
+    } finally {
+      await b.api.stop();
+      await b.daemon.stop();
+      b.journal.close();
+    }
   });
 });

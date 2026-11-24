@@ -1,4 +1,4 @@
-import { observeHarnessProgram } from "@claudexor/core";
+import { observeHarnessProgram, sharedLaunch } from "@claudexor/core";
 import { CURSOR_PROGRAM } from "./program.js";
 import { uptime } from "node:os";
 import { performance } from "node:perf_hooks";
@@ -194,8 +194,10 @@ export function createCursorStatusCoordinator(options: {
   const share = (key: string, env: EnvMap, fenced: boolean): SharedProbe => {
     const startedGeneration = generation;
     const controller = new AbortController();
-    const answer = options
-      .probe(withoutRunScopeMarkers(env), controller.signal, CURSOR_PINNED_STATUS_WAIT_MS)
+    // Shared by every caller: launched as a shared process, without any run's marker.
+    const answer = sharedLaunch("cursor-status", () =>
+      options.probe(withoutRunScopeMarkers(env), controller.signal, CURSOR_PINNED_STATUS_WAIT_MS),
+    )
       .catch((err: unknown): CursorStatusObservation => ({
         kind: "unknown",
         error: err instanceof Error ? err.message : String(err),

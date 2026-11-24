@@ -116,6 +116,21 @@ function acceptance(
 }
 
 /**
+ * State the commit depends on that is prepared before it, under the job id the
+ * commit will use (run-deadline/1: the job's durable deadline record exists
+ * before its command, so no client is answered before both are durable).
+ */
+export interface CommitReservation {
+  /** Before the commit, asynchronously; a refusal is kept for `reserve`. */
+  prepare(jobId: string, request: unknown): Promise<void>;
+  /** Inside the acceptance transaction, after replay resolution, synchronously:
+   * a kept refusal (or a deadline reached meanwhile) throws and nothing is accepted. */
+  reserve(jobId: string, request: unknown): void;
+  /** The commit did not create this job (a replay won or it failed): drop what was prepared. */
+  release(jobId: string): void;
+}
+
+/**
  * Stage an acceptance's large bodies off the request thread, then enqueue
  * synchronously exactly as `enqueueCommand` does, with the same job id and the
  * creation time those bodies carry. Staging is a dry run of the same plan; a
@@ -124,7 +139,10 @@ function acceptance(
  */
 export async function enqueueStaged(
   params: any,
-  deps: Omit<EnqueueDeps, "accept" | "stopping"> & { stopping(): boolean },
+  deps: Omit<EnqueueDeps, "accept" | "stopping"> & {
+    stopping(): boolean;
+    reservation?: CommitReservation;
+  },
 ) {
   const stamp: AcceptanceStamp = { id: newId("job") };
   try {
@@ -132,25 +150,38 @@ export async function enqueueStaged(
     if (!("replay" in plan)) {
       const { request, key, client, original, operation } = plan;
       const staged = acceptance(deps.commands, request, key, client, original, operation, stamp);
+      await deps.reservation?.prepare(stamp.id, staged.input.params);
       stamp.createdAt = await staged.store.stageAcceptance?.(staged.input);
     }
   } catch {
     // The synchronous enqueue below decides and reports.
   }
-  return enqueueCommand(params, {
-    ...deps,
-    stopping: deps.stopping(),
-    accept: (request, key, client, original, operation) => {
-      const { store, input } = acceptance(
-        deps.commands,
-        request,
-        key,
-        client,
-        original,
-        operation,
-        stamp,
-      );
-      return store.accept(input);
-    },
-  });
+  let receipt: ReturnType<typeof enqueueCommand>;
+  try {
+    receipt = enqueueCommand(params, {
+      ...deps,
+      stopping: deps.stopping(),
+      accept: (request, key, client, original, operation) => {
+        const { store, input } = acceptance(
+          deps.commands,
+          request,
+          key,
+          client,
+          original,
+          operation,
+          stamp,
+        );
+        // Judged inside the acceptance transaction, after replays: the key binds
+        // only if the deadline still holds when the rows are written.
+        return store.accept(input, {
+          admit: () => deps.reservation?.reserve(stamp.id, input.params),
+        });
+      },
+    });
+  } catch (error) {
+    deps.reservation?.release(stamp.id);
+    throw error;
+  }
+  if (receipt.reused || receipt.id !== stamp.id) deps.reservation?.release(stamp.id);
+  return receipt;
 }

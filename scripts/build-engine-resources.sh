@@ -12,6 +12,7 @@ BUILD_SHA="${CLAUDEXOR_BUILD_SHA:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
 ENGINE_JS="$RESOURCES/claudexord.bundle.cjs"
 CLI_JS="$RESOURCES/claudexor.bundle.cjs"
 SETUP_RUNNER_JS="$RESOURCES/setup-login-runner.cjs"
+WARDEN_JS="$RESOURCES/run-deadline-warden.cjs"
 BROWSER_MCP_DIR="$RESOURCES/browser-mcp-runtime"
 WIN32_CONPTY_SOURCE="${CLAUDEXOR_WIN32_CONPTY_HELPER:-}"
 WIN32_CONPTY_EXPECTED_SHA256="${CLAUDEXOR_WIN32_CONPTY_SHA256:-}"
@@ -59,6 +60,20 @@ if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/cli/dist/setup-login-runner.j
   echo "    setup-login-runner.cjs $(wc -c < "$SETUP_RUNNER_JS" | tr -d ' ') bytes"
 else
   echo "ERROR: setup-login runner bundle failed; native subscription login would be broken" >&2
+  exit 1
+fi
+echo "==> Bundling run-deadline warden"
+# One small detached process per deadline-bearing run: its own entry keeps it
+# from loading the whole engine bundle (claudexord falls back to its own
+# --run-deadline-warden role only when this file is missing).
+if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/daemon/dist/run-deadline-warden-main.js \
+      --bundle --platform=node --format=cjs --target=node24 \
+      --banner:js="const CLAUDEXOR_BUNDLE_URL = require('node:url').pathToFileURL(__filename).href;" \
+      --define:import.meta.url=CLAUDEXOR_BUNDLE_URL \
+      --outfile="$WARDEN_JS" >/dev/null ); then
+  echo "    run-deadline-warden.cjs $(wc -c < "$WARDEN_JS" | tr -d ' ') bytes"
+else
+  echo "ERROR: run-deadline warden bundle failed" >&2
   exit 1
 fi
 echo "==> Deploying pinned Browser MCP runtime"

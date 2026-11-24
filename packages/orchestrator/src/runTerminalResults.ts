@@ -7,6 +7,7 @@ import type { EventLog } from "@claudexor/event-log";
 import {
   RunFailure,
   RunFailureCode,
+  cancelSummaryOf,
   type ModeKind,
   type RunOutcomeFacts,
   type RunReason,
@@ -254,12 +255,7 @@ export function cancellationStatement(
     typeof cancelSignal?.reason === "string" && cancelSignal.reason
       ? cancelSignal.reason
       : undefined;
-  const { message, poolAttempts } = poolFailure(
-    cancelReason === "wall_clock_exceeded"
-      ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
-      : "run cancelled",
-    attempts,
-  );
+  const { message, poolAttempts } = poolFailure(cancelSummaryOf(cancelReason), attempts);
   return {
     ...(cancelReason ? { cancelReason } : {}),
     summary: message,
@@ -284,8 +280,8 @@ export function cancelledResult(
   candidates: { attemptId: string; harnessId: string; status: string }[],
   writeTelemetry?: () => void,
   spendUsd?: number | null,
-  /** The abort signal that ended the run: a STRING reason (e.g.
-   * `wall_clock_exceeded` from the maxSeconds deadline) is surfaced; a plain
+  /** The abort signal that ended the run: a STRING reason (an engine clock:
+   * `wall_clock_exceeded` or `run_deadline_expired`) is surfaced; a plain
    * user cancel aborts with a DOMException reason and stays a bare cancel. */
   cancelSignal?: AbortSignal,
   /** Materializes the diagnostic summary the output.ready below announces. */
@@ -464,4 +460,24 @@ export function failTerminally(
     candidates: [],
     ...(spendUsd !== undefined ? { spendUsd } : {}),
   };
+}
+
+/** What to do next after a cancelled run, by the reason it was cancelled for. */
+export function cancelledNextActions(reason: RunReason | null | undefined): string[] {
+  switch (reason) {
+    case "wall_clock_exceeded":
+      return [
+        "Inspect the partial work kept from before the deadline",
+        "Increase --max-seconds or narrow the scope, then re-run",
+      ];
+    case "run_deadline_expired":
+      return [
+        // From the deadline on nothing is launched in the run's scope, its own
+        // patch capture included: the work stays in the retained envelope.
+        "Inspect the retained work area: no patch is captured after a run's deadline",
+        "Start again with a later deadline, or renew it before it passes",
+      ];
+    default:
+      return ["Retry if cancellation was accidental"];
+  }
 }

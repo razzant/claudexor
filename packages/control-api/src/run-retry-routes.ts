@@ -1,3 +1,4 @@
+import { deadlineReplayRefusal, receiptDeadline } from "./run-start-receipt.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -85,6 +86,8 @@ async function exactRetry(
   if (source.state === "queued" || source.state === "running") {
     return ctx.json(res, 409, { error: `run is still ${source.state}` });
   }
+  const deadlineRefusal = await deadlineReplayRefusal(ctx.daemon, source, "Exact Retry");
+  if (deadlineRefusal) return ctx.json(res, 409, deadlineRefusal);
   let idempotencyKey: string;
   let recordedParams: RecordedControlRunStartRequest;
   let sourceTurnProvenance: SourceTurnProvenance = {};
@@ -93,6 +96,7 @@ async function exactRetry(
     const replay = await sourceReplayInput(ctx, source);
     sourceTurnProvenance = replay.turn;
     const recorded = restoreRecordedRunReviewRequest(decodeAcceptedRunStart(replay.params).request);
+    // A source that held a deadline was refused above; none is replayed here.
     const { turnId: _turnId, retryOf: _retryOf, ...original } = recorded;
     // QA-035: Exact Retry replays the IMMUTABLE original request. The stored
     // params omit any model/effort the caller left to settings, so re-reading
@@ -340,8 +344,14 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
       parentRunId,
       delegatedFromRunId,
       continueModelInherited,
+      deadline,
       ...request
     } = parsed;
+    // The deadline the source actually ran under, not only one its request set.
+    const inheritedDeadline =
+      !deadline &&
+      (source.errorCode === "run_deadline_expired" ||
+        (await receiptDeadline(ctx.daemon, source)).deadline !== undefined);
     const differences = [
       ...(accepted.deferredDefaults
         ? [
@@ -391,6 +401,23 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
               field: "delegatedFromRunId",
               change: "omitted" as const,
               reason: "Delegate parent authority is not replayable",
+            },
+          ]
+        : []),
+      ...(deadline || inheritedDeadline
+        ? [
+            {
+              field: "deadline",
+              change: "omitted" as const,
+              reason:
+                (deadline
+                  ? "an absolute run deadline binds the source run; give the new run its own deadline"
+                  : "the source run inherited its deadline (its Delegate parent or the run it continued); give the new run its own deadline") +
+                // The draft still continues that run: without its own deadline the
+                // new run takes that run's again (refused once it has passed).
+                (request.continueFrom
+                  ? `; the draft still continues ${request.continueFrom}, so without its own deadline it takes that run's deadline again while it is ahead`
+                  : ""),
             },
           ]
         : []),

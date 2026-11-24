@@ -6,7 +6,9 @@
 import { join } from "node:path";
 import {
   type CancelReasonCode,
+  type EngineClockAbortReason,
   describeStopSender,
+  engineClockAbortReason,
   makeOutcomeFacts,
   needsOperatorAttention,
   normalizeCancelReasonCode,
@@ -195,9 +197,8 @@ export function terminalEventTypeFor(
  * wire compatibility. */
 export function cancelReasonFromSignalToken(
   reason: unknown,
-): "wall_clock_exceeded" | CancelReasonCode {
-  if (reason === "wall_clock_exceeded") return "wall_clock_exceeded";
-  return normalizeCancelReasonCode(reason) ?? "user_cancelled";
+): EngineClockAbortReason | CancelReasonCode {
+  return engineClockAbortReason(reason) ?? normalizeCancelReasonCode(reason) ?? "user_cancelled";
 }
 
 export function cancellationFacts(

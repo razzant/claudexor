@@ -7,7 +7,7 @@ import {
 } from "../command-store.js";
 import { journaledRunEventCopy } from "../journaled-run-events.js";
 import type { JobRecord } from "../job-record.js";
-import type { CommandStorePort } from "../store-contracts.js";
+import type { AcceptHooks, CommandStorePort } from "../store-contracts.js";
 import {
   recoveredTerminalFacts,
   terminalCommandResult,
@@ -88,11 +88,11 @@ export class SqlCommandStore implements CommandStorePort {
     this.events = new SqlEventLedger(store, blobs, generation);
   }
 
-  accept(input: AcceptCommand): { record: JobRecord; reused: boolean } {
+  accept(input: AcceptCommand, hooks?: AcceptHooks): { record: JobRecord; reused: boolean } {
     const prior = this.find(input);
     if (prior) return { record: prior, reused: true };
     const prepared = this.prepareAcceptance(input);
-    return runMutation(this.store, (tx) => this.acceptInTx(tx, prepared));
+    return runMutation(this.store, (tx) => this.acceptInTx(tx, prepared, undefined, hooks?.admit));
   }
 
   /** All body preparation precedes the synchronous acceptance transaction. */
@@ -119,6 +119,7 @@ export class SqlCommandStore implements CommandStorePort {
     tx: MutationContext,
     acceptance: ReturnType<SqlCommandStore["prepareAcceptance"]>,
     resourcesFrom?: ResourceUseHolder,
+    admit?: () => void,
   ) {
     requireTransaction(tx);
     const { input, digests, record, prepared, event } = acceptance;
@@ -136,6 +137,8 @@ export class SqlCommandStore implements CommandStorePort {
       );
       if (prepared.row.turn_id) markTurnDispatchedInTx(tx, prepared.row.turn_id, record.createdAt);
     }
+    // The last check before the rows: a refusal rolls the whole acceptance back.
+    admit?.();
     applyCommandInTx(tx, prepared, "accept");
     bindIdempotencyInTx(tx, {
       owner: "command",
@@ -230,10 +233,14 @@ export class SqlCommandStore implements CommandStorePort {
     return this.store.flushed();
   }
 
-  update(id: string, patch: Partial<JobRecord>): JobRecord {
+  update(
+    id: string,
+    patch: Partial<JobRecord>,
+    onCommitted?: (record: JobRecord) => void,
+  ): JobRecord {
     const row = commandRow(this.store, id, this.generation.pid);
     if (!row) throw new Error(`no such job: ${id}`);
-    return this.writeUpdate(row, this.nextRecord(row, patch));
+    return this.writeUpdate(row, this.nextRecord(row, patch), false, onCommitted);
   }
 
   /** The record an update writes: the patch over the row, with a durable
@@ -308,11 +315,16 @@ export class SqlCommandStore implements CommandStorePort {
 
   /** The synchronous EventLog hook: one SQL terminal then immediate file repair.
    * Returning pending means SQL committed; EventLog must never roll it back or
-   * emit another terminal. A second terminal INSERT is a constraint failure. */
+   * emit another terminal. A second terminal INSERT is a constraint failure.
+   * `onCommitted` is told at the SQL commit itself, before any owner, observer
+   * or post-commit callback runs and before any file is materialized, also when
+   * a post-commit step then fails (run-deadline/1: the job's deadline closes at
+   * that instant, with that instant's facts). Never when nothing committed. */
   persistTerminal(
     id: string,
     raw: RunEvent,
     telemetry: RunTelemetry | null,
+    onCommitted?: () => void,
   ): { state: "materialized" } | { state: "pending"; error: unknown } {
     const event = RunEvent.parse(raw);
     const row = commandRow(this.store, id, this.generation.pid);
@@ -324,26 +336,31 @@ export class SqlCommandStore implements CommandStorePort {
     const updated = this.events.prepare("command.updated", { record });
     const run = this.events.prepare("run.event", journaledRunEventCopy(event));
     try {
-      runMutation(this.store, (tx) => {
-        applyCommandInTx(tx, prepared, "update");
-        applyTerminalInTx(tx, this.generation.pid, event);
-        this.options.obligations.create("terminal_files", event.run_id, this.generation.pid, {});
-        this.events.appendInTx(tx, updated);
-        this.events.appendInTx(tx, run);
-        tx.changes.blobChanged(
-          row.params_sha,
-          row.result_sha,
-          prepared.row.params_sha,
-          prepared.row.result_sha,
-        );
-        if (row.result_sha && row.result_sha !== prepared.row.result_sha)
-          tx.changes.afterCommit(() =>
-            collectReleasedBodies(this.store, this.blobs, [row.result_sha!]),
+      runMutation(
+        this.store,
+        (tx) => {
+          applyCommandInTx(tx, prepared, "update");
+          applyTerminalInTx(tx, this.generation.pid, event);
+          this.options.obligations.create("terminal_files", event.run_id, this.generation.pid, {});
+          this.events.appendInTx(tx, updated);
+          this.events.appendInTx(tx, run);
+          tx.changes.blobChanged(
+            row.params_sha,
+            row.result_sha,
+            prepared.row.params_sha,
+            prepared.row.result_sha,
           );
-      });
+          if (row.result_sha && row.result_sha !== prepared.row.result_sha)
+            tx.changes.afterCommit(() =>
+              collectReleasedBodies(this.store, this.blobs, [row.result_sha!]),
+            );
+        },
+        onCommitted,
+      );
     } catch (error) {
       // Notification failure cannot authorize EventLog's pre-COMMIT rollback.
-      // The terminal and its pending file obligation are already durable rows.
+      // The terminal and its pending file obligation are already durable rows
+      // (`onCommitted` was told at the commit).
       if (error instanceof MutationPostCommitError) return { state: "pending", error };
       throw error;
     }
@@ -444,26 +461,36 @@ export class SqlCommandStore implements CommandStorePort {
     );
   }
 
-  private writeUpdate(row: CommandRow, next: JobRecord, recreateTerminalFiles = false): JobRecord {
+  private writeUpdate(
+    row: CommandRow,
+    next: JobRecord,
+    recreateTerminalFiles = false,
+    onCommitted?: (record: JobRecord) => void,
+  ): JobRecord {
     const prepared = this.prepare(next, row);
     const { params: _params, ...record } = next;
     const event = this.events.prepare("command.updated", { record });
-    runMutation(this.store, (tx) => {
-      applyCommandInTx(tx, prepared, "update");
-      if (
-        recreateTerminalFiles &&
-        next.runId &&
-        !this.options.obligations.get("terminal_files", next.runId)
-      )
-        this.options.obligations.create("terminal_files", next.runId, this.generation.pid, {});
-      this.events.appendInTx(tx, event);
-      tx.changes.blobChanged(
-        row.params_sha,
-        row.result_sha,
-        prepared.row.params_sha,
-        prepared.row.result_sha,
-      );
-    });
+    const committed = onCommitted && (() => onCommitted(next));
+    runMutation(
+      this.store,
+      (tx) => {
+        applyCommandInTx(tx, prepared, "update");
+        if (
+          recreateTerminalFiles &&
+          next.runId &&
+          !this.options.obligations.get("terminal_files", next.runId)
+        )
+          this.options.obligations.create("terminal_files", next.runId, this.generation.pid, {});
+        this.events.appendInTx(tx, event);
+        tx.changes.blobChanged(
+          row.params_sha,
+          row.result_sha,
+          prepared.row.params_sha,
+          prepared.row.result_sha,
+        );
+      },
+      committed,
+    );
     if (row.result_sha && row.result_sha !== prepared.row.result_sha)
       collectReleasedBodies(this.store, this.blobs, [row.result_sha]);
     return next;

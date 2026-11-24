@@ -573,6 +573,7 @@
                             "not_converged",
                             "stuck_no_progress",
                             "wall_clock_exceeded",
+                            "run_deadline_expired",
                             "user_cancelled",
                             "host_cancelled",
                             "owner_task_gone",
@@ -1554,7 +1555,8 @@
                         "delegated_evidence_incomplete",
                         "access_profile_incompatible",
                         "auxiliary_writable_roots_unsupported",
-                        "retired_access_profile"
+                        "retired_access_profile",
+                        "run_deadline_expired"
                       ],
                       "description": "Machine-readable failure sub-code within a RunFailure category, including historical delegated-run failures and active access-profile refusals."
                     },

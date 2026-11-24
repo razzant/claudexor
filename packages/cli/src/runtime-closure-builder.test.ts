@@ -99,6 +99,7 @@ function fakeAppBundle(
     writeFileSync(join(resources, "claudexor.bundle.cjs"), `// cli sha=${sha}\n`);
   if (opts.omit !== "setup-login-runner.cjs")
     writeFileSync(join(resources, "setup-login-runner.cjs"), "// runner\n");
+  writeFileSync(join(resources, "run-deadline-warden.cjs"), "// warden\n");
   writeFileSync(
     join(resources, "browser-mcp-runtime", "dist", "browser-mcp-launcher.js"),
     "// mcp\n",
@@ -189,6 +190,7 @@ describe("build-runtime-closure", () => {
       "claudexord.bundle.cjs",
       "claudexor.bundle.cjs",
       "setup-login-runner.cjs",
+      "run-deadline-warden.cjs",
       "native/claudexor-process-identity",
     ]) {
       expect(readFileSync(join(extracted, name))).toEqual(readFileSync(join(resources, name)));

@@ -9,6 +9,7 @@
  */
 import { join } from "node:path";
 import {
+  cancelSummaryOf,
   makeOutcomeFacts,
   RunOutcomeFacts,
   type RunOutcomeFacts as RunOutcomeFactsType,
@@ -103,11 +104,8 @@ export async function guardAnnouncedRun(
   const cancellationDecided = (): boolean =>
     abortedAtStrategyEnd !== null ? abortedAtStrategyEnd : signal?.aborted === true;
   /** The cancelled terminal's one-line cause, read when the abort is observed
-   * (lazily: the wall-clock reason only exists after the signal fires). */
-  const cancelSummary = () =>
-    signal?.reason === "wall_clock_exceeded"
-      ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
-      : "run cancelled";
+   * (lazily: the wall-clock or run-deadline reason only exists after the signal fires). */
+  const cancelSummary = () => cancelSummaryOf(signal?.reason);
   const runBarrier = async (context: AnnouncedRunContext): Promise<void> => {
     if (barrierAttempted) return;
     barrierAttempted = true;

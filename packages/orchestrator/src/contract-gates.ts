@@ -9,6 +9,7 @@ import type {
 } from "@claudexor/schema";
 import { finalVerifyFiles, finalVerifyPatch, type VerifyEventLog } from "@claudexor/delivery";
 import { canonicalProjectRoot, hashJson, sha256 } from "@claudexor/util";
+import { withinRunScope } from "@claudexor/core";
 import type { CandidateRun } from "./candidateEvidence.js";
 import { gateProtectedPaths } from "./runSupport.js";
 import { runScopeGateEnv } from "./runScope.js";
@@ -91,30 +92,35 @@ export function gateSpecsFromContract(
   }));
 }
 
-/** Fresh verification (INV-115) of the run's own result, its gates in the run's custody. */
+/** Fresh verification (INV-115) of the run's own result, its gates in the run's custody
+ * and under its stop (a stopped run launches no gate). */
 export function finalVerifyRun(
   execRoot: string,
   result: CandidateRun,
   contract: ActiveTaskContract,
   log: VerifyEventLog,
-  owner: { runScopeMarker?: string },
+  owner: { runScopeMarker?: string; signal?: AbortSignal },
 ): Promise<FinalVerifyRecord> {
   const specs = gateSpecsFromContract(contract, owner.runScopeMarker);
-  if (result.files) return finalVerifyFiles(result.files, undefined, specs, log);
-  // An object result verifies its own trees at its base (#535); a legacy patch applies.
-  return result.result && result.baseSha
-    ? finalVerifyPatch(
-        execRoot,
-        {
-          baseSha: result.baseSha,
-          baseTree: result.result.base_tree,
-          tree: result.result.candidate_tree,
-          projectRoot: contract.repo.root,
-        },
-        specs,
-        log,
-      )
-    : finalVerifyPatch(execRoot, result, specs, log);
+  // Its worktree's Git children join the run's boundary too, not only the gates.
+  return withinRunScope(owner.runScopeMarker, () => {
+    if (result.files) return finalVerifyFiles(result.files, undefined, specs, log, owner.signal);
+    // An object result verifies its own trees at its base (#535); a legacy patch applies.
+    return result.result && result.baseSha
+      ? finalVerifyPatch(
+          execRoot,
+          {
+            baseSha: result.baseSha,
+            baseTree: result.result.base_tree,
+            tree: result.result.candidate_tree,
+            projectRoot: contract.repo.root,
+          },
+          specs,
+          log,
+          owner.signal,
+        )
+      : finalVerifyPatch(execRoot, result, specs, log, owner.signal);
+  });
 }
 
 export function renderTestsEvidence(contract: ActiveTaskContract, gates?: GateResult[]): string {

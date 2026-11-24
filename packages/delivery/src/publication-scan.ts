@@ -8,8 +8,10 @@
  * this same source with Node's type stripping before dependencies are
  * installed, so delivery and CI cannot drift into two detectors. Which binary
  * runs (the release pin and its location) is `publication-scanner-pin.ts`.
+ * It launches through `launch` (delivery: the run-owned launch point; CI: spawn).
  */
-import { spawn } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -40,6 +42,15 @@ export interface PublicationFinding {
   line: number | null;
   commit: string | null;
 }
+
+type LaunchOptions = SpawnOptions & { env: NodeJS.ProcessEnv };
+export type PublicationLauncher = (
+  cmd: string,
+  args: string[],
+  opts: LaunchOptions,
+) => ChildProcess;
+const plainSpawn: PublicationLauncher = (cmd, args, opts) => spawn(cmd, args, opts);
+const launching = new AsyncLocalStorage<PublicationLauncher>(); // this scan's launcher
 
 export type PublicationScanResult =
   | { status: "clean" }
@@ -92,7 +103,14 @@ export async function scanPublication(input: {
   metadata: readonly PublicationMetadata[];
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  launch?: PublicationLauncher; // how processes start (default: the plain spawn)
 }): Promise<PublicationScanResult> {
+  return launching.run(input.launch ?? plainSpawn, () => scanWith(input));
+}
+
+async function scanWith(
+  input: Parameters<typeof scanPublication>[0],
+): Promise<PublicationScanResult> {
   const work = mkdtempSync(join(tmpdir(), "claudexor-publication-scan-"));
   try {
     const config = join(work, "betterleaks.toml");
@@ -568,11 +586,12 @@ function run(
   return new Promise((resolve) => {
     let stdout = "";
     let timedOut = false;
-    let child;
+    let child: ChildProcess;
     let fd: number | undefined;
     try {
       if (stdoutPath !== undefined) fd = openSync(stdoutPath, "w", 0o600);
-      child = spawn(command, args, { cwd, env, stdio: ["ignore", fd ?? "pipe", "ignore"] });
+      const opts = { cwd, env, stdio: ["ignore", fd ?? "pipe", "ignore"] } as LaunchOptions;
+      child = (launching.getStore() ?? plainSpawn)(command, args, opts);
     } catch {
       resolve({ code: null, stdout: "", timedOut: false });
       return;

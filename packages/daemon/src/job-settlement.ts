@@ -4,6 +4,7 @@ import {
   safeProblemContext,
   safeProblemRequiredActions,
 } from "@claudexor/util";
+import { TurnEnqueueProblem } from "@claudexor/schema";
 import { commandStoreForId, type CommandAuthority } from "./command-authority.js";
 import { resultReason, resultSummary, type JobRecord, type JobState } from "./job-record.js";
 
@@ -87,10 +88,11 @@ export function settleJobError({
     errorRequiredActions: requiredActions,
     // Only a confirmed job that failed to start its turn can carry this claim.
     // Keeping it in bounded problem context also preserves it on receipt lookup.
-    // The turn recorder in server.ts reads it back into the stored problem's own
-    // `retryable` and keeps it out of the stored context — the same shape the
-    // route recorder persists via problemFromError, so one refused turn stores
-    // one identical TurnEnqueueProblem whichever path recorded it.
+    // The turn recorder (reportPreRunRefusal below, called from server.ts) reads
+    // it back into the stored problem's own `retryable` and keeps it out of the
+    // stored context — the same shape the route recorder persists via
+    // problemFromError, so one refused turn stores one identical
+    // TurnEnqueueProblem whichever path recorded it.
     errorContext:
       refusedTurn && typeof turnRetryable === "boolean" ? { turnRetryable, ...context } : context,
     finishedAt: nowIso(),
@@ -101,4 +103,37 @@ function thrownField(thrown: unknown, field: string): unknown {
   return thrown && typeof thrown === "object" && field in thrown
     ? (thrown as Record<string, unknown>)[field]
     : undefined;
+}
+
+/**
+ * A failure-shaped terminal with NO run ever bound: the refusal happened
+ * before the run materialized. If the job carried a pre-created thread turn,
+ * its reason is persisted on the turn (honest inline refusal, INV-093).
+ * A boolean `errorContext.turnRetryable` decides the turn's retryability
+ * (manual replay may succeed after workspace repair) and is not stored in
+ * the turn's context.
+ */
+export function reportPreRunRefusal(
+  rec: Pick<JobRecord, "params" | "error" | "errorCode" | "errorRetryable"> &
+    Partial<Pick<JobRecord, "errorRequiredActions" | "errorContext">>,
+  report: ((turnId: string, problem: TurnEnqueueProblem) => void) | undefined,
+): void {
+  const turnId = (rec.params as { turnId?: unknown } | null | undefined)?.turnId;
+  if (!rec.error || !report || typeof turnId !== "string" || !turnId) return;
+  const { turnRetryable, ...problemContext } = rec.errorContext ?? {};
+  try {
+    report(
+      turnId,
+      TurnEnqueueProblem.parse({
+        message: rec.error,
+        code: rec.errorCode ?? null,
+        retryable:
+          typeof turnRetryable === "boolean" ? turnRetryable : (rec.errorRetryable ?? true),
+        required_actions: rec.errorRequiredActions ?? [],
+        context: problemContext,
+      }),
+    );
+  } catch {
+    /* observer failure must not corrupt terminal bookkeeping */
+  }
 }

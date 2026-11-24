@@ -69,6 +69,7 @@ import { handleRunRetryRoute } from "./run-retry-routes.js";
 import { handleRunMessageRoute } from "./run-message-routes.js";
 import { handleRunEventPartRoute } from "./run-event-part-routes.js";
 import { handleRunTimeLimitRoute } from "./run-time-limit-routes.js";
+import { handleRunDeadlineRoute } from "./run-deadline-routes.js";
 import { handleRunWaitManyRoute } from "./run-wait-many-routes.js";
 import { handleTaskGroupRunsRoute } from "./task-group-routes.js";
 import { handleRunStartRoute } from "./run-start-routes.js";
@@ -160,6 +161,8 @@ import {
   Id,
   needsDecision,
   needsOperatorAttention,
+  CONTROL_CAPABILITIES_HEADER,
+  type ControlCapability,
 } from "@claudexor/schema";
 import { resolveControlProtocol, type ControlServingMode } from "./control-protocol.js";
 import { RefusedBodies, readControlRequestBody } from "./request-body.js";
@@ -199,6 +202,8 @@ export interface DaemonControlApiOptions {
   servingMode?: () => ControlServingMode;
   /** Current durable store identity; unavailable before open or during replacement. */
   storeId?: () => string | undefined;
+  /** Capabilities this engine proves on this host (run-deadline/1); absent: none. */
+  capabilities?: () => ControlCapability[];
   /** Body-free, positional run observations from the current durable store. */
   runObservations?: RunWaitManyHost["snapshot"];
   /** Post-commit notices for those observations; without them waits poll. */
@@ -729,6 +734,8 @@ export class DaemonControlApiServer {
         servingMode: this.opts.servingMode?.() ?? "normal",
         storeId: this.opts.storeId,
         wantsStoreId: runStart.wantsStoreIdentity(req),
+        capabilities: this.opts.capabilities,
+        wantsCapabilities: req.headers[CONTROL_CAPABILITIES_HEADER] === "1",
       });
     } catch (error) {
       return this.requestError(res, error);
@@ -759,6 +766,7 @@ export class DaemonControlApiServer {
         this.requestError(response, error, fallback),
     };
     for (const route of [
+      handleRunDeadlineRoute,
       handleDeferredMessageRoute,
       handleRunWaitManyRoute,
       handleTaskGroupRunsRoute,

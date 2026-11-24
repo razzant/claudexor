@@ -1,4 +1,5 @@
 /** Delivery-owned FinalVerifier (INV-115). */
+import { VERIFY_STOPPED } from "./files-verifier.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,6 +80,8 @@ export async function finalVerifyPatch(
   candidate: VerifiablePatch | VerifiableTree,
   specs: GateSpec[],
   log: VerifyEventLog,
+  /** The run's stop: once it fired no gate is launched (run-deadline/1 included). */
+  signal?: AbortSignal,
 ): Promise<FinalVerifyRecord> {
   const started = Date.now();
   const done = (fields: Record<string, unknown>): FinalVerifyRecord =>
@@ -132,7 +135,9 @@ export async function finalVerifyPatch(
         reason: "no deterministic gates configured",
       });
     }
-    const gates = await runGates(specs, { cwd: verifyTree });
+    if (signal?.aborted) return done({ applied_cleanly: null, reason: VERIFY_STOPPED });
+    const gates = await runGates(specs, { cwd: verifyTree, ...(signal ? { signal } : {}) });
+    if (signal?.aborted) return done({ applied_cleanly: null, reason: VERIFY_STOPPED });
     log.emit("gate.completed", {
       attempt_id: "final-verify",
       gates: gates.map((gate) => ({

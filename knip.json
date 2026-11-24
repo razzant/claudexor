@@ -23,6 +23,10 @@
       "entry": ["bin/*.js", "pi/index.js"],
       "project": ["bin/*.js", "pi/*.js"]
     },
+    "packages/daemon": {
+      "entry": ["src/run-deadline-warden-main.ts", "src/test-support/run-deadline-daemon-child.ts"],
+      "project": ["src/**/*.ts"]
+    },
     "packages/*": {
       "project": ["src/**/*.ts"]
     },

@@ -24,7 +24,7 @@ import {
   requiredIdempotencyKey,
   type RunCreateRouteContext,
 } from "./run-start.js";
-import { servingStore } from "./run-start-receipt.js";
+import { receiptDeadline, servingStore } from "./run-start-receipt.js";
 import { projectTurn } from "./thread-projection.js";
 import { acceptedTurnCommandQuery, type ThreadTurnIdempotency } from "./thread-recovery.js";
 import { threadTurnCreateIdempotency } from "./thread-turn-routes.js";
@@ -169,6 +169,19 @@ async function readAccepted(
   return daemon.findAccepted(...query);
 }
 
+/** The handle with its durable deadline, for a request that set one. */
+async function withDeadline(
+  ctx: RunStartRouteContext,
+  record: DaemonRunRecord,
+  handle: ControlStartLookupHandle,
+): Promise<ControlStartLookupHandle> {
+  try {
+    return { ...handle, ...(await receiptDeadline(ctx.daemon, record)) };
+  } catch (error) {
+    throw acceptedLookupFailure(error, "lookup");
+  }
+}
+
 async function lookupRun(
   ctx: RunStartRouteContext,
   recorded: RecordedControlRunStartRequest,
@@ -180,7 +193,9 @@ async function lookupRun(
   } catch (error) {
     throw acceptedLookupFailure(error, "lookup");
   }
-  return record ? { status: "found", handle: acceptedHandle(record) } : { status: "not_found" };
+  return record
+    ? { status: "found", handle: await withDeadline(ctx, record, acceptedHandle(record)) }
+    : { status: "not_found" };
 }
 
 /** The turn binding first, then the command bound to the same key, if still retained. */
@@ -213,7 +228,11 @@ async function lookupTurn(
   if (record)
     return {
       status: "found",
-      handle: acceptedHandle(record, { threadId, turnId: projected.id }),
+      handle: await withDeadline(
+        ctx,
+        record,
+        acceptedHandle(record, { threadId, turnId: projected.id }),
+      ),
     };
   return {
     status: "turn_only",

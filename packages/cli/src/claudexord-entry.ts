@@ -70,6 +70,17 @@ export async function dispatchClaudexordEntry(
       return;
     }
     if (await deps.beltServe(argv)) return;
+    // run-deadline/1: the bundled engine runs a run's detached warden in this role.
+    if (argv[0] === "--run-deadline-warden") {
+      if (argv.length !== 2) {
+        process.stderr.write("usage: claudexord --run-deadline-warden STATE_FILE\n");
+        process.exitCode = 2;
+        return;
+      }
+      const { runWarden } = await import("@claudexor/daemon");
+      await runWarden(argv[1]!);
+      return;
+    }
     await daemonMain();
   } catch (error: unknown) {
     process.stderr.write(`claudexord: ${error instanceof Error ? error.message : String(error)}\n`);

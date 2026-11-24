@@ -588,6 +588,21 @@
               ],
               "description": "Initial timer mode: soft warns and continues; hard cancels. Omission is hard with maxSeconds and soft without it."
             },
+            "deadline": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Absolute instant on the server's wall clock, RFC3339 UTC (Z)."
+                }
+              },
+              "required": [
+                "at"
+              ],
+              "additionalProperties": false,
+              "description": "Server-enforced absolute deadline from acceptance: queued, preparing and running. An instant already past at acceptance is refused and nothing starts."
+            },
             "denyPaths": {
               "type": "array",
               "items": {

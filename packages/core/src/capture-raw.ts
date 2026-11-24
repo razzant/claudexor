@@ -1,12 +1,8 @@
-import { spawn } from "node:child_process";
-import {
-  registerChildProcess,
-  retireChildProcess,
-  unregisterChildProcess,
-} from "./process-registry.js";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { retireChildProcess, unregisterChildProcess } from "./process-registry.js";
 import { composeSpawnEnv } from "./env-scope.js";
 import { backgroundSpawnShape, prepareHarnessCommand } from "./runtime-env.js";
-import { runScopeMarkerOf } from "./process-scope.js";
+import { spawnRunOwned } from "./run-spawn.js";
 import {
   defaultProbeGroupAlive,
   killWindowsProcessTree,
@@ -90,16 +86,18 @@ export async function runCaptureRaw(
     opts.cwd,
   );
   const env = invocation.env;
-  const child = spawn(invocation.binary, invocation.args, {
-    cwd: opts.cwd,
-    env,
-    stdio: ["pipe", "pipe", "pipe"],
-    ...backgroundSpawnShape(process.platform, opts.windowsConsole),
-  });
-  const registration =
-    typeof child.pid === "number"
-      ? registerChildProcess(child.pid, cmd, runScopeMarkerOf(env))
-      : null;
+  // The run-owned launch point: a run's marker places the child in its boundary.
+  const { child, registration } = spawnRunOwned<ChildProcessWithoutNullStreams>(
+    invocation.binary,
+    invocation.args,
+    {
+      cwd: opts.cwd,
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+      ...backgroundSpawnShape(process.platform, opts.windowsConsole),
+    },
+    { register: cmd },
+  );
   child.once("exit", (code, signal) => opts.onExit?.(code, signal));
   let captureChildClosed = false;
   child.once("close", () => {

@@ -26,6 +26,7 @@ const required = [
   "./lib/claudexor.bundle.cjs",
   "./lib/claudexord.bundle.cjs",
   "./lib/setup-login-runner.cjs",
+  "./lib/run-deadline-warden.cjs",
   "./lib/browser-mcp-runtime/index.cjs",
   "./node/bin/node",
   "./runtime.json",

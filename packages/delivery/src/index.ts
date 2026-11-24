@@ -47,9 +47,7 @@ async function withRepositoryMutationLease<T>(
   const key = await realpath(repoRoot);
   const previous = repositoryMutationTails.get(key) ?? Promise.resolve();
   let release!: () => void;
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const held = new Promise<void>((resolve) => (release = resolve));
   const tail = previous.catch(() => undefined).then(() => held);
   repositoryMutationTails.set(key, tail);
   await previous.catch(() => undefined);
@@ -111,6 +109,7 @@ export interface DeliverOptions {
   /** Config root holding the provisioned publication scanner; defaults to
    * Claudexor's own runtime root. */
   scannerConfigDir?: string;
+  signal?: AbortSignal; // the owning run's stop: no verification gate once it fired
 }
 
 export interface DeliverResult {
@@ -140,7 +139,7 @@ export interface VerifiedDeliverResult extends DeliverResult {
 export async function verifyAndDeliverFiles(
   targetRoot: string,
   candidate: VerifiableWorkspaceFiles,
-  options: { paths?: string[] } = {},
+  options: { paths?: string[]; signal?: AbortSignal } = {},
   gates: GateSpec[] = [],
   authorize?: (record: FinalVerifyRecord) => string | null,
   log: VerifyEventLog = { emit: () => undefined },
@@ -157,7 +156,8 @@ export async function verifyAndDeliverFiles(
       return sha256(JSON.stringify(entries));
     };
     const targetPreimageSha = await preimage();
-    const finalVerify = await finalVerifyFiles(candidate, options.paths, gates, log);
+    const { paths, signal } = options;
+    const finalVerify = await finalVerifyFiles(candidate, paths, gates, log, signal);
     const refusal =
       (await realpath(targetRoot)) !== (await realpath(candidate.manifest.sourceRoot))
         ? "target does not match the work product source"
@@ -223,6 +223,7 @@ async function verifyAndDeliverUnlocked(
     { baseSha: targetPreimageSha, diff: patch },
     gates,
     log,
+    options.signal,
   );
   let refusal: string | null;
   if (finalVerify.applied_cleanly === false) {

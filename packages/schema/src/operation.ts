@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { ControlCapability } from "./run-deadline.js";
 
 // v3.0.0 broke run/thread/status/mode contracts wholesale, so the negotiated
 // major moved to 3. The URL prefix stays the frozen literal `/v2/` — a path
@@ -56,6 +57,12 @@ export const ControlHandshakeResponse = z
       .optional()
       .describe(
         "Product admission: 'recovery_only' keeps normal product routes closed while recovery control stays reachable; absent means 'normal'.",
+      ),
+    capabilities: z
+      .array(ControlCapability)
+      .optional()
+      .describe(
+        "Capabilities this engine proves on this host. Returned only to a request sending `X-Claudexor-Capabilities: 1`; an empty list means none.",
       ),
   })
   .strict()

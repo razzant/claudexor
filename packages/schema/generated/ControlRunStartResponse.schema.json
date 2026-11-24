@@ -31,6 +31,101 @@
             "runDir": {
               "type": "string",
               "description": "On-disk run artifact directory."
+            },
+            "deadline": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "The deadline the engine enforces: the run's own or, when earlier, its Delegate parent's current one; after the terminal, the one it ended under."
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Revision of the run's own deadline; a set must name it."
+                },
+                "serverNow": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "The server's wall clock when this answer was made."
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "armed",
+                    "enforcing",
+                    "expired",
+                    "closed"
+                  ],
+                  "description": "Linear per run: armed while it is live and its deadline was neither reached nor claimed (the only state a set is accepted in); enforcing once its deadline won and the stop began; expired once the run's terminal followed its deadline; closed after any other terminal."
+                },
+                "stopGraceSec": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 30,
+                  "description": "Seconds after `at` by which every process inside the run's boundary is gone (see the capability's `boundary`). Physical limits outside it: a suspended host stops the run when it wakes; a task in uninterruptible kernel I/O (D state) dies once that I/O returns; on the marker boundary a process running as another user, one that cleared its environment after leaving the recorded tree, or (once the run ended normally) one whose environment cannot be read outside that tree, is not found; work handed to another service (a container engine, an already running tmux server, systemd-run) is outside the boundary."
+                },
+                "inheritedFrom": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Job id of the Delegate parent (or further ancestor) whose deadline is the effective one, or null."
+                },
+                "successorOf": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Job id of the predecessor whose deadline this continuation took at acceptance (it had none of its own, or an earlier live one capped it), or null."
+                },
+                "enforcement": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "confirmed",
+                            "unresolved"
+                          ],
+                          "description": "confirmed: the warden proved the run's boundary empty and left. unresolved: it stopped trying without that proof (an unclassifiable process, or a member that would not die); `detail` names why."
+                        },
+                        "detail": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Why membership could not be established; null when confirmed."
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "detail"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The warden's final report on the run's processes; null while it has none."
+                }
+              },
+              "required": [
+                "at",
+                "revision",
+                "serverNow",
+                "state",
+                "stopGraceSec",
+                "inheritedFrom",
+                "successorOf",
+                "enforcement"
+              ],
+              "additionalProperties": false,
+              "description": "The run-deadline/1 deadline the job holds, read without any transition from its durable record: one the request set, or one it inherited (a continuation of a run with a deadline, a Delegate child of one, or a job its deadline ended)."
             }
           },
           "required": [
@@ -70,6 +165,10 @@
             "error": {
               "type": "string",
               "description": "Error message, when the job failed."
+            },
+            "deadline": {
+              "$ref": "#/definitions/ControlRunStartResponse/anyOf/0/properties/deadline",
+              "description": "The run-deadline/1 deadline the job holds, read without any transition from its durable record: one the request set, or one it inherited (a continuation of a run with a deadline, a Delegate child of one, or a job its deadline ended)."
             }
           },
           "required": [

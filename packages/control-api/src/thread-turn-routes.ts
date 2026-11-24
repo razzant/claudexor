@@ -19,7 +19,7 @@ import {
   turnEnqueueProblemResponse,
 } from "./thread-turn-problems.js";
 import type { RunStartNormalizationOptions } from "./run-start.js";
-import { servingStore } from "./run-start-receipt.js";
+import { deadlineReplayRefusal, receiptDeadline, servingStore } from "./run-start-receipt.js";
 import {
   assertLatestThreadTurn,
   assertThreadAdmitsWork,
@@ -105,6 +105,7 @@ async function respondToTurnJob(
       ControlThreadTurnResponse.parse({
         ...ControlRunStartInfo.parse({
           ...store,
+          ...(await receiptDeadline(ctx.daemon, rec)),
           jobId: rec.id,
           runId: rec.runId,
           taskId: rec.taskId,
@@ -122,6 +123,8 @@ async function respondToTurnJob(
     // make embedders retry an unretryable refusal. Infra terminals (no typed
     // code) stay 5xx so genuine transient failures are still retried.
     const { storeId: _store, ...errorContext } = rec.errorContext ?? {};
+    // The durable deadline rides the refusal's context, as on the one-shot route.
+    const deadline = await receiptDeadline(ctx.daemon, rec);
     return ctx.json(res, preStartRefusalStatus(rec.errorCode, rec.errorStatus), {
       jobId: rec.id,
       turnId,
@@ -137,6 +140,7 @@ async function respondToTurnJob(
         turnId,
         threadId,
         ...store,
+        ...deadline,
       },
     });
   }
@@ -145,6 +149,7 @@ async function respondToTurnJob(
     202,
     ControlThreadTurnResponse.parse({
       ...store,
+      ...(await receiptDeadline(ctx.daemon, rec)),
       jobId: rec.id,
       turnId,
       threadId,
@@ -458,9 +463,31 @@ export function handleThreadTurnRetry(
         throw Object.assign(new Error(`no such turn on this thread: ${turnId}`), { status: 404 });
       const recorded = turn["enqueue_error"] as
         { retryable?: unknown; code?: unknown } | null | undefined;
+      const jobs = (await ctx.daemon.list({ turnId }))
+        .filter((record) => {
+          const params = record.params as { turnId?: unknown } | null | undefined;
+          return Boolean(params && typeof params === "object" && params.turnId === turnId);
+        })
+        .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
+      const last = jobs[jobs.length - 1];
+      // Before any other refusal, even a non-retryable one recorded on the turn (a
+      // failed preparation's job exists): a turn whose accepted job held a
+      // deadline is refused typed, with the start that carries a new deadline.
+      const deadlineRefusal =
+        last && (await deadlineReplayRefusal(ctx.daemon, last, "A turn retry", { threadId }));
+      if (deadlineRefusal) {
+        const { error: message, ...typed } = deadlineRefusal;
+        throw Object.assign(new Error(message), { status: 409, ...typed });
+      }
       // A released resource's refusal is the exception: its job exists, so a repeat
       // still resolves an accepted key and otherwise asks the owner that refused it.
-      if (!turn["run_id"] && recorded?.retryable === false && recorded.code !== RESOURCE_RELEASED) {
+      // So is a queued run-deadline/1 expiry whose job is gone (refused below).
+      if (
+        !turn["run_id"] &&
+        recorded?.retryable === false &&
+        recorded.code !== RESOURCE_RELEASED &&
+        recorded.code !== "run_deadline_expired"
+      ) {
         // The stored refusal requires a new message. A purged thread admits none.
         assertThreadAdmitsWork(threadId, detail.thread);
         throw Object.assign(
@@ -470,15 +497,9 @@ export function handleThreadTurnRetry(
           { status: 409 },
         );
       }
-      const jobs = (await ctx.daemon.list({ turnId }))
-        .filter((record) => {
-          const params = record.params as { turnId?: unknown } | null | undefined;
-          return Boolean(params && typeof params === "object" && params.turnId === turnId);
-        })
-        .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
-      const last = jobs[jobs.length - 1];
+      const replayParams = last?.params;
       if (last && ctx.daemon.findAccepted) {
-        const prior = await ctx.daemon.findAccepted(last.params, {
+        const prior = await ctx.daemon.findAccepted(replayParams, {
           idempotencyKey,
           clientId: "control-api",
           operation: "thread.turn.retry",
@@ -529,11 +550,11 @@ export function handleThreadTurnRetry(
       // the replay fails. Honest, ordering-independent, no lost refusals.
       let job: { id: string };
       try {
-        job = await ctx.daemon.enqueue(last.params, {
+        job = await ctx.daemon.enqueue(replayParams, {
           idempotencyKey,
           clientId: "control-api",
           operation: "thread.turn.retry",
-          idempotencyRequest: last.params,
+          idempotencyRequest: replayParams,
         });
       } catch (err) {
         // A failed replay ENQUEUE is a fresh refusal — but the ORIGINAL job

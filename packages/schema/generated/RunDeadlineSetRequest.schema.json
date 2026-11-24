@@ -1,0 +1,26 @@
+{
+  "$ref": "#/definitions/RunDeadlineSetRequest",
+  "definitions": {
+    "RunDeadlineSetRequest": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Absolute instant on the server's wall clock, RFC3339 UTC (Z)."
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "at",
+        "expectedRevision"
+      ],
+      "additionalProperties": false,
+      "description": "Replace the run's own absolute deadline while that deadline is armed (queued, preparing or running, not yet reached or claimed). A stale expectedRevision is a conflict; a deadline that already won refuses (run_deadline_expired), so does a terminal run (run_deadline_closed)."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

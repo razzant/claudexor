@@ -1,3 +1,5 @@
+import { sharedLaunch } from "./run-spawn.js";
+
 /** Await one reader's lifetime without giving it ownership of other readers. */
 export function waitForRead<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -49,7 +51,12 @@ export class SharedRead<T> {
       owned.promise = waitForRead(
         Promise.resolve().then(() => {
           controller.signal.throwIfAborted();
-          return acquire(controller.signal);
+          // A read other callers may join launches outside the first caller's
+          // run scope: no run's stop or deadline ends a child another run waits
+          // on. A null key is never joined and stays its caller's.
+          return key === null
+            ? acquire(controller.signal)
+            : sharedLaunch("shared-read", () => acquire(controller.signal));
         }),
         controller.signal,
       ).finally(() => this.remove(scope, owned));

@@ -8,7 +8,8 @@ import {
   type ControlOperationDescriptor,
   ControlHarnessSetupHarness,
 } from "@claudexor/schema";
-import { STORE_IDENTITY_HEADER, queryParam, resumeHeader } from "./operation-parameters.js";
+import { CAPABILITIES_HEADER, STORE_IDENTITY_HEADER } from "./operation-parameters.js";
+import { queryParam, resumeHeader } from "./operation-parameters.js";
 import { REMOTE_OPERATION_DRAFTS } from "./remote-operation-descriptors.js";
 import { MODEL_OPERATION_DRAFTS } from "./model-routes.js";
 import { MAINTENANCE_OPERATION_DRAFTS } from "./maintenance-routes.js";
@@ -74,7 +75,7 @@ const operations: ControlOperationDescriptor[] = [
     { idempotency: "natural" },
   ),
   j("POST", "/v2/handshake", "read_only", "ControlHandshakeRequest", "ControlHandshakeResponse", {
-    parameters: [STORE_IDENTITY_HEADER],
+    parameters: [STORE_IDENTITY_HEADER, CAPABILITIES_HEADER],
   }),
   j("GET", "/v2/daemon/status", "read_only", null, "ControlDaemonStatus"),
   j("GET", "/v2/operations", "read_only", null, "ControlOperationCatalog"),
@@ -231,6 +232,8 @@ const operations: ControlOperationDescriptor[] = [
   RUN_DETAIL_OPERATION,
   j("GET", "/v2/runs/:id/time-limit", "read_only", null, "RunTimeLimitSnapshot"),
   j("PATCH", "/v2/runs/:id/time-limit", "mutating", "RunTimeLimitRequest", "RunTimeLimitSnapshot"),
+  j("GET", "/v2/runs/:id/deadline", "read_only", null, "RunDeadlineSnapshot"),
+  j("PATCH", "/v2/runs/:id/deadline", "mutating", "RunDeadlineSetRequest", "RunDeadlineSnapshot"),
   j("POST", "/v2/runs/:id/retry", "mutating", null, "ControlRunRetryResponse", {
     completion: "durable_handle",
     idempotency: "key_required",

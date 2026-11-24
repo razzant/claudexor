@@ -76,6 +76,8 @@ export const RunFailureCode = z
     "access_profile_incompatible",
     "auxiliary_writable_roots_unsupported",
     "retired_access_profile",
+    /* run-deadline/1: the server-enforced deadline passed before the run started. */
+    "run_deadline_expired",
   ])
   .describe(
     "Machine-readable failure sub-code within a RunFailure category, including historical delegated-run failures and active access-profile refusals.",

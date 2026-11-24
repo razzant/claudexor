@@ -53,6 +53,9 @@ export const RunReason = z
     "not_converged",
     "stuck_no_progress",
     "wall_clock_exceeded",
+    // run-deadline/1: the run's server-enforced deadline ended it (any phase);
+    // wall_clock_exceeded stays the maxSeconds / time-limit clock's reason.
+    "run_deadline_expired",
     "user_cancelled",
     // Host-initiated cancellations (2026-08-30): the daemon/an integrating
     // host stopped the run, not a human — and the specific case where the

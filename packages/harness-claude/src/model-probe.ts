@@ -1,4 +1,4 @@
-import { observeHarnessProgram } from "@claudexor/core";
+import { observeHarnessProgram, sharedLaunch } from "@claudexor/core";
 import { CLAUDE_PROGRAM } from "./program.js";
 /**
  * Live Claude model inventory from the prompt-free `initialize` handshake.
@@ -461,7 +461,10 @@ export async function probeClaudeModels(
     // The capture owns its own bound; no caller's signal reaches it, so one
     // cancelled caller cannot hand every later caller a killed capture.
     const started = nowMs();
-    flight = captureOnce(scope, spec?.env, identity, deps.runCapture ?? runCapture, secret)
+    // Shared by every caller of this scope: no caller's run marker either.
+    flight = sharedLaunch("claude-model-probe", () =>
+      captureOnce(scope, spec?.env, identity, deps.runCapture ?? runCapture, secret),
+    )
       .catch((): ClaudeInitializeAnswer | null => null)
       .then((answer) => {
         const rows = claudeModelRows(answer);

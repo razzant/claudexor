@@ -1,4 +1,5 @@
 import {
+  type ControlCapability,
   CONTROL_PROTOCOL_MAJOR,
   ControlHandshakeRequest,
   ControlHandshakeResponse,
@@ -35,6 +36,10 @@ export async function resolveControlProtocol(input: {
   storeId?: () => string | undefined;
   /** The request opted in to `storeId` (`X-Claudexor-Store-Identity: 1`). */
   wantsStoreId?: boolean;
+  /** Capabilities proven on this host; returned only on opt-in. */
+  capabilities?: () => ControlCapability[];
+  /** The request opted in to `capabilities` (`X-Claudexor-Capabilities: 1`). */
+  wantsCapabilities?: boolean;
 }): Promise<ControlProtocolBoundary> {
   const servingMode = input.servingMode ?? "normal";
   if (input.method === "POST" && input.requestPath === "/v2/handshake") {
@@ -65,6 +70,7 @@ export async function resolveControlProtocol(input: {
         engine: engineBuildIdentity(),
         servingMode,
         ...(storeId === undefined ? {} : { storeId }),
+        ...(input.wantsCapabilities ? { capabilities: input.capabilities?.() ?? [] } : {}),
       }),
     };
   }

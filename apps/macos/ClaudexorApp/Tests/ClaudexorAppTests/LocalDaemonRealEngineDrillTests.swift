@@ -40,7 +40,7 @@ private final class RealEngineDrill: @unchecked Sendable {
 
     private static let closureParts = [
         "claudexord.bundle.cjs", "claudexor.bundle.cjs", "setup-login-runner.cjs",
-        "browser-mcp-runtime", "native",
+        "run-deadline-warden.cjs", "browser-mcp-runtime", "native",
     ]
 
     let root: URL

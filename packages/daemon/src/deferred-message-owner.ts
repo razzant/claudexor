@@ -28,7 +28,8 @@ export function assertDeferredOperator(beltContext: boolean, targetParams?: unkn
 /** The successor identity a promotion's staged acceptance was written under. */
 export interface PromotionStamp {
   jobId: string;
-  createdAt: string;
+  /** Absent when the store staged no bodies (the commit stamps its own time). */
+  createdAt?: string;
 }
 
 /** Command-adjacent storage boundary; preparation and queue publication stay

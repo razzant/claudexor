@@ -281,6 +281,17 @@
           ],
           "schema_ref": null,
           "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        },
+        {
+          "name": "x-claudexor-capabilities",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive `capabilities`, the features this engine proves on this host (run-deadline/1 with its stopGraceSec); without it the response keeps its earlier shape."
         }
       ],
       "response_schema": "ControlHandshakeResponse",
@@ -1290,11 +1301,35 @@
       "error_schema": "ControlProblem"
     },
     {
+      "method": "GET",
+      "path": "/v2/runs/:id/deadline",
+      "mutating": false,
+      "applicability": "run",
+      "summary": "Read a run's server-enforced run-deadline/1 deadline, revision and server time.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [],
+      "response_schema": "RunDeadlineSnapshot",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/runs/:id/deadline",
+      "mutating": true,
+      "applicability": "run",
+      "summary": "Replace a run's absolute deadline while it is armed (not yet reached or claimed), with an expected revision (run-deadline/1); success only once the change is durable, 503 run_deadline_outcome_unknown when it took effect but could not be made durable (read it again).",
+      "auth": "loopback_bearer",
+      "request_schema": "RunDeadlineSetRequest",
+      "parameters": [],
+      "response_schema": "RunDeadlineSnapshot",
+      "error_schema": "ControlProblem"
+    },
+    {
       "method": "POST",
       "path": "/v2/runs/:id/decision",
       "mutating": true,
       "applicability": "run",
-      "summary": "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, needs-decision, or non-patch results with typed reasons and is idempotent.",
+      "summary": "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, needs-decision, or non-patch results with typed reasons and is idempotent; a rerun of a run that held a run-deadline/1 deadline is refused with 409 run_deadline_replay_refused.",
       "auth": "loopback_bearer",
       "request_schema": "ControlRunDecisionRequest",
       "parameters": [
@@ -1439,7 +1474,7 @@
       "path": "/v2/runs/:id/retry",
       "mutating": true,
       "applicability": "run",
-      "summary": "Retry a run, returning a new durable handle.",
+      "summary": "Retry a run, returning a new durable handle; a run that held a run-deadline/1 deadline is refused with 409 run_deadline_replay_refused.",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [
@@ -2156,7 +2191,7 @@
       "path": "/v2/threads/:id/turns/:id/retry",
       "mutating": true,
       "applicability": "thread",
-      "summary": "Retry a thread turn.",
+      "summary": "Retry a refused thread turn; one whose job held a run-deadline/1 deadline is refused with 409 run_deadline_replay_refused (send a new turn with deadline.at).",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [
