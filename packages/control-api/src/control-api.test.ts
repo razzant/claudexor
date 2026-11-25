@@ -21,6 +21,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -13578,7 +13579,7 @@ describe("run-deadline/1 over the mounted HTTP routes", () => {
       await import("../../daemon/src/store/test-support/fixtures/legacy/daemon/command-store.js");
     const { legacyCommandFixture } =
       await import("../../daemon/src/store/test-support/legacy-command-fixture.js");
-    const dir = reapMk(join(tmpdir(), "cx-rdl-http-"));
+    const dir = reapMk(join(realpathSync(tmpdir()), "cx-rdl-http-"));
     const project = join(dir, "project");
     mkdirSync(project);
     const token = "deadline-token";
