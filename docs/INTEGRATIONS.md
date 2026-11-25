@@ -255,6 +255,12 @@ Not every subcommand has stable JSON output. Integrations should prefer the
 daemon/control API for long-running interactive use and use CLI JSON only where
 the command documents or returns machine-readable output.
 
+A setup wizard can put the SSH runtime on an empty server with the experimental
+`claudexor remote preflight <ssh-destination> --json` and
+`claudexor remote install <ssh-destination> --digest <sha256> --json`. What the
+digest binds, the typed refusals and how to read an unknown outcome are in
+[Remote SSH execution](ARCHITECTURE.md#remote-ssh-execution).
+
 `--web off|auto|cached|live` is the CLI-first external context policy. It is
 separate from process/network sandboxing: `off` switches off each route's own
 web tools, and web evidence counts typed web tool calls and engine Browser calls

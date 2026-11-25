@@ -376,6 +376,10 @@ pnpm test
   embedding hosts do not follow those tags.
 - Asset upload never clobbers. The remote asset set is checked before/after
   upload; publish the draft last and never edit a published tag/assets.
+- After publishing, run `scripts/smoke-remote-install-ssh.sh --published` in
+  Linux CI on the release's checkout (its built CLI installs the published,
+  pinned-key SSH runtime on an empty container) and record the run. A failure
+  is a regression of the published release.
 - Release notes describe shipped behavior, not private review scratch.
 
 ## Review Protocol

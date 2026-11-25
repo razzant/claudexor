@@ -9175,7 +9175,10 @@ manifest or asset fields before signature verification, so an unsigned extension
 cannot ride beside the explicit cross-language signing projection. The app verifies Ed25519 and archive SHA-256,
 uploads through SSH, probes a staging directory, and atomically switches
 `~/.claudexor/remote/current`, retaining `last-known-good` for rollback. No
-remote installation uses `sudo`. A newer compatible runtime is never
+remote installation uses `sudo`. The install and rollback scripts have one
+source, `packages/cli/src/remote-host-scripts.ts`; the app's
+`RemoteRuntimeScripts.swift` is generated from it (`pnpm fixtures:swift:check`).
+A newer compatible runtime is never
 downgraded; an incompatible older runtime is updated before use. One opaque
 activation lease is claimed before the install actor's first SSH suspension and
 owns the candidate through the tunneled daemon handshake. Commit and rollback
@@ -9198,6 +9201,89 @@ identity. Activation commit additionally rechecks the lease-owned pointer target
 Once that exact commit succeeds, a later final-probe mismatch is treated as a
 newer external pointer transition and fails the reconnect without rolling it
 back through the settled lease.
+
+Other clients reach a first install through two machine commands over the
+system `ssh` (OpenSSH 8.5 or newer) in batch mode. The destination is parsed
+before any call: a `Host` alias or host name, `user@host`, or
+`ssh://[user@]host[:port]`, IPv6 bare or bracketed in the URI (a zone such as
+`%eth0` only bare: a URI may decode `%`); users and names use letters, digits,
+`.`, `_` and `-`, and another login form, such as a domain account, belongs in
+`User` of the person's trusted `Host` alias. Every call checks the host key against
+known-hosts files only (no KnownHostsCommand, DNS, first-seen key or loopback
+exemption), adds nothing to them, and neither reuses nor leaves a master
+connection; the user's alias, port, user, jump host and keys apply.
+`claudexor remote preflight <ssh-destination> --json` only reads: the login's
+user, uid, home and hostname, the server's SSH host keys as `SHA256:`
+fingerprints, the target, and one state — `empty` (offering the signed runtime
+of the CLI's own version, with a `digest` over destination, login, host keys and
+release), `installed` (a runtime of this remote protocol) or `blocked` with a
+typed reason, such as `runtime_incompatible`, `host_key_unavailable` (no host
+key readable in `/etc/ssh`), `release_unavailable` (no whole manifest arrived)
+or `release_unverified` (a received one failed its checks). An installed
+runtime is identified, never run: only its immutable `versions/` directory's
+bounded regular `runtime.json` and `.archive-sha256` marker are read. A read
+that completed is kept whatever its bytes hold and must agree with the
+directory name, else `runtime_unrecognized`, which also holds when the other
+file could not be read: a contradiction read whole outweighs a missing fact.
+Only a failed read with no such contradiction leaves state `blocked` with
+`runtime_unreadable`, never a mismatch (`remote_unreadable` is the error for a
+check answer that could not be read whole). So `installed` says what the runtime
+declares, not that it works; connecting is the separate `remote bootstrap`. An
+installed, unknown or locked runtime is never changed.
+`claudexor remote install <ssh-destination> --digest <sha256> --json` pins every
+later call to the host keys it reads (a private known-hosts file under a fixed
+alias), reads again over that pin and refuses `preflight_changed` unless the
+host is still empty with that digest (a retryable `release_unavailable` when
+only the manifest could not be read); a server that cannot prove those keys is
+`host_identity_unconfirmed` before anything is written. It then makes one
+writing step. That step's shell proves the confirmed hostname, platform, uid,
+user and home (otherwise `preflight_changed`, nothing read or written), then
+runs the shared transaction its command carries; the step's whole stdin is the
+signed archive, which the transaction writes into this install's own
+token-named file. Directory and pointer
+`versions/<version>-<sha256>-<token>` carry the same token, so another client's
+upload, lock or runtime is never read, removed or claimed. The transaction
+prints a receipt after activation or a refusal for this pointer before it.
+Exit 0 with `"outcome": "installed"` is success. A failure carries
+`context.activated: false` only where that is proven: before the writing step
+(a local temporary file that could not be made keeps its system code and call,
+without its path), on its recipient refusal, or on the transaction's own refusal line
+(`install_in_progress` only when the lock it could not take is there,
+`preflight_changed`, or `install_failed`, which includes a lock it could not
+create: exit 73 with the system's reason in `stderr`).
+`context.activated: true` comes with `install_failed` (an activated file read
+whole declares another identity, even if the other could not be read; they are
+left in place) or with `install_outcome_unknown` when only the final read-only
+check is open. Every
+other outcome, a broken stream or a receipt cut mid-line included, is
+`install_outcome_unknown` without that field, and a client reads a missing,
+unparseable or field-less answer the same way: never as not applied. Its
+context holds the confirmed `server` and the expected `runtime`; a later
+preflight proves the install only when it shows exactly that server and state
+`installed` with exactly that runtime, pointer included: only such a read of
+this install's own pointer and its files settles the unknown outcome, and the
+write is never repeated. A confirmed read that
+already showed this pointer completes the check even if the operation is then
+cancelled. Nothing starts a daemon or login, no answer carries a bearer and
+nothing is retried. On an ordinary end (success, refusal, a stream that ended
+early, a broken output stream, HUP, INT or TERM) the transaction removes this
+install's archive and releases only its own lock, and the CLI removes its local
+copy and pin file. SIGKILL, power loss or a removal the filesystem refuses can
+leave the archive or the lock; Claudexor never removes a lock. A lock left
+behind makes a preflight show `install_in_progress`, and the server's owner
+removes that empty directory by hand only after checking that no install still
+runs as that user. A token-named archive left in `incoming/` without a lock is
+no other install's input and by itself shows neither a running install nor an
+activation: only this install's pointer and files settle that. `ssh` runs from the
+caller's PATH through core's capture, stopped as a process group. Upgrades
+remain the app's. `pnpm release:workflow:check` requires the publication-gating
+Linux SSH job to run this first install on the promoted assets it downloaded,
+after building the CLI; that job, not the local check, exercises it on an empty
+container. After a publication the Release checklist has the publisher run
+`smoke-remote-install-ssh.sh --published`: this checkout's built CLI against
+the published, pinned-key release of its version in a disposable Linux CI
+container. An already published release can be checked that way separately
+before the next one; it is not a standing CI job.
 
 Vendor program maintenance is declared beside each local adapter in its
 program declaration: launchers and folders, install/update/exact-version commands,

@@ -114,7 +114,7 @@ import { accountResetCommand } from "./account-reset-command.js";
 import { quotaCommand } from "./quota-command.js";
 import { trustCommand } from "./trust-command.js";
 import { projectCommand } from "./project-command.js";
-import { remoteCommand } from "./remote-command.js";
+import { remoteCommand, systemRemoteHostDeps } from "./remote-command.js";
 import { setupCommand } from "./setup-attach-command.js";
 import { harnessCommand } from "./harness-command.js";
 import { runRepl } from "./repl.js";
@@ -922,7 +922,7 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
       return projectCommand(args, json);
 
     case "remote":
-      return remoteCommand(args, json);
+      return remoteCommand(args, json, systemRemoteHostDeps);
 
     case "setup":
       return setupCommand(args, json);

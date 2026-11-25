@@ -494,7 +494,14 @@ if (!/^\s{4}runs-on:\s*macos-26\s*$/m.test(publishNpmJob)) {
   errors.push("release.yml: npm publication must run on macos-26");
 }
 // The Linux SSH smoke is a publication gate: both publish jobs must depend on
-// it and it must really exercise the promoted archive (not a no-op).
+// it and it must really exercise the promoted archive (not a no-op), both as a
+// pre-unpacked runtime and through the controller-side first install. The
+// self-tests below mutate through these same patterns.
+const remoteRuntimeSmokeCall =
+  /scripts\/smoke-remote-runtime-ssh\.sh \\\n\s*"release-assets\/claudexor-remote-runtime-\$VERSION-linux-x64\.tar\.gz"/;
+const remoteInstallSmokeCall =
+  /^ +scripts\/smoke-remote-install-ssh\.sh --candidate-assets (\S+)$/m;
+const remoteInstallCliBuild = /^ +- run: pnpm --filter "@claudexor\/cli\.\.\." build\n/m;
 errors.push(...remoteSmokeGateFindings(release));
 const delayedWindowsFixtureCi = ci
   .replace(
@@ -520,14 +527,14 @@ for (const [label, mutated] of [
       "needs: [prepare, package-macos, publish-npm, npm-smoke]",
     ),
   ],
-  [
-    "no-op SSH smoke invocation",
-    release.replace(
-      /scripts\/smoke-remote-runtime-ssh\.sh \\\n\s*"release-assets\/claudexor-remote-runtime-\$VERSION-linux-x64\.tar\.gz"/,
-      "true",
-    ),
-  ],
+  ["no-op SSH smoke invocation", release.replace(remoteRuntimeSmokeCall, "true")],
   ["deleted SSH smoke job", release.replace("  remote-linux-ssh-smoke:\n", "  renamed-job:\n")],
+  ["no-op first-install smoke", release.replace(remoteInstallSmokeCall, "          true")],
+  [
+    "first-install smoke on assets the job did not download",
+    release.replace(remoteInstallSmokeCall, (call) => call.replace(/\S+$/, "other-assets")),
+  ],
+  ["first-install smoke without the CLI build", release.replace(remoteInstallCliBuild, "")],
 ]) {
   if (mutated === release || remoteSmokeGateFindings(mutated).length === 0) {
     errors.push(`release-workflow-check self-test: failed to reject ${label}`);
@@ -941,8 +948,8 @@ for (const [label, mutatedCi, mutatedRelease] of [
     "a release smoke job without its bound",
     ci,
     release.replace(
-      "    needs: [prepare, package-macos]\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n",
-      "    needs: [prepare, package-macos]\n    runs-on: ubuntu-latest\n",
+      jobSection(release, "remote-linux-ssh-smoke"),
+      jobSection(release, "remote-linux-ssh-smoke").replace(/^ {4}timeout-minutes: \d+\n/m, ""),
     ),
   ],
   [
@@ -1511,14 +1518,22 @@ function remoteSmokeGateFindings(workflow) {
   const smokeJob = jobSection(workflow, "remote-linux-ssh-smoke");
   if (!smokeJob) {
     findings.push("release.yml: remote-linux-ssh-smoke job is missing");
-  } else if (
-    !/scripts\/smoke-remote-runtime-ssh\.sh \\\n\s*"release-assets\/claudexor-remote-runtime-\$VERSION-linux-x64\.tar\.gz"/.test(
-      smokeJob,
-    )
-  ) {
-    findings.push(
-      "release.yml: remote-linux-ssh-smoke must invoke scripts/smoke-remote-runtime-ssh.sh on the promoted linux-x64 archive (a no-op invocation hollows the gate)",
-    );
+  } else {
+    if (!remoteRuntimeSmokeCall.test(smokeJob)) {
+      findings.push(
+        "release.yml: remote-linux-ssh-smoke must invoke scripts/smoke-remote-runtime-ssh.sh on the promoted linux-x64 archive (a no-op invocation hollows the gate)",
+      );
+    }
+    // The first-install driver imports the built CLI modules and must read
+    // the promoted assets this job downloaded, not another directory.
+    const call = remoteInstallSmokeCall.exec(smokeJob);
+    const downloaded = /^ {10}path: (\S+)$/m.exec(smokeJob)?.[1];
+    const build = smokeJob.search(remoteInstallCliBuild);
+    if (!call || call[1] !== downloaded || build < 0 || build > call.index) {
+      findings.push(
+        "release.yml: remote-linux-ssh-smoke must run scripts/smoke-remote-install-ssh.sh --candidate-assets on the assets it downloaded, after building @claudexor/cli",
+      );
+    }
   }
   for (const gate of ["publish-npm", "publish-release"]) {
     if (
