@@ -3043,9 +3043,9 @@ the vendor's Deny > Ask > Allow order keeps those rules in force
 where a wildcard command rule no longer bypasses commands an administrator
 holds for review; the vendor's notes for that release also keep an ask on
 commands that would leave its terminal sandbox, and a profile `ask` rule still
-asks, so such a command can still end a headless turn. The version is that of
-the program this run launches (the core's one observation for the run's
-environment and directory). A known older version refuses the
+asks, so such a command can still end a headless turn. The version comes from
+the core's observation of the launcher in the run's own environment and
+directory, which the launch reuses while that program is unchanged. A known older version refuses the
 `workspace_write` run before dispatch
 (`agy_workspace_write_version_unsupported`) with an update remedy; a version
 that cannot be determined starts the run without the grant, as before it
@@ -3065,8 +3065,11 @@ list has another shape, a readonly run refuses before starting
 without session settings, as it did before the grant, and says so
 (`agy_workspace_write_session_policy_unavailable`); the same holds when the
 private settings file cannot be written
-(`agy_workspace_write_session_policy_unwritable`), where a readonly run refuses
-(`agy_readonly_session_policy_unwritable`).
+(`agy_workspace_write_session_policy_unwritable`), unless that file is the only
+read grant of an input delivered as files, which refuses like a readonly run
+(`agy_readonly_session_policy_unwritable`). The rules are read once when the
+run is prepared: a restriction saved to the profile after that and before the
+child starts is not in the session file.
 `--settings` needs agy `1.4.10` or newer (official `1.1.13` and
 tested `1.3.4` through `1.4.9` reject it while parsing arguments, before any
 model or account access, stopping with `agy_session_settings_unsupported` and an

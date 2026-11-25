@@ -250,6 +250,24 @@ describe("agy readonly session policy (#653)", () => {
           text: expect.stringContaining("runs without session settings"),
         });
         expect(wwEvents[1]!.text).toBe("[]");
+
+        // A run whose input needs the file's read grant refuses instead.
+        const requiredEvents = await drain(
+          withAgySessionSettings(
+            policy.settings,
+            "s",
+            async function* () {
+              started = true;
+            },
+            { access: "workspace_write", required: true },
+          ),
+        );
+        expect(started).toBe(false);
+        expect(requiredEvents.map((event) => event.type)).toEqual(["error", "completed"]);
+        expect(requiredEvents[0]).toMatchObject({
+          payload: { code: "agy_workspace_write_session_policy_unwritable" },
+          error: expect.stringContaining("nothing was sent"),
+        });
       } finally {
         if (previous === undefined) delete process.env.TMPDIR;
         else process.env.TMPDIR = previous;

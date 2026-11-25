@@ -26,7 +26,10 @@ export function* prepareAgyRunInput(
   profileHome: string,
   /** A workspace_write run gets the session shell grant only when the caller established its CLI supports it. */
   workspaceWriteShellGrant = false,
-): Generator<HarnessEvent, { settings: AgySessionSettings | null; input: string } | null> {
+): Generator<
+  HarnessEvent,
+  { settings: AgySessionSettings | null; input: string; needsSettings: boolean } | null
+> {
   const status = (text: string, payload: Record<string, unknown>): HarnessEvent => ({
     type: "status",
     session_id: spec.session_id,
@@ -92,5 +95,9 @@ export function* prepareAgyRunInput(
   if (delivery.kind === "refused")
     return yield* refuse(delivery.error, "agy_input_file_delivery_unavailable");
   if (delivery.kind === "files") yield delivery.status;
-  return { settings: sessionPolicy, input: delivery.input };
+  // The session file is the only read grant of an input delivered as files
+  // when the profile's own grant could not be saved: that run needs the file.
+  const needsSettings =
+    spec.access === "readonly" || (delivery.kind === "files" && readGrant.state === "unavailable");
+  return { settings: sessionPolicy, input: delivery.input, needsSettings };
 }

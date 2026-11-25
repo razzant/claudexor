@@ -499,7 +499,7 @@ async function* runAgy(
   // Read grant, session policy (readonly or workspace_write), and inline or file input (#653).
   const access = yield* prepareAgyRunInput(spec, route.home, shellGrant);
   if (!access) return;
-  const { settings, input } = access;
+  const { settings, input, needsSettings } = access;
 
   // AGY 1.1.13 selects print mode from piped stdin only without a print/prompt flag.
   const args = ["--output-format", "stream-json"];
@@ -549,6 +549,7 @@ async function* runAgy(
   yield* completion.wrap(
     withAgySessionSettings(settings, spec.session_id, run, {
       access: spec.access === "workspace_write" ? "workspace_write" : "readonly",
+      required: needsSettings,
     }),
   );
 }

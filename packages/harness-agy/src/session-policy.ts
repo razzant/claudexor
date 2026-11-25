@@ -132,14 +132,15 @@ export function agyWorkspaceWritePolicyEvent(
  * private paths) in a private file the adapter owns until the child has
  * exited or been reaped, including cancellation and spawn failure, like the
  * Claude instructions file. A file that cannot be written refuses a readonly
- * run before the child starts, because its denials would be missing; a
+ * run before the child starts, because its denials would be missing, and a
+ * run whose input needs the file's read grant (`required`); any other
  * workspace_write run starts without it, as before its grant existed.
  */
 export async function* withAgySessionSettings(
   settings: AgySessionSettings | null,
   sessionId: string,
   run: (settingsArgs: string[]) => AsyncIterable<HarnessEvent>,
-  options?: { access?: "readonly" | "workspace_write" },
+  options?: { access?: "readonly" | "workspace_write"; required?: boolean },
 ): AsyncGenerator<HarnessEvent> {
   if (!settings) {
     yield* run([]);
@@ -158,7 +159,7 @@ export async function* withAgySessionSettings(
       });
     } catch (error) {
       const detail = redactSecrets(error instanceof Error ? error.message : String(error));
-      if (access === "workspace_write") {
+      if (access === "workspace_write" && options?.required !== true) {
         yield {
           type: "status",
           session_id: sessionId,
@@ -173,8 +174,8 @@ export async function* withAgySessionSettings(
         type: "error",
         session_id: sessionId,
         ts: nowIso(),
-        error: `agy readonly session settings could not be written, so nothing was sent: ${detail.slice(0, 300)}`,
-        payload: { code: "agy_readonly_session_policy_unwritable" },
+        error: `agy ${access} session settings could not be written, so nothing was sent: ${detail.slice(0, 300)}`,
+        payload: { code: `agy_${access}_session_policy_unwritable` },
       };
       yield { type: "completed", session_id: sessionId, ts: nowIso() };
       return;

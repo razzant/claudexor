@@ -42,6 +42,7 @@ describe("agy minimum CLI versions (#653)", () => {
     ["2.0.0", "pass"],
     ["1.5.7-rc.1", "fail"],
     ["1.6.0-rc.1", "pass"],
+    ["1.5.7+build.42", "pass"],
   ] as const)("workspace_write reports %s as %s", (installed, status) => {
     const check = agyWorkspaceWriteDoctorCheck(installed);
     expect(check).toMatchObject({ id: "workspace_write_min_version", status });
@@ -50,7 +51,7 @@ describe("agy minimum CLI versions (#653)", () => {
     if (status === "fail") expect(check.detail).toContain("update agy");
   });
 
-  it.each([null, "", "agy (version unknown)", "1.5"])(
+  it.each([null, "", "agy (version unknown)", "1.5", "1.5.14+ local build"])(
     "claims nothing about an unknown version (%s)",
     (installed) => {
       expect(agyReadonlyDoctorCheck(installed)).toMatchObject({

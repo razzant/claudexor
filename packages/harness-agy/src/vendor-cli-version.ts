@@ -34,7 +34,7 @@ export function extractAgySemver(raw: string | null): string | null {
 /** `installed` against the release `minimum`; null when `installed` is not a
  * version. A prerelease precedes its own release and follows every earlier one. */
 export function isAgyVersionAtLeast(installed: string | null, minimum: string): boolean | null {
-  const match = /^(\d+)\.(\d+)\.(\d+)(-[^+]+)?(\+.+)?$/.exec(installed ?? "");
+  const match = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.exec(installed ?? "");
   const floor = /^(\d+)\.(\d+)\.(\d+)$/.exec(minimum);
   if (!match || !floor) return null;
   const order =
