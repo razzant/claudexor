@@ -106,18 +106,39 @@ function requireConfirmed(observed: Observation, digest: string): SignedRelease 
 
 /** Before the writing step starts, nothing on the server is this install's: a
  * refusal from that phase says so, so no client infers it from a missing
- * field. An unexpected error, which is no typed refusal, makes no claim.
- * remote-command.ts applies it to a transport it could not build. */
+ * field. A typed refusal keeps its own fields. A local file this client could
+ * not make (the pin's known-hosts file, the archive's temporary file) throws a
+ * Node system error: it keeps its code and call, never its path. Any other
+ * unexpected error makes no claim. remote-command.ts applies it to a
+ * transport it could not build. */
 export function notActivated(error: unknown): unknown {
-  if (!(error instanceof CliError) || error.context?.["activated"] !== undefined) return error;
-  return new CliError(error.category, error.message, {
-    code: error.code,
-    retryable: error.retryable,
-    fieldErrors: error.fieldErrors,
-    requiredActions: error.requiredActions,
-    details: error.details,
-    context: { ...error.context, activated: false },
-  });
+  if (error instanceof CliError) {
+    if (error.context?.["activated"] !== undefined) return error;
+    return new CliError(error.category, error.message, {
+      code: error.code,
+      retryable: error.retryable,
+      fieldErrors: error.fieldErrors,
+      requiredActions: error.requiredActions,
+      details: error.details,
+      context: { ...error.context, activated: false },
+    });
+  }
+  const local = localSystemError(error);
+  if (!local) return error;
+  return remoteHostFailure(
+    local.code,
+    `this computer could not prepare a local file for the install (${local.syscall}: ${local.code}); nothing was written to the server`,
+    { details: { syscall: local.syscall }, context: { activated: false } },
+  );
+}
+
+/** A Node system error's own code and call, or null for any other value. */
+function localSystemError(error: unknown): { code: string; syscall: string } | null {
+  if (!(error instanceof Error)) return null;
+  const { code, syscall } = error as NodeJS.ErrnoException;
+  return typeof code === "string" && /^E[A-Z0-9]+$/.test(code) && typeof syscall === "string"
+    ? { code, syscall }
+    : null;
 }
 
 function sshContext(result: SshRunResult): Record<string, unknown> {

@@ -473,6 +473,43 @@ describe("cancelling remote preflight and install", () => {
     });
     expect(d.started().at(-1)).toBe("pinned:install");
   });
+
+  it("reports a local file it could not make before the writing step by its system code, as nothing activated", async () => {
+    const lifetime = new AbortController();
+    const d = double({ lifetime });
+    const { source } = release(lifetime);
+    const digest = await digestFor({ transport: d.transport, ...source });
+    const failing = (error: Error): PinnableSshTransport => ({
+      destination: d.transport.destination,
+      run: d.transport.run,
+      pinned: () => {
+        throw error;
+      },
+    });
+    // A synthetic Node system error, as a temporary file that could not be made throws.
+    const full = Object.assign(
+      new Error("ENOSPC: no space left on device, mkdtemp '/synthetic/tmp/claudexor-ssh-pin-'"),
+      { code: "ENOSPC", syscall: "mkdtemp", errno: -28 },
+    );
+    const local = await failure(
+      installRemoteHost("synthetic-host", digest, { transport: failing(full), ...source }),
+    );
+    expect(local).toMatchObject({
+      code: "ENOSPC",
+      details: { syscall: "mkdtemp" },
+      context: { activated: false },
+    });
+    expect(String(local["message"])).not.toContain("/synthetic/tmp");
+    // An unexpected error that is no system error makes no claim.
+    const odd = await failure(
+      installRemoteHost("synthetic-host", digest, {
+        transport: failing(new Error("unexpected")),
+        ...source,
+      }),
+    );
+    expect(odd).not.toHaveProperty("context");
+    expect(d.started()).toEqual(["read", "read", "read"]);
+  });
 });
 
 interface Variant {
@@ -587,11 +624,11 @@ describe("what one confirmation binds", () => {
   });
 
   it("writes nothing as another account, nor takes its read for the confirmed one", async () => {
-    // The login reaches another account, or the name another machine with the
-    // same host key, right after the pinned decision read.
+    // The login reaches another account or platform right after the pinned
+    // decision read. The real check of the server's name runs in
+    // remote-host-scripts.test.ts; here only the client's reading is modelled.
     for (const change of [
       (host: Host) => (host.uid = "1001"),
-      (host: Host) => (host.hostname = "cloned-host"),
       (host: Host) => (host.machine = "aarch64"),
     ]) {
       let reads = 0;

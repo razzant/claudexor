@@ -1,10 +1,13 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import * as os from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   INSTALL_SCRIPT,
   INSTALL_SCRIPT_ESCAPED,
   PREFLIGHT_SCRIPT,
+  RECIPIENT_MISMATCH,
   ROLLBACK_SCRIPT,
   installCommand,
   installPointer,
@@ -101,4 +104,36 @@ describe("the one install transaction shared with the macOS app", () => {
       /(?:^|[;&|({]|\$\(|\bthen|\bdo|\belse)\s*"?\$(?:dir|file|root\/\$target)/m,
     );
   });
+
+  it.skipIf(process.platform === "win32")(
+    "refuses before writing anything when the server's name is not the confirmed one",
+    () => {
+      // The shared fixture's name, which this machine does not have; every other
+      // confirmed fact is this account's own, with an empty HOME.
+      expect(os.hostname()).not.toBe(RECIPIENT.hostname);
+      const home = mkdtempSync(join(os.tmpdir(), "claudexor-recipient-"));
+      try {
+        const { uid, username } = os.userInfo();
+        const recipient = {
+          ...RECIPIENT,
+          uid,
+          user: username,
+          home,
+          os: os.type(),
+          machine: os.machine(),
+        };
+        const command = installCommand(recipient, "9.0.1", "a".repeat(64), "b".repeat(32));
+        const step = spawnSync("/bin/sh", ["-c", command], {
+          env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: home },
+          input: "",
+          encoding: "utf8",
+        });
+        expect(step.status).toBe(77);
+        expect(step.stdout).toBe(`${RECIPIENT_MISMATCH}\n`);
+        expect(readdirSync(home)).toEqual([]);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
 });

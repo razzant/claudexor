@@ -9223,10 +9223,11 @@ or `release_unverified` (a received one failed its checks). An installed
 runtime is identified, never run: only its immutable `versions/` directory's
 bounded regular `runtime.json` and `.archive-sha256` marker are read. A read
 that completed is kept whatever its bytes hold and must agree with the
-directory name, else `runtime_unrecognized`; a file whose read failed leaves
-state `blocked` with `runtime_unreadable`, never a mismatch (`remote_unreadable`
-is the error for a check answer that could not be read whole). So `installed`
-says what the runtime
+directory name, else `runtime_unrecognized`, which also holds when the other
+file could not be read: a contradiction read whole outweighs a missing fact.
+Only a failed read with no such contradiction leaves state `blocked` with
+`runtime_unreadable`, never a mismatch (`remote_unreadable` is the error for a
+check answer that could not be read whole). So `installed` says what the runtime
 declares, not that it works; connecting is the separate `remote bootstrap`. An
 installed, unknown or locked runtime is never changed.
 `claudexor remote install <ssh-destination> --digest <sha256> --json` pins every
@@ -9244,14 +9245,16 @@ token-named file. Directory and pointer
 upload, lock or runtime is never read, removed or claimed. The transaction
 prints a receipt after activation or a refusal for this pointer before it.
 Exit 0 with `"outcome": "installed"` is success. A failure carries
-`context.activated: false` only where that is proven: before the writing step,
-on its recipient refusal, or on the transaction's own refusal line
+`context.activated: false` only where that is proven: before the writing step
+(a local temporary file that could not be made keeps its system code and call,
+without its path), on its recipient refusal, or on the transaction's own refusal line
 (`install_in_progress` only when the lock it could not take is there,
 `preflight_changed`, or `install_failed`, which includes a lock it could not
 create: exit 73 with the system's reason in `stderr`).
-`context.activated: true` comes with `install_failed` (the activated files
-declare another identity; they are left in place) or with
-`install_outcome_unknown` when only the final read-only check is open. Every
+`context.activated: true` comes with `install_failed` (an activated file read
+whole declares another identity, even if the other could not be read; they are
+left in place) or with `install_outcome_unknown` when only the final read-only
+check is open. Every
 other outcome, a broken stream or a receipt cut mid-line included, is
 `install_outcome_unknown` without that field, and a client reads a missing,
 unparseable or field-less answer the same way: never as not applied. Its
@@ -9266,19 +9269,21 @@ nothing is retried. On an ordinary end (success, refusal, a stream that ended
 early, a broken output stream, HUP, INT or TERM) the transaction removes this
 install's archive and releases only its own lock, and the CLI removes its local
 copy and pin file. SIGKILL, power loss or a removal the filesystem refuses can
-leave the archive or the lock; Claudexor never removes a lock. A preflight then
-shows `install_in_progress`, and the server's owner removes that empty
-directory by hand only after checking that no install still runs as that user;
-a leftover token-named archive is no other install's input. `ssh` runs from the
+leave the archive or the lock; Claudexor never removes a lock. A lock left
+behind makes a preflight show `install_in_progress`, and the server's owner
+removes that empty directory by hand only after checking that no install still
+runs as that user. A token-named archive left in `incoming/` without a lock is
+no other install's input and by itself shows neither a running install nor an
+activation: only this install's pointer and files settle that. `ssh` runs from the
 caller's PATH through core's capture, stopped as a process group. Upgrades
 remain the app's. `pnpm release:workflow:check` requires the publication-gating
 Linux SSH job to run this first install on the promoted assets it downloaded,
 after building the CLI; that job, not the local check, exercises it on an empty
-container. `smoke-remote-install-ssh.sh --published` is the ordinary check after
-a publication: this checkout's built CLI against the published, pinned-key
-release of its version in a disposable Linux CI container. An already published
-release can be checked that way separately before the next one; it is not a
-standing CI job.
+container. After a publication the Release checklist has the publisher run
+`smoke-remote-install-ssh.sh --published`: this checkout's built CLI against
+the published, pinned-key release of its version in a disposable Linux CI
+container. An already published release can be checked that way separately
+before the next one; it is not a standing CI job.
 
 Vendor program maintenance is declared beside each local adapter in its
 program declaration: launchers and folders, install/update/exact-version commands,
