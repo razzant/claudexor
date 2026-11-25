@@ -33,7 +33,7 @@ work of its own. Cursor's internal dashboard supplies dated monetary resources,
 not an execution-quota verdict.
 Everything runs on your machine, files are the source of truth, and there is no telemetry.
 
-Current status: **v6.4.0**. This is the source version. See the
+Current status: **v6.4.1**. This is the source version. See the
 [changelog](CHANGELOG.md) for its changes and
 [GitHub Releases](https://github.com/razzant/claudexor/releases) for
 published builds. "Stability at 2.0" below distinguishes stable contracts from
