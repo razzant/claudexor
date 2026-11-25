@@ -1,0 +1,23 @@
+# One-shot check on an isolated verification branch; not part of the product branch.
+name: Verify published Claudexor remote install
+on:
+  push:
+    branches: ['verify/remote-install-ssh-smoke']
+permissions:
+  contents: read
+jobs:
+  smoke:
+    if: github.event.created
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: bash scripts/smoke-remote-install-ssh.sh --published
