@@ -1008,7 +1008,7 @@ jobs:
     name: Exercise the promoted Linux runtime over OpenSSH
     needs: [prepare, package-macos]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: read
@@ -1031,6 +1031,22 @@ jobs:
           set -euo pipefail
           scripts/smoke-remote-runtime-ssh.sh \
             "release-assets/claudexor-remote-runtime-$VERSION-linux-x64.tar.gz"
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "@claudexor/cli..." build
+
+      # The smoke above starts from a pre-unpacked runtime; this one installs
+      # the promoted archive on an empty host through `remote preflight` and
+      # `remote install`, re-signed with a key of this run only.
+      - name: First install on an empty host through the controller-side installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/smoke-remote-install-ssh.sh --candidate-assets release-assets
 
   publish-npm:
     name: Publish npm packages with provenance

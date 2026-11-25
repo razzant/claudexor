@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { Readable } from "node:stream";
 import { retireChildProcess, unregisterChildProcess } from "./process-registry.js";
 import { composeSpawnEnv } from "./env-scope.js";
 import { backgroundSpawnShape, prepareHarnessCommand } from "./runtime-env.js";
@@ -63,6 +64,13 @@ interface RawCaptureOptions extends SpawnOptions {
   onCaptured?: (pid: number, identity: KnownProcessIdentity | undefined) => void;
   /** Test seam: the signal-0 group probe (`defaultProbeGroupAlive` in production). */
   probeGroupAlive?: (pgid: number) => boolean;
+  /**
+   * Stream stdin from this source instead of `input`: piped with back-pressure,
+   * stdin ends when the source ends. The caller owns the source: a read error
+   * is the caller's to report (it aborts through `abortSignal`), and the caller
+   * destroys the source once the capture settles.
+   */
+  stdinStream?: Readable;
 }
 
 /**
@@ -206,8 +214,14 @@ export async function runCaptureRaw(
     killTree(signal);
   };
   child.stdin.on("error", () => {});
-  if (opts.input !== undefined) child.stdin.write(opts.input);
-  child.stdin.end();
+  if (opts.stdinStream) {
+    // A child that exits before reading everything breaks the pipe: `pipe`
+    // unpipes on that stdin error and the exit status stays the outcome.
+    opts.stdinStream.pipe(child.stdin);
+  } else {
+    if (opts.input !== undefined) child.stdin.write(opts.input);
+    child.stdin.end();
+  }
 
   const buffers = new CaptureBuffers();
   let captureError: unknown;

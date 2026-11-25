@@ -11,10 +11,40 @@ import {
   inspectDaemonWriterLease,
   socketAlive,
 } from "@claudexor/daemon";
-import { type ParsedArgs } from "./args.js";
+import { flagStr, type ParsedArgs } from "./args.js";
+import { subcommandFlagScopeError } from "./command-scope.js";
 import { ensureDaemon, connectDaemonIfRunning } from "./daemon-run.js";
 import { CONTROL_PROTOCOL_MAJOR, handshakeControlApi } from "./live.js";
 import { printJson, printUsageError } from "./cli-io.js";
+import { installRemoteHost, notActivated } from "./remote-host-install.js";
+import { type RemoteHostDeps, preflightRemoteHost } from "./remote-host-preflight.js";
+import { sshDestinationProblem, systemSshTransport } from "./remote-host-transport.js";
+
+/** How `remote preflight|install` reaches a host: the CLI passes the system
+ * ssh and the published release; a test passes its own transport and fetch.
+ * There is no default, so no caller falls back to the system ssh unasked. */
+export type RemoteHostDepsFor = (destination: string) => RemoteHostDeps;
+
+export const systemRemoteHostDeps: RemoteHostDepsFor = (destination) => ({
+  transport: systemSshTransport(destination),
+});
+
+/** The command owns the operation's lifetime: SIGINT or SIGTERM to this CLI
+ * cancels it, so its ssh (in its own process group) is stopped through the
+ * capture's own stop and no further step starts. The listeners exist only
+ * while the operation runs; a second signal finds none and ends the CLI. */
+async function withCancellation<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const lifetime = new AbortController();
+  const cancel = () => lifetime.abort();
+  process.once("SIGINT", cancel);
+  process.once("SIGTERM", cancel);
+  try {
+    return await work(lifetime.signal);
+  } finally {
+    process.removeListener("SIGINT", cancel);
+    process.removeListener("SIGTERM", cancel);
+  }
+}
 import {
   admitAndAwaitRuntimeReplacementStop,
   decideRuntimeReplacementWithoutControl,
@@ -235,10 +265,60 @@ export function switchRemoteRuntimePointer(
   }
 }
 
-export async function remoteCommand(args: ParsedArgs, json: boolean): Promise<number> {
+/** Controller-side: the read-only check of an SSH host, or the one confirmed
+ * first install of this CLI's signed runtime there (remote-host-preflight.ts,
+ * remote-host-install.ts). */
+async function remoteHostCommand(
+  sub: "preflight" | "install",
+  args: ParsedArgs,
+  depsFor: RemoteHostDepsFor,
+): Promise<number> {
+  const destination = args._[2];
+  const usage = `usage: claudexor remote ${sub} <ssh-destination>${sub === "install" ? " --digest <sha256>" : ""} --json`;
+  if (args._.length !== 3 || typeof destination !== "string") return printUsageError(true, usage);
+  const problem = sshDestinationProblem(destination);
+  if (problem) return printUsageError(true, `${problem}; ${usage}`);
+  const digest = flagStr(args, "digest");
+  if (sub === "install" && (!digest || !/^[0-9a-f]{64}$/.test(digest))) {
+    return printUsageError(
+      true,
+      `remote install needs the --digest that remote preflight showed; ${usage}`,
+    );
+  }
+  // Building the transport (finding the ssh client) precedes any server call:
+  // for an install such a failure keeps its type and says nothing activated.
+  const deps = (() => {
+    try {
+      return depsFor(destination);
+    } catch (error) {
+      throw sub === "install" ? notActivated(error) : error;
+    }
+  })();
+  type RemoteAnswer = Awaited<
+    ReturnType<typeof preflightRemoteHost> | ReturnType<typeof installRemoteHost>
+  >;
+  const answer = await withCancellation<RemoteAnswer>((signal) =>
+    sub === "preflight"
+      ? preflightRemoteHost(destination, { ...deps, signal })
+      : installRemoteHost(destination, digest!, { ...deps, signal }),
+  );
+  printJson(answer);
+  return 0;
+}
+
+export async function remoteCommand(
+  args: ParsedArgs,
+  json: boolean,
+  remoteHostDeps: RemoteHostDepsFor,
+): Promise<number> {
   const sub = args._[1] ?? "probe";
   if (!json) {
     return printUsageError(false, "claudexor remote is an internal machine interface; pass --json");
+  }
+  const scopeError = subcommandFlagScopeError("remote", sub, Object.keys(args.flags));
+  if (scopeError) return printUsageError(json, scopeError);
+  if (sub === "preflight" || sub === "install") {
+    return remoteHostCommand(sub, args, remoteHostDeps);
   }
   if (sub === "stop") {
     const expectedVersion = args._[2];
@@ -271,7 +351,7 @@ export async function remoteCommand(args: ParsedArgs, json: boolean): Promise<nu
   if (args._.length > 2 || (sub !== "probe" && sub !== "bootstrap")) {
     return printUsageError(
       json,
-      "usage: claudexor remote probe|bootstrap|stop|activate|rollback --json",
+      "usage: claudexor remote probe|bootstrap|stop|activate|rollback|preflight|install --json",
     );
   }
   return sub === "bootstrap" ? bootstrap() : probe();

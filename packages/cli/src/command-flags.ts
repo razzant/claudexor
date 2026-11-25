@@ -334,7 +334,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag(
     "digest",
     "<sha256>",
-    "gc release-preparation: the record digest `gc preparations` showed",
+    "gc release-preparation / remote install: the digest `gc preparations` / `remote preflight` showed",
   ),
   booleanFlag(
     "confirm-ended",

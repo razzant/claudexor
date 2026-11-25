@@ -216,7 +216,7 @@ actor RemoteRuntimeInstaller {
         if test -L "$current"; then
           readlink "$current"
         elif test -e "$current"; then
-          echo "$current exists but is not a symlink to an installed Claudexor runtime; move it aside and install the runtime again" >&2
+          echo "$current exists but is not a symlink to an installed Claudexor runtime; it is left unchanged" >&2
           exit 73
         fi
         """
