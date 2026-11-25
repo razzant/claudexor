@@ -3050,8 +3050,12 @@ directory, which the launch reuses while that program is unchanged. A known olde
 (`agy_workspace_write_version_unsupported`) with an update remedy; a version
 that cannot be determined starts the run without the grant, as before it
 existed, and says so (`agy_workspace_write_version_unknown`). Like claude and
-cursor this is a tool-policy route with no OS sandbox. A live run of the vendor
-CLI with the grant is not yet recorded here.
+cursor this is a tool-policy route with no OS sandbox. Live on macOS with agy 1.5.14
+through the adapter (2026-11-25, one profile, a third-party model): with the
+grant `git status`, an `echo`, a listing outside the workspace, a network fetch
+and a file edit ran in one headless turn and the answer came back; the same CLI
+with the earlier arguments ended that task with an empty `SUCCESS` and the
+vendor's `command` denial on stderr. Linux and Windows have no live run.
 agy merges the session object
 into the profile settings key by key, replacing each permission list it names
 and refusing unknown top-level keys, so `--settings` carries only `permissions`
