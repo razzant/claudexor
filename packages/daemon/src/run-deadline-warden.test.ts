@@ -520,6 +520,50 @@ describe("runWarden", () => {
     });
   });
 
+  it("on Linux confirms only with evidence for every expected group: unread recorded groups stay unknown; a kept copy or a proven-empty cgroup still confirms", async () => {
+    const cases: Array<[Partial<DeadlineRecord>, string]> = [
+      [{}, "unresolved"],
+      [
+        {
+          scopes: [
+            {
+              marker: MARKER,
+              run_id: "run-1",
+              owner: null,
+              state: "open",
+              opened_at: "2026-11-20T10:00:00.000Z",
+              scope_start: null,
+              root_groups: [],
+              captured: [],
+            },
+          ],
+        },
+        "reaped",
+      ],
+      [{ cgroup: "/sys/fs/cgroup/x/run" }, "reaped"],
+      [{ markers: [], runScopes: null }, "unresolved"],
+    ];
+    for (const [patch, expected] of cases) {
+      const dir = temp();
+      const path = join(dir, "job.json");
+      // The named index file is absent: no row for the marker is readable.
+      writeJsonAtomic(path, record({ runScopes: join(dir, "run-scopes.json"), ...patch }));
+      const result = await runWarden(path, {
+        ...clockDeps(),
+        platform: "linux",
+        unresolvedAfterMs: 5_000,
+        reap: async () => outcome(), // a complete, settled census: fictional
+        cgroup: { kill: async () => true, populated: async () => false, remove: async () => {} },
+      });
+      expect(result, JSON.stringify(patch)).toBe(expected);
+      if (expected === "unresolved" && patch.markers === undefined)
+        expect(enforcementOf(readWardenOutcome(path))).toMatchObject({
+          outcome: "unresolved",
+          detail: expect.stringContaining("no kept copy"),
+        });
+    }
+  });
+
   it("caps a child by its parent's current record, or by the cached value once that record is gone", () => {
     const dir = temp();
     writeJsonAtomic(join(dir, "parent.json"), record({ jobId: "parent", own: point(5n) }));

@@ -43,6 +43,8 @@ export interface ThreadTurnRouteCtx {
   storeId?: () => string | undefined;
   /** The request opted in to `storeId`; the strict queued receipt must not surprise older clients. */
   wantsStoreId?: boolean;
+  /** The request sent `X-Claudexor-Capabilities: 1`: receipts carry an inherited deadline too. */
+  readsRunDeadline?: boolean;
   waitForRunStart(jobId: string): Promise<DaemonRunRecord>;
   readRunArtifactText(runId: string, relPath: string): Promise<string | null>;
   resolveRunArtifactPath(runId: string, relPath: string): Promise<string | null>;
@@ -98,6 +100,7 @@ async function respondToTurnJob(
     });
   }
   const store = ctx.wantsStoreId ? servingStore(ctx.storeId) : {};
+  const deadline = await receiptDeadline(ctx.daemon, rec, ctx.readsRunDeadline ?? false);
   if (rec.runId && rec.runDir) {
     return ctx.json(
       res,
@@ -105,7 +108,7 @@ async function respondToTurnJob(
       ControlThreadTurnResponse.parse({
         ...ControlRunStartInfo.parse({
           ...store,
-          ...(await receiptDeadline(ctx.daemon, rec)),
+          ...deadline,
           jobId: rec.id,
           runId: rec.runId,
           taskId: rec.taskId,
@@ -123,8 +126,6 @@ async function respondToTurnJob(
     // make embedders retry an unretryable refusal. Infra terminals (no typed
     // code) stay 5xx so genuine transient failures are still retried.
     const { storeId: _store, ...errorContext } = rec.errorContext ?? {};
-    // The durable deadline rides the refusal's context, as on the one-shot route.
-    const deadline = await receiptDeadline(ctx.daemon, rec);
     return ctx.json(res, preStartRefusalStatus(rec.errorCode, rec.errorStatus), {
       jobId: rec.id,
       turnId,
@@ -140,7 +141,7 @@ async function respondToTurnJob(
         turnId,
         threadId,
         ...store,
-        ...deadline,
+        ...deadline, // The durable deadline rides the refusal's context, as on the one-shot route.
       },
     });
   }
@@ -149,7 +150,7 @@ async function respondToTurnJob(
     202,
     ControlThreadTurnResponse.parse({
       ...store,
-      ...(await receiptDeadline(ctx.daemon, rec)),
+      ...deadline,
       jobId: rec.id,
       turnId,
       threadId,

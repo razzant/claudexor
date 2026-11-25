@@ -4,7 +4,9 @@ import {
   RunFailure,
   isTerminalLifecycle,
   outcomeFactsFromFailure,
+  type ControlRunDetail,
   type DecisionRecord,
+  type RunFacts,
   type RunOutcomeFacts,
   type WorkState,
   type RunTelemetry,
@@ -17,13 +19,14 @@ export function readFailure(rec: DaemonRunRecord, maxBytes?: number): RunFailure
   if (fromArtifact) return fromArtifact;
   if (!rec.error) return null;
   // A job its deadline ended before any run (queued, or preparing its thread
-  // worktree) never produced artifacts: keep the typed reason and the phase.
+  // worktree) never produced artifacts. It keeps the failure shape an earlier
+  // client reads: category and phase, code null. A reader built before the code
+  // drops the whole RunFailure on a member it does not know. The cause travels in
+  // outcomeFacts.reason (legacyRunOutcomeFacts) and the job's recorded problem.
   const deadlineExpired = rec.errorCode === "run_deadline_expired";
   return RunFailure.parse({
     category: deadlineExpired ? "cancelled" : "unknown",
-    ...(deadlineExpired
-      ? { code: "run_deadline_expired", phase: rec.startedAt ? "preparing" : "queued" }
-      : {}),
+    ...(deadlineExpired ? { phase: rec.startedAt ? "preparing" : "queued" } : {}),
     safeMessage: rec.error,
     runDir: rec.runDir ?? null,
   });
@@ -50,12 +53,13 @@ export function legacyRunOutcomeFacts(
   // Arbitrated runs already carry work_state on decision.facts (INV-116).
   if (decision) return decision.facts;
   const lifecycle = rec.state as RunOutcomeFacts["lifecycle"];
-  // A job its deadline ended before any run keeps that cause on the card; a
+  // A job its deadline ended before any run keeps that cause on the card, read
+  // from the daemon's own record (its failure carries no code); a manual or
   // legacy cancellation with no recorded cause keeps the generic fallback.
   const base =
-    lifecycle === "cancelled" && failure?.code === "run_deadline_expired"
+    lifecycle === "cancelled" && rec.errorCode === "run_deadline_expired"
       ? {
-          ...outcomeFactsFromFailure(lifecycle, failure.category),
+          ...outcomeFactsFromFailure(lifecycle, failure?.category),
           reason: "run_deadline_expired" as const,
         }
       : outcomeFactsFromFailure(lifecycle, failure?.category);
@@ -71,6 +75,58 @@ export function legacyRunOutcomeFacts(
             (workState.state === "needs_input" ? "input_required" : "work_incomplete"),
         }
       : {}),
+  };
+}
+
+/** The typed fact holders of a run answer: a summary row, a run detail, a history run. */
+interface RunFactHolder {
+  outcomeFacts?: RunOutcomeFacts | null;
+  failure?: RunFailure | null;
+  runFacts?: RunFacts | null;
+  decision?: DecisionRecord | null;
+}
+
+const engineStop = (facts: RunOutcomeFacts): RunOutcomeFacts =>
+  facts.reason === "run_deadline_expired" ? { ...facts, reason: "host_cancelled" } : facts;
+
+/**
+ * run-deadline/1 facts of one run answer, as its HTTP reader reads them
+ * (`readsRunDeadline`: `X-Claudexor-Capabilities: 1` on that request). An opted-in
+ * reader gets every fact as recorded. A client built before run-deadline/1 parses
+ * `RunOutcomeFacts.reason` and `RunFailure.code` as closed sets and drops the whole
+ * outcome or failure on the new member; for it a deadline's stop reads as the engine's
+ * (`host_cancelled`, never Stop's `user_cancelled` or maxSeconds' `wall_clock_exceeded`)
+ * and that failure code as untyped. Only these typed fields change: stored records, the
+ * human `outcomeBanner` and the deadline record (`GET /v2/runs/:id/deadline`, `expired`)
+ * keep the exact cause for every reader.
+ */
+export function runFactsForReader<T extends RunFactHolder>(run: T, readsRunDeadline: boolean): T {
+  if (readsRunDeadline) return run;
+  return {
+    ...run,
+    ...(run.outcomeFacts ? { outcomeFacts: engineStop(run.outcomeFacts) } : {}),
+    ...(run.failure?.code === "run_deadline_expired"
+      ? { failure: { ...run.failure, code: null } }
+      : {}),
+    ...(run.runFacts
+      ? { runFacts: { ...run.runFacts, outcome: engineStop(run.runFacts.outcome) } }
+      : {}),
+    ...(run.decision
+      ? { decision: { ...run.decision, facts: engineStop(run.decision.facts) } }
+      : {}),
+  };
+}
+
+/** A run detail with its summary and children, as its reader reads them (`runFactsForReader`). */
+export function detailForReader(
+  detail: ControlRunDetail,
+  readsRunDeadline: boolean,
+): ControlRunDetail {
+  if (readsRunDeadline) return detail;
+  return {
+    ...runFactsForReader(detail, false),
+    summary: runFactsForReader(detail.summary, false),
+    children: detail.children.map((child) => runFactsForReader(child, false)),
   };
 }
 

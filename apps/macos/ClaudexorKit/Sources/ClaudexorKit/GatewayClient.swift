@@ -38,6 +38,7 @@ public final class GatewayClient: Sendable {
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if externalPath != "healthz" {
             req.setValue("3", forHTTPHeaderField: "X-Claudexor-Protocol-Major")
+            req.setValue("1", forHTTPHeaderField: "X-Claudexor-Capabilities") // run-deadline/1 facts; else the earlier shape
         }
         if method == "POST" { req.setValue(UUID().uuidString, forHTTPHeaderField: "Idempotency-Key") }
         if let timeout { req.timeoutInterval = timeout }

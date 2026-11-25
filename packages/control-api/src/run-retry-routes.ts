@@ -1,4 +1,4 @@
-import { deadlineReplayRefusal, receiptDeadline } from "./run-start-receipt.js";
+import { deadlineReplayRefusal, heldDeadline } from "./run-start-receipt.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -351,7 +351,7 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
     const inheritedDeadline =
       !deadline &&
       (source.errorCode === "run_deadline_expired" ||
-        (await receiptDeadline(ctx.daemon, source)).deadline !== undefined);
+        (await heldDeadline(ctx.daemon, source)).deadline !== undefined);
     const differences = [
       ...(accepted.deferredDefaults
         ? [

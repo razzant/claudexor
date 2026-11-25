@@ -128,7 +128,9 @@ export async function readSignedRelease(
 }
 
 /** Download the asset into a new private temporary directory while hashing the
- * same bytes; refuse anything but the signed digest. The caller removes `dir`. */
+ * same bytes; refuse anything but the signed digest. The caller removes `dir`.
+ * A chunk this computer cannot write throws its own Node error (see the
+ * install's notActivated), never `release_unavailable`. */
 export async function downloadVerifiedArchive(
   asset: RemoteRuntimeAsset,
   source: ReleaseSource,
@@ -158,6 +160,7 @@ export async function downloadVerifiedArchive(
       );
     }
     const out = await open(file, "wx", 0o600);
+    let writing = false;
     try {
       for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
         size += chunk.byteLength;
@@ -168,10 +171,15 @@ export async function downloadVerifiedArchive(
           );
         }
         hash.update(chunk);
+        writing = true;
         await out.writeFile(chunk);
+        writing = false;
       }
     } catch (error) {
       if (error instanceof CliError) throw error;
+      // A local write fault is this computer's, never the release's: its Node
+      // error keeps its code and call, which notActivated reports without the path.
+      if (writing) throw error;
       throw remoteHostFailure(
         "release_unavailable",
         `${asset.archiveUrl} download failed: ${errorText(error)}`,

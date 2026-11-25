@@ -4,7 +4,7 @@
  * read, an inherited deadline included; a job that cannot is never asked.
  */
 import { describe, expect, it } from "vitest";
-import { deadlineReplayRefusal, receiptDeadline } from "./run-start-receipt.js";
+import { deadlineReplayRefusal, heldDeadline, receiptDeadline } from "./run-start-receipt.js";
 import type { DaemonRunRecord } from "./run-record.js";
 
 const snapshot = {
@@ -49,26 +49,44 @@ describe("receiptDeadline", () => {
     ["a continuation that inherits one", { params: { continueFrom: "run-first" } }],
     ["a Delegate child capped by its parent", { params: { delegatedFromRunId: "run-parent" } }],
     ["a job its deadline ended", { errorCode: "run_deadline_expired", params: {} }],
-  ])("reads the durable deadline of %s", async (_label, fields) => {
+  ])("reads the durable deadline of %s for a reader that opted in", async (_label, fields) => {
     const d = daemon(true);
-    expect(await receiptDeadline(d.client as never, record(fields))).toEqual({
+    expect(await receiptDeadline(d.client as never, record(fields), true)).toEqual({
       deadline: snapshot,
     });
     expect(d.asked).toEqual(["job-x"]);
   });
 
+  it.each([
+    ["a continuation that inherits one", { params: { continueFrom: "run-first" } }],
+    ["a Delegate child capped by its parent", { params: { delegatedFromRunId: "run-parent" } }],
+    ["a job an inherited deadline ended", { errorCode: "run_deadline_expired", params: {} }],
+  ])("tells an earlier reader nothing of %s, and asks nothing", async (_label, fields) => {
+    const d = daemon(true);
+    expect(await receiptDeadline(d.client as never, record(fields), false)).toEqual({});
+    expect(d.asked).toEqual([]);
+  });
+
+  it("answers the deadline a request set itself, opt-in or not", async () => {
+    const own = record({ params: { deadline: { at: snapshot.at } } });
+    for (const reads of [true, false])
+      expect(await receiptDeadline(daemon(true).client as never, own, reads)).toEqual({
+        deadline: snapshot,
+      });
+  });
+
   it("leaves the field out for a continuation that holds no record", async () => {
     const d = daemon(false);
     expect(
-      await receiptDeadline(d.client as never, record({ params: { continueFrom: "run-first" } })),
+      await heldDeadline(d.client as never, record({ params: { continueFrom: "run-first" } })),
     ).toEqual({});
   });
 
   it("never asks for a job that cannot hold a deadline", async () => {
     const d = daemon(true);
-    expect(await receiptDeadline(d.client as never, record({ params: { prompt: "x" } }))).toEqual(
-      {},
-    );
+    expect(
+      await receiptDeadline(d.client as never, record({ params: { prompt: "x" } }), true),
+    ).toEqual({});
     expect(d.asked).toEqual([]);
   });
 
@@ -93,7 +111,11 @@ describe("receiptDeadline", () => {
 
   it("reads with the read-only projection: no transition, no stop", async () => {
     const d = daemon(true);
-    await receiptDeadline(d.client as never, record({ params: { deadline: { at: snapshot.at } } }));
+    await receiptDeadline(
+      d.client as never,
+      record({ params: { deadline: { at: snapshot.at } } }),
+      false,
+    );
     expect(d.actions).toEqual(["peek"]);
   });
 
@@ -117,7 +139,11 @@ describe("receiptDeadline", () => {
       ),
     ).rejects.toMatchObject({ code: "run_deadline_record_unavailable" });
     await expect(
-      receiptDeadline(d.client as never, record({ params: { deadline: { at: snapshot.at } } })),
+      receiptDeadline(
+        d.client as never,
+        record({ params: { deadline: { at: snapshot.at } } }),
+        false,
+      ),
     ).rejects.toMatchObject({ code: "run_deadline_record_unavailable" });
   });
 

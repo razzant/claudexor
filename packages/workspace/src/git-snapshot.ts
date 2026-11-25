@@ -257,7 +257,9 @@ export async function addKeptPaths(
     });
 }
 
-const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+// Path names only: a leading U+FEFF is a character of the name, so it is kept
+// (the default decoder would drop it from each record and name another file).
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 /** Entries of an index the user marked so that Git skips their bytes: assume-unchanged
  * (a lowercase `ls-files -v` tag) and skip-worktree (`S`). A name stdin cannot carry

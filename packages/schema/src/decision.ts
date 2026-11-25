@@ -55,6 +55,9 @@ export const RunReason = z
     "wall_clock_exceeded",
     // run-deadline/1: the run's server-enforced deadline ended it (any phase);
     // wall_clock_exceeded stays the maxSeconds / time-limit clock's reason.
+    // Stored as such and answered to a reader that sends X-Claudexor-Capabilities: 1;
+    // a client built before it drops the whole outcome on this member, so any other
+    // reader is answered host_cancelled (control-api runFactsForReader).
     "run_deadline_expired",
     "user_cancelled",
     // Host-initiated cancellations (2026-08-30): the daemon/an integrating

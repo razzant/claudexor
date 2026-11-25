@@ -18,6 +18,8 @@ export interface DetailRead {
   record: DaemonRunRecord;
   cursor: number;
   includeFinalMessages?: boolean | undefined;
+  /** The reader sent `X-Claudexor-Capabilities: 1`: run-deadline/1 facts as recorded. */
+  runDeadlineFacts?: boolean | undefined;
   pending: ControlPendingInteraction[];
   operator: ControlOperatorDecisionRecord | null;
   /** Each child's question attention, derived by pendingQuestionAttention. */

@@ -29,7 +29,10 @@
  * - cgroup boundary: once `cgroup.events` reports the cgroup unpopulated and
  *   every marker reap settled (confirmed);
  * - marker boundary on Linux: once a marker census is complete and settled
- *   (confirmed); a census that cannot prove emptiness, or a member that would
+ *   and, where the record names the run-scope index, every marker's recorded
+ *   groups were read from its row or the copy kept in the record (confirmed);
+ *   recorded groups that were expected but could not be read stay unknown;
+ *   a census that cannot prove emptiness, or a member that would
  *   not die, is retried with backoff and ends as `unresolved`, with its reason,
  *   only after `UNRESOLVED_AFTER_MS` of enforcement;
  * - where no census can prove emptiness (macOS: not declared): after three
@@ -200,6 +203,9 @@ interface Pass {
   confirmed: boolean;
   outcomes: ScopeReapOutcome[];
   cgroupPopulated: boolean | null;
+  /** Markers whose recorded groups the record expects (it names the index) but
+   * that neither an index row nor a kept copy supplied. */
+  unsourced: number;
   /** Why it is not confirmed, when that is known better than the census says. */
   detail?: string;
 }
@@ -286,15 +292,16 @@ export async function runWarden(
     return "removed"; // no directory any more: nothing to guard
   }
 
-  const sources = (record: DeadlineRecord, marker: string): Partial<ScopeReapOptions> => {
+  const sources = (record: DeadlineRecord, marker: string): Partial<ScopeReapOptions> | null => {
     // The index row while it lives; once settled and retired, the copy the
     // daemon kept in the record. A failed index read with no kept copy gives
-    // no recorded sources (marker-only coverage: never a release).
+    // no recorded sources (null): marker-only coverage, never a release, and
+    // never a confirmation where the record named the index.
     const entry =
       (record.runScopes
         ? readRunScopeEntries(record.runScopes)?.find((row) => row.marker === marker)
         : undefined) ?? record.scopes?.find((row) => row.marker === marker);
-    if (!entry) return {};
+    if (!entry) return null;
     const recorded = reapSources(entry);
     // The census age filter is measured on the wall clock (macOS only); never
     // let a clock step hide a member there.
@@ -308,11 +315,14 @@ export async function runWarden(
       if (!probe) await cgroups.kill(record.cgroup);
       populated = await cgroups.populated(record.cgroup);
     }
+    let unsourced = 0;
     for (const marker of record.markers) {
+      const recorded = sources(record, marker);
+      if (recorded === null && record.runScopes !== null) unsourced += 1;
       outcomes.push(
         await reap({
           scopeStartAt: null,
-          ...sources(record, marker),
+          ...(recorded ?? {}),
           marker,
           ...(probe
             ? {
@@ -330,9 +340,15 @@ export async function runWarden(
     // With a cgroup the boundary itself is proven empty (hierarchically, from
     // cgroup.events); without one only a complete census proves that no
     // marked process is left.
+    // Every expected group needs its own evidence: a source that was expected
+    // but not read is unknown. With no observed boundary, do not confirm a stop.
     const confirmed =
-      settled && (record.cgroup !== null || outcomes.every((o) => o.completeness === "complete"));
-    return { settled, confirmed, outcomes, cgroupPopulated: populated };
+      settled &&
+      (record.cgroup !== null ||
+        (outcomes.length > 0 &&
+          unsourced === 0 &&
+          outcomes.every((o) => o.completeness === "complete")));
+    return { settled, confirmed, outcomes, cgroupPopulated: populated, unsourced };
   };
 
   // Waiting: the clock is read BEFORE the record (see the record module), and
@@ -423,6 +439,10 @@ function unresolvedDetail(pass: Pass, survivors: number): string {
   if (pass.cgroupPopulated === true) reasons.push("the run's cgroup is still populated");
   if (pass.cgroupPopulated === null) reasons.push("the run's cgroup could not be read");
   if (survivors > 0) reasons.push(`${survivors} member(s) survived every signal`);
+  if (pass.unsourced > 0)
+    reasons.push(
+      `the recorded process groups and descendants of ${pass.unsourced} scope(s) could not be read (no index row and no kept copy)`,
+    );
   for (const outcome of pass.outcomes) {
     if (outcome.unreadable.length > 0)
       reasons.push(`${outcome.unreadable.length} known member(s) could not be identified`);

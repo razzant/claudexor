@@ -5,6 +5,7 @@ import { redactSecrets } from "@claudexor/util";
 import { readArtifact } from "./artifact-read.js";
 import { readEventReplayBatch } from "./event-replay-batch.js";
 import { detailFor, summarizeRun } from "./run-projection.js";
+import { detailForReader } from "./run-card-facts.js";
 import { validRunOperatorDecision } from "./run-apply-projection.js";
 import { inRunProjection } from "./projection-context.js";
 import { prepareInterruptedOutput } from "./retained-output.js";
@@ -89,7 +90,7 @@ export function projectBulkJob(
           { retentionProblem: problem, includeFinalMessages: job.input.includeFinalMessages },
         );
         return JSON.stringify({
-          ...detail,
+          ...detailForReader(detail, job.input.runDeadlineFacts === true),
           ...(deferred === undefined ? {} : { deferredMessage: deferred }),
         });
       }

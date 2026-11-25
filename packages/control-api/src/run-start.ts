@@ -35,6 +35,7 @@ import { prepareRunStart } from "./run-start-preparation.js";
 import { requireTaskGroupStoreIdentity, respondToAcceptedJob } from "./run-start-receipt.js";
 export {
   acceptedRunReceipt,
+  readsRunDeadline,
   requireTaskGroupStoreIdentity,
   unboundRunStartResponse,
   wantsStoreIdentity,

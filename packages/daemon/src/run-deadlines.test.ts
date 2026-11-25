@@ -19,11 +19,13 @@ import {
   governingBound,
   diskReader,
   readRecord,
+  wardenReadyPath,
   writeJsonAtomic,
   type DeadlineRecord,
   type RecordIo,
 } from "./run-deadline-record.js";
 import { RUN_DEADLINE_STOP_GRACE_SEC, runWarden } from "./run-deadline-warden.js";
+import { PARENT_UNREADABLE, sweepRecords } from "./run-deadline-reconcile.js";
 import { DaemonServer, type JobRecord, type RunnerFn } from "./server.js";
 import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
@@ -1311,5 +1313,50 @@ describe("run-deadline/1 startup cost", () => {
     expect(await b.rpc({ id: "job-a", request: { action: "read" } })).toMatchObject({
       state: "closed",
     });
+  });
+
+  it("a removal sweep asks each record's parent once and keeps what an unreadable active record may depend on", () => {
+    // Fictional metadata only: names, parents and one ready marker in an empty folder.
+    const clock: RunDeadlineClock = {
+      wallNow: () => 0,
+      hostNow: () => 0n,
+      kind: "monotonic",
+      bootId: () => null,
+    };
+    const io = { remove: () => {} } as unknown as RecordIo;
+    const names = ["parent.json", "a.json", "b.json", "c.json", "child.json"];
+    const asked = new Map<string, number>();
+    const removed = sweepRecords({
+      dir: temp(),
+      clock,
+      candidates: names,
+      present: names,
+      holds: (name) => name === "child.json",
+      parentOf: (name) => {
+        asked.set(name, (asked.get(name) ?? 0) + 1);
+        return name === "child.json" ? "parent.json" : null;
+      },
+      io,
+    });
+    expect([...removed].sort()).toEqual(["a.json", "b.json", "c.json"]);
+    expect(asked.size).toBe(names.length);
+    expect([...asked.values()].every((count) => count === 1)).toBe(true);
+
+    // Its warden may still act, and its parent cannot be read now.
+    const dir = temp();
+    writeJsonAtomic(wardenReadyPath(join(dir, "active.json")), { pid: 1 });
+    const sweep = (parent: string | null | typeof PARENT_UNREADABLE) =>
+      sweepRecords({
+        dir,
+        clock,
+        candidates: ["parent.json"],
+        present: ["parent.json", "active.json"],
+        holds: () => false,
+        parentOf: (name) => (name === "active.json" ? parent : null),
+        io,
+      });
+    expect(sweep(PARENT_UNREADABLE)).toEqual([]);
+    // A later sweep that reads it decides again.
+    expect(sweep(null)).toEqual(["parent.json"]);
   });
 });

@@ -4,6 +4,7 @@
 
 ### Patch Changes
 
+- run-deadline/1 answers stay readable by released clients, chosen by each request's reader. With `X-Claudexor-Capabilities: 1` (sent by the CLI, MCP, ACP and the macOS app) a run its deadline ended reports `outcomeFacts.reason` `run_deadline_expired`, and receipts and lookups carry an inherited deadline. Without it run reads answer `host_cancelled` and failure `code` null for that cause, and a receipt or lookup carries only a deadline its own request set. The `outcomeBanner`, stored records and `GET /v2/runs/:id/deadline` are unchanged.
 - f536929: Recover earlier typed final messages in journal order, with attempt and
   provenance. Control GET, MCP result reads and ACP accept `includeFinalMessages`.
   CLI inspect accepts `--include-final-messages`. A recorded document transfers

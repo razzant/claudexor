@@ -29,6 +29,12 @@ on GitHub Releases.
   The Windows updater can retry a briefly blocked npm rename in the same
   Update (#755).
 
+  A host that opens a folder through the daemon can keep the registration
+  together with the store that accepted it, check it later against that store
+  and root, and release it without changing another store's record (#764).
+  The Hermes setup guide now describes catalog installs at a reviewed commit.
+  Fresh installs request approval for calls that can write (#757, #765).
+
 - **v6.3.0** (2026-11-18) — **Fewer checks before a Codex call.** Raw model
   calls can reuse an account's model list for up to 90 seconds by default
   while its credentials and the Codex installation stay the same.

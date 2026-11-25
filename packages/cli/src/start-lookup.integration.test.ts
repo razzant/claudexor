@@ -35,7 +35,7 @@ const WAIT = "stay unbound";
 const REFUSE = "refuse before a run";
 const PREFLIGHT_REFUSE = "refused by turn preflight";
 // The accepted-command and addressed-list reads, and the run-deadline/1 record read
-// (`handle.deadline`, also the inherited deadline of a continuation or Delegate child).
+// (`handle.deadline`: the request's own, or an inherited one for `X-Claudexor-Capabilities: 1`).
 const READS = new Set(["findAccepted", "list", "runDeadline"]);
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -738,7 +738,7 @@ describe("the operation catalog", () => {
         requestSchema,
         responseSchema: "ControlStartLookupResponse",
         applicability,
-        parameters: [],
+        parameters: [expect.objectContaining({ name: "x-claudexor-capabilities" })],
       });
     }
     expect(op("POST", "/v2/runs")).toMatchObject({
@@ -748,7 +748,10 @@ describe("the operation catalog", () => {
       requestSchema: "ControlRunStartRequest",
       responseSchema: "ControlRunStartResponse",
       applicability: "run",
-      parameters: [expect.objectContaining({ name: "x-claudexor-store-identity" })],
+      parameters: [
+        expect.objectContaining({ name: "x-claudexor-store-identity" }),
+        expect.objectContaining({ name: "x-claudexor-capabilities" }),
+      ],
     });
   });
 });

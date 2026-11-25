@@ -4,6 +4,7 @@
 
 ### Minor Changes
 
+- `RunReason` and `RunFailureCode` keep `run_deadline_expired` for stored records and for readers that send `X-Claudexor-Capabilities: 1`; the inherited `deadline` of a receipt or lookup handle is returned to those readers only.
 - f536929: Recover earlier typed final messages in journal order, with attempt and
   provenance. Control GET, MCP result reads and ACP accept `includeFinalMessages`.
   CLI inspect accepts `--include-final-messages`. A recorded document transfers

@@ -246,6 +246,15 @@ describe("final-messages discovery and bytes over HTTP", () => {
             description:
               "Include the recorded final-messages outcome. Omission or false keeps the original run detail.",
           },
+          {
+            name: "x-claudexor-capabilities",
+            location: "header",
+            required: false,
+            repeatable: false,
+            enum: ["1"],
+            schemaRef: null,
+            description: expect.stringContaining("run-deadline/1"),
+          },
         ],
       });
       const readAs620 = releasedRunReader("ControlRunDetail");

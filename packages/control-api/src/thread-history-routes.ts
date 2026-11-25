@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   CLAUDE_TURN_REPLIES_HEADER,
+  CONTROL_CAPABILITIES_HEADER,
   ThreadHistoryInput,
   ThreadHistoryPage,
   ThreadPromptPartInput,
@@ -8,8 +9,14 @@ import {
   threadHistoryProblem,
 } from "@claudexor/schema";
 import type { OperationDraft } from "./operation-draft.js";
-import { queryParam, REPLY_PROJECTION_HEADER } from "./operation-parameters.js";
+import {
+  queryParam,
+  REPLY_PROJECTION_HEADER,
+  RUN_DEADLINE_FACTS_HEADER,
+} from "./operation-parameters.js";
 import { requestGone } from "./request-liveness.js";
+import { runFactsForReader } from "./run-card-facts.js";
+import { readsRunDeadline } from "./run-start-receipt.js";
 
 export interface ThreadHistoryServices {
   threadHistory(input: ThreadHistoryInput, includeClaudeReplies?: boolean): ThreadHistoryPage;
@@ -20,6 +27,17 @@ interface Context {
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown, fallback?: 400 | 500): void;
 }
+/** Each turn's run, its run-deadline/1 facts as this answer's reader reads them. */
+function historyForReader(page: ThreadHistoryPage, readsDeadline: boolean): ThreadHistoryPage {
+  if (readsDeadline) return page;
+  return {
+    ...page,
+    turns: page.turns.map((turn) =>
+      turn.run ? { ...turn, run: runFactsForReader(turn.run, false) } : turn,
+    ),
+  };
+}
+
 export async function handleThreadHistoryRoute(
   ctx: Context,
   method: string,
@@ -30,7 +48,9 @@ export async function handleThreadHistoryRoute(
   const historyMatch = /^\/threads\/([^/]+)\/history$/.exec(path);
   const promptMatch = /^\/threads\/([^/]+)\/turns\/([^/]+)\/prompt$/.exec(path);
   if (!((method === "GET" && historyMatch) || (method === "GET" && promptMatch))) return false;
-  if (historyMatch) res.setHeader("Vary", CLAUDE_TURN_REPLIES_HEADER);
+  // A history answer is negotiated by two request headers: reply previews and run-deadline/1 facts.
+  if (historyMatch)
+    res.setHeader("Vary", `${CLAUDE_TURN_REPLIES_HEADER}, ${CONTROL_CAPABILITIES_HEADER}`);
   try {
     const match = (historyMatch ?? promptMatch)!;
     const decode = (value: string) => {
@@ -80,9 +100,12 @@ export async function handleThreadHistoryRoute(
       );
     if (!requestGone(req, res)) {
       const result = historyMatch
-        ? ctx.threadHistoryReads.threadHistory(
-            input as ThreadHistoryInput,
-            req.headers[CLAUDE_TURN_REPLIES_HEADER] === "1",
+        ? historyForReader(
+            ctx.threadHistoryReads.threadHistory(
+              input as ThreadHistoryInput,
+              req.headers[CLAUDE_TURN_REPLIES_HEADER] === "1",
+            ),
+            readsRunDeadline(req),
           )
         : ctx.threadHistoryReads.threadPromptPart(input as ThreadPromptPartInput);
       ctx.json(res, 200, result);
@@ -116,6 +139,7 @@ export const THREAD_HISTORY_OPERATION_DRAFTS: OperationDraft[] = [
         "ThreadHistoryInput",
       ),
       REPLY_PROJECTION_HEADER,
+      RUN_DEADLINE_FACTS_HEADER,
     ],
   },
   {

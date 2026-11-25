@@ -8,8 +8,8 @@ import {
   type ControlOperationDescriptor,
   ControlHarnessSetupHarness,
 } from "@claudexor/schema";
-import { CAPABILITIES_HEADER, STORE_IDENTITY_HEADER } from "./operation-parameters.js";
-import { queryParam, resumeHeader } from "./operation-parameters.js";
+import { queryParam, resumeHeader, STORE_IDENTITY_HEADER } from "./operation-parameters.js";
+import { CAPABILITIES_HEADER, RUN_DEADLINE_FACTS_HEADER } from "./operation-parameters.js";
 import { REMOTE_OPERATION_DRAFTS } from "./remote-operation-descriptors.js";
 import { MODEL_OPERATION_DRAFTS } from "./model-routes.js";
 import { MAINTENANCE_OPERATION_DRAFTS } from "./maintenance-routes.js";
@@ -225,6 +225,7 @@ const operations: ControlOperationDescriptor[] = [
         description:
           "Opaque keyset cursor from a prior page's nextCursor; returns the next (older) page. A malformed cursor is a typed 400.",
       }),
+      RUN_DEADLINE_FACTS_HEADER,
     ],
   }),
   ...START_OPERATION_DRAFTS.map(descriptor),
@@ -325,7 +326,9 @@ const operations: ControlOperationDescriptor[] = [
   j("POST", "/v2/threads", "mutating", "ControlThreadCreateRequest", "ControlThread", {
     idempotency: "key_required",
   }),
-  j("GET", "/v2/threads/:id", "read_only", null, "ControlThreadDetail"),
+  j("GET", "/v2/threads/:id", "read_only", null, "ControlThreadDetail", {
+    parameters: [RUN_DEADLINE_FACTS_HEADER],
+  }),
   j("PATCH", "/v2/threads/:id", "mutating", "ControlThreadUpdateRequest", "ControlThread", {
     idempotency: "natural",
   }),
@@ -354,7 +357,7 @@ const operations: ControlOperationDescriptor[] = [
     "ControlThreadTurnResponse",
     {
       idempotency: "key_required",
-      parameters: [STORE_IDENTITY_HEADER],
+      parameters: [STORE_IDENTITY_HEADER, RUN_DEADLINE_FACTS_HEADER],
     },
   ),
   ...TURN_LOOKUP_OPERATION_DRAFTS.map(descriptor),

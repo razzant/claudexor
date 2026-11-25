@@ -175,7 +175,7 @@ import {
   safeProblemRequiredActions,
 } from "@claudexor/util";
 import { stringify as stringifyYaml } from "yaml";
-import { readFailure } from "./run-card-facts.js";
+import { readFailure, runFactsForReader } from "./run-card-facts.js";
 import { runOutcomeFacts, winnerWorkStateFor } from "./run-projection.js";
 
 export {
@@ -757,7 +757,8 @@ export class DaemonControlApiServer {
       serializeThreadMutation: <T>(threadId: string, work: () => Promise<T>) =>
         chainThreadMutation(this.threadTurnChains, threadId, work),
       stopping: this.stopSignal.signal,
-      summarize: (record: DaemonRunRecord) => this.summarizeRunOrDiagnostic(record),
+      summarize: (record: DaemonRunRecord) =>
+        this.summarizeRunOrDiagnostic(record, runStart.readsRunDeadline(req)),
       bulk: this.bulk,
       readBody: (request: IncomingMessage, maxBytes?: number) => this.readBody(request, maxBytes),
       json: (response: ServerResponse, status: number, body: unknown) =>
@@ -891,6 +892,7 @@ export class DaemonControlApiServer {
                   record: rec,
                   cursor,
                   includeFinalMessages,
+                  runDeadlineFacts: runStart.readsRunDeadline(req),
                   pending: this.pendingInteractionsFor(rec),
                   operator: this.operatorDecisionFor(rec),
                   children: children.map((record) => ({
@@ -1015,7 +1017,7 @@ export class DaemonControlApiServer {
         const cards = await projectTurnRunCards(
           detail.turns as { run_id?: string | null }[],
           runs,
-          (record) => this.summarizeRunOrDiagnostic(record),
+          (record) => this.summarizeRunOrDiagnostic(record, runStart.readsRunDeadline(req)),
           () => !requestGone(req, res),
         );
         if (requestGone(req, res)) return;
@@ -2079,6 +2081,7 @@ export class DaemonControlApiServer {
       json: (res, status, body) => this.json(res, status, body),
       storeId: this.opts.storeId,
       wantsStoreId: req ? runStart.wantsStoreIdentity(req) : false,
+      readsRunDeadline: req ? runStart.readsRunDeadline(req) : false,
       waitForRunStart: (jobId) => this.waitForRunStart(jobId),
       readRunArtifactText: (runId, rel) => this.readRunArtifactText(runId, rel),
       resolveRunArtifactPath: async (runId, rel) => this.resolveRunArtifactPath(runId, rel),
@@ -2179,26 +2182,24 @@ export class DaemonControlApiServer {
   }
 
   /**
-   * Cached artifact projection + journal-backed waiting_on_user overlay. Pending
-   * interactions are not part of the run artifact fingerprint, so they must
-   * never be frozen into the summary cache.
+   * Degrade contract shared by GET /runs and the thread-detail turn cards:
+   * artifact corruption becomes a diagnostic row in the worker, never a 500
+   * for the whole read; a worker failure stays a typed 503.
+   * Over the one cached artifact projection per run lie two per-answer layers:
+   * its run-deadline/1 facts as this answer's reader reads them, and the
+   * journal-backed waiting_on_user overlay. Pending interactions are not part of
+   * the run artifact fingerprint, so they must never be frozen into the summary cache.
    */
-  private async summarizeRunLive(rec: DaemonRunRecord): Promise<ControlRunSummary> {
-    const summary = await this.summarizeRunCached(rec);
+  private async summarizeRunOrDiagnostic(
+    rec: DaemonRunRecord,
+    readsRunDeadline: boolean,
+  ): Promise<ControlRunSummary> {
+    const summary = runFactsForReader(await this.summarizeRunCached(rec), readsRunDeadline);
     const attention = pendingQuestionAttention(this.pendingInteractionsFor(rec, true));
     return summary.waitingOnUser === attention.waitingOnUser &&
       summary.asyncQuestionsOnly === attention.asyncQuestionsOnly
       ? summary
       : { ...summary, ...attention };
-  }
-
-  /**
-   * Degrade contract shared by GET /runs and the thread-detail turn cards:
-   * artifact corruption becomes a diagnostic row in the worker, never a 500
-   * for the whole read; a worker failure stays a typed 503.
-   */
-  private summarizeRunOrDiagnostic(rec: DaemonRunRecord): Promise<ControlRunSummary> {
-    return this.summarizeRunLive(rec);
   }
 
   /**

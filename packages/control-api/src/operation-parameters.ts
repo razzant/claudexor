@@ -73,6 +73,14 @@ export const CAPABILITIES_HEADER = headerParam({
     "Send `1` to receive `capabilities`, the features this engine proves on this host (run-deadline/1 with its stopGraceSec); without it the response keeps its earlier shape.",
 });
 
+/** The same opt-in on a run read, a start receipt or a lookup: `1` adds its run-deadline/1 facts. */
+export const RUN_DEADLINE_FACTS_HEADER = headerParam({
+  name: CONTROL_CAPABILITIES_HEADER,
+  enum: ["1"],
+  description:
+    "Send `1` (the handshake's capabilities opt-in) to receive this answer's run-deadline/1 facts: the reason and failure code `run_deadline_expired` and a deadline the job inherited. Without it a deadline's stop reads `host_cancelled` and only a deadline the request set is returned.",
+});
+
 export const REPLY_PROJECTION_HEADER = headerParam({
   name: CLAUDE_TURN_REPLIES_HEADER,
   enum: ["1"],
