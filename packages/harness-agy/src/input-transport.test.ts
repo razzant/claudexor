@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -21,11 +22,22 @@ const observed = vi.hoisted(() => ({
   version: "1.1.13",
   options: [] as CliRunLoopOptions[],
   captures: [] as Array<SpawnOptions | undefined>,
+  gates: [] as Array<{ environment?: NodeJS.ProcessEnv; cwd?: string } | undefined>,
 }));
 vi.mock("@claudexor/core", async (original) => {
   const actual = await original<typeof import("@claudexor/core")>();
   return {
     ...actual,
+    // The run's gate asks the core's observation with the run's own environment and directory.
+    observeHarnessProgram: async (
+      _program: unknown,
+      _patch: unknown,
+      _bin: unknown,
+      options?: { environment?: NodeJS.ProcessEnv; cwd?: string },
+    ) => {
+      observed.gates.push(options);
+      return { selection: { version: observed.version }, program: null, key: "fixture" };
+    },
     resolveSelectedProgramAsync: async (_program: unknown, options?: SpawnOptions) => {
       observed.captures.push(options);
       return {
@@ -87,6 +99,7 @@ afterEach(() => {
   observed.version = "1.1.13";
   observed.options.length = 0;
   observed.captures.length = 0;
+  observed.gates.length = 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function spec(
@@ -486,7 +499,7 @@ describe("AGY native raw stdin selection", () => {
     expect(readFileSync(settingsPath, "utf8")).toBe("{ not json");
   });
 
-  it.each(["1.1.13", "1.4.10", "1.5.6"] as const)(
+  it.each(["1.1.13", "1.4.10", "1.5.6", "1.5.7-rc.1"] as const)(
     "refuses workspace_write before spawning on a known agy %s (below 1.5.7)",
     async (version) => {
       observed.version = version;
@@ -525,15 +538,21 @@ describe("AGY native raw stdin selection", () => {
     });
   });
 
-  it("threads extra.abortSignal into workspace_write version detection and exits cleanly when aborted", async () => {
-    observed.version = null as unknown as string;
+  it("gates on the program this run launches and ends cleanly when aborted meanwhile", async () => {
+    observed.version = "1.5.14";
+    const input = spec("Fix it.", undefined, "workspace_write");
+    await collect(input);
+    // The profile's own HOME and the run's directory, as at launch.
+    expect(observed.gates).toHaveLength(1);
+    expect(observed.gates[0]!.cwd).toBe(input.cwd);
+    expect(observed.gates[0]!.environment?.["HOME"]).toBe(
+      realpathSync(input.credential_profile!.isolation_locator!),
+    );
+
     const controller = new AbortController();
     controller.abort();
-    const events = await collect({
-      ...spec("Fix it.", undefined, "workspace_write"),
-      extra: { abortSignal: controller.signal },
-    });
-    expect(observed.captures.at(-1)?.abortSignal).toBe(controller.signal);
+    observed.options.length = 0;
+    const events = await collect({ ...input, extra: { abortSignal: controller.signal } });
     expect(observed.options).toHaveLength(0);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ type: "completed", aborted: true });

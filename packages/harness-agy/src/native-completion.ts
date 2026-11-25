@@ -54,6 +54,18 @@ export function createAgyNativeCompletion() {
       if (record !== undefined) agyError = record ?? undefined;
     }
   };
+  const denial = (denied: string, hasAnswer: boolean, at: HarnessEvent): HarnessEvent => ({
+    type: hasAnswer ? "status" : "error",
+    session_id: at.session_id,
+    ts: at.ts,
+    ...(hasAnswer
+      ? {
+          text: `agy headless tool permission refused: ${denied}; retained answer is not proof of that tool's success`,
+        }
+      : { error: `agy headless tool permission refused: ${denied}` }),
+    permission_denial: { permission: denied, source: "agy_native_stderr" },
+    payload: { code: "permission_denied" },
+  });
   async function* wrap(stream: AsyncIterable<HarnessEvent>): AsyncGenerator<HarnessEvent> {
     let hasAnswer = false;
     let terminal = false;
@@ -81,18 +93,7 @@ export function createAgyNativeCompletion() {
         if (typeof tail === "string") observeStderr(tail);
         if (permission) {
           if (!hasAnswer) pendingEmptySuccess = undefined;
-          yield {
-            type: hasAnswer ? "status" : "error",
-            session_id: event.session_id,
-            ts: event.ts,
-            ...(hasAnswer
-              ? {
-                  text: `agy headless tool permission refused: ${permission}; retained answer is not proof of that tool's success`,
-                }
-              : { error: `agy headless tool permission refused: ${permission}` }),
-            permission_denial: { permission, source: "agy_native_stderr" },
-            payload: { code: "permission_denied" },
-          };
+          yield denial(permission, hasAnswer, event);
         }
         if (pendingEmptySuccess) {
           yield pendingEmptySuccess;
@@ -135,7 +136,11 @@ export function createAgyNativeCompletion() {
       }
       yield event;
     }
-    if (pendingEmptySuccess && !(permission && !hasAnswer)) yield pendingEmptySuccess;
+    // A stream that ended without `completed` still names its failure once.
+    if (pendingEmptySuccess)
+      yield permission && !hasAnswer
+        ? denial(permission, false, pendingEmptySuccess)
+        : pendingEmptySuccess;
   }
   /** The run loop's translation of a stderr-only nonzero exit. */
   const parseStderrFailure = (_tail: string, sessionId: string): HarnessEvent | null =>

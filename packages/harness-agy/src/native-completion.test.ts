@@ -232,7 +232,12 @@ describe("AGY native permission evidence", () => {
       })(),
     ))
       liveWithoutCompleted.push(EventSchema.parse(e));
-    expect(liveWithoutCompleted.some((e) => e.error?.includes("cause unknown"))).toBe(false);
+    expect(liveWithoutCompleted.filter((e) => e.type === "error")).toEqual([
+      expect.objectContaining({
+        permission_denial: { permission: "read_file", source: "agy_native_stderr" },
+        payload: { code: "permission_denied" },
+      }),
+    ]);
   });
 });
 

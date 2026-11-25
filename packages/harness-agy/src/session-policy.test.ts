@@ -237,18 +237,19 @@ describe("agy readonly session policy (#653)", () => {
           withAgySessionSettings(
             policy.settings,
             "s",
-            async function* () {
-              started = true;
+            async function* (args) {
+              yield { type: "status", session_id: "s", ts: "t", text: JSON.stringify(args) };
             },
             { access: "workspace_write" },
           ),
         );
-        expect(started).toBe(false);
-        expect(wwEvents.map((event) => event.type)).toEqual(["error", "completed"]);
+        // A workspace_write run starts without the file and says so.
+        expect(wwEvents.map((event) => event.type)).toEqual(["status", "status"]);
         expect(wwEvents[0]).toMatchObject({
           payload: { code: "agy_workspace_write_session_policy_unwritable" },
-          error: expect.stringContaining("nothing was sent"),
+          text: expect.stringContaining("runs without session settings"),
         });
+        expect(wwEvents[1]!.text).toBe("[]");
       } finally {
         if (previous === undefined) delete process.env.TMPDIR;
         else process.env.TMPDIR = previous;

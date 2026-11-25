@@ -18,7 +18,6 @@ import {
 } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter, HarnessModelSpec } from "@claudexor/core";
 import {
-  abortSignalFromSpec,
   formatNativeArgs,
   HarnessUnavailableError,
   harnessPlatform,
@@ -39,17 +38,16 @@ import {
 } from "./profile.js";
 import {
   AGY_VENDOR_CLI_VERSION,
-  AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
   agyReadonlyDoctorCheck,
   agyWorkspaceWriteDoctorCheck,
   extractAgySemver,
-  isAgyVersionAtLeast,
 } from "./vendor-cli-version.js";
 import { listAgyModels } from "./models.js";
 import { AGY_KNOWN_MODELS } from "./known-models.js";
 import { applyAgyRunProcessing, prepareAgyProcessing } from "./processing.js";
 import { prepareAgyRunInput } from "./run-input.js";
 import { withAgySessionSettings } from "./session-policy.js";
+import { agyWorkspaceWriteShellGrant } from "./shell-grant.js";
 // The package publishes only what other packages consume. The profile probe,
 // the route resolver and the stream parser are reached through the adapter
 // this file returns, so re-exporting them would be a dead public surface.
@@ -98,12 +96,11 @@ function accessArgs(access: AccessProfile): string[] {
  */
 const AGY_WINDOWS_CONSOLE = "none";
 
-async function detectVersion(abortSignal?: AbortSignal): Promise<string | null> {
+async function detectVersion(): Promise<string | null> {
   return (
     await resolveSelectedProgramAsync(AGY_PROGRAM, {
       environment: { ...composeBaseEnv("mirror_native"), ...AGY_PROGRAM.childUpdateEnv },
       windowsConsole: AGY_WINDOWS_CONSOLE,
-      ...(abortSignal ? { abortSignal } : {}),
     })
   ).versionOutput;
 }
@@ -496,45 +493,8 @@ async function* runAgy(
     // The vendor probe/run remains the final transport authority.
   }
 
-  const abortSignal = abortSignalFromSpec(spec);
-  // The shell grant is sent only to a CLI known to be new enough for it; a
-  // known older one refuses, and an undetermined one runs as before the grant.
-  let shellGrant = false;
-  if (spec.access === "workspace_write") {
-    const installedSemver = extractAgySemver(await detectVersion(abortSignal));
-    if (abortSignal?.aborted) {
-      yield { type: "completed", session_id: spec.session_id, ts: nowIso(), aborted: true };
-      return;
-    }
-    const meets = isAgyVersionAtLeast(installedSemver, AGY_WORKSPACE_WRITE_MIN_CLI_VERSION);
-    if (meets === false) {
-      yield {
-        type: "error",
-        session_id: spec.session_id,
-        ts: nowIso(),
-        error: `agy workspace_write requires agy ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer for session-only settings (installed agy is ${installedSemver}); update agy`,
-        payload: {
-          code: "agy_workspace_write_version_unsupported",
-          installed_version: installedSemver,
-          min_version: AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
-        },
-      };
-      yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
-      return;
-    }
-    shellGrant = meets === true;
-    if (!shellGrant)
-      yield {
-        type: "status",
-        session_id: spec.session_id,
-        ts: nowIso(),
-        text: `agy workspace_write runs without the session shell grant, so headless shell commands may be refused without asking: the installed agy version could not be determined (the grant needs ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer)`,
-        payload: {
-          code: "agy_workspace_write_version_unknown",
-          min_version: AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
-        },
-      };
-  }
+  const shellGrant = yield* agyWorkspaceWriteShellGrant(spec, route.env);
+  if (shellGrant === null) return;
 
   // Read grant, session policy (readonly or workspace_write), and inline or file input (#653).
   const access = yield* prepareAgyRunInput(spec, route.home, shellGrant);

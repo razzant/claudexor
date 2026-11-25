@@ -34,7 +34,7 @@ export function extractAgySemver(raw: string | null): string | null {
 /** `installed` against the release `minimum`; null when `installed` is not a
  * version. A prerelease precedes its own release and follows every earlier one. */
 export function isAgyVersionAtLeast(installed: string | null, minimum: string): boolean | null {
-  const match = /^(\d+)\.(\d+)\.(\d+)(-.+)?$/.exec(installed ?? "");
+  const match = /^(\d+)\.(\d+)\.(\d+)(-[^+]+)?(\+.+)?$/.exec(installed ?? "");
   const floor = /^(\d+)\.(\d+)\.(\d+)$/.exec(minimum);
   if (!match || !floor) return null;
   const order =
@@ -82,7 +82,7 @@ export function agyWorkspaceWriteDoctorCheck(installed: string | null): {
 } {
   return versionDoctorCheck(
     "workspace_write_min_version",
-    `workspace_write runs need agy ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer for session-only settings; full runs do not`,
+    `workspace_write runs need agy ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer for their session shell grant; full runs do not`,
     installed,
     AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
     `installed ${installed} stops workspace_write runs before the model; update agy`,

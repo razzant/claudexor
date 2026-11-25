@@ -131,8 +131,9 @@ export function agyWorkspaceWritePolicyEvent(
  * Keep the session settings out of argv (the profile's rules can name
  * private paths) in a private file the adapter owns until the child has
  * exited or been reaped, including cancellation and spawn failure, like the
- * Claude instructions file. A file that cannot be written refuses the run
- * before the child starts.
+ * Claude instructions file. A file that cannot be written refuses a readonly
+ * run before the child starts, because its denials would be missing; a
+ * workspace_write run starts without it, as before its grant existed.
  */
 export async function* withAgySessionSettings(
   settings: AgySessionSettings | null,
@@ -157,12 +158,23 @@ export async function* withAgySessionSettings(
       });
     } catch (error) {
       const detail = redactSecrets(error instanceof Error ? error.message : String(error));
+      if (access === "workspace_write") {
+        yield {
+          type: "status",
+          session_id: sessionId,
+          ts: nowIso(),
+          text: `agy workspace_write runs without session settings, so headless shell commands may be refused without asking: the settings file could not be written: ${detail.slice(0, 300)}`,
+          payload: { code: "agy_workspace_write_session_policy_unwritable" },
+        };
+        yield* run([]);
+        return;
+      }
       yield {
         type: "error",
         session_id: sessionId,
         ts: nowIso(),
-        error: `agy ${access} session settings could not be written, so nothing was sent: ${detail.slice(0, 300)}`,
-        payload: { code: `agy_${access}_session_policy_unwritable` },
+        error: `agy readonly session settings could not be written, so nothing was sent: ${detail.slice(0, 300)}`,
+        payload: { code: "agy_readonly_session_policy_unwritable" },
       };
       yield { type: "completed", session_id: sessionId, ts: nowIso() };
       return;
