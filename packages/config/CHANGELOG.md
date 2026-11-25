@@ -1,5 +1,15 @@
 # @claudexor/config
 
+## 6.4.0
+
+### Patch Changes
+
+- Updated dependencies [178706b]
+- Updated dependencies [f536929]
+- Updated dependencies [5dc3b73]
+  - @claudexor/schema@6.4.0
+  - @claudexor/util@6.4.0
+
 ## 6.3.0
 
 ### Patch Changes

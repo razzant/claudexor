@@ -1,5 +1,69 @@
 # @claudexor/cli
 
+## 6.4.0
+
+### Minor Changes
+
+- dd717af: `claudexor remote preflight <ssh-destination> --json` and `claudexor remote install <ssh-destination> --digest <sha256> --json` install this CLI's signed SSH runtime on an empty server the person confirmed. The destination is parsed before any SSH call: a `Host` alias or host name, `user@host`, or `ssh://[user@]host[:port]`, IPv6 included (an IPv6 zone only bare, not inside `ssh://`); another login form goes into `User` of a trusted `Host` alias. The preflight only reads and shows the SSH login, the server's host key fingerprints and the offered build; an installed runtime is identified from its own metadata files, never run. A manifest that could not be read whole is reported as unavailable, not as unverified, and a runtime file that could not be read leaves the host blocked as `runtime_unreadable`, never a mismatch, unless the other file, read whole, already contradicts the identity. The install writes only to a server that proves those host keys, in one writing step that first proves the confirmed hostname, platform, user, uid and home, and in which the shared install transaction itself receives the signed archive into its own file and removes it on an ordinary end. It uses its own directory and runtime pointer, starts no daemon or login, and ends with a read-only identity check, which a runtime file read whole and contradicting the signed identity fails even when the other could not be read. Connecting stays the separate `remote bootstrap`. An installed, unknown or locked runtime is never changed. An answer says `activated: false` only where that is proven: before the writing step (a local temporary file that could not be made keeps its system code), on its recipient refusal, or on the transaction's own refusal. Any other outcome the client did not see, a broken stream included, is reported as unknown with what a later preflight must show, and is never retried. These commands need OpenSSH 8.5 or newer and check host keys against known-hosts files only, loopback included, without adding to them or sharing a connection. The macOS app runs the same shared install and rollback scripts. Both now release only their own lock, once, also when their output stream breaks or a signal arrives, so a dropped connection no longer leaves the lock that blocked the app's next install or rollback. A lock directory they cannot create (no space or no permission) is now a failure with exit 73 and the system's reason, no longer taken for another install's lock. An archive left behind without a lock shows neither a running install nor an activation. The install script also prints a receipt after activation or a refusal before it, keeps a directory it already moved into place, and asks for a lock to be removed by hand only after checking that no install still runs.
+
+### Patch Changes
+
+- 178706b: Write quota observations once and keep each daemon log generation within 256 KiB. `claudexor daemon logs` also shows delayed event-loop windows and Stop requests from a separate bounded history, even when the main log is missing (#688, #707).
+- 178706b: Record the sender details reported by the client on ordinary daemon Stop and in the timeline of each run it cancelled. Older clients can omit these fields.
+- 178706b: Vendor program updates skip a redundant version check when there is nothing to clean up. If an update selects an unsupported major, its receipt reports the observed change and identifies the incompatible version. Maintenance errors with an empty code now retain their original diagnostic instead of failing to build the receipt.
+- f536929: Recover earlier typed final messages in journal order, with attempt and
+  provenance. Control GET, MCP result reads and ACP accept `includeFinalMessages`.
+  CLI inspect accepts `--include-final-messages`. A recorded document transfers
+  with its verified size and digest. Default reads and launches keep their original shape.
+
+  Codex text operations advertise `typedRefusals`. A failed content refusal
+  ends the request without retrying or penalizing the account. Public Codex
+  failure details omit or mask unrecognized provider diagnostics. A completed
+  refusal remains an assistant answer with usage and any tool calls. Claude
+  Code closes input on a confirmed quota refusal of its own command and still
+  collects late receipts. A late queue acknowledgment is distinguishable from
+  actual consumption without sending the message again.
+
+  Mandatory-file refusals name the execution root and affected files. Context
+  paths must resolve inside that root. After repair, a saved turn with a
+  replayable job can be retried. A blocked Claude pin names a recorded
+  verification requirement. Antigravity print probes distinguish a timeout,
+  a bad response and a nonzero exit without exposing arbitrary vendor text.
+
+- 7a45ec2: When Windows refuses to rename an old managed npm package during conversion, the updater can retry that rename for up to two seconds without running the installer again. A brief file hold can clear within the same Update. If the refusal persists, the Update ends before anything is retired and the old copy stays in place. On every platform, conversion retires a hidden package only if its own rename moved it and the package still matches what it proved before the hide. It then checks the final selection; if that differs from the verified replacement, the Update reports the difference, and that refusal does not undo retirement. The receipt records the first error, how many renames were attempted and the elapsed time. The natural cause of the Windows refusal is still unknown.
+- 5dc3b73: An ordinary read-only Ask with no paid budget left (a $0 limit from the request or Settings, or an inherited limit already used up) no longer sends diagnostic requests that could be billed while it checks which executors are ready, and a vendor-verified native subscription can still serve it, including a first Ask with no earlier run. In that mode each send, including a fallback model or continuity summary, can use subscription pricing only if it still runs strictly on the verified native session or uses an account with its own vendor verification. A processing receipt, preference or past run cannot establish that entitlement. Routing can drop a harness whose only proof was withheld and fails `harness_unavailable` when no route remains, while the ledger refuses an admitted send whose billing is unknown or metered (`finite_zero` at $0). Unverified keys and setup-tokens are reported as not verified, and only where a check was actually withheld does the report name the paid budget and suggest raising the limit. A Claude setup-token on its own, with no vendor verification already on record, therefore cannot serve such an Ask while that check is withheld; a native vendor sign-in is the way to use the subscription with no paid check. Family headroom is sampled once at readiness admission. When that admission takes an account from the pool, an account the vendor verified goes ahead of accounts that have only a login file or a setup-token on record, which never count as included by their kind; an explicit pin or a ready thread account is kept. Accounts `next_up` still names the first candidate in ordinary pool order for the configured default model, so such an Ask, like any run with its own pin, thread, model, mode or auth preference, can use another account; the Accounts help, docs and API descriptions now say so, and the wire is unchanged. Plan, Agent, Deep Scan, review, manual `doctor` and runs that allow paid use keep their checks and dispatch; only an Auto refusal with no route now lists each harness's own reasons.
+- Updated dependencies [10bdd5c]
+- Updated dependencies [178706b]
+- Updated dependencies [178706b]
+- Updated dependencies [9e4b854]
+- Updated dependencies [f536929]
+- Updated dependencies [7a45ec2]
+- Updated dependencies [5dc3b73]
+  - @claudexor/harness-codex@6.4.0
+  - @claudexor/daemon@6.4.0
+  - @claudexor/orchestrator@6.4.0
+  - @claudexor/schema@6.4.0
+  - @claudexor/workspace@6.4.0
+  - @claudexor/control-api@6.4.0
+  - @claudexor/mcp-server@6.4.0
+  - @claudexor/acp-server@6.4.0
+  - @claudexor/core@6.4.0
+  - @claudexor/harness-claude@6.4.0
+  - @claudexor/harness-agy@6.4.0
+  - @claudexor/harness-cursor@6.4.0
+  - @claudexor/config@6.4.0
+  - @claudexor/delivery@6.4.0
+  - @claudexor/gateway@6.4.0
+  - @claudexor/harness-acp@6.4.0
+  - @claudexor/harness-fake@6.4.0
+  - @claudexor/harness-grok@6.4.0
+  - @claudexor/harness-opencode@6.4.0
+  - @claudexor/harness-raw-api@6.4.0
+  - @claudexor/review@6.4.0
+  - @claudexor/artifact-store@6.4.0
+  - @claudexor/secrets@6.4.0
+  - @claudexor/util@6.4.0
+
 ## 6.3.0
 
 ### Patch Changes

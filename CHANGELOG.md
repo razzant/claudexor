@@ -4,6 +4,31 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v6.4.0** (2026-11-25) — **Server-enforced deadlines for Linux runs.**
+  A controller can set an absolute deadline when it starts a run and renew it
+  while it is still armed. A queued job whose time runs out never starts. For
+  a running job, a separate process enforces the deadline even if the daemon
+  exits. The handshake tells the controller which processes the engine can
+  stop; its report distinguishes a confirmed stop from an unresolved one. A
+  lost renewal reply can be checked without sending the change again (#770).
+
+  **Install the SSH runtime on an empty server.** `claudexor remote preflight`
+  shows the login, host key fingerprints and signed build without installing
+  it. `claudexor remote install` takes the digest of that preview and checks
+  the recipient again before writing. Installation needs no sudo and starts
+  no daemon. If the reply is lost, check what is installed before taking any
+  further action. Connecting is a separate `remote bootstrap` step (#773).
+
+  A read-only Ask with no paid budget left skips checks that could be billed;
+  it can still use a verified native subscription (#760). Earlier final
+  messages can be read back in order, and a Codex content refusal no longer
+  triggers a retry or an account penalty (#766). Saved Codex forks keep the
+  history they need to resume (#747). Sparse checkouts capture new files
+  outside their checkout patterns (#734). `claudexor daemon logs` keeps Stop
+  requests and event-loop delays visible across log rotation (#688, #707).
+  The Windows updater can retry a briefly blocked npm rename in the same
+  Update (#755).
+
 - **v6.3.0** (2026-11-18) — **Fewer checks before a Codex call.** Raw model
   calls can reuse an account's model list for up to 90 seconds by default
   while its credentials and the Codex installation stay the same.

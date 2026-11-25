@@ -1,5 +1,40 @@
 # @claudexor/control-api
 
+## 6.4.0
+
+### Patch Changes
+
+- f536929: Recover earlier typed final messages in journal order, with attempt and
+  provenance. Control GET, MCP result reads and ACP accept `includeFinalMessages`.
+  CLI inspect accepts `--include-final-messages`. A recorded document transfers
+  with its verified size and digest. Default reads and launches keep their original shape.
+
+  Codex text operations advertise `typedRefusals`. A failed content refusal
+  ends the request without retrying or penalizing the account. Public Codex
+  failure details omit or mask unrecognized provider diagnostics. A completed
+  refusal remains an assistant answer with usage and any tool calls. Claude
+  Code closes input on a confirmed quota refusal of its own command and still
+  collects late receipts. A late queue acknowledgment is distinguishable from
+  actual consumption without sending the message again.
+
+  Mandatory-file refusals name the execution root and affected files. Context
+  paths must resolve inside that root. After repair, a saved turn with a
+  replayable job can be retried. A blocked Claude pin names a recorded
+  verification requirement. Antigravity print probes distinguish a timeout,
+  a bad response and a nonzero exit without exposing arbitrary vendor text.
+
+- 5dc3b73: An ordinary read-only Ask with no paid budget left (a $0 limit from the request or Settings, or an inherited limit already used up) no longer sends diagnostic requests that could be billed while it checks which executors are ready, and a vendor-verified native subscription can still serve it, including a first Ask with no earlier run. In that mode each send, including a fallback model or continuity summary, can use subscription pricing only if it still runs strictly on the verified native session or uses an account with its own vendor verification. A processing receipt, preference or past run cannot establish that entitlement. Routing can drop a harness whose only proof was withheld and fails `harness_unavailable` when no route remains, while the ledger refuses an admitted send whose billing is unknown or metered (`finite_zero` at $0). Unverified keys and setup-tokens are reported as not verified, and only where a check was actually withheld does the report name the paid budget and suggest raising the limit. A Claude setup-token on its own, with no vendor verification already on record, therefore cannot serve such an Ask while that check is withheld; a native vendor sign-in is the way to use the subscription with no paid check. Family headroom is sampled once at readiness admission. When that admission takes an account from the pool, an account the vendor verified goes ahead of accounts that have only a login file or a setup-token on record, which never count as included by their kind; an explicit pin or a ready thread account is kept. Accounts `next_up` still names the first candidate in ordinary pool order for the configured default model, so such an Ask, like any run with its own pin, thread, model, mode or auth preference, can use another account; the Accounts help, docs and API descriptions now say so, and the wire is unchanged. Plan, Agent, Deep Scan, review, manual `doctor` and runs that allow paid use keep their checks and dispatch; only an Auto refusal with no route now lists each harness's own reasons.
+- Updated dependencies [178706b]
+- Updated dependencies [9e4b854]
+- Updated dependencies [f536929]
+- Updated dependencies [5dc3b73]
+  - @claudexor/schema@6.4.0
+  - @claudexor/workspace@6.4.0
+  - @claudexor/event-log@6.4.0
+  - @claudexor/delivery@6.4.0
+  - @claudexor/secrets@6.4.0
+  - @claudexor/util@6.4.0
+
 ## 6.3.0
 
 ### Patch Changes

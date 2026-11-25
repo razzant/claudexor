@@ -1,5 +1,40 @@
 # @claudexor/daemon
 
+## 6.4.0
+
+### Patch Changes
+
+- 178706b: Write quota observations once and keep each daemon log generation within 256 KiB. `claudexor daemon logs` also shows delayed event-loop windows and Stop requests from a separate bounded history, even when the main log is missing (#688, #707).
+- 178706b: Record the sender details reported by the client on ordinary daemon Stop and in the timeline of each run it cancelled. Older clients can omit these fields.
+- f536929: Recover earlier typed final messages in journal order, with attempt and
+  provenance. Control GET, MCP result reads and ACP accept `includeFinalMessages`.
+  CLI inspect accepts `--include-final-messages`. A recorded document transfers
+  with its verified size and digest. Default reads and launches keep their original shape.
+
+  Codex text operations advertise `typedRefusals`. A failed content refusal
+  ends the request without retrying or penalizing the account. Public Codex
+  failure details omit or mask unrecognized provider diagnostics. A completed
+  refusal remains an assistant answer with usage and any tool calls. Claude
+  Code closes input on a confirmed quota refusal of its own command and still
+  collects late receipts. A late queue acknowledgment is distinguishable from
+  actual consumption without sending the message again.
+
+  Mandatory-file refusals name the execution root and affected files. Context
+  paths must resolve inside that root. After repair, a saved turn with a
+  replayable job can be retried. A blocked Claude pin names a recorded
+  verification requirement. Antigravity print probes distinguish a timeout,
+  a bad response and a nonzero exit without exposing arbitrary vendor text.
+
+- Updated dependencies [178706b]
+- Updated dependencies [9e4b854]
+- Updated dependencies [f536929]
+- Updated dependencies [7a45ec2]
+- Updated dependencies [5dc3b73]
+  - @claudexor/schema@6.4.0
+  - @claudexor/workspace@6.4.0
+  - @claudexor/core@6.4.0
+  - @claudexor/util@6.4.0
+
 ## 6.3.0
 
 ### Patch Changes

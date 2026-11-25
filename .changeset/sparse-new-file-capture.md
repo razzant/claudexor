@@ -1,5 +1,0 @@
----
-"@claudexor/workspace": patch
----
-
-In a sparse checkout, a run's new regular file outside the sparse-checkout patterns (a new test beside a checked-out `src/`, #734) is no longer refused by Git's `add -A` and so is captured by both the candidate capture and the dirty snapshot, from its current bytes whether or not it is staged. An addition already staged in the user's index is read from that index relative to the capture base (read-only) and stays captured even when a working `.gitignore` rule that arrived after staging now matches it; an ignored file the user never staged is still left out. Omitted `.gitignore` files still decide what is ignored, as in the user's checkout, omitted tracked files are not recorded as deleted, and the user's index and sparse-checkout patterns are not written. A new file that cannot be read still refuses the capture, and so does a new file whose name is not valid UTF-8 (refused rather than guessed or omitted); a Git without `sparse-checkout check-rules` (before 2.41) keeps Git's refusal.
