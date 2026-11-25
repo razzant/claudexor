@@ -15,14 +15,17 @@ import {
  * What the profile settings decide before an agy child starts, with each
  * decision disclosed as it is made: the read grant, a readonly or
  * workspace_write run's session policy (and the readonly engine note), and the
- * child's stdin (inline, or the bootstrap of a file delivery). Readonly and
- * workspace_write runs always carry their session policy when composed; when
- * it cannot be composed safely, or the input cannot be delivered whole, this
- * yields a typed error and `completed` and returns null: nothing is sent.
+ * child's stdin (inline, or the bootstrap of a file delivery). A readonly run
+ * always carries its policy: when it cannot be composed safely, or the input
+ * cannot be delivered whole, this yields a typed error and `completed` and
+ * returns null: nothing is sent. A workspace_write run whose policy cannot be
+ * composed starts without session settings and says so.
  */
 export function* prepareAgyRunInput(
   spec: HarnessRunSpec,
   profileHome: string,
+  /** A workspace_write run gets the session shell grant only when the caller established its CLI supports it. */
+  workspaceWriteShellGrant = false,
 ): Generator<HarnessEvent, { settings: AgySessionSettings | null; input: string } | null> {
   const status = (text: string, payload: Record<string, unknown>): HarnessEvent => ({
     type: "status",
@@ -44,13 +47,15 @@ export function* prepareAgyRunInput(
       "agy_readonly_session_policy_unavailable",
     );
   const workspaceWritePolicy =
-    spec.access === "workspace_write"
-      ? agyWorkspaceWritePolicy(readGrant, spec.tool_permission_policy)
+    spec.access === "workspace_write" && workspaceWriteShellGrant
+      ? agyWorkspaceWritePolicy(readGrant)
       : null;
+  // Before this grant a workspace_write run carried no session settings, so
+  // unreadable profile settings keep that run instead of refusing it.
   if (workspaceWritePolicy?.state === "unavailable")
-    return yield* refuse(
-      `agy workspace_write cannot compose session permissions safely for this run, so nothing was sent: ${workspaceWritePolicy.reason}`,
-      "agy_workspace_write_session_policy_unavailable",
+    yield status(
+      `agy workspace_write runs without session settings, so headless shell commands may be refused without asking: ${workspaceWritePolicy.reason}`,
+      { code: "agy_workspace_write_session_policy_unavailable" },
     );
   const sessionPolicy =
     readonlyPolicy?.state === "composed"
@@ -74,10 +79,7 @@ export function* prepareAgyRunInput(
       note: AGY_READONLY_NOTE,
     });
   } else if (workspaceWritePolicy?.state === "composed") {
-    yield agyWorkspaceWritePolicyEvent(spec.session_id, {
-      allow: workspaceWritePolicy.addedAllow,
-      deny: workspaceWritePolicy.addedDeny,
-    });
+    yield agyWorkspaceWritePolicyEvent(spec.session_id, workspaceWritePolicy.added);
   }
   const delivery = agyInputDelivery({
     prompt: spec.prompt,

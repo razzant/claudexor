@@ -497,25 +497,22 @@ async function* runAgy(
   }
 
   const abortSignal = abortSignalFromSpec(spec);
+  // The shell grant is sent only to a CLI known to be new enough for it; a
+  // known older one refuses, and an undetermined one runs as before the grant.
+  let shellGrant = false;
   if (spec.access === "workspace_write") {
     const installedSemver = extractAgySemver(await detectVersion(abortSignal));
     if (abortSignal?.aborted) {
       yield { type: "completed", session_id: spec.session_id, ts: nowIso(), aborted: true };
       return;
     }
-    if (
-      installedSemver === null ||
-      isAgyVersionAtLeast(installedSemver, AGY_WORKSPACE_WRITE_MIN_CLI_VERSION) !== true
-    ) {
-      const detail =
-        installedSemver === null
-          ? "installed agy version could not be determined"
-          : `installed agy is ${installedSemver}`;
+    const meets = isAgyVersionAtLeast(installedSemver, AGY_WORKSPACE_WRITE_MIN_CLI_VERSION);
+    if (meets === false) {
       yield {
         type: "error",
         session_id: spec.session_id,
         ts: nowIso(),
-        error: `agy workspace_write requires agy ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer for session-only settings (${detail}); update agy`,
+        error: `agy workspace_write requires agy ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer for session-only settings (installed agy is ${installedSemver}); update agy`,
         payload: {
           code: "agy_workspace_write_version_unsupported",
           installed_version: installedSemver,
@@ -525,10 +522,22 @@ async function* runAgy(
       yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
       return;
     }
+    shellGrant = meets === true;
+    if (!shellGrant)
+      yield {
+        type: "status",
+        session_id: spec.session_id,
+        ts: nowIso(),
+        text: `agy workspace_write runs without the session shell grant, so headless shell commands may be refused without asking: the installed agy version could not be determined (the grant needs ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer)`,
+        payload: {
+          code: "agy_workspace_write_version_unknown",
+          min_version: AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
+        },
+      };
   }
 
   // Read grant, session policy (readonly or workspace_write), and inline or file input (#653).
-  const access = yield* prepareAgyRunInput(spec, route.home);
+  const access = yield* prepareAgyRunInput(spec, route.home, shellGrant);
   if (!access) return;
   const { settings, input } = access;
 

@@ -3032,19 +3032,24 @@ write are never rewritten, and a non-full run reports
 `agy_read_grant_unavailable`. In a headless run plan mode's ask for a command
 cannot be answered and ends the whole turn, so a readonly run also passes
 session-only settings in a private file (`--settings`) that deny `command(*)`
-and `write_file(*)`, including commands the profile allows. For
-`workspace_write` (`--mode accept-edits`), headless `agy` likewise auto-denies
-shell commands that prompt for interactive approval; on `agy >= 1.5.7`, the
-adapter passes session-only `--settings` granting `command(*)` (unless the
-caller denies or narrows shell commands in `tool_permission_policy`: blanket
-caller shell denies append `command(*)`, scoped `command(...)` /
-`run_command(...)` denies forward as `command(...)` rules, and scoped
-`Bash(...)` denies withhold `command(*)`) while preserving the profile's
-own `allow`, `deny`, and `ask` lists verbatim so profile Deny/Ask rules and
-enterprise/admin overrides stay in force. Versions older than `1.5.7` (or with
-unknown installed version) refuse `workspace_write` before dispatch
-(`agy_workspace_write_version_unsupported`) rather than running degraded or
-risking older `--settings` admin-policy behavior. agy merges the session object
+and `write_file(*)`, including commands the profile allows. A
+`workspace_write` run (`--mode accept-edits`) has the same headless problem
+with shell commands: 70 of 196 managed runs in the week to 2026-11-25 ended
+with an empty `SUCCESS` after the vendor auto-denied a command. Such a run
+passes session-only `--settings` that append `command(*)` to the profile's
+`allow` list and copy its `deny` and `ask` lists as read, so the vendor's
+Deny > Ask > Allow order keeps every profile rule in force
+(`agy_workspace_write_session_policy`). The grant needs agy `1.5.7` or newer,
+where a wildcard command rule no longer bypasses commands an administrator
+holds for review; the vendor's notes for that release also keep an ask on
+commands that would leave its terminal sandbox, so such a command can still
+end a headless turn. A known older installed version refuses the
+`workspace_write` run before dispatch
+(`agy_workspace_write_version_unsupported`) with an update remedy; an
+installed version that cannot be determined starts the run without the grant,
+as before it existed, and says so (`agy_workspace_write_version_unknown`).
+Like claude and cursor this is a tool-policy route with no OS sandbox.
+agy merges the session object
 into the profile settings key by key, replacing each permission list it names
 and refusing unknown top-level keys, so `--settings` carries only `permissions`
 with all three lists copied from the profile as read (the read grant included)
@@ -3052,9 +3057,11 @@ and the mode's rule adjustments appended (`agy_readonly_session_policy` or
 `agy_workspace_write_session_policy`). A denied call then fails as its own
 tool step and the model continues. When only saving the read grant fails, the
 session settings still carry it. When profile settings cannot be read or a
-list has another shape, readonly (`agy_readonly_session_policy_unavailable`) and
-workspace_write (`agy_workspace_write_session_policy_unavailable`) refuse before
-starting. `--settings` needs agy `1.4.10` or newer (official `1.1.13` and
+list has another shape, a readonly run refuses before starting
+(`agy_readonly_session_policy_unavailable`), while a workspace_write run starts
+without session settings, as it did before the grant, and says so
+(`agy_workspace_write_session_policy_unavailable`).
+`--settings` needs agy `1.4.10` or newer (official `1.1.13` and
 tested `1.3.4` through `1.4.9` reject it while parsing arguments, before any
 model or account access, stopping with `agy_session_settings_unsupported` and an
 update remedy); full runs are unaffected, doctor reports both

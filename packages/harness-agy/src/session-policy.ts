@@ -34,21 +34,8 @@ export type AgySessionSettings = { permissions: Rules };
 export type AgyReadonlyPolicy =
   { state: "composed"; settings: AgySessionSettings } | { state: "unavailable"; reason: string };
 export type AgyWorkspaceWritePolicy =
-  | {
-      state: "composed";
-      settings: AgySessionSettings;
-      addedAllow: string[];
-      addedDeny: string[];
-    }
+  | { state: "composed"; settings: AgySessionSettings; added: string[] }
   | { state: "unavailable"; reason: string };
-
-const SHELL_DENY_TOKENS = new Set([
-  "command",
-  "command(*)",
-  "run_command",
-  "run_command(*)",
-  "Bash",
-]);
 
 function readProfilePermissionRules(
   grant: AgyReadGrant,
@@ -62,8 +49,7 @@ function readProfilePermissionRules(
     };
   const rules: Partial<Rules> = {};
   for (const key of ["allow", "deny", "ask"] as const) {
-    const raw = permissions[key];
-    const list = raw === undefined ? [] : raw;
+    const list = permissions[key] ?? [];
     if (!Array.isArray(list) || list.some((rule) => typeof rule !== "string"))
       return {
         state: "unavailable",
@@ -97,60 +83,22 @@ export function agyReadonlyPolicy(grant: AgyReadGrant): AgyReadonlyPolicy {
 }
 
 /**
- * The `--settings` object for a workspace_write run on agy >= 1.5.7.
- * Preserves the profile's `allow`, `deny`, and `ask` lists verbatim so profile
- * Deny/Ask rules remain in force, fails closed if profile permissions cannot be
- * read cleanly, and honors caller shell deny or `command(...)` / `Bash(...)`
- * allow-narrowing from `tool_permission_policy`.
+ * The `--settings` object for a workspace_write run. It carries the profile's
+ * `allow`, `deny` and `ask` lists as read (agy replaces each list it names)
+ * with `command(*)` appended to `allow`, so the vendor's Deny > Ask > Allow
+ * order keeps every profile deny and ask rule in force. Settings that could
+ * not be read are not treated as empty: no policy, and the run starts without
+ * session settings, as before this grant existed.
  */
-export function agyWorkspaceWritePolicy(
-  grant: AgyReadGrant,
-  toolPolicy?: { allow?: readonly string[]; deny?: readonly string[] },
-): AgyWorkspaceWritePolicy {
+export function agyWorkspaceWritePolicy(grant: AgyReadGrant): AgyWorkspaceWritePolicy {
   const parsed = readProfilePermissionRules(grant);
   if (parsed.state === "unavailable") return parsed;
   const { allow, deny, ask } = parsed.rules;
-  const callerDeny = new Set(toolPolicy?.deny ?? []);
-  const callerAllow = new Set(toolPolicy?.allow ?? []);
-  const callerDeniesShell = [...callerDeny].some((rule) => SHELL_DENY_TOKENS.has(rule));
-  const callerHasScopedBashDeny = [...callerDeny].some((rule) => rule.startsWith("Bash("));
-  const callerSpecificCommandDenies = [
-    ...new Set(
-      [...callerDeny]
-        .filter((rule) => rule.startsWith("command(") || rule.startsWith("run_command("))
-        .map((rule) =>
-          rule.startsWith("run_command(") ? `command(${rule.slice("run_command(".length)}` : rule,
-        ),
-    ),
-  ].filter((rule) => !deny.includes(rule));
-  const callerNarrowsShell = [...callerAllow].some(
-    (rule) =>
-      (rule.startsWith("command(") && rule !== "command(*)") ||
-      (rule.startsWith("run_command(") && rule !== "run_command(*)") ||
-      rule.startsWith("Bash("),
-  );
-  const profileDeniesAllShell = deny.includes("command(*)") || deny.includes("command");
-  const addedAllow =
-    callerDeniesShell || callerHasScopedBashDeny || callerNarrowsShell || profileDeniesAllShell
-      ? []
-      : AGY_WORKSPACE_WRITE_ALLOW_RULES.filter((rule) => !allow.includes(rule));
-  const addedDeny = callerDeniesShell
-    ? [
-        ...["command(*)"].filter((rule) => !deny.includes(rule)),
-        ...callerSpecificCommandDenies.filter((rule) => rule !== "command(*)"),
-      ]
-    : callerSpecificCommandDenies;
+  const added = AGY_WORKSPACE_WRITE_ALLOW_RULES.filter((rule) => !allow.includes(rule));
   return {
     state: "composed",
-    settings: {
-      permissions: {
-        allow: [...allow, ...addedAllow],
-        deny: [...deny, ...addedDeny],
-        ask,
-      },
-    },
-    addedAllow,
-    addedDeny,
+    settings: { permissions: { allow: [...allow, ...added], deny, ask } },
+    added,
   };
 }
 
@@ -168,22 +116,14 @@ export function agyReadonlyPolicyEvent(sessionId: string): HarnessEvent {
 /** The status event disclosing a workspace_write run's session policy. */
 export function agyWorkspaceWritePolicyEvent(
   sessionId: string,
-  added: { allow: readonly string[]; deny: readonly string[] },
+  added: readonly string[],
 ): HarnessEvent {
-  const parts: string[] = [];
-  if (added.allow.length > 0) parts.push(`allow ${added.allow.join(" and ")}`);
-  if (added.deny.length > 0) parts.push(`deny ${added.deny.join(" and ")}`);
-  const summary = parts.length > 0 ? parts.join(" and ") : "keep profile shell policy";
   return {
     type: "status",
     session_id: sessionId,
     ts: nowIso(),
-    text: `agy workspace_write: this run's session settings ${summary}; the profile's own rules stay in force`,
-    payload: {
-      code: "agy_workspace_write_session_policy",
-      allow: [...added.allow],
-      ...(added.deny.length > 0 ? { deny: [...added.deny] } : {}),
-    },
+    text: `agy workspace_write: this run's session settings allow ${AGY_WORKSPACE_WRITE_ALLOW_RULES.join(" and ")}; the profile's own deny and ask rules stay in force`,
+    payload: { code: "agy_workspace_write_session_policy", allow: [...added] },
   };
 }
 

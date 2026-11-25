@@ -463,51 +463,67 @@ describe("AGY native raw stdin selection", () => {
     expect(codes).not.toContain("agy_readonly_session_policy");
   });
 
-  it("refuses a workspace_write run whose profile settings are unreadable JSON, before spawning", async () => {
+  it("starts a workspace_write run without session settings when the profile settings are unreadable", async () => {
     observed.version = "1.5.14";
     const input = spec("Fix.", undefined, "workspace_write");
     const settingsPath = agySettingsPath(input.credential_profile!.isolation_locator!);
     mkdirSync(dirname(settingsPath), { recursive: true });
     writeFileSync(settingsPath, "{ not json");
     const events = await collect(input);
-    expect(observed.options).toHaveLength(0);
-    expect(events.map((event) => event.type)).toEqual(["error", "completed"]);
-    expect(events[0]).toMatchObject({
-      payload: { code: "agy_workspace_write_session_policy_unavailable" },
-      error: expect.stringMatching(/nothing was sent: settings\.json is not valid JSON$/),
+    expect(observed.options).toHaveLength(1);
+    expect(observed.options[0]!.args).not.toContain("--settings");
+    expect(observed.options[0]!.args).toContain("accept-edits");
+    expect(
+      events.find(
+        (event) => event.payload?.["code"] === "agy_workspace_write_session_policy_unavailable",
+      ),
+    ).toMatchObject({
+      type: "status",
+      text: expect.stringMatching(
+        /may be refused without asking: settings\.json is not valid JSON$/,
+      ),
     });
     expect(readFileSync(settingsPath, "utf8")).toBe("{ not json");
   });
 
-  it("honors caller shell deny through tool_permission_policy on workspace_write", async () => {
-    observed.version = "1.5.14";
-    const base = spec("Fix.", undefined, "workspace_write");
-    const input = HarnessRunSpec.parse({
-      ...base,
-      tool_permission_policy: { web: "auto", allow: [], deny: ["Bash"] },
-    });
-    const events = await collect(input);
-    expect(answerOf(events).settings).toEqual({
-      permissions: { allow: ["read_file(*)"], deny: ["command(*)"], ask: [] },
-    });
-  });
-
-  it.each(["1.1.13", "1.4.10", "1.5.6", null] as const)(
-    "refuses workspace_write before spawning when agy version is %s (< 1.5.7 or unknown)",
+  it.each(["1.1.13", "1.4.10", "1.5.6"] as const)(
+    "refuses workspace_write before spawning on a known agy %s (below 1.5.7)",
     async (version) => {
-      observed.version = version as string;
+      observed.version = version;
       const events = await collect(spec("Fix it.", undefined, "workspace_write"));
       expect(observed.options).toHaveLength(0);
       expect(events.map((event) => event.type)).toEqual(["error", "completed"]);
       expect(events[0]).toMatchObject({
         payload: {
           code: "agy_workspace_write_version_unsupported",
+          installed_version: version,
           min_version: "1.5.7",
         },
         error: expect.stringContaining("requires agy 1.5.7 or newer"),
       });
     },
   );
+
+  it("starts workspace_write without the shell grant when the agy version is undetermined", async () => {
+    observed.version = null as unknown as string;
+    const events = await collect(spec("Fix it.", undefined, "workspace_write"));
+    expect(observed.options).toHaveLength(1);
+    expect(observed.options[0]!.args).not.toContain("--settings");
+    expect(observed.options[0]!.args).toContain("accept-edits");
+    const codes = events.map((event) => event.payload?.["code"]);
+    expect(codes).toContain("agy_workspace_write_version_unknown");
+    expect(codes).not.toContain("agy_workspace_write_version_unsupported");
+    expect(codes).not.toContain("agy_workspace_write_session_policy");
+  });
+
+  it("sends the shell grant to a prerelease of a later agy", async () => {
+    observed.version = "1.6.0-rc.1";
+    const events = await collect(spec("Fix it.", undefined, "workspace_write"));
+    expect(observed.options[0]!.args).toContain("--settings");
+    expect(answerOf(events).settings).toEqual({
+      permissions: { allow: ["read_file(*)", "command(*)"], deny: [], ask: [] },
+    });
+  });
 
   it("threads extra.abortSignal into workspace_write version detection and exits cleanly when aborted", async () => {
     observed.version = null as unknown as string;

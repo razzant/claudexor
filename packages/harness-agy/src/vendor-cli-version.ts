@@ -26,27 +26,22 @@ export const AGY_READONLY_MIN_CLI_VERSION = "1.4.10";
  */
 export const AGY_WORKSPACE_WRITE_MIN_CLI_VERSION = "1.5.7";
 
-/** Extract a version token from `--version` output, keeping prerelease tags so they do not satisfy release floors. */
+/** The version token of `--version` output, with its prerelease tag when it has one. */
 export function extractAgySemver(raw: string | null): string | null {
   return raw?.match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/)?.[0] ?? null;
 }
 
-/** Parse a bare `X.Y.Z` semver string into numeric components, or null if unknown/prerelease. */
-function parseSemverTriplet(version: string | null): [number, number, number] | null {
-  if (!version) return null;
-  const parts = version.split(".");
-  if (parts.length !== 3 || parts.some((part) => !/^\d+$/.test(part))) return null;
-  const nums = parts.map(Number);
-  return [nums[0]!, nums[1]!, nums[2]!];
-}
-
-/** Compare `installed` against `minimum`; null when `installed` is unknown. */
+/** `installed` against the release `minimum`; null when `installed` is not a
+ * version. A prerelease precedes its own release and follows every earlier one. */
 export function isAgyVersionAtLeast(installed: string | null, minimum: string): boolean | null {
-  const actual = parseSemverTriplet(installed);
-  const floor = parseSemverTriplet(minimum);
-  if (!actual || !floor) return null;
-  const order = actual[0] - floor[0] || actual[1] - floor[1] || actual[2] - floor[2];
-  return order >= 0;
+  const match = /^(\d+)\.(\d+)\.(\d+)(-.+)?$/.exec(installed ?? "");
+  const floor = /^(\d+)\.(\d+)\.(\d+)$/.exec(minimum);
+  if (!match || !floor) return null;
+  const order =
+    Number(match[1]) - Number(floor[1]) ||
+    Number(match[2]) - Number(floor[2]) ||
+    Number(match[3]) - Number(floor[3]);
+  return order > 0 || (order === 0 && !match[4]);
 }
 
 function versionDoctorCheck<Id extends string>(
