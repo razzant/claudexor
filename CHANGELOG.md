@@ -4,6 +4,27 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v6.4.1** (2026-11-26) — **Antigravity `workspace_write` runs can run
+  shell commands.** In a headless Antigravity run in `workspace_write` mode,
+  agy auto-denied any shell command it would otherwise ask about, so the turn
+  ended with an empty result and a "cause unknown" error. Such a run now passes
+  session-only settings that allow shell commands and keep the profile's own
+  deny and ask rules, so commands run in the same turn. A command that a
+  profile ask rule covers, that an administrator holds for review or that would
+  leave agy's terminal sandbox can still end a turn. The grant needs agy 1.5.7
+  or newer: a run on a known older agy now refuses before it starts
+  (`agy_workspace_write_version_unsupported`) and asks you to update agy; when
+  the version cannot be determined the run starts without the grant and says
+  so. `claudexor doctor` reports the minimum as `workspace_write_min_version`.
+  A native permission denial is now reported as `permission_denied` instead of
+  the "cause unknown" error of an empty result. Verified live on macOS with
+  agy 1.5.14; Linux and Windows have no live run (#771). Readonly and full runs
+  are unchanged. Control protocol major 3 and engine store schema 8 are
+  unchanged, and there is no data migration; the local-engine manifest still
+  requires Claudexor.app 6.2.0, while the SSH-runtime manifest of this release
+  requires Claudexor.app 6.4.1. As with every release, older engines refuse a
+  data root that 6.4.1 has served (`root_authority_floor_regression`).
+
 - **v6.4.0** (2026-11-25) — **Server-enforced deadlines for Linux runs.**
   A controller can set an absolute deadline when it starts a run and renew it
   while it is still armed. A queued job whose time runs out never starts. For
