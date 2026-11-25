@@ -69,9 +69,11 @@ export function ensureAgyReadGrant(profileHome: string): AgyReadGrant {
     if (!isRecord(parsed)) return unavailable("settings.json is not a JSON object");
     settings = parsed;
   }
-  const permissions = settings["permissions"] ?? {};
+  const rawPermissions = settings["permissions"];
+  const permissions = rawPermissions === undefined ? {} : rawPermissions;
   if (!isRecord(permissions)) return unavailable("settings.json permissions is not an object");
-  const allow = permissions["allow"] ?? [];
+  const rawAllow = permissions["allow"];
+  const allow = rawAllow === undefined ? [] : rawAllow;
   if (!Array.isArray(allow)) return unavailable("settings.json permissions.allow is not a list");
   if (allow.includes(AGY_READ_ANYWHERE_RULE)) return { state: "present", permissions };
   const granted = { ...permissions, allow: [...allow, AGY_READ_ANYWHERE_RULE] };

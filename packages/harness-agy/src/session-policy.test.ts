@@ -15,8 +15,11 @@ import type { HarnessEvent } from "@claudexor/schema";
 import { agySettingsPath, ensureAgyReadGrant } from "./read-grant.js";
 import {
   AGY_READONLY_DENY_RULES,
+  AGY_WORKSPACE_WRITE_ALLOW_RULES,
   agyReadonlyPolicy,
   agyReadonlyPolicyEvent,
+  agyWorkspaceWritePolicy,
+  agyWorkspaceWritePolicyEvent,
   withAgySessionSettings,
 } from "./session-policy.js";
 
@@ -229,6 +232,23 @@ describe("agy readonly session policy (#653)", () => {
           payload: { code: "agy_readonly_session_policy_unwritable" },
           error: expect.stringContaining("nothing was sent"),
         });
+
+        const wwEvents = await drain(
+          withAgySessionSettings(
+            policy.settings,
+            "s",
+            async function* () {
+              started = true;
+            },
+            { access: "workspace_write" },
+          ),
+        );
+        expect(started).toBe(false);
+        expect(wwEvents.map((event) => event.type)).toEqual(["error", "completed"]);
+        expect(wwEvents[0]).toMatchObject({
+          payload: { code: "agy_workspace_write_session_policy_unwritable" },
+          error: expect.stringContaining("nothing was sent"),
+        });
       } finally {
         if (previous === undefined) delete process.env.TMPDIR;
         else process.env.TMPDIR = previous;
@@ -236,4 +256,151 @@ describe("agy readonly session policy (#653)", () => {
       }
     },
   );
+});
+
+describe("agy workspace_write session policy (agy >= 1.5.7)", () => {
+  it("keeps profile rules intact and appends command(*) once", () => {
+    const { grant } = grantFor(
+      JSON.stringify({
+        toolPermission: "strict",
+        permissions: {
+          allow: ["read_file(/repo/**)"],
+          deny: ["read_file(/secret/**)", "command(sudo *)"],
+          ask: ["mcp(*)"],
+        },
+      }),
+    );
+    expect(agyWorkspaceWritePolicy(grant)).toEqual({
+      state: "composed",
+      settings: {
+        permissions: {
+          allow: ["read_file(/repo/**)", "read_file(*)", ...AGY_WORKSPACE_WRITE_ALLOW_RULES],
+          deny: ["read_file(/secret/**)", "command(sudo *)"],
+          ask: ["mcp(*)"],
+        },
+      },
+      addedAllow: ["command(*)"],
+      addedDeny: [],
+    });
+
+    const again = grantFor(JSON.stringify({ permissions: { allow: ["command(*)"] } }));
+    expect(agyWorkspaceWritePolicy(again.grant)).toEqual({
+      state: "composed",
+      settings: { permissions: { allow: ["command(*)", "read_file(*)"], deny: [], ask: [] } },
+      addedAllow: [],
+      addedDeny: [],
+    });
+  });
+
+  it("fails closed when profile permissions are corrupt or non-list", () => {
+    const { home, grant } = grantFor(JSON.stringify({ permissions: { ask: "mcp(*)" } }));
+    const before = readFileSync(agySettingsPath(home), "utf8");
+    expect(agyWorkspaceWritePolicy(grant)).toEqual({
+      state: "unavailable",
+      reason: expect.stringContaining("ask is not a list of rules"),
+    });
+    expect(readFileSync(agySettingsPath(home), "utf8")).toBe(before);
+  });
+
+  it.each(["command", "command(*)", "run_command", "run_command(*)", "Bash"] as const)(
+    "honors caller shell deny %s without granting command(*)",
+    (token) => {
+      const { grant } = grantFor();
+      expect(agyWorkspaceWritePolicy(grant, { deny: [token] })).toEqual({
+        state: "composed",
+        settings: { permissions: { allow: ["read_file(*)"], deny: ["command(*)"], ask: [] } },
+        addedAllow: [],
+        addedDeny: ["command(*)"],
+      });
+    },
+  );
+
+  it("forwards specific caller command/run_command/Bash denies cleanly", () => {
+    const { grant } = grantFor();
+    expect(agyWorkspaceWritePolicy(grant, { deny: ["command(rm -rf *)"] })).toEqual({
+      state: "composed",
+      settings: {
+        permissions: {
+          allow: ["read_file(*)", "command(*)"],
+          deny: ["command(rm -rf *)"],
+          ask: [],
+        },
+      },
+      addedAllow: ["command(*)"],
+      addedDeny: ["command(rm -rf *)"],
+    });
+    expect(agyWorkspaceWritePolicy(grant, { deny: ["run_command(rm -rf *)"] })).toEqual({
+      state: "composed",
+      settings: {
+        permissions: {
+          allow: ["read_file(*)", "command(*)"],
+          deny: ["command(rm -rf *)"],
+          ask: [],
+        },
+      },
+      addedAllow: ["command(*)"],
+      addedDeny: ["command(rm -rf *)"],
+    });
+    expect(agyWorkspaceWritePolicy(grant, { deny: ["Bash(rm -rf *)"] })).toEqual({
+      state: "composed",
+      settings: {
+        permissions: {
+          allow: ["read_file(*)"],
+          deny: [],
+          ask: [],
+        },
+      },
+      addedAllow: [],
+      addedDeny: [],
+    });
+  });
+
+  it("fails closed when profile permissions or rule lists are explicit JSON null", () => {
+    const nullPermissions = grantFor(JSON.stringify({ permissions: null }));
+    expect(agyWorkspaceWritePolicy(nullPermissions.grant)).toEqual({
+      state: "unavailable",
+      reason: expect.stringContaining("permissions is not an object"),
+    });
+    const nullAllow = grantFor(JSON.stringify({ permissions: { allow: null } }));
+    expect(agyWorkspaceWritePolicy(nullAllow.grant)).toEqual({
+      state: "unavailable",
+      reason: expect.stringContaining("permissions.allow is not a list"),
+    });
+    const nullDeny = grantFor(JSON.stringify({ permissions: { allow: [], deny: null } }));
+    expect(agyWorkspaceWritePolicy(nullDeny.grant)).toEqual({
+      state: "unavailable",
+      reason: expect.stringContaining("deny is not a list of rules"),
+    });
+  });
+
+  it.each(["command(git *)", "run_command(git *)", "Bash(npm test)"] as const)(
+    "honors caller shell narrowing %s without widening to command(*)",
+    (allowRule) => {
+      const { grant } = grantFor();
+      expect(agyWorkspaceWritePolicy(grant, { allow: [allowRule] })).toEqual({
+        state: "composed",
+        settings: { permissions: { allow: ["read_file(*)"], deny: [], ask: [] } },
+        addedAllow: [],
+        addedDeny: [],
+      });
+    },
+  );
+
+  it("does not grant command(*) if the profile itself denies all commands", () => {
+    const { grant } = grantFor(JSON.stringify({ permissions: { deny: ["command(*)"] } }));
+    expect(agyWorkspaceWritePolicy(grant)).toEqual({
+      state: "composed",
+      settings: { permissions: { allow: ["read_file(*)"], deny: ["command(*)"], ask: [] } },
+      addedAllow: [],
+      addedDeny: [],
+    });
+  });
+
+  it("discloses a composed workspace_write policy as one status event", () => {
+    expect(agyWorkspaceWritePolicyEvent("s", { allow: ["command(*)"], deny: [] })).toMatchObject({
+      type: "status",
+      session_id: "s",
+      payload: { code: "agy_workspace_write_session_policy", allow: ["command(*)"] },
+    });
+  });
 });

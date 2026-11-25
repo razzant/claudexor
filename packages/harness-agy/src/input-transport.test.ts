@@ -148,9 +148,9 @@ describe("AGY Windows console policy", () => {
   });
 });
 
-describe("AGY doctor readonly minimum (#653)", () => {
+describe("AGY doctor minimum CLI versions (#653)", () => {
   it("accepts a newer installed program without comparing it with the fixture stamp", async () => {
-    observed.version = "1.5.3";
+    observed.version = "1.5.7";
     const report = await createAgyAdapter({ prepareProfileKeychain: () => undefined }).doctor(
       {} as never,
     );
@@ -160,8 +160,25 @@ describe("AGY doctor readonly minimum (#653)", () => {
     expect(report.checks.find((check) => check.id === "readonly_min_version")).toMatchObject({
       status: "pass",
     });
+    expect(report.checks.find((check) => check.id === "workspace_write_min_version")).toMatchObject(
+      {
+        status: "pass",
+      },
+    );
     expect(report.reasons.join(" ")).not.toContain("differs from");
     expect(report.checks.some((check) => check.id === "version_pin")).toBe(false);
+  });
+  it("reports workspace_write_min_version fail on 1.5.3 while readonly passes", async () => {
+    observed.version = "1.5.3";
+    const report = await createAgyAdapter({ prepareProfileKeychain: () => undefined }).doctor(
+      {} as never,
+    );
+    expect(report.checks.find((c) => c.id === "readonly_min_version")).toMatchObject({
+      status: "pass",
+    });
+    const ww = report.checks.find((c) => c.id === "workspace_write_min_version");
+    expect(ww).toMatchObject({ status: "fail" });
+    expect(report.reasons).toContain(ww?.detail);
   });
   it("states that readonly runs on the probed 1.1.13 stop for an update", async () => {
     const report = await createAgyAdapter({ prepareProfileKeychain: () => undefined }).doctor(
@@ -171,6 +188,9 @@ describe("AGY doctor readonly minimum (#653)", () => {
     expect(check).toMatchObject({ status: "fail" });
     expect(check?.detail).toContain("installed 1.1.13 stops readonly runs before the model");
     expect(report.reasons).toContain(check?.detail);
+    const ww = report.checks.find((c) => c.id === "workspace_write_min_version");
+    expect(ww).toMatchObject({ status: "fail" });
+    expect(report.reasons).toContain(ww?.detail);
     // Fixture stamps do not restrict installed vendor versions.
     expect(report.checks.some((c) => c.id === "version_pin")).toBe(false);
   });
@@ -371,37 +391,140 @@ describe("AGY native raw stdin selection", () => {
   );
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-    "keeps workspace_write as before when the read grant cannot be saved",
+    "keeps workspace_write working via session settings when the read grant cannot be saved",
     async () => {
+      observed.version = "1.5.14";
       const run = mkdtempSync(join(claudexorOwnedRoot(), "agy-run-"));
       roots.push(run);
       const small = spec("Fix it.", undefined, "workspace_write", join(run, "context"));
       const settingsPath = agySettingsPath(small.credential_profile!.isolation_locator!);
+      const profileSettings = JSON.stringify({
+        permissions: { allow: [], deny: ["read_file(/secret/**)"], ask: ["mcp(*)"] },
+      });
       mkdirSync(dirname(settingsPath), { recursive: true });
-      writeFileSync(settingsPath, JSON.stringify({ permissions: { allow: [] } }));
+      writeFileSync(settingsPath, profileSettings);
       chmodSync(dirname(settingsPath), 0o500);
       try {
         const events = await collect(small);
-        expect(observed.options[0]!.args).not.toContain("--settings");
+        expect(observed.options[0]!.args).toContain("--settings");
+        expect(answerOf(events).settings).toEqual({
+          permissions: {
+            allow: ["read_file(*)", "command(*)"],
+            deny: ["read_file(/secret/**)"],
+            ask: ["mcp(*)"],
+          },
+        });
         const grant = events.find(
           (event) => event.payload?.["code"] === "agy_read_grant_unavailable",
         );
-        expect(grant?.text).toMatch(/^agy may refuse reads outside the workspace without asking: /);
+        expect(grant?.text).toContain(
+          "only this workspace_write run's session settings grant reads",
+        );
         const large = await collect({ ...small, prompt: "p".repeat(128 * 1024 + 1) });
-        expect(observed.options).toHaveLength(1);
-        expect(large.at(-2)).toMatchObject({
-          type: "error",
-          payload: { code: "agy_input_file_delivery_unavailable" },
-          error: expect.stringContaining("read grant is unavailable"),
-        });
+        expect(observed.options).toHaveLength(2);
+        expect(large.some((event) => event.type === "message" && event.final)).toBe(true);
+        expect(readFileSync(settingsPath, "utf8")).toBe(profileSettings);
       } finally {
         chmodSync(dirname(settingsPath), 0o700);
       }
     },
   );
 
-  it.each(["full", "workspace_write", "inherit_native"] as const)(
-    "keeps %s argv and input free of the readonly session policy",
+  it("grants command(*) via --settings for workspace_write on >= 1.5.7 while keeping profile Deny/Ask", async () => {
+    observed.version = "1.5.14";
+    const input = spec("Fix it.", "caller instructions", "workspace_write");
+    const settingsPath = agySettingsPath(input.credential_profile!.isolation_locator!);
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        permissions: {
+          allow: ["read_file(/repo/**)"],
+          deny: ["command(rm -rf /)"],
+          ask: ["mcp(*)"],
+        },
+      }),
+    );
+    const events = await collect(input);
+    expect(observed.options[0]!.input).toBe(
+      "[SYSTEM INSTRUCTIONS]\ncaller instructions\n[END SYSTEM INSTRUCTIONS]\n\nFix it.",
+    );
+    expect(observed.options[0]!.args).toContain("--settings");
+    expect(answerOf(events).settings).toEqual({
+      permissions: {
+        allow: ["read_file(/repo/**)", "read_file(*)", "command(*)"],
+        deny: ["command(rm -rf /)"],
+        ask: ["mcp(*)"],
+      },
+    });
+    const codes = events.map((event) => event.payload?.["code"]);
+    expect(codes).toContain("agy_workspace_write_session_policy");
+    expect(codes).not.toContain("agy_readonly_access_note");
+    expect(codes).not.toContain("agy_readonly_session_policy");
+  });
+
+  it("refuses a workspace_write run whose profile settings are unreadable JSON, before spawning", async () => {
+    observed.version = "1.5.14";
+    const input = spec("Fix.", undefined, "workspace_write");
+    const settingsPath = agySettingsPath(input.credential_profile!.isolation_locator!);
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, "{ not json");
+    const events = await collect(input);
+    expect(observed.options).toHaveLength(0);
+    expect(events.map((event) => event.type)).toEqual(["error", "completed"]);
+    expect(events[0]).toMatchObject({
+      payload: { code: "agy_workspace_write_session_policy_unavailable" },
+      error: expect.stringMatching(/nothing was sent: settings\.json is not valid JSON$/),
+    });
+    expect(readFileSync(settingsPath, "utf8")).toBe("{ not json");
+  });
+
+  it("honors caller shell deny through tool_permission_policy on workspace_write", async () => {
+    observed.version = "1.5.14";
+    const base = spec("Fix.", undefined, "workspace_write");
+    const input = HarnessRunSpec.parse({
+      ...base,
+      tool_permission_policy: { web: "auto", allow: [], deny: ["Bash"] },
+    });
+    const events = await collect(input);
+    expect(answerOf(events).settings).toEqual({
+      permissions: { allow: ["read_file(*)"], deny: ["command(*)"], ask: [] },
+    });
+  });
+
+  it.each(["1.1.13", "1.4.10", "1.5.6", null] as const)(
+    "refuses workspace_write before spawning when agy version is %s (< 1.5.7 or unknown)",
+    async (version) => {
+      observed.version = version as string;
+      const events = await collect(spec("Fix it.", undefined, "workspace_write"));
+      expect(observed.options).toHaveLength(0);
+      expect(events.map((event) => event.type)).toEqual(["error", "completed"]);
+      expect(events[0]).toMatchObject({
+        payload: {
+          code: "agy_workspace_write_version_unsupported",
+          min_version: "1.5.7",
+        },
+        error: expect.stringContaining("requires agy 1.5.7 or newer"),
+      });
+    },
+  );
+
+  it("threads extra.abortSignal into workspace_write version detection and exits cleanly when aborted", async () => {
+    observed.version = null as unknown as string;
+    const controller = new AbortController();
+    controller.abort();
+    const events = await collect({
+      ...spec("Fix it.", undefined, "workspace_write"),
+      extra: { abortSignal: controller.signal },
+    });
+    expect(observed.captures.at(-1)?.abortSignal).toBe(controller.signal);
+    expect(observed.options).toHaveLength(0);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "completed", aborted: true });
+  });
+
+  it.each(["full", "inherit_native"] as const)(
+    "keeps %s argv and input free of session settings policy",
     async (access) => {
       const input = spec("Fix it.", "caller instructions", access);
       const events = await collect(input);
@@ -413,7 +536,7 @@ describe("AGY native raw stdin selection", () => {
       const codes = events.map((event) => event.payload?.["code"]);
       expect(codes).not.toContain("agy_readonly_access_note");
       expect(codes).not.toContain("agy_readonly_session_policy");
-      expect(codes).not.toContain("agy_readonly_session_policy_unavailable");
+      expect(codes).not.toContain("agy_workspace_write_session_policy");
     },
   );
 

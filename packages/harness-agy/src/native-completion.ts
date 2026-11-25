@@ -58,21 +58,29 @@ export function createAgyNativeCompletion() {
     let hasAnswer = false;
     let terminal = false;
     let vendorFailure: unknown;
+    let pendingEmptySuccess: HarnessEvent | undefined;
     for await (const event of stream) {
       if (event.type === "message" && event.final === true && event.text?.trim()) hasAnswer = true;
       if (event.type === "message" && event.final === true) {
         terminal = true;
         vendorFailure = undefined; // a later typed final supersedes an earlier failure
+        pendingEmptySuccess = undefined;
       }
       if (event.type === "error") {
+        if (event.payload?.["code"] === "agy_empty_success") {
+          pendingEmptySuccess = event;
+          continue;
+        }
         terminal = true;
         vendorFailure = event.payload?.["vendor_failure"];
+        pendingEmptySuccess = undefined;
       }
       if (event.type === "completed") {
         // Retained normalized recordings can replay the historical diagnostic.
         const tail = event.payload?.["stderr_tail"];
         if (typeof tail === "string") observeStderr(tail);
-        if (permission)
+        if (permission) {
+          if (!hasAnswer) pendingEmptySuccess = undefined;
           yield {
             type: hasAnswer ? "status" : "error",
             session_id: event.session_id,
@@ -85,6 +93,12 @@ export function createAgyNativeCompletion() {
             permission_denial: { permission, source: "agy_native_stderr" },
             payload: { code: "permission_denied" },
           };
+        }
+        if (pendingEmptySuccess) {
+          yield pendingEmptySuccess;
+          pendingEmptySuccess = undefined;
+          terminal = true;
+        }
         const aborted = event.aborted === true || event.payload?.["aborted"] === true;
         if (!terminal && !aborted && !(permission && !hasAnswer))
           yield {
@@ -121,6 +135,7 @@ export function createAgyNativeCompletion() {
       }
       yield event;
     }
+    if (pendingEmptySuccess && !(permission && !hasAnswer)) yield pendingEmptySuccess;
   }
   /** The run loop's translation of a stderr-only nonzero exit. */
   const parseStderrFailure = (_tail: string, sessionId: string): HarnessEvent | null =>
@@ -130,7 +145,7 @@ export function createAgyNativeCompletion() {
           session_id: sessionId,
           ts: new Date().toISOString(),
           error:
-            "agy rejected --settings before starting: readonly runs need agy 1.4.10 or newer, whose session-only settings deny commands and writes; update agy. Full and workspace_write runs do not need it.",
+            "agy rejected --settings before starting: readonly runs need agy 1.4.10 or newer and workspace_write runs need agy 1.5.7 or newer for session-only settings; update agy. Full runs do not need it.",
           payload: { code: "agy_session_settings_unsupported" },
         }
       : null;

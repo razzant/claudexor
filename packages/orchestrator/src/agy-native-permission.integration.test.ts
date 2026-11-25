@@ -27,6 +27,14 @@ vi.mock("@claudexor/core", async (original) => {
   const actual = await original<typeof import("@claudexor/core")>();
   return {
     ...actual,
+    resolveSelectedProgramAsync: async () => ({
+      path: "/fixture/agy",
+      realPath: "/fixture/agy",
+      version: "1.5.14",
+      versionOutput: "1.5.14",
+      overrideEnv: null,
+      overrideValue: null,
+    }),
     runCliHarness: (options: CliRunLoopOptions) => {
       fixture.spawns.push(options);
       return actual.runCliHarness({
@@ -228,6 +236,7 @@ describe("AGY native permission at the actual consumer boundary", () => {
       expect(durable).toContain(
         '"permission_denial":{"permission":"read_file","source":"agy_native_stderr"}',
       );
+      if (final === "empty") expect(durable).not.toContain("cause unknown");
       expect(
         new Set(
           out.events

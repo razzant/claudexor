@@ -26,6 +26,14 @@ vi.mock("@claudexor/core", async (original) => {
   const actual = await original<typeof import("@claudexor/core")>();
   return {
     ...actual,
+    resolveSelectedProgramAsync: async () => ({
+      path: "/fixture/agy",
+      realPath: "/fixture/agy",
+      version: "1.5.14",
+      versionOutput: "1.5.14",
+      overrideEnv: null,
+      overrideValue: null,
+    }),
     runCliHarness: (options: CliRunLoopOptions) => {
       const file = fixture.files[Math.min(fixture.spawns.length, fixture.files.length - 1)]!;
       fixture.spawns.push(options);

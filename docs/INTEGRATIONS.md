@@ -3026,29 +3026,43 @@ documents as matching all files on the system, keeping every other key and
 rule. The agent then reads any path in every access profile, as claude and
 codex agents do; without it a headless plan-mode run auto-denies any read
 outside its workspace folder. The vendor evaluates Deny > Ask > Allow, so a
-`read_file` deny rule in that file still wins, and `toolPermission: "strict"`
-prompts before every read even when an allow rule matches. Settings the
-adapter cannot read, parse or write are never rewritten, and a non-full run
-reports `agy_read_grant_unavailable`. In a headless run plan mode's ask for
-a command cannot be answered and ends the whole turn, so a readonly run also
-passes session-only settings in a private file (`--settings`) that deny `command(*)` and `write_file(*)`, including commands the
-profile allows. agy merges that object into the profile settings but replaces
-each permission list it names and refuses unknown keys, so it carries only
-`permissions` with all three lists copied from the profile as read, the read
-grant included, and the denials appended (`agy_readonly_session_policy`). A
-denied call then fails as its own tool step and the model continues. When only
-saving the read grant fails, the session settings still carry it. When the
-settings cannot be read or a list has another shape, the readonly run is
-refused before it starts (`agy_readonly_session_policy_unavailable`). The
-flag needs agy 1.4.10 or newer: official 1.1.13 and the tested releases from
-1.3.4 through 1.4.9 reject it while parsing arguments, before any model or account
-access, and 1.4.10 through 1.5.3 accept it. On an older CLI a readonly run
-therefore stops with `agy_session_settings_unsupported` and an update remedy,
-and doctor reports `readonly_min_version`; full and workspace_write runs are
-unaffected, and nothing updates agy. This minimum is separate from the 1.1.13
-fixture and transport pin. Other asking categories (`read_url`,
-`execute_url`, `mcp`) may still end a turn. The instructions end with an
-engine note naming the denial (`agy_readonly_access_note`). Events:
+`read_file` deny rule in that file still wins, and `toolPermission: "strict"` prompts before every
+read even when an allow rule matches. Settings the adapter cannot read, parse or
+write are never rewritten, and a non-full run reports
+`agy_read_grant_unavailable`. In a headless run plan mode's ask for a command
+cannot be answered and ends the whole turn, so a readonly run also passes
+session-only settings in a private file (`--settings`) that deny `command(*)`
+and `write_file(*)`, including commands the profile allows. For
+`workspace_write` (`--mode accept-edits`), headless `agy` likewise auto-denies
+shell commands that prompt for interactive approval; on `agy >= 1.5.7`, the
+adapter passes session-only `--settings` granting `command(*)` (unless the
+caller denies or narrows shell commands in `tool_permission_policy`: blanket
+caller shell denies append `command(*)`, scoped `command(...)` /
+`run_command(...)` denies forward as `command(...)` rules, and scoped
+`Bash(...)` denies withhold `command(*)`) while preserving the profile's
+own `allow`, `deny`, and `ask` lists verbatim so profile Deny/Ask rules and
+enterprise/admin overrides stay in force. Versions older than `1.5.7` (or with
+unknown installed version) refuse `workspace_write` before dispatch
+(`agy_workspace_write_version_unsupported`) rather than running degraded or
+risking older `--settings` admin-policy behavior. agy merges the session object
+into the profile settings key by key, replacing each permission list it names
+and refusing unknown top-level keys, so `--settings` carries only `permissions`
+with all three lists copied from the profile as read (the read grant included)
+and the mode's rule adjustments appended (`agy_readonly_session_policy` or
+`agy_workspace_write_session_policy`). A denied call then fails as its own
+tool step and the model continues. When only saving the read grant fails, the
+session settings still carry it. When profile settings cannot be read or a
+list has another shape, readonly (`agy_readonly_session_policy_unavailable`) and
+workspace_write (`agy_workspace_write_session_policy_unavailable`) refuse before
+starting. `--settings` needs agy `1.4.10` or newer (official `1.1.13` and
+tested `1.3.4` through `1.4.9` reject it while parsing arguments, before any
+model or account access, stopping with `agy_session_settings_unsupported` and an
+update remedy); full runs are unaffected, doctor reports both
+`readonly_min_version` (`1.4.10+`) and `workspace_write_min_version` (`1.5.7+`),
+and nothing updates agy. These minimums are separate from the 1.1.13 fixture
+and transport pin. Other asking categories (`read_url`, `execute_url`, `mcp`)
+may still end a turn. For readonly runs, the instructions end with an engine
+note naming the denial (`agy_readonly_access_note`). Events:
 `init` → `started` (the vendor `conversation_id` is the
 resumable native session id); tool steps emit `tool_call` on `ACTIVE`.
 `DONE` emits an error `tool_result` for native tool errors, a successful
@@ -3066,8 +3080,7 @@ replay and retained output keep every frame. Terminal
 `SUCCESS` emits the `response` final (`final_source: result`); object
 `structured_output` is parsed but unreachable in shipped runs
 (`json_schema_output` is false).
-Empty `SUCCESS` is a cause-unknown error, never proof of permission denial. A
-non-`SUCCESS` result is never answer material: a non-empty `response` and an
+Empty `SUCCESS` without a matching native stderr denial is a cause-unknown error, never proof of permission denial; when both appear on the same turn, the native `permission_denied` diagnostic supersedes the empty-success error. A non-`SUCCESS` result is never answer material: a non-empty `response` and an
 object `structured_output` ride exact retained evidence (`buffered` messages
 marked `non_success_result`, never live display), and its error carries the
 result's own `status` and error words as `vendor_failure` (`source:

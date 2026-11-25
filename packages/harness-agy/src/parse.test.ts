@@ -67,6 +67,7 @@ describe("parseAgyEvent", () => {
     expect(out).toHaveLength(1);
     expect(out![0].type).toBe("error");
     expect(out![0].error).toContain("cause unknown");
+    expect(out![0].payload).toEqual({ code: "agy_empty_success" });
     expect(out![0].permission_denial).toBeUndefined();
   });
 
