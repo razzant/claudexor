@@ -130,6 +130,59 @@ describe("history HTTP boundary", () => {
     expect(await reasonFor({ [CONTROL_CAPABILITIES_HEADER]: "0" })).toBe("host_cancelled");
   });
 
+  it("gives the header's head run the same run-deadline/1 form as its rows, without changing the recorded page", async () => {
+    const deadline = makeOutcomeFacts("cancelled", { reason: "run_deadline_expired" });
+    const hostStop = { ...deadline, reason: "host_cancelled" };
+    const base = emptyPage("t");
+    // The current turn's run is the head run, but that turn is outside this page.
+    const headOnly = ThreadHistoryPage.parse({
+      ...base,
+      header: {
+        ...base.header,
+        thread: { ...base.header.thread, headRunId: "run-head" },
+        headRun: { runId: "run-head", run: { state: "cancelled", outcomeFacts: deadline } },
+        headRunStatus: "available",
+      },
+    });
+    // The same head run, with a row on the page.
+    const withRow: ThreadHistoryPage = {
+      ...headOnly,
+      turns: [
+        { run: { outcomeFacts: deadline, failure: null, runFacts: null } },
+      ] as unknown as ThreadHistoryPage["turns"],
+    };
+    for (const page of [headOnly, withRow]) {
+      const recorded = structuredClone(page);
+      const f = fixture();
+      f.services.threadHistory.mockReturnValue(page);
+      const bodyFor = async (headers: Record<string, string>) => {
+        await f.read("/threads/t/history", headers);
+        return f.ctx.json.mock.lastCall?.[2] as ThreadHistoryPage;
+      };
+      const exact = await bodyFor({ [CONTROL_CAPABILITIES_HEADER]: "1" });
+      expect(exact).toEqual(recorded);
+      expect(exact.header.headRun?.run.outcomeFacts?.reason).toBe("run_deadline_expired");
+      const legacy = await bodyFor({});
+      expect(legacy).toEqual({
+        ...recorded,
+        header: {
+          ...recorded.header,
+          headRun: {
+            runId: "run-head",
+            run: { ...recorded.header.headRun!.run, outcomeFacts: hostStop },
+          },
+        },
+        turns: recorded.turns.map((turn) => ({
+          ...turn,
+          run: { ...turn.run!, outcomeFacts: hostStop },
+        })),
+      });
+      if (page === headOnly) expect(() => ThreadHistoryPage.parse(legacy)).not.toThrow();
+      expect(page).toEqual(recorded);
+      expect(await bodyFor({ [CONTROL_CAPABILITIES_HEADER]: "1" })).toEqual(recorded);
+    }
+  });
+
   it("distinguishes unavailable service from successful empty history and bounds explicit prompt reads", async () => {
     const unavailable = fixture(false);
     await unavailable.read("/threads/t/history");

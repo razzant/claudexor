@@ -27,11 +27,17 @@ interface Context {
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown, fallback?: 400 | 500): void;
 }
-/** Each turn's run, its run-deadline/1 facts as this answer's reader reads them. */
+/** Every run card of one history answer, the header's head run and each turn's run, with its
+ * run-deadline/1 facts as this answer's reader reads them (`runFactsForReader`). The recorded
+ * page is never changed: a reader's form is a copy. */
 function historyForReader(page: ThreadHistoryPage, readsDeadline: boolean): ThreadHistoryPage {
   if (readsDeadline) return page;
+  const { headRun } = page.header;
   return {
     ...page,
+    header: headRun
+      ? { ...page.header, headRun: { ...headRun, run: runFactsForReader(headRun.run, false) } }
+      : page.header,
     turns: page.turns.map((turn) =>
       turn.run ? { ...turn, run: runFactsForReader(turn.run, false) } : turn,
     ),
