@@ -190,6 +190,7 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
           session_id: sessionId,
           ts,
           error: "agy reported SUCCESS with an empty response (no output produced; cause unknown)",
+          payload: { code: "agy_empty_success" },
         });
       }
     } else {

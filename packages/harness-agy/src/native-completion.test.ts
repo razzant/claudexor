@@ -191,6 +191,54 @@ describe("AGY native permission evidence", () => {
       expect(out.some((e) => e.type === "status" || e.type === "error")).toBe(false);
     }
   });
+
+  it("supersedes empty-success cause-unknown when native stderr reports permission denial", async () => {
+    const emptySuccess = parseAgyEvent(
+      { event: "result", result: { status: "SUCCESS", response: "" } },
+      "test",
+    )!;
+    const withDenial = await replay([
+      ...emptySuccess,
+      event({ payload: { stderr_tail: diagnostic, exit_code: 0 } }),
+    ]);
+    const errors = withDenial.filter((e) => e.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      type: "error",
+      permission_denial: { permission: "read_file", source: "agy_native_stderr" },
+      payload: { code: "permission_denied" },
+    });
+    expect(errors[0]!.error).not.toContain("cause unknown");
+
+    const withoutDenial = await replay([...emptySuccess, event({ payload: { exit_code: 0 } })]);
+    const unknownErrors = withoutDenial.filter((e) => e.type === "error");
+    expect(unknownErrors).toHaveLength(1);
+    expect(unknownErrors[0]!.error).toContain("cause unknown");
+    expect(unknownErrors[0]!.permission_denial).toBeUndefined();
+
+    const afterError = await replay([
+      ...emptySuccess,
+      event({ type: "error", error: "downstream failure" }),
+      event({ payload: { exit_code: 1 } }),
+    ]);
+    expect(afterError.some((e) => e.error?.includes("cause unknown"))).toBe(false);
+
+    const completion = createAgyNativeCompletion();
+    completion.observeStderr(diagnostic);
+    const liveWithoutCompleted: HarnessEvent[] = [];
+    for await (const e of completion.wrap(
+      (async function* () {
+        yield* emptySuccess;
+      })(),
+    ))
+      liveWithoutCompleted.push(EventSchema.parse(e));
+    expect(liveWithoutCompleted.filter((e) => e.type === "error")).toEqual([
+      expect.objectContaining({
+        permission_denial: { permission: "read_file", source: "agy_native_stderr" },
+        payload: { code: "permission_denied" },
+      }),
+    ]);
+  });
 });
 
 describe("AGY explicit not-retryable record (vendor stderr `AGY_ERROR` line)", () => {

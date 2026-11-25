@@ -28,7 +28,10 @@ write while keeping the profile's own rules, so a denied call returns to the
 model as a tool error instead of ending the turn (`src/session-policy.ts`);
 this needs agy 1.4.10 or newer, and an older CLI stops a readonly run before
 the model with an update remedy. Settings it cannot read refuse the run before
-it starts. Input over a conservative 128 KiB limit (agy cut larger piped input at
+it starts. A workspace_write run on agy 1.5.7 or newer adds session-only
+settings that allow shell commands and keep the profile's deny and ask rules
+(`src/shell-grant.ts`); a known older CLI refuses it with an update remedy, and
+without a determinable version or readable settings it runs without them. Input over a conservative 128 KiB limit (agy cut larger piped input at
 192,000 bytes) is saved unchanged in the run's `context/` directory and named
 by a bootstrap that does not grow with it (`src/input-file.ts`).
 

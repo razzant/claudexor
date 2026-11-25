@@ -36,12 +36,18 @@ import {
   probeAgyCredentialProfile,
   resolveAgyProfileRoute,
 } from "./profile.js";
-import { AGY_VENDOR_CLI_VERSION, agyReadonlyDoctorCheck } from "./vendor-cli-version.js";
+import {
+  AGY_VENDOR_CLI_VERSION,
+  agyReadonlyDoctorCheck,
+  agyWorkspaceWriteDoctorCheck,
+  extractAgySemver,
+} from "./vendor-cli-version.js";
 import { listAgyModels } from "./models.js";
 import { AGY_KNOWN_MODELS } from "./known-models.js";
 import { applyAgyRunProcessing, prepareAgyProcessing } from "./processing.js";
 import { prepareAgyRunInput } from "./run-input.js";
 import { withAgySessionSettings } from "./session-policy.js";
+import { agyWorkspaceWriteShellGrant } from "./shell-grant.js";
 // The package publishes only what other packages consume. The profile probe,
 // the route resolver and the stream parser are reached through the adapter
 // this file returns, so re-exporting them would be a dead public surface.
@@ -166,8 +172,9 @@ export const AGY_CAPABILITY_PROFILE: HarnessCapabilityProfile =
       ],
       managed_login: AGY_MANAGED_LOGIN,
     },
-    // workspace_write rides the vendor's `--mode accept-edits` permission
-    // policy — the same class as claude/cursor, not an unconfined "none".
+    // workspace_write rides the vendor's `--mode accept-edits` permission policy
+    // plus session-only `--settings` granting `command(*)` on agy >= 1.5.7 (while
+    // keeping profile Deny/Ask lists intact) — the same tool_policy class as claude/cursor.
     access_control: {
       readonly_mechanism: "permission_deny",
       write_mechanism: "tool_policy",
@@ -309,15 +316,16 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
 
     async doctor(spec: DoctorSpec): Promise<ConformanceReport> {
       const version = await detectVersion();
-      const installedSemver = version?.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
+      const installedSemver = extractAgySemver(version);
       // Л-24 + INV-067: Darwin's profile-local keychain plus vendor fallback
       // preserves the proven profile identity route. Linux retains the
       // config-file transport without a live multi-account proof. Windows has
       // a different effective policy altogether: the vendor credential is
       // OS-user-scoped and HOME scopes state only.
       const platformProof = agyPlatformIsolationDetail();
-      // The readonly minimum (#653) is its own fact, apart from the fixture pin.
+      // The readonly (1.4.10) and workspace_write (1.5.7) minimums are separate from the fixture pin.
       const readonly = agyReadonlyDoctorCheck(installedSemver);
+      const workspaceWrite = agyWorkspaceWriteDoctorCheck(installedSemver);
       const requestedSource = spec.authSource;
       if (requestedSource !== undefined && requestedSource !== "native_session") {
         return ConformanceReportSchema.parse({
@@ -380,6 +388,7 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
             detail: "agy has no engine-default credential by design; accounts are named profiles",
           },
           readonly,
+          workspaceWrite,
           ...(platformProof
             ? [{ id: "platform_isolation", status: "skip" as const, detail: platformProof }]
             : []),
@@ -389,6 +398,7 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
         reasons: [
           "agy routes only through named accounts: add one (`claudexor profiles add agy <id>` + `claudexor profiles login agy <id>`) and pin it (--profile)",
           ...(readonly.status === "fail" ? [readonly.detail] : []),
+          ...(workspaceWrite.status === "fail" ? [workspaceWrite.detail] : []),
           ...(platformProof ? [platformProof] : []),
         ],
         auth_sources: [
@@ -483,10 +493,13 @@ async function* runAgy(
     // The vendor probe/run remains the final transport authority.
   }
 
-  // Read grant, readonly session policy and note, and inline or file input (#653).
-  const access = yield* prepareAgyRunInput(spec, route.home);
+  const shellGrant = yield* agyWorkspaceWriteShellGrant(spec, route.env);
+  if (shellGrant === null) return;
+
+  // Read grant, session policy (readonly or workspace_write), and inline or file input (#653).
+  const access = yield* prepareAgyRunInput(spec, route.home, shellGrant);
   if (!access) return;
-  const { settings, input } = access;
+  const { settings, input, needsSettings } = access;
 
   // AGY 1.1.13 selects print mode from piped stdin only without a print/prompt flag.
   const args = ["--output-format", "stream-json"];
@@ -533,5 +546,10 @@ async function* runAgy(
         return out;
       },
     });
-  yield* completion.wrap(withAgySessionSettings(settings, spec.session_id, run));
+  yield* completion.wrap(
+    withAgySessionSettings(settings, spec.session_id, run, {
+      access: spec.access === "workspace_write" ? "workspace_write" : "readonly",
+      required: needsSettings,
+    }),
+  );
 }

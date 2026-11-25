@@ -27,6 +27,12 @@ vi.mock("@claudexor/core", async (original) => {
   const actual = await original<typeof import("@claudexor/core")>();
   return {
     ...actual,
+    // The adapter's workspace_write gate reads the core's observation of the program it launches.
+    observeHarnessProgram: async () => ({
+      selection: { version: "1.5.14" },
+      program: null,
+      key: "fixture",
+    }),
     runCliHarness: (options: CliRunLoopOptions) => {
       fixture.spawns.push(options);
       return actual.runCliHarness({
@@ -228,6 +234,7 @@ describe("AGY native permission at the actual consumer boundary", () => {
       expect(durable).toContain(
         '"permission_denial":{"permission":"read_file","source":"agy_native_stderr"}',
       );
+      if (final === "empty") expect(durable).not.toContain("cause unknown");
       expect(
         new Set(
           out.events
