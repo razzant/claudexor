@@ -37,6 +37,7 @@ function sseServer(
       }
       expect(req.url).toBe("/v2/runs/run-f/events");
       expect(req.headers["x-claudexor-protocol-major"]).toBe("3");
+      expect(req.headers["x-claudexor-capabilities"]).toBe("1");
       const lastEventId = Number(req.headers["last-event-id"] ?? 0);
       res.writeHead(200, { "content-type": "text/event-stream" });
       handler(lastEventId, res);

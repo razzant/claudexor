@@ -20,7 +20,7 @@ import {
   type DeadlinePoint,
   type DeadlineSpec,
 } from "./run-deadline-problems.js";
-import { reconcileRecords, sweepRecords } from "./run-deadline-reconcile.js";
+import { PARENT_UNREADABLE, reconcileRecords, sweepRecords } from "./run-deadline-reconcile.js";
 import type { DeadlineBoundary } from "./run-deadline-cgroup.js";
 import {
   RECORD_VERSION,
@@ -529,12 +529,17 @@ export abstract class RunDeadlineStore {
       present: names,
       // Held and staged records depend on their parents while they exist.
       holds: (name) => this.byFile.has(name) || this.stagedByFile(name) !== undefined,
-      parentOf: (name) =>
-        this.byFile.get(name)?.record.parent ??
-        this.stagedByFile(name)?.parent ??
-        ((record) => (record && record !== "unreadable" ? record.parent : null))(
-          readRecord(join(this.opts.dir!, name)),
-        ),
+      // A record held, staged or decided here is known, its null parent
+      // included: no read. Only another record is read, and a failed read
+      // stays unknown, never "no parent".
+      parentOf: (name) => {
+        const known =
+          this.byFile.get(name)?.record ?? this.stagedByFile(name) ?? this.settled.get(name);
+        if (known) return known.parent;
+        const record = readRecord(join(this.opts.dir!, name));
+        if (record === "unreadable") return PARENT_UNREADABLE;
+        return record ? record.parent : null;
+      },
       io: this.io,
     });
     for (const name of removed) this.orphans.delete(name);

@@ -76,7 +76,9 @@ export const RunFailureCode = z
     "access_profile_incompatible",
     "auxiliary_writable_roots_unsupported",
     "retired_access_profile",
-    /* run-deadline/1: the server-enforced deadline passed before the run started. */
+    /* run-deadline/1: the server-enforced deadline passed before the run started. Only a
+     * reader that sends X-Claudexor-Capabilities: 1 is answered this code; any other reads
+     * it as null (a released client drops the whole RunFailure on it). */
     "run_deadline_expired",
   ])
   .describe(

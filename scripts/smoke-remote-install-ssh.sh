@@ -231,6 +231,15 @@ deadline_note=$(jq -er --slurpfile inst "$work/out/install.json" '
     ) | "run-deadline/1=observed(" + $cap.boundary + ",not-stop-proof)"
   end
 ' "$work/handshake.json" 2>/dev/null) || { echo "remote install smoke: handshake mismatch" >&2; exit 1; }
+installed_ver=$(jq -er '.runtime.version | select(type == "string" and length > 0)' "$work/out/install.json") \
+  || { echo "remote install smoke: install answer names no runtime version" >&2; exit 1; }
+# 6.3.0 predates run-deadline/1 and stays a historical install-only check;
+# every other runtime must advertise it with a valid boundary.
+case "$deadline_note:$installed_ver" in
+  run-deadline/1=observed*) ;;
+  run-deadline/1=absent:6.3.0) deadline_note="run-deadline/1=absent(historical 6.3.0, install-only)" ;;
+  *) echo "remote install smoke: runtime $installed_ver does not advertise run-deadline/1" >&2; exit 1 ;;
+esac
 
 if test "$mode" = "published"; then
   jq -c '{version: .install.version, buildSha: .install.buildSha, archiveSha256: .install.archiveSha256}' \

@@ -179,7 +179,7 @@ export const ControlThreadTurnResponse = z
         turnId: Id,
         state: z.string().min(1),
         deadline: RunDeadlineSnapshot.optional().describe(
-          "The run-deadline/1 deadline the turn's job holds, read without any transition from its durable record: one the turn set, or one it inherited.",
+          "The run-deadline/1 deadline the turn's job holds, read without any transition from its durable record: one the turn set, or, for a reader that sends X-Claudexor-Capabilities: 1, one it inherited.",
         ),
       })
       .strict(),

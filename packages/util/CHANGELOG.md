@@ -1,5 +1,7 @@
 # @claudexor/util
 
+## 6.4.0
+
 ## 6.3.0
 
 ### Patch Changes

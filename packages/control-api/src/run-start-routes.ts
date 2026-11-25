@@ -13,7 +13,7 @@ import {
   type RecordedControlRunStartRequest,
 } from "@claudexor/schema";
 import type { OperationDraft } from "./operation-draft.js";
-import { STORE_IDENTITY_HEADER } from "./operation-parameters.js";
+import { RUN_DEADLINE_FACTS_HEADER, STORE_IDENTITY_HEADER } from "./operation-parameters.js";
 import { readContinuationBody } from "./run-continuation-start.js";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
 import {
@@ -24,7 +24,7 @@ import {
   requiredIdempotencyKey,
   type RunCreateRouteContext,
 } from "./run-start.js";
-import { receiptDeadline, servingStore } from "./run-start-receipt.js";
+import { readsRunDeadline, receiptDeadline, servingStore } from "./run-start-receipt.js";
 import { projectTurn } from "./thread-projection.js";
 import { acceptedTurnCommandQuery, type ThreadTurnIdempotency } from "./thread-recovery.js";
 import { threadTurnCreateIdempotency } from "./thread-turn-routes.js";
@@ -40,7 +40,7 @@ export const START_OPERATION_DRAFTS: OperationDraft[] = [
     responseKind: "json",
     completion: "durable_handle",
     idempotency: "key_required",
-    parameters: [STORE_IDENTITY_HEADER],
+    parameters: [STORE_IDENTITY_HEADER, RUN_DEADLINE_FACTS_HEADER],
   },
   {
     method: "POST",
@@ -50,6 +50,7 @@ export const START_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlStartLookupResponse",
     responseKind: "json",
     idempotency: "key_required",
+    parameters: [RUN_DEADLINE_FACTS_HEADER],
   },
 ];
 
@@ -62,6 +63,7 @@ export const TURN_LOOKUP_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlStartLookupResponse",
     responseKind: "json",
     idempotency: "key_required",
+    parameters: [RUN_DEADLINE_FACTS_HEADER],
   },
 ];
 
@@ -169,14 +171,16 @@ async function readAccepted(
   return daemon.findAccepted(...query);
 }
 
-/** The handle with its durable deadline, for a request that set one. */
+/** The handle with its durable deadline (`receiptDeadline`: the one its request set, or any
+ * it holds for a reader that opted in). */
 async function withDeadline(
   ctx: RunStartRouteContext,
   record: DaemonRunRecord,
   handle: ControlStartLookupHandle,
+  readsDeadline: boolean,
 ): Promise<ControlStartLookupHandle> {
   try {
-    return { ...handle, ...(await receiptDeadline(ctx.daemon, record)) };
+    return { ...handle, ...(await receiptDeadline(ctx.daemon, record, readsDeadline)) };
   } catch (error) {
     throw acceptedLookupFailure(error, "lookup");
   }
@@ -186,6 +190,7 @@ async function lookupRun(
   ctx: RunStartRouteContext,
   recorded: RecordedControlRunStartRequest,
   idempotencyKey: string,
+  readsDeadline: boolean,
 ): Promise<LookupAnswer> {
   let record: DaemonRunRecord | null;
   try {
@@ -194,7 +199,10 @@ async function lookupRun(
     throw acceptedLookupFailure(error, "lookup");
   }
   return record
-    ? { status: "found", handle: await withDeadline(ctx, record, acceptedHandle(record)) }
+    ? {
+        status: "found",
+        handle: await withDeadline(ctx, record, acceptedHandle(record), readsDeadline),
+      }
     : { status: "not_found" };
 }
 
@@ -203,6 +211,7 @@ async function lookupTurn(
   ctx: RunStartRouteContext,
   threadId: string,
   idempotency: ThreadTurnIdempotency,
+  readsDeadline: boolean,
 ): Promise<LookupAnswer> {
   const findTurn = ctx.services?.findThreadTurnByIdempotency;
   if (!findTurn)
@@ -232,6 +241,7 @@ async function lookupTurn(
         ctx,
         record,
         acceptedHandle(record, { threadId, turnId: projected.id }),
+        readsDeadline,
       ),
     };
   return {
@@ -301,7 +311,9 @@ async function serveRunLookup(
   } catch (error) {
     return ctx.requestError(res, error);
   }
-  return answer(ctx, res, before, () => lookupRun(ctx, recorded, idempotencyKey));
+  return answer(ctx, res, before, () =>
+    lookupRun(ctx, recorded, idempotencyKey, readsRunDeadline(req)),
+  );
 }
 
 async function serveTurnLookup(
@@ -320,7 +332,9 @@ async function serveTurnLookup(
   } catch (error) {
     return ctx.requestError(res, error);
   }
-  return answer(ctx, res, before, () => lookupTurn(ctx, threadId, idempotency));
+  return answer(ctx, res, before, () =>
+    lookupTurn(ctx, threadId, idempotency, readsRunDeadline(req)),
+  );
 }
 
 export async function handleRunStartRoute(

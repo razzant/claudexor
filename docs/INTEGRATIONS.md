@@ -378,16 +378,27 @@ gate's explicit exemptions):
   the run is enqueued, so a refused turn's key keeps answering that turn (its
   refusal stays in the turn's history): send a revised turn under a new key. A
   job its deadline ends before it starts (queued, or preparing its thread
-  worktree) ends `cancelled` with `errorCode` and `failure.code`
-  `run_deadline_expired`, `errorStatus` 409, not retryable (a thread turn
-  records the same; a pending next message is held as by Stop): the start and its
-  same-key replay (one-shot and thread turn) answer that 409 with the durable
-  `deadline` in the problem's `context`, and `POST /v2/runs/lookup` returns the
-  handle with its recorded `problem` (status 409) and its `deadline`; receipts,
-  refusals and lookups of a continuation or a Delegate child carry the deadline it
-  inherited. A running job is cancelled with reason
-  `run_deadline_expired` (`wall_clock_exceeded` stays the `maxSeconds` / time
-  limit's). A Delegate child is capped by its parent's current deadline, so
+  worktree) ends `cancelled` with `errorCode` `run_deadline_expired`,
+  `errorStatus` 409, not retryable (a thread turn records the same; a pending
+  next message is held as by Stop); its `failure` keeps the shape released
+  clients read (category `cancelled`, `phase` `queued` or `preparing`, the
+  engine's message, `code` null). The start and its same-key replay (one-shot
+  and thread turn) answer that 409 with the durable `deadline` in the problem's
+  `context`, and `POST /v2/runs/lookup` returns the handle with its recorded
+  `problem` (status 409) and its `deadline`. A running job is cancelled with
+  reason `run_deadline_expired` (`wall_clock_exceeded` stays the `maxSeconds` /
+  time limit's, `user_cancelled` Stop's). Run records keep that reason. A reader
+  receives it, and the deadline a continuation or Delegate child inherited in
+  receipts, refusals and lookups, when it sends `X-Claudexor-Capabilities: 1`
+  (the handshake's opt-in) on that request; the CLI, MCP, ACP and the macOS app
+  send it. A client built before run-deadline/1 parses these as closed sets and
+  strict objects, so without the header run reads (`GET /v2/runs`, `GET
+  /v2/runs/:id` with its children, a thread and its history) answer
+  `host_cancelled` (the engine stopped the run, not a person) and failure `code`
+  null for that cause, and a receipt, refusal or lookup carries only a deadline
+  its own request set. The human `outcomeBanner` ("Deadline reached"), the
+  stored records and `GET /v2/runs/:id/deadline` (`expired`) are the same for
+  every reader; run events replay as recorded. A Delegate child is capped by its parent's current deadline, so
   extending the parent extends the child (`inheritedFrom`); children refuse
   their own changes (`delegated_deadline_forbidden`); a finished child keeps the
   deadline it ended under. A continuation (`continueFrom`) without its own

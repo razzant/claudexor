@@ -17,7 +17,9 @@
  * ready, done, or of another boot) and no remaining record names it as its
  * Delegate parent while that dependent is held or its warden may still act.
  * A dependent's deadline therefore never rises because its parent's record
- * went; removing a dependent can free its parent in the same sweep.
+ * went; removing a dependent can free its parent in the same sweep. A sweep
+ * asks each record's parent at most once; a record whose parent cannot be read
+ * while it is needed keeps every candidate until a later sweep reads it.
  */
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -125,6 +127,9 @@ export async function reconcileRecords(deps: ReconcileDeps): Promise<string[]> {
   return removable;
 }
 
+/** A record's parent could not be read now: it may name any candidate. */
+export const PARENT_UNREADABLE: unique symbol = Symbol("parent unreadable");
+
 export interface SweepDeps {
   dir: string;
   clock: RunDeadlineClock;
@@ -134,8 +139,10 @@ export interface SweepDeps {
   present: readonly string[];
   /** A record this daemon holds or stages: it depends on its parent while it exists. */
   holds(name: string): boolean;
-  /** The parent record file a record names (null for none or unreadable). */
-  parentOf(name: string): string | null;
+  /** The parent record file a record names: null for none, PARENT_UNREADABLE
+   * when the record cannot be read now. Asked at most once per record in one
+   * sweep; the next sweep asks again. */
+  parentOf(name: string): string | null | typeof PARENT_UNREADABLE;
   io?: RecordIo;
 }
 
@@ -155,16 +162,32 @@ export function sweepRecords(deps: SweepDeps): string[] {
   const removed: string[] = [];
   const needs = (name: string) =>
     deps.holds(name) || wardenMayAct(join(deps.dir, name), deps.clock);
+  // One answer per record for this sweep only: a record names the same parent
+  // for its life, and an unreadable one is asked again by the next sweep.
+  const parents = new Map<string, string | null | typeof PARENT_UNREADABLE>();
+  const parentOf = (name: string) => {
+    let parent = parents.get(name);
+    if (parent === undefined) {
+      parent = deps.parentOf(name);
+      parents.set(name, parent);
+    }
+    return parent;
+  };
   for (let changed = true; changed;) {
     changed = false;
     for (const name of candidates) {
-      if (deps.holds(name) || wardenMayAct(join(deps.dir, name), deps.clock)) continue;
+      if (needs(name)) continue;
       let needed = false;
-      for (const other of present)
-        if (other !== name && deps.parentOf(other) === name && needs(other)) {
+      for (const other of present) {
+        if (other === name) continue;
+        const parent = parentOf(other);
+        // A record whose parent cannot be read may name this one: while it is
+        // held or its warden may act, nothing it could depend on goes now.
+        if ((parent === name || parent === PARENT_UNREADABLE) && needs(other)) {
           needed = true;
           break;
         }
+      }
       if (needed) continue;
       try {
         removeRecordFiles(join(deps.dir, name), deps.io);

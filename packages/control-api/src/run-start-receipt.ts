@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  CONTROL_CAPABILITIES_HEADER,
   CONTROL_STORE_IDENTITY_HEADER,
   ControlQueuedRunInfo,
   ControlRunStartInfo,
@@ -12,6 +13,14 @@ import { TERMINAL_STATES } from "./sse-shared.js";
 /** The request opted in to `storeId`: some shipped same-major clients parse a receipt strictly. */
 export function wantsStoreIdentity(req: IncomingMessage): boolean {
   return req.headers[CONTROL_STORE_IDENTITY_HEADER] === "1";
+}
+
+/** This answer's reader opted in to run-deadline/1 facts (`X-Claudexor-Capabilities: 1`, the
+ * header its handshake takes): the exact `run_deadline_expired` reason and failure code, and a
+ * deadline the job inherited. A client built before run-deadline/1 parses those as closed sets
+ * or strict objects and drops the whole outcome, failure or handle; it is answered without them. */
+export function readsRunDeadline(req: IncomingMessage): boolean {
+  return req.headers[CONTROL_CAPABILITIES_HEADER] === "1";
 }
 
 /** The store that served the read this answer speaks for, so call this after that read. Absent
@@ -113,15 +122,33 @@ export function unboundRunStartResponse(
 
 /**
  * The run-deadline/1 snapshot a start receipt, a pre-start refusal and a lookup
- * carry: for every job that can hold a deadline record — one that set its own,
- * a continuation (`continueFrom`) or a Delegate child (`delegatedFromRunId`)
- * that may inherit one, and a job its deadline ended. A job without a record
- * answers as before (a client that never used deadlines never sees the field).
- * The projection is read-only (`peek`): it awaits no pending change and starts
- * no stop, so the receipt agrees with the handle it carries. A record that
- * exists but cannot be read fails the answer (503, retryable).
+ * carry. A reader that opted in (`readsRunDeadline`) gets the deadline the job
+ * holds, its own or inherited (`heldDeadline`). Any other reader gets only one its
+ * own request set: that request proves it knows the field, and a client built
+ * before run-deadline/1, which never sets one, parses a lookup handle and a queued
+ * turn strictly.
  */
 export async function receiptDeadline(
+  daemon: Pick<DaemonFacadeClient, "runDeadline"> | undefined,
+  rec: DaemonRunRecord,
+  readsDeadline: boolean,
+): Promise<{ deadline?: RunDeadlineSnapshot }> {
+  const params = rec.params as { deadline?: unknown } | null | undefined;
+  const own = !!params && typeof params === "object" && params.deadline !== undefined;
+  return readsDeadline || own ? heldDeadline(daemon, rec) : {};
+}
+
+/**
+ * The deadline a job holds, read for every job that can hold a deadline record —
+ * one that set its own, a continuation (`continueFrom`) or a Delegate child
+ * (`delegatedFromRunId`) that may inherit one, and a job its deadline ended. A job
+ * without a record holds none. Also the engine's own read for a replay refusal and
+ * Run Again's differences, whoever asks. The projection is read-only (`peek`): it
+ * awaits no pending change and starts no stop, so the receipt agrees with the
+ * handle it carries. A record that exists but cannot be read fails the answer
+ * (503, retryable).
+ */
+export async function heldDeadline(
   daemon: Pick<DaemonFacadeClient, "runDeadline"> | undefined,
   rec: DaemonRunRecord,
 ): Promise<{ deadline?: RunDeadlineSnapshot }> {
@@ -161,7 +188,7 @@ export async function deadlineReplayRefusal(
 ): Promise<{ error: string; code: string; retryable: false; requiredActions: string[] } | null> {
   const params = source.params as { deadline?: unknown } | null | undefined;
   const explicit = !!params && typeof params === "object" && params.deadline !== undefined;
-  const { deadline } = await receiptDeadline(daemon, source);
+  const { deadline } = await heldDeadline(daemon, source);
   if (!deadline && !explicit && source.errorCode !== "run_deadline_expired") return null;
   return {
     error: `${route} would start this run again without its deadline; start it again with a new deadline instead`,
@@ -190,7 +217,7 @@ export async function respondToAcceptedJob(
   const rec = await ctx.waitForRunStart(jobId);
   const metadata = {
     ...acceptedRunReceipt(rec, ctx.storeId, wantsStoreIdentity(req)),
-    ...(await receiptDeadline(ctx.daemon, rec)),
+    ...(await receiptDeadline(ctx.daemon, rec, readsRunDeadline(req))),
   };
   if (rec.runId && rec.runDir) {
     return ctx.json(

@@ -1186,6 +1186,17 @@
           "enum": null,
           "schema_ref": null,
           "description": "Opaque keyset cursor from a prior page's nextCursor; returns the next (older) page. A malformed cursor is a typed 400."
+        },
+        {
+          "name": "x-claudexor-capabilities",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` (the handshake's capabilities opt-in) to receive this answer's run-deadline/1 facts: the reason and failure code `run_deadline_expired` and a deadline the job inherited. Without it a deadline's stop reads `host_cancelled` and only a deadline the request set is returned."
         }
       ],
       "response_schema": "ControlRunListResponse",
@@ -1210,6 +1221,17 @@
           ],
           "schema_ref": null,
           "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        },
+        {
+          "name": "x-claudexor-capabilities",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` (the handshake's capabilities opt-in) to receive this answer's run-deadline/1 facts: the reason and failure code `run_deadline_expired` and a deadline the job inherited. Without it a deadline's stop reads `host_cancelled` and only a deadline the request set is returned."
         }
       ],
       "response_schema": "ControlRunStartResponse",
@@ -1235,6 +1257,17 @@
           ],
           "schema_ref": null,
           "description": "Include the recorded final-messages outcome. Omission or false keeps the original run detail."
+        },
+        {
+          "name": "x-claudexor-capabilities",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` (the handshake's capabilities opt-in) to receive this answer's run-deadline/1 facts: the reason and failure code `run_deadline_expired` and a deadline the job inherited. Without it a deadline's stop reads `host_cancelled` and only a deadline the request set is returned."
         }
       ],
       "response_schema": "ControlRunDetail",
@@ -1537,7 +1570,19 @@
       "summary": "Read, without starting or waiting, the job a POST /v2/runs with this exact body and Idempotency-Key created: found or not_found in the answering store.",
       "auth": "loopback_bearer",
       "request_schema": "ControlRunStartRequest",
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-capabilities",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` (the handshake's capabilities opt-in) to receive this answer's run-deadline/1 facts: the reason and failure code `run_deadline_expired` and a deadline the job inherited. Without it a deadline's stop reads `host_cancelled` and only a deadline the request set is returned."
+        }
+      ],
       "response_schema": "ControlStartLookupResponse",
       "error_schema": "ControlProblem"
     },
@@ -1891,7 +1936,19 @@
       "summary": "Read a thread's detail (turns + head).",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-capabilities",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` (the handshake's capabilities opt-in) to receive this answer's run-deadline/1 facts: the reason and failure code `run_deadline_expired` and a deadline the job inherited. Without it a deadline's stop reads `host_cancelled` and only a deadline the request set is returned."
+        }
+      ],
       "response_schema": "ControlThreadDetail",
       "error_schema": "ControlProblem"
     },
@@ -2026,6 +2083,17 @@
           ],
           "schema_ref": null,
           "description": "Send 1 for Claude reply previews in history and reply text in event parts."
+        },
+        {
+          "name": "x-claudexor-capabilities",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` (the handshake's capabilities opt-in) to receive this answer's run-deadline/1 facts: the reason and failure code `run_deadline_expired` and a deadline the job inherited. Without it a deadline's stop reads `host_cancelled` and only a deadline the request set is returned."
         }
       ],
       "response_schema": "ThreadHistoryPage",
@@ -2141,6 +2209,17 @@
           ],
           "schema_ref": null,
           "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        },
+        {
+          "name": "x-claudexor-capabilities",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` (the handshake's capabilities opt-in) to receive this answer's run-deadline/1 facts: the reason and failure code `run_deadline_expired` and a deadline the job inherited. Without it a deadline's stop reads `host_cancelled` and only a deadline the request set is returned."
         }
       ],
       "response_schema": "ControlThreadTurnResponse",
@@ -2218,7 +2297,19 @@
       "summary": "Read, without creating or waiting, the turn and job a turn create with this exact body and Idempotency-Key recorded: found, turn_only or not_found.",
       "auth": "loopback_bearer",
       "request_schema": "ControlThreadTurnRequest",
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-capabilities",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` (the handshake's capabilities opt-in) to receive this answer's run-deadline/1 facts: the reason and failure code `run_deadline_expired` and a deadline the job inherited. Without it a deadline's stop reads `host_cancelled` and only a deadline the request set is returned."
+        }
+      ],
       "response_schema": "ControlStartLookupResponse",
       "error_schema": "ControlProblem"
     },

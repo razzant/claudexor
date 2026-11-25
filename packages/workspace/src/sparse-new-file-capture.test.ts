@@ -293,6 +293,12 @@ describe("NUL-delimited Git name listings are decoded byte-faithfully (#734)", (
     expect(decodeNulNames(listing(["", "x"]), "ls")).toEqual(["x"]);
   });
 
+  it("keeps a leading U+FEFF, which is a real character of the name", () => {
+    const names = ["\uFEFFa.txt", "dir/\uFEFFb", "\uFEFF\uFEFFc", "\uFEFF"];
+    expect(decodeNulNames(listing(names), "ls")).toEqual(names);
+    expect(decodeNulNames(Buffer.from("\uFEFFlast", "utf8"), "ls")).toEqual(["\uFEFFlast"]);
+  });
+
   it("refuses, not guesses or omits, a name that is not valid UTF-8", () => {
     // Benign malformed bytes only: an isolated continuation byte, no path text.
     const malformed = Buffer.concat([

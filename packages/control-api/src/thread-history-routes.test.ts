@@ -1,11 +1,50 @@
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { describe, expect, it, vi } from "vitest";
-import { CLAUDE_TURN_REPLIES_HEADER } from "@claudexor/schema";
+import {
+  CLAUDE_TURN_REPLIES_HEADER,
+  CONTROL_CAPABILITIES_HEADER,
+  ThreadHistoryPage,
+  makeOutcomeFacts,
+} from "@claudexor/schema";
 import { handleThreadHistoryRoute } from "./thread-history-routes.js";
 
+/** A valid empty history page: no turns, no head run. */
+const emptyPage = (threadId: string): ThreadHistoryPage =>
+  ThreadHistoryPage.parse({
+    storeId: "store-1",
+    threadId,
+    epoch: "epoch-1",
+    revision: { epoch: "6f1e2b4c-0d3a-4c5e-9f70-1a2b3c4d5e6f", sequence: 0 },
+    header: {
+      thread: {
+        id: threadId,
+        createdAt: "2026-11-25T00:00:00.000Z",
+        updatedAt: "2026-11-25T00:00:00.000Z",
+      },
+      latestTurnId: null,
+      latestOrdinal: null,
+      latestAdmission: null,
+      headRun: null,
+      headRunStatus: "unbound",
+      sessions: [],
+      sessionsComplete: true,
+    },
+    turns: [],
+    hasOlder: false,
+    hasNewer: false,
+    olderCursor: null,
+    newerCursor: null,
+    replayCursor: null,
+    replayNextCursor: null,
+    limitedBy: null,
+  });
+
 function fixture(available = true) {
-  const services = { threadHistory: vi.fn(), threadPromptPart: vi.fn() };
+  const services = {
+    threadHistory: vi.fn((input: { threadId: string }) => emptyPage(input.threadId)),
+    threadPromptPart: vi.fn(),
+  };
   const ctx = {
     threadHistoryReads: available ? services : undefined,
     json: vi.fn(),
@@ -46,18 +85,101 @@ describe("history HTTP boundary", () => {
       { threadId: "t", limit: 1, beforeTurnId: "mounted" },
       false,
     );
-    expect(f.ctx.json).toHaveBeenCalledWith(expect.anything(), 200, undefined);
+    expect(f.ctx.json).toHaveBeenCalledWith(expect.anything(), 200, emptyPage("t"));
   });
 
   it("negotiates reply previews per request without changing history selectors", async () => {
     const f = fixture();
     for (const value of ["1", "0", "true"]) {
       const res = await f.read("/threads/t/history", { [CLAUDE_TURN_REPLIES_HEADER]: value });
-      expect(res.getHeader("Vary")).toBe(CLAUDE_TURN_REPLIES_HEADER);
+      expect(res.getHeader("Vary")).toBe(
+        `${CLAUDE_TURN_REPLIES_HEADER}, ${CONTROL_CAPABILITIES_HEADER}`,
+      );
       expect(f.services.threadHistory).toHaveBeenLastCalledWith(
         { threadId: "t", limit: 20 },
         value === "1",
       );
+    }
+  });
+
+  it("negotiates run-deadline/1 facts per request on the same recorded page", async () => {
+    const f = fixture();
+    const page: ThreadHistoryPage = {
+      ...emptyPage("t"),
+      turns: [
+        {
+          run: {
+            outcomeFacts: makeOutcomeFacts("cancelled", { reason: "run_deadline_expired" }),
+            failure: null,
+            runFacts: null,
+          },
+        },
+      ] as unknown as ThreadHistoryPage["turns"],
+    };
+    f.services.threadHistory.mockReturnValue(page);
+    const reasonFor = async (headers: Record<string, string>) => {
+      const res = await f.read("/threads/t/history", headers);
+      expect(res.getHeader("Vary")).toBe(
+        `${CLAUDE_TURN_REPLIES_HEADER}, ${CONTROL_CAPABILITIES_HEADER}`,
+      );
+      const body = f.ctx.json.mock.lastCall?.[2] as ThreadHistoryPage;
+      return body.turns[0]?.run?.outcomeFacts?.reason;
+    };
+    expect(await reasonFor({ [CONTROL_CAPABILITIES_HEADER]: "1" })).toBe("run_deadline_expired");
+    expect(await reasonFor({})).toBe("host_cancelled");
+    expect(await reasonFor({ [CONTROL_CAPABILITIES_HEADER]: "0" })).toBe("host_cancelled");
+  });
+
+  it("gives the header's head run the same run-deadline/1 form as its rows, without changing the recorded page", async () => {
+    const deadline = makeOutcomeFacts("cancelled", { reason: "run_deadline_expired" });
+    const hostStop = { ...deadline, reason: "host_cancelled" };
+    const base = emptyPage("t");
+    // The current turn's run is the head run, but that turn is outside this page.
+    const headOnly = ThreadHistoryPage.parse({
+      ...base,
+      header: {
+        ...base.header,
+        thread: { ...base.header.thread, headRunId: "run-head" },
+        headRun: { runId: "run-head", run: { state: "cancelled", outcomeFacts: deadline } },
+        headRunStatus: "available",
+      },
+    });
+    // The same head run, with a row on the page.
+    const withRow: ThreadHistoryPage = {
+      ...headOnly,
+      turns: [
+        { run: { outcomeFacts: deadline, failure: null, runFacts: null } },
+      ] as unknown as ThreadHistoryPage["turns"],
+    };
+    for (const page of [headOnly, withRow]) {
+      const recorded = structuredClone(page);
+      const f = fixture();
+      f.services.threadHistory.mockReturnValue(page);
+      const bodyFor = async (headers: Record<string, string>) => {
+        await f.read("/threads/t/history", headers);
+        return f.ctx.json.mock.lastCall?.[2] as ThreadHistoryPage;
+      };
+      const exact = await bodyFor({ [CONTROL_CAPABILITIES_HEADER]: "1" });
+      expect(exact).toEqual(recorded);
+      expect(exact.header.headRun?.run.outcomeFacts?.reason).toBe("run_deadline_expired");
+      const legacy = await bodyFor({});
+      expect(legacy).toEqual({
+        ...recorded,
+        header: {
+          ...recorded.header,
+          headRun: {
+            runId: "run-head",
+            run: { ...recorded.header.headRun!.run, outcomeFacts: hostStop },
+          },
+        },
+        turns: recorded.turns.map((turn) => ({
+          ...turn,
+          run: { ...turn.run!, outcomeFacts: hostStop },
+        })),
+      });
+      if (page === headOnly) expect(() => ThreadHistoryPage.parse(legacy)).not.toThrow();
+      expect(page).toEqual(recorded);
+      expect(await bodyFor({ [CONTROL_CAPABILITIES_HEADER]: "1" })).toEqual(recorded);
     }
   });
 

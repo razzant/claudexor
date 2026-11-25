@@ -258,7 +258,7 @@ export function createRunEventLineFormatter(): (ev: Record<string, unknown>) => 
 
 // SSOT: the negotiated major lives in the schema; the re-export keeps the
 // existing CLI/MCP/ACP import path stable.
-import { CONTROL_PROTOCOL_MAJOR } from "@claudexor/schema";
+import { CONTROL_CAPABILITIES_HEADER, CONTROL_PROTOCOL_MAJOR } from "@claudexor/schema";
 export { CONTROL_PROTOCOL_MAJOR };
 
 /** One control-plane transport boundary for CLI, MCP and ACP projections.
@@ -277,8 +277,12 @@ export function controlApiFetch(
         : `/v2${path.startsWith("/") ? path : `/${path}`}`;
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${addr.token}`);
-  if (externalPath !== "/healthz")
+  if (externalPath !== "/healthz") {
     headers.set("X-Claudexor-Protocol-Major", String(CONTROL_PROTOCOL_MAJOR));
+    // This client reads run-deadline/1 facts: the exact deadline reason and an
+    // inherited deadline (its handshake also lists capabilities).
+    headers.set(CONTROL_CAPABILITIES_HEADER, "1");
+  }
   if (
     (init.method ?? "GET").toUpperCase() === "POST" &&
     (externalPath === "/v2/runs" ||

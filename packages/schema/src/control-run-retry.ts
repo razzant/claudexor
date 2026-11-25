@@ -12,7 +12,7 @@ export function makeControlRunRetrySchemas<T extends z.ZodTypeAny>(runRequest: T
       taskId: z.string().optional().describe("Task id, when already allocated."),
       runDir: z.string().describe("On-disk run artifact directory."),
       deadline: RunDeadlineSnapshot.optional().describe(
-        "The run-deadline/1 deadline the job holds, read without any transition from its durable record: one the request set, or one it inherited (a continuation of a run with a deadline, a Delegate child of one, or a job its deadline ended).",
+        "The run-deadline/1 deadline the job holds, read without any transition from its durable record: one the request set, or, for a reader that sends X-Claudexor-Capabilities: 1, one it inherited (a continuation of a run with a deadline, a Delegate child of one, or a job its deadline ended).",
       ),
     })
     .describe("Response for a successfully enqueued run.");
@@ -59,7 +59,7 @@ export function makeControlRunRetrySchemas<T extends z.ZodTypeAny>(runRequest: T
         state,
         error: z.string().optional().describe("Error message, when the job failed."),
         deadline: RunDeadlineSnapshot.optional().describe(
-          "The run-deadline/1 deadline the job holds, read without any transition from its durable record: one the request set, or one it inherited (a continuation of a run with a deadline, a Delegate child of one, or a job its deadline ended).",
+          "The run-deadline/1 deadline the job holds, read without any transition from its durable record: one the request set, or, for a reader that sends X-Claudexor-Capabilities: 1, one it inherited (a continuation of a run with a deadline, a Delegate child of one, or a job its deadline ended).",
         ),
       })
       .describe("Compact state of a queued/running daemon job.");
