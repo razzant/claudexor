@@ -2,7 +2,7 @@ import type { HarnessEvent, HarnessRequestRefusal } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import {
   AGY_READONLY_MIN_CLI_VERSION,
-  AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
+  AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION,
 } from "./vendor-cli-version.js";
 
 const AGY_ERROR = "AGY_ERROR: ";
@@ -153,7 +153,7 @@ export function createAgyNativeCompletion() {
           type: "error",
           session_id: sessionId,
           ts: new Date().toISOString(),
-          error: `agy rejected --settings before starting: readonly runs need agy ${AGY_READONLY_MIN_CLI_VERSION} or newer for session-only settings, and workspace_write runs send them only to agy ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer; update agy. Full runs do not need it.`,
+          error: `agy rejected --settings before starting: readonly runs need agy ${AGY_READONLY_MIN_CLI_VERSION} or newer for session-only settings, and workspace_write runs send them only to an agy observed as ${AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION} or newer; update agy. Full runs do not need it.`,
           payload: { code: "agy_session_settings_unsupported" },
         }
       : null;

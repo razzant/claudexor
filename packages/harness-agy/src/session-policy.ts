@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarnessEvent } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
-import type { AgyProfileSettings, AgyReadGrant } from "./read-grant.js";
+import type { AgyPermissionRules, AgyProfileSettings, AgyReadGrant } from "./read-grant.js";
 import {
   AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION,
   AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
@@ -43,37 +43,21 @@ const AGY_TOOL_PERMISSIONS = ["request-review", "proceed-in-sandbox", "strict", 
 export const AGY_READONLY_NOTE =
   "ENGINE NOTE (read-only Antigravity run): Your file tools may read files and folders outside the workspace as well as inside it, except where the profile's own rules deny or ask about a read or its strict mode prompts for one. Shell commands and file writes are denied in this run: such a call returns a permission error instead of running, so do not retry it and inspect files with your file tools instead.";
 
-type Rules = { allow: string[]; deny: string[]; ask: string[] };
-/** A readonly session file carries the permission lists; a workspace_write one
- * names only the terminal settings, so the profile's lists apply unchanged. */
-export type AgySessionSettings =
-  { permissions: Rules } | { enableTerminalSandbox: true; toolPermission: "proceed-in-sandbox" };
+/**
+ * A run's session file. A readonly one carries the three permission lists with
+ * its denials. A workspace_write one names the two terminal settings when it
+ * requests them and, only when saving the read grant failed, the three lists
+ * as read with the grant (`agyWorkspaceWriteSessionSettings`); otherwise it
+ * names no list, so the profile's lists apply unchanged.
+ */
+export type AgySessionSettings = {
+  permissions?: AgyPermissionRules;
+  enableTerminalSandbox?: true;
+  toolPermission?: "proceed-in-sandbox";
+};
 export type AgyReadonlyPolicy =
-  | { state: "composed"; settings: { permissions: Rules } }
+  | { state: "composed"; settings: { permissions: AgyPermissionRules } }
   | { state: "unavailable"; reason: string };
-
-function readProfilePermissionRules(
-  grant: AgyReadGrant,
-): { state: "ok"; rules: Rules } | { state: "unavailable"; reason: string } {
-  const permissions = grant.permissions;
-  if (!permissions)
-    return {
-      state: "unavailable",
-      reason:
-        grant.state === "unavailable" ? grant.reason : "settings.json permissions are unknown",
-    };
-  const rules: Partial<Rules> = {};
-  for (const key of ["allow", "deny", "ask"] as const) {
-    const list = permissions[key] ?? [];
-    if (!Array.isArray(list) || list.some((rule) => typeof rule !== "string"))
-      return {
-        state: "unavailable",
-        reason: `settings.json permissions.${key} is not a list of rules`,
-      };
-    rules[key] = [...(list as string[])];
-  }
-  return { state: "ok", rules: rules as Rules };
-}
 
 /**
  * The `--settings` object for a readonly run. agy 1.5.0 merges it into the
@@ -82,14 +66,18 @@ function readProfilePermissionRules(
  * only `permissions`, with all three lists copied from the profile and the
  * denials appended: the profile's own allow, deny and ask rules, its
  * `toolPermission` and every other key stay in force. The lists come from the
- * rules as read, with the read grant, also when saving the grant failed.
- * Settings that could not be read or have an unexpected shape are not treated
- * as empty: no policy, and the caller refuses the run.
+ * run's one settings snapshot, with the read grant, also when saving the grant
+ * failed. Settings that could not be read or have an unexpected shape are not
+ * treated as empty: no policy, and the caller refuses the run.
  */
 export function agyReadonlyPolicy(grant: AgyReadGrant): AgyReadonlyPolicy {
-  const parsed = readProfilePermissionRules(grant);
-  if (parsed.state === "unavailable") return parsed;
-  const { allow, deny, ask } = parsed.rules;
+  const rules = grant.rules;
+  if (!rules)
+    return {
+      state: "unavailable",
+      reason: "reason" in grant ? grant.reason : "settings.json permissions are unknown",
+    };
+  const { allow, deny, ask } = rules;
   const added = AGY_READONLY_DENY_RULES.filter((rule) => !deny.includes(rule));
   return {
     state: "composed",
@@ -98,16 +86,37 @@ export function agyReadonlyPolicy(grant: AgyReadGrant): AgyReadonlyPolicy {
 }
 
 /**
+ * A workspace_write run's session file, or null when it needs none: the
+ * terminal request, and the lists `carried` (the profile's lists as read with
+ * the read grant, only when saving the grant failed). agy replaces each list
+ * the file names, so carrying all three as read keeps every allow, deny and ask
+ * rule of the snapshot; no other rule is added.
+ */
+export function agyWorkspaceWriteSessionSettings(
+  carried: AgyPermissionRules | null,
+  terminal: boolean,
+): AgySessionSettings | null {
+  if (!carried && !terminal) return null;
+  return {
+    ...(carried ? { permissions: carried } : {}),
+    ...(terminal ? { ...AGY_WORKSPACE_WRITE_TERMINAL } : {}),
+  };
+}
+
+/**
  * Whether a workspace_write run requests the limited terminal mode. Only a
  * profile that leaves both settings unset, or already chose the same values,
  * gets it. A saved `request-review` or `strict`, a disabled sandbox, a value
- * the engine does not know and unreadable settings all stay in force and the
- * request is not made: it would loosen what the profile chose.
+ * the engine does not know, unreadable settings and permission lists that are
+ * not lists of rules all stay in force and the request is not made: it would
+ * loosen what the profile chose, or rest on rules nobody can check.
  */
 export function agyWorkspaceWriteTerminal(
   profile: AgyProfileSettings,
 ): { state: "requested" } | { state: "kept" | "unavailable"; reason: string } {
   if (profile.state === "unavailable") return profile;
+  if (profile.rules.state === "invalid")
+    return { state: "unavailable", reason: profile.rules.reason };
   const { toolPermission, enableTerminalSandbox } = profile.settings;
   const wanted = AGY_WORKSPACE_WRITE_TERMINAL;
   if (toolPermission !== undefined && toolPermission !== wanted.toolPermission)
@@ -130,12 +139,15 @@ function shown(value: unknown, known: readonly unknown[]): string {
 }
 
 /**
- * Why a workspace_write run must not start, or null. Its `--mode accept-edits`
- * could approve edits that a `strict` tool permission asks about on an agy not
- * known to let strict win (vendor-cli-version.ts), so a profile set to strict,
- * or one whose settings cannot be read and so might be, is refused there
- * before anything is sent or written. Every other profile keeps its ordinary
- * edits.
+ * Why a workspace_write run must not start for a strict setting, or null. Its
+ * `--mode accept-edits` could approve edits that a `strict` tool permission
+ * asks about on an agy not known to keep those edits asking
+ * (vendor-cli-version.ts), so a profile set to strict, or one whose settings
+ * cannot be read and so might be, is refused there, whatever other rules it
+ * saved, before its settings are written or anything is sent (on macOS the
+ * profile-local keychain may already have been prepared). A saved permission
+ * for every command is judged separately
+ * (`agyWorkspaceWriteAdminControlsRefusal`).
  */
 export function agyWorkspaceWriteStrictRefusal(
   profile: AgyProfileSettings,
@@ -144,8 +156,8 @@ export function agyWorkspaceWriteStrictRefusal(
   if (cli.strictKept) return null;
   const strictMin = AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION;
   const agy = cli.determined
-    ? `agy ${cli.installed} is older than ${strictMin}, the first release whose strict setting also wins over accept-edits`
-    : `the agy version could not be determined, so it is unknown whether its strict setting wins over accept-edits`;
+    ? `agy ${cli.installed} is older than ${strictMin}, the first release in which file edits still ask under strict with accept-edits`
+    : `the agy version could not be determined, so it is unknown whether file edits still ask under its strict setting with accept-edits`;
   const cause =
     profile.state === "unavailable"
       ? `the profile's settings could not be read (${profile.reason}), so it is unknown whether they set toolPermission "strict"`
@@ -157,48 +169,89 @@ export function agyWorkspaceWriteStrictRefusal(
     : null;
 }
 
+/** The documented allow rule for every shell command (the one 6.4.1 sent for its
+ * own sessions), compared as written: no pattern is interpreted. */
+const AGY_ANY_COMMAND_RULE = "command(*)";
+
 /**
- * Whether a workspace_write run requests the limited terminal mode, with the
- * status event that says why or why not: it is requested only on agy 1.5.8 or
- * newer (vendor-cli-version.ts) and only when the profile leaves the choice
- * unset (`agyWorkspaceWriteTerminal`).
+ * Why a workspace_write run must not start on an agy older than 1.5.8 or of
+ * unknown version, or null. Before 1.5.8 a headless run could ignore Gemini
+ * Enterprise admin controls (vendor-cli-version.ts), so a saved permission
+ * that runs every shell command without asking, `toolPermission:
+ * "always-proceed"` or the allow rule `command(*)`, could override what an
+ * administrator holds back, whether or not the profile is strict. Such a
+ * profile, or one whose settings or lists cannot be read and so might hold
+ * one, is refused there before its settings are written or anything is sent,
+ * and its saved rules stay as they are. Narrower rules are not judged, and
+ * every other profile keeps its ordinary edits.
  */
-export function* agyWorkspaceWriteTerminalRequest(
+export function agyWorkspaceWriteAdminControlsRefusal(
+  profile: AgyProfileSettings,
+  cli: Pick<AgyWorkspaceWriteCli, "installed" | "determined" | "terminal">,
+): string | null {
+  if (cli.terminal) return null;
+  const min = AGY_WORKSPACE_WRITE_MIN_CLI_VERSION;
+  const unknown = "so it is unknown whether they let every shell command run without asking";
+  const cause =
+    profile.state === "unavailable"
+      ? `the profile's settings could not be read (${profile.reason}), ${unknown}`
+      : profile.settings["toolPermission"] === "always-proceed"
+        ? `the profile's toolPermission "always-proceed" runs every shell command without asking`
+        : profile.rules.state === "invalid"
+          ? `the profile's rules could not be checked (${profile.rules.reason}), ${unknown}`
+          : profile.rules.lists.allow.includes(AGY_ANY_COMMAND_RULE)
+            ? `the profile's allow rule ${AGY_ANY_COMMAND_RULE} runs every shell command without asking`
+            : null;
+  if (!cause) return null;
+  const agy = cli.determined
+    ? `agy ${cli.installed} is older than ${min}, the first release whose headless runs apply Gemini Enterprise admin controls, so such a permission could override them`
+    : `the agy version could not be determined, so it is unknown whether its headless runs apply Gemini Enterprise admin controls over such a permission`;
+  return `agy workspace_write did not start, so nothing was sent: ${cause}, and ${agy}; update agy to ${min} or newer`;
+}
+
+/**
+ * Whether a workspace_write run requests the limited terminal mode: only on agy
+ * 1.5.8 or newer (vendor-cli-version.ts) and only when the profile leaves the
+ * choice unset (`agyWorkspaceWriteTerminal`). When it does not, the status
+ * says why; a request is disclosed only once its session file is in place,
+ * immediately before launch (`agyWorkspaceWritePolicyEvent`).
+ */
+export function agyWorkspaceWriteTerminalPlan(
   sessionId: string,
   profile: AgyProfileSettings,
   cli: Pick<AgyWorkspaceWriteCli, "installed" | "determined" | "terminal">,
-): Generator<HarnessEvent, boolean> {
+): { requested: true } | { requested: false; status: HarnessEvent } {
   const min = AGY_WORKSPACE_WRITE_MIN_CLI_VERSION;
-  if (!cli.terminal) {
-    yield cli.determined
-      ? agyWorkspaceWriteNoTerminalEvent(
-          sessionId,
-          `the installed agy ${cli.installed} is older than ${min}; update agy`,
-          {
-            code: "agy_workspace_write_version_unsupported",
-            installed_version: cli.installed,
-            min_version: min,
-          },
-        )
-      : agyWorkspaceWriteNoTerminalEvent(
-          sessionId,
-          `the installed agy version could not be determined (the request needs ${min} or newer)`,
-          { code: "agy_workspace_write_version_unknown", min_version: min },
-        );
-    return false;
-  }
+  if (!cli.terminal)
+    return {
+      requested: false,
+      status: cli.determined
+        ? agyWorkspaceWriteNoTerminalEvent(
+            sessionId,
+            `the installed agy ${cli.installed} is older than ${min}; update agy`,
+            {
+              code: "agy_workspace_write_version_unsupported",
+              installed_version: cli.installed,
+              min_version: min,
+            },
+          )
+        : agyWorkspaceWriteNoTerminalEvent(
+            sessionId,
+            `the installed agy version could not be determined (the request needs ${min} or newer)`,
+            { code: "agy_workspace_write_version_unknown", min_version: min },
+          ),
+    };
   const decision = agyWorkspaceWriteTerminal(profile);
-  if (decision.state === "requested") {
-    yield agyWorkspaceWritePolicyEvent(sessionId);
-    return true;
-  }
-  yield agyWorkspaceWriteNoTerminalEvent(sessionId, decision.reason, {
-    code:
-      decision.state === "kept"
-        ? "agy_workspace_write_terminal_kept"
-        : "agy_workspace_write_session_policy_unavailable",
-  });
-  return false;
+  if (decision.state === "requested") return { requested: true };
+  return {
+    requested: false,
+    status: agyWorkspaceWriteNoTerminalEvent(sessionId, decision.reason, {
+      code:
+        decision.state === "kept"
+          ? "agy_workspace_write_terminal_kept"
+          : "agy_workspace_write_session_policy_unavailable",
+    }),
+  };
 }
 
 /** The status event disclosing a readonly run's session policy. */
@@ -236,7 +289,7 @@ export function agyWorkspaceWriteNoTerminalEvent(
     type: "status",
     session_id: sessionId,
     ts: nowIso(),
-    text: `agy workspace_write requests no terminal sandbox, so this run edits files and a shell command agy would ask about is refused in a headless run: ${reason}`,
+    text: `agy workspace_write requests no terminal sandbox, so its file edits follow accept-edits within the profile's own settings and a shell command agy would ask about is denied without asking, which can end a headless turn: ${reason}`,
     payload,
   };
 }
@@ -245,15 +298,22 @@ export function agyWorkspaceWriteNoTerminalEvent(
  * Keep the session settings out of argv (the profile's rules can name
  * private paths) in a private file the adapter owns until the child has
  * exited or been reaped, including cancellation and spawn failure, like the
- * Claude instructions file. A file that cannot be written refuses a readonly
- * run before the child starts, because its denials would be missing; a
- * workspace_write run starts without it, requesting no terminal sandbox.
+ * Claude instructions file. What the run discloses about the file (`written`)
+ * is yielded only once it is in place, immediately before the child starts. A
+ * file that cannot be written refuses a `required` run before the child
+ * starts: every readonly run, whose denials would be missing, and a
+ * workspace_write run whose input files only the file's read grant lets agy
+ * read. Any other workspace_write run starts without it and says what it lacks.
  */
 export async function* withAgySessionSettings(
   settings: AgySessionSettings | null,
   sessionId: string,
   run: (settingsArgs: string[]) => AsyncIterable<HarnessEvent>,
-  options?: { access?: "readonly" | "workspace_write" },
+  options?: {
+    access?: "readonly" | "workspace_write";
+    required?: boolean;
+    written?: () => HarnessEvent[];
+  },
 ): AsyncGenerator<HarnessEvent> {
   if (!settings) {
     yield* run([]);
@@ -272,12 +332,20 @@ export async function* withAgySessionSettings(
       });
     } catch (error) {
       const detail = redactSecrets(error instanceof Error ? error.message : String(error));
-      if (access === "workspace_write") {
+      if (access === "workspace_write" && options?.required !== true) {
+        const lacks = [
+          settings.toolPermission
+            ? "it requests no terminal sandbox (a shell command agy would ask about is denied without asking)"
+            : null,
+          settings.permissions
+            ? "it carries no read grant in place of the one the profile could not save (agy may refuse reads outside the workspace)"
+            : null,
+        ].filter(Boolean);
         yield {
           type: "status",
           session_id: sessionId,
           ts: nowIso(),
-          text: `agy workspace_write runs without session settings, so it requests no terminal sandbox and a shell command agy would ask about is refused in a headless run: the settings file could not be written: ${detail.slice(0, 300)}`,
+          text: `agy workspace_write runs without session settings, so ${lacks.join(", and ")}: the settings file could not be written: ${detail.slice(0, 300)}`,
           payload: { code: "agy_workspace_write_session_policy_unwritable" },
         };
         yield* run([]);
@@ -293,6 +361,7 @@ export async function* withAgySessionSettings(
       yield { type: "completed", session_id: sessionId, ts: nowIso() };
       return;
     }
+    yield* options?.written?.() ?? [];
     yield* run(["--settings", path]);
   } finally {
     if (directory) rmSync(directory, { recursive: true, force: true });

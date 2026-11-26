@@ -46,8 +46,11 @@ import { listAgyModels } from "./models.js";
 import { AGY_KNOWN_MODELS } from "./known-models.js";
 import { applyAgyRunProcessing, prepareAgyProcessing } from "./processing.js";
 import { prepareAgyRunInput } from "./run-input.js";
-import { withAgySessionSettings } from "./session-policy.js";
-import { observeAgyWorkspaceWriteCli } from "./workspace-write-cli.js";
+import { agyWorkspaceWritePolicyEvent, withAgySessionSettings } from "./session-policy.js";
+import {
+  confirmAgyWorkspaceWriteProgram,
+  observeAgyWorkspaceWriteCli,
+} from "./workspace-write-cli.js";
 // The package publishes only what other packages consume. The profile probe,
 // the route resolver and the stream parser are reached through the adapter
 // this file returns, so re-exporting them would be a dead public surface.
@@ -72,7 +75,7 @@ export {
  * live-proven on 1.3.4) restores reading anywhere; a readonly run's session
  * settings deny commands and writes (session-policy.ts), so a refused call
  * returns to the model as a tool error instead of ending the turn. A
- * workspace_write run's session settings request the vendor's terminal
+ * workspace_write run's session settings may request the vendor's terminal
  * sandbox for shell commands (session-policy.ts).
  */
 function accessArgs(access: AccessProfile): string[] {
@@ -326,8 +329,8 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
       // a different effective policy altogether: the vendor credential is
       // OS-user-scoped and HOME scopes state only.
       const platformProof = agyPlatformIsolationDetail();
-      // The readonly (1.4.10) and workspace_write (1.5.7 strict, 1.5.8 terminal) minimums
-      // are separate from the fixture pin.
+      // The readonly (1.4.10) and workspace_write (1.5.7 strict, 1.5.8 terminal
+      // and admin controls) minimums are separate from the fixture pin.
       const readonly = agyReadonlyDoctorCheck(installedSemver);
       const workspaceWrite = agyWorkspaceWriteDoctorCheck(installedSemver);
       const requestedSource = spec.authSource;
@@ -502,7 +505,7 @@ async function* runAgy(
   if (spec.access === "workspace_write" && !cli) return;
 
   // Read grant, session policy (readonly or workspace_write), and inline or file input (#653).
-  const access = yield* prepareAgyRunInput(spec, route.home, cli ?? undefined);
+  const access = yield* prepareAgyRunInput(spec, route.home, cli?.facts);
   if (!access) return;
   const { settings, input } = access;
 
@@ -520,6 +523,9 @@ async function* runAgy(
   if (prepared.nativeModel) args.push("--model", prepared.nativeModel);
   // INV-137: the vendor conversation id is the resumable native session.
   if (spec.resume_session_id) args.push("--conversation", spec.resume_session_id);
+
+  // The version-dependent decisions above hold only for the program they were made on.
+  if (cli && !(yield* confirmAgyWorkspaceWriteProgram(spec, route.env, cli))) return;
 
   const completion = createAgyNativeCompletion();
   const run = (settingsArgs: string[]) =>
@@ -554,6 +560,9 @@ async function* runAgy(
   yield* completion.wrap(
     withAgySessionSettings(settings, spec.session_id, run, {
       access: spec.access === "workspace_write" ? "workspace_write" : "readonly",
+      required: access.settingsRequired,
+      written: () =>
+        access.terminalRequested ? [agyWorkspaceWritePolicyEvent(spec.session_id)] : [],
     }),
   );
 }

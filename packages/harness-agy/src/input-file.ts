@@ -34,16 +34,17 @@ interface Section {
  * stdin carries a short engine bootstrap that names the directory once and
  * each section's numbered range of parts, so its size does not grow with the
  * input; the engine's notes stay inline. Nothing here claims the model read
- * the files. Without a run-owned directory, or when agy may not be allowed to
- * read outside its workspace, the input is refused before anything is sent:
- * never cut.
+ * the files. Without a run-owned directory, or when agy might not read the
+ * files without asking (`unreadable`, the reason), the input is refused before
+ * anything is sent: never cut. Input that fits inline is never refused for it.
  */
 export function agyInputDelivery(args: {
   prompt: string;
   instructions: string | undefined;
   notes: string[];
   dir: string | null;
-  readable: boolean;
+  /** Why agy might not read the input files without asking; null: it may. */
+  unreadable: string | null;
   sessionId: string;
 }): AgyInputDelivery {
   const callerInstructions = args.instructions?.trim() ?? "";
@@ -59,10 +60,10 @@ export function agyInputDelivery(args: {
       kind: "refused",
       error: `${over}, and this run has no run-owned directory to deliver it as files; nothing was sent`,
     };
-  if (!args.readable)
+  if (args.unreadable)
     return {
       kind: "refused",
-      error: `${over}, and the profile read grant is unavailable, so agy could refuse to read the input files; nothing was sent`,
+      error: `${over}, and ${args.unreadable}, so agy could refuse to read the input files; nothing was sent`,
     };
   const sections: Section[] = [
     { role: "instructions" as const, bytes: Buffer.from(callerInstructions, "utf8") },

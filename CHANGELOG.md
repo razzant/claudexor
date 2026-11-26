@@ -15,27 +15,52 @@ on GitHub Releases.
   vendor's documentation a command then runs without asking only inside the
   sandbox, where it may write to the project, temporary directories and build
   caches and has no network by default; any other command asks, and a headless
-  run refuses it. The engine records the request; the effective mode is agy's.
+  run refuses it. The engine discloses the request only once its session file
+  is in place at launch; the effective mode is agy's.
   A tool permission or sandbox setting the profile saved, including
   `request-review` and `strict`, stays in force, and the profile's allow, ask
   and deny rules are neither removed nor rewritten, so a command the profile
   allows still runs without asking. File reading is unchanged: every agy run
   keeps its `read_file(*)` grant, and the sandbox can read whatever the profile
-  may read, so build tools can see those files; it is no isolation for running
-  untrusted code. An older agy no longer refuses a workspace_write run; it
-  edits files without the request. On an agy older than 1.5.7 or of unknown
-  version a profile set to `strict`, or one whose settings cannot be read, is
-  refused before the run (`agy_workspace_write_strict_unverified`), because
-  accept-edits may loosen strict there. `claudexor doctor` reports the 1.5.8
-  minimum as `workspace_write_min_version`. In a live project on macOS with
-  agy 1.5.14, Gemini 4 Neon High fixed a one-line error and ran `node --test`;
-  the unchanged test passed. Unit and orchestrator tests cover the requested
-  settings and version fallbacks. Readonly and full runs are unchanged. Control protocol
-  major 3 and engine store schema 8 are unchanged, and there is no data
-  migration; the local-engine manifest still requires Claudexor.app 6.2.0,
-  while the SSH-runtime manifest of this release requires Claudexor.app 6.4.2.
-  As with every release, older engines refuse a data root that 6.4.2 has
-  served (`root_authority_floor_regression`).
+  may read; it is no isolation for running untrusted code.
+
+  An older agy keeps ordinary edits without the request, except where a vendor
+  fix is missing. Below 1.5.7, or at an unknown version, a profile set to
+  `strict` is refused before anything is sent
+  (`agy_workspace_write_strict_unverified`). Below 1.5.8, or at an unknown
+  version, so is a profile that saved `command(*)` or
+  `toolPermission: "always-proceed"`, strict or not,
+  because headless runs before 1.5.8 could ignore Gemini Enterprise admin
+  controls (`agy_workspace_write_admin_controls_unverified`), and so is one
+  whose settings Claudexor cannot check. Update agy to run such a profile;
+  its saved settings stay as they are. From 1.5.7 a strict profile runs, but
+  its edits still ask. `claudexor doctor` reports these minimums as
+  `workspace_write_min_version`.
+
+  Input over the 128 KiB inline limit is delivered as files only when the run
+  can read them without asking. Otherwise it is refused before anything is
+  sent, with the reason: no read grant reaches the run, or the profile's own
+  settings ask before or deny every read (`toolPermission: "strict"`, or
+  `read_file(*)` among its ask or deny rules; under full access only the deny
+  rule counts). Shorter input runs as before. When only saving the grant
+  fails, the session file of a run on agy 1.5.7 or newer carries the profile's
+  lists with the grant. Each run decides from one reading of the profile
+  settings and saves the grant only while the file still holds what it read;
+  if the file changed meanwhile, the run writes nothing and stops before
+  sending (`agy_profile_settings_changed`): start it again. It also starts
+  only on the agy program it checked (`agy_workspace_write_program_changed`).
+
+  A live run on macOS with agy 1.5.14, in which Gemini 4 Neon High fixed a
+  one-line error and ran `node --test` and the unchanged test passed, predates
+  the run-preparation fixes in this entry; unit and orchestrator tests cover
+  the requested settings, the refusals and the version fallbacks. Readonly and
+  full runs are otherwise unchanged; they too no longer save the grant into
+  settings whose lists are not lists of rules. Control protocol major 3 and
+  engine store schema 8 are unchanged, and there is no data migration; the
+  local-engine manifest still requires Claudexor.app 6.2.0, while the
+  SSH-runtime manifest of this release requires Claudexor.app 6.4.2. As with
+  every release, older engines refuse a data root that 6.4.2 has served
+  (`root_authority_floor_regression`).
 
 - **v6.4.1** (2026-11-26) — **Antigravity `workspace_write` runs can run
   shell commands.** In a headless Antigravity run in `workspace_write` mode,

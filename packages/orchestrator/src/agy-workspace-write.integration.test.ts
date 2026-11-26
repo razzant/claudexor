@@ -12,9 +12,17 @@
  * this path, never that agy enforces its sandbox. */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CliRunLoopOptions, HarnessAdapter } from "@claudexor/core";
 import {
@@ -338,7 +346,8 @@ describe("AGY workspace_write: ordinary work inside the workspace", () => {
     expect(out.result.lifecycle).toBe("failed");
     expect(out.journal).toContain('"code":"agy_workspace_write_strict_unverified"');
     expect(changed(repo)).toEqual([]);
-    // Refused before anything is written, the read grant included.
+    // Refused before the profile's settings are written, the read grant
+    // included (on macOS the profile keychain preparation, stubbed here, runs first).
     expect(savedProfile(settingsPath)).toEqual(saved);
   });
 
@@ -370,4 +379,34 @@ describe("AGY workspace_write: ordinary work inside the workspace", () => {
       permissions: { ...lists, allow: [...lists.allow, GRANT] },
     });
   });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "reads oversized input whole through a read grant it could not save, carried by the session file",
+    async () => {
+      const lists = { allow: ["command(git status)"], deny: ["command(sudo)"], ask: ["mcp(*)"] };
+      const { repo, settingsPath } = sandbox({ permissions: lists });
+      chmodSync(dirname(settingsPath), 0o500);
+      try {
+        const prompt = `${"Implement the ledger line.\n".repeat(6_000)}TAIL-LEDGER`;
+        const out = await agent(repo, prompt, { large: true, command: true });
+        expect(fixture.spawns).toHaveLength(1);
+        expect(out.result.lifecycle).toBe("succeeded");
+        // The lists as read with the grant, beside the terminal request; no other rule.
+        expect(out.seen!["session"]).toEqual({
+          permissions: { ...lists, allow: [...lists.allow, GRANT] },
+          ...TERMINAL,
+        });
+        expect(out.seen!["task"]).toBe(
+          createHash("sha256").update(fixture.spawns[0]!.spec.prompt).digest("hex"),
+        );
+        expect(out.seen!["ran"]).toBe("sandbox");
+        expect(readFileSync(join(repo, "notes.md"), "utf8")).toBe("edited by the fixture\n");
+        expect(out.journal).toContain('"code":"agy_read_grant_unavailable"');
+        expect(out.journal).toContain('"code":"agy_workspace_write_session_policy"');
+        expect(savedProfile(settingsPath)).toEqual({ permissions: lists });
+      } finally {
+        chmodSync(dirname(settingsPath), 0o700);
+      }
+    },
+  );
 });

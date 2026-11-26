@@ -49,20 +49,29 @@ describe("agy minimum CLI versions (#653)", () => {
   ] as const)("workspace_write reports %s as %s", (installed, status) => {
     const check = agyWorkspaceWriteDoctorCheck(installed);
     expect(check).toMatchObject({ id: "workspace_write_min_version", status });
+    // A request, made only where the profile chose no terminal setting itself.
     expect(check.detail).toContain(
-      "workspace_write runs request agy's terminal sandbox for shell commands on agy 1.5.8 or newer",
+      "workspace_write runs ask for agy's terminal sandbox for shell commands only on agy 1.5.8 or newer, and only when the profile saved no terminal setting of its own",
     );
-    expect(check.detail).toContain("full runs do not");
+    expect(check.detail).toContain("full runs do not depend on either");
+    // A strict profile is admitted from 1.5.7, not promised working edits there;
+    // a saved permission for every command, or unknown settings, from 1.5.8.
     expect(check.detail).toContain(
-      "run a profile set to strict, or one whose settings cannot be read, only on agy 1.5.7 or newer",
+      "admit a profile set to strict only on agy 1.5.7 or newer, where file edits still ask under strict, and one that saved command(*) or always-proceed, or whose settings cannot be checked, only on agy 1.5.8 or newer, where headless runs apply Gemini Enterprise admin controls",
     );
-    // An older agy still edits files: the doctor names a lost request, not a stopped run.
+    // An older agy keeps ordinary edits: the doctor names a lost request, not a stopped run.
     if (status === "fail") {
-      expect(check.detail).toContain("edits files");
+      expect(check.detail).toContain(
+        "file edits follow accept-edits within the profile's settings",
+      );
+      expect(check.detail).toContain("which can end a headless turn");
       expect(check.detail).not.toContain("stops");
-      expect(check.detail).toContain("update agy");
+      expect(check.detail).not.toContain("edits files");
+      expect(check.detail).toContain(
+        "a profile that saved command(*) or always-proceed, or one whose settings cannot be checked, before anything is sent; update agy",
+      );
     }
-    expect(check.detail.includes("refuses a strict or unreadable profile before the model")).toBe(
+    expect(check.detail.includes("Claudexor refuses a strict profile, ")).toBe(
       ["1.1.13", "1.4.10"].includes(installed),
     );
   });

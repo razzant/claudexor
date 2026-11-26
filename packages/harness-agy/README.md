@@ -28,21 +28,39 @@ write while keeping the profile's own rules, so a denied call returns to the
 model as a tool error instead of ending the turn (`src/session-policy.ts`);
 this needs agy 1.4.10 or newer, and an older CLI stops a readonly run before
 the model with an update remedy. Settings it cannot read refuse the run before
-it starts. A workspace_write run adds no command, write or network permission
-of its own: on agy 1.5.8 or newer its session-only settings request the
-vendor's terminal sandbox (`enableTerminalSandbox` with `proceed-in-sandbox`),
-naming no permission list, unless the profile saved its own choice. The
-request is recorded as requested; the effective mode is agy's. The sandbox can
-read whatever the profile's read rules allow, including the `read_file(*)`
-grant every agy run keeps (`src/read-grant.ts`), so it is no isolation for
-untrusted code. On an agy older than 1.5.7, or of unknown
-version, a profile set to strict or with unreadable settings is refused before
-the model, because accept-edits may loosen strict there; other runs on such a
-version edit files without the request (`src/workspace-write-cli.ts`,
-`src/run-input.ts`). Input
-over a conservative 128 KiB limit (agy cut larger piped input at
-192,000 bytes) is saved unchanged in the run's `context/` directory and named
-by a bootstrap that does not grow with it (`src/input-file.ts`).
+it starts. Every run takes its decisions, and the grant it saves, from one
+snapshot of the profile settings, and saves the grant only while the file
+still holds that snapshot; a run that finds it changed writes nothing and
+stops before sending, so start it again. An `allow`, `deny` or `ask` list that
+is not a list of rules is never rewritten and gets no terminal request. A
+workspace_write run adds no command, write or network permission of its own:
+on agy 1.5.8 or newer its session-only settings request the vendor's terminal
+sandbox (`enableTerminalSandbox` with `proceed-in-sandbox`), naming no
+permission list, unless the profile saved its own choice. The request is
+disclosed as requested only once its file is in place at launch; the
+effective mode is agy's. When only saving the read grant fails, the session
+file of a run on agy 1.5.7 or newer carries the profile's lists as read with
+the grant, and input delivered as files is refused rather than sent if that
+file cannot be written. The sandbox can read whatever the profile's read rules
+allow, including the `read_file(*)` grant every agy run keeps
+(`src/read-grant.ts`), so it is no isolation for untrusted code. On an agy
+older than 1.5.7, or of unknown version, a profile set to strict or with
+unreadable settings is refused before its settings are written or anything is
+sent (on macOS the profile keychain may already be prepared), because
+accept-edits may loosen strict there; from 1.5.7 a strict profile is admitted,
+but its edits still ask. On an agy older than 1.5.8, or of unknown version, a
+profile that saved `command(*)` or `toolPermission: "always-proceed"`, or
+whose settings cannot be checked, is refused the same way, because headless
+runs there could ignore Gemini Enterprise admin controls; updating agy lifts
+both refusals, and saved rules are never changed. Other runs on such a version
+keep ordinary edits without the request, and the run starts only on the
+program observation it decided on (`src/workspace-write-cli.ts`,
+`src/run-input.ts`). Input over a conservative 128 KiB limit (agy cut larger
+piped input at 192,000 bytes) is saved unchanged in the run's `context/`
+directory and named by a bootstrap that does not grow with it
+(`src/input-file.ts`); it is refused, with the reason, when the run could not
+read those files without asking, including under the profile's own `strict`
+or a `read_file(*)` ask or deny rule. Shorter input runs as before.
 
 Fixtures under `fixtures/` pin the recorded 1.1.13 stream shapes, plus one
 1.5.0 readonly denial recording; see `fixtures/manifest.yaml` for provenance

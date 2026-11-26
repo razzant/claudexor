@@ -1315,9 +1315,14 @@ reads outside the workspace are not auto-denied in headless runs, and a
 readonly child gets session-only settings that deny commands and writes. On agy
 1.5.8 or newer a workspace_write child's session-only settings request the
 vendor's terminal sandbox for shell commands, naming no permission list,
-unless the profile chose its own setting; on an agy older than 1.5.7, or of
-unknown version, a profile set to strict or with unreadable settings is
-refused ([INTEGRATIONS](INTEGRATIONS.md)).
+unless the profile chose its own setting; only when saving the read grant
+failed do they carry the profile's lists with the grant, on agy 1.5.7 or
+newer. Before its settings are written, a workspace_write run is refused for a
+profile set to strict on an agy older than 1.5.7, and for one that saved
+`command(*)` or `always-proceed`, or whose settings cannot be checked, on an
+agy older than 1.5.8 (an unknown version counts as older). The grant is saved
+only while the file still holds what the run read; otherwise the run stops
+before anything is sent ([INTEGRATIONS](INTEGRATIONS.md)).
 Linux keeps the config-file/HOME route.
 On Windows the credential is an OS-user-scoped vendor Keychain item: the named
 HOME scopes mutable vendor state without claiming an independent Google
