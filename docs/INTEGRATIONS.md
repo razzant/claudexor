@@ -3083,14 +3083,16 @@ edits files without the request and says so
 observation of the launcher in the run's own environment and directory, which
 the launch reuses while that program is unchanged. This stays a tool-policy
 route: the engine requests the vendor's sandbox but neither applies nor
-verifies an OS boundary. Its evidence is of two kinds. Unit tests pin the
+verifies an OS boundary. Unit tests pin the
 arguments, session files and statuses the adapter produces. An integration
 test drives Agent runs through the orchestrator against a scripted vendor that
 models the documented behavior (an edit and a sandboxed build in one turn, Git
 in the run's shared clone through the read grant, a saved `request-review`
 still asking, a saved allow rule still deciding, a `strict` profile refused on
-1.5.6); it shows what the engine sends, not that agy enforces it. No live run
-with these settings is recorded.
+1.5.6). In a live run on macOS with agy 1.5.14, Gemini 4 Neon High edited
+one line in the project and ran `node --test` without a confirmation prompt;
+its one unchanged test passed. This checks that an ordinary edit and test work,
+not which files or network destinations the OS prevents a command from reaching.
 agy merges the session object
 into the profile settings key by key, replacing each permission list it names
 and refusing unknown top-level keys (probed on 1.5.0), so a readonly

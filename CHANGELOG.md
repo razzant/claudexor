@@ -27,9 +27,10 @@ on GitHub Releases.
   version a profile set to `strict`, or one whose settings cannot be read, is
   refused before the run (`agy_workspace_write_strict_unverified`), because
   accept-edits may loosen strict there. `claudexor doctor` reports the 1.5.8
-  minimum as `workspace_write_min_version`. Verified with unit tests and
-  orchestrator tests against a scripted agy; no live agy run with these
-  settings is recorded. Readonly and full runs are unchanged. Control protocol
+  minimum as `workspace_write_min_version`. In a live project on macOS with
+  agy 1.5.14, Gemini 4 Neon High fixed a one-line error and ran `node --test`;
+  the unchanged test passed. Unit and orchestrator tests cover the requested
+  settings and version fallbacks. Readonly and full runs are unchanged. Control protocol
   major 3 and engine store schema 8 are unchanged, and there is no data
   migration; the local-engine manifest still requires Claudexor.app 6.2.0,
   while the SSH-runtime manifest of this release requires Claudexor.app 6.4.2.
