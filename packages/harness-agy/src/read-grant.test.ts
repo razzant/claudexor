@@ -11,7 +11,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { AGY_READ_ANYWHERE_RULE, agySettingsPath, ensureAgyReadGrant } from "./read-grant.js";
+import {
+  AGY_READ_ANYWHERE_RULE,
+  agySettingsPath,
+  ensureAgyReadGrant,
+  readAgyProfileSettings,
+} from "./read-grant.js";
 
 const homes: string[] = [];
 afterEach(() => {
@@ -127,4 +132,41 @@ describe("agy profile read grant", () => {
       }
     },
   );
+});
+
+describe("agy profile settings read without writing", () => {
+  it("reads a missing or empty file as no settings and creates nothing", () => {
+    const missing = profileHome();
+    expect(readAgyProfileSettings(missing)).toEqual({ state: "read", settings: {} });
+    expect(readdirSync(missing)).toEqual([]);
+    const empty = profileHome("  \n");
+    expect(readAgyProfileSettings(empty)).toEqual({ state: "read", settings: {} });
+    expect(readFileSync(agySettingsPath(empty), "utf8")).toBe("  \n");
+  });
+
+  it("returns the settings as saved and never adds the read rule", () => {
+    const saved = JSON.stringify({
+      toolPermission: "request-review",
+      permissions: { allow: ["command(git status)"], deny: ["command(sudo)"] },
+    });
+    const home = profileHome(saved);
+    const before = statSync(agySettingsPath(home));
+    expect(readAgyProfileSettings(home)).toEqual({ state: "read", settings: JSON.parse(saved) });
+    expect(readFileSync(agySettingsPath(home), "utf8")).toBe(saved);
+    expect(statSync(agySettingsPath(home)).mtimeMs).toBe(before.mtimeMs);
+    expect(statSync(agySettingsPath(home)).mode & 0o777).toBe(0o640);
+    expect(siblings(home)).toEqual(["settings.json"]);
+  });
+
+  it.each([
+    ["invalid JSON", "{ theme: dark", "not valid JSON"],
+    ["a non-object document", "[]", "not a JSON object"],
+  ])("reports %s as unavailable, never as empty", (_label, settings, reason) => {
+    const home = profileHome(settings);
+    expect(readAgyProfileSettings(home)).toEqual({
+      state: "unavailable",
+      reason: expect.stringContaining(reason),
+    });
+    expect(readFileSync(agySettingsPath(home), "utf8")).toBe(settings);
+  });
 });

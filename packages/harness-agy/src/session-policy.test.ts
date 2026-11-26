@@ -13,13 +13,16 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessEvent } from "@claudexor/schema";
 import { agySettingsPath, ensureAgyReadGrant } from "./read-grant.js";
+import { agyWorkspaceWriteCliFacts } from "./vendor-cli-version.js";
 import {
   AGY_READONLY_DENY_RULES,
-  AGY_WORKSPACE_WRITE_ALLOW_RULES,
+  AGY_WORKSPACE_WRITE_TERMINAL,
   agyReadonlyPolicy,
   agyReadonlyPolicyEvent,
-  agyWorkspaceWritePolicy,
+  agyWorkspaceWriteStrictRefusal,
   agyWorkspaceWritePolicyEvent,
+  agyWorkspaceWriteTerminal,
+  agyWorkspaceWriteTerminalRequest,
   withAgySessionSettings,
 } from "./session-policy.js";
 
@@ -250,24 +253,6 @@ describe("agy readonly session policy (#653)", () => {
           text: expect.stringContaining("runs without session settings"),
         });
         expect(wwEvents[1]!.text).toBe("[]");
-
-        // A run whose input needs the file's read grant refuses instead.
-        const requiredEvents = await drain(
-          withAgySessionSettings(
-            policy.settings,
-            "s",
-            async function* () {
-              started = true;
-            },
-            { access: "workspace_write", required: true },
-          ),
-        );
-        expect(started).toBe(false);
-        expect(requiredEvents.map((event) => event.type)).toEqual(["error", "completed"]);
-        expect(requiredEvents[0]).toMatchObject({
-          payload: { code: "agy_workspace_write_session_policy_unwritable" },
-          error: expect.stringContaining("nothing was sent"),
-        });
       } finally {
         if (previous === undefined) delete process.env.TMPDIR;
         else process.env.TMPDIR = previous;
@@ -278,60 +263,145 @@ describe("agy readonly session policy (#653)", () => {
 });
 
 describe("agy workspace_write session policy", () => {
-  it("keeps the profile's rules and appends command(*) once", () => {
-    const { grant } = grantFor(
-      JSON.stringify({
-        toolPermission: "strict",
-        permissions: {
-          allow: ["read_file(/repo/**)"],
-          deny: ["read_file(/secret/**)", "command(sudo *)"],
-          ask: ["mcp(*)"],
+  const read = (settings: Record<string, unknown>) => ({ state: "read" as const, settings });
+
+  it("requests the vendor's limited terminal mode only where the profile leaves it unset", () => {
+    for (const settings of [
+      {},
+      { theme: "dark", permissions: { allow: ["command(git status)"], deny: ["command(sudo)"] } },
+      { toolPermission: "proceed-in-sandbox" },
+      { enableTerminalSandbox: true },
+      { toolPermission: "proceed-in-sandbox", enableTerminalSandbox: true },
+    ])
+      expect(agyWorkspaceWriteTerminal(read(settings))).toEqual({ state: "requested" });
+  });
+
+  it.each([
+    [{ toolPermission: "request-review" }, 'toolPermission is "request-review"'],
+    [{ toolPermission: "strict" }, 'toolPermission is "strict"'],
+    [{ toolPermission: "always-proceed" }, 'toolPermission is "always-proceed"'],
+    [{ toolPermission: "ask-twice" }, "toolPermission has a value this engine does not recognize"],
+    [{ toolPermission: null }, "toolPermission has a value this engine does not recognize"],
+    [{ enableTerminalSandbox: false }, "enableTerminalSandbox is false"],
+    [
+      { enableTerminalSandbox: "on" },
+      "enableTerminalSandbox has a value this engine does not recognize",
+    ],
+    [
+      { toolPermission: "proceed-in-sandbox", enableTerminalSandbox: false },
+      "enableTerminalSandbox is false",
+    ],
+  ])("keeps a profile's own terminal choice %j instead of loosening it", (settings, reason) => {
+    expect(agyWorkspaceWriteTerminal(read(settings))).toEqual({
+      state: "kept",
+      reason: `the profile's ${reason}`,
+    });
+  });
+
+  it("requests nothing from settings it could not read", () => {
+    const unreadable = { state: "unavailable" as const, reason: "settings.json is not valid JSON" };
+    expect(agyWorkspaceWriteTerminal(unreadable)).toEqual(unreadable);
+  });
+
+  it("names the two terminal settings alone, with no permission list or general rule", () => {
+    expect(AGY_WORKSPACE_WRITE_TERMINAL).toEqual({
+      enableTerminalSandbox: true,
+      toolPermission: "proceed-in-sandbox",
+    });
+    expect(Object.keys(AGY_WORKSPACE_WRITE_TERMINAL)).not.toContain("permissions");
+  });
+
+  it("requests the mode only on agy 1.5.8 or newer and says why it did not", () => {
+    const run = (installed: string | null, settings: Record<string, unknown> = {}) => {
+      const events: HarnessEvent[] = [];
+      const generator = agyWorkspaceWriteTerminalRequest(
+        "s",
+        read(settings),
+        agyWorkspaceWriteCliFacts(installed),
+      );
+      for (let step = generator.next(); ; step = generator.next()) {
+        if (step.done) return { requested: step.value, events };
+        events.push(step.value);
+      }
+    };
+    expect(run("1.5.8")).toMatchObject({
+      requested: true,
+      events: [{ payload: { code: "agy_workspace_write_session_policy" } }],
+    });
+    expect(run("1.5.7")).toMatchObject({
+      requested: false,
+      events: [
+        {
+          payload: {
+            code: "agy_workspace_write_version_unsupported",
+            installed_version: "1.5.7",
+            min_version: "1.5.8",
+          },
         },
-      }),
-    );
-    expect(agyWorkspaceWritePolicy(grant)).toEqual({
-      state: "composed",
-      settings: {
-        permissions: {
-          allow: ["read_file(/repo/**)", "read_file(*)", ...AGY_WORKSPACE_WRITE_ALLOW_RULES],
-          deny: ["read_file(/secret/**)", "command(sudo *)"],
-          ask: ["mcp(*)"],
+      ],
+    });
+    expect(run(null)).toMatchObject({
+      requested: false,
+      events: [{ payload: { code: "agy_workspace_write_version_unknown", min_version: "1.5.8" } }],
+    });
+    expect(run("1.5.14", { toolPermission: "request-review" })).toMatchObject({
+      requested: false,
+      events: [
+        {
+          payload: { code: "agy_workspace_write_terminal_kept" },
+          text: expect.stringContaining('the profile\'s toolPermission is "request-review"'),
         },
-      },
-      added: ["command(*)"],
+      ],
     });
-
-    const again = grantFor(JSON.stringify({ permissions: { allow: ["command(*)"] } }));
-    expect(agyWorkspaceWritePolicy(again.grant)).toEqual({
-      state: "composed",
-      settings: { permissions: { allow: ["command(*)", "read_file(*)"], deny: [], ask: [] } },
-      added: [],
-    });
+    for (const outcome of [run("1.5.7"), run(null), run("1.5.14", { toolPermission: "strict" })])
+      expect(outcome.events[0]!.text).toContain(
+        "a shell command agy would ask about is refused in a headless run",
+      );
   });
 
-  it("leaves a profile's own denial of every command in the deny list, where it outranks the grant", () => {
-    const { grant } = grantFor(JSON.stringify({ permissions: { deny: ["command(*)"] } }));
-    expect(agyWorkspaceWritePolicy(grant)).toMatchObject({
-      state: "composed",
-      settings: { permissions: { allow: ["read_file(*)", "command(*)"], deny: ["command(*)"] } },
-    });
+  it("refuses a strict or unreadable profile where accept-edits might loosen strict", () => {
+    const strict = read({ toolPermission: "strict" });
+    const unreadable = { state: "unavailable" as const, reason: "settings.json is not valid JSON" };
+    for (const version of ["1.1.13", "1.5.6", "1.5.7-rc.1"]) {
+      const cli = agyWorkspaceWriteCliFacts(version);
+      expect(agyWorkspaceWriteStrictRefusal(strict, cli)).toBe(
+        `agy workspace_write did not start, so nothing was sent: the profile's toolPermission is "strict", and agy ${version} is older than 1.5.7, the first release whose strict setting also wins over accept-edits; update agy to 1.5.7 or newer`,
+      );
+      expect(agyWorkspaceWriteStrictRefusal(unreadable, cli)).toContain(
+        `the profile's settings could not be read (settings.json is not valid JSON), so it is unknown whether they set toolPermission "strict"`,
+      );
+    }
+    const unknown = agyWorkspaceWriteCliFacts(null);
+    for (const profile of [strict, unreadable])
+      expect(agyWorkspaceWriteStrictRefusal(profile, unknown)).toContain(
+        "the agy version could not be determined, so it is unknown whether its strict setting wins over accept-edits",
+      );
+    // Ordinary edits keep running on any version, and strict itself from 1.5.7.
+    for (const version of ["1.1.13", "1.5.6", null])
+      for (const settings of [{}, { toolPermission: "request-review" }, { theme: "dark" }])
+        expect(
+          agyWorkspaceWriteStrictRefusal(read(settings), agyWorkspaceWriteCliFacts(version)),
+        ).toBeNull();
+    for (const version of ["1.5.7", "1.5.14"])
+      for (const profile of [strict, unreadable])
+        expect(
+          agyWorkspaceWriteStrictRefusal(profile, agyWorkspaceWriteCliFacts(version)),
+        ).toBeNull();
   });
 
-  it("composes nothing from profile rules it cannot read as lists, and leaves the file alone", () => {
-    const { home, grant } = grantFor(JSON.stringify({ permissions: { ask: "mcp(*)" } }));
-    const before = readFileSync(agySettingsPath(home), "utf8");
-    expect(agyWorkspaceWritePolicy(grant)).toEqual({
-      state: "unavailable",
-      reason: expect.stringContaining("ask is not a list of rules"),
-    });
-    expect(readFileSync(agySettingsPath(home), "utf8")).toBe(before);
-  });
-
-  it("discloses a composed workspace_write policy as one status event", () => {
-    expect(agyWorkspaceWritePolicyEvent("s", ["command(*)"])).toMatchObject({
+  it("discloses the request as requested, not as proven isolation", () => {
+    const event = agyWorkspaceWritePolicyEvent("s");
+    expect(event).toMatchObject({
       type: "status",
       session_id: "s",
-      payload: { code: "agy_workspace_write_session_policy", allow: ["command(*)"] },
+      payload: {
+        code: "agy_workspace_write_session_policy",
+        requested: { enableTerminalSandbox: true, toolPermission: "proceed-in-sandbox" },
+      },
     });
+    expect(event.text).toContain("request agy's terminal sandbox");
+    expect(event.text).toContain("Requested, not observed");
+    expect(event.text).toContain("it is no isolation for untrusted code");
+    expect(event.text).toContain("on a personal account also outside the sandbox");
   });
 });

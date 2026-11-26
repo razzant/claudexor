@@ -20,11 +20,27 @@ export const AGY_VENDOR_CLI_VERSION: VendorCliVersionStamp = "1.1.13";
 export const AGY_READONLY_MIN_CLI_VERSION = "1.4.10";
 
 /**
- * The oldest agy that safely supports session-only `--settings` granting
- * `command(*)` in headless `workspace_write` (`--mode accept-edits`) runs while
- * preserving profile Deny/Ask rules and enterprise/admin policy overrides.
+ * The oldest agy whose `strict` tool permission also wins over accept-edits
+ * (1.5.7 release notes: file edits still ask under `strict`). Before it the
+ * mode a workspace_write run passes could approve edits a strict profile asks
+ * about, so such a profile, or one whose settings cannot be read, is not run
+ * on an older or undetermined version.
  */
-export const AGY_WORKSPACE_WRITE_MIN_CLI_VERSION = "1.5.7";
+export const AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION = "1.5.7";
+
+/**
+ * The oldest agy whose headless `workspace_write` (`--mode accept-edits`) run
+ * requests the terminal sandbox through session-only `--settings`
+ * (session-policy.ts); an older or undetermined version still edits files,
+ * without the request. It is the first release with every fact the request
+ * relies on: `--settings` itself (1.4.10, above); `proceed-in-sandbox` asking
+ * like `request-review` where the sandbox cannot run (vendor sandbox page,
+ * from 1.4.4); `strict` winning over accept-edits (1.5.7, above); and the
+ * 1.5.8 security fix in the sandbox's network proxy, with its fix for headless
+ * runs that ignored Gemini Enterprise admin controls (1.5.8 release notes). No
+ * vendor run of these settings is recorded.
+ */
+export const AGY_WORKSPACE_WRITE_MIN_CLI_VERSION = "1.5.8";
 
 /** The version token of `--version` output, with its prerelease tag when it has one. */
 export function extractAgySemver(raw: string | null): string | null {
@@ -42,6 +58,27 @@ export function isAgyVersionAtLeast(installed: string | null, minimum: string): 
     Number(match[2]) - Number(floor[2]) ||
     Number(match[3]) - Number(floor[3]);
   return order > 0 || (order === 0 && !match[4]);
+}
+
+/** What a workspace_write run may rely on from the agy it launches; every fact
+ * is false when the version is older or undetermined. */
+export type AgyWorkspaceWriteCli = {
+  installed: string | null;
+  determined: boolean;
+  /** A profile's `strict` tool permission still wins over accept-edits (1.5.7). */
+  strictKept: boolean;
+  /** The terminal sandbox request through session-only `--settings` (1.5.8). */
+  terminal: boolean;
+};
+
+export function agyWorkspaceWriteCliFacts(installed: string | null): AgyWorkspaceWriteCli {
+  const at = (minimum: string) => isAgyVersionAtLeast(installed, minimum);
+  return {
+    installed,
+    determined: at(AGY_WORKSPACE_WRITE_MIN_CLI_VERSION) !== null,
+    strictKept: at(AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION) === true,
+    terminal: at(AGY_WORKSPACE_WRITE_MIN_CLI_VERSION) === true,
+  };
 }
 
 function versionDoctorCheck<Id extends string>(
@@ -74,17 +111,18 @@ export function agyReadonlyDoctorCheck(installed: string | null): {
   );
 }
 
-/** The doctor's statement of the workspace_write minimum for an installed version. */
+/** The doctor's statement of the workspace_write minimums for an installed version. */
 export function agyWorkspaceWriteDoctorCheck(installed: string | null): {
   id: "workspace_write_min_version";
   status: "pass" | "fail" | "skip";
   detail: string;
 } {
+  const strictKept = isAgyVersionAtLeast(installed, AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION);
   return versionDoctorCheck(
     "workspace_write_min_version",
-    `workspace_write runs need agy ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer for their session shell grant; full runs do not`,
+    `workspace_write runs request agy's terminal sandbox for shell commands on agy ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer, and run a profile set to strict, or one whose settings cannot be read, only on agy ${AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION} or newer; full runs do not`,
     installed,
     AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
-    `installed ${installed} stops workspace_write runs before the model; update agy`,
+    `installed ${installed} runs workspace_write without that request, so it edits files but a headless run refuses a shell command agy would ask about${strictKept === false ? ", and it refuses a strict or unreadable profile before the model" : ""}; update agy`,
   );
 }

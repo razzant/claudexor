@@ -4,6 +4,38 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v6.4.2** (2026-11-26) — **Antigravity `workspace_write` runs request
+  agy's terminal sandbox instead of allowing every shell command.** In 6.4.1
+  such a run allowed every shell command for its session (`command(*)`). On a
+  personal Google account that also let a command outside agy's terminal
+  sandbox run without asking, so an ordinary build could reach files beyond
+  the project. On agy 1.5.8 or newer the run's session settings now request the
+  vendor's terminal sandbox instead (`enableTerminalSandbox` with
+  `toolPermission: "proceed-in-sandbox"`) and name no permission list. By the
+  vendor's documentation a command then runs without asking only inside the
+  sandbox, where it may write to the project, temporary directories and build
+  caches and has no network by default; any other command asks, and a headless
+  run refuses it. The engine records the request; the effective mode is agy's.
+  A tool permission or sandbox setting the profile saved, including
+  `request-review` and `strict`, stays in force, and the profile's allow, ask
+  and deny rules are neither removed nor rewritten, so a command the profile
+  allows still runs without asking. File reading is unchanged: every agy run
+  keeps its `read_file(*)` grant, and the sandbox can read whatever the profile
+  may read, so build tools can see those files; it is no isolation for running
+  untrusted code. An older agy no longer refuses a workspace_write run; it
+  edits files without the request. On an agy older than 1.5.7 or of unknown
+  version a profile set to `strict`, or one whose settings cannot be read, is
+  refused before the run (`agy_workspace_write_strict_unverified`), because
+  accept-edits may loosen strict there. `claudexor doctor` reports the 1.5.8
+  minimum as `workspace_write_min_version`. Verified with unit tests and
+  orchestrator tests against a scripted agy; no live agy run with these
+  settings is recorded. Readonly and full runs are unchanged. Control protocol
+  major 3 and engine store schema 8 are unchanged, and there is no data
+  migration; the local-engine manifest still requires Claudexor.app 6.2.0,
+  while the SSH-runtime manifest of this release requires Claudexor.app 6.4.2.
+  As with every release, older engines refuse a data root that 6.4.2 has
+  served (`root_authority_floor_regression`).
+
 - **v6.4.1** (2026-11-26) — **Antigravity `workspace_write` runs can run
   shell commands.** In a headless Antigravity run in `workspace_write` mode,
   agy auto-denied any shell command it would otherwise ask about, so the turn

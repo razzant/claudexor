@@ -21,7 +21,9 @@ import { redactSecrets } from "@claudexor/util";
  * commands keep their own approval. The vendor evaluates Deny > Ask > Allow,
  * so a read_file deny rule in the same file still wins, and
  * `toolPermission: "strict"` prompts before every read even when an allow rule
- * matches.
+ * matches. The terminal sandbox a workspace_write run may request mounts
+ * every path a `read_file` rule allows, read-only, so this rule also makes the
+ * files it covers visible to commands inside that sandbox.
  */
 export const AGY_READ_ANYWHERE_RULE = "read_file(*)";
 
@@ -40,15 +42,15 @@ export function agySettingsPath(profileHome: string): string {
   return join(profileHome, ".gemini", "antigravity-cli", "settings.json");
 }
 
-/**
- * Ensure the Claudexor-owned profile settings carry the read grant, keeping
- * every other key and rule. The file belongs to the whole profile, so the
- * grant applies to every run on it. Unreadable or unexpected settings are
- * never rewritten and the caller discloses the reason; a grant that could not
- * be saved still returns the rules as read.
- */
-export function ensureAgyReadGrant(profileHome: string): AgyReadGrant {
-  const path = agySettingsPath(profileHome);
+/** The profile's own settings as read; a missing file reads as no settings. */
+export type AgyProfileSettings =
+  { state: "read"; settings: Record<string, unknown> } | { state: "unavailable"; reason: string };
+
+function readSettingsFile(
+  path: string,
+):
+  | { state: "read"; settings: Record<string, unknown>; mode: number }
+  | { state: "unavailable"; reason: string } {
   let text = "";
   let mode = 0o600;
   try {
@@ -58,17 +60,36 @@ export function ensureAgyReadGrant(profileHome: string): AgyReadGrant {
     if ((error as NodeJS.ErrnoException)?.code !== "ENOENT")
       return unavailable(`settings.json is unreadable: ${message(error)}`);
   }
-  let settings: Record<string, unknown> = {};
-  if (text.trim()) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return unavailable("settings.json is not valid JSON");
-    }
-    if (!isRecord(parsed)) return unavailable("settings.json is not a JSON object");
-    settings = parsed;
+  if (!text.trim()) return { state: "read", settings: {}, mode };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return unavailable("settings.json is not valid JSON");
   }
+  if (!isRecord(parsed)) return unavailable("settings.json is not a JSON object");
+  return { state: "read", settings: parsed, mode };
+}
+
+/** The profile's settings as read, without writing anything: a
+ * workspace_write run decides from them before its read grant is saved. */
+export function readAgyProfileSettings(profileHome: string): AgyProfileSettings {
+  const file = readSettingsFile(agySettingsPath(profileHome));
+  return file.state === "read" ? { state: "read", settings: file.settings } : file;
+}
+
+/**
+ * Ensure the Claudexor-owned profile settings carry the read grant, keeping
+ * every other key and rule. The file belongs to the whole profile, so the
+ * grant applies to every run on it. Unreadable or unexpected settings are
+ * never rewritten and the caller discloses the reason; a grant that could not
+ * be saved still returns the rules as read.
+ */
+export function ensureAgyReadGrant(profileHome: string): AgyReadGrant {
+  const path = agySettingsPath(profileHome);
+  const file = readSettingsFile(path);
+  if (file.state === "unavailable") return file;
+  const { settings, mode } = file;
   const permissions = settings["permissions"] ?? {};
   if (!isRecord(permissions)) return unavailable("settings.json permissions is not an object");
   const allow = permissions["allow"] ?? [];
@@ -112,7 +133,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function unavailable(reason: string): AgyReadGrant {
+function unavailable(reason: string): { state: "unavailable"; reason: string } {
   return { state: "unavailable", reason };
 }
 

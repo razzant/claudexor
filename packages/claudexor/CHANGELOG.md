@@ -1,5 +1,11 @@
 # claudexor
 
+## 6.4.2
+
+### Patch Changes
+
+- @claudexor/cli@6.4.2
+
 ## 6.4.1
 
 ### Patch Changes

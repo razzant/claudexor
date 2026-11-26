@@ -1,5 +1,14 @@
 # @claudexor/harness-agy
 
+## 6.4.2
+
+### Patch Changes
+
+- Antigravity `workspace_write` runs no longer allow every shell command for their session. The `command(*)` rule they carried since 6.4.1 also let a command outside agy's terminal sandbox run without asking on a personal account. On agy 1.5.8 or newer such a run now requests the vendor's terminal sandbox (`enableTerminalSandbox` with `toolPermission: "proceed-in-sandbox"`) in a session file that names no permission list; by the vendor's documentation a command then runs without asking only inside the sandbox. The engine records the request; the effective mode is agy's. A tool permission or sandbox setting the profile saved, including `request-review` and `strict`, stays in force, and saved allow, ask and deny rules are neither removed nor rewritten. File reading is unchanged: the run keeps its `read_file(*)` grant, and the sandbox can read whatever the profile may read, so it is no isolation for untrusted code. An older agy no longer refuses the run, which then edits files without the request, except that a profile set to `strict`, or one whose settings cannot be read, is refused on an agy older than 1.5.7 or of unknown version, where accept-edits may loosen strict.
+  - @claudexor/core@6.4.2
+  - @claudexor/schema@6.4.2
+  - @claudexor/util@6.4.2
+
 ## 6.4.1
 
 ### Patch Changes
