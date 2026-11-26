@@ -84,3 +84,14 @@ export const AGY_PROGRAM = defineHarnessProgram({
     },
   },
 });
+
+/**
+ * Agy's print mode treats an openable CONIN$ as an interactive terminal
+ * (print-command.ts, antigravity-cli#508), and its runs select print mode from
+ * piped stdin. Until a supported agy is proven to ignore CONIN$, its runs and
+ * its version probes (the discovery probe and the workspace_write run's
+ * observation, workspace-write-cli.ts) keep starting without a console on
+ * Windows, while other harnesses get an invisible one; console programs an agy
+ * run starts may open windows of their own.
+ */
+export const AGY_WINDOWS_CONSOLE = "none";

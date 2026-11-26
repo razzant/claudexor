@@ -3035,12 +3035,14 @@ section's numbered range of parts, instructions first, so its size does not
 grow with the input; the engine notes stay inline. An
 `agy_input_file_delivery` status records sizes and digests, never that the
 model read them. Model-free probes on sampled versions from 1.1.13 through 1.5.3 returned
-32 KiB unbroken lines whole; a live run also read a 32,042-byte line and returned its end marker. Without a run-owned directory, or when agy might not be
-allowed to read outside its workspace, the input is refused before anything
-is sent, with the reason. That includes a profile whose own settings ask
-before or deny every read: `toolPermission: "strict"`, or `read_file(*)`
+32 KiB unbroken lines whole; a live run also read a 32,042-byte line and returned its end marker. Without a run-owned directory, or when no read
+grant reaches a non-full run, the input is refused before anything is sent,
+with the reason. So is input for a profile whose own settings declare an ask
+or denial of every read: `toolPermission: "strict"`, or `read_file(*)`
 itself among its ask or deny rules (only those, as written; under full access
-only the deny rule counts). Input that fits inline still runs. Before a run the adapter ensures the profile's own
+only the deny rule counts). Only those known declarations are checked: a
+delivery is no guarantee that agy reads every file. Input that fits inline
+still runs. Before a run the adapter ensures the profile's own
 `.gemini/antigravity-cli/settings.json` allows `read_file(*)`, which the vendor
 documents as matching all files on the system, keeping every other key and
 rule. The agent then reads any path in every access profile, as claude and
@@ -3059,16 +3061,17 @@ saved, a non-full run reports `agy_read_grant_unavailable`. In a headless run pl
 cannot be answered and ends the whole turn, so a readonly run also passes
 session-only settings in a private file (`--settings`) that deny `command(*)`
 and `write_file(*)`, including commands the profile allows. A
-`workspace_write` run (`--mode accept-edits`) adds no command, write or
-network permission of its own. The vendor documents a limited terminal mode:
+`workspace_write` run (`--mode accept-edits`) does not add a blanket permission
+for commands, writes or network access. The vendor documents a limited terminal mode:
 with `enableTerminalSandbox` on, `toolPermission: "proceed-in-sandbox"` runs a
 command without asking only when it runs inside the terminal sandbox (the
 workspace, temporary directories and common build caches writable, no network
 by default) and asks before any other command; where the sandbox cannot run,
 the setting asks like `request-review`. On agy `1.5.8` or newer the run's
 session-only `--settings` file requests that mode, naming those two settings
-and no permission list, when the profile leaves both unset or already chose
-those values and its three permission lists are lists of rules. The request is
+and no permission list, when each of the two is unset in the profile or
+already holds the requested value and its three permission lists are lists of
+rules. The request is
 disclosed (`agy_workspace_write_session_policy`) only once that file is in
 place at launch, never for a run refused before it or one whose file could not
 be written. It is a request: the effective mode is agy's, and the engine does

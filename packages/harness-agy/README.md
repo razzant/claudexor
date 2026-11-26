@@ -33,10 +33,11 @@ snapshot of the profile settings, and saves the grant only while the file
 still holds that snapshot; a run that finds it changed writes nothing and
 stops before sending, so start it again. An `allow`, `deny` or `ask` list that
 is not a list of rules is never rewritten and gets no terminal request. A
-workspace_write run adds no command, write or network permission of its own:
+workspace_write run adds no blanket permission for commands, writes or network access:
 on agy 1.5.8 or newer its session-only settings request the vendor's terminal
 sandbox (`enableTerminalSandbox` with `proceed-in-sandbox`), naming no
-permission list, unless the profile saved its own choice. The request is
+permission list, unless the profile saved a different value for either of
+those two settings (each may be unset or already hold the requested value). The request is
 disclosed as requested only once its file is in place at launch; the
 effective mode is agy's. When only saving the read grant fails, the session
 file of a run on agy 1.5.7 or newer carries the profile's lists as read with
@@ -58,9 +59,10 @@ program observation it decided on (`src/workspace-write-cli.ts`,
 `src/run-input.ts`). Input over a conservative 128 KiB limit (agy cut larger
 piped input at 192,000 bytes) is saved unchanged in the run's `context/`
 directory and named by a bootstrap that does not grow with it
-(`src/input-file.ts`); it is refused, with the reason, when the run could not
-read those files without asking, including under the profile's own `strict`
-or a `read_file(*)` ask or deny rule. Shorter input runs as before.
+(`src/input-file.ts`); it is refused, with the reason, when no read grant
+reaches the run or the profile's own `strict` or a `read_file(*)` ask or deny
+rule holds every read. Only those known declarations are checked, so delivery
+is no guarantee that agy reads every file. Shorter input runs as before.
 
 Fixtures under `fixtures/` pin the recorded 1.1.13 stream shapes, plus one
 1.5.0 readonly denial recording; see `fixtures/manifest.yaml` for provenance

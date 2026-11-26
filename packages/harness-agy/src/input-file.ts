@@ -34,16 +34,17 @@ interface Section {
  * stdin carries a short engine bootstrap that names the directory once and
  * each section's numbered range of parts, so its size does not grow with the
  * input; the engine's notes stay inline. Nothing here claims the model read
- * the files. Without a run-owned directory, or when agy might not read the
- * files without asking (`unreadable`, the reason), the input is refused before
- * anything is sent: never cut. Input that fits inline is never refused for it.
+ * the files. Without a run-owned directory, or when a known reason says agy
+ * might not read the files without asking (`unreadable`), the input is refused
+ * before anything is sent: never cut. No reason is not a promise that agy reads
+ * every file. Input that fits inline is never refused for it.
  */
 export function agyInputDelivery(args: {
   prompt: string;
   instructions: string | undefined;
   notes: string[];
   dir: string | null;
-  /** Why agy might not read the input files without asking; null: it may. */
+  /** A known reason agy might not read the input files without asking; null: none known. */
   unreadable: string | null;
   sessionId: string;
 }): AgyInputDelivery {

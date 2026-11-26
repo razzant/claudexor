@@ -24,8 +24,22 @@ const observed = vi.hoisted(() => ({
   sequence: [] as Array<string | null>,
   options: [] as CliRunLoopOptions[],
   captures: [] as Array<SpawnOptions | undefined>,
-  gates: [] as Array<{ environment?: NodeJS.ProcessEnv; cwd?: string } | undefined>,
+  gates: [] as Array<
+    { environment?: NodeJS.ProcessEnv; cwd?: string; windowsConsole?: string } | undefined
+  >,
+  /** Answers the account's `agy models` list in place of the vendor, when set. */
+  models: null as null | (() => string),
 }));
+vi.mock("./print-command.js", async (original) => {
+  const actual = await original<typeof import("./print-command.js")>();
+  return {
+    ...actual,
+    runAgyPrintCommand: async (...args: Parameters<typeof actual.runAgyPrintCommand>) =>
+      observed.models
+        ? { kind: "completed", code: 0, signal: null, stdout: observed.models(), stderr: "" }
+        : actual.runAgyPrintCommand(...args),
+  };
+});
 vi.mock("@claudexor/core", async (original) => {
   const actual = await original<typeof import("@claudexor/core")>();
   return {
@@ -35,7 +49,7 @@ vi.mock("@claudexor/core", async (original) => {
       _program: unknown,
       _patch: unknown,
       _bin: unknown,
-      options?: { environment?: NodeJS.ProcessEnv; cwd?: string },
+      options?: { environment?: NodeJS.ProcessEnv; cwd?: string; windowsConsole?: string },
     ) => {
       observed.gates.push(options);
       const version = observed.sequence.length > 0 ? observed.sequence.shift()! : observed.version;
@@ -105,6 +119,7 @@ afterEach(() => {
   observed.options.length = 0;
   observed.captures.length = 0;
   observed.gates.length = 0;
+  observed.models = null;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function spec(
@@ -927,6 +942,12 @@ describe("AGY native raw stdin selection", () => {
       { permissions: { deny: ["read_file(*)"] } },
       "the profile's deny rule read_file(*) refuses",
     ],
+    // An unrelated malformed list does not hide the explicit denial.
+    [
+      "full",
+      { permissions: { deny: ["read_file(*)"], ask: "mcp(*)" } },
+      "the profile's deny rule read_file(*) refuses",
+    ],
   ] as const)(
     "refuses %s input it must deliver as files when the profile's own settings hold every read (%j)",
     async (access, saved, reason) => {
@@ -984,6 +1005,8 @@ describe("AGY native raw stdin selection", () => {
     expect(observed.gates).toHaveLength(2);
     for (const gate of observed.gates) {
       expect(gate!.cwd).toBe(input.cwd);
+      // Its version probe starts console-less on Windows, like the run.
+      expect(gate!.windowsConsole).toBe("none");
       expect(gate!.environment?.["HOME"]).toBe(
         realpathSync(input.credential_profile!.isolation_locator!),
       );
@@ -996,6 +1019,40 @@ describe("AGY native raw stdin selection", () => {
     expect(observed.options).toHaveLength(0);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ type: "completed", aborted: true });
+  });
+
+  it("decides workspace_write access from the settings as they are after model selection", async () => {
+    observed.version = "1.5.14";
+    const input = {
+      ...spec("Fix it.", undefined, "workspace_write"),
+      effort_hint: "high",
+    } satisfies HarnessRunSpec;
+    const settingsPath = saveProfile(input, {});
+    const before = { gates: -1 };
+    // While the account's model list is read, the user saves a benign preference.
+    observed.models = () => {
+      before.gates = observed.gates.length;
+      writeFileSync(settingsPath, JSON.stringify({ toolPermission: "request-review" }));
+      return "gemini-fixture-low\tLow\ngemini-fixture-high\tHigh\n";
+    };
+    const events = await collect(input);
+    // The model was selected before any access decision was taken.
+    expect(before.gates).toBe(0);
+    expect(observed.options).toHaveLength(1);
+    const args = observed.options[0]!.args;
+    expect(args[args.indexOf("--model") + 1]).toBe("gemini-fixture-high");
+    // The outgoing declaration follows the current preference: no terminal request.
+    expect(args).not.toContain("--settings");
+    expect(answerOf(events).settings).toBeNull();
+    expect(
+      events.find((event) => event.payload?.["code"] === "agy_workspace_write_terminal_kept")?.text,
+    ).toMatch(/: the profile's toolPermission is "request-review"$/);
+    expect(codesOf(events)).not.toContain("agy_workspace_write_session_policy");
+    expect(codesOf(events)).not.toContain("agy_profile_settings_changed");
+    expect(profileOf(input)).toEqual({
+      toolPermission: "request-review",
+      permissions: { allow: [GRANT] },
+    });
   });
 
   it.each([

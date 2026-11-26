@@ -17,7 +17,10 @@ on GitHub Releases.
   caches and has no network by default; any other command asks, and a headless
   run refuses it. The engine discloses the request only once its session file
   is in place at launch; the effective mode is agy's.
-  A tool permission or sandbox setting the profile saved, including
+  The request is made only when each of the two settings is unset in the
+  profile or already holds the requested value. The adapter does not add a
+  blanket permission for commands, writes or network access. A different tool permission or
+  sandbox setting the profile saved, including
   `request-review` and `strict`, stays in force, and the profile's allow, ask
   and deny rules are neither removed nor rewritten, so a command the profile
   allows still runs without asking. File reading is unchanged: every agy run
@@ -37,12 +40,13 @@ on GitHub Releases.
   its edits still ask. `claudexor doctor` reports these minimums as
   `workspace_write_min_version`.
 
-  Input over the 128 KiB inline limit is delivered as files only when the run
-  can read them without asking. Otherwise it is refused before anything is
-  sent, with the reason: no read grant reaches the run, or the profile's own
-  settings ask before or deny every read (`toolPermission: "strict"`, or
-  `read_file(*)` among its ask or deny rules; under full access only the deny
-  rule counts). Shorter input runs as before. When only saving the grant
+  Input over the 128 KiB inline limit is refused before anything is sent,
+  with the reason, when no read grant reaches the run or the profile's own
+  settings declare an ask or denial of every read (`toolPermission: "strict"`,
+  or `read_file(*)` among its ask or deny rules; under full access only the
+  deny rule counts); otherwise it is delivered as files. Only those known
+  declarations are checked, so a delivery does not guarantee that agy reads
+  every file. Shorter input runs as before. When only saving the grant
   fails, the session file of a run on agy 1.5.7 or newer carries the profile's
   lists with the grant. Each run decides from one reading of the profile
   settings and saves the grant only while the file still holds what it read;

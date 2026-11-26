@@ -1315,7 +1315,9 @@ reads outside the workspace are not auto-denied in headless runs, and a
 readonly child gets session-only settings that deny commands and writes. On agy
 1.5.8 or newer a workspace_write child's session-only settings request the
 vendor's terminal sandbox for shell commands, naming no permission list,
-unless the profile chose its own setting; only when saving the read grant
+unless the profile saved a different value for either of those two settings
+(each may be unset or already match), and add no command, write or network
+permission of their own; only when saving the read grant
 failed do they carry the profile's lists with the grant, on agy 1.5.7 or
 newer. Before its settings are written, a workspace_write run is refused for a
 profile set to strict on an agy older than 1.5.7, and for one that saved

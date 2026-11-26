@@ -47,8 +47,10 @@ export type AgyPreparedInput = {
  * read grant failed, a workspace_write run on an agy known to keep strict edits
  * asking (1.5.7) carries the lists as read with the grant in its session file,
  * as a readonly run does; on an older or undetermined agy it cannot. Input that
- * must be read as files is refused, never sent unreadable, when no grant
- * reaches the run or the snapshot asks before or denies every read.
+ * must be read as files is refused when no grant reaches the run or the
+ * snapshot declares an ask or denial of every read (only the declarations
+ * `agyReadsHeldBySettings` knows): a check of known declarations, not a
+ * guarantee that agy will read every file.
  */
 export function* prepareAgyRunInput(
   spec: HarnessRunSpec,
@@ -132,8 +134,9 @@ export function* prepareAgyRunInput(
     instructions: spec.instructions,
     notes: sessionPolicy ? [AGY_READONLY_NOTE] : [],
     dir: spec.input_file_dir,
-    // A grant does not make files readable where the snapshot itself asks
-    // before or denies every read; full access approves the asking itself.
+    // A grant does not make files readable where the snapshot itself declares
+    // an ask or denial of every read; full access approves the asking itself.
+    // Only those known declarations are checked: no other rule is interpreted.
     unreadable:
       agyReadsHeldBySettings(profile, spec.access === "full") ??
       (granted ? null : "the profile read grant is unavailable"),

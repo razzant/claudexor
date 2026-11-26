@@ -1,5 +1,5 @@
 import { composeBaseEnv, resolveSelectedProgramAsync } from "@claudexor/core";
-import { AGY_PROGRAM } from "./program.js";
+import { AGY_PROGRAM, AGY_WINDOWS_CONSOLE } from "./program.js";
 import type {
   AccessProfile,
   ConformanceReport,
@@ -90,16 +90,6 @@ function accessArgs(access: AccessProfile): string[] {
       return [];
   }
 }
-
-/**
- * Agy's print mode treats an openable CONIN$ as an interactive terminal
- * (print-command.ts, antigravity-cli#508), and its runs select print mode from
- * piped stdin. Until a supported agy is proven to ignore CONIN$, its runs and
- * this version probe keep starting without a console on Windows, while other
- * harnesses get an invisible one; console programs an agy run starts may open
- * windows of their own.
- */
-const AGY_WINDOWS_CONSOLE = "none";
 
 async function detectVersion(): Promise<string | null> {
   return (
@@ -500,6 +490,14 @@ async function* runAgy(
     // The vendor probe/run remains the final transport authority.
   }
 
+  // ONE prepared result: the id sent is the processing receipt's
+  // submittedNative (the effort-selected family variant); spec.model_hint
+  // stays the caller's requested id. It is chosen first: an effort may ask
+  // the account's `agy models` list, and the access decisions below are taken
+  // after that wait, as close to the launch as they can be.
+  const prepared = await applyAgyRunProcessing(spec, listModels);
+  spec = prepared.spec;
+
   const cli =
     spec.access === "workspace_write" ? yield* observeAgyWorkspaceWriteCli(spec, route.env) : null;
   if (spec.access === "workspace_write" && !cli) return;
@@ -515,11 +513,6 @@ async function* runAgy(
   // data dir instead of the workspace (live-proven §1.2d).
   args.push("--add-dir", spec.cwd);
   args.push(...accessArgs(spec.access));
-  // ONE prepared result: the id sent is the processing receipt's
-  // submittedNative (the effort-selected family variant); spec.model_hint
-  // stays the caller's requested id.
-  const prepared = await applyAgyRunProcessing(spec, listModels);
-  spec = prepared.spec;
   if (prepared.nativeModel) args.push("--model", prepared.nativeModel);
   // INV-137: the vendor conversation id is the resumable native session.
   if (spec.resume_session_id) args.push("--conversation", spec.resume_session_id);

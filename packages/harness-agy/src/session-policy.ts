@@ -105,8 +105,8 @@ export function agyWorkspaceWriteSessionSettings(
 
 /**
  * Whether a workspace_write run requests the limited terminal mode. Only a
- * profile that leaves both settings unset, or already chose the same values,
- * gets it. A saved `request-review` or `strict`, a disabled sandbox, a value
+ * profile in which each of the two settings is unset or already holds the
+ * requested value gets it. A saved `request-review` or `strict`, a disabled sandbox, a value
  * the engine does not know, unreadable settings and permission lists that are
  * not lists of rules all stay in force and the request is not made: it would
  * loosen what the profile chose, or rest on rules nobody can check.
@@ -211,8 +211,9 @@ export function agyWorkspaceWriteAdminControlsRefusal(
 
 /**
  * Whether a workspace_write run requests the limited terminal mode: only on agy
- * 1.5.8 or newer (vendor-cli-version.ts) and only when the profile leaves the
- * choice unset (`agyWorkspaceWriteTerminal`). When it does not, the status
+ * 1.5.8 or newer (vendor-cli-version.ts) and only when each of the two
+ * settings is unset in the profile or already holds the requested value
+ * (`agyWorkspaceWriteTerminal`). When it does not, the status
  * says why; a request is disclosed only once its session file is in place,
  * immediately before launch (`agyWorkspaceWritePolicyEvent`).
  */

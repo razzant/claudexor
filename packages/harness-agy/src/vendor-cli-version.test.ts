@@ -49,9 +49,10 @@ describe("agy minimum CLI versions (#653)", () => {
   ] as const)("workspace_write reports %s as %s", (installed, status) => {
     const check = agyWorkspaceWriteDoctorCheck(installed);
     expect(check).toMatchObject({ id: "workspace_write_min_version", status });
-    // A request, made only where the profile chose no terminal setting itself.
+    // A request, made only where each terminal setting is unset or already
+    // matches it, and no permission grant of the adapter's own.
     expect(check.detail).toContain(
-      "workspace_write runs ask for agy's terminal sandbox for shell commands only on agy 1.5.8 or newer, and only when the profile saved no terminal setting of its own",
+      "workspace_write runs ask for agy's terminal sandbox for shell commands only on agy 1.5.8 or newer, and only when each of the profile's two terminal settings is unset or already holds the requested value; the adapter adds no command, write or network permission of its own.",
     );
     expect(check.detail).toContain("full runs do not depend on either");
     // A strict profile is admitted from 1.5.7, not promised working edits there;

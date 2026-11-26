@@ -331,4 +331,23 @@ describe("agy reads the profile's own settings hold back", () => {
     ] satisfies AgyProfileSettings[])
       expect(agyReadsHeldBySettings(profile, false)).toBeNull();
   });
+
+  it("keeps an explicit all-files deny rule when an unrelated list is malformed", () => {
+    const invalid = "settings.json permissions.ask is not a list of rules";
+    const withRaw = (permissions: unknown) => ({
+      ...snapshotOf({ permissions }),
+      rules: { state: "invalid", reason: invalid } as const,
+    });
+    const refused = "the profile's deny rule read_file(*) refuses every read";
+    for (const approved of [false, true])
+      expect(
+        agyReadsHeldBySettings(
+          withRaw({ deny: [AGY_READ_ANYWHERE_RULE], ask: "mcp(*)" }),
+          approved,
+        ),
+      ).toBe(refused);
+    // Unknown is still not a denial: no new limit where nothing denies every read.
+    for (const permissions of [{ ask: "mcp(*)" }, { deny: "read_file(*)" }, "read_file(*)"])
+      expect(agyReadsHeldBySettings(withRaw(permissions), true)).toBeNull();
+  });
 });

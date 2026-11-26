@@ -201,18 +201,27 @@ function currentText(path: string): string | null {
  * which prompts before every read, and the all-files rule itself in `ask` or
  * in `deny`. A headless run cannot answer a prompt; where prompts are
  * approved for the run (`promptsApproved`, full access), only the deny rule
- * holds. Settings or lists that are unknown give null here: a read grant
- * cannot be saved from them, and that is reported on its own.
+ * holds. A `deny` list that names the all-files rule as written counts even
+ * when another list is not a list of rules. Otherwise settings or lists that
+ * are unknown give null here: a read grant cannot be saved from them, and
+ * that is reported on its own.
  */
 export function agyReadsHeldBySettings(
   profile: AgyProfileSettings,
   promptsApproved: boolean,
 ): string | null {
-  if (profile.state !== "read" || profile.rules.state !== "valid") return null;
-  const { deny, ask } = profile.rules.lists;
-  if (deny.includes(AGY_READ_ANYWHERE_RULE))
+  if (profile.state !== "read") return null;
+  const permissions = profile.settings["permissions"];
+  const deny: unknown =
+    profile.rules.state === "valid"
+      ? profile.rules.lists.deny
+      : isRecord(permissions)
+        ? permissions["deny"]
+        : undefined;
+  if (Array.isArray(deny) && deny.includes(AGY_READ_ANYWHERE_RULE))
     return `the profile's deny rule ${AGY_READ_ANYWHERE_RULE} refuses every read`;
-  if (promptsApproved) return null;
+  if (promptsApproved || profile.rules.state !== "valid") return null;
+  const { ask } = profile.rules.lists;
   if (profile.settings["toolPermission"] === "strict")
     return `the profile's toolPermission "strict" asks before every read, which a headless run cannot answer`;
   if (ask.includes(AGY_READ_ANYWHERE_RULE))

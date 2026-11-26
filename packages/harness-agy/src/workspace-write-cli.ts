@@ -8,7 +8,7 @@ import {
 } from "@claudexor/core";
 import { nowIso } from "@claudexor/util";
 import { AGY_BIN } from "./profile.js";
-import { AGY_PROGRAM } from "./program.js";
+import { AGY_PROGRAM, AGY_WINDOWS_CONSOLE } from "./program.js";
 import { agyWorkspaceWriteCliFacts, type AgyWorkspaceWriteCli } from "./vendor-cli-version.js";
 
 /** The CLI facts a workspace_write run decides on, and the observation they come from. */
@@ -19,7 +19,8 @@ export type AgyWorkspaceWriteProgram = {
 
 /** The core's one observation of the program this run launches, asked with the
  * run's own environment and directory exactly as the launch asks it, so the
- * launch reuses the answer while that program is unchanged. */
+ * launch reuses the answer while that program is unchanged. Its version
+ * process starts under agy's console policy (program.ts), like the run. */
 function observeLaunchProgram(
   spec: HarnessRunSpec,
   routeEnv: Record<string, string | null | undefined>,
@@ -27,6 +28,7 @@ function observeLaunchProgram(
   return observeHarnessProgram(AGY_PROGRAM, routeEnv, AGY_BIN(), {
     environment: composeSpawnEnv(spec.env_inheritance, routeEnv),
     cwd: spec.cwd,
+    windowsConsole: AGY_WINDOWS_CONSOLE,
   });
 }
 
