@@ -1,5 +1,5 @@
 import { composeBaseEnv, resolveSelectedProgramAsync } from "@claudexor/core";
-import { AGY_PROGRAM } from "./program.js";
+import { AGY_PROGRAM, AGY_WINDOWS_CONSOLE } from "./program.js";
 import type {
   AccessProfile,
   ConformanceReport,
@@ -46,8 +46,11 @@ import { listAgyModels } from "./models.js";
 import { AGY_KNOWN_MODELS } from "./known-models.js";
 import { applyAgyRunProcessing, prepareAgyProcessing } from "./processing.js";
 import { prepareAgyRunInput } from "./run-input.js";
-import { withAgySessionSettings } from "./session-policy.js";
-import { agyWorkspaceWriteShellGrant } from "./shell-grant.js";
+import { agyWorkspaceWritePolicyEvent, withAgySessionSettings } from "./session-policy.js";
+import {
+  confirmAgyWorkspaceWriteProgram,
+  observeAgyWorkspaceWriteCli,
+} from "./workspace-write-cli.js";
 // The package publishes only what other packages consume. The profile probe,
 // the route resolver and the stream parser are reached through the adapter
 // this file returns, so re-exporting them would be a dead public surface.
@@ -71,7 +74,9 @@ export {
  * ended without an answer that way. The profile read grant (read-grant.ts,
  * live-proven on 1.3.4) restores reading anywhere; a readonly run's session
  * settings deny commands and writes (session-policy.ts), so a refused call
- * returns to the model as a tool error instead of ending the turn.
+ * returns to the model as a tool error instead of ending the turn. A
+ * workspace_write run's session settings may request the vendor's terminal
+ * sandbox for shell commands (session-policy.ts).
  */
 function accessArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -85,16 +90,6 @@ function accessArgs(access: AccessProfile): string[] {
       return [];
   }
 }
-
-/**
- * Agy's print mode treats an openable CONIN$ as an interactive terminal
- * (print-command.ts, antigravity-cli#508), and its runs select print mode from
- * piped stdin. Until a supported agy is proven to ignore CONIN$, its runs and
- * this version probe keep starting without a console on Windows, while other
- * harnesses get an invisible one; console programs an agy run starts may open
- * windows of their own.
- */
-const AGY_WINDOWS_CONSOLE = "none";
 
 async function detectVersion(): Promise<string | null> {
   return (
@@ -172,9 +167,10 @@ export const AGY_CAPABILITY_PROFILE: HarnessCapabilityProfile =
       ],
       managed_login: AGY_MANAGED_LOGIN,
     },
-    // workspace_write rides the vendor's `--mode accept-edits` permission policy
-    // plus session-only `--settings` granting `command(*)` on agy >= 1.5.7 (while
-    // keeping profile Deny/Ask lists intact) — the same tool_policy class as claude/cursor.
+    // workspace_write rides the vendor's `--mode accept-edits` permission policy;
+    // on agy >= 1.5.8 its session-only `--settings` also request the vendor's
+    // terminal sandbox (requested, not verified by the engine) — the same
+    // tool_policy class as claude/cursor.
     access_control: {
       readonly_mechanism: "permission_deny",
       write_mechanism: "tool_policy",
@@ -323,7 +319,8 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
       // a different effective policy altogether: the vendor credential is
       // OS-user-scoped and HOME scopes state only.
       const platformProof = agyPlatformIsolationDetail();
-      // The readonly (1.4.10) and workspace_write (1.5.7) minimums are separate from the fixture pin.
+      // The readonly (1.4.10) and workspace_write (1.5.7 strict, 1.5.8 terminal
+      // and admin controls) minimums are separate from the fixture pin.
       const readonly = agyReadonlyDoctorCheck(installedSemver);
       const workspaceWrite = agyWorkspaceWriteDoctorCheck(installedSemver);
       const requestedSource = spec.authSource;
@@ -493,13 +490,22 @@ async function* runAgy(
     // The vendor probe/run remains the final transport authority.
   }
 
-  const shellGrant = yield* agyWorkspaceWriteShellGrant(spec, route.env);
-  if (shellGrant === null) return;
+  // ONE prepared result: the id sent is the processing receipt's
+  // submittedNative (the effort-selected family variant); spec.model_hint
+  // stays the caller's requested id. It is chosen first: an effort may ask
+  // the account's `agy models` list, and the access decisions below are taken
+  // after that wait, as close to the launch as they can be.
+  const prepared = await applyAgyRunProcessing(spec, listModels);
+  spec = prepared.spec;
+
+  const cli =
+    spec.access === "workspace_write" ? yield* observeAgyWorkspaceWriteCli(spec, route.env) : null;
+  if (spec.access === "workspace_write" && !cli) return;
 
   // Read grant, session policy (readonly or workspace_write), and inline or file input (#653).
-  const access = yield* prepareAgyRunInput(spec, route.home, shellGrant);
+  const access = yield* prepareAgyRunInput(spec, route.home, cli?.facts);
   if (!access) return;
-  const { settings, input, needsSettings } = access;
+  const { settings, input } = access;
 
   // AGY 1.1.13 selects print mode from piped stdin only without a print/prompt flag.
   const args = ["--output-format", "stream-json"];
@@ -507,14 +513,12 @@ async function* runAgy(
   // data dir instead of the workspace (live-proven §1.2d).
   args.push("--add-dir", spec.cwd);
   args.push(...accessArgs(spec.access));
-  // ONE prepared result: the id sent is the processing receipt's
-  // submittedNative (the effort-selected family variant); spec.model_hint
-  // stays the caller's requested id.
-  const prepared = await applyAgyRunProcessing(spec, listModels);
-  spec = prepared.spec;
   if (prepared.nativeModel) args.push("--model", prepared.nativeModel);
   // INV-137: the vendor conversation id is the resumable native session.
   if (spec.resume_session_id) args.push("--conversation", spec.resume_session_id);
+
+  // The version-dependent decisions above hold only for the program they were made on.
+  if (cli && !(yield* confirmAgyWorkspaceWriteProgram(spec, route.env, cli))) return;
 
   const completion = createAgyNativeCompletion();
   const run = (settingsArgs: string[]) =>
@@ -549,7 +553,9 @@ async function* runAgy(
   yield* completion.wrap(
     withAgySessionSettings(settings, spec.session_id, run, {
       access: spec.access === "workspace_write" ? "workspace_write" : "readonly",
-      required: needsSettings,
+      required: access.settingsRequired,
+      written: () =>
+        access.terminalRequested ? [agyWorkspaceWritePolicyEvent(spec.session_id)] : [],
     }),
   );
 }

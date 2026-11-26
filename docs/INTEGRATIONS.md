@@ -3035,67 +3035,128 @@ section's numbered range of parts, instructions first, so its size does not
 grow with the input; the engine notes stay inline. An
 `agy_input_file_delivery` status records sizes and digests, never that the
 model read them. Model-free probes on sampled versions from 1.1.13 through 1.5.3 returned
-32 KiB unbroken lines whole; a live run also read a 32,042-byte line and returned its end marker. Without a run-owned directory, or when agy might not be
-allowed to read outside its workspace, the input is refused before anything
-is sent. Before a run the adapter ensures the profile's own
+32 KiB unbroken lines whole; a live run also read a 32,042-byte line and returned its end marker. Without a run-owned directory, or when no read
+grant reaches a non-full run, the input is refused before anything is sent,
+with the reason. So is input for a profile whose own settings declare an ask
+or denial of every read: `toolPermission: "strict"`, or `read_file(*)`
+itself among its ask or deny rules (only those, as written; under full access
+only the deny rule counts). Only those known declarations are checked: a
+delivery is no guarantee that agy reads every file. Input that fits inline
+still runs. Before a run the adapter ensures the profile's own
 `.gemini/antigravity-cli/settings.json` allows `read_file(*)`, which the vendor
 documents as matching all files on the system, keeping every other key and
 rule. The agent then reads any path in every access profile, as claude and
 codex agents do; without it a headless plan-mode run auto-denies any read
 outside its workspace folder. The vendor evaluates Deny > Ask > Allow, so a
 `read_file` deny rule in that file still wins, and `toolPermission: "strict"` prompts before every
-read even when an allow rule matches. Settings the adapter cannot read, parse or
-write are never rewritten, and a non-full run reports
-`agy_read_grant_unavailable`. In a headless run plan mode's ask for a command
+read even when an allow rule matches. A run reads that file once and takes
+every decision below, and the grant it saves, from that one snapshot. It
+saves the grant only while the file still holds what it read, compared just
+before the replacement; this narrows the window for a concurrent change but
+locks nothing. A run that finds the file changed writes nothing and stops
+before anything is sent (`agy_profile_settings_changed`): start it again.
+Settings the adapter cannot read or parse, and an `allow`, `deny` or `ask`
+list that is not a list of rules, are never rewritten; when the grant is not
+saved, a non-full run reports `agy_read_grant_unavailable`. In a headless run plan mode's ask for a command
 cannot be answered and ends the whole turn, so a readonly run also passes
 session-only settings in a private file (`--settings`) that deny `command(*)`
 and `write_file(*)`, including commands the profile allows. A
-`workspace_write` run (`--mode accept-edits`) has the same headless problem
-with shell commands: an ask nobody can answer is auto-denied and the turn ends
-with an empty `SUCCESS` (two traced runs carried the vendor's `command`
-denial). Such a run passes session-only `--settings` that append `command(*)`
-to the profile's `allow` list and copy its `deny` and `ask` lists as read, so
-the vendor's Deny > Ask > Allow order keeps those rules in force
-(`agy_workspace_write_session_policy`). The grant needs agy `1.5.7` or newer,
-where a wildcard command rule no longer bypasses commands an administrator
-holds for review; the vendor's notes for that release also keep an ask on
-commands that would leave its terminal sandbox, and a profile `ask` rule still
-asks, so such a command can still end a headless turn. The version comes from
-the core's observation of the launcher in the run's own environment and
-directory, which the launch reuses while that program is unchanged. A known older version refuses the
-`workspace_write` run before dispatch
-(`agy_workspace_write_version_unsupported`) with an update remedy; a version
-that cannot be determined starts the run without the grant, as before it
-existed, and says so (`agy_workspace_write_version_unknown`). Like claude and
-cursor this is a tool-policy route with no OS sandbox. Live on macOS with agy 1.5.14
-through the adapter (2026-11-25, one profile, a third-party model): with the
-grant `git status`, an `echo`, a listing outside the workspace, a network fetch
-and a file edit ran in one headless turn and the answer came back; the same CLI
-with the earlier arguments ended that task with an empty `SUCCESS` and the
-vendor's `command` denial on stderr. Linux and Windows have no live run.
+`workspace_write` run (`--mode accept-edits`) does not add a blanket permission
+for commands, writes or network access. The vendor documents a limited terminal mode:
+with `enableTerminalSandbox` on, `toolPermission: "proceed-in-sandbox"` runs a
+command without asking only when it runs inside the terminal sandbox (the
+workspace, temporary directories and common build caches writable, no network
+by default) and asks before any other command; where the sandbox cannot run,
+the setting asks like `request-review`. On agy `1.5.8` or newer the run's
+session-only `--settings` file requests that mode, naming those two settings
+and no permission list, when each of the two is unset in the profile or
+already holds the requested value and its three permission lists are lists of
+rules. The request is
+disclosed (`agy_workspace_write_session_policy`) only once that file is in
+place at launch, never for a run refused before it or one whose file could not
+be written. It is a request: the effective mode is agy's, and the engine does
+not observe it. A value the profile saved for either setting, including
+`request-review`, `strict`, a disabled sandbox or a value the engine does not
+recognize, stays in force and no request is made
+(`agy_workspace_write_terminal_kept`). The
+engine neither reads nor changes settings an administrator manages. The
+profile's allow, deny and ask rules decide before the mode: a command a saved
+allow rule matches still runs without asking (on a personal account also
+outside the sandbox), a saved ask rule still asks, and a command that asks is
+soft-denied in a headless run, which can end the turn. The sandbox mounts every path the profile lets agy read
+(with the read grant above, files outside the workspace too) read-only, so
+build tools can see those files, including a run's input files and the object
+store a run's shared Git clone borrows; it confines where commands write, not
+what they read, and is no isolation for running untrusted code. agy's release
+notes keep file edits asking under `strict` with accept-edits only from
+`1.5.7`, so on an older or undetermined version a profile set to `strict`,
+whatever other rules it saved, or one whose settings cannot be read, is
+refused before its settings are written or anything is sent
+(`agy_workspace_write_strict_unverified`; on macOS the profile keychain
+preparation may already have run). From `1.5.7` a strict profile is admitted,
+but its edits still ask, which a headless run cannot answer. agy fixed
+headless runs that ignored Gemini Enterprise admin controls only in `1.5.8`,
+so below it, or at an unknown version, a profile that saved the allow rule
+`command(*)` or `toolPermission: "always-proceed"`, strict or not, is refused
+the same way, because that permission could override what an administrator
+holds back (`agy_workspace_write_admin_controls_unverified`); so is one whose
+settings or lists cannot be checked. Only those two declarations count, as
+written; narrower rules are not judged, saved rules are never changed, and
+updating agy lifts the refusal. Any other run on an older or undetermined
+version keeps its ordinary edits without the request and says so
+(`agy_workspace_write_version_unsupported`,
+`agy_workspace_write_version_unknown`). The version comes from the core's
+observation of the launcher in the run's own environment and directory, which
+the launch reuses while that program is unchanged. Immediately before launch
+the run asks that observation again and starts only when it is the one its
+decisions were made on; a program replaced or re-read with another version
+meanwhile refuses the run before anything is sent
+(`agy_workspace_write_program_changed`), through the core's own file-identity
+and version memory, with no watcher. This stays a tool-policy
+route: the engine requests the vendor's sandbox but neither applies nor
+verifies an OS boundary. Unit tests pin the
+arguments, session files and statuses the adapter produces. An integration
+test drives Agent runs through the orchestrator against a scripted vendor that
+models the documented behavior (an edit and a sandboxed build in one turn, Git
+in the run's shared clone through the read grant, a saved `request-review`
+still asking, a saved allow rule still deciding, a `strict` profile refused on
+1.5.6, oversized input read through a grant only the session file carries).
+On macOS with agy 1.5.14, Gemini 4 Neon High corrected one line in a sample
+project and ran `node --test` without intervention. The unchanged test passed.
+The same check passed again after the run-preparation fixes; neither run
+measured which files or network destinations the OS blocks.
 agy merges the session object
 into the profile settings key by key, replacing each permission list it names
-and refusing unknown top-level keys, so `--settings` carries only `permissions`
-with all three lists copied from the profile as read (the read grant included)
-and the mode's rule adjustments appended (`agy_readonly_session_policy` or
-`agy_workspace_write_session_policy`). A denied call then fails as its own
-tool step and the model continues. When only saving the read grant fails, the
-session settings still carry it. When profile settings cannot be read or a
-list has another shape, a readonly run refuses before starting
-(`agy_readonly_session_policy_unavailable`), while a workspace_write run starts
-without session settings, as it did before the grant, and says so
-(`agy_workspace_write_session_policy_unavailable`); the same holds when the
-private settings file cannot be written
-(`agy_workspace_write_session_policy_unwritable`), unless that file is the only
-read grant of an input delivered as files, which refuses like a readonly run
-(`agy_readonly_session_policy_unwritable`). The rules are read once when the
-run is prepared: a restriction saved to the profile after that and before the
-child starts is not in the session file.
+and refusing unknown top-level keys (probed on 1.5.0), so a readonly
+`--settings` file carries only `permissions`, with all three lists copied from
+the profile as read (the read grant included) and its denials appended
+(`agy_readonly_session_policy`), while a workspace_write file names the two
+terminal settings it requests and no list. A call a readonly denial matches then fails as its own tool step
+and the model continues. When only saving the read grant fails, a readonly
+run's session settings still carry it, and so does a workspace_write run's
+session file on agy 1.5.7 or newer: the three lists as read with the grant,
+and no other rule. Input delivered as files
+that only this carried grant lets agy read is refused before anything is sent
+when the file cannot be written (`agy_workspace_write_session_policy_unwritable`),
+and on an older or undetermined agy, which gets no such file, it is refused
+too (`agy_input_file_delivery_unavailable`); inline input runs either way. When
+profile settings cannot be read, or a list is not a list of rules, a readonly
+run refuses before starting (`agy_readonly_session_policy_unavailable`). A
+workspace_write run then saves no grant and requests no terminal mode: on agy
+1.5.8 or newer it says so (`agy_workspace_write_session_policy_unavailable`),
+and on an older or undetermined version it is refused as above. A
+workspace_write session file that cannot be written leaves a run with inline
+input without what it carried, said with
+`agy_workspace_write_session_policy_unwritable`. Beyond the check before the
+grant is saved, a restriction saved to the profile after the run read it and
+before the child starts is not in a session file that carries the lists.
 `--settings` needs agy `1.4.10` or newer (official `1.1.13` and
 tested `1.3.4` through `1.4.9` reject it while parsing arguments, before any
 model or account access, stopping with `agy_session_settings_unsupported` and an
-update remedy); full runs are unaffected, doctor reports both
-`readonly_min_version` (`1.4.10+`) and `workspace_write_min_version` (`1.5.7+`),
+update remedy); full runs are unaffected, doctor reports
+`readonly_min_version` (`1.4.10+`) and `workspace_write_min_version` (`1.5.8+`
+for the terminal request and the admin-controls refusal, naming `1.5.7+` for
+a strict profile),
 and nothing updates agy. These minimums are separate from the 1.1.13 fixture
 and transport pin. Other asking categories (`read_url`, `execute_url`, `mcp`)
 may still end a turn. For readonly runs, the instructions end with an engine

@@ -68,7 +68,7 @@ describe("agy input delivery (#653)", () => {
         instructions,
         notes,
         dir,
-        readable: true,
+        unreadable: null,
         sessionId: "s",
       });
       expect(delivery).toEqual({
@@ -91,7 +91,7 @@ describe("agy input delivery (#653)", () => {
         instructions: undefined,
         notes: [],
         dir,
-        readable: true,
+        unreadable: null,
         sessionId: "s",
       }).kind,
     ).toBe("inline");
@@ -101,7 +101,7 @@ describe("agy input delivery (#653)", () => {
         instructions: undefined,
         notes: [],
         dir,
-        readable: true,
+        unreadable: null,
         sessionId: "s",
       }).kind,
     ).toBe("files");
@@ -121,7 +121,7 @@ describe("agy input delivery (#653)", () => {
       instructions,
       notes: [note],
       dir,
-      readable: true,
+      unreadable: null,
       sessionId: "s",
     });
     expect(delivery.kind).toBe("files");
@@ -204,7 +204,7 @@ describe("agy input delivery (#653)", () => {
         instructions: "Answer with the tail marker.",
         notes: [note],
         dir,
-        readable: true,
+        unreadable: null,
         sessionId: "s",
       });
       expect(delivery.kind).toBe("files");
@@ -233,7 +233,7 @@ describe("agy input delivery (#653)", () => {
       // Engine notes are short; an oversized one stands in for any cause.
       notes: ["n".repeat(AGY_INLINE_INPUT_MAX_BYTES)],
       dir,
-      readable: true,
+      unreadable: null,
       sessionId: "s",
     });
     expect(delivery).toEqual({
@@ -251,7 +251,7 @@ describe("agy input delivery (#653)", () => {
       instructions: "  ",
       notes: [],
       dir,
-      readable: true,
+      unreadable: null,
       sessionId: "s",
     });
     const onlyInstructions = agyInputDelivery({
@@ -259,7 +259,7 @@ describe("agy input delivery (#653)", () => {
       instructions: big,
       notes: [],
       dir,
-      readable: true,
+      unreadable: null,
       sessionId: "s",
     });
     for (const [delivery, present, absent, text] of [
@@ -284,7 +284,7 @@ describe("agy input delivery (#653)", () => {
       instructions: "one small instruction",
       notes: [],
       dir,
-      readable: true,
+      unreadable: null,
       sessionId: "s",
     });
     expect(delivery.kind).toBe("files");
@@ -302,7 +302,7 @@ describe("agy input delivery (#653)", () => {
       instructions: undefined,
       notes: [],
       dir,
-      readable: true,
+      unreadable: null,
       sessionId: "s",
     };
     const first = agyInputDelivery(args);
@@ -325,20 +325,30 @@ describe("agy input delivery (#653)", () => {
   it("refuses rather than cutting when the files cannot be delivered", () => {
     const big = "z".repeat(AGY_INLINE_INPUT_MAX_BYTES + 1);
     const base = { prompt: big, instructions: undefined, notes: [], sessionId: "s" };
-    expect(agyInputDelivery({ ...base, dir: null, readable: true })).toEqual({
+    expect(agyInputDelivery({ ...base, dir: null, unreadable: null })).toEqual({
       kind: "refused",
       error: expect.stringContaining("no run-owned directory"),
     });
-    const unreadable = contextDir();
-    expect(agyInputDelivery({ ...base, dir: unreadable, readable: false })).toEqual({
-      kind: "refused",
-      error: expect.stringContaining("read grant is unavailable"),
-    });
-    expect(() => readdirSync(unreadable)).toThrow();
+    // The caller's concrete reason is reported as given, and nothing is written.
+    for (const reason of [
+      "the profile read grant is unavailable",
+      'the profile\'s toolPermission "strict" asks before every read, which a headless run cannot answer',
+    ]) {
+      const unreadable = contextDir();
+      expect(agyInputDelivery({ ...base, dir: unreadable, unreadable: reason })).toEqual({
+        kind: "refused",
+        error: `agy input is ${AGY_INLINE_INPUT_MAX_BYTES + 1} bytes, over the ${AGY_INLINE_INPUT_MAX_BYTES}-byte limit for its standard input, and ${reason}, so agy could refuse to read the input files; nothing was sent`,
+      });
+      expect(() => readdirSync(unreadable)).toThrow();
+    }
+    // Input that fits inline is never refused for it.
+    expect(
+      agyInputDelivery({ ...base, prompt: "small", dir: contextDir(), unreadable: "any reason" }),
+    ).toMatchObject({ kind: "inline", input: "small" });
     const root = mkdtempSync(join(tmpdir(), "agy-input-blocked-"));
     roots.push(root);
     writeFileSync(join(root, "context"), "a file, not a directory");
-    expect(agyInputDelivery({ ...base, dir: join(root, "context"), readable: true })).toEqual({
+    expect(agyInputDelivery({ ...base, dir: join(root, "context"), unreadable: null })).toEqual({
       kind: "refused",
       error: expect.stringContaining("could not be saved"),
     });

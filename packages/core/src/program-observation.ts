@@ -4,7 +4,7 @@ import type {
   SelectedHarnessProgram,
 } from "@claudexor/schema";
 import { composeSpawnEnv } from "./env-scope.js";
-import { harnessBinaryIdentityOnPath } from "./runtime-env.js";
+import { harnessBinaryIdentityOnPath, type WindowsConsolePolicy } from "./runtime-env.js";
 import { sharedLaunch } from "./run-spawn.js";
 import {
   resolveSelectedProgramAsync,
@@ -108,12 +108,20 @@ export function programObservationPublisher(
 
 /** Passive reads inspect file identity only. The first read of an entry and
  * explicit fresh reads share one version process. An unanswered ask is remembered
- * by file identity too; consumers may reuse evidence under that same null answer. */
+ * by file identity too; consumers may reuse evidence under that same null answer.
+ * `windowsConsole` is the asking adapter's console policy for that version
+ * process (default `hidden`); it does not key the answer. */
 export async function observeHarnessProgram(
   program: HarnessProgram | undefined,
   patch?: Record<string, string | null | undefined>,
   bin?: string,
-  options: { fresh?: boolean; probe?: boolean; environment?: NodeJS.ProcessEnv; cwd?: string } = {},
+  options: {
+    fresh?: boolean;
+    probe?: boolean;
+    environment?: NodeJS.ProcessEnv;
+    cwd?: string;
+    windowsConsole?: WindowsConsolePolicy;
+  } = {},
 ): Promise<ProgramObservation> {
   if (!program)
     return { selection: null, program: null, key: "no-program", versionSource: "unknown" };
@@ -140,7 +148,10 @@ export async function observeHarnessProgram(
   // One version probe serves every concurrent caller: it launches outside the
   // first caller's run scope, so no run's stop or deadline ends it for the others.
   const pending = sharedLaunch("program-version", () =>
-    resolveSelectedProgramAsync(program, resolution),
+    resolveSelectedProgramAsync(program, {
+      ...resolution,
+      ...(options.windowsConsole ? { windowsConsole: options.windowsConsole } : {}),
+    }),
   )
     .then((answer) => {
       if (

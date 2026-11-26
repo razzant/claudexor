@@ -20,10 +20,26 @@ import { agySettingsPath } from "./read-grant.js";
 
 const observed = vi.hoisted(() => ({
   version: "1.1.13",
+  /** What the next observations answer, one each, before `version` again. */
+  sequence: [] as Array<string | null>,
   options: [] as CliRunLoopOptions[],
   captures: [] as Array<SpawnOptions | undefined>,
-  gates: [] as Array<{ environment?: NodeJS.ProcessEnv; cwd?: string } | undefined>,
+  gates: [] as Array<
+    { environment?: NodeJS.ProcessEnv; cwd?: string; windowsConsole?: string } | undefined
+  >,
+  /** Answers the account's `agy models` list in place of the vendor, when set. */
+  models: null as null | (() => string),
 }));
+vi.mock("./print-command.js", async (original) => {
+  const actual = await original<typeof import("./print-command.js")>();
+  return {
+    ...actual,
+    runAgyPrintCommand: async (...args: Parameters<typeof actual.runAgyPrintCommand>) =>
+      observed.models
+        ? { kind: "completed", code: 0, signal: null, stdout: observed.models(), stderr: "" }
+        : actual.runAgyPrintCommand(...args),
+  };
+});
 vi.mock("@claudexor/core", async (original) => {
   const actual = await original<typeof import("@claudexor/core")>();
   return {
@@ -33,10 +49,12 @@ vi.mock("@claudexor/core", async (original) => {
       _program: unknown,
       _patch: unknown,
       _bin: unknown,
-      options?: { environment?: NodeJS.ProcessEnv; cwd?: string },
+      options?: { environment?: NodeJS.ProcessEnv; cwd?: string; windowsConsole?: string },
     ) => {
       observed.gates.push(options);
-      return { selection: { version: observed.version }, program: null, key: "fixture" };
+      const version = observed.sequence.length > 0 ? observed.sequence.shift()! : observed.version;
+      // The core keys an observation by file identity and version.
+      return { selection: { version }, program: null, key: `fixture:${version}` };
     },
     resolveSelectedProgramAsync: async (_program: unknown, options?: SpawnOptions) => {
       observed.captures.push(options);
@@ -97,9 +115,11 @@ vi.mock("@claudexor/core", async (original) => {
 const roots: string[] = [];
 afterEach(() => {
   observed.version = "1.1.13";
+  observed.sequence.length = 0;
   observed.options.length = 0;
   observed.captures.length = 0;
   observed.gates.length = 0;
+  observed.models = null;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function spec(
@@ -163,7 +183,7 @@ describe("AGY Windows console policy", () => {
 
 describe("AGY doctor minimum CLI versions (#653)", () => {
   it("accepts a newer installed program without comparing it with the fixture stamp", async () => {
-    observed.version = "1.5.7";
+    observed.version = "1.5.8";
     const report = await createAgyAdapter({ prepareProfileKeychain: () => undefined }).doctor(
       {} as never,
     );
@@ -403,85 +423,265 @@ describe("AGY native raw stdin selection", () => {
     },
   );
 
+  const TERMINAL = { enableTerminalSandbox: true, toolPermission: "proceed-in-sandbox" };
+  const GRANT = "read_file(*)";
+  function saveProfile(input: HarnessRunSpec, saved: unknown): string {
+    const settingsPath = agySettingsPath(input.credential_profile!.isolation_locator!);
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, typeof saved === "string" ? saved : JSON.stringify(saved));
+    return settingsPath;
+  }
+  const codesOf = (events: HarnessEvent[]) => events.map((event) => event.payload?.["code"]);
+  const profileOf = (input: HarnessRunSpec): unknown =>
+    JSON.parse(readFileSync(agySettingsPath(input.credential_profile!.isolation_locator!), "utf8"));
+  const runDir = () => {
+    const run = mkdtempSync(join(claudexorOwnedRoot(), "agy-run-"));
+    roots.push(run);
+    return join(run, "context");
+  };
+  const oversized = `${"plain ledger line\n".repeat(9_000)}TAIL-WORKSPACE-WRITE`;
+
+  it("requests the terminal sandbox via --settings on agy 1.5.8 or newer, naming no permission list", async () => {
+    observed.version = "1.5.14";
+    const input = spec("Fix it.", "caller instructions", "workspace_write");
+    const saved = JSON.stringify({
+      theme: "dark",
+      permissions: {
+        allow: ["command(git status)"],
+        deny: ["command(rm -rf /)"],
+        ask: ["mcp(*)"],
+      },
+    });
+    const settingsPath = saveProfile(input, saved);
+    const events = await collect(input);
+    const options = observed.options[0]!;
+    expect(options.input).toBe(
+      "[SYSTEM INSTRUCTIONS]\ncaller instructions\n[END SYSTEM INSTRUCTIONS]\n\nFix it.",
+    );
+    expect(
+      options.args.slice(options.args.indexOf("--mode"), options.args.indexOf("--mode") + 2),
+    ).toEqual(["--mode", "accept-edits"]);
+    expect(options.args).not.toContain("--dangerously-skip-permissions");
+    const settingsFile = options.args[options.args.indexOf("--settings") + 1]!;
+    // Only the two terminal keys: the profile's lists stay the ones agy reads itself.
+    expect(answerOf(events).settings).toEqual(TERMINAL);
+    // Like every agy run, the profile keeps its rules and gains only the read grant.
+    expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+      theme: "dark",
+      permissions: {
+        allow: ["command(git status)", GRANT],
+        deny: ["command(rm -rf /)"],
+        ask: ["mcp(*)"],
+      },
+    });
+    expect(existsSync(settingsFile)).toBe(false);
+    const codes = codesOf(events);
+    expect(codes).toContain("agy_workspace_write_session_policy");
+    expect(codes).not.toContain("agy_read_grant_unavailable");
+    expect(codes).not.toContain("agy_readonly_access_note");
+    expect(codes).not.toContain("agy_readonly_session_policy");
+    expect(
+      events.find((event) => event.payload?.["code"] === "agy_workspace_write_session_policy")
+        ?.text,
+    ).toContain("request agy's terminal sandbox");
+  });
+
+  it("keeps the read grant of every agy run, also for a profile without settings", async () => {
+    observed.version = "1.5.14";
+    const input = spec(oversized, undefined, "workspace_write", runDir());
+    const events = await collect(input);
+    expect(profileOf(input)).toEqual({ permissions: { allow: [GRANT] } });
+    const answer = answerOf(events);
+    // The input is read through that grant; the session file names no list.
+    expect(answer.files.task?.bytes).toBe(Buffer.byteLength(oversized));
+    expect(answer.settings).toEqual(TERMINAL);
+    expect(codesOf(events)).not.toContain("agy_read_grant_unavailable");
+  });
+
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-    "keeps workspace_write working via session settings when the read grant cannot be saved",
+    "carries a read grant it could not save in the session file on agy 1.5.7 or newer",
     async () => {
-      observed.version = "1.5.14";
-      const run = mkdtempSync(join(claudexorOwnedRoot(), "agy-run-"));
-      roots.push(run);
-      const small = spec("Fix it.", undefined, "workspace_write", join(run, "context"));
-      const settingsPath = agySettingsPath(small.credential_profile!.isolation_locator!);
-      const profileSettings = JSON.stringify({
-        permissions: { allow: [], deny: ["read_file(/secret/**)"], ask: ["mcp(*)"] },
-      });
-      mkdirSync(dirname(settingsPath), { recursive: true });
-      writeFileSync(settingsPath, profileSettings);
+      const dir = runDir();
+      const input = spec("Fix it.", undefined, "workspace_write", dir);
+      const lists = { allow: ["command(git status)"], deny: ["command(sudo)"], ask: ["mcp(*)"] };
+      const saved = JSON.stringify({ toolPermission: "request-review", permissions: lists });
+      const settingsPath = saveProfile(input, saved);
       chmodSync(dirname(settingsPath), 0o500);
       try {
-        const events = await collect(small);
-        expect(observed.options[0]!.args).toContain("--settings");
-        expect(answerOf(events).settings).toEqual({
-          permissions: {
-            allow: ["read_file(*)", "command(*)"],
-            deny: ["read_file(/secret/**)"],
-            ask: ["mcp(*)"],
-          },
-        });
-        const grant = events.find(
-          (event) => event.payload?.["code"] === "agy_read_grant_unavailable",
-        );
-        expect(grant?.text).toContain(
-          "only this workspace_write run's session settings grant reads",
-        );
-        const large = await collect({ ...small, prompt: "p".repeat(128 * 1024 + 1) });
-        expect(observed.options).toHaveLength(2);
-        expect(large.some((event) => event.type === "message" && event.final)).toBe(true);
-        expect(readFileSync(settingsPath, "utf8")).toBe(profileSettings);
+        // The lists as read with the grant; no other rule, and the saved choice kept.
+        const carried = { ...lists, allow: [...lists.allow, GRANT] };
+        for (const version of ["1.5.7", "1.5.14"]) {
+          observed.version = version;
+          observed.options.length = 0;
+          const small = await collect(input);
+          expect(observed.options).toHaveLength(1);
+          expect(answerOf(small).settings).toEqual({ permissions: carried });
+          expect(
+            small.find((event) => event.payload?.["code"] === "agy_read_grant_unavailable")?.text,
+          ).toContain("only this workspace_write run's session settings grant reads");
+          observed.options.length = 0;
+          const large = await collect({ ...input, prompt: oversized });
+          expect(observed.options).toHaveLength(1);
+          const answer = answerOf(large);
+          expect(answer.settings).toEqual({ permissions: carried });
+          expect(answer.files.task?.bytes).toBe(Buffer.byteLength(oversized));
+          expect(codesOf(large)).not.toContain("agy_workspace_write_session_policy");
+        }
+        expect(readFileSync(settingsPath, "utf8")).toBe(saved);
       } finally {
         chmodSync(dirname(settingsPath), 0o700);
       }
     },
   );
 
-  it("grants command(*) via --settings for workspace_write on >= 1.5.7 while keeping profile Deny/Ask", async () => {
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "carries the grant beside the terminal request, and refuses only input it must read on an older or undetermined agy",
+    async () => {
+      const dir = runDir();
+      const input = spec("Fix it.", undefined, "workspace_write", dir);
+      const saved = JSON.stringify({ permissions: { allow: ["command(git status)"] } });
+      const settingsPath = saveProfile(input, saved);
+      chmodSync(dirname(settingsPath), 0o500);
+      try {
+        observed.version = "1.5.14";
+        const both = await collect({ ...input, prompt: oversized });
+        expect(answerOf(both).settings).toEqual({
+          permissions: { allow: ["command(git status)", GRANT], deny: [], ask: [] },
+          ...TERMINAL,
+        });
+        expect(codesOf(both)).toContain("agy_workspace_write_session_policy");
+        for (const version of ["1.5.6", null]) {
+          observed.version = version as string;
+          observed.options.length = 0;
+          const small = await collect(input);
+          expect(observed.options).toHaveLength(1);
+          expect(answerOf(small).settings).toBeNull();
+          expect(
+            small.find((event) => event.payload?.["code"] === "agy_read_grant_unavailable")?.text,
+          ).toContain("agy may refuse reads outside the workspace without asking");
+          const large = await collect({ ...input, prompt: oversized });
+          expect(observed.options).toHaveLength(1);
+          expect(large.slice(-2).map((event) => event.type)).toEqual(["error", "completed"]);
+          expect(large.at(-2)).toMatchObject({
+            payload: { code: "agy_input_file_delivery_unavailable" },
+            error: expect.stringContaining("the profile read grant is unavailable"),
+          });
+        }
+        expect(readFileSync(settingsPath, "utf8")).toBe(saved);
+      } finally {
+        chmodSync(dirname(settingsPath), 0o700);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "refuses file input whose only grant is a session file it cannot write, and runs inline input without it",
+    async () => {
+      observed.version = "1.5.14";
+      const input = spec("Fix it.", undefined, "workspace_write", runDir());
+      const settingsPath = saveProfile(input, JSON.stringify({}));
+      const blocked = mkdtempSync(join(claudexorOwnedRoot(), "agy-tmp-blocked-"));
+      roots.push(blocked);
+      chmodSync(dirname(settingsPath), 0o500);
+      chmodSync(blocked, 0o500);
+      const previous = process.env.TMPDIR;
+      process.env.TMPDIR = blocked;
+      try {
+        const large = await collect({ ...input, prompt: oversized });
+        expect(observed.options).toHaveLength(0);
+        expect(large.slice(-2).map((event) => event.type)).toEqual(["error", "completed"]);
+        expect(large.at(-2)).toMatchObject({
+          payload: { code: "agy_workspace_write_session_policy_unwritable" },
+          error: expect.stringContaining("nothing was sent"),
+        });
+        // Never announced: the request never reached a launch.
+        expect(codesOf(large)).not.toContain("agy_workspace_write_session_policy");
+        const small = await collect(input);
+        expect(observed.options).toHaveLength(1);
+        expect(observed.options[0]!.args).not.toContain("--settings");
+        const lacks = small.find(
+          (event) => event.payload?.["code"] === "agy_workspace_write_session_policy_unwritable",
+        );
+        expect(lacks?.type).toBe("status");
+        expect(lacks?.text).toContain("it requests no terminal sandbox");
+        expect(lacks?.text).toContain("it carries no read grant in place of the one");
+        expect(codesOf(small)).not.toContain("agy_workspace_write_session_policy");
+      } finally {
+        if (previous === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = previous;
+        chmodSync(blocked, 0o700);
+        chmodSync(dirname(settingsPath), 0o700);
+      }
+    },
+  );
+
+  it("announces the terminal request only with a launch, never for refused input", async () => {
     observed.version = "1.5.14";
-    const input = spec("Fix it.", "caller instructions", "workspace_write");
-    const settingsPath = agySettingsPath(input.credential_profile!.isolation_locator!);
-    mkdirSync(dirname(settingsPath), { recursive: true });
-    writeFileSync(
-      settingsPath,
-      JSON.stringify({
-        permissions: {
-          allow: ["read_file(/repo/**)"],
-          deny: ["command(rm -rf /)"],
-          ask: ["mcp(*)"],
-        },
-      }),
-    );
-    const events = await collect(input);
-    expect(observed.options[0]!.input).toBe(
-      "[SYSTEM INSTRUCTIONS]\ncaller instructions\n[END SYSTEM INSTRUCTIONS]\n\nFix it.",
-    );
-    expect(observed.options[0]!.args).toContain("--settings");
-    expect(answerOf(events).settings).toEqual({
-      permissions: {
-        allow: ["read_file(/repo/**)", "read_file(*)", "command(*)"],
-        deny: ["command(rm -rf /)"],
-        ask: ["mcp(*)"],
-      },
-    });
-    const codes = events.map((event) => event.payload?.["code"]);
-    expect(codes).toContain("agy_workspace_write_session_policy");
-    expect(codes).not.toContain("agy_readonly_access_note");
-    expect(codes).not.toContain("agy_readonly_session_policy");
+    // No run-owned directory for an input over the inline limit: refused.
+    const refused = await collect(spec("p".repeat(128 * 1024 + 1), undefined, "workspace_write"));
+    expect(observed.options).toHaveLength(0);
+    expect(codesOf(refused)).toContain("agy_input_file_delivery_unavailable");
+    expect(codesOf(refused)).not.toContain("agy_workspace_write_session_policy");
   });
+
+  it("checks all three lists before saving the grant or requesting the terminal mode", async () => {
+    observed.version = "1.5.14";
+    const input = spec("Fix it.", undefined, "workspace_write");
+    const saved = JSON.stringify({
+      permissions: { allow: ["command(git status)"], deny: "command(sudo)" },
+    });
+    const settingsPath = saveProfile(input, saved);
+    const events = await collect(input);
+    // Ordinary inline work still runs, with neither the grant nor the request.
+    expect(observed.options).toHaveLength(1);
+    expect(observed.options[0]!.args).not.toContain("--settings");
+    expect(observed.options[0]!.args).toContain("accept-edits");
+    expect(readFileSync(settingsPath, "utf8")).toBe(saved);
+    const unavailable = events.find(
+      (event) => event.payload?.["code"] === "agy_workspace_write_session_policy_unavailable",
+    );
+    expect(unavailable?.text).toMatch(/: settings\.json permissions\.deny is not a list of rules$/);
+    expect(codesOf(events)).toContain("agy_read_grant_unavailable");
+    expect(codesOf(events)).not.toContain("agy_workspace_write_session_policy");
+  });
+
+  it.each([
+    [{ toolPermission: "request-review" }, 'toolPermission is "request-review"'],
+    [{ toolPermission: "strict" }, 'toolPermission is "strict"'],
+    [{ toolPermission: "always-proceed" }, 'toolPermission is "always-proceed"'],
+    [{ toolPermission: "ask-twice" }, "toolPermission has a value this engine does not recognize"],
+    [{ enableTerminalSandbox: false }, "enableTerminalSandbox is false"],
+  ])(
+    "keeps the profile's own %j and sends a short workspace_write run no settings",
+    async (saved, reason) => {
+      observed.version = "1.5.14";
+      const input = spec("Fix it.", undefined, "workspace_write");
+      const settingsPath = saveProfile(input, saved);
+      const events = await collect(input);
+      expect(observed.options).toHaveLength(1);
+      expect(observed.options[0]!.args).not.toContain("--settings");
+      expect(observed.options[0]!.args).toContain("accept-edits");
+      expect(answerOf(events).settings).toBeNull();
+      const kept = events.find(
+        (event) => event.payload?.["code"] === "agy_workspace_write_terminal_kept",
+      );
+      expect(kept).toMatchObject({
+        type: "status",
+        text: expect.stringContaining("requests no terminal sandbox"),
+      });
+      expect(kept!.text!.endsWith(`: the profile's ${reason}`)).toBe(true);
+      expect(codesOf(events)).not.toContain("agy_workspace_write_session_policy");
+      expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+        ...saved,
+        permissions: { allow: [GRANT] },
+      });
+    },
+  );
 
   it("starts a workspace_write run without session settings when the profile settings are unreadable", async () => {
     observed.version = "1.5.14";
     const input = spec("Fix.", undefined, "workspace_write");
-    const settingsPath = agySettingsPath(input.credential_profile!.isolation_locator!);
-    mkdirSync(dirname(settingsPath), { recursive: true });
-    writeFileSync(settingsPath, "{ not json");
+    const settingsPath = saveProfile(input, "{ not json");
     const events = await collect(input);
     expect(observed.options).toHaveLength(1);
     expect(observed.options[0]!.args).not.toContain("--settings");
@@ -492,62 +692,325 @@ describe("AGY native raw stdin selection", () => {
       ),
     ).toMatchObject({
       type: "status",
-      text: expect.stringMatching(
-        /may be refused without asking: settings\.json is not valid JSON$/,
-      ),
+      text: expect.stringMatching(/headless turn: settings\.json is not valid JSON$/),
     });
+    expect(codesOf(events)).toContain("agy_read_grant_unavailable");
     expect(readFileSync(settingsPath, "utf8")).toBe("{ not json");
   });
 
-  it.each(["1.1.13", "1.4.10", "1.5.6", "1.5.7-rc.1"] as const)(
-    "refuses workspace_write before spawning on a known agy %s (below 1.5.7)",
+  it.each(["1.1.13", "1.4.10", "1.5.7", "1.5.8-rc.1"] as const)(
+    "runs a short workspace_write task on a known older agy %s without session settings",
     async (version) => {
       observed.version = version;
       const events = await collect(spec("Fix it.", undefined, "workspace_write"));
+      expect(observed.options).toHaveLength(1);
+      expect(observed.options[0]!.args).not.toContain("--settings");
+      expect(observed.options[0]!.args).toContain("accept-edits");
+      expect(events.some((event) => event.type === "error")).toBe(false);
+      expect(events.some((event) => event.type === "message" && event.final)).toBe(true);
+      expect(
+        events.find(
+          (event) => event.payload?.["code"] === "agy_workspace_write_version_unsupported",
+        ),
+      ).toMatchObject({
+        type: "status",
+        payload: { installed_version: version, min_version: "1.5.8" },
+        text: expect.stringContaining("requests no terminal sandbox"),
+      });
+      expect(codesOf(events)).not.toContain("agy_workspace_write_session_policy");
+    },
+  );
+
+  it.each([
+    ["1.1.13", { toolPermission: "strict" }, 'the profile\'s toolPermission is "strict"'],
+    ["1.5.6", { toolPermission: "strict" }, 'the profile\'s toolPermission is "strict"'],
+    ["1.5.7-rc.1", { toolPermission: "strict" }, 'the profile\'s toolPermission is "strict"'],
+    [null, { toolPermission: "strict" }, 'the profile\'s toolPermission is "strict"'],
+    ["1.5.6", "{ not json", "so it is unknown whether they set toolPermission"],
+    [null, "{ not json", "so it is unknown whether they set toolPermission"],
+    // Saved rules that let commands run without asking do not lift the refusal.
+    [
+      "1.5.6",
+      { toolPermission: "strict", permissions: { allow: ["command(*)", "command(npm test)"] } },
+      'the profile\'s toolPermission is "strict"',
+    ],
+  ] as const)(
+    "refuses workspace_write before spawning on agy %s for a profile whose strict accept-edits might loosen (%j)",
+    async (version, saved, cause) => {
+      observed.version = version as string;
+      const input = spec("Fix it.", undefined, "workspace_write");
+      const settingsPath = saveProfile(input, saved);
+      const before = readFileSync(settingsPath, "utf8");
+      const events = await collect(input);
       expect(observed.options).toHaveLength(0);
       expect(events.map((event) => event.type)).toEqual(["error", "completed"]);
       expect(events[0]).toMatchObject({
         payload: {
-          code: "agy_workspace_write_version_unsupported",
+          code: "agy_workspace_write_strict_unverified",
           installed_version: version,
           min_version: "1.5.7",
         },
-        error: expect.stringContaining("requires agy 1.5.7 or newer"),
+        error: expect.stringContaining(cause),
       });
+      expect(events[0]!.error).toMatch(/^agy workspace_write did not start, so nothing was sent: /);
+      expect(events[0]!.error!.endsWith("; update agy to 1.5.7 or newer")).toBe(true);
+      expect(readFileSync(settingsPath, "utf8")).toBe(before);
     },
   );
 
-  it("starts workspace_write without the shell grant when the agy version is undetermined", async () => {
+  it.each([
+    ["1.5.7", [{ toolPermission: "strict" }]],
+    ["1.5.14", [{ toolPermission: "strict" }, "{ not json"]],
+  ] as const)(
+    "admits a strict profile on agy %s, where file edits still ask under strict",
+    async (version, profiles) => {
+      observed.version = version;
+      for (const saved of profiles) {
+        observed.options.length = 0;
+        const input = spec("Fix it.", undefined, "workspace_write");
+        saveProfile(input, saved);
+        const events = await collect(input);
+        expect(observed.options).toHaveLength(1);
+        expect(observed.options[0]!.args).toContain("accept-edits");
+        expect(observed.options[0]!.args).not.toContain("--settings");
+        expect(codesOf(events)).not.toContain("agy_workspace_write_strict_unverified");
+        expect(codesOf(events)).not.toContain("agy_workspace_write_admin_controls_unverified");
+      }
+    },
+  );
+
+  it.each([
+    ["1.1.13", { permissions: { allow: ["command(*)"] } }, "the profile's allow rule command(*)"],
+    ["1.5.7", { permissions: { allow: ["command(*)"] } }, "the profile's allow rule command(*)"],
+    [null, { permissions: { allow: ["command(*)"] } }, "the profile's allow rule command(*)"],
+    [
+      "1.5.7",
+      { toolPermission: "always-proceed" },
+      'the profile\'s toolPermission "always-proceed"',
+    ],
+    [
+      "1.5.8-rc.1",
+      { toolPermission: "always-proceed", permissions: { allow: ["command(*)"] } },
+      'the profile\'s toolPermission "always-proceed"',
+    ],
+    // Strict is admitted from 1.5.7; a saved permission for every command is not.
+    [
+      "1.5.7",
+      { toolPermission: "strict", permissions: { allow: ["command(*)"] } },
+      "the profile's allow rule command(*)",
+    ],
+    ["1.5.7", "{ not json", "so it is unknown whether they let every shell command run"],
+    [
+      "1.5.7",
+      { permissions: { allow: ["command(*)"], ask: "mcp(*)" } },
+      "so it is unknown whether they let every shell command run",
+    ],
+  ] as const)(
+    "refuses workspace_write before spawning on agy %s for a saved permission for every command (%j)",
+    async (version, saved, cause) => {
+      observed.version = version as string;
+      const input = spec("Fix it.", undefined, "workspace_write");
+      const settingsPath = saveProfile(input, saved);
+      const before = readFileSync(settingsPath, "utf8");
+      const events = await collect(input);
+      expect(observed.options).toHaveLength(0);
+      expect(events.map((event) => event.type)).toEqual(["error", "completed"]);
+      expect(events[0]).toMatchObject({
+        payload: {
+          code: "agy_workspace_write_admin_controls_unverified",
+          installed_version: version,
+          min_version: "1.5.8",
+        },
+        error: expect.stringContaining(cause),
+      });
+      expect(events[0]!.error).toMatch(/^agy workspace_write did not start, so nothing was sent: /);
+      expect(events[0]!.error).toContain("Gemini Enterprise admin controls");
+      expect(events[0]!.error!.endsWith("; update agy to 1.5.8 or newer")).toBe(true);
+      // The saved rules stay exactly as they were: no grant, no rewrite.
+      expect(readFileSync(settingsPath, "utf8")).toBe(before);
+    },
+  );
+
+  it("treats a settings file with a byte order mark as unreadable, never as empty", async () => {
+    const saved = `\uFEFF${JSON.stringify({ toolPermission: "strict" })}`;
+    observed.version = "1.5.14";
+    const current = spec("Fix it.", undefined, "workspace_write");
+    const currentPath = saveProfile(current, saved);
+    const ran = await collect(current);
+    expect(observed.options).toHaveLength(1);
+    expect(observed.options[0]!.args).not.toContain("--settings");
+    expect(codesOf(ran)).toContain("agy_workspace_write_session_policy_unavailable");
+    expect(readFileSync(currentPath, "utf8")).toBe(saved);
+    observed.options.length = 0;
+    observed.version = "1.5.6";
+    const older = spec("Fix it.", undefined, "workspace_write");
+    saveProfile(older, saved);
+    const refused = await collect(older);
+    expect(observed.options).toHaveLength(0);
+    expect(codesOf(refused)).toContain("agy_workspace_write_strict_unverified");
+  });
+
+  it("reads null permissions as no saved rules", async () => {
+    observed.version = "1.5.14";
+    const input = spec(oversized, undefined, "workspace_write", runDir());
+    saveProfile(input, { permissions: null });
+    const events = await collect(input);
+    expect(profileOf(input)).toEqual({ permissions: { allow: [GRANT] } });
+    expect(answerOf(events).settings).toEqual(TERMINAL);
+    expect(answerOf(events).files.task?.bytes).toBe(Buffer.byteLength(oversized));
+  });
+
+  it("starts workspace_write without the terminal request when the agy version is undetermined", async () => {
     observed.version = null as unknown as string;
     const events = await collect(spec("Fix it.", undefined, "workspace_write"));
     expect(observed.options).toHaveLength(1);
     expect(observed.options[0]!.args).not.toContain("--settings");
     expect(observed.options[0]!.args).toContain("accept-edits");
-    const codes = events.map((event) => event.payload?.["code"]);
+    const codes = codesOf(events);
     expect(codes).toContain("agy_workspace_write_version_unknown");
     expect(codes).not.toContain("agy_workspace_write_version_unsupported");
     expect(codes).not.toContain("agy_workspace_write_session_policy");
   });
 
-  it("sends the shell grant to a prerelease of a later agy", async () => {
+  it("sends the terminal request to a prerelease of a later agy", async () => {
     observed.version = "1.6.0-rc.1";
     const events = await collect(spec("Fix it.", undefined, "workspace_write"));
     expect(observed.options[0]!.args).toContain("--settings");
-    expect(answerOf(events).settings).toEqual({
-      permissions: { allow: ["read_file(*)", "command(*)"], deny: [], ask: [] },
+    expect(answerOf(events).settings).toEqual(TERMINAL);
+  });
+
+  it("delivers oversized workspace_write input whole through the read grant, naming no list", async () => {
+    observed.version = "1.5.14";
+    const dir = runDir();
+    const input = spec(oversized, "caller instructions", "workspace_write", dir);
+    const lists = {
+      allow: ["command(git status)"],
+      deny: ["read_file(/secret)", "command(sudo)"],
+      ask: ["mcp(*)"],
+    };
+    saveProfile(input, { permissions: lists });
+    const events = await collect(input);
+    expect(observed.options).toHaveLength(1);
+    expect(observed.options[0]!.input).not.toContain("TAIL-WORKSPACE-WRITE");
+    const answer = answerOf(events);
+    expect(answer.files.task).toEqual({
+      bytes: Buffer.byteLength(oversized),
+      hash: createHash("sha256").update(oversized).digest("hex"),
     });
+    expect(readdirSync(dir)).toEqual([expect.stringMatching(/^agy-input-[0-9a-f]{64}$/)]);
+    expect(answer.settings).toEqual(TERMINAL);
+    expect(profileOf(input)).toEqual({ permissions: { ...lists, allow: [...lists.allow, GRANT] } });
+    const codes = codesOf(events);
+    expect(codes).toContain("agy_input_file_delivery");
+    expect(codes).toContain("agy_workspace_write_session_policy");
+  });
+
+  it.each(["1.1.13", "1.4.10", "1.5.7", null] as const)(
+    "delivers oversized input whole on agy %s through the read grant, without session settings",
+    async (version) => {
+      observed.version = version as string;
+      const input = spec(oversized, undefined, "workspace_write", runDir());
+      const events = await collect(input);
+      expect(observed.options).toHaveLength(1);
+      expect(observed.options[0]!.args).not.toContain("--settings");
+      const answer = answerOf(events);
+      expect(answer.settings).toBeNull();
+      expect(answer.files.task?.bytes).toBe(Buffer.byteLength(oversized));
+      expect(profileOf(input)).toEqual({ permissions: { allow: [GRANT] } });
+    },
+  );
+
+  it.each([
+    ["readonly", { toolPermission: "strict" }, 'the profile\'s toolPermission "strict" asks'],
+    [
+      "workspace_write",
+      { toolPermission: "strict" },
+      'the profile\'s toolPermission "strict" asks',
+    ],
+    [
+      "inherit_native",
+      { permissions: { ask: ["read_file(*)"] } },
+      "the profile's ask rule read_file(*) asks",
+    ],
+    [
+      "readonly",
+      { permissions: { deny: ["read_file(*)"] } },
+      "the profile's deny rule read_file(*) refuses",
+    ],
+    [
+      "full",
+      { permissions: { deny: ["read_file(*)"] } },
+      "the profile's deny rule read_file(*) refuses",
+    ],
+    // An unrelated malformed list does not hide the explicit denial.
+    [
+      "full",
+      { permissions: { deny: ["read_file(*)"], ask: "mcp(*)" } },
+      "the profile's deny rule read_file(*) refuses",
+    ],
+  ] as const)(
+    "refuses %s input it must deliver as files when the profile's own settings hold every read (%j)",
+    async (access, saved, reason) => {
+      observed.version = "1.5.14";
+      const dir = runDir();
+      const input = spec(oversized, undefined, access, dir);
+      saveProfile(input, saved);
+      const events = await collect(input);
+      expect(observed.options).toHaveLength(0);
+      expect(events.slice(-2).map((event) => event.type)).toEqual(["error", "completed"]);
+      expect(events.at(-2)).toMatchObject({
+        payload: { code: "agy_input_file_delivery_unavailable" },
+        error: expect.stringContaining(`-byte limit for its standard input, and ${reason}`),
+      });
+      expect(events.at(-2)!.error).toMatch(
+        /so agy could refuse to read the input files; nothing was sent$/,
+      );
+      expect(existsSync(dir)).toBe(false);
+      // Inline input needs no file read and still runs.
+      const inline = await collect({ ...input, prompt: "Fix it." });
+      expect(observed.options).toHaveLength(1);
+      expect(codesOf(inline)).not.toContain("agy_input_file_delivery_unavailable");
+    },
+  );
+
+  it("delivers files to a full run whose prompts it approves, under strict or an ask rule", async () => {
+    const input = spec(oversized, undefined, "full", runDir());
+    saveProfile(input, { toolPermission: "strict", permissions: { ask: ["read_file(*)"] } });
+    const events = await collect(input);
+    expect(observed.options).toHaveLength(1);
+    expect(answerOf(events).files.task?.bytes).toBe(Buffer.byteLength(oversized));
+  });
+
+  it("refuses oversized workspace_write input before sending when the settings cannot be read", async () => {
+    observed.version = "1.5.14";
+    const dir = runDir();
+    const input = spec(oversized, undefined, "workspace_write", dir);
+    saveProfile(input, "{ not json");
+    const events = await collect(input);
+    expect(observed.options).toHaveLength(0);
+    expect(events.slice(-2).map((event) => event.type)).toEqual(["error", "completed"]);
+    expect(events.at(-2)).toMatchObject({
+      payload: { code: "agy_input_file_delivery_unavailable" },
+      error: expect.stringContaining("the profile read grant is unavailable"),
+    });
+    expect(existsSync(dir)).toBe(false);
   });
 
   it("gates on the program this run launches and ends cleanly when aborted meanwhile", async () => {
     observed.version = "1.5.14";
     const input = spec("Fix it.", undefined, "workspace_write");
     await collect(input);
-    // The profile's own HOME and the run's directory, as at launch.
-    expect(observed.gates).toHaveLength(1);
-    expect(observed.gates[0]!.cwd).toBe(input.cwd);
-    expect(observed.gates[0]!.environment?.["HOME"]).toBe(
-      realpathSync(input.credential_profile!.isolation_locator!),
-    );
+    // The decision and the pre-launch confirmation ask the same observation:
+    // the profile's own HOME and the run's directory, as at launch.
+    expect(observed.gates).toHaveLength(2);
+    for (const gate of observed.gates) {
+      expect(gate!.cwd).toBe(input.cwd);
+      // Its version probe starts console-less on Windows, like the run.
+      expect(gate!.windowsConsole).toBe("none");
+      expect(gate!.environment?.["HOME"]).toBe(
+        realpathSync(input.credential_profile!.isolation_locator!),
+      );
+    }
 
     const controller = new AbortController();
     controller.abort();
@@ -557,6 +1020,65 @@ describe("AGY native raw stdin selection", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ type: "completed", aborted: true });
   });
+
+  it("decides workspace_write access from the settings as they are after model selection", async () => {
+    observed.version = "1.5.14";
+    const input = {
+      ...spec("Fix it.", undefined, "workspace_write"),
+      effort_hint: "high",
+    } satisfies HarnessRunSpec;
+    const settingsPath = saveProfile(input, {});
+    const before = { gates: -1 };
+    // While the account's model list is read, the user saves a benign preference.
+    observed.models = () => {
+      before.gates = observed.gates.length;
+      writeFileSync(settingsPath, JSON.stringify({ toolPermission: "request-review" }));
+      return "gemini-fixture-low\tLow\ngemini-fixture-high\tHigh\n";
+    };
+    const events = await collect(input);
+    // The model was selected before any access decision was taken.
+    expect(before.gates).toBe(0);
+    expect(observed.options).toHaveLength(1);
+    const args = observed.options[0]!.args;
+    expect(args[args.indexOf("--model") + 1]).toBe("gemini-fixture-high");
+    // The outgoing declaration follows the current preference: no terminal request.
+    expect(args).not.toContain("--settings");
+    expect(answerOf(events).settings).toBeNull();
+    expect(
+      events.find((event) => event.payload?.["code"] === "agy_workspace_write_terminal_kept")?.text,
+    ).toMatch(/: the profile's toolPermission is "request-review"$/);
+    expect(codesOf(events)).not.toContain("agy_workspace_write_session_policy");
+    expect(codesOf(events)).not.toContain("agy_profile_settings_changed");
+    expect(profileOf(input)).toEqual({
+      toolPermission: "request-review",
+      permissions: { allow: [GRANT] },
+    });
+  });
+
+  it.each([
+    ["1.5.14", "1.5.6", { toolPermission: "strict" }],
+    ["1.5.14", null, {}],
+    ["1.5.6", "1.5.14", {}],
+  ] as const)(
+    "refuses before sending when agy changes from %s to %s between its version read and the launch",
+    async (decided, launch, saved) => {
+      observed.sequence.push(decided, launch);
+      const input = spec("Fix it.", undefined, "workspace_write");
+      saveProfile(input, saved);
+      const events = await collect(input);
+      expect(observed.options).toHaveLength(0);
+      expect(events.slice(-2).map((event) => event.type)).toEqual(["error", "completed"]);
+      expect(events.at(-2)).toMatchObject({
+        payload: {
+          code: "agy_workspace_write_program_changed",
+          installed_version: decided,
+          launch_version: launch,
+        },
+        error: expect.stringContaining("nothing was sent"),
+      });
+      expect(codesOf(events)).not.toContain("agy_workspace_write_session_policy");
+    },
+  );
 
   it.each(["full", "inherit_native"] as const)(
     "keeps %s argv and input free of session settings policy",

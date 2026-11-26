@@ -1,5 +1,17 @@
 # @claudexor/review
 
+## 6.4.2
+
+### Patch Changes
+
+- @claudexor/budget@6.4.2
+- @claudexor/config@6.4.2
+- @claudexor/context@6.4.2
+- @claudexor/core@6.4.2
+- @claudexor/schema@6.4.2
+- @claudexor/util@6.4.2
+- @claudexor/workspace@6.4.2
+
 ## 6.4.1
 
 ### Patch Changes

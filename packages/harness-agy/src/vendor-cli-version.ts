@@ -20,11 +20,34 @@ export const AGY_VENDOR_CLI_VERSION: VendorCliVersionStamp = "1.1.13";
 export const AGY_READONLY_MIN_CLI_VERSION = "1.4.10";
 
 /**
- * The oldest agy that safely supports session-only `--settings` granting
- * `command(*)` in headless `workspace_write` (`--mode accept-edits`) runs while
- * preserving profile Deny/Ask rules and enterprise/admin policy overrides.
+ * The oldest agy in which file edits still ask under a `strict` tool
+ * permission with accept-edits (1.5.7 release notes). Before it the mode a
+ * workspace_write run passes could approve edits a strict profile asks about,
+ * so such a profile, or one whose settings cannot be read, is not run on an
+ * older or undetermined version. From it a strict profile is admitted, but its
+ * edits still ask, which a headless run cannot answer. A workspace_write run
+ * sends session-only settings only from this version: here they can carry a
+ * read grant the profile could not save; the terminal request needs 1.5.8.
  */
-export const AGY_WORKSPACE_WRITE_MIN_CLI_VERSION = "1.5.7";
+export const AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION = "1.5.7";
+
+/**
+ * The oldest agy whose headless `workspace_write` (`--mode accept-edits`) run
+ * requests the terminal sandbox through session-only `--settings`
+ * (session-policy.ts); an older or undetermined version still edits files,
+ * without the request. It is the first release with every fact the request
+ * relies on: `--settings` itself (1.4.10, above); `proceed-in-sandbox` asking
+ * like `request-review` where the sandbox cannot run (vendor sandbox page,
+ * from 1.4.4); file edits still asking under `strict` (1.5.7, above); and the
+ * 1.5.8 security fix in the sandbox's network proxy, with its fix for headless
+ * runs that ignored Gemini Enterprise admin controls (1.5.8 release notes).
+ * Before it a saved permission for every shell command could override those
+ * controls, so such a profile, or one whose settings cannot be checked, is not
+ * run on an older or undetermined version (session-policy.ts).
+ * For the live macOS edit-and-test check and its scope, see the Antigravity
+ * section of docs/INTEGRATIONS.md.
+ */
+export const AGY_WORKSPACE_WRITE_MIN_CLI_VERSION = "1.5.8";
 
 /** The version token of `--version` output, with its prerelease tag when it has one. */
 export function extractAgySemver(raw: string | null): string | null {
@@ -42,6 +65,29 @@ export function isAgyVersionAtLeast(installed: string | null, minimum: string): 
     Number(match[2]) - Number(floor[2]) ||
     Number(match[3]) - Number(floor[3]);
   return order > 0 || (order === 0 && !match[4]);
+}
+
+/** What a workspace_write run may rely on from the agy it launches; every fact
+ * is false when the version is older or undetermined. */
+export type AgyWorkspaceWriteCli = {
+  installed: string | null;
+  determined: boolean;
+  /** File edits still ask under a profile's `strict` with accept-edits (1.5.7);
+   * also the floor for any workspace_write session file. */
+  strictKept: boolean;
+  /** The terminal sandbox request through session-only `--settings`, and
+   * headless runs that apply Gemini Enterprise admin controls (1.5.8). */
+  terminal: boolean;
+};
+
+export function agyWorkspaceWriteCliFacts(installed: string | null): AgyWorkspaceWriteCli {
+  const at = (minimum: string) => isAgyVersionAtLeast(installed, minimum);
+  return {
+    installed,
+    determined: at(AGY_WORKSPACE_WRITE_MIN_CLI_VERSION) !== null,
+    strictKept: at(AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION) === true,
+    terminal: at(AGY_WORKSPACE_WRITE_MIN_CLI_VERSION) === true,
+  };
 }
 
 function versionDoctorCheck<Id extends string>(
@@ -74,17 +120,18 @@ export function agyReadonlyDoctorCheck(installed: string | null): {
   );
 }
 
-/** The doctor's statement of the workspace_write minimum for an installed version. */
+/** The doctor's statement of the workspace_write minimums for an installed version. */
 export function agyWorkspaceWriteDoctorCheck(installed: string | null): {
   id: "workspace_write_min_version";
   status: "pass" | "fail" | "skip";
   detail: string;
 } {
+  const strictKept = isAgyVersionAtLeast(installed, AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION);
   return versionDoctorCheck(
     "workspace_write_min_version",
-    `workspace_write runs need agy ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer for their session shell grant; full runs do not`,
+    `workspace_write runs ask for agy's terminal sandbox for shell commands only on agy ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer, and only when each of the profile's two terminal settings is unset or already holds the requested value; the adapter adds no command, write or network permission of its own. They admit a profile set to strict only on agy ${AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION} or newer, where file edits still ask under strict, and one that saved command(*) or always-proceed, or whose settings cannot be checked, only on agy ${AGY_WORKSPACE_WRITE_MIN_CLI_VERSION} or newer, where headless runs apply Gemini Enterprise admin controls; full runs do not depend on either`,
     installed,
     AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
-    `installed ${installed} stops workspace_write runs before the model; update agy`,
+    `installed ${installed} runs workspace_write without that request: file edits follow accept-edits within the profile's settings, and a shell command agy would ask about is denied without asking, which can end a headless turn; Claudexor refuses ${strictKept === false ? "a strict profile, " : ""}a profile that saved command(*) or always-proceed, or one whose settings cannot be checked, before anything is sent; update agy`,
   );
 }

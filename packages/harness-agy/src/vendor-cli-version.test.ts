@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   AGY_READONLY_MIN_CLI_VERSION,
+  AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION,
   AGY_VENDOR_CLI_VERSION,
   AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
   agyReadonlyDoctorCheck,
+  agyWorkspaceWriteCliFacts,
   agyWorkspaceWriteDoctorCheck,
 } from "./vendor-cli-version.js";
 
 describe("agy minimum CLI versions (#653)", () => {
   it("keeps readonly and workspace_write minimums separate from the fixture pin", () => {
     expect(AGY_READONLY_MIN_CLI_VERSION).toBe("1.4.10");
-    expect(AGY_WORKSPACE_WRITE_MIN_CLI_VERSION).toBe("1.5.7");
+    expect(AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION).toBe("1.5.7");
+    expect(AGY_WORKSPACE_WRITE_MIN_CLI_VERSION).toBe("1.5.8");
     expect(AGY_VENDOR_CLI_VERSION).toBe("1.1.13");
   });
 
@@ -35,20 +38,56 @@ describe("agy minimum CLI versions (#653)", () => {
   it.each([
     ["1.1.13", "fail"],
     ["1.4.10", "fail"],
-    ["1.5.6", "fail"],
-    ["1.5.7", "pass"],
+    ["1.5.7", "fail"],
+    ["1.5.8", "pass"],
     ["1.5.14", "pass"],
     ["1.10.0", "pass"],
     ["2.0.0", "pass"],
-    ["1.5.7-rc.1", "fail"],
+    ["1.5.8-rc.1", "fail"],
     ["1.6.0-rc.1", "pass"],
-    ["1.5.7+build.42", "pass"],
+    ["1.5.8+build.42", "pass"],
   ] as const)("workspace_write reports %s as %s", (installed, status) => {
     const check = agyWorkspaceWriteDoctorCheck(installed);
     expect(check).toMatchObject({ id: "workspace_write_min_version", status });
-    expect(check.detail).toContain("workspace_write runs need agy 1.5.7 or newer");
-    expect(check.detail).toContain("full runs do not");
-    if (status === "fail") expect(check.detail).toContain("update agy");
+    // A request, made only where each terminal setting is unset or already
+    // matches it, and no permission grant of the adapter's own.
+    expect(check.detail).toContain(
+      "workspace_write runs ask for agy's terminal sandbox for shell commands only on agy 1.5.8 or newer, and only when each of the profile's two terminal settings is unset or already holds the requested value; the adapter adds no command, write or network permission of its own.",
+    );
+    expect(check.detail).toContain("full runs do not depend on either");
+    // A strict profile is admitted from 1.5.7, not promised working edits there;
+    // a saved permission for every command, or unknown settings, from 1.5.8.
+    expect(check.detail).toContain(
+      "admit a profile set to strict only on agy 1.5.7 or newer, where file edits still ask under strict, and one that saved command(*) or always-proceed, or whose settings cannot be checked, only on agy 1.5.8 or newer, where headless runs apply Gemini Enterprise admin controls",
+    );
+    // An older agy keeps ordinary edits: the doctor names a lost request, not a stopped run.
+    if (status === "fail") {
+      expect(check.detail).toContain(
+        "file edits follow accept-edits within the profile's settings",
+      );
+      expect(check.detail).toContain("which can end a headless turn");
+      expect(check.detail).not.toContain("stops");
+      expect(check.detail).not.toContain("edits files");
+      expect(check.detail).toContain(
+        "a profile that saved command(*) or always-proceed, or one whose settings cannot be checked, before anything is sent; update agy",
+      );
+    }
+    expect(check.detail.includes("Claudexor refuses a strict profile, ")).toBe(
+      ["1.1.13", "1.4.10"].includes(installed),
+    );
+  });
+
+  it.each([
+    ["1.4.9", { determined: true, strictKept: false, terminal: false }],
+    ["1.4.10", { determined: true, strictKept: false, terminal: false }],
+    ["1.5.7-rc.1", { determined: true, strictKept: false, terminal: false }],
+    ["1.5.7", { determined: true, strictKept: true, terminal: false }],
+    ["1.5.8", { determined: true, strictKept: true, terminal: true }],
+    ["1.6.0-rc.1", { determined: true, strictKept: true, terminal: true }],
+    [null, { determined: false, strictKept: false, terminal: false }],
+    ["agy (version unknown)", { determined: false, strictKept: false, terminal: false }],
+  ] as const)("judges each workspace_write threshold separately for %s", (installed, facts) => {
+    expect(agyWorkspaceWriteCliFacts(installed)).toEqual({ installed, ...facts });
   });
 
   it.each([null, "", "agy (version unknown)", "1.5", "1.5.14+ local build"])(

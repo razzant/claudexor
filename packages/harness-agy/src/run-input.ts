@@ -1,35 +1,63 @@
 import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
 import { agyInputDelivery } from "./input-file.js";
-import { ensureAgyReadGrant } from "./read-grant.js";
+import {
+  agyReadsHeldBySettings,
+  ensureAgyReadGrant,
+  readAgyProfileSettings,
+} from "./read-grant.js";
 import {
   AGY_READONLY_NOTE,
   agyReadonlyPolicy,
   agyReadonlyPolicyEvent,
-  agyWorkspaceWritePolicy,
-  agyWorkspaceWritePolicyEvent,
+  agyWorkspaceWriteAdminControlsRefusal,
+  agyWorkspaceWriteSessionSettings,
+  agyWorkspaceWriteStrictRefusal,
+  agyWorkspaceWriteTerminalPlan,
   type AgySessionSettings,
 } from "./session-policy.js";
+import {
+  AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION,
+  AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
+  agyWorkspaceWriteCliFacts,
+  type AgyWorkspaceWriteCli,
+} from "./vendor-cli-version.js";
+
+export type AgyPreparedInput = {
+  settings: AgySessionSettings | null;
+  /** The run must not start without its session file (`withAgySessionSettings`). */
+  settingsRequired: boolean;
+  /** The file requests the terminal mode: disclosed once it is in place, at launch. */
+  terminalRequested: boolean;
+  input: string;
+};
 
 /**
- * What the profile settings decide before an agy child starts, with each
- * decision disclosed as it is made: the read grant, a readonly or
- * workspace_write run's session policy (and the readonly engine note), and the
- * child's stdin (inline, or the bootstrap of a file delivery). A readonly run
- * always carries its policy: when it cannot be composed safely, or the input
- * cannot be delivered whole, this yields a typed error and `completed` and
- * returns null: nothing is sent. A workspace_write run whose policy cannot be
- * composed starts without session settings and says so.
+ * What the profile settings decide before an agy child starts, all from ONE
+ * snapshot of them, read and checked once: a workspace_write refusal, the read
+ * grant, a readonly run's session policy and engine note or a workspace_write
+ * run's session file, and the child's stdin (inline, or the bootstrap of a
+ * file delivery). A readonly run always carries its policy: when it cannot be
+ * composed safely, or the input cannot be delivered whole, this yields a typed
+ * error and `completed` and returns null: nothing is sent. A workspace_write
+ * run whose strict setting its accept-edits mode might loosen, or whose saved
+ * permission for every command might override admin controls, is refused the
+ * same way, before the profile's settings are written; so is any run whose
+ * settings file changed before its grant was saved. When only saving the
+ * read grant failed, a workspace_write run on an agy known to keep strict edits
+ * asking (1.5.7) carries the lists as read with the grant in its session file,
+ * as a readonly run does; on an older or undetermined agy it cannot. Input that
+ * must be read as files is refused when no grant reaches the run or the
+ * snapshot declares an ask or denial of every read (only the declarations
+ * `agyReadsHeldBySettings` knows): a check of known declarations, not a
+ * guarantee that agy will read every file.
  */
 export function* prepareAgyRunInput(
   spec: HarnessRunSpec,
   profileHome: string,
-  /** A workspace_write run gets the session shell grant only when the caller established its CLI supports it. */
-  workspaceWriteShellGrant = false,
-): Generator<
-  HarnessEvent,
-  { settings: AgySessionSettings | null; input: string; needsSettings: boolean } | null
-> {
+  /** What the agy a workspace_write run launches supports (workspace-write-cli.ts). */
+  workspaceWriteCli: AgyWorkspaceWriteCli = agyWorkspaceWriteCliFacts(null),
+): Generator<HarnessEvent, AgyPreparedInput | null> {
   const status = (text: string, payload: Record<string, unknown>): HarnessEvent => ({
     type: "status",
     session_id: spec.session_id,
@@ -37,67 +65,91 @@ export function* prepareAgyRunInput(
     text,
     payload,
   });
-  function* refuse(error: string, code: string): Generator<HarnessEvent, null> {
-    yield { type: "error", session_id: spec.session_id, ts: nowIso(), error, payload: { code } };
+  function* refuse(error: string, payload: Record<string, unknown>): Generator<HarnessEvent, null> {
+    yield { type: "error", session_id: spec.session_id, ts: nowIso(), error, payload };
     yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
     return null;
   }
-  const readGrant = ensureAgyReadGrant(profileHome);
+  const writing = spec.access === "workspace_write";
+  const profile = readAgyProfileSettings(profileHome);
+  const strict = writing ? agyWorkspaceWriteStrictRefusal(profile, workspaceWriteCli) : null;
+  if (strict)
+    return yield* refuse(strict, {
+      code: "agy_workspace_write_strict_unverified",
+      installed_version: workspaceWriteCli.installed,
+      min_version: AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION,
+    });
+  const anyCommand = writing
+    ? agyWorkspaceWriteAdminControlsRefusal(profile, workspaceWriteCli)
+    : null;
+  if (anyCommand)
+    return yield* refuse(anyCommand, {
+      code: "agy_workspace_write_admin_controls_unverified",
+      installed_version: workspaceWriteCli.installed,
+      min_version: AGY_WORKSPACE_WRITE_MIN_CLI_VERSION,
+    });
+  const readGrant = ensureAgyReadGrant(profileHome, profile);
+  // Every decision above and below rests on the snapshot: a file that changed
+  // before the grant was saved leaves none of them standing.
+  if (readGrant.state === "changed")
+    return yield* refuse(
+      `agy did not start, so nothing was sent: ${readGrant.reason}; this run's access decisions came from the earlier settings, so start it again`,
+      { code: "agy_profile_settings_changed" },
+    );
   const readonlyPolicy = spec.access === "readonly" ? agyReadonlyPolicy(readGrant) : null;
   if (readonlyPolicy?.state === "unavailable")
     return yield* refuse(
       `agy readonly cannot deny commands and writes for this run, so nothing was sent: ${readonlyPolicy.reason}`,
-      "agy_readonly_session_policy_unavailable",
+      { code: "agy_readonly_session_policy_unavailable" },
     );
-  const workspaceWritePolicy =
-    spec.access === "workspace_write" && workspaceWriteShellGrant
-      ? agyWorkspaceWritePolicy(readGrant)
+  const sessionPolicy = readonlyPolicy?.state === "composed" ? readonlyPolicy.settings : null;
+  const carried =
+    writing && workspaceWriteCli.strictKept && readGrant.state === "unavailable"
+      ? (readGrant.rules ?? null)
       : null;
-  // Before this grant a workspace_write run carried no session settings, so
-  // unreadable profile settings keep that run instead of refusing it.
-  if (workspaceWritePolicy?.state === "unavailable")
-    yield status(
-      `agy workspace_write runs without session settings, so headless shell commands may be refused without asking: ${workspaceWritePolicy.reason}`,
-      { code: "agy_workspace_write_session_policy_unavailable" },
-    );
-  const sessionPolicy =
-    readonlyPolicy?.state === "composed"
-      ? readonlyPolicy.settings
-      : workspaceWritePolicy?.state === "composed"
-        ? workspaceWritePolicy.settings
-        : null;
+  const terminal = writing
+    ? agyWorkspaceWriteTerminalPlan(spec.session_id, profile, workspaceWriteCli)
+    : null;
+  const sessionGrantsReads = sessionPolicy !== null || carried !== null;
   // Full access auto-approves every read, so only the other profiles can lose
-  // one; readonly and workspace_write session settings carry the read grant themselves.
+  // one; a session file that carries the lists carries the read grant too.
   if (readGrant.state === "unavailable" && spec.access !== "full")
     yield status(
-      sessionPolicy
+      sessionGrantsReads
         ? `agy could not save the profile read grant, so only this ${spec.access} run's session settings grant reads: ${readGrant.reason}`
         : `agy may refuse reads outside the workspace without asking: ${readGrant.reason}`,
       { code: "agy_read_grant_unavailable" },
     );
-  if (readonlyPolicy?.state === "composed") {
+  if (sessionPolicy) {
     yield agyReadonlyPolicyEvent(spec.session_id);
     yield status("agy readonly: the engine appended its access note to the instructions", {
       code: "agy_readonly_access_note",
       note: AGY_READONLY_NOTE,
     });
-  } else if (workspaceWritePolicy?.state === "composed") {
-    yield agyWorkspaceWritePolicyEvent(spec.session_id, workspaceWritePolicy.added);
   }
+  if (terminal && !terminal.requested) yield terminal.status;
+  const granted = spec.access === "full" || readGrant.state !== "unavailable" || sessionGrantsReads;
   const delivery = agyInputDelivery({
     prompt: spec.prompt,
     instructions: spec.instructions,
-    notes: readonlyPolicy?.state === "composed" ? [AGY_READONLY_NOTE] : [],
+    notes: sessionPolicy ? [AGY_READONLY_NOTE] : [],
     dir: spec.input_file_dir,
-    readable: spec.access === "full" || readGrant.state !== "unavailable" || sessionPolicy !== null,
+    // A grant does not make files readable where the snapshot itself declares
+    // an ask or denial of every read; full access approves the asking itself.
+    // Only those known declarations are checked: no other rule is interpreted.
+    unreadable:
+      agyReadsHeldBySettings(profile, spec.access === "full") ??
+      (granted ? null : "the profile read grant is unavailable"),
     sessionId: spec.session_id,
   });
   if (delivery.kind === "refused")
-    return yield* refuse(delivery.error, "agy_input_file_delivery_unavailable");
+    return yield* refuse(delivery.error, { code: "agy_input_file_delivery_unavailable" });
   if (delivery.kind === "files") yield delivery.status;
-  // The session file is the only read grant of an input delivered as files
-  // when the profile's own grant could not be saved: that run needs the file.
-  const needsSettings =
-    spec.access === "readonly" || (delivery.kind === "files" && readGrant.state === "unavailable");
-  return { settings: sessionPolicy, input: delivery.input, needsSettings };
+  const terminalRequested = terminal?.requested === true;
+  return {
+    settings: sessionPolicy ?? agyWorkspaceWriteSessionSettings(carried, terminalRequested),
+    settingsRequired: sessionPolicy !== null || (carried !== null && delivery.kind === "files"),
+    terminalRequested,
+    input: delivery.input,
+  };
 }
