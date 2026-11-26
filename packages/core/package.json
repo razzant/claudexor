@@ -27,7 +27,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@playwright/mcp": "0.0.85",
+    "@playwright/mcp": "0.0.86",
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"
   },
