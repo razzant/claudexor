@@ -3118,12 +3118,10 @@ models the documented behavior (an edit and a sandboxed build in one turn, Git
 in the run's shared clone through the read grant, a saved `request-review`
 still asking, a saved allow rule still deciding, a `strict` profile refused on
 1.5.6, oversized input read through a grant only the session file carries).
-A live run on macOS with agy 1.5.14, made before this run preparation (one
-settings snapshot, carried grant, launch-time disclosure and program check),
-had Gemini 4 Neon High edit one line in the project and run `node --test`
-without a confirmation prompt; its one unchanged test passed. It checks that
-an ordinary edit and test worked, not which files or network destinations the
-OS prevents a command from reaching.
+On macOS with agy 1.5.14, Gemini 4 Neon High corrected one line in a sample
+project and ran `node --test` without intervention. The unchanged test passed.
+The same check passed again after the run-preparation fixes; neither run
+measured which files or network destinations the OS blocks.
 agy merges the session object
 into the profile settings key by key, replacing each permission list it names
 and refusing unknown top-level keys (probed on 1.5.0), so a readonly

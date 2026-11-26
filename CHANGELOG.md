@@ -50,10 +50,10 @@ on GitHub Releases.
   sending (`agy_profile_settings_changed`): start it again. It also starts
   only on the agy program it checked (`agy_workspace_write_program_changed`).
 
-  A live run on macOS with agy 1.5.14, in which Gemini 4 Neon High fixed a
-  one-line error and ran `node --test` and the unchanged test passed, predates
-  the run-preparation fixes in this entry; unit and orchestrator tests cover
-  the requested settings, the refusals and the version fallbacks. Readonly and
+  On macOS with agy 1.5.14, Gemini 4 Neon High corrected a one-line arithmetic
+  error and ran `node --test` without intervention. The unchanged test passed
+  both before and after the run-preparation fixes. Unit and orchestrator tests
+  cover the requested settings, the refusals and the version fallbacks. Readonly and
   full runs are otherwise unchanged; they too no longer save the grant into
   settings whose lists are not lists of rules. Control protocol major 3 and
   engine store schema 8 are unchanged, and there is no data migration; the

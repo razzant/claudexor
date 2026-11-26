@@ -44,9 +44,8 @@ export const AGY_STRICT_OVER_ACCEPT_EDITS_MIN_CLI_VERSION = "1.5.7";
  * Before it a saved permission for every shell command could override those
  * controls, so such a profile, or one whose settings cannot be checked, is not
  * run on an older or undetermined version (session-policy.ts).
- * One live macOS run on 1.5.14 (an edit and a test command) used these
- * settings before the current run preparation; it shows that ordinary work
- * proceeds, not what the sandbox prevents.
+ * For the live macOS edit-and-test check and its scope, see the Antigravity
+ * section of docs/INTEGRATIONS.md.
  */
 export const AGY_WORKSPACE_WRITE_MIN_CLI_VERSION = "1.5.8";
 
