@@ -167,6 +167,8 @@ function staleOwnerDetail(owner: DaemonLeaseOwner, capability: DaemonLeaseOwnerC
       return `pid ${owner.pid} was recycled by another process (never signalled)`;
     case "linux_zombie":
       return `daemon pid ${owner.pid} is a Linux zombie (never signalled)`;
+    case "lease_predates_boot":
+      return `the daemon's lease was written before this system booted, so pid ${owner.pid} is another process (never signalled)`;
   }
 }
 

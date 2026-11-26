@@ -8,6 +8,7 @@ import {
   writeFileSync,
   type Stats,
 } from "node:fs";
+import { uptime } from "node:os";
 import { join } from "node:path";
 import {
   compareProcessIdentity,
@@ -100,7 +101,7 @@ export type DaemonLeaseOwnerCapability =
     }
   | {
       status: "proven_stale";
-      reason: "process_missing" | "identity_mismatch" | "linux_zombie";
+      reason: "process_missing" | "identity_mismatch" | "linux_zombie" | "lease_predates_boot";
       observation: ProcessObservation;
     }
   | {
@@ -129,7 +130,7 @@ export type DaemonWriterLeaseStatus =
 
 type RawDaemonWriterLeaseStatus =
   | { status: "absent"; path: string }
-  | { status: "owned"; path: string; owner: DaemonLeaseOwner }
+  | { status: "owned"; path: string; owner: DaemonLeaseOwner; ownerWrittenAtMs: number | null }
   | { status: "unknown"; path: string; reason: DaemonWriterLeaseUnknownReason };
 
 /** Narrow synchronous seam used to deterministically exercise failure/race branches. */
@@ -148,6 +149,10 @@ export interface DaemonWriterLeaseDependencies {
   observation?: ProcessObservationReader;
   /** Signal-zero probe: return for present, throw an errno-bearing error otherwise. */
   probeProcess?: (pid: number) => void;
+  /** When this operating system instance booted, in epoch milliseconds; null when unknown. */
+  bootTimeMs?: () => number | null;
+  /** Wall clock for the boot comparison. */
+  now?: () => number;
   filesystem?: Partial<DaemonWriterLeaseFilesystem>;
 }
 
@@ -295,7 +300,7 @@ function inspectWriterLeasePath(
   }
   const owner = parseLeaseOwner(raw);
   return owner
-    ? { status: "owned", path, owner }
+    ? { status: "owned", path, owner, ownerWrittenAtMs: finiteTime(ownerStat.mtimeMs) }
     : { status: "unknown", path, reason: "owner_malformed" };
 }
 
@@ -313,9 +318,54 @@ function probeProcessPresence(pid: number, probe: (pid: number) => void): Proces
   }
 }
 
+function finiteTime(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** How far the lease must precede the boot before the two clocks are trusted to
+ * disagree: it covers the boot time's own resolution and a wall clock that was
+ * corrected between the write and the boot. */
+export const LEASE_BOOT_SKEW_MS = 5 * 60_000;
+
+function defaultBootTimeMs(): number | null {
+  const seconds = uptime();
+  return Number.isFinite(seconds) && seconds > 0 ? Date.now() - seconds * 1000 : null;
+}
+
+/**
+ * Was the lease written before this operating system instance booted? No
+ * process alive now existed then, so the daemon that wrote it is gone whatever
+ * holds its pid today. True only on positive evidence: a missing or unreadable
+ * write time, an unknown boot time, a boot time or a write time ahead of the
+ * clock, or a write inside the skew margin all answer false.
+ */
+function leasePredatesBoot(
+  ownerWrittenAtMs: number | null | undefined,
+  deps: DaemonWriterLeaseDependencies,
+): boolean {
+  const written = finiteTime(ownerWrittenAtMs);
+  if (written === null) return false;
+  let booted: number | null;
+  try {
+    booted = finiteTime((deps.bootTimeMs ?? defaultBootTimeMs)());
+  } catch {
+    return false;
+  }
+  const now = (deps.now ?? Date.now)();
+  if (booted === null || booted > now || written > now) return false;
+  return written + LEASE_BOOT_SKEW_MS < booted;
+}
+
+/**
+ * `lease.ownerWrittenAtMs` is when the lease's owner record was written. It
+ * decides only where the live process cannot: an owner with a recorded
+ * identity whose live identity or presence is unreadable is proven stale when
+ * its lease predates the boot.
+ */
 export function classifyDaemonLeaseOwner(
   owner: DaemonLeaseOwner,
   deps: DaemonWriterLeaseDependencies = {},
+  lease: { ownerWrittenAtMs?: number | null } = {},
 ): DaemonLeaseOwnerCapability {
   const identity =
     deps.identity ?? (owner.identity ? daemonIdentity : defaultProcessIdentityService);
@@ -353,6 +403,12 @@ export function classifyDaemonLeaseOwner(
   if (!owner.identity && (presence === "present" || presence === "permission_denied")) {
     return { status: "capable", reason: "legacy_process_present", observation };
   }
+  // The recorded owner cannot be read (after a reboot its pid may belong to a
+  // protected system process), so the lease's own age is the remaining evidence.
+  // A PID-only legacy record returned above and keeps its operator recovery.
+  if (leasePredatesBoot(lease.ownerWrittenAtMs, deps)) {
+    return { status: "proven_stale", reason: "lease_predates_boot", observation };
+  }
   if (presence === "present" || presence === "permission_denied") {
     return { status: "unknown", reason: "identity_unavailable", observation };
   }
@@ -369,10 +425,10 @@ export function inspectDaemonWriterLease(
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const raw = inspectWriterLeasePath(path, fs);
     if (raw.status !== "owned") return raw;
-    const capability = classifyDaemonLeaseOwner(raw.owner, deps);
+    const capability = classifyDaemonLeaseOwner(raw.owner, deps, raw);
     const confirmed = inspectWriterLeasePath(path, fs);
     if (confirmed.status === "owned" && sameOwner(confirmed.owner, raw.owner)) {
-      return { ...confirmed, capability };
+      return { status: "owned", path: confirmed.path, owner: confirmed.owner, capability };
     }
     if (attempt === 1) {
       return confirmed.status === "owned"
@@ -446,6 +502,8 @@ export function acquireDaemonWriterLease(
     observation: acquisitionDeps.observation,
     probeProcess: acquisitionDeps.probeProcess,
     filesystem: acquisitionDeps.filesystem,
+    bootTimeMs: acquisitionDeps.bootTimeMs,
+    now: acquisitionDeps.now,
   };
   const path = writerLeasePath(socketPath);
   const token = randomUUID();
@@ -471,7 +529,7 @@ export function acquireDaemonWriterLease(
       if (existing.status === "absent") continue;
       if (existing.status === "unknown") throw writerBusy(path);
 
-      const capability = classifyDaemonLeaseOwner(existing.owner, effectiveDeps);
+      const capability = classifyDaemonLeaseOwner(existing.owner, effectiveDeps, existing);
       if (capability.status !== "proven_stale") throw writerBusy(path);
 
       // Classification may have spanned an orderly release. Re-read the main

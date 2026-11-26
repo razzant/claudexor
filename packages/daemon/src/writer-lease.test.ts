@@ -6,6 +6,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,6 +22,7 @@ import {
 } from "@claudexor/core";
 import {
   acquireDaemonWriterLease,
+  LEASE_BOOT_SKEW_MS,
   classifyDaemonLeaseOwner,
   daemonLeaseOwner,
   inspectDaemonWriterLease,
@@ -126,6 +128,8 @@ function acquireWithDependencies(
       observation: deps.observation,
       probeProcess: deps.probeProcess,
       filesystem: deps.filesystem,
+      bootTimeMs: deps.bootTimeMs,
+      now: deps.now,
     },
   );
 }
@@ -779,5 +783,160 @@ describe("generation-bound writer-lease recovery", () => {
     lease.release();
     expect(JSON.parse(readFileSync(join(leasePath, "owner.json"), "utf8"))).toEqual(successor);
     expect(lstatSync(leasePath).isDirectory()).toBe(true);
+  });
+});
+
+/**
+ * A daemon killed by a reboot leaves its lease behind. Afterwards its pid can
+ * belong to a protected system process whose identity cannot be read, so the
+ * owner is neither missing nor mismatched; the lease's own write time is then
+ * the only evidence that the daemon is gone.
+ */
+describe("a lease written before the last boot", () => {
+  const NOW = Date.parse("2026-06-10T12:00:00Z");
+  const BOOT = NOW - 3_600_000;
+  const owner: DaemonLeaseOwner = { pid: 3524, token: "owner", identity: known(3524, "linux:1") };
+  /** The pid is alive but belongs to a process this user may not inspect. */
+  const protectedProcess = observation({
+    status: "unknown",
+    pid: 3524,
+    platform: "win32",
+    reason: "permission_denied",
+  });
+  const denied = () => {
+    throw errno("EPERM");
+  };
+  const deps = (extra: Partial<DaemonWriterLeaseDependencies> = {}) =>
+    depsFor(protectedProcess, {
+      probeProcess: denied,
+      bootTimeMs: () => BOOT,
+      now: () => NOW,
+      ...extra,
+    });
+  const classify = (
+    ownerWrittenAtMs: number | null | undefined,
+    extra: Partial<DaemonWriterLeaseDependencies> = {},
+  ) => classifyDaemonLeaseOwner(owner, deps(extra), { ownerWrittenAtMs });
+
+  it("is proven stale when the live identity is unavailable", () => {
+    for (const probeProcess of [denied, () => undefined]) {
+      expect(classify(BOOT - 86_400_000, { probeProcess })).toMatchObject({
+        status: "proven_stale",
+        reason: "lease_predates_boot",
+      });
+    }
+    // The same evidence settles a presence the probe could not read at all.
+    const unreadable = () => {
+      throw errno("EIO");
+    };
+    expect(classify(BOOT - 86_400_000, { probeProcess: unreadable })).toMatchObject({
+      status: "proven_stale",
+      reason: "lease_predates_boot",
+    });
+  });
+
+  it("stays unknown for a lease written after the boot", () => {
+    expect(classify(BOOT + 1000)).toMatchObject({
+      status: "unknown",
+      reason: "identity_unavailable",
+    });
+    expect(classify(NOW)).toMatchObject({ status: "unknown", reason: "identity_unavailable" });
+  });
+
+  it("allows for clock skew: a write just before the boot is not evidence", () => {
+    expect(classify(BOOT - 1)).toMatchObject({ status: "unknown" });
+    expect(classify(BOOT - LEASE_BOOT_SKEW_MS)).toMatchObject({ status: "unknown" });
+    expect(classify(BOOT - LEASE_BOOT_SKEW_MS - 1)).toMatchObject({
+      status: "proven_stale",
+      reason: "lease_predates_boot",
+    });
+  });
+
+  it("stays unknown when the boot time or the write time is not known", () => {
+    const old = BOOT - 86_400_000;
+    for (const bootTimeMs of [
+      () => null,
+      () => Number.NaN,
+      () => 0,
+      // A boot time ahead of the clock means the two clocks cannot be compared.
+      () => NOW + 60_000,
+      () => {
+        throw new Error("uptime unavailable");
+      },
+    ]) {
+      expect(classify(old, { bootTimeMs })).toMatchObject({
+        status: "unknown",
+        reason: "identity_unavailable",
+      });
+    }
+    for (const written of [null, undefined, Number.NaN, 0, -1, NOW + 60_000]) {
+      expect(classify(written)).toMatchObject({
+        status: "unknown",
+        reason: "identity_unavailable",
+      });
+    }
+    // No evidence at all is the behavior every existing caller keeps.
+    expect(classifyDaemonLeaseOwner(owner, deps())).toMatchObject({
+      status: "unknown",
+      reason: "identity_unavailable",
+    });
+  });
+
+  it("never overrides a live owner whose identity can be read", () => {
+    const old = { ownerWrittenAtMs: BOOT - 86_400_000 };
+    const live = depsFor(observation(known(3524, "linux:1")), {
+      bootTimeMs: () => BOOT,
+      now: () => NOW,
+    });
+    expect(classifyDaemonLeaseOwner(owner, live, old)).toMatchObject({
+      status: "capable",
+      reason: "identity_match",
+    });
+    // A legacy lease with no recorded identity stays capable while its process can be read.
+    expect(classifyDaemonLeaseOwner({ pid: 3524, token: "legacy" }, live, old)).toMatchObject({
+      status: "capable",
+      reason: "legacy_process_present",
+    });
+  });
+
+  it("leaves a PID-only legacy lease to operator recovery, whatever its age", () => {
+    const legacy: DaemonLeaseOwner = { pid: 3524, token: "legacy" };
+    for (const ownerWrittenAtMs of [BOOT - 86_400_000, BOOT + 1000]) {
+      expect(classifyDaemonLeaseOwner(legacy, deps(), { ownerWrittenAtMs })).toMatchObject({
+        status: "capable",
+        reason: "legacy_process_present",
+      });
+    }
+  });
+
+  it("lets a new daemon take over such a lease, and refuses one written after the boot", () => {
+    seedOwner(owner);
+    const ownerFile = join(leasePath, "owner.json");
+    const stamp = (ms: number) => utimesSync(ownerFile, ms / 1000, ms / 1000);
+
+    stamp(BOOT + 60_000);
+    expect(inspectDaemonWriterLease(socketPath, deps())).toMatchObject({
+      status: "owned",
+      capability: { status: "unknown", reason: "identity_unavailable" },
+    });
+    expect(() => acquireWithDependencies(socketPath, deps())).toThrow(
+      /another claudexor daemon owns/,
+    );
+
+    stamp(BOOT - 86_400_000);
+    const inspected = inspectDaemonWriterLease(socketPath, deps());
+    expect(inspected).toMatchObject({
+      status: "owned",
+      capability: { status: "proven_stale", reason: "lease_predates_boot" },
+    });
+    // The public status keeps its shape: the write time is internal evidence.
+    expect(Object.keys(inspected).sort()).toEqual(["capability", "owner", "path", "status"]);
+    const lease = acquireWithDependencies(socketPath, deps());
+    expect(lease.owner.pid).toBe(process.pid);
+    // The dead generation is kept as a tombstone, as for every stale takeover.
+    expect(
+      readFileSync(join(writerLeaseTombstonePath(leasePath, owner), "owner.json"), "utf8"),
+    ).toContain('"token":"owner"');
+    lease.release();
   });
 });
