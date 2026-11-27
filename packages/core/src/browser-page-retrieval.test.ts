@@ -6,10 +6,10 @@ import { BROWSER_MCP_SERVER, browserPageRetrieval } from "./browser-mcp.js";
  * #118: a successful Browser MCP call is "verified" web evidence only when the
  * reply shows a retrieved page, "dispatched" when a page read reached the web
  * without that proof, and no retrieval at all when it read no web page. The
- * recording holds real replies of the pinned Browser MCP against loopback pages
- * (`.review-evidence/scripts/capture-browser-producer.mjs`; ports and temp
- * paths neutralized). The previous pin's recording stays as a compatibility
- * comparison; older recordings remain archived without duplicate test rows.
+ * recording holds real replies from the pinned Browser MCP on synthetic
+ * loopback pages (ports and temp paths neutralized). The previous pin's
+ * recording stays as a compatibility comparison; older recordings remain
+ * archived without duplicate test rows.
  */
 interface Reply {
   label: string;
@@ -25,8 +25,8 @@ const readRecording = (version: string): Recording =>
       "utf8",
     ),
   ) as Recording;
-const recording = readRecording("0.0.85");
-const previous = readRecording("0.0.84");
+const recording = readRecording("0.0.86");
+const previous = readRecording("0.0.85");
 const corePackage = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ) as { dependencies: Record<string, string> };
@@ -59,6 +59,8 @@ const RETRIEVED = new Set([
   "navigate-tab-2",
   "navigate-tab-3",
   "snapshot-many-tabs",
+  "download-landing",
+  "download-snapshot",
 ]);
 /** Page reads that reached an http(s) page whose status is an error. */
 const ERROR_PAGES = new Set(["navigate-404", "snapshot-of-404", "navigate-500"]);
@@ -98,6 +100,16 @@ describe("Browser page retrieval against the real pinned producer (#118)", () =>
     expect(textOf(reply("snapshot-of-404"))).toContain("- HTTP status: 404 Not Found");
     expect(textOf(reply("navigate-500"))).toContain("- HTTP status: 500 Internal Server Error");
     expect(reply("navigate-refused").isError).toBe(true);
+  });
+
+  it("checks distinct reported paths for two same-named downloads (0.0.86)", () => {
+    // This replay checks only the reported paths, not the on-disk files.
+    expect(textOf(reply("download-first"))).toContain(
+      'Downloaded file report.txt to "out/report.txt"',
+    );
+    expect(textOf(reply("download-second"))).toContain(
+      'Downloaded file report.txt to "out/report-1.txt"',
+    );
   });
 
   it("a long real reply keeps its proof: only a clipped view of it would lose the page", () => {
