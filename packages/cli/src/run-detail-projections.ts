@@ -11,6 +11,7 @@ import { redactSecrets } from "@claudexor/util";
 
 export type PrimaryOutputPresentation = Pick<ControlPrimaryOutputType, "kind" | "path" | "text"> & {
   truncated?: boolean;
+  earlierAssistantOutput?: ControlPrimaryOutputType["earlierAssistantOutput"];
 };
 
 /** Schema-validate the Control API's single primary-output owner. */
@@ -34,9 +35,16 @@ export function presentRunPrimaryOutput(output: PrimaryOutputPresentation | null
   if (!output || output.kind === "patch" || typeof output.text !== "string") return null;
   const text = output.text.trim();
   if (!text) return null;
-  return output.truncated === true
-    ? `${text}\n\n[Inline preview bounded; full artifact: ${output.path}]`
-    : text;
+  const accepted =
+    output.truncated === true
+      ? `${text}\n\n[Inline preview bounded; full artifact: ${output.path}]`
+      : text;
+  const earlier = output.earlierAssistantOutput;
+  if (!earlier) return accepted;
+  const preview = earlier.truncated
+    ? `${earlier.text}\n\n[Earlier text preview bounded; full artifact: ${earlier.path}]`
+    : earlier.text.trimEnd();
+  return `${preview}\n\n---\n\n## Accepted final answer\n\n${accepted}`;
 }
 
 export type ApplyEligibilityProjection = {

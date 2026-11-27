@@ -1,0 +1,399 @@
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  ConformanceReport,
+  CONTROL_PROTOCOL_MAJOR,
+  ControlRunDetail,
+  HarnessManifest,
+} from "@claudexor/schema";
+import { runCliHarness, type HarnessAdapter } from "@claudexor/core";
+import { createCursorAdapter } from "@claudexor/harness-cursor";
+// Use the same built writer as the Orchestrator without adding a CLI dependency.
+import { EventLog } from "../../event-log/dist/index.js";
+import { Orchestrator } from "@claudexor/orchestrator";
+import { DaemonControlApiServer, type DaemonRunRecord } from "@claudexor/control-api";
+import { defaultClaudexorTools } from "@claudexor/mcp-server";
+import { expect, it, vi } from "vitest";
+import { acpSessionQuery } from "./acp-surface-runner.js";
+import * as daemonRun from "./daemon-run.js";
+import { projectLaunchHandle } from "./mcp-launch-handle.js";
+import { mcpSurfaceRunner } from "./mcp-runner.js";
+
+const path = "final/earlier-assistant-output.md";
+const report = "Initial swatch check: green.";
+const correction = "Correction after reading: red.";
+const final = "Swatch check complete.";
+const footer = '\n```json\n{"work_report":{"state":"completed","required_inputs":[]}}\n```';
+const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+
+function nativeFrames(large: boolean) {
+  const session_id = "synthetic-cursor-chat";
+  const assistant = (...pieces: string[]) => ({
+    type: "assistant",
+    session_id,
+    message: { role: "assistant", content: pieces.map((text) => ({ type: "text", text })) },
+  });
+  const call = (variant: string, call_id: string, args: object, result: object) =>
+    (["started", "completed"] as const).map((subtype) => ({
+      type: "tool_call",
+      subtype,
+      session_id,
+      call_id,
+      tool_call: { [variant]: subtype === "started" ? { args } : { result } },
+    }));
+  const read = (id: string) =>
+    call("readToolCall", id, { path: "sample.txt" }, { success: { output: "Tool-only text" } });
+  const notice = {
+    type: "system",
+    subtype: "task_notification",
+    session_id,
+    task_id: "14",
+    status: "success",
+  };
+  // ASCII markers plus multibyte characters; individual frames stay small.
+  const chunks = large ? Array.from({ length: 24 }, () => "🟦".repeat(46_000)) : [];
+  return [
+    { type: "system", subtype: "init", session_id, model: "Fixture Model" },
+    assistant("Preamble never belongs to the report."),
+    ...call(
+      "shellToolCall",
+      "synthetic-shell",
+      { command: "fixture-check" },
+      { success: { shellId: 14, backgroundReason: "SHELL_BACKGROUND_REASON_USER_REQUEST" } },
+    ),
+    ...(large
+      ? [
+          { ...assistant(report), timestamp_ms: 1 },
+          ...chunks.map((part, i) => ({ ...assistant(part), timestamp_ms: i + 2 })),
+        ]
+      : [assistant(report)]),
+    notice,
+    ...read("first-read"),
+    assistant(correction),
+    { type: "thinking", session_id, text: "Reasoning-only text" },
+    ...read("second-read"),
+    assistant(final, footer),
+    { type: "result", subtype: "success", session_id, result: "Unexpected vendor aggregate" },
+  ];
+}
+
+function losingLane(): HarnessAdapter {
+  const id = "fixture-loser";
+  return {
+    id,
+    async discover() {
+      return HarnessManifest.parse({
+        id,
+        display_name: id,
+        kind: "local_cli",
+        provider_family: "anthropic",
+        capabilities: { implement: true, repair: true, read_files: true },
+        access_profiles_supported: ["readonly", "workspace_write"],
+      });
+    },
+    async doctor() {
+      return ConformanceReport.parse({
+        harness_id: id,
+        status: "ok",
+        enabled_intents: ["implement", "repair"],
+      });
+    },
+    async *run(spec) {
+      const base = { session_id: spec.session_id, ts: new Date().toISOString() };
+      yield { ...base, type: "started" };
+      yield { ...base, type: "message", text: "Only the losing lane said this." };
+      yield { ...base, type: "error", error: "Synthetic losing lane exit" };
+    },
+  };
+}
+
+const cases: {
+  label: string;
+  mode: "ask" | "agent";
+  large?: boolean;
+  convergence?: boolean;
+  gap?: "sequence" | "writer";
+}[] = [
+  { label: "Ask", mode: "ask" },
+  { label: "Agent race", mode: "agent" },
+  { label: "Agent convergence", mode: "agent", convergence: true },
+  { label: "Ask above 4 MiB", mode: "ask", large: true },
+  { label: "Ask with a missing event", mode: "ask", gap: "sequence" },
+  { label: "Ask with append loss reported", mode: "ask", gap: "writer" },
+];
+
+it.each(cases)(
+  "reads the actual Cursor report through $label → Control → MCP",
+  async ({ mode, large = false, convergence, gap }) => {
+    const area = mkdtempSync(join(tmpdir(), "cx756-"));
+    vi.stubEnv("CLAUDEXOR_CONFIG_DIR", join(area, "config"));
+    const token = "fixture";
+    let server: DaemonControlApiServer | undefined;
+    let connect: ReturnType<typeof vi.spyOn> | undefined;
+    let gapRead: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      // The run has its own config and one synthetic native account. Only the
+      // Cursor subprocess's stdout/exit and environment preflight are doubled.
+      const config = process.env.CLAUDEXOR_CONFIG_DIR!;
+      const repo = join(area, "repo");
+      const profile = join(config, "profiles", "cursor-synthetic");
+      mkdirSync(repo);
+      mkdirSync(profile, { recursive: true });
+      writeFileSync(join(repo, "sample.txt"), "invented example\n");
+      writeFileSync(
+        join(config, "config.yaml"),
+        `credential_profiles:\n  - profile_id: fixture\n    harness_id: cursor\n    display_name: Fixture\n    credential_kind: config_dir_login\n    isolation_locator: ${JSON.stringify(profile)}\n`,
+      );
+      const frames = nativeFrames(large);
+      const generation = vi.fn();
+      const cursor = createCursorAdapter({
+        detectVersion: async () => "cursor-test",
+        nativeAuthOk: async () => ({ kind: "authenticated" }),
+        cursorApiKey: () => null,
+        listCursorModels: async () => [],
+        smokeIsolatedApiKey: async () => ({ ok: false, detail: "not used" }),
+        runCliHarness: (opts) =>
+          runCliHarness({
+            ...opts,
+            spawn: async function* () {
+              generation();
+              for (const frame of frames) yield { type: "stdout", line: JSON.stringify(frame) };
+              yield { type: "exit", code: 0, signal: null };
+            } as NonNullable<typeof opts.spawn>,
+          }),
+      });
+      const race = mode === "agent" && !convergence;
+      const adapters = race ? [cursor, losingLane()] : [cursor];
+      const prompt = "Review the synthetic swatch.";
+      if (gap) {
+        const readAll = EventLog.prototype.readAll;
+        gapRead = vi.spyOn(EventLog.prototype, "readAll").mockImplementation(function (
+          this: EventLog,
+        ) {
+          const source = readAll.call(this);
+          // Inject a read/landing failure only at terminal preparation, not at
+          // the adapter or the canonical answer's own selection.
+          if (
+            !source.events.some(
+              ({ type, payload }) =>
+                type === "output.ready" && payload["path"] === "final/answer.md",
+            )
+          )
+            return source;
+          if (gap === "writer") return { ...source, eventLoss: true };
+          return {
+            ...source,
+            events: source.events.filter(
+              ({ type, payload }) =>
+                type !== "harness.event" ||
+                payload["type"] !== "tool_result" ||
+                (payload["tool"] as { use_id?: string } | undefined)?.use_id !== "first-read",
+            ),
+          };
+        });
+      }
+      const produced = await new Orchestrator({
+        registry: new Map(adapters.map((a) => [a.id, a])),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        workspaceKind: "directory",
+        mode,
+        ...(convergence ? { attempts: 1, review: false } : { n: adapters.length }),
+        inPlace: mode === "ask",
+        ...(mode === "agent" ? { scopePaths: ["sample.txt"] } : { credentialProfileId: "fixture" }),
+        harnesses: adapters.map((a) => a.id),
+        prompt,
+        web: "auto",
+        ...(mode === "ask" ? { review: false } : {}),
+      });
+      gapRead?.mockRestore();
+      expect(produced.lifecycle, produced.summary).toBe("succeeded");
+      expect(generation, produced.summary).toHaveBeenCalledTimes(1);
+      const eventText = readFileSync(join(produced.runDir, "events.jsonl"), "utf8");
+      expect(eventText).toContain("command_outcome_refined");
+      if (race) expect(eventText).toContain("Only the losing lane said this.");
+      const record: DaemonRunRecord = {
+        id: `job-${produced.runId}`,
+        runId: produced.runId,
+        taskId: produced.taskId,
+        state: produced.lifecycle,
+        runDir: produced.runDir,
+        params: { mode, scope: { kind: "project", root: repo }, prompt },
+      };
+      // Real Control HTTP and bulk read worker; no ambient daemon can be reached.
+      server = new DaemonControlApiServer({
+        token,
+        daemon: {
+          list: async () => [record],
+          status: async (id) => {
+            expect([record.id, record.runId]).toContain(id);
+            return record;
+          },
+          enqueue: async () => {
+            throw new Error("Unexpected enqueue");
+          },
+          cancel: async () => {
+            throw new Error("Unexpected cancel");
+          },
+        },
+      });
+      const { host, port } = await server.start();
+      expect(host).toBe("127.0.0.1");
+      const addr = { baseUrl: `http://${host}:${port}`, token };
+      connect = vi.spyOn(daemonRun, "connectDaemonIfRunning").mockResolvedValue({
+        client: {} as never,
+        addr: addr as never,
+        engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
+      });
+      const route = `/v2/runs/${produced.runId}`;
+      const get = (suffix: string) =>
+        fetch(addr.baseUrl + route + suffix, {
+          headers: {
+            authorization: `Bearer ${token}`,
+            "X-Claudexor-Protocol-Major": String(CONTROL_PROTOCOL_MAJOR),
+          },
+        });
+      const detailResponse = await get("");
+      expect(detailResponse.status).toBe(200);
+      const detail = ControlRunDetail.parse(await detailResponse.json());
+      const answer = readFileSync(join(produced.runDir, "final/answer.md"), "utf8");
+      expect(detail.primaryOutput).toMatchObject({
+        path: "final/answer.md",
+        kind: "answer",
+        text: answer,
+      });
+      expect(answer).toContain(final);
+      expect(answer).not.toContain(report);
+      expect(answer).not.toContain(correction);
+      const tool = defaultClaudexorTools(mcpSurfaceRunner()).find(
+        (t) => t.name === "claudexor_run_result",
+      )!;
+      const ordinary = await tool.handler({ runId: produced.runId }, {});
+      if (typeof ordinary === "string") throw new Error("expected MCP result object");
+      expect(ordinary.structured).not.toHaveProperty("finalMessages");
+      expect(ordinary.structured).not.toHaveProperty("earlierAssistantOutput");
+      const opted = await tool.handler({ runId: produced.runId, includeFinalMessages: true }, {});
+      if (typeof opted === "string") throw new Error("expected MCP result object");
+      expect(opted.structured?.finalMessages).toMatchObject({
+        state: gap ? "partial" : "complete",
+        count: 1,
+      });
+      const exact = await get("/artifacts/final/final-messages.jsonl");
+      expect(exact.status).toBe(200);
+      const rows = (await exact.text())
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(rows[1].payload.text).toBe(final + footer);
+      const earlier = detail.primaryOutput?.earlierAssistantOutput;
+      if (gap) {
+        expect(earlier).toBeUndefined();
+        expect(eventText).toContain('"earlier_assistant_output_gap":true');
+        expect((await get(`/artifacts/${path}`)).status).toBe(404);
+        expect(String(ordinary.structured?.summary)).toContain(final);
+        return;
+      }
+      if (!earlier) throw new Error("the ordinary result must name the generated earlier speech");
+      expect(earlier).toMatchObject({
+        path,
+        truncated: large,
+      });
+      const downloaded = await get(`/artifacts/${path}`);
+      expect(downloaded.status, "the ordinary pointer must serve the exact full document").toBe(
+        200,
+      );
+      const bytes = Buffer.from(await downloaded.arrayBuffer());
+      expect(digest(bytes)).toBe(digest(readFileSync(join(produced.runDir, path))));
+      expect(bytes.byteLength).toBe(earlier.bytes);
+      const text = bytes.toString("utf8");
+      expect(text.split(report)).toHaveLength(2);
+      expect(text.split(correction)).toHaveLength(2);
+      expect(text.indexOf(report)).toBeLessThan(text.indexOf(correction));
+      for (const excluded of [
+        final,
+        "Preamble",
+        "losing lane",
+        "Tool-only text",
+        "Reasoning-only text",
+      ]) {
+        expect(text).not.toContain(excluded);
+      }
+      const summary = String(ordinary.structured?.summary);
+      // The ordinary launch path when the caller elects to await the result.
+      const launch = await projectLaunchHandle(
+        addr,
+        {
+          runId: produced.runId,
+          runDir: produced.runDir,
+          jobId: record.id,
+          status: "succeeded",
+        },
+        { deferred: false, mode },
+      );
+      expect(launch["summary"]).toBe(summary);
+      expect(launch).not.toHaveProperty("finalMessages");
+      if (mode === "ask" && !large) {
+        const ensure = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
+          client: {} as never,
+          addr: addr as never,
+          engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
+        });
+        const realFetch = globalThis.fetch;
+        const fetchThread = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+          // Only the enclosing conversation metadata is simulated; ACP reads
+          // the completed output through the same real HTTP route above.
+          if (String(input) === `${addr.baseUrl}/v2/threads/fixture`)
+            return Promise.resolve(
+              Response.json({
+                thread: { id: "fixture", repoRoot: repo },
+                turns: [{ prompt, runId: produced.runId }],
+              }),
+            );
+          return realFetch(input, init);
+        });
+        try {
+          const replay = await acpSessionQuery(
+            { mode: "__acp_session_load", sessionId: "fixture", repoPath: repo },
+            undefined,
+            {} as never,
+          );
+          expect(replay).toMatchObject({
+            turns: [{ prompt, output: { text: summary, truncated: false } }],
+          });
+        } finally {
+          fetchThread.mockRestore();
+          ensure.mockRestore();
+        }
+      }
+      if (large) {
+        expect(bytes.byteLength).toBeGreaterThan(4 * 1024 * 1024);
+        expect(earlier.text).not.toContain("�");
+        expect(text.startsWith(earlier.text)).toBe(true);
+        expect(summary).toContain(path);
+        writeFileSync(join(produced.runDir, "final/ordinary-long-note.md"), bytes);
+        expect((await get("/artifacts/final/ordinary-long-note.md")).status).toBe(413);
+        const unauthenticated = await fetch(addr.baseUrl + route + `/artifacts/${path}`);
+        expect(unauthenticated.status).toBe(401);
+      } else {
+        const rendered = String(ordinary.text);
+        for (const body of [summary, rendered]) {
+          expect(body.split(report)).toHaveLength(2);
+          expect(body.split(correction)).toHaveLength(2);
+          expect(body.split(final)).toHaveLength(2);
+          expect(body.indexOf(report)).toBeLessThan(body.indexOf(correction));
+          expect(body.indexOf(correction)).toBeLessThan(body.indexOf(final));
+        }
+      }
+    } finally {
+      gapRead?.mockRestore();
+      connect?.mockRestore();
+      vi.unstubAllEnvs();
+      await server?.stop();
+      rmSync(area, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);

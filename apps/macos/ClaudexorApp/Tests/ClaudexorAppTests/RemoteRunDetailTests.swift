@@ -29,6 +29,32 @@ import Testing
     }
 
     @MainActor
+    @Test func addressedAnswerShowsEarlierPreviewBeforeTheSameAcceptedText() async {
+        defer { RemoteRunDetailURLProtocol.handler = nil }
+        let (model, locationID) = makeModel(runId: "run-speaks")
+        let requests = RemoteRunDetailCounter()
+        RemoteRunDetailURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs/run-speaks" else {
+                throw RemoteRunDetailError.badRequest // No implicit full-artifact fetch.
+            }
+            let sequence = requests.incrementAndGet()
+            let earlier = sequence == 1 ? "" : ###", "earlierAssistantOutput":{"path":"final/earlier-assistant-output.md","text":"## Earlier assistant text (not the accepted final)\n\nInitial swatch report.","bytes":20000,"truncated":true}"###
+            let body = #"{"summary":{"runId":"run-speaks","state":"succeeded","mode":"ask","outputReadyState":"ready"},"primaryOutput":{"kind":"answer","path":"final/answer.md","text":"Accepted text.","truncated":false\#(earlier)},"lastSeq":\#(sequence)}"#
+            return (response(for: request), Data(body.utf8), 0)
+        }
+        #expect(await model.loadRunDetail("run-speaks", locationID: locationID))
+        #expect(model.task("run-speaks", at: locationID)?.answerText == "Accepted text.")
+        #expect(await model.loadRunDetail("run-speaks", locationID: locationID))
+        let task = model.task("run-speaks", at: locationID)
+        let expected = "## Earlier assistant text (not the accepted final)\n\nInitial swatch report."
+            + "\n\n[Earlier text preview bounded; full artifact: final/earlier-assistant-output.md]"
+            + "\n\n---\n\n## Accepted final answer\n\nAccepted text."
+        #expect(task?.answerText == expected)
+        #expect(task?.primaryOutputPath == "final/answer.md")
+        #expect(requests.value == 2)
+    }
+
+    @MainActor
     @Test func remoteLegacyDetailUsesTheSharedBoundedArtifactFallback() async throws {
         defer { RemoteRunDetailURLProtocol.handler = nil }
         let (model, locationID) = makeModel(runId: "run-legacy")

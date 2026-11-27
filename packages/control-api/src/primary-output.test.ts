@@ -18,6 +18,49 @@ function facts(path: string): RunFacts {
 }
 
 describe("canonical terminal presentation", () => {
+  it.each([11 * 1024, 24 * 1024])(
+    "reads earlier speech for addressed answers with an independent UTF-8 budget (%s bytes target)",
+    (targetBytes) => {
+      const runDir = mkdtempSync(join(tmpdir(), "claudexor-earlier-output-"));
+      const path = "final/answer.md";
+      const earlierPath = "final/earlier-assistant-output.md";
+      const earlier = "🟦".repeat(targetBytes / 4) + " end\n";
+      const answer = "Accepted answer\n";
+      mkdirSync(join(runDir, "final"));
+      writeFileSync(join(runDir, earlierPath), earlier);
+      writeFileSync(join(runDir, path), answer);
+      try {
+        const rec = record(runDir);
+        const truncated = targetBytes > 16 * 1024;
+        const canonical = {
+          kind: "answer",
+          path,
+          text: answer,
+          bytes: Buffer.byteLength(answer),
+          truncated: false,
+        };
+        expect(primaryOutput(rec, "ask", null, facts(path))).toEqual({
+          ...canonical,
+          earlierAssistantOutput: {
+            path: earlierPath,
+            text: truncated ? earlier.slice(0, ((16 * 1024) / 4) * 2) : earlier,
+            bytes: Buffer.byteLength(earlier),
+            truncated,
+          },
+        });
+        expect(primaryOutput(rec, "ask", null, facts(path), { maxBytes: 1024 })).toEqual(canonical);
+        expect(primaryOutput({ ...rec, state: "failed" }, "ask", null, facts(path))).toEqual(
+          canonical,
+        );
+        expect(
+          primaryOutput(rec, "ask", null, facts(path.replace("answer", "missing"))),
+        ).not.toHaveProperty("earlierAssistantOutput");
+      } finally {
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([true, false])(
     "keeps full, byte-bounded and patch-reference previews distinct (full first=%s)",
     (fullFirst) => {

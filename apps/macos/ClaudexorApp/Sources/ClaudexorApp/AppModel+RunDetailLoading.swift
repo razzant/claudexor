@@ -92,9 +92,15 @@ extension AppModel {
                   detail.summary.outputReadyState != "diagnostic" || primary.kind == "report"
             else { return nil }
             if detail.summary.outputReadyState == "diagnostic" { return text }
-            return primary.truncated == true
+            let accepted = primary.truncated == true
                 ? text + "\n\n_Inline preview bounded; open \(primary.path) for the full output._"
                 : text
+            guard primary.kind == "answer", let earlier = primary.earlierAssistantOutput
+            else { return accepted }
+            let preview = earlier.truncated
+                ? earlier.text + "\n\n[Earlier text preview bounded; full artifact: \(earlier.path)]"
+                : earlier.text
+            return preview + "\n\n---\n\n## Accepted final answer\n\n" + accepted
         }
         guard detail.summary.outputReadyState != "diagnostic" else { return nil }
         return await firstArtifactText(

@@ -3838,6 +3838,34 @@
                   "type": "boolean",
                   "default": false,
                   "description": "True when text is a bounded inline preview of the full artifact."
+                },
+                "earlierAssistantOutput": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "description": "Run-relative artifact with the complete selected earlier text."
+                    },
+                    "text": {
+                      "type": "string",
+                      "description": "Bounded view of the earlier assistant text and its event provenance."
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "text",
+                    "bytes",
+                    "truncated"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Observed earlier speech, presented before the accepted answer but never part of it."
                 }
               },
               "required": [

@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { emitBestEffort, writeFinalMessages, writeRetainedOutput } from "@claudexor/event-log";
+import {
+  emitBestEffort,
+  writeEarlierAssistantOutput,
+  writeFinalMessages,
+  writeRetainedOutput,
+} from "@claudexor/event-log";
+import { commandOutcomeRefinement, RunTelemetry } from "@claudexor/schema";
 import type { FinalMessagesOutcome, FinalMessagesUnavailableReason } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
+import { terminalPresentation } from "./runFactsPresentation.js";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
 
 type LogRead = ReturnType<AnnouncedRunContext["log"]["readAll"]>;
@@ -16,7 +23,7 @@ function readOutputSource(context: AnnouncedRunContext): LogRead | null {
   }
 }
 
-/** Both derived terminal outputs from one read of the run's settled log. Each
+/** Derive terminal outputs from one read of the run's settled log. Each
  * reports its own failure; neither undoes the other or the terminal. */
 export function publishTerminalOutputs(
   context: AnnouncedRunContext,
@@ -24,10 +31,53 @@ export function publishTerminalOutputs(
   failed: boolean,
 ): { retainedOutput: string | null; finalMessages: FinalMessagesOutcome } {
   const source = readOutputSource(context);
+  if (succeeded && source) publishEarlierSpeech(context, source);
   return {
     finalMessages: publishFinalMessages(context, source),
     retainedOutput: publishRetainedOutput(context, succeeded, failed, source ?? undefined),
   };
+}
+
+/** Use the winner recorded by the strategy and the same settled event read as
+ * final-messages/retained output; event time does not choose the winner. */
+function publishEarlierSpeech(context: AnnouncedRunContext, source: LogRead): void {
+  if (context.mode !== "ask" && context.mode !== "agent") return;
+  const gap =
+    source.malformed > 0 ||
+    source.eventLoss === true ||
+    source.events.some((row, index) => row.seq !== index + 1);
+  const refinement = (attemptId?: string) =>
+    source.events.some(
+      ({ type, payload }) =>
+        type === "harness.event" &&
+        payload["harness_id"] === "cursor" &&
+        (!attemptId || payload["attempt_id"] === attemptId) &&
+        commandOutcomeRefinement(payload) !== null,
+    );
+  if (!gap && !refinement()) return;
+  try {
+    const telemetry = RunTelemetry.safeParse(
+      context.store.readYaml(join(context.paths.finalDir, "telemetry.yaml")),
+    ).data;
+    const winner = telemetry?.attempts.find(
+      (attempt) => attempt.attempt_id === telemetry.final_attempt_id,
+    );
+    if (winner?.harness_id !== "cursor") return;
+    const presentation = terminalPresentation(context, source.events);
+    if (presentation?.state !== "ready" || presentation.primary?.kind !== "answer") return;
+    if (gap) {
+      status(context, "Earlier assistant text unavailable", "The run's event log is incomplete.", {
+        earlier_assistant_output_gap: true,
+      });
+      return;
+    }
+    if (refinement(winner.attempt_id))
+      writeEarlierAssistantOutput(context.paths.root, source.events, winner.attempt_id);
+  } catch (error) {
+    status(context, "Earlier assistant text could not be saved", String(error), {
+      earlier_assistant_output_failed: true,
+    });
+  }
 }
 
 /** #307: the run's typed finals in order, beside its primary output. Never

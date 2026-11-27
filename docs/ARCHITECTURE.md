@@ -8376,6 +8376,19 @@ document. Captured media references are added from the existing attempt capture,
 attempt-scoped handles; the original text remains intact. The full retained
 Markdown fetch is exact like other text, but is not restricted by the log
 preview fetch ceiling. Inline/native rendering keeps its own preview limits.
+
+Cursor #756 preserves earlier speech alongside a successful Ask/Agent's
+selected text answer, regardless of later artifact announcements. A matched
+background completion (#546) within a tool-delimited speech interval anchors
+the start; subsequent assistant speech in that winning physical session stays
+ordered through tools and notices, excluding the final and its linked echoes.
+Known journal loss prevents publication and records a diagnostic. The addressed
+Control detail includes an earlier-assistant-output field (16 KiB preview)
+and the exact run path `final/earlier-assistant-output.md`, readable through the
+usual authenticated artifact route even above the ordinary preview ceiling.
+MCP, text inspect, addressed macOS output and ACP replay present earlier speech
+before the accepted answer. Strict finals, WorkReport and bounded history are
+unchanged; no read-time archive scan or prose guessing is involved.
 The direct observer delta cap does not truncate public event replay, whose
 existing backpressure and client display bounds remain in force.
 

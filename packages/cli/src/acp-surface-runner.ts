@@ -335,12 +335,18 @@ export async function acpSessionQuery(
           const run = await request(await runDetailPath(addr, runId, includeFinalMessages, engine));
           if (includeFinalMessages) finalMessages = projectRunFinalMessages(run);
           const primary = run["primaryOutput"] as Record<string, unknown> | null | undefined;
-          const text = typeof primary?.["text"] === "string" ? primary["text"].trim() : "";
+          const typed = projectRunPrimaryOutput(run);
+          const earlier = typed?.kind === "answer" ? typed.earlierAssistantOutput : undefined;
+          const text = earlier
+            ? (presentRunPrimaryOutput(typed) ?? "")
+            : typeof primary?.["text"] === "string"
+              ? primary["text"].trim()
+              : "";
           if (text) {
             output = {
               kind: typeof primary?.["kind"] === "string" ? (primary["kind"] as string) : "answer",
               text,
-              truncated: primary?.["truncated"] === true,
+              truncated: primary?.["truncated"] === true || earlier?.truncated === true,
             };
           }
         } catch (error) {
