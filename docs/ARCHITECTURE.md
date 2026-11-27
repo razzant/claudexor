@@ -221,7 +221,9 @@ at every wire boundary.
   the published global install (`npm install -g claudexor`) and the ONE owner
   of the global bin names. Its Pi declarations in `package.json` and the
   extension that registers the server (`pi/index.js`) are hand-written.
-  `gen:version` copies the portable MCP descriptor and Skill into `pi/`.
+  `gen:version` copies the portable MCP descriptor into `pi/` and composes its
+  Skill, like Hermes', from the canonical body below the host default section in
+  `host-skills/`; Cursor and Claude copy the canonical Skill unchanged.
 - `packages/mcp-server`, `packages/acp-server`: thin protocol surfaces. The
   MCP server rides the official TypeScript SDK v2 (concurrent dispatch, era
   negotiation down to 2024-10-07, schema-validated arguments, elicitation);

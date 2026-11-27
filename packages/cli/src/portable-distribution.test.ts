@@ -26,6 +26,20 @@ describe("portable Agent Skill, Copilot plugin, and MCP distribution", () => {
       ).toBe("boolean");
     }
 
+    // The Hermes/Pi default second-opinion body names tools against the real production
+    // registry, not against a grep of sources: names in prose prove nothing about
+    // registration, and the registry is the shipped surface this distribution claims.
+    const hostDefault = readFileSync(
+      join(repoRoot, "packages", "claudexor", "host-skills", "default-second-opinion.md"),
+      "utf8",
+    );
+    const registry = new Set(tools.map((tool) => tool.name));
+    for (const name of hostDefault.match(/`claudexor_[a-z_]+`/g) ?? []) {
+      expect(registry, `default second opinion names unregistered ${name}`).toContain(
+        name.slice(1, -1),
+      );
+    }
+
     const root = mkdtempSync(join(tmpdir(), "claudexor-portable-parity-"));
     tempRoots.push(root);
     const home = join(root, "home");
