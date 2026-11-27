@@ -332,7 +332,9 @@ export async function acpSessionQuery(
       let finalMessages: FinalMessagesOutcome | null = null;
       if (runId) {
         try {
-          const run = await request(await runDetailPath(addr, runId, includeFinalMessages, engine));
+          const run = await request(
+            await runDetailPath(addr, runId, includeFinalMessages, engine, true),
+          );
           if (includeFinalMessages) finalMessages = projectRunFinalMessages(run);
           const primary = run["primaryOutput"] as Record<string, unknown> | null | undefined;
           const typed = projectRunPrimaryOutput(run);

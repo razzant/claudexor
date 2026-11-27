@@ -23,6 +23,12 @@ export const RUN_DETAIL_OPERATION = jsonOperation(
         description:
           "Include the recorded final-messages outcome. Omission or false keeps the original run detail.",
       }),
+      queryParam({
+        name: "includeEarlierAssistantOutput",
+        enum: ["true", "false"],
+        description:
+          "Include the earlier assistant text preview and exact artifact path beside an eligible primary answer. Omission or false keeps the original primary output shape.",
+      }),
       RUN_DEADLINE_FACTS_HEADER,
     ],
   },

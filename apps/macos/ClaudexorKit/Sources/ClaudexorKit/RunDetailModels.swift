@@ -18,6 +18,7 @@ public struct PrimaryOutput: Codable, Sendable, Equatable {
     public let bytes: Int?
     public let truncated: Bool?
     public let earlierAssistantOutput: EarlierAssistantOutput?
+    public let earlierAssistantOutputUnavailable: String?
 }
 
 /// One member of a plan council draft round (D31): who drafted or merged, and

@@ -1,9 +1,29 @@
 import ClaudexorKit
 import Foundation
+import AppKit
+import SwiftUI
 import Testing
 @testable import ClaudexorApp
 
 @Suite(.serialized) struct RemoteRunDetailTests {
+    @MainActor
+    @Test func addressedAnswerWithUnclosedFence() throws {
+        let earlier = "## Earlier assistant text\n\n```swift\nlet swatch = 1"
+        let accepted = "B: The accepted correction remains prose."
+        #expect(MarkdownOutputView.parse(accepted).first?.text == accepted)
+        // Optional AppKit raster of the real component (includes its native
+        // Markdown selection views). Does not show or focus any window.
+        guard let path = ProcessInfo.processInfo.environment["CX756_PREVIEW_PNG"] else { return }
+        let view = NSHostingView(rootView: AddressedAnswerContent(earlier: earlier, accepted: accepted)
+            .padding(16).frame(width: 580))
+        view.frame.size = view.fittingSize
+        view.layoutSubtreeIfNeeded()
+        let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        try png.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+
     @MainActor
     @Test func failedRemoteDetailLoadRemainsRetryable() async {
         defer { RemoteRunDetailURLProtocol.handler = nil }
@@ -34,7 +54,8 @@ import Testing
         let (model, locationID) = makeModel(runId: "run-speaks")
         let requests = RemoteRunDetailCounter()
         RemoteRunDetailURLProtocol.handler = { request in
-            guard request.url?.path == "/v2/runs/run-speaks" else {
+            guard request.url?.path == "/v2/runs/run-speaks",
+                  request.url?.query == "includeEarlierAssistantOutput=true" else {
                 throw RemoteRunDetailError.badRequest // No implicit full-artifact fetch.
             }
             let sequence = requests.incrementAndGet()
@@ -48,8 +69,8 @@ import Testing
         let task = model.task("run-speaks", at: locationID)
         let expected = "## Earlier assistant text (not the accepted final)\n\nInitial swatch report."
             + "\n\n[Earlier text preview bounded; full artifact: final/earlier-assistant-output.md]"
-            + "\n\n---\n\n## Accepted final answer\n\nAccepted text."
-        #expect(task?.answerText == expected)
+        #expect(task?.earlierAnswerText == expected)
+        #expect(task?.answerText == "Accepted text.")
         #expect(task?.primaryOutputPath == "final/answer.md")
         #expect(requests.value == 2)
     }

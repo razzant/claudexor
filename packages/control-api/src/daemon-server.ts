@@ -863,8 +863,10 @@ export class DaemonControlApiServer {
     const runDetailMatch = /^\/runs\/([^/]+)$/.exec(path);
     if (method === "GET" && runDetailMatch) {
       let includeFinalMessages: boolean | undefined;
+      let includeEarlierAssistantOutput: boolean | undefined;
       try {
         includeFinalMessages = optionalBooleanQuery(url, "includeFinalMessages");
+        includeEarlierAssistantOutput = optionalBooleanQuery(url, "includeEarlierAssistantOutput");
       } catch (error) {
         return this.requestError(res, error);
       }
@@ -892,6 +894,7 @@ export class DaemonControlApiServer {
                   record: rec,
                   cursor,
                   includeFinalMessages,
+                  includeEarlierAssistantOutput,
                   runDeadlineFacts: runStart.readsRunDeadline(req),
                   pending: this.pendingInteractionsFor(rec),
                   operator: this.operatorDecisionFor(rec),

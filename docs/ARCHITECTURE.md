@@ -8377,20 +8377,24 @@ attempt-scoped handles; the original text remains intact. The full retained
 Markdown fetch is exact like other text, but is not restricted by the log
 preview fetch ceiling. Inline/native rendering keeps its own preview limits.
 
-Cursor #756 preserves earlier speech alongside a successful Ask/Agent's
-selected text answer, regardless of later artifact announcements. A matched
-background completion (#546) within a tool-delimited speech interval anchors
-the start; subsequent assistant speech in that winning physical session stays
-ordered through tools and notices, excluding the final and its linked echoes.
-Known journal loss prevents publication and records a diagnostic. The addressed
-Control detail includes an earlier-assistant-output field (16 KiB preview)
-and the exact run path `final/earlier-assistant-output.md`, readable through the
-usual authenticated artifact route even above the ordinary preview ceiling.
-MCP, text inspect, addressed macOS output and ACP replay present earlier speech
-before the accepted answer. Strict finals, WorkReport and bounded history are
-unchanged; no read-time archive scan or prose guessing is involved.
 The direct observer delta cap does not truncate public event replay, whose
 existing backpressure and client display bounds remain in force.
+
+Cursor #756 preserves earlier speech alongside a successful Ask/Agent's
+selected text answer. The recorded handoff refined by the matched completion
+anchors the start; speech from that winning physical session stays ordered
+through intervening tools and notices, excluding the final and its linked echoes.
+`GET /v2/runs/:id?includeEarlierAssistantOutput=true` opts into the bounded
+`primaryOutput.earlierAssistantOutput` (16 KiB) and exact authenticated artifact
+`final/earlier-assistant-output.md`, including files above the ordinary preview
+ceiling. Plain/false requests retain the legacy shape. On positive evidence of
+unavailability, the opted-in primary can instead carry
+`earlierAssistantOutputUnavailable`: `source_gap`, `publication_failed`, or
+`artifact_unavailable` (publication observed but the artifact no longer reads).
+Earlier text is evidence, not a second accepted answer or WorkReport. MCP,
+text inspect, addressed macOS details and ACP replay present it alongside the
+accepted answer; history and strict finals stay unchanged. The projector uses
+one settled event read to publish, and the existing event fold to read status.
 
 Retained output is also a source of the in-run EVIDENCE INDEX: when an
 attempt continues on a fresh session (`packet` carrier), the successor's

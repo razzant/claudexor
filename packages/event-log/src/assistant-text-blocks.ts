@@ -11,6 +11,8 @@ export interface TextBlock {
   key?: string;
   /** The harness's complete text of the keyed block replaced its fragments. */
   complete?: boolean;
+  /** Cursor names a model call on buffered snapshots; its deltas and flush may be unlabelled. */
+  modelCallId?: string;
   /** A complete message held outside `blocks`: the streamed blocks it exactly repeats. */
   forms?: TextBlock[];
 }
@@ -158,6 +160,9 @@ function textBlock(
     return block;
   }
   const buffered = payload?.["buffered"] === true;
+  const call = buffered && source.harness === "cursor" ? payload?.["model_call_id"] : undefined;
+  const modelCallId = typeof call === "string" && call ? call : undefined;
+  const distinctCall = modelCallId && current?.modelCallId && modelCallId !== current.modelCallId;
   const repeated = source.echo.complete(text, { buffered, final });
   const repeats =
     typeof repeated === "number" ? [...new Set(source.fragments.slice(repeated))] : [];
@@ -167,6 +172,7 @@ function textBlock(
   if (
     current &&
     !current.final &&
+    !distinctCall &&
     current.text === text &&
     (source.openDelta || source.pendingFlush || final || buffered)
   ) {
@@ -174,10 +180,19 @@ function textBlock(
     current.last = seq;
     current.delta = false;
     current.final ||= final;
+    if (modelCallId) current.modelCallId = modelCallId;
     return current;
   }
-  if (repeated !== null) return { text, first: seq, last: seq, delta, final, forms: repeats };
-  const block: TextBlock = { text, first: seq, last: seq, delta, final };
+  const block: TextBlock = {
+    text,
+    first: seq,
+    last: seq,
+    delta,
+    final,
+    ...(modelCallId ? { modelCallId } : {}),
+  };
+  if (repeated !== null && !(distinctCall && repeated === "previous"))
+    return { ...block, forms: repeats };
   source.blocks.push(block);
   return block;
 }

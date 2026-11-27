@@ -39,7 +39,10 @@ describe("canonical terminal presentation", () => {
           bytes: Buffer.byteLength(answer),
           truncated: false,
         };
-        expect(primaryOutput(rec, "ask", null, facts(path))).toEqual({
+        expect(primaryOutput(rec, "ask", null, facts(path))).toEqual(canonical);
+        expect(
+          primaryOutput(rec, "ask", null, facts(path), { includeEarlierAssistantOutput: true }),
+        ).toEqual({
           ...canonical,
           earlierAssistantOutput: {
             path: earlierPath,
@@ -48,7 +51,25 @@ describe("canonical terminal presentation", () => {
             truncated,
           },
         });
-        expect(primaryOutput(rec, "ask", null, facts(path), { maxBytes: 1024 })).toEqual(canonical);
+        expect(
+          primaryOutput(rec, "ask", null, facts(path), {
+            maxBytes: 1024,
+            includeEarlierAssistantOutput: true,
+          }),
+        ).toEqual(canonical);
+        rmSync(join(runDir, earlierPath));
+        for (const [fact, reason] of [
+          ["saved", "artifact_unavailable"],
+          ["source_gap", "source_gap"],
+          ["publication_failed", "publication_failed"],
+        ] as const) {
+          expect(
+            primaryOutput(rec, "ask", null, facts(path), {
+              includeEarlierAssistantOutput: true,
+              earlierAssistantOutputFact: fact,
+            }),
+          ).toEqual({ ...canonical, earlierAssistantOutputUnavailable: reason });
+        }
         expect(primaryOutput({ ...rec, state: "failed" }, "ask", null, facts(path))).toEqual(
           canonical,
         );

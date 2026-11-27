@@ -55,6 +55,12 @@ export const ControlPrimaryOutput = z
       .default(false)
       .describe("True when text is a bounded inline preview of the full artifact."),
     earlierAssistantOutput: EarlierAssistantOutput.optional(),
+    earlierAssistantOutputUnavailable: z
+      .enum(["source_gap", "publication_failed", "artifact_unavailable"])
+      .optional()
+      .describe(
+        "Evidence that earlier text could not be established or read; absent is not proof of absence.",
+      ),
   })
   .describe("The run's primary user-facing output artifact.");
 export type ControlPrimaryOutput = z.infer<typeof ControlPrimaryOutput>;

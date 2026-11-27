@@ -71,8 +71,19 @@ function publishEarlierSpeech(context: AnnouncedRunContext, source: LogRead): vo
       });
       return;
     }
-    if (refinement(winner.attempt_id))
-      writeEarlierAssistantOutput(context.paths.root, source.events, winner.attempt_id);
+    if (
+      refinement(winner.attempt_id) &&
+      writeEarlierAssistantOutput(context.paths.root, source.events, winner.attempt_id)
+    ) {
+      status(
+        context,
+        "Earlier assistant text saved",
+        "The selected earlier text is available as an artifact.",
+        {
+          earlier_assistant_output_saved: true,
+        },
+      );
+    }
   } catch (error) {
     status(context, "Earlier assistant text could not be saved", String(error), {
       earlier_assistant_output_failed: true,

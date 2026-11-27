@@ -39,7 +39,7 @@ export async function projectLaunchHandle(
     let detailProblem: ReturnType<typeof describeRunDetailProblem> | null = null;
     if (!opts.deferred || terminal) {
       try {
-        detail = await fetchRunDetail(addr, address);
+        detail = await fetchRunDetail(addr, address, false, undefined, terminal);
         detailProjection = projectImmediateRunDetail(detail, {
           runId: address,
           ...(terminal ? { lifecycle: out.status as RunOutcomeFacts["lifecycle"] } : {}),

@@ -1,4 +1,4 @@
-import { commandOutcomeRefinement, type RunEvent } from "@claudexor/schema";
+import { commandOutcomeRefinement, ToolRef, type RunEvent } from "@claudexor/schema";
 import { newAssistantSource, observeAssistantText } from "./assistant-text-blocks.js";
 import { isFinalMessage } from "./final-messages.js";
 import { writeOutputArtifact } from "./write-output-artifact.js";
@@ -40,15 +40,18 @@ export function earlierAssistantOutput(
 
   const source = newAssistantSource(attempt, "cursor", session);
   const notices: Array<{ after: number; seq: number }> = [];
-  let after = rows[start]?.seq ?? 0;
+  const pending = new Map<string, { seq: number; shell: string }>();
   for (const { seq, payload } of physical) {
     if (!seq || seq > finalSeq) break;
     const type = payload["type"];
-    if (type === "tool_call" || type === "tool_result") {
-      after = seq;
+    if (type === "tool_call" || type === "tool_result" || type === "thinking") {
+      if (type === "tool_result") {
+        const tool = ToolRef.safeParse(payload["tool"]).data;
+        const outcome = tool?.command_outcome;
+        if (tool?.use_id && outcome?.state === "backgrounded" && outcome.shell_id)
+          pending.set(tool.use_id, { seq, shell: outcome.shell_id });
+      }
       observeAssistantText(source, payload, seq);
-    } else if (commandOutcomeRefinement(payload)) {
-      notices.push({ after, seq });
     } else if (type === "message") {
       const detail = payload["payload"] as Record<string, unknown> | undefined;
       observeAssistantText(
@@ -56,6 +59,15 @@ export function earlierAssistantOutput(
         detail?.["delivery"] === "async" ? { type: "status" } : payload,
         seq,
       );
+    } else {
+      const refinement = commandOutcomeRefinement(payload);
+      if (refinement) {
+        const handoff = pending.get(refinement.useId);
+        if (handoff && handoff.shell === refinement.outcome.shell_id) {
+          pending.delete(refinement.useId);
+          notices.push({ after: handoff.seq, seq });
+        }
+      }
     }
     // A background notice (or other non-speech telemetry) can arrive between
     // fragments of a word. It doesn't start another assistant message.
@@ -63,11 +75,13 @@ export function earlierAssistantOutput(
   if (!source.answer || notices.length === 0) return null;
   const represented = new Set([source.answer, ...(source.answer.forms ?? [])]);
   const speech = source.blocks.filter((block) => !represented.has(block) && !block.final);
-  let candidate = 0;
+  // Windows may overlap and need not close in the order the commands started.
+  let index = 0;
   const first = speech.findIndex((block) => {
-    while (notices[candidate] && notices[candidate]!.seq <= block.first) candidate += 1;
-    const notice = notices[candidate];
-    return notice && block.first > notice.after && block.text.trim().length > 0;
+    while (notices[index] && notices[index]!.seq <= block.first) index += 1;
+    return (
+      block.text.trim().length > 0 && notices.slice(index).some(({ after }) => block.first > after)
+    );
   });
   if (first === -1) return null;
   const kept = speech.slice(first);
@@ -78,7 +92,9 @@ export function writeEarlierAssistantOutput(
   runDir: string,
   events: readonly RunEvent[],
   attempt: string,
-): void {
+): boolean {
   const text = earlierAssistantOutput(events, attempt);
-  if (text !== null) writeOutputArtifact(runDir, EARLIER_ASSISTANT_OUTPUT_PATH, text);
+  if (text === null) return false;
+  writeOutputArtifact(runDir, EARLIER_ASSISTANT_OUTPUT_PATH, text);
+  return true;
 }

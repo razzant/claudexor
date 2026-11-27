@@ -247,6 +247,15 @@ describe("final-messages discovery and bytes over HTTP", () => {
               "Include the recorded final-messages outcome. Omission or false keeps the original run detail.",
           },
           {
+            name: "includeEarlierAssistantOutput",
+            location: "query",
+            required: false,
+            repeatable: false,
+            enum: ["true", "false"],
+            schemaRef: null,
+            description: expect.stringContaining("earlier assistant text"),
+          },
+          {
             name: "x-claudexor-capabilities",
             location: "header",
             required: false,

@@ -37,7 +37,7 @@ extension AppModel {
         let original = remoteTasks[locationID]?.first { $0.id == id || $0.resolvedRunId == id }
         guard original != nil || selectedThreadAuthorizesColdRun(id) else { return false }
         do {
-            let detail = try await requestClient.runDetail(runId: id)
+            let detail = try await requestClient.runDetail(runId: id, includeEarlierAssistantOutput: true)
             guard selectedExecutionLocation == locationID,
                   gateway(for: locationID) === requestClient,
                   remoteRunDetailLoadTokens[loadKey] == loadToken
@@ -72,6 +72,7 @@ extension AppModel {
                 task.activity = detail.timeline.map(Self.activityEvent(from:))
             }
             task.adoptPrimaryOutput(detail)
+            task.earlierAnswerText = Self.earlierAnswerText(for: detail.primaryOutput)
             task.answerText = await answerText(
                 for: detail, client: requestClient, runId: id)
             guard selectedExecutionLocation == locationID,

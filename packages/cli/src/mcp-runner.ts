@@ -362,7 +362,13 @@ async function recoveryQuery(
     };
     try {
       const detail = await get(
-        await runDetailPath(addr, runId, read.includeFinalMessages, conn.engine),
+        await runDetailPath(
+          addr,
+          runId,
+          read.includeFinalMessages,
+          conn.engine,
+          mode === "__run_result",
+        ),
         true,
       );
       return projectRecoveryRunDetail(mode, runId, detail, parent, read);

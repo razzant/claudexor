@@ -525,6 +525,7 @@ struct TaskRun: Identifiable, Hashable {
     var diff: [DiffFile]
     var isLive: Bool = false
     var answerText: String?
+    var earlierAnswerText: String?
     var primaryOutputPath: String?
     var primaryOutputTruncated = false
     var capturedArtifactPaths: [String] = []

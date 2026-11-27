@@ -101,7 +101,13 @@ export function primaryOutput(
   mode: string | null | undefined,
   failure: RunFailure | null,
   runFacts: RunFacts | null = null,
-  options: { maxBytes?: number; patchReferenceOnly?: boolean; metadataMaxBytes?: number } = {},
+  options: {
+    maxBytes?: number;
+    patchReferenceOnly?: boolean;
+    metadataMaxBytes?: number;
+    includeEarlierAssistantOutput?: boolean | undefined;
+    earlierAssistantOutputFact?: "saved" | "source_gap" | "publication_failed" | undefined;
+  } = {},
 ): ControlPrimaryOutput | null {
   const selected = (path: string, kind?: string) =>
     preview(rec, path, options.maxBytes, options.patchReferenceOnly && kind === "patch");
@@ -134,6 +140,7 @@ export function primaryOutput(
       // Only the ordinary addressed detail carries the extra view, never a
       // history-page/pointer read or a historical/diagnostic primary.
       if (
+        options.includeEarlierAssistantOutput &&
         rec.state === "succeeded" &&
         runFacts.presentation.state === "ready" &&
         primary.kind === "answer" &&
@@ -143,6 +150,12 @@ export function primaryOutput(
       ) {
         const earlier = readRunEarlierAssistantOutput(rec.runDir);
         if (earlier) answer.earlierAssistantOutput = earlier;
+        else if (options.earlierAssistantOutputFact) {
+          answer.earlierAssistantOutputUnavailable =
+            options.earlierAssistantOutputFact === "saved"
+              ? "artifact_unavailable"
+              : options.earlierAssistantOutputFact;
+        }
       }
       return answer;
     }

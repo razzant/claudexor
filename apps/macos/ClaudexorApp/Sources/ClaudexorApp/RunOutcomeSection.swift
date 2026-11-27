@@ -157,10 +157,8 @@ struct RunOutcomeSection: View {
             }
             Panel {
                 if let answer = task.answerText, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    MarkdownOutputView(markdown: answer,
-                                       fileScopeRoots: task.fileScopeRoots,
-                                       remoteFileScope: task.remoteFileScope,
-                                       bodyFont: .body)
+                    AddressedAnswerContent(earlier: task.earlierAnswerText, accepted: answer,
+                                           roots: task.fileScopeRoots, scope: task.remoteFileScope)
                 } else {
                     Text(task.outputReadyState == "finalizing"
                          ? "Run is terminal; output is still finalizing. See Evidence for events and artifact paths."
@@ -230,5 +228,30 @@ struct RunOutcomeSection: View {
                 ForEach(task.findings) { FindingCard(finding: $0) }
             }
         }
+    }
+}
+
+/// Parse the two sources independently so a bounded, unclosed code fence in
+/// the earlier output cannot swallow the accepted answer.
+struct AddressedAnswerContent: View {
+    let earlier: String?
+    let accepted: String
+    var roots: [String] = []
+    var scope: RemoteFileScope?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            if let earlier {
+                output(earlier)
+                Divider()
+                Text("Accepted final answer").font(.headline)
+            }
+            output(accepted)
+        }
+    }
+
+    private func output(_ markdown: String) -> some View {
+        MarkdownOutputView(markdown: markdown, fileScopeRoots: roots,
+                           remoteFileScope: scope, bodyFont: .body)
     }
 }

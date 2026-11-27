@@ -6,6 +6,7 @@ import {
   ConformanceReport,
   CONTROL_PROTOCOL_MAJOR,
   ControlRunDetail,
+  ControlOperationCatalog,
   HarnessManifest,
 } from "@claudexor/schema";
 import { runCliHarness, type HarnessAdapter } from "@claudexor/core";
@@ -16,6 +17,7 @@ import { Orchestrator } from "@claudexor/orchestrator";
 import { DaemonControlApiServer, type DaemonRunRecord } from "@claudexor/control-api";
 import { defaultClaudexorTools } from "@claudexor/mcp-server";
 import { expect, it, vi } from "vitest";
+import { releasedRunReader } from "../../schema/fixtures/run-results-6.2.0.js";
 import { acpSessionQuery } from "./acp-surface-runner.js";
 import * as daemonRun from "./daemon-run.js";
 import { projectLaunchHandle } from "./mcp-launch-handle.js";
@@ -69,8 +71,8 @@ function nativeFrames(large: boolean) {
           ...chunks.map((part, i) => ({ ...assistant(part), timestamp_ms: i + 2 })),
         ]
       : [assistant(report)]),
-    notice,
     ...read("first-read"),
+    notice,
     assistant(correction),
     { type: "thinking", session_id, text: "Reasoning-only text" },
     ...read("second-read"),
@@ -126,7 +128,7 @@ const cases: {
 
 it.each(cases)(
   "reads the actual Cursor report through $label → Control → MCP",
-  async ({ mode, large = false, convergence, gap }) => {
+  async ({ label, mode, large = false, convergence, gap }) => {
     const area = mkdtempSync(join(tmpdir(), "cx756-"));
     vi.stubEnv("CLAUDEXOR_CONFIG_DIR", join(area, "config"));
     const token = "fixture";
@@ -249,14 +251,42 @@ it.each(cases)(
         engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
       });
       const route = `/v2/runs/${produced.runId}`;
-      const get = (suffix: string) =>
-        fetch(addr.baseUrl + route + suffix, {
+      const getPath = (path: string) =>
+        fetch(addr.baseUrl + path, {
           headers: {
             authorization: `Bearer ${token}`,
             "X-Claudexor-Protocol-Major": String(CONTROL_PROTOCOL_MAJOR),
           },
         });
-      const detailResponse = await get("");
+      const get = (suffix: string) => getPath(route + suffix);
+      const operations = ControlOperationCatalog.parse(
+        await (await getPath("/v2/operations")).json(),
+      );
+      const runOperation = operations.operations.find((op) => op.id === "get:runs.id");
+      expect(runOperation?.parameters).toContainEqual(
+        expect.objectContaining({
+          location: "query",
+          name: "includeEarlierAssistantOutput",
+          enum: ["true", "false"],
+        }),
+      );
+      const legacyReader = releasedRunReader("ControlRunDetail");
+      const witness = (facts: object) => {
+        if (process.env["CX756_PRINT_FIXTURE"] === "1")
+          console.info("CX756", JSON.stringify({ label, ...facts }));
+      };
+      const ordinaryPrimary: unknown[] = [];
+      for (const query of ["", "?includeEarlierAssistantOutput=false"]) {
+        const response = await get(query);
+        expect(response.status).toBe(200);
+        const legacy = await response.json();
+        expect(legacyReader(legacy), JSON.stringify(legacyReader.errors)).toBe(true);
+        expect(legacy.primaryOutput).not.toHaveProperty("earlierAssistantOutput");
+        expect(legacy.primaryOutput).not.toHaveProperty("earlierAssistantOutputUnavailable");
+        ordinaryPrimary.push(legacy.primaryOutput);
+      }
+      expect((await get("?includeEarlierAssistantOutput=bogus")).status).toBe(400);
+      const detailResponse = await get("?includeEarlierAssistantOutput=true");
       expect(detailResponse.status).toBe(200);
       const detail = ControlRunDetail.parse(await detailResponse.json());
       const answer = readFileSync(join(produced.runDir, "final/answer.md"), "utf8");
@@ -291,12 +321,14 @@ it.each(cases)(
       const earlier = detail.primaryOutput?.earlierAssistantOutput;
       if (gap) {
         expect(earlier).toBeUndefined();
+        expect(detail.primaryOutput?.earlierAssistantOutputUnavailable).toBe("source_gap");
         expect(eventText).toContain('"earlier_assistant_output_gap":true');
         expect((await get(`/artifacts/${path}`)).status).toBe(404);
         expect(String(ordinary.structured?.summary)).toContain(final);
+        witness({ ordinaryPrimary, optInPrimary: detail.primaryOutput });
         return;
       }
-      if (!earlier) throw new Error("the ordinary result must name the generated earlier speech");
+      if (!earlier) throw new Error("the opted-in result must name the generated earlier speech");
       expect(earlier).toMatchObject({
         path,
         truncated: large,
@@ -309,6 +341,16 @@ it.each(cases)(
       expect(digest(bytes)).toBe(digest(readFileSync(join(produced.runDir, path))));
       expect(bytes.byteLength).toBe(earlier.bytes);
       const text = bytes.toString("utf8");
+      if (label === "Ask")
+        witness({
+          operation: runOperation,
+          ordinaryPrimary,
+          optInPrimary: detail.primaryOutput,
+          artifactRoute: `${route}/artifacts/${path}`,
+          exactArtifactText: text,
+          sha256: digest(bytes),
+        });
+      if (large) witness({ artifactPath: path, bytes: bytes.byteLength, sha256: digest(bytes) });
       expect(text.split(report)).toHaveLength(2);
       expect(text.split(correction)).toHaveLength(2);
       expect(text.indexOf(report)).toBeLessThan(text.indexOf(correction));
@@ -375,6 +417,14 @@ it.each(cases)(
         expect(summary).toContain(path);
         writeFileSync(join(produced.runDir, "final/ordinary-long-note.md"), bytes);
         expect((await get("/artifacts/final/ordinary-long-note.md")).status).toBe(413);
+        rmSync(join(produced.runDir, path));
+        const missing = await (await get("?includeEarlierAssistantOutput=true")).json();
+        expect(missing.primaryOutput).toMatchObject({
+          text: answer,
+          earlierAssistantOutputUnavailable: "artifact_unavailable",
+        });
+        expect((await get(`/artifacts/${path}`)).status).toBe(404);
+        witness({ afterArtifactRemoved: missing.primaryOutput });
         const unauthenticated = await fetch(addr.baseUrl + route + `/artifacts/${path}`);
         expect(unauthenticated.status).toBe(401);
       } else {
