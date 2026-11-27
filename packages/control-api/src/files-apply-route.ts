@@ -1,4 +1,9 @@
-import { verifyAndDeliverFiles, finalVerifyFiles } from "@claudexor/delivery";
+import {
+  verifyAndDeliverFiles,
+  finalVerifyFiles,
+  finalVerifySpaceFailure,
+  withSpaceRefusal,
+} from "@claudexor/delivery";
 import {
   readWorkspaceFile,
   workspaceFilePath,
@@ -92,7 +97,11 @@ export async function checkFilesResult(
     emit: () => undefined,
   });
   const refused = ctx.gateError(record, "", root, verify);
-  if (refused) return ControlApplyCheckResponse.parse({ ok: false, code: 1, stderr: refused });
+  // A verification copy that could not fit is a typed refusal, as the delivery's.
+  if (refused)
+    return ControlApplyCheckResponse.parse(
+      withSpaceRefusal({ ok: false, code: 1, stderr: refused }, finalVerifySpaceFailure(verify)),
+    );
   let alreadyApplied = true;
   const selected = deliverableWorkspaceChanges(candidate.manifest, paths);
   const unresolvedUnknown = candidate.manifest.entries.some(

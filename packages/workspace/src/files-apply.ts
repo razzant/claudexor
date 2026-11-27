@@ -2,10 +2,13 @@ import { chmod, lstat, mkdir, readFile, rename, rm, rmdir } from "node:fs/promis
 import { dirname, join } from "node:path";
 import {
   WorkspaceFilesManifest,
+  type WorkspaceCaptureFailure,
   type WorkspaceFileChange,
   type WorkspaceFileState,
 } from "@claudexor/schema";
 import { newId, sha256 } from "@claudexor/util";
+import { captureFailureEvidence } from "./capture-failure.js";
+import { FileSpaceError, fileSpaceFailure } from "./file-copy.js";
 import {
   materializeWorkspaceFile,
   readWorkspaceFile,
@@ -91,6 +94,10 @@ export interface ApplyWorkspaceFilesResult {
   treeMutated: boolean;
   appliedPaths: string[];
   detail?: string;
+  /** The typed cause when the apply stopped for want of room (`detail` is its prose). */
+  captureFailure?: WorkspaceCaptureFailure;
+  /** The path being written when the apply stopped (not in `appliedPaths`). */
+  stoppedAt?: string;
 }
 
 async function ensureTargetParents(
@@ -127,6 +134,7 @@ export async function applyWorkspaceFiles(
       ...result,
       detail: "Direct results are already in place; no separate apply is available",
     };
+  let writing: string | undefined;
   try {
     await verifyWorkspaceFiles(manifest, artifactRoot);
     // Entries with an unknown preimage are retained as custody/disclosure
@@ -168,6 +176,7 @@ export async function applyWorkspaceFiles(
         .sort((a, b) => a.path.split("/").length - b.path.split("/").length),
     ];
     for (const entry of ordered) {
+      writing = entry.path;
       const target = await workspaceFilePath(targetRoot, entry.path);
       if (!sameWorkspaceFile(entry.before, await readWorkspaceFile(target)))
         return { ...result, detail: `Target changed during delivery: ${entry.path}` };
@@ -220,6 +229,7 @@ export async function applyWorkspaceFiles(
       }
       result.treeMutated = true;
       result.appliedPaths.push(entry.path);
+      writing = undefined;
     }
     return {
       ...result,
@@ -230,7 +240,18 @@ export async function applyWorkspaceFiles(
           }
         : {}),
     };
-  } catch (error) {
-    return { ...result, detail: error instanceof Error ? error.message : String(error) };
+  } catch (caught) {
+    // A write that ran out of room keeps its typed cause beside the message.
+    const error = fileSpaceFailure(caught, "file apply");
+    return {
+      ...result,
+      detail: error instanceof Error ? error.message : String(error),
+      ...(error instanceof FileSpaceError
+        ? {
+            captureFailure: captureFailureEvidence(error),
+            ...(writing ? { stoppedAt: writing } : {}),
+          }
+        : {}),
+    };
   }
 }

@@ -15,6 +15,7 @@ import { repositoryObjectFormat } from "./git-result.js";
 import { assertProjectObjectFormat } from "./object-store.js";
 import { ensureHarnessHomeAsync } from "./harness-home.js";
 import { createDirectoryEnvelope } from "./directory-workspace.js";
+import type { RunContentIndex } from "./content-index.js";
 import { processStartTime } from "./envelope-recovery.js";
 import { liveEnvelopeCustody, writeEnvelopeCustodyAsync } from "./envelope-custody.js";
 import { snapshotLegacyDirectoryBaseline } from "./plain-diff.js";
@@ -61,6 +62,8 @@ export interface CreateEnvelopeOptions {
    * Git child is stopped (`PreparationStopped`); its Git children join the scope the
    * signal carries (`withScopeMarker`). */
   signal?: AbortSignal;
+  /** Set by the run's manager: a directory baseline shares the run's immutable bytes. */
+  contentIndex?: RunContentIndex;
 }
 
 /**

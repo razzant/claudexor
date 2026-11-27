@@ -1,18 +1,29 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WorkspaceManager } from "@claudexor/workspace";
-import { DecisionRecord, WorkProduct, makeOutcomeFacts } from "@claudexor/schema";
+import { fileCopyHost, WorkspaceManager } from "@claudexor/workspace";
+import {
+  ControlDeliveryResponse,
+  DecisionRecord,
+  WorkProduct,
+  makeOutcomeFacts,
+} from "@claudexor/schema";
 import { validateApplyGate, verifyAndDeliverFiles } from "./index.js";
+import {
+  filesDeliverySpaceFailure,
+  finalVerifyFiles,
+  finalVerifySpaceFailure,
+} from "./files-verifier.js";
 
 const roots: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-async function fixture() {
+async function fixture(big = false, hugeOutput = false) {
   const root = await mkdtemp(join(tmpdir(), "claudexor-files-delivery-test-"));
   roots.push(root);
   const source = join(root, "source"),
@@ -20,6 +31,10 @@ async function fixture() {
   await mkdir(source);
   await writeFile(join(source, "a.txt"), "original");
   await writeFile(join(source, "context.txt"), "unchanged input");
+  if (big) {
+    await writeFile(join(source, "big.bin"), "A".repeat(4096));
+    await truncate(join(source, "big.bin"), 1024 * 1024);
+  }
   const manager = new WorkspaceManager(source, { runtimeRoot: join(root, "runtime") });
   const env = await manager.create({
     taskId: "t",
@@ -29,6 +44,10 @@ async function fixture() {
   });
   await writeFile(join(env.worktree_path, "a.txt"), "prepared");
   await writeFile(join(env.worktree_path, "output.bin"), Buffer.from([0, 255, 1]));
+  if (hugeOutput) {
+    await writeFile(join(env.worktree_path, "huge.bin"), "H".repeat(4096));
+    await truncate(join(env.worktree_path, "huge.bin"), 2 * 1024 * 1024);
+  }
   const captured = await manager.captureFiles(env, artifactRoot);
   await manager.dispose(env);
   return {
@@ -150,5 +169,95 @@ describe("directory delivery", () => {
     });
     expect(await readFile(marker, "utf8").catch(() => "never ran")).toBe("never ran");
     expect(await readFile(join(f.source, "a.txt"), "utf8")).toBe("original");
+  });
+});
+
+describe("a final verification that cannot restore its baseline", () => {
+  it("keeps the typed space cause beside the unproven verdict", async () => {
+    const f = await fixture(true);
+    vi.spyOn(fileCopyHost, "clone").mockResolvedValue(false);
+    vi.spyOn(fileCopyHost, "availableBytes").mockReturnValue(0);
+    const record = await finalVerifyFiles(f.candidate, undefined, [], { emit: () => undefined });
+
+    expect(record).toMatchObject({ attempted: true, applied_cleanly: null });
+    expect(record.reason).toContain("full length");
+    expect(finalVerifySpaceFailure(record)).toMatchObject({ code: "capture_space_insufficient" });
+  });
+
+  it("has no space cause for a verification that simply passed", async () => {
+    const f = await fixture(true);
+    const record = await finalVerifyFiles(f.candidate, undefined, [], { emit: () => undefined });
+    expect(record.applied_cleanly).toBe(true);
+    expect(finalVerifySpaceFailure(record)).toBeUndefined();
+  });
+});
+
+describe("a directory delivery that runs out of room", () => {
+  it("states a verification copy that could not fit as a typed public refusal", async () => {
+    const f = await fixture(true);
+    vi.spyOn(fileCopyHost, "clone").mockResolvedValue(false);
+    vi.spyOn(fileCopyHost, "availableBytes").mockReturnValue(0);
+    const receipt = await verifyAndDeliverFiles(f.source, f.candidate);
+
+    expect(ControlDeliveryResponse.parse(receipt)).toMatchObject({
+      applied: false,
+      refused: true,
+      appliedPaths: [],
+      treeMutated: false,
+      refusal: { code: "space_insufficient", paths: [] },
+    });
+    expect(receipt).not.toHaveProperty("captureFailure");
+    expect(filesDeliverySpaceFailure(receipt)).toMatchObject({
+      code: "capture_space_insufficient",
+    });
+    expect(await readFile(join(f.source, "a.txt"), "utf8")).toBe("original");
+  });
+
+  it("names the paths written before the target ran out of room and the one it stopped at", async () => {
+    const f = await fixture(false, true);
+    vi.spyOn(fileCopyHost, "clone").mockResolvedValue(false);
+    const real = fileCopyHost.availableBytes;
+    vi.spyOn(fileCopyHost, "availableBytes").mockImplementation((dir) =>
+      dir.startsWith(f.source) ? 0 : real(dir),
+    );
+    const receipt = await verifyAndDeliverFiles(f.source, f.candidate);
+
+    expect(ControlDeliveryResponse.parse(receipt)).toMatchObject({
+      applied: false,
+      refused: true,
+      treeMutated: true,
+      appliedPaths: ["a.txt"],
+      refusal: { code: "space_insufficient", paths: ["huge.bin"], pathCount: 1 },
+    });
+    expect(receipt.finalVerify.applied_cleanly).toBe(true);
+    expect(filesDeliverySpaceFailure(receipt)).toMatchObject({
+      code: "capture_space_insufficient",
+    });
+    expect(await readFile(join(f.source, "a.txt"), "utf8")).toBe("prepared");
+    await expect(readFile(join(f.source, "huge.bin"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps a clean delivery's public receipt as before", async () => {
+    const f = await fixture(false, true);
+    const receipt = await verifyAndDeliverFiles(f.source, f.candidate);
+    const parsed = ControlDeliveryResponse.parse(receipt);
+    expect(parsed).toMatchObject({ applied: true, refused: false });
+    expect(parsed.refusal).toBeUndefined();
+    expect(parsed.appliedPaths?.sort()).toEqual(["a.txt", "huge.bin", "output.bin"]);
+    expect(filesDeliverySpaceFailure(receipt)).toBeUndefined();
+  });
+
+  it("types a verification whose temporary directory cannot be made", async () => {
+    const f = await fixture();
+    const previous = process.env["TMPDIR"];
+    process.env["TMPDIR"] = join(f.root, "missing", "tmp");
+    try {
+      const record = await finalVerifyFiles(f.candidate, undefined, [], { emit: () => undefined });
+      expect(record).toMatchObject({ attempted: true, applied_cleanly: null });
+      expect(record.reason).toContain("ENOENT");
+    } finally {
+      if (previous === undefined) delete process.env["TMPDIR"];
+      else process.env["TMPDIR"] = previous;
+    }
   });
 });

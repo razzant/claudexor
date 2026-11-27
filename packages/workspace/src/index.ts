@@ -26,6 +26,8 @@ export * from "./lanes.js";
 export * from "./thread-tree.js";
 export * from "./directory-workspace.js";
 export * from "./files-io.js";
+export * from "./file-copy.js";
+export { RunContentIndex } from "./content-index.js";
 export * from "./files-apply.js";
 export * from "./continuation-sources.js";
 export * from "./continuation-facts.js";

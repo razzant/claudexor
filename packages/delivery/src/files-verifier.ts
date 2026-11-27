@@ -1,20 +1,75 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FinalVerifyRecord, type WorkspaceFilesManifest } from "@claudexor/schema";
+import {
+  FinalVerifyRecord,
+  type GitResultRefusal,
+  type WorkspaceCaptureFailure,
+  type WorkspaceFilesManifest,
+} from "@claudexor/schema";
 import { gatesPassed, runGates, type GateSpec } from "@claudexor/review";
 import {
   applyWorkspaceFiles,
+  captureFailureEvidence,
+  FileSpaceError,
+  fileSpaceFailure,
   materializeWorkspaceBaseline,
   verifyWorkspaceFiles,
 } from "@claudexor/workspace";
 import { redactSecrets, sha256 } from "@claudexor/util";
 import type { VerifyEventLog } from "./final-verifier.js";
 
+/** What a directory delivery adds to the shared receipt: the paths it actually
+ * wrote and, for a delivery that stopped for want of room (in its verification
+ * copy or at the target), the receipt's typed `refusal` (`space_insufficient`,
+ * the paths it concerns). The full typed cause rides beside the receipt in
+ * memory (`filesDeliverySpaceFailure`); the receipt itself stays the public one. */
+export interface FilesDeliveryFacts {
+  appliedPaths: string[];
+  refusal?: GitResultRefusal;
+}
+
+const deliverySpaceCauses = new WeakMap<object, WorkspaceCaptureFailure>();
+export function filesDeliverySpaceFailure(
+  receipt: object | null | undefined,
+): WorkspaceCaptureFailure | undefined {
+  return receipt ? deliverySpaceCauses.get(receipt) : undefined;
+}
+
+/** The receipt's typed refusal of a delivery that lacked room, its cause kept beside it. */
+export function withSpaceRefusal<T extends object>(
+  receipt: T,
+  cause: WorkspaceCaptureFailure | undefined,
+  paths: readonly string[] = [],
+): T & { refusal?: GitResultRefusal } {
+  if (!cause) return receipt;
+  const result = {
+    ...receipt,
+    refusal: {
+      code: "space_insufficient" as const,
+      message: cause.message,
+      paths: paths.slice(0, 200),
+      pathCount: paths.length,
+    },
+  };
+  deliverySpaceCauses.set(result, cause);
+  return result;
+}
+
 export interface VerifiableWorkspaceFiles {
   manifest: WorkspaceFilesManifest;
   manifestSha256: string;
   artifactRoot: string;
+}
+
+/** The typed cause of a verification that stopped for want of room. The record is
+ * the persisted `FinalVerifyRecord` (its prose stays `reason`); this rides beside
+ * it in memory so the terminal that reads the record can still name the cause. */
+const spaceCauses = new WeakMap<object, WorkspaceCaptureFailure>();
+export function finalVerifySpaceFailure(
+  record: FinalVerifyRecord | null | undefined,
+): WorkspaceCaptureFailure | undefined {
+  return record ? spaceCauses.get(record) : undefined;
 }
 
 /** What a verification the run's stop interrupted records: not verified, never passed. */
@@ -33,8 +88,11 @@ export async function finalVerifyFiles(
     ...FinalVerifyRecord.parse({ attempted: true, duration_ms: Date.now() - started, ...fields }),
     base_manifest_sha256: candidate.manifestSha256,
   });
-  const root = await mkdtemp(join(tmpdir(), "claudexor-verify-files-"));
+  let root: string | undefined;
   try {
+    // Inside the try: a temporary directory that cannot be made is the same
+    // typed verification failure as a copy that cannot fit in it.
+    root = await mkdtemp(join(tmpdir(), "claudexor-verify-files-"));
     if (sha256(JSON.stringify(candidate.manifest) + "\n") !== candidate.manifestSha256)
       throw new Error("Files manifest does not match its canonical digest");
     await verifyWorkspaceFiles(candidate.manifest, candidate.artifactRoot);
@@ -45,7 +103,11 @@ export async function finalVerifyFiles(
       candidate.artifactRoot,
       paths,
     );
-    if (!applied.applied) return done({ applied_cleanly: false, reason: applied.detail });
+    if (!applied.applied) {
+      const record = done({ applied_cleanly: false, reason: applied.detail });
+      if (applied.captureFailure) spaceCauses.set(record, applied.captureFailure);
+      return record;
+    }
     if (specs.length === 0)
       return done({
         applied_cleanly: true,
@@ -61,12 +123,15 @@ export async function finalVerifyFiles(
       gates_passed: gatesPassed(gates),
       gates: gates.map((gate) => ({ id: gate.id, status: gate.status })),
     });
-  } catch (error) {
-    return done({
+  } catch (caught) {
+    const error = fileSpaceFailure(caught, "final verification");
+    const record = done({
       applied_cleanly: null,
       reason: redactSecrets(error instanceof Error ? error.message : String(error)),
     });
+    if (error instanceof FileSpaceError) spaceCauses.set(record, captureFailureEvidence(error));
+    return record;
   } finally {
-    await rm(root, { recursive: true, force: true });
+    if (root) await rm(root, { recursive: true, force: true });
   }
 }

@@ -14,7 +14,10 @@ export async function treeReclaimableBytes(
     const key = `${info.dev}:${info.ino}`;
     const links = (removed.get(key) ?? 0) + 1;
     removed.set(key, links);
-    if (links === info.nlink) total += info.size;
+    // Allocated bytes where the platform reports them (a sparse file frees only
+    // what it holds), else the logical length. Extents shared by a copy-on-write
+    // clone are still counted in full, so the figure may overstate.
+    if (links === info.nlink) total += info.blocks === undefined ? info.size : info.blocks * 512;
   };
   const walk = async (dir: string): Promise<void> => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {

@@ -4,6 +4,7 @@ import { cp, mkdir, open, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import type { DiffEvidence } from "@claudexor/context";
+import { independentFileFilter } from "@claudexor/workspace";
 import {
   newId,
   readTextSafe,
@@ -19,6 +20,7 @@ import type {
 } from "./reviewRuntimeTypes.js";
 import { initializeReviewerWorkspaceGit, reviewerGitEnv } from "./reviewerGit.js";
 import { isSpaceError, notWhollyCopied, regularBytes, roomFor } from "./reviewerSavedCopy.js";
+import { copyDirectoryEvidenceFile } from "./reviewerDirectoryCopy.js";
 
 const BLOCKED_REVIEWER_RUNTIME_ROOTS = new Set(
   "auth cache daemon home homes logs runs secrets state tmp workspaces".split(" "),
@@ -61,6 +63,9 @@ export async function prepareReviewerWorkspace(input: {
    * read at all, whatever its directory still holds and whether it is there. */
   savedCopy?: { unavailable: readonly UninspectableReviewerFile[]; failed?: boolean };
   preserveEvidenceBytes?: boolean;
+  /** A directory result's files can be large and sparse: each becomes an
+   * independent copy that keeps its holes, never a link to the saved payload. */
+  directoryPayload?: boolean;
 }): Promise<ReviewerWorkspace> {
   const sourceRoot = resolve(input.sourceRoot);
   const workspaceBaseDir = resolve(input.workspaceBaseDir);
@@ -91,23 +96,32 @@ export async function prepareReviewerWorkspace(input: {
         (root) => !isSameOrInside(root, sourceEvidenceDir),
       );
       await rm(evidenceDir, { recursive: true, force: true });
-      await cp(
-        sourceEvidenceDir,
-        evidenceDir,
-        input.preserveEvidenceBytes
-          ? { recursive: true, dereference: false }
-          : {
-              recursive: true,
-              dereference: false,
-              filter: (sourcePath) =>
-                shouldCopyReviewerPath(
-                  sourceEvidenceDir,
-                  resolvedSourceEvidenceDir,
-                  sourcePath,
-                  evidenceExcludeRoots,
-                ),
-            },
-      );
+      const admit = (sourcePath: string) =>
+        input.preserveEvidenceBytes === true ||
+        shouldCopyReviewerPath(
+          sourceEvidenceDir,
+          resolvedSourceEvidenceDir,
+          sourcePath,
+          evidenceExcludeRoots,
+        );
+      try {
+        await cp(sourceEvidenceDir, evidenceDir, {
+          recursive: true,
+          dereference: false,
+          // An admitted relative link keeps naming this copy's own file.
+          verbatimSymlinks: input.directoryPayload === true,
+          filter: input.directoryPayload ? independentFileFilter(admit) : admit,
+        });
+      } catch (error) {
+        if (!input.directoryPayload || !isSpaceError(error)) throw error;
+        // What could not fit is named, so the review cannot pass clean (#535).
+        uninspectable.push(
+          ...(await notWhollyCopied(
+            { sourceRoot: sourceEvidenceDir, root: evidenceDir, copied: admit, named: [] },
+            (rel) => `.claudexor-review-evidence/${rel}`,
+          )),
+        );
+      }
     }
     await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
 
@@ -143,25 +157,30 @@ async function copyCandidate(
   // for room first, cloned where the filesystem can (no second copy of the bytes),
   // and a disk that fills names what the copy cannot hold instead of ending the run.
   const fits = !exactLinks || roomFor(root, await regularBytes(sourceRoot));
+  // A directory result's copy that ran out of room is named the same way.
+  let full = false;
+  const admit = async (sourcePath: string) =>
+    copied(sourcePath) &&
+    ((exactLinks && lstatSync(sourcePath).isSymbolicLink()) ||
+      (await readable(sourcePath, (reason) => {
+        const rel = relative(sourceRoot, resolve(sourcePath));
+        uninspectable.push({ path: normalizeReviewerRelativePath(rel) ?? rel, reason });
+      })));
   try {
     if (fits)
       await cp(sourceRoot, root, {
         recursive: true,
         dereference: false,
-        verbatimSymlinks: exactLinks,
+        // An admitted relative link keeps naming this copy's own file.
+        verbatimSymlinks: exactLinks || input.directoryPayload === true,
         ...(exactLinks ? { mode: constants.COPYFILE_FICLONE } : {}),
-        filter: async (sourcePath) =>
-          copied(sourcePath) &&
-          ((exactLinks && lstatSync(sourcePath).isSymbolicLink()) ||
-            (await readable(sourcePath, (reason) => {
-              const rel = relative(sourceRoot, resolve(sourcePath));
-              uninspectable.push({ path: normalizeReviewerRelativePath(rel) ?? rel, reason });
-            }))),
+        filter: input.directoryPayload ? independentFileFilter(admit) : admit,
       });
   } catch (error) {
-    if (!exactLinks || !isSpaceError(error)) throw error;
+    if (!(exactLinks || input.directoryPayload) || !isSpaceError(error)) throw error;
+    full = true;
   }
-  if (exactLinks)
+  if (exactLinks || full)
     uninspectable.push(
       ...(await notWhollyCopied(
         { sourceRoot, root, copied, named: uninspectable },
@@ -191,6 +210,9 @@ export async function copyReviewEvidencePacket(
   sourceEvidenceDir: string,
   persistentEvidenceDir: string,
   preserveBytes = false,
+  /** A directory result's packet (see `prepareReviewerWorkspace`). The persistent
+   * record is engine-owned, so it shares the packet's immutable blobs. */
+  directoryPayload = false,
 ): Promise<void> {
   const source = resolve(sourceEvidenceDir);
   const target = resolve(persistentEvidenceDir);
@@ -217,6 +239,7 @@ export async function copyReviewEvidencePacket(
       sourcePath,
       join(target, entry.name),
       target,
+      directoryPayload,
     );
   }
 }
@@ -227,6 +250,7 @@ async function copyReviewEvidenceEntry(
   sourcePath: string,
   targetPath: string,
   targetEvidenceDir: string,
+  directoryPayload: boolean,
 ): Promise<void> {
   const stat = lstatSync(sourcePath);
   if (stat.isDirectory()) {
@@ -249,12 +273,14 @@ async function copyReviewEvidenceEntry(
         childSource,
         join(targetPath, entry.name),
         targetEvidenceDir,
+        directoryPayload,
       );
     }
     return;
   }
   await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
-  await cp(sourcePath, targetPath, { recursive: false, dereference: false });
+  if (!directoryPayload) await cp(sourcePath, targetPath, { recursive: false, dereference: false });
+  else await copyDirectoryEvidenceFile(sourceEvidenceDir, sourcePath, targetPath, stat);
 }
 
 function shouldCopyEvidencePacketPath(

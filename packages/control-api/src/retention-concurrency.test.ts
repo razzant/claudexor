@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -16,6 +24,19 @@ vi.mock("./retention-removal.js", async (original) => {
     },
   };
 });
+
+/** What an n-byte file reclaims: its allocated bytes where the platform reports them, else its length. */
+const held = (size: number): number => {
+  const dir = mkdtempSync(join(tmpdir(), "retention-held-"));
+  try {
+    writeFileSync(join(dir, "f"), "x".repeat(size));
+    const info = statSync(join(dir, "f"));
+    return info.blocks === undefined ? info.size : info.blocks * 512;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
 const roots: string[] = [];
 afterEach(() => {
   beforeCommit = () => {};
@@ -108,7 +129,7 @@ it("keeps an honest partial run receipt when SQL ownership changes during the ne
     },
   );
   expect(receipt.deleted_runs).toHaveLength(1);
-  expect(receipt.freed_bytes).toBe(8);
+  expect(receipt.freed_bytes).toBe(held(8));
   expect(receipt.errors.join()).toContain("references changed");
   expect(retry).toBe(true);
   expect(paths.filter((path) => existsSync(join(path, "final")))).toHaveLength(1);

@@ -83,7 +83,7 @@ import {
   directoryHasOutput,
   directoryCandidateStable,
   observeDirectoryPaths,
-  publishDirectoryCandidate,
+  publishRunDirectoryCandidate,
 } from "./directoryCandidate.js";
 import {
   appliedAttemptFacts,
@@ -2336,6 +2336,7 @@ export class Orchestrator {
         envelope,
         artifactRoot: join(paths.attemptsDir, attemptId),
         observedPaths: [...observedPaths],
+        retainContent: final,
         ...(final ? { holder: { runId: paths.runId, runDir: paths.root } } : {}),
       }));
     const sessionFields = runInput
@@ -3595,6 +3596,7 @@ export class Orchestrator {
             knobs.model,
           ),
           infraPhase,
+          ...(envelope === undefined && delegateFailure.unpreparedWorkspaceRefusal(err, message)),
           poolAttempts: tried.snapshot(),
           // Keep a TYPED pre-spawn refusal (spent quota window + its reset)
           // alive past this catch; `message` alone would force the terminal to
@@ -3712,8 +3714,8 @@ export class Orchestrator {
           budgetDenial,
           ...(mutatingRun ? { liveCapture: failedOutput } : {}),
         });
-      const failure = delegateFailure.candidateFailureTerminal(failedDelegation, "race", runs);
       if (mutatingRun) await delegateFailure.persistFailedCandidateOutput(failedOutput);
+      const failure = delegateFailure.candidateFailureTerminal(failedDelegation, "race", runs);
       raceTerminal.writeTelemetry();
       return failTerminally(
         log,
@@ -4075,6 +4077,7 @@ export class Orchestrator {
     let deliveryFailureReason: string | null = null;
     let raceDeliveryReceipt: Awaited<ReturnType<typeof verifyAndDeliver>> | null = null;
     let directoryDeliveryReceipt = false;
+    let deliverySpace: ReturnType<typeof delegateFailure.captureCause>;
     const inPlaceWinner = winnerRun?.reviewCwd === execRoot;
     const deferredRaceVerify = input.inPlace === true && !inPlaceWinner;
     if (
@@ -4152,6 +4155,7 @@ export class Orchestrator {
           directoryDelivery = delivered;
           finalVerify = delivered.finalVerify;
           if (finalVerifyBlocks(finalVerify)) finalVerifyFailed = true;
+          deliverySpace = delegateFailure.deliveryCause(delivered);
           if (!delivered.applied) {
             deliveryFailureReason = delivered.detail ?? "directory race adoption was refused";
             facts = { ...facts, checks: "failed", reason: "checks_failed" };
@@ -4165,17 +4169,8 @@ export class Orchestrator {
             deliveryReceiptPath: "final/delivery_receipt.yaml",
           });
         }
-        await publishDirectoryCandidate({
-          files: winnerRun.files,
-          store,
-          paths,
-          taskId,
-          attemptId: winnerRun.attemptId,
-          harnessId: winnerRun.harnessId,
-          facts,
-          log,
-          delivery: directoryDelivery,
-        });
+        const publication = { store, paths, taskId, facts, log, delivery: directoryDelivery };
+        facts = await publishRunDirectoryCandidate(winnerRun, publication);
       } else if (mutatingRun) {
         const savedPatch = await secretDiff.persistFinalPatch(store, paths.finalDir, winnerRun);
         const patchSha256 = savedPatch.patchSha256;
@@ -4357,16 +4352,17 @@ export class Orchestrator {
     const pool = racePool();
     // Beside whichever failure record leads, a source another attempt kept stays named.
     const keptSources = candidateCaptureRefusals(runs).flatMap(secretDiff.captureInspectionActions);
+    const record = delegateFailure.recordFor(store, paths, winnerRun, finalVerify, deliverySpace);
     if (deliveryFailureReason && !finalVerifyFailed) {
       const refused = deliveryRefusalFailure(deliveryFailureReason, paths.root);
-      writeFailure(store, paths, {
+      record({
         ...refused,
         safeMessage: withPoolAttempts(refused.safeMessage, pool),
         poolAttempts: pool,
         nextActions: [...refused.nextActions, ...keptSources],
       });
     } else if (finalVerifyFailed) {
-      writeFailure(store, paths, {
+      record({
         phase: "verification",
         // RunFailure.category is a closed enum; "validation" is the honest
         // bucket (the winner failed re-validation on a fresh base).
@@ -4399,7 +4395,7 @@ export class Orchestrator {
       // stays `internal`. A review/checks block is `policy` (the acceptance
       // path), phase `review`, and its remedy names the decision, not "retry
       // with a different harness".
-      writeFailure(store, paths, {
+      record({
         phase: decisionBlock ? "review" : "arbitration",
         category: decisionBlock
           ? "policy"
@@ -4439,7 +4435,7 @@ export class Orchestrator {
               ]),
           ...keptSources,
         ],
-        ...(decisionBlock ? {} : erroredWinnerFailure(winnerRun, keptSources)),
+        ...(decisionBlock ? {} : erroredWinnerFailure(winnerRun, keptSources, facts)),
       });
       if (!winnerRun) {
         await store.writeTextAsync(
@@ -4454,7 +4450,7 @@ export class Orchestrator {
       }
     }
 
-    if (mutatingRun && winnerRun) {
+    if (mutatingRun && winnerRun && !winnerRun.captureRefusal) {
       log.emit("work_product.emitted", { winner: result.decision.winner });
     }
     if (!isFailureTerminal) {
@@ -4487,7 +4483,7 @@ export class Orchestrator {
         lifecycle: facts.lifecycle,
         facts,
         reason: facts.reason,
-        phase: "arbitration",
+        phase: facts.reason === "capture_refused" && !decisionBlock ? "workspace" : "arbitration",
         pool_attempts: pool,
         failure_ref: "final/failure.yaml",
         ...resumableTerminal(store, paths, runs, isFailureTerminal),
@@ -5064,7 +5060,6 @@ export class Orchestrator {
         }
         if (endsConvergence(run)) break;
         if (delegateFailure.candidateFailureKind(run)) {
-          const failure = delegateFailure.candidateFailureTerminal(run, "convergence");
           await delegateFailure.persistFailedCandidateOutput({
             ...{ store, log, paths, execRoot, preTurnSha, taskId, mode, run },
             projectRoot: input.repoRoot,
@@ -5072,6 +5067,7 @@ export class Orchestrator {
             kind: input.create === true ? "new_repo" : "patch",
             attempts: attempt,
           });
+          const failure = delegateFailure.candidateFailureTerminal(run, "convergence");
           this.writeRunTelemetry(
             store,
             paths,
@@ -5181,15 +5177,9 @@ export class Orchestrator {
           })();
         } catch (err) {
           if (run.files)
-            await publishDirectoryCandidate({
-              files: run.files,
-              store,
-              paths,
-              taskId,
-              attemptId,
-              harnessId: run.harnessId,
-              facts: makeOutcomeFacts("failed", { noChanges: run.files.noChanges }),
-              log,
+            await delegateFailure.persistFailedCandidateOutput({
+              ...{ store, log, paths, execRoot, preTurnSha, taskId, mode, run },
+              ...{ projectRoot: input.repoRoot, live: false, kind: "patch" as const },
             });
           return failAfterCandidates(
             {
@@ -5402,6 +5392,11 @@ export class Orchestrator {
       if (finalVerifyBlocks(convFinalVerify))
         facts = { ...facts, checks: "failed", reason: "checks_failed" };
     }
+    // Publication can still fail the run, so it precedes every statement of its lifecycle.
+    if (lastRun?.files) {
+      const publication = { store, paths, taskId, facts, log };
+      facts = await publishRunDirectoryCandidate(lastRun, publication);
+    }
     const convNeedsDecision = facts.review === "blocked" || facts.checks === "failed";
     // Every attempt's failed tries by the actual outcome; a block is not an account failure.
     const convPool = terminalPoolAttempts(facts, convergenceRuns);
@@ -5414,6 +5409,7 @@ export class Orchestrator {
         ...(convNeedsDecision
           ? blockedDecisionOverride(decision.evidence_facts, facts, convFinalVerify)
           : { facts }),
+        ...(lastRun?.files && lastRun.captureRefusal && { apply_recommendation: "inspect" }),
         final_verify: convFinalVerify,
       };
       await store.writeYamlAsync(join(paths.arbitrationDir, "decision.yaml"), decision);
@@ -5440,13 +5436,14 @@ export class Orchestrator {
         !workStateVetoes(facts);
       if (lastRun.files || lastRun.captureRefusal) {
         // An incomplete capture has no exact patch: never publish an empty one.
-        await delegateFailure.persistFailedCandidateOutput({
-          ...{ store, log, paths, execRoot, preTurnSha, taskId, mode, facts, run: lastRun },
-          projectRoot: input.repoRoot,
-          live: input.inPlace === true && input.workspaceKind !== "directory",
-          kind: input.create === true ? "new_repo" : "patch",
-          attempts: attempt,
-        });
+        if (!lastRun.files)
+          await delegateFailure.persistFailedCandidateOutput({
+            ...{ store, log, paths, execRoot, preTurnSha, taskId, mode, facts, run: lastRun },
+            projectRoot: input.repoRoot,
+            live: input.inPlace === true && input.workspaceKind !== "directory",
+            kind: input.create === true ? "new_repo" : "patch",
+            attempts: attempt,
+          });
       } else {
         const savedPatch = await secretDiff.persistFinalPatch(store, paths.finalDir, lastRun);
         const patchSha256 = savedPatch.patchSha256;
@@ -5523,7 +5520,8 @@ export class Orchestrator {
           ? lastRun?.declaredFailure
           : undefined;
       const inspect = secretDiff.captureInspectionActions(lastRun?.captureRefusal);
-      writeFailure(store, paths, {
+      const record = delegateFailure.recordFor(store, paths, lastRun, convFinalVerify);
+      record({
         phase: convNeedsDecision ? "review" : "convergence",
         category: isBudgetTerminal(facts.reason)
           ? "budget"
@@ -5541,7 +5539,6 @@ export class Orchestrator {
         attemptId: lastRun?.attemptId,
         vendorFailure: convCause ? lastRun?.telemetry.vendorFailure : null,
         runDir: paths.root,
-        captureFailure: lastRun?.captureRefusal?.failure,
         nextActions: [
           ...(facts.lifecycle === "cancelled"
             ? cancelledNextActions(facts.reason)
@@ -5578,6 +5575,7 @@ export class Orchestrator {
           convPool,
         ),
         poolAttempts: convPool,
+        ...delegateFailure.refusedPublicationRecord(facts, lastRun),
       });
       // D-16 r8/r9: an INTERRUPTED envelope run still gets its diagnostic
       // summary + output.ready (only patch/work_product are withheld) — the
@@ -5628,7 +5626,7 @@ export class Orchestrator {
         facts,
         reason: facts.reason,
         attempts: attempt,
-        phase: "convergence",
+        phase: delegateFailure.refusedPublicationRecord(facts, lastRun).phase ?? "convergence",
         pool_attempts: convPool,
         failure_ref: "final/failure.yaml",
         // QA-041: surface the typed deadline reason on the terminal event so the
@@ -5653,7 +5651,7 @@ export class Orchestrator {
         ? { cancelReason: convAbortReason }
         : {}),
       summary: withPoolAttempts(
-        converged
+        converged && !(lastRun?.files && lastRun.captureRefusal)
           ? `converged in ${attempt} attempt(s)`
           : `${convCause ? `${convCause}\n` : ""}${facts.lifecycle} after ${attempt} attempt(s)`,
         convPool,

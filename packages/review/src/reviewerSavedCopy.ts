@@ -12,7 +12,7 @@ const COPY_SPACE_MARGIN_BYTES = 64 * 1024 * 1024;
 
 export const isSpaceError = (error: unknown) => {
   const code = (error as NodeJS.ErrnoException | null)?.code;
-  return code === "ENOSPC" || code === "EDQUOT";
+  return code === "ENOSPC" || code === "EDQUOT" || code === "capture_space_insufficient";
 };
 
 /** The bytes of the regular files under `dir` (a saved copy: only changed files). */

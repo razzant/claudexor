@@ -68,7 +68,7 @@ export const DeliveryReceipt = z
     targetPreimageSha: z.string().describe("Target snapshot verified immediately before delivery."),
     /** #535: why an object delivery refused, typed, with the paths it concerns. */
     refusal: GitResultRefusal.optional().describe(
-      "Typed refusal of an object-result delivery (code, message, bounded paths); absent on success or a legacy patch refusal.",
+      "Typed refusal of an object-result delivery (code, message, bounded paths), or space_insufficient for a directory delivery that ran out of room (the path it stopped at; appliedPaths are those written before); absent on success or a legacy patch refusal.",
     ),
     /** #535: the actual pair an object delivery wrote; revert runs on it. */
     deliveryPair: GitDeliveryPair.optional().describe(

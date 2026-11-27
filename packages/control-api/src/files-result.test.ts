@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, rm, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import {
 import {
   WorkspaceManager,
   envelopeBaseOf,
+  fileCopyHost,
   retainForInspection,
   retainedSourcesOfRun,
 } from "@claudexor/workspace";
@@ -291,5 +292,74 @@ describe("complete files result through the ordinary control API", () => {
       appliedPaths: ["new.txt"],
     });
     expect(await readFile(join(f.source, "document.bin"), "utf8")).toBe("baseline\n");
+  });
+
+  describe("out of room", () => {
+    const withholdRoom = (where: (dir: string) => boolean) => {
+      vi.spyOn(fileCopyHost, "clone").mockResolvedValue(false);
+      const real = fileCopyHost.availableBytes;
+      vi.spyOn(fileCopyHost, "availableBytes").mockImplementation((dir) =>
+        where(dir) ? 0 : real(dir),
+      );
+    };
+    const verifyCopy = (dir: string) => dir.includes("claudexor-verify-files-");
+
+    it("answers a verification copy without room with a typed refusal, and replays it", async () => {
+      const f = await fixture(true);
+      withholdRoom(verifyCopy);
+      try {
+        const res = await f.request("apply", { mode: "apply" }, "full-verify");
+        expect(res.status).toBe(200);
+        const receipt = await res.json();
+        expect(receipt).toMatchObject({
+          applied: false,
+          refused: true,
+          appliedPaths: [],
+          refusal: { code: "space_insufficient", paths: [] },
+        });
+        expect(receipt).not.toHaveProperty("captureFailure");
+        expect(await (await f.request("apply", { mode: "apply" }, "full-verify")).json()).toEqual(
+          receipt,
+        );
+        const check = await (await f.request("apply/check", { target: undefined })).json();
+        expect(check).toMatchObject({ ok: false, refusal: { code: "space_insufficient" } });
+        expect(await readFile(join(f.source, "document.bin"), "utf8")).toBe("baseline\n");
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("rejects accept_clean_patch out of room with the cause, not a request error", async () => {
+      const f = await fixture(true);
+      withholdRoom(verifyCopy);
+      try {
+        const res = await f.request("decision", { action: "accept_clean_patch" }, "accept-full");
+        expect(res.status).toBe(200);
+        const answer = (await res.json()) as { message?: string };
+        expect(answer).toMatchObject({ accepted: false, status: "rejected" });
+        expect(answer.message).toContain("full length");
+        expect(await readFile(join(f.source, "document.bin"), "utf8")).toBe("baseline\n");
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("answers a target without room with a typed refusal naming where it stopped", async () => {
+      const f = await fixture(true);
+      withholdRoom((dir) => dir.startsWith(f.source));
+      try {
+        const res = await f.request("apply", { mode: "apply" }, "full-target");
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({
+          applied: false,
+          refused: true,
+          appliedPaths: [],
+          refusal: { code: "space_insufficient", paths: ["document.bin"], pathCount: 1 },
+        });
+        expect(await readFile(join(f.source, "document.bin"), "utf8")).toBe("baseline\n");
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
   });
 });

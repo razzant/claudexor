@@ -70,7 +70,7 @@
             "message"
           ],
           "additionalProperties": false,
-          "description": "Typed reason an object result's dry run refused (code, message, bounded paths); absent otherwise."
+          "description": "Typed reason an object result's dry run refused (code, message, bounded paths), or space_insufficient when a directory result's verification copy ran out of room; absent otherwise."
         }
       },
       "required": [

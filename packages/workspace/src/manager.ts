@@ -32,6 +32,7 @@ import {
   type ClaudeBridgeGeneration,
 } from "./claude-bridge.js";
 import { prepareEnvelope, type CreateEnvelopeOptions } from "./prepare-envelope.js";
+import { RunContentIndex } from "./content-index.js";
 import { branchDelete, captureWorkingTreeTransient, worktreePrune, worktreeRemove } from "./git.js";
 
 /** One candidate capture. `diff` is the exact patch every consumer (apply,
@@ -72,6 +73,9 @@ export class WorkspaceManager {
   private readonly bridgeCreatedEnvelopes = new Set<string>();
   private readonly retainedEnvelopes = new Set<string>();
   private readonly keptArtifactDirectories = new Set<string>();
+  /** This run's engine-owned immutable directory bytes, one payload per digest:
+   * one manager serves one run, so the index ends with it. */
+  readonly contentIndex = new RunContentIndex();
 
   constructor(
     private readonly repoRoot: string,
@@ -117,7 +121,7 @@ export class WorkspaceManager {
       repoRoot: this.repoRoot,
       projectRoot: this.projectRoot,
       base: this.envelopeBase(opts.taskId, opts.attemptId),
-      opts,
+      opts: { ...opts, contentIndex: this.contentIndex },
     });
     // Record the created-this-run fact keyed by envelope id, so diff() gates the
     // bridge exclusion on POSITIVE PROOF rather than on content bytes alone.
@@ -256,7 +260,10 @@ export class WorkspaceManager {
   async captureFiles(
     env: WorkspaceEnvelope,
     runRoot: string,
-    options: { observedPaths?: string[] } = {},
+    options: {
+      observedPaths?: string[];
+      retainContent?: boolean;
+    } = {},
   ): Promise<CapturedWorkspaceFiles> {
     if (env.workspace_kind !== "directory")
       throw new WorkspaceError("captureFiles requires a directory workspace");
@@ -266,6 +273,7 @@ export class WorkspaceManager {
       envelopeRoot: this.baseOf(env),
       runRoot,
       ...options,
+      contentIndex: this.contentIndex,
       excludedPaths: owned ? [owned] : [],
     });
   }

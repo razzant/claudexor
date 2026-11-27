@@ -2665,6 +2665,69 @@ run facts use `noChanges: true` for the absence of a write-backed result, not a
 filesystem comparison proving the absence of changes. Writable live and isolated
 directory work keep their existing preparation and capture.
 
+Saved bytes are stored once and copied with their holes
+(`packages/workspace/src/file-copy.ts`). An independent copy (isolated tree,
+captured blob, delivery and verification targets, review candidate and reviewer
+workspace) of a file that may change (a workspace or source file) is a bounded
+stream from a handle opened without following links. Only an engine-owned
+immutable blob may instead be cloned, where the runtime makes a copy-on-write
+clone (a Linux reflink through `copyFile`). Node offers no clone on macOS (its
+forced clone answers `ENOSYS`), so there every copy is the stream. The stream
+leaves the all-zero 4 KiB blocks of a sparse source unwritten (an allocated file
+is written in full), writes no more than the
+length it checked room for, sets the exact length and checks it on the written
+file. The room check (preflight) applies from 1 MiB: the file's whole length plus
+a 64 MiB margin must be free at the destination. It is deliberately
+conservative: a sparse file can be refused where it would have fitted, in
+exchange for never starting a copy that fills the disk. When free space cannot be
+read, a copy under 64 MiB proceeds and one of 64 MiB or more is refused. Apply and
+final verification copy the same way; review and verification copies are not
+flushed. Too little or unknown room and a mid-write `ENOSPC`/`EDQUOT` are
+`capture_space_insufficient` (also through baseline creation, review
+preparation, Apply, final verification and cancellation); `EFBIG` is its own
+cause. A reviewer copy that cannot fit names those files `space_insufficient`,
+so the review cannot pass clean; the reviewer workspace's Git baseline still
+stores a compressed object of every candidate file without a space check
+(60-second Git limit), and a Git failure there fails the preparation, never
+passes. The destination decides which unwritten ranges stay holes (APFS on macOS
+26 allocates gaps up to about 16 MiB; the stream cannot make a sparse file on
+Windows/NTFS without `FSCTL_SET_SPARSE`, which is not implemented), and an HTTP
+download is a plain byte stream. Within one run the immutable names the engine
+owns (envelope baseline blobs, attempt captures, `final/files/content`, the
+review evidence packet and its persistent record) hold one verified payload per
+digest: the run's `WorkspaceManager` keeps an in-memory index of the names it
+created or verified (`content-index.ts`, nothing on disk, nothing discovered from
+directory names, gone with the run) and links them (or copies where the filesystem
+has no hard links, under a private name first). A large file is hashed before
+anything is written; one keeper per digest stores it while a simultaneous attempt
+with the same digest waits, and keepers of other digests do not. An inode is
+reread only when it changed since it was verified; a name whose bytes changed is
+never linked, and one that went away is skipped for the file's own source. A writable or caller-visible
+file is never linked to saved bytes. Review copies are built only for a panel
+that will read them. A try's capture only hashes; the bytes are stored once, by
+the final capture. The post-review stability check hashes the same footprint and
+writes nothing: a file that changed while it was read is a changed result, and a
+check that cannot read it ends the run `capture_refused` with that cause. Saved
+baseline bytes that differ are "Baseline bytes no longer match"; a read or copy
+that failed keeps its own typed cause.
+
+A `final/files` publication that cannot complete records no `files` WorkProduct
+and removes what it created; its commit point is the work product and a durably
+landed `output.ready`. The attempt's capture and any delivery receipt stay. A
+clean success then ends `failed`/`capture_refused` (phase `workspace`, on the
+event and `failure.yaml` alike) with the typed `captureFailure`; a cancellation,
+executor or budget failure, a review block or error and a blocked outcome (checks
+failed, review blocked) keep their own cause and phase, and their
+`failure.yaml` adds the refusal's cause, its statement and the kept copy to
+inspect. A cancellation that keeps one attempt's files still records another
+attempt's failed capture, with the event's `phase`/`failure_ref` and the summary
+naming it. A strategy whose workspace could not be prepared for want of room
+(convergence prepares its one workspace first) ends `capture_refused` in phase
+`workspace`. A directory delivery (Apply, its replay, `accept_clean_patch`) that
+runs out of room answers the public receipt's typed `refusal`
+(`space_insufficient`, the path it stopped at) with `appliedPaths` written before
+it stopped; `apply/check` answers the same refusal for a verification copy.
+
 Writable directory work produces a `files` WorkProduct. Its `files.manifest` and
 `meta.manifest_sha256` address a complete file manifest in the existing run
 artifact tree, including source/execution roots, selection, completeness, modes,

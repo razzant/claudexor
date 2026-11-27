@@ -310,6 +310,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     input.evidenceDir,
     persistentEvidenceDir,
     input.evidenceReadOnly === true,
+    input.candidatePathsHaveManifest,
   );
   const persistentPatch = input.evidenceReadOnly
     ? readExistingDiffEvidence(persistentEvidenceDir, input.diff)
@@ -366,6 +367,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         candidatePaths: input.candidatePaths,
         savedCopy: input.savedCopy,
         preserveEvidenceBytes: input.evidenceReadOnly === true,
+        directoryPayload: input.candidatePathsHaveManifest,
       });
       const reviewerPatch = input.evidenceReadOnly
         ? readExistingDiffEvidence(reviewerWorkspace.evidenceDir, input.diff)

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -17,6 +17,21 @@ it("counts shared patch bytes once in both preview and actual retirement", async
     expect(await treeReclaimableBytes(run, new Map())).toBe(0);
     rmSync(run, { recursive: true });
     expect(await prunePatchObjects(root, false)).toBe(10);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("counts a sparse file by the bytes it holds, not its logical length", async () => {
+  const root = mkdtempSync(join(tmpdir(), "retention-sparse-"));
+  try {
+    mkdirSync(join(root, "run"));
+    const image = join(root, "run", "disk.img");
+    writeFileSync(image, "A".repeat(4096));
+    truncateSync(image, 1024 * 1024);
+    const info = statSync(image);
+    const expected = info.blocks === undefined ? info.size : info.blocks * 512;
+    expect(await treeReclaimableBytes(join(root, "run"), new Map())).toBe(expected);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

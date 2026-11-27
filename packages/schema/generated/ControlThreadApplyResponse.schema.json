@@ -290,7 +290,7 @@
                     "message"
                   ],
                   "additionalProperties": false,
-                  "description": "Typed refusal of an object-result delivery (code, message, bounded paths); absent on success or a legacy patch refusal."
+                  "description": "Typed refusal of an object-result delivery (code, message, bounded paths), or space_insufficient for a directory delivery that ran out of room (the path it stopped at; appliedPaths are those written before); absent on success or a legacy patch refusal."
                 },
                 "deliveryPair": {
                   "type": "object",

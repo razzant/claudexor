@@ -5,6 +5,7 @@ import {
   makeOutcomeFacts,
   type ModeKind,
   type RunOutcomeFacts,
+  type WorkspaceCaptureFailure,
   type WorkspaceKind,
 } from "@claudexor/schema";
 import { newId } from "@claudexor/util";
@@ -17,7 +18,7 @@ import {
   hasCandidateChanges,
   type CandidateRun,
 } from "./candidateEvidence.js";
-import { publishDirectoryCandidate } from "./directoryCandidate.js";
+import { publishRunDirectoryCandidate } from "./directoryCandidate.js";
 import { delegationBeltToolFailure, delegationBeltUnavailable } from "./delegationToolEvidence.js";
 import {
   captureInspectionActions,
@@ -25,6 +26,9 @@ import {
   resultSummaryLines,
 } from "./secretDiff.js";
 import { CAPTURE_REFUSED_REASON, captureRefusedFacts } from "./captureRefusal.js";
+import { writeFailure } from "./runTerminalResults.js";
+import { filesDeliverySpaceFailure, finalVerifySpaceFailure } from "@claudexor/delivery";
+export { unpreparedWorkspaceRefusal } from "./captureRefusal.js";
 
 export type DelegationFailureKind = "startup" | "runtime";
 
@@ -82,6 +86,8 @@ export function raceSummaryDisclosure(
 ): string | null {
   const lines = [
     winner?.errored ? `- Failure: ${candidateCause(winner)}` : null,
+    // A winner holds a capture refusal only when its files could not be published.
+    winner?.captureRefusal ? `- ${winner.captureRefusal.detail}` : null,
     resultSummaryLines(winner),
     ...runs
       .filter((run) => run !== winner && run.captureRefusal)
@@ -196,15 +202,60 @@ type FailedCandidateOutput = {
 };
 
 /** One owner for what a failed candidate leaves behind: complete directory
- * files keep their manifest; live Git effects keep their blocked record. */
-export async function persistFailedCandidateOutput(input: FailedCandidateOutput): Promise<void> {
-  const { run } = input;
-  if (!run.files) return persistFailedInPlaceWorkProduct(input);
-  await publishDirectoryCandidate({
-    ...{ store: input.store, paths: input.paths, taskId: input.taskId, log: input.log },
-    ...{ files: run.files, attemptId: run.attemptId, harnessId: run.harnessId },
-    facts: input.facts ?? makeOutcomeFacts("failed", { noChanges: run.files.noChanges }),
-  });
+ * files keep their manifest; live Git effects keep their blocked record.
+ * Answers the facts the terminal states (a refused publication fails a success). */
+export async function persistFailedCandidateOutput(
+  input: FailedCandidateOutput,
+): Promise<RunOutcomeFacts | undefined> {
+  const { run, store, paths, taskId, log } = input;
+  if (!run.files) {
+    await persistFailedInPlaceWorkProduct(input);
+    return input.facts;
+  }
+  const facts = input.facts ?? makeOutcomeFacts("failed", { noChanges: run.files.noChanges });
+  return publishRunDirectoryCandidate(run, { store, paths, taskId, log, facts });
+}
+
+/**
+ * The one owner of what a refused publication of a run's files adds to the
+ * terminal's failure record, on every lane and exit: its typed cause, and,
+ * beside a blocking or other leading cause (review, checks, delivery, budget),
+ * its own statement (the phase it failed in, what was not recorded, the kept
+ * copy and any delivery receipt) and the kept copy's inspection action. A
+ * record without such a refusal is returned as it is.
+ */
+function withPublicationRefusal<
+  T extends { safeMessage: string; captureFailure?: SpaceCause; nextActions?: string[] },
+>(run: CandidateRun | null | undefined, record: T): T {
+  const refusal = run?.files ? run.captureRefusal : undefined;
+  if (!refusal) return record;
+  const inspect = captureInspectionActions(refusal);
+  return {
+    ...record,
+    captureFailure: refusal.failure ?? record.captureFailure,
+    safeMessage: record.safeMessage.includes(refusal.detail)
+      ? record.safeMessage
+      : `${record.safeMessage}\n${refusal.detail}`,
+    nextActions: [
+      ...(record.nextActions ?? []),
+      ...inspect.filter((action) => !record.nextActions?.includes(action)),
+    ],
+  };
+}
+
+/** The record a refused publication leads when it alone failed a finished run;
+ * review, check, budget and cancellation records stay as they were. */
+export function refusedPublicationRecord(
+  facts: RunOutcomeFacts,
+  run: CandidateRun | null | undefined,
+): { phase?: string; category?: "project" } {
+  const alone =
+    facts.reason === CAPTURE_REFUSED_REASON &&
+    facts.review !== "blocked" &&
+    facts.checks !== "failed";
+  return alone && run?.files && run.captureRefusal
+    ? { phase: "workspace", category: "project" as const }
+    : {};
 }
 
 /** An explicitly in-place harness may have changed the live tree before a
@@ -265,4 +316,43 @@ export async function persistFailedInPlaceWorkProduct(input: FailedCandidateOutp
     facts:
       input.facts ?? makeOutcomeFacts("failed", { reason: "harness_failed", noChanges: false }),
   });
+}
+
+type SpaceCause = WorkspaceCaptureFailure | undefined;
+
+/**
+ * The typed capture cause a failure record names: the attempt's own refusal, else a
+ * delivery's or a final verification's lack of room.
+ */
+/** The failure-record writer of a run's terminal: every record it writes names
+ * the typed cause (the run's own refusal, else a delivery's or a final
+ * verification's lack of room) and a refused publication's facts. */
+export function recordFor(
+  store: ArtifactStore,
+  paths: RunPaths,
+  run: CandidateRun | null | undefined,
+  verify: Parameters<typeof finalVerifySpaceFailure>[0],
+  delivered?: SpaceCause,
+) {
+  return (record: Parameters<typeof writeFailure>[2]) =>
+    writeFailure(
+      store,
+      paths,
+      withPublicationRefusal(run, {
+        ...record,
+        captureFailure: record.captureFailure ?? captureCause(verify, delivered, run),
+      }),
+    );
+}
+
+/** A directory delivery's own lack of room (its receipt states it as a typed refusal). */
+export const deliveryCause = (delivered: object): SpaceCause =>
+  filesDeliverySpaceFailure(delivered);
+
+export function captureCause(
+  verify: Parameters<typeof finalVerifySpaceFailure>[0],
+  delivered?: SpaceCause,
+  run?: { captureRefusal?: { failure?: SpaceCause } | undefined } | null,
+): SpaceCause {
+  return run?.captureRefusal?.failure ?? delivered ?? finalVerifySpaceFailure(verify);
 }

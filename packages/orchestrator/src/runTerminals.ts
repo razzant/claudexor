@@ -36,6 +36,7 @@ import {
   withStopSender,
 } from "./runTerminalHelpers.js";
 import { reconcileDecisionTerminal } from "./decisionTerminalReconciliation.js";
+import { unpreparedRunFailure } from "./captureRefusal.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import { prepareRunFactsFailureReceipt, prepareRunFactsReceipt } from "./runFacts.js";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
@@ -239,6 +240,7 @@ export async function guardAnnouncedRun(
       } catch {
         /* the failure terminal below remains authoritative */
       }
+      const unprepared = barrierFailed ? null : unpreparedRunFailure(terminalError);
       const failed = failTerminally(
         a.log,
         a.store,
@@ -246,13 +248,14 @@ export async function guardAnnouncedRun(
         a.runId,
         a.taskId,
         a.mode,
-        barrierFailed ? "delegation_drain" : a.phase,
+        barrierFailed ? "delegation_drain" : (unprepared?.phase ?? a.phase),
         terminalError,
         spendUsd,
         // Read before this terminal replaces the prepared record.
         {
           priorFacts: reconciledFailureFacts,
           ...preparedCaptureFacts(a),
+          ...unprepared?.meta,
           attempts: a.attempts?.(),
           lostEvents,
         },
