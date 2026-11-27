@@ -5,8 +5,8 @@ import { createClaudeParser } from "./parse.js";
 
 /**
  * #118: Claude's Browser MCP results carry the typed retrieval stamp the engine
- * reads. Real replies of the pinned Browser MCP drive the real parser: the stamp
- * reads the whole reply, while the displayed summary stays bounded.
+ * reads. Replies recorded from Browser MCP 0.0.85 drive the real parser: the
+ * stamp reads the whole reply, while the displayed summary stays bounded.
  */
 interface Reply {
   label: string;
