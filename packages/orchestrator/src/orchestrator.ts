@@ -4346,7 +4346,8 @@ export class Orchestrator {
     // run.blocked/run.failed; a succeeded, non-needs-decision terminal
     // (applyable, no_changes, or not-verified) is an honest completion.
     const needsDecisionTerminal = facts.review === "blocked" || facts.checks === "failed";
-    const isFailureTerminal = facts.lifecycle !== "succeeded" || needsDecisionTerminal;
+    const veto = delegateFailure.workStatePublicationRefused(facts, winnerRun);
+    const isFailureTerminal = facts.lifecycle !== "succeeded" || needsDecisionTerminal || veto;
     const decisionBlock = needsHuman || needsDecisionTerminal;
     const statement = raceStatement(winnerRun, decisionBlock, result.decision.why_winner);
     const pool = racePool();
@@ -4388,6 +4389,8 @@ export class Orchestrator {
           ...keptSources,
         ],
       });
+    } else if (veto) {
+      record(delegateFailure.workStatePublicationRecord(facts, winnerRun!, pool, keptSources));
     } else if (isFailureTerminal) {
       // QA-010c: a reviewer-accepted BLOCK/FIX_FIRST (or a failed deterministic
       // gate) that BLOCKS the run is an operator-decision terminal, not an
@@ -4469,13 +4472,15 @@ export class Orchestrator {
         lifecycle: facts.lifecycle,
         facts,
         pool_attempts: pool,
-        ...resumableTerminal(store, paths, runs, isFailureTerminal),
+        ...resumableTerminal(store, paths, veto ? [winnerRun!] : runs, isFailureTerminal && !veto),
         phase:
           deliveryFailureReason && !finalVerifyFailed
             ? "delivery"
             : finalVerifyFailed
               ? "verification"
-              : "review",
+              : veto
+                ? "workspace"
+                : "review",
         failure_ref: "final/failure.yaml",
       });
     } else {
@@ -5505,14 +5510,13 @@ export class Orchestrator {
 
     // A needs-decision terminal (review blocked / checks failed) writes a
     // failure record + fires run.blocked even though the lifecycle succeeded.
-    const convIsFailureTerminal = facts.lifecycle !== "succeeded" || convNeedsDecision;
-    const continuation = resumableTerminal(
-      store,
-      paths,
-      lastRun ? [lastRun] : [],
-      convIsFailureTerminal,
-    );
-    if (convIsFailureTerminal) {
+    const convVeto = delegateFailure.workStatePublicationRefused(facts, lastRun);
+    const convIsFailureTerminal = facts.lifecycle !== "succeeded" || convNeedsDecision || convVeto;
+    const nonSuccess = convIsFailureTerminal && !convVeto;
+    const continuation = resumableTerminal(store, paths, lastRun ? [lastRun] : [], nonSuccess);
+    const record = delegateFailure.recordFor(store, paths, lastRun, convFinalVerify);
+    if (convVeto) record(delegateFailure.workStatePublicationRecord(facts, lastRun!, convPool));
+    else if (convIsFailureTerminal) {
       // A5 last-result lift: the LAST attempt's typed mid-attempt refusal
       // survives onto the terminal; budget/cancel/needs-decision outrank it.
       const convDeclared =
@@ -5520,7 +5524,6 @@ export class Orchestrator {
           ? lastRun?.declaredFailure
           : undefined;
       const inspect = secretDiff.captureInspectionActions(lastRun?.captureRefusal);
-      const record = delegateFailure.recordFor(store, paths, lastRun, convFinalVerify);
       record({
         phase: convNeedsDecision ? "review" : "convergence",
         category: isBudgetTerminal(facts.reason)
@@ -5615,7 +5618,7 @@ export class Orchestrator {
         lifecycle: facts.lifecycle,
         facts,
         attempts: attempt,
-        phase: "review",
+        phase: convVeto ? "workspace" : "review",
         pool_attempts: convPool,
         failure_ref: "final/failure.yaml",
       });

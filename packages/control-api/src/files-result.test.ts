@@ -39,7 +39,12 @@ afterEachClosed(
 const digest = (bytes: Uint8Array | string) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
-async function fixture(big = false, isolation: "envelope" | "live" = "envelope") {
+async function fixture(
+  big = false,
+  isolation: "envelope" | "live" = "envelope",
+  /** The small new file is written before the large document. */
+  newFirst = false,
+) {
   const root = await mkdtemp(join(tmpdir(), "cx-files-result-"));
   removals.push(() => rm(root, { recursive: true, force: true }));
   const source = join(root, "source"),
@@ -87,7 +92,7 @@ async function fixture(big = false, isolation: "envelope" | "live" = "envelope")
     entries: [
       { path: "document.bin", before: await file(old), after: await file(output) },
       { path: "new.txt", before: null, after: await file(Buffer.from("new")) },
-    ],
+    ].sort((a, b) => (newFirst ? b.path.localeCompare(a.path) : 0)),
   };
   const text = JSON.stringify(manifest) + "\n",
     manifestSha256 = digest(text);
@@ -342,6 +347,45 @@ describe("complete files result through the ordinary control API", () => {
       } finally {
         vi.restoreAllMocks();
       }
+    });
+
+    it("states accept_clean_patch's partial effects in its message, the same on replay", async () => {
+      const f = await fixture(true, "envelope", true);
+      withholdRoom((dir) => dir.startsWith(f.source));
+      try {
+        const answer = async () =>
+          (await (
+            await f.request("decision", { action: "accept_clean_patch" }, "accept-part")
+          ).json()) as { accepted: boolean; status: string; message?: string };
+        const first = await answer();
+        expect(first).toMatchObject({ accepted: false, status: "rejected" });
+        expect(first.message).toContain("Refusal: space_insufficient at document.bin.");
+        expect(first.message).toContain("Already written before it stopped: new.txt.");
+        expect(await answer()).toEqual(first);
+        expect(await readFile(join(f.source, "new.txt"), "utf8")).toBe("new");
+      } finally {
+        vi.restoreAllMocks();
+      }
+      // With room again, Apply writes the rest and the result reads applied.
+      const done = await (await f.request("apply", { mode: "apply" }, "after-room")).json();
+      expect(done).toMatchObject({ applied: true, appliedPaths: ["document.bin"] });
+      expect(parse(await readFile(join(f.run, "final/delivery_state.yaml"), "utf8"))).toMatchObject(
+        {
+          applyState: "applied",
+        },
+      );
+    });
+
+    it("counts an earlier delivery's file the target holds once Apply writes the rest", async () => {
+      const f = await fixture(true, "envelope", true);
+      // An automatic delivery wrote new.txt and stopped; its receipt is not this overlay's.
+      await writeFile(join(f.source, "new.txt"), "new");
+      const done = await (await f.request("apply", { mode: "apply" }, "rest")).json();
+      // The receipt names only its own writes; the overlay counts the held file too.
+      expect(done).toMatchObject({ applied: true, appliedPaths: ["document.bin"] });
+      const state = parse(await readFile(join(f.run, "final/delivery_state.yaml"), "utf8"));
+      expect(state.applyState).toBe("applied");
+      expect([...state.appliedPaths].sort()).toEqual(["document.bin", "new.txt"]);
     });
 
     it("answers a target without room with a typed refusal naming where it stopped", async () => {

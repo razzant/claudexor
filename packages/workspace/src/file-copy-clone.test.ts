@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdtemp, open, readdir, readFile, rm } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,14 @@ import { fileCopyHost, writeIndependentCopy } from "./file-copy.js";
 
 const MiB = 1024 * 1024;
 const SIZE = 48 * MiB;
+const posix = process.platform !== "win32";
+
+/** Allocated bytes, or null where the host does not report them (Windows):
+ * an unknown count is no evidence of holes, never zero. */
+async function allocated(path: string): Promise<number | null> {
+  const blocks = (await lstat(path)).blocks;
+  return posix && blocks !== undefined ? blocks * 512 : null;
+}
 const roots: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -36,8 +44,14 @@ describe("which copies may be clones", () => {
     expect(clone).not.toHaveBeenCalled();
     expect(digest.sizeBytes).toBe(SIZE);
     expect((await readFile(target)).equals(await readFile(source))).toBe(true);
-    // The stream leaves the long zero range unwritten.
-    expect(((await lstat(target)).blocks ?? 0) * 512).toBeLessThan(SIZE / 2);
+    // Where the source demonstrably holds holes, the stream leaves the long zero
+    // range unwritten; elsewhere only bytes and independence are claimed.
+    const [from, to] = [await allocated(source), await allocated(target)];
+    if (from !== null && from < SIZE / 2) expect(to).toBeLessThan(SIZE / 2);
+    // An independent file: editing it never reaches the source.
+    const before = await readFile(source);
+    await writeFile(target, "edited");
+    expect((await readFile(source)).equals(before)).toBe(true);
   });
 
   it("offers only an engine-owned immutable source to the clone route", async () => {
@@ -47,7 +61,7 @@ describe("which copies may be clones", () => {
     const { source, target } = await sparseSource();
     await writeIndependentCopy(source, target, { immutableSource: true, mode: 0o640 });
     expect(clone).toHaveBeenCalledWith(source, target);
-    expect((await lstat(target)).mode & 0o777).toBe(0o640);
+    if (posix) expect((await lstat(target)).mode & 0o777).toBe(0o640);
     expect((await readFile(target)).equals(await readFile(source))).toBe(true);
   });
 

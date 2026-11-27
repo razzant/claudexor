@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rm,
+  truncate,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +22,7 @@ import {
 import { validateApplyGate, verifyAndDeliverFiles } from "./index.js";
 import {
   filesDeliverySpaceFailure,
+  filesVerifyRefusal,
   finalVerifyFiles,
   finalVerifySpaceFailure,
 } from "./files-verifier.js";
@@ -259,5 +269,92 @@ describe("a directory delivery that runs out of room", () => {
       if (previous === undefined) delete process.env["TMPDIR"];
       else process.env["TMPDIR"] = previous;
     }
+  });
+});
+
+describe("one rule for a files verification's verdict", () => {
+  const verifyCopy = (dir: string) => dir.includes("claudexor-verify-files-");
+
+  it("records a postimage that cannot fit in the verification copy as unproven, not a conflict", async () => {
+    const f = await fixture(false, true);
+    vi.spyOn(fileCopyHost, "clone").mockResolvedValue(false);
+    const real = fileCopyHost.availableBytes;
+    vi.spyOn(fileCopyHost, "availableBytes").mockImplementation((dir) =>
+      verifyCopy(dir) ? 0 : real(dir),
+    );
+    const record = await finalVerifyFiles(f.candidate, undefined, [], { emit: () => undefined });
+    expect(record).toMatchObject({ attempted: true, applied_cleanly: null });
+    expect(record.reason).toContain("full length");
+    expect(finalVerifySpaceFailure(record)).toMatchObject({ code: "capture_space_insufficient" });
+
+    // An accepted risk does not authorize it: Apply refuses with the typed cause.
+    const receipt = await verifyAndDeliverFiles(f.source, f.candidate, {}, [], () => null);
+    expect(ControlDeliveryResponse.parse(receipt)).toMatchObject({
+      applied: false,
+      refused: true,
+      appliedPaths: [],
+      refusal: { code: "space_insufficient" },
+    });
+    expect(await readFile(join(f.source, "a.txt"), "utf8")).toBe("original");
+  });
+
+  it("authorizes only a materialized copy", () => {
+    const base = { attempted: true, duration_ms: 1 };
+    const authorize = () => null;
+    expect(
+      filesVerifyRefusal({ ...base, applied_cleanly: null, reason: "no room" }, authorize),
+    ).toBe("no room");
+    expect(
+      filesVerifyRefusal({ ...base, applied_cleanly: false, reason: "conflict" }, authorize),
+    ).toBe("conflict");
+    expect(filesVerifyRefusal({ ...base, applied_cleanly: true }, authorize)).toBeNull();
+    expect(filesVerifyRefusal({ ...base, applied_cleanly: true }, () => "blocked")).toBe("blocked");
+  });
+});
+
+describe("a files verification's own cost", () => {
+  async function syncs<T>(work: () => Promise<T>): Promise<{ result: T; count: number }> {
+    const probe = await open(__filename, "r");
+    const prototype = Object.getPrototypeOf(probe) as FileHandle;
+    await probe.close();
+    const sync = vi.spyOn(prototype, "sync");
+    const result = await work();
+    const count = sync.mock.calls.length;
+    sync.mockRestore();
+    return { result, count };
+  }
+
+  it("never flushes its disposable copy, while the real Apply target stays durable", async () => {
+    const f = await fixture(false, true);
+    const verified = await syncs(() =>
+      finalVerifyFiles(f.candidate, undefined, [], { emit: () => undefined }),
+    );
+    expect(verified.result.applied_cleanly).toBe(true);
+    expect(verified.count).toBe(0);
+    const delivered = await syncs(() => verifyAndDeliverFiles(f.source, f.candidate));
+    expect(delivered.result.applied).toBe(true);
+    // One flush per file written at the target; none for the verification copy.
+    expect(delivered.count).toBe(delivered.result.appliedPaths.length);
+  });
+
+  it("reads each immutable blob once per check, however many states name it", async () => {
+    const f = await fixture(true);
+    const reads = vi.spyOn(fileCopyHost, "digest");
+    const record = await finalVerifyFiles(f.candidate, undefined, [], { emit: () => undefined });
+    expect(record.applied_cleanly).toBe(true);
+    const blobs = reads.mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path.startsWith(f.candidate.artifactRoot));
+    const named = new Set(
+      f.candidate.manifest.entries.flatMap((entry) =>
+        [entry.before, entry.after].flatMap((state) =>
+          state && state !== "unknown" && state.kind === "file" && state.artifactPath
+            ? [join(f.candidate.artifactRoot, state.artifactPath)]
+            : [],
+        ),
+      ),
+    );
+    // An unchanged file's before and after are one blob, read once.
+    expect(blobs.sort()).toEqual([...named].sort());
   });
 });

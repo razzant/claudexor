@@ -3,7 +3,9 @@ import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
 import {
   makeOutcomeFacts,
+  workStateVetoes,
   type ModeKind,
+  type PoolAttemptFailure,
   type RunOutcomeFacts,
   type WorkspaceCaptureFailure,
   type WorkspaceKind,
@@ -27,6 +29,7 @@ import {
 } from "./secretDiff.js";
 import { CAPTURE_REFUSED_REASON, captureRefusedFacts } from "./captureRefusal.js";
 import { writeFailure } from "./runTerminalResults.js";
+import { withPoolAttempts } from "./pool-attempt-evidence.js";
 import { filesDeliverySpaceFailure, finalVerifySpaceFailure } from "@claudexor/delivery";
 export { unpreparedWorkspaceRefusal } from "./captureRefusal.js";
 
@@ -243,6 +246,52 @@ function withPublicationRefusal<
   };
 }
 
+/** A finished run whose own report vetoes it (needs input, incomplete) and whose
+ * files could not be published. It ends as a failure terminal for the record
+ * and its event; its facts, reason and continuation stay the report's. */
+export function workStatePublicationRefused(
+  facts: RunOutcomeFacts,
+  run: CandidateRun | null | undefined,
+): boolean {
+  return (
+    facts.lifecycle === "succeeded" &&
+    facts.review !== "blocked" &&
+    facts.checks !== "failed" &&
+    workStateVetoes(facts) &&
+    Boolean(run?.files && run.captureRefusal)
+  );
+}
+
+/** That terminal's record: the report's own statement and remedy lead; `recordFor`
+ * adds the refused publication second, with its typed cause and the kept copy. */
+export function workStatePublicationRecord(
+  facts: RunOutcomeFacts,
+  run: CandidateRun,
+  pool: readonly PoolAttemptFailure[],
+  followUps: readonly string[] = [],
+) {
+  const needsInput = facts.work_state?.state === "needs_input";
+  return {
+    phase: "workspace",
+    category: "project" as const,
+    harnessId: run.harnessId,
+    attemptId: run.attemptId,
+    safeMessage: withPoolAttempts(
+      needsInput
+        ? `The run needs input before its work can finish (${facts.reason ?? "input_required"}).`
+        : `The run reported its work incomplete (${facts.reason ?? "work_incomplete"}).`,
+      pool,
+    ),
+    poolAttempts: pool,
+    nextActions: [
+      needsInput
+        ? "Provide the requested input and continue the run"
+        : "Continue the run to finish the remaining work",
+      ...followUps,
+    ],
+  };
+}
+
 /** The record a refused publication leads when it alone failed a finished run;
  * review, check, budget and cancellation records stay as they were. */
 export function refusedPublicationRecord(
@@ -340,6 +389,7 @@ export function recordFor(
       paths,
       withPublicationRefusal(run, {
         ...record,
+        runDir: record.runDir ?? paths.root,
         captureFailure: record.captureFailure ?? captureCause(verify, delivered, run),
       }),
     );

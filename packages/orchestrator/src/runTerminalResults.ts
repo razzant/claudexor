@@ -386,6 +386,8 @@ export function failTerminally(
     nextActions?: string[];
     /** Actions that follow this terminal's own remedy (an earlier record's capture actions). */
     followUps?: readonly string[];
+    /** Statements that follow the cause (a refused publication of a candidate's files). */
+    statements?: readonly string[];
     priorFacts?: RunOutcomeFacts;
     /** The leading cause's own reason when the phase does not name it (capture refusal). */
     reason?: RunReason;
@@ -404,8 +406,10 @@ export function failTerminally(
   // A failure held for the run's earlier lines is stated here and taken first,
   // so this terminal's own output and run.failed still append.
   const lost = lostEventsStatement(paths.eventsPath, failureMeta.lostEvents);
-  const cause =
-    budget?.safeMessage ?? redactSecrets(err instanceof Error ? err.message : String(err));
+  const cause = [
+    budget?.safeMessage ?? redactSecrets(err instanceof Error ? err.message : String(err)),
+    ...(failureMeta.statements ?? []),
+  ].join("\n");
   const { message, poolAttempts } = poolFailure(
     lost ? `${cause}\n\n${lost}` : cause,
     failureMeta.attempts ?? failureMeta.continuity ?? [],

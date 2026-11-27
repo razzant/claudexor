@@ -267,15 +267,24 @@ export async function publishDirectoryCandidate(
   input: DirectoryPublication,
 ): Promise<CaptureRefusal | null> {
   const created: string[] = [];
+  const productPath = join(input.paths.finalDir, "work_product.yaml");
+  // Set by the ready event's own write, before its durable sink accepts it.
+  const ready = { written: false };
   try {
-    await writeDirectoryResult(input, created);
+    await writeDirectoryResult(input, created, ready);
     return null;
   } catch (error) {
-    // A leftover without a work product is no result; it never replaces the cause.
-    for (const path of created.reverse()) await rm(path, { force: true }).catch(() => undefined);
+    // The ready line reached the run's event file and only the journal after it
+    // failed: that file still replays it, so the manifest and the bytes it names
+    // stay; the work product alone is taken back. Otherwise every leftover is.
+    const readinessWritten = ready.written;
+    for (const path of created.reverse())
+      if (!readinessWritten || path === productPath)
+        await rm(path, { force: true }).catch(() => undefined);
     return directoryPublicationRefusal(fileSpaceFailure(error, "file publication"), {
       artifactRoot: input.files.artifactRoot,
       delivered: input.delivery !== undefined,
+      ...(readinessWritten ? { readiness: join(input.paths.root, input.files.manifestPath) } : {}),
     });
   }
 }
@@ -302,12 +311,16 @@ export async function publishRunDirectoryCandidate(
   // failed terminal, and a succeeded one awaiting a decision (review blocked,
   // checks failed, work state vetoing), keep their own cause with the refusal beside.
   const { facts: prior } = input;
-  const clean =
-    prior.lifecycle === "succeeded" &&
-    prior.review !== "blocked" &&
-    prior.checks !== "failed" &&
-    !workStateVetoes(prior);
-  if (!clean) return prior;
+  const decided =
+    prior.lifecycle === "succeeded" && prior.review !== "blocked" && prior.checks !== "failed";
+  if (decided && workStateVetoes(prior)) {
+    // The run's own report stays its cause; its written decision stops recommending apply.
+    await demoteWrittenDecision(input.store, input.paths, prior, refusal.detail).catch(
+      () => undefined,
+    );
+    return prior;
+  }
+  if (!decided) return prior;
   const facts = terminalOutcomeFacts(input.facts, "failed", CAPTURE_REFUSED_REASON);
   await demoteWrittenDecision(input.store, input.paths, facts, refusal.detail).catch(
     () => undefined,
@@ -333,7 +346,11 @@ async function demoteWrittenDecision(
   });
 }
 
-async function writeDirectoryResult(input: DirectoryPublication, created: string[]): Promise<void> {
+async function writeDirectoryResult(
+  input: DirectoryPublication,
+  created: string[],
+  ready: { written: boolean },
+): Promise<void> {
   const { files, paths, store } = input;
   const published = new Set<string>();
   for (const entry of files.manifest.entries)
@@ -414,5 +431,10 @@ async function writeDirectoryResult(input: DirectoryPublication, created: string
   );
   await store.writeYamlAsync(productPath, product);
   if (!productExisted) created.push(productPath);
-  await input.log.emitLanded("output.ready", { kind: "artifact", path: files.manifestPath });
+  await input.log.emitLanded(
+    "output.ready",
+    { kind: "artifact", path: files.manifestPath },
+    true,
+    () => (ready.written = true),
+  );
 }

@@ -65,8 +65,6 @@ const HOLE_BYTES = 4096;
 const ZERO_BLOCK = Buffer.alloc(HOLE_BYTES);
 /** From this size a copy is checked for room first; a smaller one costs at most its own length. */
 const COSTLY_BYTES = 1024 * 1024;
-/** The size from which a file's bytes are worth looking for in a store before copying. */
-export const LARGE_FILE_BYTES = COSTLY_BYTES;
 const OPEN_READ = constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0);
 
 const codeOf = (error: unknown) => (error as NodeJS.ErrnoException | null)?.code;
@@ -144,8 +142,15 @@ async function cloneFile(source: string, target: string): Promise<boolean> {
  * leave unwritten: an allocated file is not thinned by being copied. */
 const isSparse = (info: Stats) => (info.blocks ?? 0) * 512 < info.size;
 
-/** The host facilities a copy depends on, in one place so a test can withhold them. */
-export const fileCopyHost = { clone: cloneFile, availableBytes, link, isSparse };
+/** The host facilities a copy depends on, in one place so a test can withhold or
+ * observe them (`digest`: every whole-file hash this module and its index read). */
+export const fileCopyHost = {
+  clone: cloneFile,
+  availableBytes,
+  link,
+  isSparse,
+  digest: fileDigest,
+};
 
 /** Read a regular file in bounded memory. With `limit` (the length the caller
  * checked room for) at most that many bytes are read, and one more read must
@@ -262,7 +267,7 @@ export async function writeIndependentCopy(
     let digest: FileDigest;
     if (options.immutableSource && (await fileCopyHost.clone(source, target))) {
       created = true;
-      digest = await fileDigest(target);
+      digest = await fileCopyHost.digest(target);
     } else {
       assertCopySpace(dirname(target), info.size);
       const output = await open(target, "wx", 0o600);
@@ -320,7 +325,7 @@ export async function hasImmutableFile(
   if (!info) return false;
   if (info.isFile() && info.size === expected.sizeBytes) {
     if (index?.verified(info, expected)) return true;
-    if (matches(await fileDigest(path), expected)) {
+    if (matches(await fileCopyHost.digest(path), expected)) {
       index?.remember(path, info, expected);
       return true;
     }
@@ -331,14 +336,28 @@ export async function hasImmutableFile(
   );
 }
 
-/** A new name changes an inode's ctime: the index learns the identity after it. */
-async function named(path: string, digest: FileDigest, index?: RunContentIndex): Promise<void> {
-  if (index) index.remember(path, await lstat(path), digest);
+/**
+ * A new name, and removing another, changes an inode's ctime: the index learns
+ * the identity after both. It does so only for the inode `held` saw (taken when
+ * its bytes were known to be `digest`) with that content time: bytes written
+ * since are never taken as verified, and the next check reads them.
+ */
+async function named(
+  path: string,
+  digest: FileDigest,
+  held: Stats,
+  index?: RunContentIndex,
+): Promise<void> {
+  if (!index) return;
+  const info = await lstat(path);
+  if (info.ino === held.ino && info.dev === held.dev && info.mtimeMs === held.mtimeMs)
+    index.remember(path, info, digest);
 }
 
 /** Publish a private file this process just wrote (and hashed) under its
  * immutable name, whole or not at all; true when this call created `target`.
- * The caller removes `staged`. */
+ * A claimed `staged` name is removed here, before the index learns the inode;
+ * the caller removes one that was not claimed. */
 export async function claimImmutableFile(
   staged: string,
   target: string,
@@ -346,6 +365,7 @@ export async function claimImmutableFile(
   index?: RunContentIndex,
 ): Promise<boolean> {
   if (await hasImmutableFile(target, digest, index)) return false;
+  const held = await lstat(staged);
   const claim = await claimName(staged, target);
   if (claim === "taken") {
     await hasImmutableFile(target, digest, index);
@@ -353,7 +373,8 @@ export async function claimImmutableFile(
   }
   // Without hard links the name was just seen free.
   if (claim === "unavailable") await rename(staged, target);
-  await named(target, digest, index);
+  else await discard(staged);
+  await named(target, digest, held, index);
   return true;
 }
 
@@ -373,11 +394,12 @@ export async function shareImmutableFile(
   try {
     await mkdir(dirname(target), { recursive: true });
     if (await hasImmutableFile(target, expected, index)) return false;
-    if (!(await hasImmutableFile(source, expected, index)))
+    const held = await lstat(source).catch(() => null);
+    if (!held || !(await hasImmutableFile(source, expected, index)))
       throw new WorkspaceError(`Immutable file is missing: ${source}`);
     const claim = await claimName(source, target);
     if (claim === "linked") {
-      await named(target, expected, index);
+      await named(target, expected, held, index);
       return true;
     }
     if (claim === "taken") {

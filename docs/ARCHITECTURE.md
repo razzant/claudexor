@@ -2682,7 +2682,7 @@ conservative: a sparse file can be refused where it would have fitted, in
 exchange for never starting a copy that fills the disk. When free space cannot be
 read, a copy under 64 MiB proceeds and one of 64 MiB or more is refused. Apply and
 final verification copy the same way; review and verification copies are not
-flushed. Too little or unknown room and a mid-write `ENOSPC`/`EDQUOT` are
+flushed, and one check reads each immutable blob once, however many states name it. Too little or unknown room and a mid-write `ENOSPC`/`EDQUOT` are
 `capture_space_insufficient` (also through baseline creation, review
 preparation, Apply, final verification and cancellation); `EFBIG` is its own
 cause. A reviewer copy that cannot fit names those files `space_insufficient`,
@@ -2698,11 +2698,16 @@ review evidence packet and its persistent record) hold one verified payload per
 digest: the run's `WorkspaceManager` keeps an in-memory index of the names it
 created or verified (`content-index.ts`, nothing on disk, nothing discovered from
 directory names, gone with the run) and links them (or copies where the filesystem
-has no hard links, under a private name first). A large file is hashed before
-anything is written; one keeper per digest stores it while a simultaneous attempt
-with the same digest waits, and keepers of other digests do not. An inode is
-reread only when it changed since it was verified; a name whose bytes changed is
-never linked, and one that went away is skipped for the file's own source. A writable or caller-visible
+has no hard links, under a private name first). Every file is hashed before
+anything is written, so a repeated file of any size needs no staged copy; one
+keeper per digest stores it while a simultaneous attempt with the same digest
+waits, and keepers of other digests do not. An inode is reread only when it
+changed since it was verified: its identity is learned after this process removed
+its own staging name (whose unlink moves the ctime), and only for the inode and
+content time seen when its bytes were known, so a later write is reread, never
+trusted; a ctime moved by anything else (a chmod, a link made elsewhere) costs one
+extra read. A name whose bytes changed
+is never linked, and one that went away is skipped for the file's own source. A writable or caller-visible
 file is never linked to saved bytes. Review copies are built only for a panel
 that will read them. A try's capture only hashes; the bytes are stored once, by
 the final capture. The post-review stability check hashes the same footprint and
@@ -2713,20 +2718,38 @@ that failed keeps its own typed cause.
 
 A `final/files` publication that cannot complete records no `files` WorkProduct
 and removes what it created; its commit point is the work product and a durably
-landed `output.ready`. The attempt's capture and any delivery receipt stay. A
+landed `output.ready`. When that event's line reached the run's `events.jsonl` and
+only the daemon journal after it failed (`emitLanded`'s `written` callback tells
+the two apart), the manifest and the bytes it names stay, since the file replays
+the line; only the work product is taken back. The attempt's capture and any
+delivery receipt stay. A
 clean success then ends `failed`/`capture_refused` (phase `workspace`, on the
 event and `failure.yaml` alike) with the typed `captureFailure`; a cancellation,
 executor or budget failure, a review block or error and a blocked outcome (checks
 failed, review blocked) keep their own cause and phase, and their
-`failure.yaml` adds the refusal's cause, its statement and the kept copy to
-inspect. A cancellation that keeps one attempt's files still records another
+`failure.yaml` adds the refusal's cause, its statement after the leading one (an
+executor's, review's or arbitration's error first) and the kept copy to inspect.
+A finished run whose own report vetoes it (needs input, incomplete) keeps that
+reason, remedy and continuation; its `failure.yaml` (phase `workspace`) leads with
+them, adds the refusal, and its `run.blocked` names that `failure_ref`. A cancellation that keeps one attempt's files still records another
 attempt's failed capture, with the event's `phase`/`failure_ref` and the summary
 naming it. A strategy whose workspace could not be prepared for want of room
 (convergence prepares its one workspace first) ends `capture_refused` in phase
-`workspace`. A directory delivery (Apply, its replay, `accept_clean_patch`) that
-runs out of room answers the public receipt's typed `refusal`
+`workspace`; for a directory workspace every step counts (its base, `owner.json`,
+the scoped home, the copies), with the system's code as `causeCode` and the
+cleanup's facts. Git preparation keeps its own errors. A directory delivery (Apply,
+its replay) that runs out of room answers the public receipt's typed `refusal`
 (`space_insufficient`, the path it stopped at) with `appliedPaths` written before
-it stopped; `apply/check` answers the same refusal for a verification copy.
+it stopped; `apply/check` answers the same refusal for a verification copy. A
+verification copy without room, at its baseline or a postimage, is
+`applied_cleanly: null`, never a conflict, and Apply and `apply/check` refuse by
+one rule: an accepted risk authorizes only a copy that was materialized.
+`accept_clean_patch` delivers the same way but answers no receipt fields: its
+`message` states the refusal code, the path it stopped at and the paths already
+written; the full typed receipt is the one Apply answers. The delivery state counts each delivery's writes
+and the selected changes it found the target already holding against this
+manifest, so a delivery that completes an earlier partial one reads applied; a
+receipt's `appliedPaths` are only its own writes.
 
 Writable directory work produces a `files` WorkProduct. Its `files.manifest` and
 `meta.manifest_sha256` address a complete file manifest in the existing run

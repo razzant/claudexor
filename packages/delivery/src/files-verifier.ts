@@ -17,7 +17,7 @@ import {
   verifyWorkspaceFiles,
 } from "@claudexor/workspace";
 import { redactSecrets, sha256 } from "@claudexor/util";
-import type { VerifyEventLog } from "./final-verifier.js";
+import { finalVerifyBlocks, type VerifyEventLog } from "./final-verifier.js";
 
 /** What a directory delivery adds to the shared receipt: the paths it actually
  * wrote and, for a delivery that stopped for want of room (in its verification
@@ -34,6 +34,18 @@ export function filesDeliverySpaceFailure(
   receipt: object | null | undefined,
 ): WorkspaceCaptureFailure | undefined {
   return receipt ? deliverySpaceCauses.get(receipt) : undefined;
+}
+
+/** The selected changes a directory delivery found the target already holding
+ * (compared against this manifest by that delivery). Beside the receipt in memory,
+ * as its space cause is: the receipt's own `appliedPaths` stay its writes alone. */
+const deliveryHeldPaths = new WeakMap<object, readonly string[]>();
+export function filesDeliveryHeldPaths(receipt: object | null | undefined): readonly string[] {
+  return (receipt && deliveryHeldPaths.get(receipt)) ?? [];
+}
+export function withHeldPaths<T extends object>(receipt: T, held: readonly string[] = []): T {
+  if (held.length > 0) deliveryHeldPaths.set(receipt, held);
+  return receipt;
 }
 
 /** The receipt's typed refusal of a delivery that lacked room, its cause kept beside it. */
@@ -72,6 +84,20 @@ export function finalVerifySpaceFailure(
   return record ? spaceCauses.get(record) : undefined;
 }
 
+/**
+ * The one rule a files delivery and its check (`apply/check`) refuse by: only a
+ * verification copy that was materialized may be authorized (`authorize`, an
+ * accepted risk included). An unproven one (its copy ran out of room, the
+ * verifier failed) or a conflict refuses with its own reason, override or not.
+ */
+export function filesVerifyRefusal(
+  record: FinalVerifyRecord,
+  authorize?: (record: FinalVerifyRecord) => string | null,
+): string | null {
+  if (record.applied_cleanly !== true) return record.reason ?? "file verification failed";
+  return authorize ? authorize(record) : finalVerifyBlocks(record) ? "final verify failed" : null;
+}
+
 /** What a verification the run's stop interrupted records: not verified, never passed. */
 export const VERIFY_STOPPED = "the run was stopped during final verification";
 
@@ -95,16 +121,23 @@ export async function finalVerifyFiles(
     root = await mkdtemp(join(tmpdir(), "claudexor-verify-files-"));
     if (sha256(JSON.stringify(candidate.manifest) + "\n") !== candidate.manifestSha256)
       throw new Error("Files manifest does not match its canonical digest");
+    // The blobs are read once here; the disposable copy is never flushed.
     await verifyWorkspaceFiles(candidate.manifest, candidate.artifactRoot);
-    await materializeWorkspaceBaseline(root, candidate.manifest, candidate.artifactRoot);
+    await materializeWorkspaceBaseline(root, candidate.manifest, candidate.artifactRoot, false);
     const applied = await applyWorkspaceFiles(
       root,
       candidate.manifest,
       candidate.artifactRoot,
       paths,
+      { durable: false, artifactsVerified: true },
     );
     if (!applied.applied) {
-      const record = done({ applied_cleanly: false, reason: applied.detail });
+      // A copy that ran out of room proved nothing either way (null, as for the
+      // baseline); only an established failure to apply is a conflict (false).
+      const record = done({
+        applied_cleanly: applied.captureFailure ? null : false,
+        reason: applied.detail,
+      });
       if (applied.captureFailure) spaceCauses.set(record, applied.captureFailure);
       return record;
     }

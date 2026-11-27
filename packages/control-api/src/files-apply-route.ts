@@ -1,5 +1,7 @@
 import {
   verifyAndDeliverFiles,
+  filesDeliveryHeldPaths,
+  filesVerifyRefusal,
   finalVerifyFiles,
   finalVerifySpaceFailure,
   withSpaceRefusal,
@@ -61,11 +63,15 @@ export async function applyFilesResult(
         );
       },
     });
+    // The overlay counts this delivery's writes and the changes it found the
+    // target already holding (an earlier partial delivery's, compared against
+    // this manifest); the receipt's own appliedPaths stay its writes.
+    const held = filesDeliveryHeldPaths(result);
     if (
       ctx.deliveredApplyState(record) !== "discarded" &&
-      (result.appliedPaths.length || result.applied)
+      (result.appliedPaths.length || held.length || result.applied)
     )
-      ctx.markFilesApplied?.(record, result.appliedPaths, candidate.manifest);
+      ctx.markFilesApplied?.(record, [...result.appliedPaths, ...held], candidate.manifest);
     ctx.appendAudit(record, result.applied ? "control.applied" : "control.rejected", {
       control: "apply",
       kind: "files",
@@ -76,6 +82,37 @@ export async function applyFilesResult(
     });
     return ControlDeliveryResponse.parse(result);
   });
+}
+
+const listed = (paths: readonly string[]) =>
+  `${paths.slice(0, 20).join(", ")}${paths.length > 20 ? ` and ${paths.length - 20} more` : ""}`;
+
+/**
+ * What `accept_clean_patch` says of a files delivery in its existing `message`
+ * (its response has no receipt fields): the delivery's detail and, for one that
+ * did not apply, its typed refusal with the path it stopped at and the paths it
+ * had already written. The full typed DeliveryReceipt is the one Apply answers.
+ */
+export function filesDecisionMessage(receipt: {
+  applied: boolean;
+  appliedPaths?: readonly string[] | undefined;
+  detail?: string | undefined;
+  refusal?: { code: string; paths: readonly string[] } | undefined;
+}): string | undefined {
+  if (receipt.applied) return receipt.detail;
+  const refusal = receipt.refusal;
+  const parts = [
+    receipt.detail,
+    refusal
+      ? `Refusal: ${refusal.code}${refusal.paths.length > 0 ? ` at ${listed(refusal.paths)}` : ""}.`
+      : undefined,
+    receipt.appliedPaths?.length
+      ? `Already written before it stopped: ${listed(receipt.appliedPaths)}.`
+      : refusal
+        ? "Nothing was written before it stopped."
+        : undefined,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
 export async function checkFilesResult(
@@ -96,11 +133,15 @@ export async function checkFilesResult(
   const verify = await finalVerifyFiles(candidate, paths, ctx.gateSpecs(record), {
     emit: () => undefined,
   });
-  const refused = ctx.gateError(record, "", root, verify);
+  // Apply's own rule: an accepted risk authorizes only a materialized copy.
+  const refused = filesVerifyRefusal(verify, (proven) => ctx.gateError(record, "", root, proven));
   // A verification copy that could not fit is a typed refusal, as the delivery's.
   if (refused)
     return ControlApplyCheckResponse.parse(
-      withSpaceRefusal({ ok: false, code: 1, stderr: refused }, finalVerifySpaceFailure(verify)),
+      withSpaceRefusal(
+        { ok: false, code: 1, stderr: refused },
+        verify.applied_cleanly === true ? undefined : finalVerifySpaceFailure(verify),
+      ),
     );
   let alreadyApplied = true;
   const selected = deliverableWorkspaceChanges(candidate.manifest, paths);

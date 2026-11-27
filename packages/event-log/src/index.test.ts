@@ -720,3 +720,33 @@ describe("lastRunEventSeq: live writer counter vs finished file tail", () => {
     expect(lastRunEventSeq(path)).toBe(6);
   });
 });
+
+describe("an inline awaited landing", () => {
+  it("hears its own line before a sink that then refuses it", async () => {
+    const path = join(reapMk(join(tmpdir(), "cx-inline-written-")), "events.jsonl");
+    const refused = new Error("journal refused");
+    const log = new EventLog(path, "run-1", "task-1", (event) => {
+      if (event.type === "output.ready") throw refused;
+    });
+    log.emit("run.created");
+    let written = 0;
+    await expect(
+      log.emitLanded("output.ready", { kind: "artifact" }, true, () => (written += 1)),
+    ).rejects.toBe(refused);
+    expect(written).toBe(1);
+    expect(readRunEvents(path).events.map((event) => event.type)).toContain("output.ready");
+  });
+
+  it("hears nothing when its own append fails", async () => {
+    const dir = reapMk(join(tmpdir(), "cx-inline-unwritten-"));
+    const path = join(dir, "events.jsonl");
+    const log = new EventLog(path, "run-1", "task-1");
+    // The run's file cannot take a line: its path is now a directory.
+    mkdirSync(path);
+    let written = 0;
+    await expect(
+      log.emitLanded("output.ready", { kind: "artifact" }, true, () => (written += 1)),
+    ).rejects.toThrow();
+    expect(written).toBe(0);
+  });
+});

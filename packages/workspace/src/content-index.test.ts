@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceEnvelope, WorkspaceFileState } from "@claudexor/schema";
 import * as fileCopy from "./file-copy.js";
-import { RunContentIndex } from "./content-index.js";
+import { keepFileContent, RunContentIndex } from "./content-index.js";
 import { WorkspaceManager } from "./manager.js";
 
 const MiB = 1024 * 1024;
@@ -44,6 +44,14 @@ const run = (root: string, source: string, name: string) =>
   new WorkspaceManager(source, { runtimeRoot: join(root, name) });
 const directory = (manager: WorkspaceManager, attemptId: string) =>
   manager.create({ taskId: "t", attemptId, workspaceKind: "directory", scopePaths: ["."] });
+const inPlace = (manager: WorkspaceManager) =>
+  manager.create({
+    taskId: "t",
+    attemptId: "a",
+    workspaceKind: "directory",
+    scopePaths: ["."],
+    inPlace: true,
+  });
 
 const blobOf = (state: WorkspaceFileState | null | "unknown" | undefined) => {
   if (!state || state === "unknown" || state.kind !== "file") throw new Error("expected a file");
@@ -98,18 +106,78 @@ describe.skipIf(!posix)("one verified payload per digest within a run", () => {
       ).toEqual([]);
   });
 
-  it("verifies a stored payload once per inode, not on every further name", async () => {
+  it("verifies a stored payload once per inode, from the run's first name on", async () => {
     const { root, source } = await project();
+    // A file without a twin: no later keeper of its digest re-reads its baseline blob.
+    await writeFile(join(source, "solo.txt"), "only once\n");
     const manager = run(root, source, "run-1");
+    // Observed from the start: the baseline's own names are learned after this
+    // process removed its staging name, so they are not hashed again either.
+    const reads = vi.spyOn(fileCopy.fileCopyHost, "digest");
     const env = await directory(manager, "a");
-    await manager.captureFiles(env, join(root, "attempt-0"));
-    const reads = vi.spyOn(fileCopy, "fileDigest");
-    await manager.captureFiles(env, join(root, "attempt-1"));
-    // Each large source is hashed to learn its digest; the held payload, already
-    // verified by this run and unchanged, is not hashed again.
-    const paths = reads.mock.calls.map(([path]) => String(path));
-    expect(paths.filter((path) => path.startsWith(env.worktree_path))).toHaveLength(2);
-    expect(paths.filter((path) => path.includes("/content/"))).toEqual([]);
+    for (const at of [0, 1]) {
+      reads.mockClear();
+      await manager.captureFiles(env, join(root, `attempt-${at}`));
+      const paths = reads.mock.calls.map(([path]) => String(path));
+      // Each source file, large or small, is hashed once to learn its digest.
+      expect(paths.filter((path) => path.startsWith(env.worktree_path)).sort()).toEqual(
+        ["a.txt", "b.txt", "disk.img", "solo.txt", "twin.img"].map((name) =>
+          join(env.worktree_path, name),
+        ),
+      );
+      // A held payload, verified by this run and unchanged since, is not read again.
+      expect(paths.filter((path) => path.includes(`${sep}content${sep}`))).toEqual([]);
+    }
+  });
+
+  it.each([
+    ["with hard links", false],
+    ["without hard links", true],
+  ])(
+    "names a repeated small file's held bytes, with no staged copy: %s",
+    async (_name, noLinks) => {
+      const { root, source } = await project();
+      if (noLinks)
+        vi.spyOn(fileCopy.fileCopyHost, "link").mockRejectedValue(
+          Object.assign(new Error("ENOTSUP: links unsupported"), { code: "ENOTSUP" }),
+        );
+      const manager = run(root, source, "run-1");
+      const env = await inPlace(manager);
+      const reads = vi.spyOn(fileCopy.fileCopyHost, "digest");
+      const captured = await manager.captureFiles(env, join(root, "attempt-0"));
+      const of = (name: string) =>
+        blobOf(captured.manifest.entries.find((item) => item.path === name)!.after);
+      expect(of("b.txt").artifactPath).toBe(of("a.txt").artifactPath);
+      // The duplicate is hashed before anything is kept, so its held name answers it.
+      expect(reads.mock.calls.map(([path]) => String(path))).toContain(
+        join(env.worktree_path, "b.txt"),
+      );
+      const content = join(root, "attempt-0", "final/files/content");
+      const names = await readdir(content);
+      expect(names.every((name) => /^[0-9a-f]{64}$/.test(name))).toBe(true);
+      expect(new Set(names).size).toBe(names.length);
+      expect(await sha(join(root, "attempt-0", of("b.txt").artifactPath!))).toBe(
+        of("b.txt").sha256,
+      );
+    },
+  );
+
+  it("refuses a source whose bytes change between its hash and its copy", async () => {
+    const root = await mkdtemp(join(tmpdir(), "claudexor-content-index-"));
+    roots.push(root);
+    const path = join(root, "note.txt");
+    await writeFile(path, "first bytes\n");
+    const before = await lstat(path);
+    const real = fileCopy.fileCopyHost.digest;
+    vi.spyOn(fileCopy.fileCopyHost, "digest").mockImplementation(async (file) => {
+      const digest = await real(file);
+      if (file === path) await writeFile(path, "other bytes\n");
+      return digest;
+    });
+    await expect(
+      keepFileContent(path, before, join(root, "content"), new RunContentIndex()),
+    ).rejects.toBeInstanceOf(fileCopy.FileChangedError);
+    expect(await readdir(join(root, "content"))).toEqual([]);
   });
 
   it("never shares a payload with another run", async () => {
@@ -151,15 +219,6 @@ describe.skipIf(!posix)("one verified payload per digest within a run", () => {
       (await lstat(join(root, "attempt-0", state.artifactPath!))).ino,
     );
   });
-
-  const inPlace = (manager: WorkspaceManager) =>
-    manager.create({
-      taskId: "t",
-      attemptId: "a",
-      workspaceKind: "directory",
-      scopePaths: ["."],
-      inPlace: true,
-    });
 
   it("stores from its own source when a held name goes away before the link", async () => {
     const { root, source } = await project();

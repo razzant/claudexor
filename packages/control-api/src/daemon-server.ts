@@ -37,7 +37,7 @@ import { TERMINAL_STATES } from "./sse-shared.js";
 import { readFilesWorkProduct } from "./files-work-product.js";
 import { appendRunAuditEvent } from "./run-audit.js";
 import { handleRunDisposition } from "./run-taken-route.js";
-import { applyFilesResult } from "./files-apply-route.js";
+import { applyFilesResult, filesDecisionMessage } from "./files-apply-route.js";
 import { streamRunEvents } from "./run-events-stream.js";
 import {
   projectTurnRunCards,
@@ -1274,7 +1274,7 @@ export class DaemonControlApiServer {
               ControlRunDecisionResponse.parse({
                 accepted: delivered.applied,
                 status: delivered.applied ? "applied" : "rejected",
-                message: delivered.detail,
+                message: filesDecisionMessage(delivered),
               }),
             );
           } catch (error) {

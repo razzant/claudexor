@@ -8,10 +8,12 @@ import {
   selectedWorkspaceChanges,
   workspaceFilePath,
 } from "@claudexor/workspace";
-import { finalVerifyBlocks, type VerifyEventLog } from "./final-verifier.js";
+import type { VerifyEventLog } from "./final-verifier.js";
 import {
+  filesVerifyRefusal,
   finalVerifyFiles,
   finalVerifySpaceFailure,
+  withHeldPaths,
   withSpaceRefusal,
   type FilesDeliveryFacts,
   type VerifiableWorkspaceFiles,
@@ -46,13 +48,7 @@ export async function verifyAndDeliverFiles(
     const refusal =
       (await realpath(targetRoot)) !== (await realpath(candidate.manifest.sourceRoot))
         ? "target does not match the work product source"
-        : finalVerify.applied_cleanly !== true
-          ? (finalVerify.reason ?? "file verification failed")
-          : authorize
-            ? authorize(finalVerify)
-            : finalVerifyBlocks(finalVerify)
-              ? "final verify failed"
-              : null;
+        : filesVerifyRefusal(finalVerify, authorize);
     if (refusal || (await preimage()) !== targetPreimageSha) {
       const refused = {
         mode: "apply" as const,
@@ -67,23 +63,26 @@ export async function verifyAndDeliverFiles(
       // A verification copy that could not fit refused it: the receipt says so, typed.
       return withSpaceRefusal(refused, refusal === finalVerify.reason ? verifySpace : undefined);
     }
-    const { captureFailure, stoppedAt, ...result } = await applyWorkspaceFiles(
+    const { captureFailure, stoppedAt, heldPaths, ...result } = await applyWorkspaceFiles(
       targetRoot,
       candidate.manifest,
       candidate.artifactRoot,
       options.paths,
     );
     // The target ran out of room: `appliedPaths` are those written before it stopped.
-    return withSpaceRefusal(
-      {
-        mode: "apply" as const,
-        ...result,
-        refused: !result.applied,
-        finalVerify,
-        targetPreimageSha,
-      },
-      captureFailure,
-      stoppedAt ? [stoppedAt] : [],
+    return withHeldPaths(
+      withSpaceRefusal(
+        {
+          mode: "apply" as const,
+          ...result,
+          refused: !result.applied,
+          finalVerify,
+          targetPreimageSha,
+        },
+        captureFailure,
+        stoppedAt ? [stoppedAt] : [],
+      ),
+      heldPaths,
     );
   });
 }

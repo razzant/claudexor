@@ -236,7 +236,9 @@ export function unpreparedRunFailure(error: unknown) {
  * receipt stay. */
 export function directoryPublicationRefusal(
   error: unknown,
-  input: { artifactRoot: string; delivered: boolean },
+  /** `readiness`: the manifest whose ready line the run's event file kept when
+   * only the journal after it failed; it and the files it names stay. */
+  input: { artifactRoot: string; delivered: boolean; readiness?: string },
 ): CaptureRefusal {
   const failure = captureFailureEvidence(error instanceof Error ? error : new Error(String(error)));
   const kept = join(input.artifactRoot, "final/files");
@@ -246,8 +248,11 @@ export function directoryPublicationRefusal(
     sourceRoot: kept,
     failure,
     detail:
-      `The captured result could not be published as the run's final files: ${captureCause(failure)}.` +
-      `${captureDiagnostic(failure)} No final file result was recorded. Kept: the captured copy at ${kept}.` +
+      (input.readiness
+        ? `The run's final files were written and their ready event reached the run's event log, but the daemon journal did not accept it: ${captureCause(failure)}.` +
+          `${captureDiagnostic(failure)} No work product was recorded; the manifest ${input.readiness} and the files it names stay as the event log states. Kept: the captured copy at ${kept}.`
+        : `The captured result could not be published as the run's final files: ${captureCause(failure)}.` +
+          `${captureDiagnostic(failure)} No final file result was recorded. Kept: the captured copy at ${kept}.`) +
       (input.delivered
         ? " What was already delivered stays recorded in final/delivery_receipt.yaml."
         : ""),

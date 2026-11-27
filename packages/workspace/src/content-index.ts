@@ -17,11 +17,10 @@ import { join } from "node:path";
 import { newId } from "@claudexor/util";
 import {
   claimImmutableFile,
-  fileDigest,
+  fileCopyHost,
   FileChangedError,
   hasImmutableFile,
   ImmutableFileMismatch,
-  LARGE_FILE_BYTES,
   shareImmutableFile,
   writeIndependentCopy,
   type FileDigest,
@@ -148,10 +147,11 @@ const sameDigest = (a: FileDigest, b: FileDigest) =>
 /**
  * The digest of the regular file `path` (seen as `before`) and, with
  * `contentDir`, its bytes kept there under their content name. With the run's
- * `index`, a large file is hashed before anything is written and its digest is
+ * `index`, the file is hashed before anything is written and its digest is
  * claimed alone: bytes the run already holds are linked, and only the first
- * keeper of a digest writes them. A small file is written once while it is
- * hashed. A file that changed while it was read is `FileChangedError`.
+ * keeper of a digest writes them (one copy, read a second time to write it).
+ * Without an index it is written once while it is hashed. A file that changed
+ * while it was read is `FileChangedError`.
  */
 export async function keepFileContent(
   path: string,
@@ -160,15 +160,19 @@ export async function keepFileContent(
   index?: RunContentIndex,
 ): Promise<FileDigest> {
   if (!contentDir) {
-    const digest = await fileDigest(path);
+    const digest = await fileCopyHost.digest(path);
     await assertUnchanged(path, before, digest);
     return digest;
   }
   await mkdir(contentDir, { recursive: true });
   const temp = join(contentDir, newId("pending"));
   try {
-    const hashFirst = index !== undefined && before.size >= LARGE_FILE_BYTES;
-    const digest = hashFirst ? await fileDigest(path) : await writeIndependentCopy(path, temp);
+    // Within a run every file is hashed before anything is written: bytes it
+    // already holds are named again, with no temporary copy whatever their size.
+    const hashFirst = index !== undefined;
+    const digest = hashFirst
+      ? await fileCopyHost.digest(path)
+      : await writeIndependentCopy(path, temp);
     await assertUnchanged(path, before, digest);
     const target = join(contentDir, digest.sha256.slice(7));
     const keep = async () => {

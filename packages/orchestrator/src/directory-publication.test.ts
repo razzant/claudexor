@@ -56,6 +56,8 @@ function author(
   act: (spec: HarnessRunSpec) => void | Promise<void>,
   ending?: "error",
   id = "writer",
+  /** A work report the final message ends with (a validated footer). */
+  report?: object,
 ): HarnessAdapter {
   const fake = createFakeHarness("fake-implement");
   return {
@@ -66,7 +68,12 @@ function author(
         ...(await fake.discover()),
         id,
         kind: "local_cli",
-        capabilities: { ...(await fake.discover()).capabilities, review: false, synthesize: false },
+        capabilities: {
+          ...(await fake.discover()).capabilities,
+          review: false,
+          synthesize: false,
+          ...(report ? { work_report_transport: "validated" as const } : {}),
+        },
       });
     },
     async doctor() {
@@ -85,7 +92,16 @@ function author(
         yield { type: "error", ts, session_id: spec.session_id, error: "executor crashed" };
         return;
       }
-      yield { type: "message", ts, session_id: spec.session_id, text: "Done.", final: true };
+      const footer = report
+        ? `\n\n\`\`\`json\n${JSON.stringify({ work_report: report })}\n\`\`\``
+        : "";
+      yield {
+        type: "message",
+        ts,
+        session_id: spec.session_id,
+        text: `Done.${footer}`,
+        final: true,
+      };
       yield { type: "completed", ts, session_id: spec.session_id };
     },
   };
@@ -247,6 +263,11 @@ describe.each([
     expect(facts.outcome.reason).not.toBe("capture_refused");
     expect(failure!.captureFailure).toMatchObject({ code: "capture_space_insufficient" });
     expect(failure!.safeMessage).toContain("executor crashed");
+    // The executor's own cause leads; the refused publication is the second statement.
+    const lines = failure!.safeMessage.split("\n");
+    const published = lines.findIndex((line) => line.includes("could not be published"));
+    expect(lines.findIndex((line) => line.includes("executor crashed"))).toBeLessThan(published);
+    expect(published).toBeGreaterThan(-1);
     expectOnlyAttemptCopy(result.runDir, attemptId);
   });
 });
@@ -402,7 +423,10 @@ describe("a reviewed directory result", () => {
     const { facts, failure } = terminal(result.runDir);
     expect(facts.outcome.lifecycle).toBe("failed");
     expect(failure).toMatchObject({ phase: "review" });
-    expect(failure!.safeMessage).toContain("reviewer preparation failed");
+    // The review's error leads; the refused publication is stated after it.
+    const [lead, ...rest] = failure!.safeMessage.split("\n");
+    expect(lead).toContain("reviewer preparation failed");
+    expect(rest.join("\n")).toContain("could not be published as the run's final files");
     expect(failure!.captureFailure).toMatchObject({ code: "capture_space_insufficient" });
     expectOnlyAttemptCopy(result.runDir, "a01");
   });
@@ -561,6 +585,41 @@ describe("a publication's commit point", () => {
     expect(failure!.captureFailure).toMatchObject({ causeCode: "EIO" });
     expect(failure!.safeMessage).not.toContain("harness");
     expectOnlyAttemptCopy(result.runDir, "a01");
+  });
+
+  it("keeps the files its ready line names when only the journal after that line fails", async () => {
+    const real = EventLog.prototype.emitLanded;
+    vi.spyOn(EventLog.prototype, "emitLanded").mockImplementation(function (
+      this: EventLog,
+      ...args: Parameters<EventLog["emitLanded"]>
+    ) {
+      if (args[0] !== "output.ready" || (args[1] as { kind?: string })?.kind !== "artifact")
+        return real.apply(this, args);
+      // The run's own file takes the line; its durable journal then refuses it.
+      return real.apply(this, args).then((event) => {
+        throw Object.assign(new Error("EIO: journal write failed"), { code: "EIO", event });
+      });
+    });
+    const result = await start(author((spec) => writeImage(join(spec.cwd, "disk.img"))));
+
+    const { facts, failure } = terminal(result.runDir);
+    expect(facts.outcome).toMatchObject({ lifecycle: "failed", reason: "capture_refused" });
+    expect(failure!.captureFailure).toMatchObject({ causeCode: "EIO" });
+    expect(failure!.safeMessage).toContain("the daemon journal did not accept it");
+    const ready = readRunEvents(join(result.runDir, "events.jsonl")).events.filter(
+      (event) => event.type === "output.ready" && event.payload?.["kind"] === "artifact",
+    );
+    expect(ready.map((event) => event.payload?.["path"])).toEqual(["final/files/manifest.json"]);
+    // What the replayable line names stays whole; no work product claims it.
+    const manifest = WorkspaceFilesManifest.parse(
+      JSON.parse(readFileSync(join(result.runDir, "final/files/manifest.json"), "utf8")),
+    );
+    for (const entry of manifest.entries)
+      if (entry.after?.kind === "file")
+        expect(lstatSync(join(result.runDir, entry.after.artifactPath!)).size).toBe(
+          entry.after.sizeBytes,
+        );
+    expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(false);
   });
 
   it("types a space failure writing the manifest itself", async () => {
@@ -733,4 +792,67 @@ describe.each([
     expect(failure!.nextActions.join("\n")).toMatch(/attempts[\\/]a01[\\/]final[\\/]files/);
     expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(false);
   });
+});
+
+describe.each([
+  ["race", {}],
+  ["convergence", { attempts: 1 }],
+] as const)("a refused publication of an unfinished %s run", (_lane, lane) => {
+  it.each([
+    [
+      "needs input",
+      {
+        state: "needs_input",
+        required_inputs: [{ kind: "decision", locator: "db", description: "Which database?" }],
+      },
+      "input_required",
+      "The run needs input",
+      "Provide the requested input and continue the run",
+    ],
+    [
+      "incomplete",
+      { state: "incomplete", required_inputs: [] },
+      "work_incomplete",
+      "The run reported its work incomplete",
+      "Continue the run to finish the remaining work",
+    ],
+  ] as const)(
+    "%s: keeps the report as the cause and records the refusal beside it",
+    async (_state, report, reason, statement, remedy) => {
+      refusePublication();
+      const result = await start(
+        author((spec) => writeImage(join(spec.cwd, "disk.img")), undefined, "writer", report),
+        lane,
+      );
+
+      const { facts, failure, events } = terminal(result.runDir);
+      expect(facts.outcome).toMatchObject({ lifecycle: "succeeded", reason });
+      expect(failure).toMatchObject({ phase: "workspace", category: "project" });
+      expect(failure!.captureFailure).toMatchObject({
+        code: "capture_space_insufficient",
+        causeCode: "ENOSPC",
+      });
+      const [lead, ...rest] = failure!.safeMessage.split("\n");
+      expect(lead).toContain(statement);
+      expect(rest.join("\n")).toContain("could not be published as the run's final files");
+      expect(failure!.nextActions[0]).toBe(remedy);
+      expect(failure!.nextActions).toContain(
+        `Inspect the changed files at ${join(result.runDir, "attempts", "a01", "final/files")}`,
+      );
+      const blocked = readRunEvents(join(result.runDir, "events.jsonl")).events.find(
+        (event) => event.type === "run.blocked",
+      );
+      expect(blocked?.payload).toMatchObject({
+        phase: "workspace",
+        failure_ref: "final/failure.yaml",
+        facts: { reason },
+      });
+      expect(events).not.toContain("work_product.emitted");
+      expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(false);
+      const decision = new ArtifactStore(result.runDir).readYaml<{
+        apply_recommendation: string;
+      }>(join(result.runDir, "arbitration/decision.yaml"))!;
+      expect(decision.apply_recommendation).toBe("inspect");
+    },
+  );
 });

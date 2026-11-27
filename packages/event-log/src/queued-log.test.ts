@@ -762,4 +762,63 @@ describe("a queued EventLog", () => {
     expect(appendRunEvent(path, "run-1", "task-1", "control.applied", {}).seq).toBe(3);
     expect(onDisk(path).map(([seq]) => seq)).toEqual([1, 2, 3]);
   });
+
+  describe("tells an awaited landing whether its own line was written", () => {
+    it("hears its line before a sink that then refuses it", async () => {
+      const { path } = runDir();
+      const refused = new Error("journal refused");
+      const log = queuedLog(path, {
+        onPersist: (event) => {
+          if (event.type === "output.ready") throw refused;
+        },
+      });
+      log.emit("run.created", {});
+      let written = 0;
+      await expect(
+        log.emitLanded("output.ready", { kind: "artifact" }, true, () => (written += 1)),
+      ).rejects.toBe(refused);
+      expect(written).toBe(1);
+      await orderedAppender.settled(path);
+      expect(onDisk(path).map(([, type]) => type)).toContain("output.ready");
+    });
+
+    it("hears nothing when its own write fails", async () => {
+      const { path } = runDir();
+      const log = queuedLog(path);
+      log.emit("run.created", {});
+      await orderedAppender.settled(path);
+      const full = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      const spy = failAfter(0, full);
+      let written = 0;
+      try {
+        await expect(
+          log.emitLanded("output.ready", { kind: "artifact" }, true, () => (written += 1)),
+        ).rejects.toBe(full);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(written).toBe(0);
+    });
+
+    it("hears nothing when an earlier line's held failure refuses it", async () => {
+      const { path } = runDir();
+      const lost = new Error("journal refused an earlier line");
+      const log = queuedLog(path, {
+        onPersist: (event) => {
+          if (event.payload["text"] === "lost") throw lost;
+        },
+      });
+      log.emit("run.created", {});
+      log.emit("harness.event", { text: "lost" });
+      await orderedAppender.drained(path);
+      let written = 0;
+      // The held failure is the earlier line's: this event was never stamped or written.
+      await expect(
+        log.emitLanded("output.ready", { kind: "artifact" }, true, () => (written += 1)),
+      ).rejects.toBe(lost);
+      expect(written).toBe(0);
+      await orderedAppender.settled(path);
+      expect(onDisk(path).map(([, type]) => type)).not.toContain("output.ready");
+    });
+  });
 });

@@ -234,19 +234,22 @@ function unpublishedResult(run: CandidateRun | null | undefined) {
  * that ended not converged on an ERRORED last attempt names that attempt's own
  * cause (#633), never an earlier attempt's. A budget mapping, a review or check
  * block, a stall, an interruption and a cancellation keep their own statements,
- * and the loop's phase and category stay as they were. Null otherwise.
+ * and the loop's phase and category stay as they were. A refused publication of
+ * the attempt's files is always stated, after that cause. Null otherwise.
  */
 export function convergenceCause(
   lastRun: CandidateRun | null | undefined,
   facts: RunOutcomeFacts,
   budgetSpeaks: boolean,
 ): string | null {
-  const unpublished = unpublishedResult(lastRun);
-  if (unpublished) return unpublished.detail;
   const block = facts.review === "blocked" || facts.checks === "failed";
-  return lastRun?.errored && facts.reason === "not_converged" && !budgetSpeaks && !block
-    ? candidateCause(lastRun)
-    : null;
+  const executor =
+    lastRun?.errored && facts.reason === "not_converged" && !budgetSpeaks && !block
+      ? candidateCause(lastRun)
+      : null;
+  // The attempt's own cause leads; a refused publication of its files follows it.
+  const lines = [executor, unpublishedResult(lastRun)?.detail].filter(Boolean);
+  return lines.length > 0 ? lines.join("\n") : null;
 }
 
 /** A review/arbitration failure still owns the completed candidates' continuity
@@ -270,6 +273,9 @@ export function failAfterCandidates(
     attempts: input.attempts,
     captureFailure: captureCauseOf(error) ?? refusals[0]?.failure,
     followUps: refusals.flatMap(secretDiff.captureInspectionActions),
+    // The review's or arbitration's own error leads; a refused publication of a
+    // candidate's files is the second statement.
+    statements: runs.flatMap((run) => unpublishedResult(run)?.detail ?? []),
     ...(unverified && { category: "project" as const, reason: CAPTURE_REFUSED_REASON }),
   });
 }

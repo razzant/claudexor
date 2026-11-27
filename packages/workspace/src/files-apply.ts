@@ -27,14 +27,20 @@ export async function readWorkspaceFilesManifest(
   return WorkspaceFilesManifest.parse(JSON.parse(text));
 }
 
+/** Every immutable blob the manifest names holds its recorded bytes. A blob named
+ * by more than one state (an unchanged file's before and after) is read once. */
 export async function verifyWorkspaceFiles(
   manifest: WorkspaceFilesManifest,
   artifactRoot: string,
 ): Promise<void> {
   WorkspaceFilesManifest.parse(manifest);
+  const read = new Set<string>();
   for (const entry of manifest.entries) {
     for (const state of [entry.before, entry.after]) {
       if (state === "unknown" || state?.kind !== "file" || !state.artifactPath) continue;
+      const key = `${state.artifactPath}\0${state.sha256}\0${state.sizeBytes}`;
+      if (read.has(key)) continue;
+      read.add(key);
       const actual = await readWorkspaceFile(
         await workspaceFilePath(artifactRoot, state.artifactPath),
       );
@@ -70,10 +76,12 @@ export function deliverableWorkspaceChanges(
   return selectedWorkspaceChanges(manifest, paths).filter((entry) => entry.before !== "unknown");
 }
 
+/** `durable: false` for a disposable tree (a verification copy): not flushed. */
 export async function materializeWorkspaceBaseline(
   root: string,
   manifest: WorkspaceFilesManifest,
   artifactRoot: string,
+  durable = true,
 ): Promise<void> {
   for (const entry of manifest.entries) {
     if (entry.before === "unknown") continue;
@@ -84,6 +92,7 @@ export async function materializeWorkspaceBaseline(
       entry.before.kind === "file" && entry.before.artifactPath
         ? await workspaceFilePath(artifactRoot, entry.before.artifactPath)
         : undefined,
+      durable,
     );
   }
 }
@@ -98,6 +107,9 @@ export interface ApplyWorkspaceFilesResult {
   captureFailure?: WorkspaceCaptureFailure;
   /** The path being written when the apply stopped (not in `appliedPaths`). */
   stoppedAt?: string;
+  /** Selected changes this call found the target already holding in their
+   * recorded after-state (read and compared here; not written by this call). */
+  heldPaths?: string[];
 }
 
 async function ensureTargetParents(
@@ -116,12 +128,16 @@ async function ensureTargetParents(
   }
 }
 
-/** Caller supplies the shared delivery mutation lease. Never reverse unrelated edits. */
+/** Caller supplies the shared delivery mutation lease. Never reverse unrelated edits.
+ * A disposable target (a verification copy) passes `durable: false`, and
+ * `artifactsVerified` when this same operation just ran `verifyWorkspaceFiles`
+ * on the blobs; each written file is still checked against its digest. */
 export async function applyWorkspaceFiles(
   targetRoot: string,
   manifest: WorkspaceFilesManifest,
   artifactRoot: string,
   paths?: readonly string[],
+  options: { durable?: boolean; artifactsVerified?: boolean } = {},
 ): Promise<ApplyWorkspaceFilesResult> {
   const result: ApplyWorkspaceFilesResult = {
     applied: false,
@@ -136,7 +152,7 @@ export async function applyWorkspaceFiles(
     };
   let writing: string | undefined;
   try {
-    await verifyWorkspaceFiles(manifest, artifactRoot);
+    if (!options.artifactsVerified) await verifyWorkspaceFiles(manifest, artifactRoot);
     // Entries with an unknown preimage are retained as custody/disclosure
     // facts, but can never authorize overwriting an existing target. They are
     // therefore excluded from the mutation set while safe selected entries
@@ -153,6 +169,10 @@ export async function applyWorkspaceFiles(
     const pendingEntries = entries.filter(
       (entry) => !sameWorkspaceFile(entry.after, current.get(entry.path) ?? null),
     );
+    const heldPaths = entries
+      .filter((entry) => !pendingEntries.includes(entry))
+      .map((entry) => entry.path);
+    if (heldPaths.length > 0) result.heldPaths = heldPaths;
     if (pendingEntries.length === 0) {
       const detail =
         refusedUnknown.length > 0
@@ -211,6 +231,7 @@ export async function applyWorkspaceFiles(
             after.kind === "file" && after.artifactPath
               ? await workspaceFilePath(artifactRoot, after.artifactPath)
               : undefined,
+            options.durable,
           );
           if (!sameWorkspaceFile(entry.before, await readWorkspaceFile(target)))
             return { ...result, detail: `Target changed while output was prepared: ${entry.path}` };
