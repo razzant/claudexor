@@ -17,6 +17,30 @@ extension AppModel {
         await loadRunDetail(id, insertingIfMissing: insertingIfMissing)
     }
 
+    /// The explicitly opened run detail. A remote load always asks for earlier
+    /// assistant text. A local run is first addressed (`addressedRunDetails`
+    /// key), so this and later milestone loads ask for it too; the value records
+    /// that the last successful load carried it, so a cached plain hydration
+    /// never stands in. A load that started plain is joined, then followed.
+    func ensureAddressedRunDetail(
+        _ id: String,
+        locationID: ExecutionLocationID,
+        insertingIfMissing: Bool = false
+    ) async {
+        guard locationID == .local else {
+            await loadRunDetail(id, locationID: locationID)
+            return
+        }
+        addressRunDetail(id)
+        if runDetailLoads[id] != nil { await loadRunDetail(id, insertingIfMissing: insertingIfMissing) }
+        if hydratedRunDetails.contains(id), addressedRunDetails[id] == true { return }
+        await loadRunDetail(id, insertingIfMissing: insertingIfMissing)
+    }
+
+    func addressRunDetail(_ id: String) {
+        if addressedRunDetails[id] == nil { addressedRunDetails[id] = false }
+    }
+
     /// Milestone refreshes coalesce concurrent triggers into one lead plus at
     /// most one trailing snapshot. A UUID token prevents an old connection's
     /// completion from clearing a new same-run request after reconnect.
@@ -104,13 +128,24 @@ extension AppModel {
     }
 
     nonisolated static func earlierAnswerText(for primary: PrimaryOutput?) -> String? {
-        guard let primary, primary.kind == "answer" else { return nil }
-        guard let earlier = primary.earlierAssistantOutput else {
-            return primary.earlierAssistantOutputUnavailable == nil ? nil : "Earlier assistant text unavailable."
-        }
+        guard let primary, primary.kind == "answer", let earlier = primary.earlierAssistantOutput
+        else { return nil }
         return earlier.truncated
             ? earlier.text + "\n\n[Earlier text preview bounded; full artifact: \(earlier.path)]"
             : earlier.text
+    }
+
+    /// The same wording the CLI, MCP and ACP readers use for each recorded reason.
+    nonisolated static func earlierAnswerNote(for primary: PrimaryOutput?) -> String? {
+        guard let primary, primary.kind == "answer", primary.earlierAssistantOutput == nil,
+              let reason = primary.earlierAssistantOutputUnavailable else { return nil }
+        // A gap or failed preparation never asserts that earlier speech existed.
+        return switch reason {
+        case "source_gap": "Earlier assistant text could not be determined: the run's event record is incomplete."
+        case "publication_failed": "Earlier assistant text could not be determined: preparing it failed."
+        case "artifact_unavailable": "Earlier assistant text could not be read: its saved copy is unavailable."
+        default: "Earlier assistant text could not be determined."
+        }
     }
 
     /// Keep a valid String prefix within an exact UTF-8 byte ceiling. Cutting

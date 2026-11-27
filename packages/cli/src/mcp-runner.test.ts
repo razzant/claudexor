@@ -2102,8 +2102,9 @@ describe("mcp daemon body mapping", () => {
         expect.objectContaining({ baseUrl: "http://x", token: "t" }),
         "run-fast-failed",
         false,
-        undefined,
-        true,
+        // The connection's handshake identity; earlier speech only beside a success.
+        { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
+        false,
       );
     } finally {
       ensureSpy.mockRestore();

@@ -22,6 +22,9 @@ extension AppModel {
         task.reviewVerdict = existing.reviewVerdict
         if !existing.plan.isEmpty { task.plan = existing.plan }
         task.answerText = existing.answerText ?? task.answerText
+        // Earlier assistant text rides only the addressed detail, never a list summary.
+        task.earlierAnswerText = existing.earlierAnswerText
+        task.earlierAnswerNote = existing.earlierAnswerNote
         task.capturedArtifactPaths = existing.capturedArtifactPaths
         task.primaryOutputPath = existing.primaryOutputPath
         task.primaryOutputTruncated = existing.primaryOutputTruncated

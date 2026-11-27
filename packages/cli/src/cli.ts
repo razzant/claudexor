@@ -8,7 +8,7 @@ import { releaseCommand } from "./release-command.js";
 import { serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
 import { dispatchAcpCommand } from "./acp-auth-command.js";
 import { initProjectConfig } from "@claudexor/config";
-import { readRunEarlierAssistantOutput, readRunFinalMessages } from "@claudexor/control-api";
+import { readRunEarlierAssistantOutputView, readRunFinalMessages } from "@claudexor/control-api";
 import {
   commandOutcomeLabel,
   DecisionRecord,
@@ -1260,16 +1260,18 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
       }
       if (primary?.text.trim()) {
         print("");
+        // The addressed detail's earlier text, or its recorded reason as a note.
         const earlier =
           primary.kind === "answer" &&
           runFacts?.outcome.lifecycle === "succeeded" &&
           runFacts.presentation?.state === "ready"
-            ? readRunEarlierAssistantOutput(paths.root)
+            ? readRunEarlierAssistantOutputView(paths.root)
+            : {};
+        const shown =
+          earlier.earlierAssistantOutput || earlier.earlierAssistantOutputUnavailable
+            ? presentRunPrimaryOutput({ ...primary, ...earlier })
             : null;
-        print(
-          (earlier && presentRunPrimaryOutput({ ...primary, earlierAssistantOutput: earlier })) ||
-            primary.text.trim(),
-        );
+        print(shown || primary.text.trim());
       } else {
         print(summary ?? "(no summary or primary output in the run directory)");
       }

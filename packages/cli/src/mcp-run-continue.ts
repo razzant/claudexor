@@ -142,5 +142,5 @@ export async function runContinueQuery(
     }
   }
   // The successor's mode is the daemon's inherited fact, unknown here.
-  return projectLaunchHandle(connection.addr, out, { deferred: true });
+  return projectLaunchHandle(connection.addr, out, { deferred: true, engine: connection.engine });
 }

@@ -358,6 +358,7 @@ final class AppModel {
     /// uses this to avoid turning overlapping view tasks into serial duplicate
     /// GETs; event milestones continue to call `loadRunDetail` directly.
     @ObservationIgnored var hydratedRunDetails: Set<String> = []
+    @ObservationIgnored var addressedRunDetails: [String: Bool] = [:] // see ensureAddressedRunDetail
     /// Stream envelopes deferred while a snapshot load is in flight. Hard-capped
     /// (W23): runs whose buffer overflowed are flagged here and get a FRESH
     /// snapshot instead of a replay — dropped envelopes are never reconstructed.

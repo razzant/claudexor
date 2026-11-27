@@ -6,20 +6,40 @@ import Testing
 @testable import ClaudexorApp
 
 @Suite(.serialized) struct RemoteRunDetailTests {
+    /// The product view gives the earlier text and the accepted answer separate
+    /// native documents, so an unclosed fence in the first cannot swallow the second.
     @MainActor
     @Test func addressedAnswerWithUnclosedFence() throws {
         let earlier = "## Earlier assistant text\n\n```swift\nlet swatch = 1"
         let accepted = "B: The accepted correction remains prose."
-        #expect(MarkdownOutputView.parse(accepted).first?.text == accepted)
-        // Optional AppKit raster of the real component (includes its native
-        // Markdown selection views). Does not show or focus any window.
+        let note = "Earlier assistant text could not be determined: the run's event record is incomplete."
+        // Control: one concatenated document puts the accepted line inside the fence.
+        let joined = renderedProse(offscreen(MarkdownOutputView(markdown: earlier + "\n\n" + accepted)))
+        #expect(joined.count == 1)
+        #expect(joined.first.flatMap { insideCodeBlock($0.text, accepted) } == true)
+
+        let both = offscreen(AddressedAnswerContent(earlier: earlier, accepted: accepted))
+        let hosts = renderedProse(both)
+        let early = try #require(hosts.first { $0.text.string.contains("let swatch = 1") })
+        let final = try #require(hosts.first { $0.text.string.contains(accepted) })
+        #expect(!early.text.string.contains(accepted))
+        #expect(!final.text.string.contains("let swatch"))
+        #expect(insideCodeBlock(early.text, "let swatch = 1") == true)
+        #expect(insideCodeBlock(final.text, accepted) == false)
+        #expect(early.top < final.top)
+
+        let noted = offscreen(AddressedAnswerContent(earlier: nil, accepted: accepted, earlierNote: note))
+        #expect(renderedProse(noted).map(\.text.string) == [accepted])
+
+        // Optional legible raster of the same offscreen hosts; no window is shown.
         guard let path = ProcessInfo.processInfo.environment["CX756_PREVIEW_PNG"] else { return }
-        let view = NSHostingView(rootView: AddressedAnswerContent(earlier: earlier, accepted: accepted)
-            .padding(16).frame(width: 580))
-        view.frame.size = view.fittingSize
-        view.layoutSubtreeIfNeeded()
-        let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let sheet = offscreen(VStack(alignment: .leading, spacing: 24) {
+            AddressedAnswerContent(earlier: earlier, accepted: accepted)
+            Divider()
+            AddressedAnswerContent(earlier: nil, accepted: accepted, earlierNote: note)
+        })
+        let bitmap = try #require(sheet.bitmapImageRepForCachingDisplay(in: sheet.bounds))
+        sheet.cacheDisplay(in: sheet.bounds, to: bitmap)
         let png = try #require(bitmap.representation(using: .png, properties: [:]))
         try png.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
@@ -76,6 +96,147 @@ import Testing
         #expect(task?.answerText == "Accepted text.")
         #expect(task?.primaryOutputPath == "final/answer.md")
         #expect(requests.value == 2)
+    }
+
+    /// The local addressed detail asks for earlier text even after a plain view
+    /// hydration cached the run, keeps it across a runs-list refresh, and lets a
+    /// fresh addressed detail replace it with a positive unavailability note.
+    @MainActor
+    @Test func localAddressedDetailAsksForEarlierTextBeyondAPlainHydration() async throws {
+        defer { RemoteRunDetailURLProtocol.handler = nil }
+        let (model, _) = makeModel(runId: "run-local", local: true)
+        let queries = RemoteRunDetailRecorder()
+        let state = RemoteRunDetailRecorder()
+        state.append("text")
+        RemoteRunDetailURLProtocol.handler = { request in
+            let query = request.url?.query ?? ""
+            if request.url?.path == "/v2/runs", query.isEmpty {
+                let list = #"{"runs":[{"runId":"run-local","state":"succeeded","mode":"ask","outputReadyState":"ready"}]}"#
+                return (response(for: request), Data(list.utf8), 0)
+            }
+            let addressed = query == "includeEarlierAssistantOutput=true"
+            guard request.url?.path == "/v2/runs/run-local", addressed || query.isEmpty else {
+                throw RemoteRunDetailError.badRequest
+            }
+            queries.append(query)
+            let extra = !addressed ? "" : state.last == "text"
+                ? ###", "earlierAssistantOutput":{"path":"final/earlier-assistant-output.md","text":"## Earlier assistant text (not the accepted final)\n\nInitial swatch report.","bytes":80,"truncated":false}"###
+                : #", "earlierAssistantOutputUnavailable":"source_gap""#
+            let body = #"{"summary":{"runId":"run-local","state":"succeeded","mode":"ask","outputReadyState":"ready"},"primaryOutput":{"kind":"answer","path":"final/answer.md","text":"Accepted text.","truncated":false\#(extra)},"lastSeq":4}"#
+            return (response(for: request), Data(body.utf8), 0)
+        }
+
+        // An ordinary view (Evidence, Changes) hydrates the run without earlier text.
+        await model.ensureRunDetail("run-local")
+        #expect(queries.values == [""])
+        #expect(model.task("run-local")?.answerText == "Accepted text.")
+        #expect(model.task("run-local")?.earlierAnswerText == nil)
+
+        // Opening the run's detail is not satisfied by that cached plain load.
+        await model.ensureAddressedRunDetail("run-local", locationID: .local)
+        #expect(queries.values == ["", "includeEarlierAssistantOutput=true"])
+        let earlier = "## Earlier assistant text (not the accepted final)\n\nInitial swatch report."
+        #expect(model.task("run-local")?.earlierAnswerText == earlier)
+        #expect(model.task("run-local")?.earlierAnswerNote == nil)
+        #expect(model.task("run-local")?.answerText == "Accepted text.")
+        await model.ensureAddressedRunDetail("run-local", locationID: .local)
+        #expect(queries.values.count == 2)
+
+        // A runs-list refresh carries only the summary and keeps the addressed view.
+        await model.refreshRuns()
+        #expect(model.task("run-local")?.earlierAnswerText == earlier)
+        #expect(model.task("run-local")?.answerText == "Accepted text.")
+
+        // A later milestone load of the addressed run is itself authoritative.
+        state.append("gap")
+        await model.loadRunDetail("run-local")
+        #expect(queries.values.last == "includeEarlierAssistantOutput=true")
+        let task = try #require(model.task("run-local"))
+        #expect(task.earlierAnswerText == nil)
+        #expect(task.earlierAnswerNote
+            == "Earlier assistant text could not be determined: the run's event record is incomplete.")
+        #expect(task.answerText == "Accepted text.")
+        #expect(task.primaryOutputPath == "final/answer.md")
+    }
+
+    @MainActor
+    @Test func localLocationScopedLoadIsAnAddressedRead() async {
+        defer { RemoteRunDetailURLProtocol.handler = nil }
+        let (model, _) = makeModel(runId: "run-local", local: true)
+        let queries = RemoteRunDetailRecorder()
+        RemoteRunDetailURLProtocol.handler = { request in
+            queries.append(request.url?.query ?? "")
+            let earlier = request.url?.query == "includeEarlierAssistantOutput=true"
+                ? ###","earlierAssistantOutput":{"path":"final/earlier-assistant-output.md","text":"Initial swatch report.","bytes":22,"truncated":false}"### : ""
+            let body = #"{"summary":{"runId":"run-local","state":"succeeded","mode":"ask","outputReadyState":"ready"},"primaryOutput":{"kind":"answer","path":"final/answer.md","text":"Accepted text.","truncated":false\#(earlier)},"lastSeq":4}"#
+            return (response(for: request), Data(body.utf8), 0)
+        }
+        await model.ensureRunDetail("run-local")
+        #expect(await model.loadRunDetail("run-local", locationID: .local))
+        #expect(queries.values == ["", "includeEarlierAssistantOutput=true"])
+        #expect(model.task("run-local")?.earlierAnswerText == "Initial swatch report.")
+        #expect(model.task("run-local")?.answerText == "Accepted text.")
+    }
+
+    /// A new draft, another thread and a connection boundary retire addressed
+    /// runs with the hydration cache, so a later unrelated load is plain again.
+    @MainActor
+    @Test func addressedRunsRetireWithTheHydrationCache() async {
+        defer { RemoteRunDetailURLProtocol.handler = nil }
+        let (model, _) = makeModel(runId: "run-local", local: true)
+        let queries = RemoteRunDetailRecorder()
+        RemoteRunDetailURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs/run-local" else {
+                return (response(for: request, status: 404), Data("{}".utf8), 0)
+            }
+            queries.append(request.url?.query ?? "")
+            let earlier = request.url?.query == "includeEarlierAssistantOutput=true"
+                ? ###","earlierAssistantOutput":{"path":"final/earlier-assistant-output.md","text":"Initial swatch report.","bytes":22,"truncated":false}"### : ""
+            let body = #"{"summary":{"runId":"run-local","state":"succeeded","mode":"ask","outputReadyState":"ready"},"primaryOutput":{"kind":"answer","path":"final/answer.md","text":"Accepted text.","truncated":false\#(earlier)},"lastSeq":4}"#
+            return (response(for: request), Data(body.utf8), 0)
+        }
+        let boundaries: [(String, @MainActor () async -> Void)] = [
+            ("new draft", { model.startDraftThread() }),
+            ("other thread", { await model.openThread(locationID: .local, id: "thread-other") }),
+            ("connection", { model.retireRunDetailState(cancelInFlight: true) }),
+        ]
+        for (label, boundary) in boundaries {
+            await model.ensureAddressedRunDetail("run-local", locationID: .local)
+            #expect(queries.last == "includeEarlierAssistantOutput=true", "\(label)")
+            #expect(model.addressedRunDetails["run-local"] == true, "\(label)")
+            await boundary()
+            #expect(model.addressedRunDetails.isEmpty, "\(label)")
+            await model.loadRunDetail("run-local")
+            #expect(queries.last == "", "\(label)")
+            #expect(model.addressedRunDetails.isEmpty, "\(label)")
+            // The plain read keeps the view it was shown beside the same answer.
+            #expect(model.task("run-local")?.earlierAnswerText == "Initial swatch report.", "\(label)")
+        }
+    }
+
+    @MainActor
+    @Test func remoteAddressedEarlierTextSurvivesARunsListRefresh() async throws {
+        defer { RemoteRunDetailURLProtocol.handler = nil }
+        let (model, locationID) = makeModel(runId: "run-remote")
+        RemoteRunDetailURLProtocol.handler = { request in
+            switch (request.url?.path, request.url?.query) {
+            case ("/v2/runs", nil):
+                let list = #"{"runs":[{"runId":"run-remote","state":"succeeded","mode":"ask","outputReadyState":"ready"}]}"#
+                return (response(for: request), Data(list.utf8), 0)
+            case ("/v2/runs/run-remote", "includeEarlierAssistantOutput=true"):
+                let body = #"{"summary":{"runId":"run-remote","state":"succeeded","mode":"ask","outputReadyState":"ready"},"primaryOutput":{"kind":"answer","path":"final/answer.md","text":"Accepted text.","truncated":false,"earlierAssistantOutputUnavailable":"publication_failed"},"lastSeq":5}"#
+                return (response(for: request), Data(body.utf8), 0)
+            default:
+                throw RemoteRunDetailError.badRequest
+            }
+        }
+        #expect(await model.loadRunDetail("run-remote", locationID: locationID))
+        let note = "Earlier assistant text could not be determined: preparing it failed."
+        #expect(model.task("run-remote", at: locationID)?.earlierAnswerNote == note)
+        #expect(model.task("run-remote", at: locationID)?.earlierAnswerText == nil)
+        await model.refreshRemoteRuns(locationID)
+        #expect(model.task("run-remote", at: locationID)?.earlierAnswerNote == note)
+        #expect(model.task("run-remote", at: locationID)?.answerText == "Accepted text.")
     }
 
     @MainActor
@@ -158,26 +319,70 @@ import Testing
     }
 
     @MainActor
-    private func makeModel(runId: String) -> (AppModel, ExecutionLocationID) {
+    private func makeModel(runId: String, local: Bool = false) -> (AppModel, ExecutionLocationID) {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RemoteRunDetailURLProtocol.self]
         let client = GatewayClient(
             baseURL: URL(string: "http://127.0.0.1:43123")!, token: "test",
             session: URLSession(configuration: config))
-        let locationID = ExecutionLocationID.remote(UUID())
-        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        let locationID: ExecutionLocationID = local ? .local : .remote(UUID())
+        let model = AppModel(client: local ? client : nil, requestNotificationAuthorization: false)
         model.selectedExecutionLocation = locationID
         model.draftExecutionLocation = locationID
-        model.remoteClients[locationID] = client
-        model.remoteTasks[locationID] = [TaskRun(
+        if !local { model.remoteClients[locationID] = client }
+        let row = TaskRun(
             id: runId, title: runId, prompt: "", mode: .agent, phase: .succeeded,
             project: "Remote", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
-            candidates: [], findings: [], diff: [])]
+            candidates: [], findings: [], diff: [])
+        if local { model.liveTasks = [row] } else { model.remoteTasks[locationID] = [row] }
         return (model, locationID)
     }
+}
+
+private final class RemoteRunDetailRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String] = []
+
+    var values: [String] { lock.withLock { items } }
+    var last: String? { lock.withLock { items.last } }
+    func append(_ value: String) { lock.withLock { items.append(value) } }
+}
+
+/// A light, white-backed offscreen host for the real view; never put in a window.
+@MainActor
+private func offscreen(_ content: some View) -> NSView {
+    let host = NSHostingView(rootView: content.frame(width: 580).padding(16).background(Color.white))
+    host.appearance = NSAppearance(named: .aqua)
+    host.frame.size = host.fittingSize
+    host.layoutSubtreeIfNeeded()
+    return host
+}
+
+/// The native prose documents the host created, top first.
+@MainActor
+private func renderedProse(_ host: NSView) -> [(text: NSAttributedString, top: CGFloat)] {
+    var found: [(text: NSAttributedString, top: CGFloat)] = []
+    func walk(_ view: NSView) {
+        if let prose = view as? ProseTextView, let storage = prose.textStorage {
+            let frame = prose.convert(prose.bounds, to: host)
+            found.append((NSAttributedString(attributedString: storage),
+                          host.isFlipped ? frame.minY : host.bounds.height - frame.maxY))
+        }
+        view.subviews.forEach(walk)
+    }
+    walk(host)
+    return found.sorted { $0.top < $1.top }
+}
+
+/// Whether `needle` sits in a fenced code block of the rendered document; nil if absent.
+private func insideCodeBlock(_ text: NSAttributedString, _ needle: String) -> Bool? {
+    let range = (text.string as NSString).range(of: needle)
+    guard range.location != NSNotFound else { return nil }
+    let style = text.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle
+    return style?.textBlocks.contains { $0 is ProseCodeBlock } == true
 }
 
 private enum RemoteRunDetailError: Error { case badRequest }

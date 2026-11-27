@@ -64,6 +64,7 @@ export async function projectTerminalTurnDetail(
   lifecycle: RunOutcomeFacts["lifecycle"],
   includeFinalMessages = false,
   engine?: EngineIdentity,
+  includeEarlierAssistantOutput = false,
 ): Promise<{
   applyEligibility: unknown;
   planReadiness: unknown;
@@ -89,7 +90,13 @@ export async function projectTerminalTurnDetail(
   };
   if (!runId) return empty;
   try {
-    const detail = await fetchRunDetail(addr, runId, includeFinalMessages, engine);
+    const detail = await fetchRunDetail(
+      addr,
+      runId,
+      includeFinalMessages,
+      engine,
+      includeEarlierAssistantOutput,
+    );
     const runFacts = projectRunFacts(detail, { runId, lifecycle });
     return {
       applyEligibility: projectApplyEligibility(detail),
@@ -339,7 +346,9 @@ export async function acpSessionQuery(
           const primary = run["primaryOutput"] as Record<string, unknown> | null | undefined;
           const typed = projectRunPrimaryOutput(run);
           const earlier = typed?.kind === "answer" ? typed.earlierAssistantOutput : undefined;
-          const text = earlier
+          const addressed =
+            earlier || (typed?.kind === "answer" && typed.earlierAssistantOutputUnavailable);
+          const text = addressed
             ? (presentRunPrimaryOutput(typed) ?? "")
             : typeof primary?.["text"] === "string"
               ? primary["text"].trim()
@@ -417,6 +426,8 @@ export async function acpSessionQuery(
           record.state as RunOutcomeFacts["lifecycle"],
           includeFinalMessages,
           engine,
+          // Earlier speech is offered only beside a successful answer.
+          record.state === "succeeded",
         );
         const summary = acpTerminalSummary({ runId, runDir, record, detail });
         const { primaryOutput: _primaryOutput, ...terminalProjection } = detail;

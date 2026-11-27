@@ -299,11 +299,13 @@ it.each(cases)(
       for (const query of ["", "?includeEarlierAssistantOutput=false"]) {
         const response = await get(query);
         expect(response.status).toBe(200);
-        const legacy = await response.json();
+        const legacy: unknown = await response.json();
         expect(legacyReader(legacy), JSON.stringify(legacyReader.errors)).toBe(true);
-        expect(legacy.primaryOutput).not.toHaveProperty("earlierAssistantOutput");
-        expect(legacy.primaryOutput).not.toHaveProperty("earlierAssistantOutputUnavailable");
-        ordinaryPrimary.push(legacy.primaryOutput);
+        // The current schema knows both optional keys, so parsing keeps them if sent.
+        const { primaryOutput } = ControlRunDetail.parse(legacy);
+        expect(primaryOutput).not.toHaveProperty("earlierAssistantOutput");
+        expect(primaryOutput).not.toHaveProperty("earlierAssistantOutputUnavailable");
+        ordinaryPrimary.push(primaryOutput);
       }
       expect((await get("?includeEarlierAssistantOutput=bogus")).status).toBe(400);
       const detailResponse = await get("?includeEarlierAssistantOutput=true");
@@ -345,7 +347,10 @@ it.each(cases)(
         expect(detail.primaryOutput?.earlierAssistantOutputUnavailable).toBe("source_gap");
         expect(eventText).toContain('"earlier_assistant_output_gap":true');
         expect((await get(`/artifacts/${path}`)).status).toBe(404);
-        expect(String(ordinary.structured?.summary)).toContain(final);
+        // MCP and the offline text inspect note the gap; the accepted answer follows unchanged.
+        const noted = `[Earlier assistant text could not be determined: the run's event record is incomplete.]\n\n${answer.trim()}`;
+        expect(String(ordinary.structured?.summary)).toBe(noted);
+        expect(await inspectText(produced.runId, repo, config)).toContain(`\n${noted}\n`);
         witness({ ordinaryPrimary, optInPrimary: detail.primaryOutput });
         return;
       }
@@ -498,12 +503,17 @@ it.each(cases)(
         writeFileSync(join(produced.runDir, "final/ordinary-long-note.md"), bytes);
         expect((await get("/artifacts/final/ordinary-long-note.md")).status).toBe(413);
         rmSync(join(produced.runDir, path));
-        const missing = await (await get("?includeEarlierAssistantOutput=true")).json();
+        const missing = ControlRunDetail.parse(
+          await (await get("?includeEarlierAssistantOutput=true")).json(),
+        );
         expect(missing.primaryOutput).toMatchObject({
           text: answer,
           earlierAssistantOutputUnavailable: "artifact_unavailable",
         });
         expect((await get(`/artifacts/${path}`)).status).toBe(404);
+        expect(await inspectText(produced.runId, repo, config)).toContain(
+          `\n[Earlier assistant text could not be read: its saved copy is unavailable.]\n\n${answer.trim()}\n`,
+        );
         witness({ afterArtifactRemoved: missing.primaryOutput });
         const unauthenticated = await fetch(addr.baseUrl + route + `/artifacts/${path}`);
         expect(unauthenticated.status).toBe(401);

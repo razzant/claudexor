@@ -526,6 +526,8 @@ struct TaskRun: Identifiable, Hashable {
     var isLive: Bool = false
     var answerText: String?
     var earlierAnswerText: String?
+    /// Positive evidence that earlier assistant text could not be shown.
+    var earlierAnswerNote: String?
     var primaryOutputPath: String?
     var primaryOutputTruncated = false
     var capturedArtifactPaths: [String] = []

@@ -158,6 +158,7 @@ struct RunOutcomeSection: View {
             Panel {
                 if let answer = task.answerText, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     AddressedAnswerContent(earlier: task.earlierAnswerText, accepted: answer,
+                                           earlierNote: task.earlierAnswerNote,
                                            roots: task.fileScopeRoots, scope: task.remoteFileScope)
                 } else {
                     Text(task.outputReadyState == "finalizing"
@@ -236,6 +237,8 @@ struct RunOutcomeSection: View {
 struct AddressedAnswerContent: View {
     let earlier: String?
     let accepted: String
+    /// Shown only when earlier text is positively unavailable; never prose.
+    var earlierNote: String?
     var roots: [String] = []
     var scope: RemoteFileScope?
 
@@ -245,6 +248,9 @@ struct AddressedAnswerContent: View {
                 output(earlier)
                 Divider()
                 Text("Accepted final answer").font(.headline)
+            } else if let earlierNote {
+                Label(earlierNote, systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             output(accepted)
         }

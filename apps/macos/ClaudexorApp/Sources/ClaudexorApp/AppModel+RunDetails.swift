@@ -11,10 +11,12 @@ extension AppModel {
     ///
     /// Local detail hydration stays on the mainline request owner in
     /// `AppModel+RunDetailLoading`; remote rows are kept in their location-scoped
-    /// collection so identical daemon run ids can never collide.
+    /// collection so identical daemon run ids can never collide. Both are
+    /// addressed reads that ask for earlier assistant text.
     @discardableResult
     func loadRunDetail(_ id: String, locationID: ExecutionLocationID) async -> Bool {
         if locationID == .local {
+            addressRunDetail(id)
             await loadRunDetail(id)
             return hydratedRunDetails.contains(id)
         }
@@ -73,6 +75,7 @@ extension AppModel {
             }
             task.adoptPrimaryOutput(detail)
             task.earlierAnswerText = Self.earlierAnswerText(for: detail.primaryOutput)
+            task.earlierAnswerNote = Self.earlierAnswerNote(for: detail.primaryOutput)
             task.answerText = await answerText(
                 for: detail, client: requestClient, runId: id)
             guard selectedExecutionLocation == locationID,

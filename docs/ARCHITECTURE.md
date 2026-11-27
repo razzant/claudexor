@@ -8384,18 +8384,21 @@ Cursor #756 preserves earlier speech alongside a successful Ask/Agent's
 selected text answer. The recorded handoff refined by the matched completion
 anchors the start; speech from that winning physical session stays ordered
 through intervening tools and notices, excluding the final and its linked echoes.
+Narration only before that handoff is not selected.
 On `GET /v2/runs/:id`, set the query parameter `includeEarlierAssistantOutput`
 to `true` to opt in. The `primaryOutput` object can then contain
 `earlierAssistantOutput` with the bounded `text` preview (16 KiB), its
 `truncated` flag, and the full artifact's `path` and `bytes`. The authenticated
 artifact at `final/earlier-assistant-output.md` serves exact bytes even above
 the ordinary preview ceiling. Omission or `false` keeps the legacy shape.
-On positive evidence of unavailability, `primaryOutput` can instead contain
-`earlierAssistantOutputUnavailable`: `source_gap`, `publication_failed`, or
+On positive evidence, `primaryOutput` can instead contain
+`earlierAssistantOutputUnavailable`: `source_gap` or `publication_failed` (earlier
+text could not be determined; neither asserts that it existed), or
 `artifact_unavailable` (publication observed but the artifact no longer reads).
 Earlier text is evidence, not a second accepted answer or WorkReport. MCP,
-text inspect, addressed macOS details and ACP replay present it alongside the
-accepted answer; history and strict finals stay unchanged. The projector uses
+text inspect, addressed macOS details and ACP turns and replay present it
+before the accepted answer, or a one-line note for a recorded reason; history,
+lists, the chat bubble and strict finals stay unchanged. The projector uses
 one settled event read to publish, and the existing event fold to read status.
 
 Retained output is also a source of the in-run EVIDENCE INDEX: when an
