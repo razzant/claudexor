@@ -4,9 +4,9 @@ import { HarnessEvent } from "@claudexor/schema";
 import { parseCodexEvent } from "./parse.js";
 
 /**
- * #118: Codex keeps the Browser MCP's tool name and server. Real replies of the
- * pinned Browser MCP drive the real parser: the typed retrieval stamp reads the
- * whole reply, while the displayed summary stays bounded.
+ * #118: Codex keeps the Browser MCP's tool name and server. Replies recorded
+ * from Browser MCP 0.0.85 drive the real parser: the typed retrieval stamp
+ * reads the whole reply, while the displayed summary stays bounded.
  */
 interface Reply {
   label: string;
