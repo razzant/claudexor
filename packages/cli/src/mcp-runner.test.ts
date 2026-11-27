@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CONTROL_PROTOCOL_MAJOR,
   ControlPendingInteraction,
   ControlProblem,
   makeOutcomeFacts,
@@ -17,6 +18,17 @@ import { makeInteractionBridge } from "./mcp-runner.js";
 const addr = { baseUrl: "http://127.0.0.1:1", token: "t" } as never;
 const PUBLIC_RECOVERY_MODES = ["__run_inspect", "__run_status", "__run_result"] as const;
 const BELT_RECOVERY_MODES = ["__run_status", "__run_result"] as const;
+
+/** Keep operation lookup separate from the addressed detail reply under test. */
+function stubLegacyDetailFetch(runId: string, detail: () => Promise<unknown>) {
+  vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname === "/v2/operations")
+      return Response.json({ protocolMajor: CONTROL_PROTOCOL_MAJOR, operations: [] });
+    expect(url.pathname + url.search).toBe(`/v2/runs/${runId}`);
+    return detail();
+  });
+}
 
 function validPlanRunFacts(runId: string) {
   return validateRunFactsInvariants({
@@ -2089,6 +2101,9 @@ describe("mcp daemon body mapping", () => {
       expect(detailSpy).toHaveBeenCalledWith(
         expect.objectContaining({ baseUrl: "http://x", token: "t" }),
         "run-fast-failed",
+        false,
+        undefined,
+        true,
       );
     } finally {
       ensureSpy.mockRestore();
@@ -2144,7 +2159,7 @@ describe("mcp daemon body mapping", () => {
         council: null,
       }),
     }));
-    vi.stubGlobal("fetch", fetchSpy);
+    stubLegacyDetailFetch("run-child", fetchSpy);
     try {
       const result = (await mcpSurfaceRunner()({ mode: "agent", prompt: "go" })) as Record<
         string,
@@ -2446,107 +2461,6 @@ describe("mcp daemon body mapping", () => {
     }
   });
 
-  it("presents earlier Cursor speech through ordinary MCP run_result over Control HTTP (#756)", async () => {
-    const { defaultClaudexorTools } = await import("@claudexor/mcp-server");
-    const { mcpSurfaceRunner } = await import("./mcp-runner.js");
-    const daemonRun = await import("./daemon-run.js");
-    const runDir = mkdtempSync(join(tmpdir(), "claudexor-mcp-earlier-output-"));
-    const runId = "run-cursor-earlier-output";
-    const taskId = "task-cursor-earlier-output";
-    const answer = "Final correction: azure.\n";
-    const earlier = "## Earlier assistant text (not the accepted final)\n\nA and T.\n";
-    const path = "final/answer.md";
-    const record: DaemonRunRecord = {
-      id: "job-cursor-earlier-output",
-      runId,
-      taskId,
-      runDir,
-      state: "succeeded",
-      params: { mode: "ask" },
-    };
-    const token = "fixture";
-    const server = new DaemonControlApiServer({
-      token,
-      daemon: {
-        list: async () => [record],
-        status: async () => record,
-        enqueue: async () => ({ id: "unused", state: "queued" }),
-        cancel: async () => ({}),
-      },
-    });
-    try {
-      mkdirSync(join(runDir, "final"));
-      writeFileSync(join(runDir, path), answer);
-      writeFileSync(join(runDir, "final/earlier-assistant-output.md"), earlier);
-      // JSON is valid YAML. The real HTTP projection reads a ready canonical
-      // answer and the separate terminal artifact, never the broad report.
-      writeFileSync(
-        join(runDir, "final/run_facts.yaml"),
-        JSON.stringify(
-          validateRunFactsInvariants({
-            schema_version: SCHEMA_VERSION,
-            run_id: runId,
-            task_id: taskId,
-            mode: "ask",
-            outcome: makeOutcomeFacts("succeeded"),
-            deliverable: { present: true, kind: "answer", path, producer_attempt_id: "a01" },
-            presentation: { state: "ready", primary: { kind: "answer", path } },
-            participants: {
-              planners: 0,
-              attempts: [
-                {
-                  attempt_id: "a01",
-                  harness_id: "cursor",
-                  role: "candidate",
-                  deliverable_present: true,
-                  status: "success",
-                },
-              ],
-            },
-            gates: {
-              configured: false,
-              required: 0,
-              total: 0,
-              executed: false,
-              state: "not_configured",
-            },
-            review: { state: "not_run", blockers: 0, blocker_ids: [] },
-            apply: { eligibility: null, operator_decision_present: false },
-            required_actions: [],
-            generated_at: "2026-11-27T00:00:00.000Z",
-          }),
-        ),
-      );
-      const { host, port } = await server.start();
-      const connect = vi.spyOn(daemonRun, "connectDaemonIfRunning").mockResolvedValue({
-        client: {} as never,
-        addr: { baseUrl: `http://${host}:${port}`, token } as never,
-        engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
-      });
-      try {
-        const tool = defaultClaudexorTools(mcpSurfaceRunner()).find(
-          (entry) => entry.name === "claudexor_run_result",
-        );
-        const result = await tool!.handler({ runId }, {});
-        expect(result).toMatchObject({
-          structured: {
-            runId,
-            status: "succeeded",
-            summary: `${earlier.trimEnd()}\n\n---\n\n## Accepted final answer\n\n${answer.trimEnd()}`,
-          },
-        });
-        if (typeof result === "string") throw new Error("expected an MCP result");
-        expect(result.structured).not.toHaveProperty("earlierAssistantOutput");
-        expect(result.structured).not.toHaveProperty("finalMessages");
-      } finally {
-        connect.mockRestore();
-      }
-    } finally {
-      await server.stop();
-      rmSync(runDir, { recursive: true, force: true });
-    }
-  });
-
   it.each(
     PUBLIC_RECOVERY_MODES.flatMap((mode) =>
       (["run_facts_invalid", "invalid_service_response"] as const).map(
@@ -2571,7 +2485,7 @@ describe("mcp daemon body mapping", () => {
         retryable,
       }),
     }));
-    vi.stubGlobal("fetch", fetchSpy);
+    stubLegacyDetailFetch("run-degraded", fetchSpy);
     try {
       const result = (await mcpSurfaceRunner()({
         mode,
@@ -2639,7 +2553,7 @@ describe("mcp daemon body mapping", () => {
       },
     ];
     const fetchSpy = vi.fn(async () => responses.shift() as never);
-    vi.stubGlobal("fetch", fetchSpy);
+    stubLegacyDetailFetch("run-degraded", fetchSpy);
     try {
       const runner = mcpSurfaceRunner();
       for (const expectedCode of ["invalid_service_response", "run_facts_invalid"]) {
@@ -2738,7 +2652,7 @@ describe("mcp daemon body mapping", () => {
           retryable: false,
         }),
       }));
-      vi.stubGlobal("fetch", fetchSpy);
+      stubLegacyDetailFetch("run-child", fetchSpy);
       try {
         await expect(
           mcpSurfaceRunner({

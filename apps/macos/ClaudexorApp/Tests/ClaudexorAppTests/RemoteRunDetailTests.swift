@@ -58,6 +58,8 @@ import Testing
                   request.url?.query == "includeEarlierAssistantOutput=true" else {
                 throw RemoteRunDetailError.badRequest // No implicit full-artifact fetch.
             }
+            // The old route tolerates the unknown query and returns its normal answer.
+            // The new route returns an additional preview only for the addressed request.
             let sequence = requests.incrementAndGet()
             let earlier = sequence == 1 ? "" : ###", "earlierAssistantOutput":{"path":"final/earlier-assistant-output.md","text":"## Earlier assistant text (not the accepted final)\n\nInitial swatch report.","bytes":20000,"truncated":true}"###
             let body = #"{"summary":{"runId":"run-speaks","state":"succeeded","mode":"ask","outputReadyState":"ready"},"primaryOutput":{"kind":"answer","path":"final/answer.md","text":"Accepted text.","truncated":false\#(earlier)},"lastSeq":\#(sequence)}"#
@@ -65,6 +67,7 @@ import Testing
         }
         #expect(await model.loadRunDetail("run-speaks", locationID: locationID))
         #expect(model.task("run-speaks", at: locationID)?.answerText == "Accepted text.")
+        #expect(model.task("run-speaks", at: locationID)?.earlierAnswerText == nil)
         #expect(await model.loadRunDetail("run-speaks", locationID: locationID))
         let task = model.task("run-speaks", at: locationID)
         let expected = "## Earlier assistant text (not the accepted final)\n\nInitial swatch report."

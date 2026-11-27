@@ -73,7 +73,10 @@ export const ThreadHistoryTextFacts = z
   })
   .strict();
 // The bounded history page never carries the addressed detail's earlier output.
-export const ThreadHistoryOutput = ControlPrimaryOutput.omit({ earlierAssistantOutput: true })
+export const ThreadHistoryOutput = ControlPrimaryOutput.omit({
+  earlierAssistantOutput: true,
+  earlierAssistantOutputUnavailable: true,
+})
   .extend(ThreadHistoryTextFacts.shape)
   .strict();
 const count = z

@@ -1,7 +1,10 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
   ConformanceReport,
   CONTROL_PROTOCOL_MAJOR,
@@ -29,6 +32,23 @@ const correction = "Correction after reading: red.";
 const final = "Swatch check complete.";
 const footer = '\n```json\n{"work_report":{"state":"completed","required_inputs":[]}}\n```';
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+const exec = promisify(execFile);
+
+async function inspectText(runId: string, repo: string, config: string) {
+  const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+  const { stdout } = await exec(process.execPath, [cli, "inspect", runId], {
+    cwd: repo,
+    env: {
+      HOME: config,
+      USERPROFILE: config,
+      TMPDIR: config,
+      SystemRoot: process.env["SystemRoot"],
+      CLAUDEXOR_CONFIG_DIR: config,
+    },
+    timeout: 10_000,
+  });
+  return stdout;
+}
 
 function nativeFrames(large: boolean) {
   const session_id = "synthetic-cursor-chat";
@@ -303,6 +323,7 @@ it.each(cases)(
       )!;
       const ordinary = await tool.handler({ runId: produced.runId }, {});
       if (typeof ordinary === "string") throw new Error("expected MCP result object");
+      expect(ordinary.structured).toMatchObject({ runId: produced.runId, status: "succeeded" });
       expect(ordinary.structured).not.toHaveProperty("finalMessages");
       expect(ordinary.structured).not.toHaveProperty("earlierAssistantOutput");
       const opted = await tool.handler({ runId: produced.runId, includeFinalMessages: true }, {});
@@ -364,6 +385,16 @@ it.each(cases)(
         expect(text).not.toContain(excluded);
       }
       const summary = String(ordinary.structured?.summary);
+      if (label === "Ask") {
+        expect(summary).toBe(
+          `${text.trimEnd()}\n\n---\n\n## Accepted final answer\n\n${answer.trim()}`,
+        );
+        const inspected = await inspectText(produced.runId, repo, config);
+        expect(inspected).toContain(`\n${summary}\n`);
+        expect(inspected.split(report)).toHaveLength(2);
+        expect(inspected.split(final)).toHaveLength(2);
+        witness({ textInspect: { earlier: true, accepted: true } });
+      }
       // The ordinary launch path when the caller elects to await the result.
       const launch = await projectLaunchHandle(
         addr,
@@ -408,6 +439,55 @@ it.each(cases)(
         } finally {
           fetchThread.mockRestore();
           ensure.mockRestore();
+        }
+      }
+      if (label === "Ask") {
+        // Exercise the present MCP consumer when discovery has the pre-#756
+        // parameter set. Reuse the same server's real legacy detail response.
+        connect.mockResolvedValue({
+          client: {} as never,
+          addr: addr as never,
+          engine: { engineVersion: "6.2.0", engineBuildSha: null, servingMode: "normal" },
+        });
+        const legacyDetailQueries: string[] = [];
+        let legacyDiscoveries = 0;
+        const realFetch = globalThis.fetch;
+        const legacyFetch = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+          const url = new URL(input instanceof Request ? input.url : String(input));
+          if (url.origin === addr.baseUrl && url.pathname === "/v2/operations") {
+            legacyDiscoveries++;
+            return Promise.resolve(
+              Response.json({
+                ...operations,
+                operations: operations.operations.map((op) =>
+                  op.id === "get:runs.id"
+                    ? {
+                        ...op,
+                        parameters: op.parameters.filter(
+                          (p) => p.name !== "includeEarlierAssistantOutput",
+                        ),
+                      }
+                    : op,
+                ),
+              }),
+            );
+          }
+          if (url.origin === addr.baseUrl && url.pathname === route)
+            legacyDetailQueries.push(url.search);
+          return realFetch(input, init);
+        });
+        try {
+          const legacy = await tool.handler({ runId: produced.runId }, {});
+          expect(legacy).toMatchObject({
+            structured: { runId: produced.runId, status: "succeeded", summary: answer.trim() },
+          });
+          expect(legacyDiscoveries).toBe(1);
+          expect(legacyDetailQueries).toEqual([""]);
+          witness({
+            legacyMcp: { discoveries: legacyDiscoveries, detailQueries: legacyDetailQueries },
+          });
+        } finally {
+          legacyFetch.mockRestore();
         }
       }
       if (large) {

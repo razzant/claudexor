@@ -15,7 +15,7 @@ import { BulkExecutor } from "./bulk-executor.js";
 import { requestGone } from "./request-liveness.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { trackRequest } from "./request-timing.js";
-import { serveRunDetail } from "./run-detail-route.js";
+import { parseRunDetailQuery, serveRunDetail } from "./run-detail-route.js";
 import { handleDeferredMessageRoute } from "./deferred-message-routes.js";
 import { handleAccountResourceRoute, type ResourceRead } from "./account-resource-routes.js";
 import { ControlAccountResetRequest } from "@claudexor/schema";
@@ -98,7 +98,7 @@ import {
 } from "./artifact-serve-routes.js";
 import { runExecutionWorkspaceRoot } from "./run-execution-root.js";
 import { bearerCredential } from "./authorization.js";
-import { assertOnlyQueryParams, optionalBooleanQuery, singleQuery } from "./query.js";
+import { assertOnlyQueryParams, singleQuery } from "./query.js";
 import {
   parseCredentialProfilesSnapshotQuery,
   parseHarnessListQuery,
@@ -862,11 +862,9 @@ export class DaemonControlApiServer {
 
     const runDetailMatch = /^\/runs\/([^/]+)$/.exec(path);
     if (method === "GET" && runDetailMatch) {
-      let includeFinalMessages: boolean | undefined;
-      let includeEarlierAssistantOutput: boolean | undefined;
+      let detailQuery: ReturnType<typeof parseRunDetailQuery>;
       try {
-        includeFinalMessages = optionalBooleanQuery(url, "includeFinalMessages");
-        includeEarlierAssistantOutput = optionalBooleanQuery(url, "includeEarlierAssistantOutput");
+        detailQuery = parseRunDetailQuery(url);
       } catch (error) {
         return this.requestError(res, error);
       }
@@ -893,8 +891,7 @@ export class DaemonControlApiServer {
                 input: {
                   record: rec,
                   cursor,
-                  includeFinalMessages,
-                  includeEarlierAssistantOutput,
+                  ...detailQuery,
                   runDeadlineFacts: runStart.readsRunDeadline(req),
                   pending: this.pendingInteractionsFor(rec),
                   operator: this.operatorDecisionFor(rec),

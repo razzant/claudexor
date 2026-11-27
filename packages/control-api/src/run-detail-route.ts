@@ -7,6 +7,7 @@ import type { DaemonRunRecord } from "./run-record.js";
 import { jsonOperation } from "./operation-descriptor.js";
 import { queryParam, RUN_DEADLINE_FACTS_HEADER } from "./operation-parameters.js";
 import { requestGone } from "./request-liveness.js";
+import { optionalBooleanQuery } from "./query.js";
 import { servingStore } from "./run-start-receipt.js";
 
 export const RUN_DETAIL_OPERATION = jsonOperation(
@@ -33,6 +34,13 @@ export const RUN_DETAIL_OPERATION = jsonOperation(
     ],
   },
 );
+
+export function parseRunDetailQuery(url: URL) {
+  return {
+    includeFinalMessages: optionalBooleanQuery(url, "includeFinalMessages"),
+    includeEarlierAssistantOutput: optionalBooleanQuery(url, "includeEarlierAssistantOutput"),
+  };
+}
 
 interface RunDetailContext {
   findRun(id: string): Promise<DaemonRunRecord | null>;

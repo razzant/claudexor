@@ -8384,11 +8384,13 @@ Cursor #756 preserves earlier speech alongside a successful Ask/Agent's
 selected text answer. The recorded handoff refined by the matched completion
 anchors the start; speech from that winning physical session stays ordered
 through intervening tools and notices, excluding the final and its linked echoes.
-`GET /v2/runs/:id?includeEarlierAssistantOutput=true` opts into the bounded
-`primaryOutput.earlierAssistantOutput` (16 KiB) and exact authenticated artifact
-`final/earlier-assistant-output.md`, including files above the ordinary preview
-ceiling. Plain/false requests retain the legacy shape. On positive evidence of
-unavailability, the opted-in primary can instead carry
+On `GET /v2/runs/:id`, set the query parameter `includeEarlierAssistantOutput`
+to `true` to opt in. The `primaryOutput` object can then contain
+`earlierAssistantOutput` with the bounded `text` preview (16 KiB), its
+`truncated` flag, and the full artifact's `path` and `bytes`. The authenticated
+artifact at `final/earlier-assistant-output.md` serves exact bytes even above
+the ordinary preview ceiling. Omission or `false` keeps the legacy shape.
+On positive evidence of unavailability, `primaryOutput` can instead contain
 `earlierAssistantOutputUnavailable`: `source_gap`, `publication_failed`, or
 `artifact_unavailable` (publication observed but the artifact no longer reads).
 Earlier text is evidence, not a second accepted answer or WorkReport. MCP,

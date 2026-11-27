@@ -3866,6 +3866,15 @@
                   ],
                   "additionalProperties": false,
                   "description": "Observed earlier speech, presented before the accepted answer but never part of it."
+                },
+                "earlierAssistantOutputUnavailable": {
+                  "type": "string",
+                  "enum": [
+                    "source_gap",
+                    "publication_failed",
+                    "artifact_unavailable"
+                  ],
+                  "description": "Evidence that earlier text could not be established or read; absent is not proof of absence."
                 }
               },
               "required": [
