@@ -1,5 +1,26 @@
 # @claudexor/schema
 
+## 6.6.0
+
+### Minor Changes
+
+- 4f4a28c: Show a successful Cursor Ask or Agent run's speech after its matched background handoff before the accepted final, in order, even when tool reads or notices come between them. Narration only before the handoff is not selected. `GET /v2/runs/:id?includeEarlierAssistantOutput=true` adds `primaryOutput.earlierAssistantOutput` (bounded preview and artifact path) or `earlierAssistantOutputUnavailable`; the default response, the accepted answer, WorkReport and history keep their shapes. MCP results, text inspect, ACP turns and replay, and addressed macOS run details show the earlier text, or a short note when it could not be determined or read.
+
+### Patch Changes
+
+- e72f2fe: Directory runs keep a large sparse file (a VM disk image, for example) sparse when the source reports its holes and the destination filesystem keeps them, and store its bytes once per run where hard links are available (#783).
+
+  - A copy of a sparse source skips its all-zero 4 KiB blocks; an allocated file is written in full. Only engine-owned immutable blobs are cloned, where the runtime can (a Linux reflink); macOS has no clone in Node, APFS fills gaps up to about 16 MiB, and on Windows/NTFS the copy is not marked sparse.
+  - Within one run each digest is stored once and linked into every attempt, the run's final files and review evidence. Writable copies (attempt and review trees, verification and Apply targets) still write the bytes, and without hard links each stored name is its own copy.
+  - From 1 MiB a copy starts only when free space at that moment covers the file's full length plus 64 MiB; this is an observation, not a reservation, so concurrent copies can still run out of room (typed, partial file removed). Unknown free space refuses copies of 64 MiB or more. Lack of room is `capture_space_insufficient` with the system's code (`ENOSPC`, `EDQUOT`), except in the reviewer workspace's Git baseline, which fails as a Git error.
+  - Retiring run and review trees counts allocated bytes as reclaimable where the block count is evidence (POSIX; on Windows a zero count for a non-empty file counts its length); anchors and object-store files keep their logical length.
+  - A files result whose final verification copy lacked room still blocks like failed checks (its cause is not kept on the decision): the advice is now to free the room first, then accept the risk and apply, which rebuilds and rechecks the copy, or to re-run; failed checks of a files result with no distinguishable cause also offer a re-run; with the risk accepted the run's view reads `verify_pending`. Git results keep their advice. A refused publication beside a review, check or budget block states that block first and offers the kept files instead of an apply.
+  - Apply answers lack of room with `refusal.code: space_insufficient`, the path it stopped at, `appliedPaths` (completed writes) and `treeMutated`; `apply/check` writes nothing and answers only the typed refusal of its verification copy. A verification copy without room is unproven (`applied_cleanly: null`), never a conflict, and an accepted risk does not authorize it. `accept_clean_patch`, `claudexor apply` and the macOS app state Apply's facts in prose (the typed receipt is Apply's); `claudexor apply --dry-run` states the check's refusal or the cause the daemon gave.
+  - Apply journals its receipt before the delivery state and audit, so a failure to record the state (`delivery_state_unavailable`, which still states the delivery's writes, refusal and detail) no longer replaces the receipt; a same-key replay answers it and records the state without writing a file or auditing again. The state counts an earlier automatic delivery of the same manifest and paths the target already holds, so completing a partial delivery reads applied; a refusal that wrote nothing marks nothing. A run whose result could not be published reads applied only when its saved automatic receipt covers the whole manifest. An accepted risk on a files result is shown by every run view.
+  - A refused publication fails only a clean success; another cause (executor, review, verification, a report that needs input or is incomplete) keeps leading the failure record and the returned summary, with the refusal and the kept copy after it. When only the journal after a written ready event fails, the files it names stay.
+  - One verification check reads each blob once for integrity and again to build its copy; an in-process review links its evidence through the run's index, while a standalone review verifies every blob.
+  - @claudexor/util@6.6.0
+
 ## 6.5.0
 
 ### Patch Changes

@@ -1,5 +1,15 @@
 # @claudexor/context
 
+## 6.6.0
+
+### Patch Changes
+
+- Updated dependencies [4f4a28c]
+- Updated dependencies [e72f2fe]
+  - @claudexor/schema@6.6.0
+  - @claudexor/core@6.6.0
+  - @claudexor/util@6.6.0
+
 ## 6.5.0
 
 ### Patch Changes

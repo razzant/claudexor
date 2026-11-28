@@ -4,6 +4,23 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v6.6.0** (2026-11-28) — **A Cursor run's earlier speech is readable, and
+  directory runs keep large sparse files sparse.** When Cursor sends a command
+  to the background, writes a report, and later answers the matching completion
+  notice with a short correction, readers now see the report followed by the
+  correction. The correction remains the accepted final answer.
+  `GET /v2/runs/:id?includeEarlierAssistantOutput=true` adds
+  `primaryOutput.earlierAssistantOutput` (a bounded preview and an artifact
+  path) or `earlierAssistantOutputUnavailable`, and MCP results, text inspect,
+  ACP turns and addressed macOS run details show it or a short note. The
+  default response, the accepted answer, the WorkReport and history keep their
+  shapes. A directory run now keeps a large sparse file, such as a VM disk
+  image, sparse when the source reports its holes and the destination
+  filesystem keeps them, and stores its bytes once per run where hard links are
+  available (#783). A copy that would not fit in the free space is refused
+  with a typed `capture_space_insufficient` or, in Apply, `space_insufficient`;
+  Apply keeps its receipt when the delivery state cannot be recorded.
+
 - **v6.5.0** (2026-11-28) — **Read-only second opinions in Hermes and Pi.**
   When the Claudexor skill is enabled, its experimental default asks the host
   model to request one read-only second opinion for an explicit code review,
