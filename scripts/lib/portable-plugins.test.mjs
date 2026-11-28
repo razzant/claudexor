@@ -134,7 +134,7 @@ test("the default section calls only Ask, wait and result", () => {
   ]);
 });
 
-test("both host Skills use the terminal result at a blocked cursor and disclose model fallback", () => {
+test("both host Skills use the terminal result at a blocked cursor", () => {
   for (const target of SKILL_TARGETS.filter((entry) => entry.hostSkill)) {
     const shipped = readFileSync(join(repo, target.root, skillPath), "utf8").replace(/\s+/g, " ");
     expect(shipped).toContain(
@@ -143,13 +143,32 @@ test("both host Skills use the terminal result at a blocked cursor and disclose 
     expect(shipped).toMatch(
       /non-terminal run, if an oversized event or `invalid_event` leaves the cursor unchanged, stop waiting.*?do not repeat that cursor/,
     );
-    expect(shipped).toMatch(
-      /`runFacts\.deliverable\.producer_attempt_id` to `observed_model` on the same `attempt_id`/,
+  }
+});
+
+test("both host Skills report an unconfirmed model when the only model event came from a failed native try", () => {
+  // The Ask case in observed-model-native-retry.integration.test.ts exercises
+  // the actual retry: one published model label, two native tries under the
+  // same attempt id, successful answer with no second model label. Here we
+  // pin the shipped instructions for that case, not the host model's behavior.
+  for (const target of SKILL_TARGETS.filter((entry) => entry.hostSkill)) {
+    const shipped = readFileSync(join(repo, target.root, skillPath), "utf8");
+    const modelRule = bodyOf(shipped)
+      .match(/\n7\. Give your own assessment first,[\s\S]*?\n8\. /)?.[0]
+      .replace(/\s+/g, " ");
+    expect(modelRule).toContain(
+      "Use the model only if Result metadata ties it to the delivered answer",
     );
-    expect(shipped).toContain(
-      "If a different model answered, name both the requested and answering models",
+    expect(modelRule).toMatch(
+      /first try may report a model and fail, then the retry may deliver the answer without naming its model\. Report "Answering model unconfirmed" in that case, even if Wait returned only one matching model event/,
     );
-    expect(shipped).toContain("say when the answering model is unconfirmed");
+    expect(modelRule).toContain(
+      "Do not infer the model from Wait events, Ask arguments or the answer text.",
+    );
+    expect(modelRule).not.toContain("producer_attempt_id");
+    expect(modelRule).toContain(
+      "If a different answering model is confirmed, name both the requested and answering models.",
+    );
   }
 });
 

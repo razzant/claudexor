@@ -81,13 +81,14 @@ readiness or version check, and pass no `repoPath`.
    id. Never cancel it to hurry.
 7. Give your own assessment first, then "Second opinion via Claudexor": what
    the run returned, where it agrees and disagrees. Name the answering harness
-   and model only from execution metadata, not the answer text. If Result
-   does not name the model, match its `runFacts.deliverable.producer_attempt_id`
-   to `observed_model` on the same `attempt_id` in `harness.event` rows already
-   returned by Wait.
-   If a different model answered, name both the requested and answering models.
-   For a named model, say when the answering model is unconfirmed; never infer
-   it from Ask arguments or a different attempt. Run or apply its suggestions
+   only from execution metadata. Use the model only if Result metadata ties it
+   to the delivered answer; otherwise say "Answering model unconfirmed."
+   A native retry can reuse `attempt_id`: the first try may report a model and
+   fail, then the retry may deliver the answer without naming its model.
+   Report "Answering model unconfirmed" in that case, even if Wait returned
+   only one matching model event. Do not infer the model from Wait events,
+   Ask arguments or the answer text. If a different answering model is confirmed,
+   name both the requested and answering models. Run or apply its suggestions
    only when the user asks; the second opinion never changes files.
 8. On a refusal, a missing or disabled tool or a declined account, give the
    typed reason and the way forward in one line, then finish your own review.
