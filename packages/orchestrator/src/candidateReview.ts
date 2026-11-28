@@ -191,10 +191,6 @@ export async function reviewCandidateRuns(
     let directoryReview: Awaited<ReturnType<typeof prepareDirectoryReview>> | undefined;
     let savedFiles: UnrenderedCandidateFiles | null = null;
     try {
-      if (run.files) {
-        directoryReview = await prepareDirectoryReview(run.files, candidateEvidenceDir);
-        candidateCwd = directoryReview.cwd;
-      }
       await writeTextAsync(
         join(candidateEvidenceDir, "TESTS.txt"),
         renderTestsEvidence(contract, run.gates).trim() + "\n",
@@ -223,6 +219,18 @@ export async function reviewCandidateRuns(
           : undefined;
       let processingDenial: BudgetDenial | null = null;
       const reviewing = hasDiff && reviewers.length > 0 && (reviewLease?.granted ?? true);
+      // A directory result's review copies cost disk: only a panel that will
+      // read them gets them (policy findings read the manifest).
+      if (reviewing && run.files) {
+        try {
+          directoryReview = await prepareDirectoryReview(run.files, candidateEvidenceDir);
+        } catch (error) {
+          // Nothing was dispatched: the reservation goes back.
+          if (reviewLease?.granted) ledger?.cancel(reviewLease.lease!.lease_id);
+          throw error;
+        }
+        candidateCwd = directoryReview.cwd;
+      }
       // Reviewers judge the same exact result that apply consumes. An unrendered
       // object result (#535) gets an explicit bounded notice, its changed paths form
       // the candidate inventory, and they read those files from its saved tree: a
@@ -242,7 +250,11 @@ export async function reviewCandidateRuns(
             candidateLabel: run.label,
             diff: run.patchViewUnavailable ? unrenderedResultNotice(run) : run.diff,
             ...(directoryReview
-              ? { candidatePaths: directoryReview.paths, candidatePathsHaveManifest: true }
+              ? {
+                  candidatePaths: directoryReview.paths,
+                  candidatePathsHaveManifest: true,
+                  ...(run.files?.contentIndex ? { contentIndex: run.files.contentIndex } : {}),
+                }
               : run.patchViewUnavailable
                 ? {
                     candidatePaths: run.changedPaths ?? [],

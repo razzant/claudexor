@@ -20,10 +20,16 @@ export function captureFailureEvidence(error: Error | undefined): WorkspaceCaptu
   const cleanup = facts["cleanupError"];
   const cleanupCode = (cleanup as { code?: unknown } | undefined)?.code;
   const inventory = CaptureChangeInventory.safeParse(facts["captureInventory"]);
+  // A lack of room keeps the system's own code (ENOSPC, EDQUOT) as its cause.
+  const errno = (facts["cause"] as { code?: unknown } | undefined)?.code;
+  const causeCode =
+    code.success && code.data === "capture_space_insufficient" && typeof errno === "string"
+      ? errno
+      : facts["code"];
   return WorkspaceCaptureFailure.parse({
     code: code.success ? code.data : "capture_failed",
     message: safe(error?.message ?? "Workspace changes could not be captured completely"),
-    ...(typeof facts["code"] === "string" ? { causeCode: safe(facts["code"]) } : {}),
+    ...(typeof causeCode === "string" ? { causeCode: safe(causeCode) } : {}),
     ...(Number.isSafeInteger(facts["bufferBudgetBytes"]) && Number(facts["bufferBudgetBytes"]) >= 0
       ? { bufferBudgetBytes: facts["bufferBudgetBytes"] }
       : {}),

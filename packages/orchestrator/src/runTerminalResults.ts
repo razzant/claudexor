@@ -296,6 +296,9 @@ export function cancelledResult(
   attempts?: readonly ContinuityTerminalFacts[],
   /** Landing failures the failure net consumed under the run directory (#704). */
   lostEvents?: readonly unknown[],
+  /** The failure record written beside the cancellation (a capture that could
+   * not be kept): the summary states it and the event references it. */
+  failure?: { phase: string; detail: string },
 ): OrchestratorResult {
   if (writeTelemetry) {
     try {
@@ -308,8 +311,9 @@ export function cancelledResult(
   const { cancelReason, poolAttempts } = statement;
   // A lost run event is stated beside the cancellation, which it does not change.
   const lost = lostEventsStatement(join(runDir, "events.jsonl"), lostEvents);
-  const summaryText = lost ? `${statement.summary}\n\n${lost}` : statement.summary;
-  const markdown = lost ? `${statement.markdown}\n${lost}\n` : statement.markdown;
+  const notes = [failure?.detail, lost].filter(Boolean).join("\n\n");
+  const summaryText = notes ? `${statement.summary}\n\n${notes}` : statement.summary;
+  const markdown = notes ? `${statement.markdown}\n${notes}\n` : statement.markdown;
   // Materialize the diagnostic summary BEFORE announcing it — output.ready must
   // point at a file that exists (partial-output honesty), and it must precede
   // the terminal in every mode (INV-116).
@@ -341,6 +345,7 @@ export function cancelledResult(
     ...(cancelReason ? { cancel_reason: cancelReason } : {}),
     ...(attempts ? { pool_attempts: poolAttempts } : {}),
     ...(resumable ? { resumable } : {}),
+    ...(failure ? { phase: failure.phase, failure_ref: "final/failure.yaml" } : {}),
   });
   return {
     runId,
@@ -381,6 +386,8 @@ export function failTerminally(
     nextActions?: string[];
     /** Actions that follow this terminal's own remedy (an earlier record's capture actions). */
     followUps?: readonly string[];
+    /** Statements that follow the cause (a refused publication of a candidate's files). */
+    statements?: readonly string[];
     priorFacts?: RunOutcomeFacts;
     /** The leading cause's own reason when the phase does not name it (capture refusal). */
     reason?: RunReason;
@@ -399,8 +406,10 @@ export function failTerminally(
   // A failure held for the run's earlier lines is stated here and taken first,
   // so this terminal's own output and run.failed still append.
   const lost = lostEventsStatement(paths.eventsPath, failureMeta.lostEvents);
-  const cause =
-    budget?.safeMessage ?? redactSecrets(err instanceof Error ? err.message : String(err));
+  const cause = [
+    budget?.safeMessage ?? redactSecrets(err instanceof Error ? err.message : String(err)),
+    ...(failureMeta.statements ?? []),
+  ].join("\n");
   const { message, poolAttempts } = poolFailure(
     lost ? `${cause}\n\n${lost}` : cause,
     failureMeta.attempts ?? failureMeta.continuity ?? [],

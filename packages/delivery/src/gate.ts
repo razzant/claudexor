@@ -93,7 +93,12 @@ export const EXACT_PATCH_UNAVAILABLE_MESSAGE =
  * decision the daemon will refuse (a not-verified run needs a gate/review, not
  * a risk override). Keyed on the decision facts when present.
  */
-function applyHint(decision: DecisionRecord | null, lifecycle: string | null): string {
+function applyHint(
+  decision: DecisionRecord | null,
+  lifecycle: string | null,
+  /** A files result: its Apply always builds and checks a fresh copy first. */
+  files = false,
+): string {
   const facts = decision?.facts ?? null;
   if (facts) {
     // D-16 work_state veto (INV-116): the model itself reported the work is not
@@ -105,6 +110,28 @@ function applyHint(decision: DecisionRecord | null, lifecycle: string | null): s
     if (facts.lifecycle === "succeeded" && facts.work_state?.state === "incomplete") {
       return "Re-run until the run reports the work is complete.";
     }
+    // A final check that could not even build or prove its copy (a copy without
+    // room, a verifier error) blocks like a failed check; its typed cause is not
+    // kept on the decision, so the block stands and Apply still needs the
+    // override. Accepting before the cause is gone only meets the same refusal:
+    // Apply builds the copy afresh and refuses while it still cannot be made.
+    if (files && facts.checks === "failed" && decision?.final_verify?.applied_cleanly === null) {
+      const reason = decision.final_verify.reason;
+      // A saved block whose cause was not kept: an ordinary re-run checks it again.
+      if (!reason)
+        return "Re-run the task, or once the final check's cause is gone accept the risk for this exact result and apply: Apply rebuilds and rechecks it, and accepting the risk also accepts checks that then fail.";
+      return `Remove the final check's cause first (${reason}; for example free disk space), then accept the risk for this exact result and apply: Apply rebuilds and rechecks it, and accepting the risk also accepts checks that then fail. Or re-run the task.`;
+    }
+    // A files result whose failed checks name no distinguishable cause: no saved
+    // check at all (an older record), or a proven copy whose own gates did not fail
+    // (its automatic delivery stopped at the target). A re-run checks it again.
+    if (
+      files &&
+      facts.checks === "failed" &&
+      facts.review !== "blocked" &&
+      decision?.final_verify?.gates_passed !== false
+    )
+      return "Re-run the task to check it again, or accept the risk for this exact result and apply: Apply rebuilds and rechecks it first.";
     if (facts.review === "blocked" || facts.checks === "failed") {
       // A blocked run already completed its (verified) review — pointing back at
       // "run a review first" is a dead loop (QA-032B). The real next step is the
@@ -179,7 +206,11 @@ function isOverrideVerifyPending(input: ApplyGateInput): boolean {
   // then gated normally (a mechanical conflict still fails closed).
   if (input.finalVerify !== undefined) return false;
   const persisted = input.decision?.final_verify ?? null;
-  if (persisted?.attempted) return false;
+  // A files result's saved check that never proved its copy (out of room, a
+  // verifier error) is no evidence: its Apply mutates nothing unless the fresh
+  // copy it builds is materialized, so that check is still due.
+  const unproven = input.workProduct?.kind === "files" && persisted?.applied_cleanly === null;
+  if (persisted?.attempted && !unproven) return false;
   return hasValidRiskOverride(input);
 }
 
@@ -196,7 +227,7 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
   if (input.state && input.state !== "succeeded" && !override) {
     // Plain human message (F5); the machine axes stay on the decision facts /
     // ApplyEligibility.state that callers read alongside this string.
-    return `This change can't be applied yet — the run is still ${input.state}. ${applyHint(input.decision, input.state)}`;
+    return `This change can't be applied yet — the run is still ${input.state}. ${applyHint(input.decision, input.state, input.workProduct?.kind === "files")}`;
   }
   if (!input.decision) return "A completed run is required before this change can be applied.";
   // D-16 work_state veto (INV-116): a model-attested needs_input/incomplete
@@ -218,7 +249,7 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
     // Jargon soup rewritten to plain language (F5). The raw axes (lifecycle,
     // review, checks) remain the machine detail on `decision.facts` and the
     // typed `ApplyEligibility` projection — not embedded in this human line.
-    return `This change isn't ready to apply yet. ${applyHint(input.decision, input.state ?? null)}`;
+    return `This change isn't ready to apply yet. ${applyHint(input.decision, input.state ?? null, input.workProduct?.kind === "files")}`;
   }
   // FinalVerifier consumer (INV-115): a patch that FAILED to apply onto a
   // fresh tree at its own base is factually undeliverable — no operator
@@ -377,7 +408,11 @@ export function deriveApplyEligibility(input: ApplyGateInput): ApplyEligibility 
     eligible: false,
     state,
     reason,
-    requiredAction: applyHint(input.decision, input.state ?? null),
+    requiredAction: applyHint(
+      input.decision,
+      input.state ?? null,
+      input.workProduct?.kind === "files",
+    ),
   };
 }
 

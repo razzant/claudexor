@@ -14,7 +14,7 @@ import {
   unanimousDeclaredFailure,
   type CandidateRun,
 } from "./candidateEvidence.js";
-import { publishDirectoryCandidate } from "./directoryCandidate.js";
+import { publishRunDirectoryCandidate } from "./directoryCandidate.js";
 import * as secretDiff from "./secretDiff.js";
 import { classifyBudgetFailure, budgetFailureRecord, type BudgetDenial } from "./budgetFailure.js";
 import { failTerminally, writeFailure } from "./runTerminalResults.js";
@@ -37,7 +37,13 @@ import {
   type ContinuityTerminalFacts,
 } from "./continuity-terminal.js";
 import { poolFailure } from "./pool-attempt-evidence.js";
-import { captureInventorySummary } from "./captureRefusal.js";
+import {
+  CAPTURE_REFUSED_REASON,
+  captureCauseOf,
+  captureInventorySummary,
+  captureRefusalNextActions,
+  DirectoryStabilityError,
+} from "./captureRefusal.js";
 
 interface CandidateTerminalContext {
   ledger: BudgetLedger;
@@ -67,18 +73,30 @@ export async function cancelledCandidatesResult(
 ): Promise<OrchestratorResult> {
   const { store, paths, log, runId, taskId, mode, ledger, runs, signal, writeTelemetry } = input;
   const candidate = runs.find((run) => run.files);
-  if (candidate?.files)
-    await publishDirectoryCandidate({
-      files: candidate.files,
-      store,
-      paths,
-      taskId,
-      attemptId: candidate.attemptId,
-      harnessId: candidate.harnessId,
-      facts: makeOutcomeFacts("cancelled", {
-        noChanges: candidate.continuationRefusal ? null : candidate.files.noChanges,
-      }),
-      log,
+  if (candidate?.files) {
+    const noChanges = candidate.continuationRefusal ? null : candidate.files.noChanges;
+    const facts = makeOutcomeFacts("cancelled", { noChanges });
+    await publishRunDirectoryCandidate(candidate, { store, paths, taskId, facts, log });
+  }
+  // A cancellation has no failure of its own; a capture that could not be kept (a
+  // refused publication of complete files, or an attempt whose workspace or capture
+  // never completed) keeps its typed cause on that surface, under the cancellation's
+  // category, even when another attempt's files were kept. A Git run records its
+  // refusal below.
+  const refused =
+    (candidate?.captureRefusal ? candidate : undefined) ??
+    (input.git ? undefined : runs.find((run) => run.captureRefusal));
+  const refusal = refused?.captureRefusal;
+  const failure = refusal && { phase: "workspace", detail: refusal.detail };
+  if (refused && refusal)
+    writeFailure(store, paths, {
+      phase: "workspace",
+      category: "cancelled",
+      safeMessage: `The run was cancelled. ${refusal.detail}`,
+      attemptId: refused.attemptId,
+      harnessId: refused.harnessId,
+      captureFailure: refusal.failure,
+      nextActions: captureRefusalNextActions(refusal),
     });
   if (runs.length === 1 && input.git) {
     const run = runs[0]!;
@@ -139,6 +157,8 @@ export async function cancelledCandidatesResult(
     undefined,
     resumableOf(runs, "cancelled"),
     input.attempts ?? runs,
+    undefined,
+    failure,
   );
 }
 
@@ -153,14 +173,29 @@ export async function cancelledCandidatesResult(
 export function erroredWinnerFailure(
   winner: CandidateRun | undefined,
   keptSources: readonly string[],
+  facts?: RunOutcomeFacts,
 ): Partial<Parameters<typeof writeFailure>[2]> {
-  if (!winner?.errored) return {};
+  const unpublished = unpublishedResult(winner);
+  const captureFailure = unpublished?.failure;
+  if (!winner?.errored) {
+    if (!unpublished) return {};
+    // A refused publication leads only where it alone failed the run; a budget
+    // or other terminal keeps its own record beside the capture facts.
+    if (facts?.reason !== CAPTURE_REFUSED_REASON) return { captureFailure };
+    return {
+      phase: "workspace",
+      category: "project",
+      captureFailure,
+      nextActions: [...captureRefusalNextActions(unpublished), ...keptSources],
+    };
+  }
   const declared = winner.declaredFailure;
   if (!declaredFailureSpeaks(declared))
-    return { vendorFailure: attemptVendorFailure([winner], winner.attemptId) };
+    return { captureFailure, vendorFailure: attemptVendorFailure([winner], winner.attemptId) };
   const category = dominantHarnessFailureCategory(winner.telemetry.transientFailures);
   return {
     ...declared,
+    captureFailure,
     category: declared.category ?? "harness_error",
     vendorFailure: attemptVendorFailure([winner], winner.attemptId),
     nextActions: [
@@ -183,7 +218,15 @@ export function raceStatement(
   decisionBlock: boolean,
   whyWinner: string,
 ): string {
-  return winner?.errored && !decisionBlock ? `${candidateCause(winner)}\n${whyWinner}` : whyWinner;
+  if (decisionBlock) return whyWinner;
+  const cause = winner?.errored ? candidateCause(winner) : undefined;
+  return [cause, unpublishedResult(winner)?.detail, whyWinner].filter(Boolean).join("\n");
+}
+
+/** A captured directory result that could not be published: it alone leaves a
+ * candidate holding both its files and a capture refusal. */
+function unpublishedResult(run: CandidateRun | null | undefined) {
+  return run?.files ? run.captureRefusal : undefined;
 }
 
 /**
@@ -191,7 +234,8 @@ export function raceStatement(
  * that ended not converged on an ERRORED last attempt names that attempt's own
  * cause (#633), never an earlier attempt's. A budget mapping, a review or check
  * block, a stall, an interruption and a cancellation keep their own statements,
- * and the loop's phase and category stay as they were. Null otherwise.
+ * and the loop's phase and category stay as they were. A refused publication of
+ * the attempt's files is always stated, after that cause. Null otherwise.
  */
 export function convergenceCause(
   lastRun: CandidateRun | null | undefined,
@@ -199,9 +243,13 @@ export function convergenceCause(
   budgetSpeaks: boolean,
 ): string | null {
   const block = facts.review === "blocked" || facts.checks === "failed";
-  return lastRun?.errored && facts.reason === "not_converged" && !budgetSpeaks && !block
-    ? candidateCause(lastRun)
-    : null;
+  const executor =
+    lastRun?.errored && facts.reason === "not_converged" && !budgetSpeaks && !block
+      ? candidateCause(lastRun)
+      : null;
+  // The attempt's own cause leads; a refused publication of its files follows it.
+  const lines = [executor, unpublishedResult(lastRun)?.detail].filter(Boolean);
+  return lines.length > 0 ? lines.join("\n") : null;
 }
 
 /** A review/arbitration failure still owns the completed candidates' continuity
@@ -216,11 +264,19 @@ export function failAfterCandidates(
 ): OrchestratorResult {
   const { log, store, paths, runId, taskId, mode, ledger, runs } = input;
   const refusals = candidateCaptureRefusals(runs);
-  return failTerminally(log, store, paths, runId, taskId, mode, phase, error, ledger.spend(), {
+  // A result that could not be verified leads with its capture refusal; a review
+  // copy that could not fit stays a review failure carrying that typed cause.
+  const unverified = error instanceof DirectoryStabilityError ? error : undefined;
+  const at = unverified ? (unverified.refusal.phase ?? "workspace") : phase;
+  return failTerminally(log, store, paths, runId, taskId, mode, at, error, ledger.spend(), {
     continuity: runs,
     attempts: input.attempts,
-    captureFailure: refusals[0]?.failure,
+    captureFailure: captureCauseOf(error) ?? refusals[0]?.failure,
     followUps: refusals.flatMap(secretDiff.captureInspectionActions),
+    // The review's or arbitration's own error leads; a refused publication of a
+    // candidate's files is the second statement.
+    statements: runs.flatMap((run) => unpublishedResult(run)?.detail ?? []),
+    ...(unverified && { category: "project" as const, reason: CAPTURE_REFUSED_REASON }),
   });
 }
 
@@ -307,9 +363,9 @@ export async function failedCandidatesResult(
 ): Promise<OrchestratorResult> {
   const { store, paths, log, runId, taskId, mode, ledger, runs, writeTelemetry } = input;
   const first = runs[0] as CandidateRun;
-  // Every kept source is named, in attempt order; the first candidate's own
-  // refusal (when it has one) still leads the record below.
-  const refusals = candidateCaptureRefusals(runs);
+  // The first candidate's own capture refusal (when it has one) still leads the
+  // record below; a refused publication of its files does not replace its cause.
+  const own = first.captureRefusal;
   // A lease denial, or a budget terminal the ledger settled on a candidate
   // whose capture then failed (stream hard cap, exact overshoot, unverifiable
   // cash), owns the terminal: the shared classifier leads and the capture
@@ -320,10 +376,7 @@ export async function failedCandidatesResult(
       ? classifyBudgetFailure({ denial: input.budgetDenial ?? null, terminal: budgetTerminal })
       : null;
   const phase =
-    budget?.phase ??
-    (first.captureRefusal
-      ? (first.captureRefusal.phase ?? "workspace")
-      : (first.infraPhase ?? "harness"));
+    budget?.phase ?? (own ? (own.phase ?? "workspace") : (first.infraPhase ?? "harness"));
   const partition = partitionCandidates(runs);
   const facts = budget ? { ...partition.facts, reason: budget.reason } : partition.facts;
   const { message: rootCause, poolAttempts } = poolFailure(
@@ -331,24 +384,18 @@ export async function failedCandidatesResult(
     input.attempts ?? runs,
   );
   const captured = runs.find((run) => run.files);
-  if (captured?.files)
-    await publishDirectoryCandidate({
-      files: captured.files,
-      store,
-      paths,
-      taskId,
-      attemptId: captured.attemptId,
-      harnessId: captured.harnessId,
-      facts,
-      log,
-    });
+  if (captured) await publishRunDirectoryCandidate(captured, { store, paths, taskId, facts, log });
+  const unpublished = unpublishedResult(captured);
+  const statement = unpublished ? `${rootCause}\n${unpublished.detail}` : rootCause;
+  // Every kept source is named, in attempt order.
+  const refusals = candidateCaptureRefusals(runs);
   if (input.liveCapture) await persistFailedInPlaceWorkProduct({ ...input.liveCapture, facts });
   await store.writeYamlAsync(join(paths.arbitrationDir, "decision.yaml"), {
     winner: null,
     facts,
-    why_winner: rootCause,
+    why_winner: statement,
     evidence_facts: runs.flatMap((r) => [
-      `${r.attemptId} ${r.captureRefusal ? "capture incomplete" : "delivered no accepted result"}: ${r.errors[0] ?? "unknown"}`,
+      `${r.attemptId} ${r.captureRefusal && !r.files ? "capture incomplete" : "delivered no accepted result"}: ${r.errors[0] ?? "unknown"}`,
       ...(r.continuationRefusal
         ? [
             `${r.continuationRefusal.attemptId} capture incomplete: ${r.continuationRefusal.refusal.detail}`,
@@ -361,7 +408,7 @@ export async function failedCandidatesResult(
   writeTelemetry();
   await store.writeTextAsync(
     join(paths.finalDir, "summary.md"),
-    `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: ${phase}\n\n${rootCause}\n${captureInventorySummary(refusals[0]?.failure)}`,
+    `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: ${phase}\n\n${statement}\n${captureInventorySummary(refusals[0]?.failure)}`,
   );
   const existingEventRefs = runs
     .map((r) => `attempts/${r.attemptId}/events.jsonl`)
@@ -393,8 +440,8 @@ export async function failedCandidatesResult(
     // The first candidate speaks (like harnessId/attemptId); a budget terminal speaks for itself.
     vendorFailure: budget ? null : attemptVendorFailure([first], first.attemptId),
     nextActions: [
-      ...(first.captureRefusal
-        ? secretDiff.captureRefusalNextActions(first.captureRefusal)
+      ...(own
+        ? secretDiff.captureRefusalNextActions(own)
         : phase === "workspace"
           ? ["Check the project folder", "Open diagnostics", "Retry the run"]
           : harnessFailureNextActions(harnessCategory)),
@@ -408,7 +455,7 @@ export async function failedCandidatesResult(
         })
       : {}),
     // After the budget record: every terminal speaks the same message and list.
-    safeMessage: rootCause,
+    safeMessage: statement,
     poolAttempts,
   });
   log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
@@ -417,7 +464,7 @@ export async function failedCandidatesResult(
     facts,
     reason: facts.reason,
     phase,
-    error: rootCause,
+    error: statement,
     pool_attempts: poolAttempts,
     failure_ref: "final/failure.yaml",
     ...resumableTerminal(store, paths, runs, true),
@@ -430,7 +477,7 @@ export async function failedCandidatesResult(
     facts,
     winner: null,
     runDir: paths.root,
-    summary: rootCause,
+    summary: statement,
     candidates: runs.map((r) => ({
       attemptId: r.attemptId,
       harnessId: r.harnessId,

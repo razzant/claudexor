@@ -65,7 +65,8 @@ export function deliveryRefusalDecisionFields(
   };
 }
 
-export function deliveryRefusalFailure(reason: string, runDir: string) {
+/** `space`: the delivery's typed lack of room (its receipt's refusal), remedied by room. */
+export function deliveryRefusalFailure(reason: string, runDir: string, space?: object) {
   return {
     phase: "delivery",
     category: "validation",
@@ -74,7 +75,9 @@ export function deliveryRefusalFailure(reason: string, runDir: string) {
     runDir,
     nextActions: [
       "Inspect final/delivery_receipt.yaml",
-      "Retry after the target tree stops changing",
+      space
+        ? "Free disk space at the target first, then accept the risk for this exact result and apply it (Apply verifies it afresh; paths already written are kept)"
+        : "Retry after the target tree stops changing",
     ],
   };
 }

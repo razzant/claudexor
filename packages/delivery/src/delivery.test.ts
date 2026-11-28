@@ -1452,3 +1452,113 @@ describe("blocked decision fact overrides", () => {
     });
   });
 });
+
+describe("a saved final check that never proved its copy (applied_cleanly=null)", () => {
+  const patch = "diff --git a/x b/x\n";
+  const decision = (reason?: string) =>
+    DecisionRecord.parse({
+      winner: "a01",
+      facts: makeOutcomeFacts("succeeded", { checks: "failed", reason: "checks_failed" }),
+      final_verify: { attempted: true, applied_cleanly: null, ...(reason ? { reason } : {}) },
+    });
+  const manifestSha256 = "sha256:files";
+  const files = (reason?: string) => ({
+    state: "succeeded" as const,
+    decision: decision(reason),
+    workProduct: { kind: "files", meta: { manifest_sha256: manifestSha256 } } as never,
+    patch: "",
+    filesManifest: { isolation: "envelope", complete: true } as never,
+    manifestSha256,
+    originalRepoRoot: process.cwd(),
+    targetRepoRoot: process.cwd(),
+  });
+  const git = {
+    state: "succeeded" as const,
+    decision: decision("worktree add failed"),
+    workProduct: { kind: "patch", meta: { patch_sha256: sha256(patch) } } as never,
+    patch,
+    originalRepoRoot: process.cwd(),
+    targetRepoRoot: process.cwd(),
+  };
+
+  it("keeps a Git result's advice and verdict as they were", () => {
+    expect(deriveApplyEligibility(git).requiredAction).toBe(
+      "Accept the risk to apply it anyway (`claudexor decision <run> --accept-risk`).",
+    );
+    const accepted = deriveApplyEligibility({
+      ...git,
+      operatorDecision: { action: "accept_risk", patch_sha256: sha256(patch) },
+    });
+    expect(accepted).toMatchObject({ eligible: true, state: "needs_review" });
+  });
+
+  it("tells a files result to remove the cause or re-run, and a re-run when no cause was kept", () => {
+    const named = deriveApplyEligibility(files("final verification ran out of space"));
+    expect(named.requiredAction).toContain("Remove the final check's cause first");
+    expect(named.requiredAction).toContain("Or re-run the task.");
+    const unnamed = deriveApplyEligibility(files());
+    expect(unnamed.eligible).toBe(false);
+    expect(unnamed.requiredAction).toMatch(/^Re-run the task, or once/);
+  });
+
+  it("reads an accepted files result as still due its fresh check, never as checked", () => {
+    const accepted = {
+      ...files("final verification ran out of space"),
+      operatorDecision: { action: "accept_risk", manifest_sha256: manifestSha256 },
+    };
+    expect(deriveApplyEligibility(accepted)).toMatchObject({
+      eligible: true,
+      state: "verify_pending",
+    });
+    // A decision for another manifest authorizes nothing.
+    expect(
+      deriveApplyEligibility({
+        ...accepted,
+        operatorDecision: { action: "accept_risk", manifest_sha256: "sha256:other" },
+      }).eligible,
+    ).toBe(false);
+  });
+});
+
+describe("failed checks of a files result with no distinguishable cause", () => {
+  const manifestSha256 = "sha256:files";
+  const input = (kind: "files" | "patch", finalVerify: Record<string, unknown> | null) => ({
+    state: "succeeded" as const,
+    decision: DecisionRecord.parse({
+      winner: "a01",
+      facts: makeOutcomeFacts("succeeded", { checks: "failed", reason: "checks_failed" }),
+      final_verify: finalVerify,
+    }),
+    workProduct: (kind === "files"
+      ? { kind, meta: { manifest_sha256: manifestSha256 } }
+      : { kind, meta: { patch_sha256: sha256("diff --git a/x b/x\n") } }) as never,
+    patch: kind === "files" ? "" : "diff --git a/x b/x\n",
+    ...(kind === "files"
+      ? { filesManifest: { isolation: "envelope", complete: true } as never, manifestSha256 }
+      : {}),
+    originalRepoRoot: process.cwd(),
+    targetRepoRoot: process.cwd(),
+  });
+  const rerun =
+    "Re-run the task to check it again, or accept the risk for this exact result and apply: Apply rebuilds and rechecks it first.";
+  const accept = "Accept the risk to apply it anyway (`claudexor decision <run> --accept-risk`).";
+
+  it("offers a re-run when no final check was saved at all", () => {
+    expect(deriveApplyEligibility(input("files", null))).toMatchObject({
+      eligible: false,
+      state: "needs_review",
+      requiredAction: rerun,
+    });
+  });
+
+  it("offers a re-run after a proven copy whose delivery stopped at the target", () => {
+    const proven = { attempted: true, applied_cleanly: true, gates_passed: true };
+    expect(deriveApplyEligibility(input("files", proven)).requiredAction).toBe(rerun);
+  });
+
+  it("keeps the accepted risk as the remedy for checks that really failed, and Git as it was", () => {
+    const failed = { attempted: true, applied_cleanly: true, gates_passed: false };
+    expect(deriveApplyEligibility(input("files", failed)).requiredAction).toBe(accept);
+    expect(deriveApplyEligibility(input("patch", null)).requiredAction).toBe(accept);
+  });
+});

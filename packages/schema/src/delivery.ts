@@ -68,7 +68,7 @@ export const DeliveryReceipt = z
     targetPreimageSha: z.string().describe("Target snapshot verified immediately before delivery."),
     /** #535: why an object delivery refused, typed, with the paths it concerns. */
     refusal: GitResultRefusal.optional().describe(
-      "Typed refusal of an object-result delivery (code, message, bounded paths); absent on success or a legacy patch refusal.",
+      "Typed refusal of an object-result delivery (code, message, bounded paths), or space_insufficient for a directory delivery that ran out of room (the path it stopped at; appliedPaths are those written before); absent on success or a legacy patch refusal.",
     ),
     /** #535: the actual pair an object delivery wrote; revert runs on it. */
     deliveryPair: GitDeliveryPair.optional().describe(
@@ -78,3 +78,42 @@ export const DeliveryReceipt = z
   .strict()
   .describe("Immutable receipt for a freshly verified delivery attempt.");
 export type DeliveryReceipt = z.infer<typeof DeliveryReceipt>;
+
+const listedPaths = (paths: readonly string[]) =>
+  `${paths.slice(0, 20).join(", ")}${paths.length > 20 ? ` and ${paths.length - 20} more` : ""}`;
+
+/**
+ * One statement of what a delivery that did not apply actually did, for every
+ * surface that renders a receipt in prose (accept_clean_patch's message, the CLI,
+ * a run's failure record): its detail, its typed refusal and the path it stopped
+ * at, the paths it completed, and whether the target changed with none completed
+ * (a replaced directory or a parent it made). An applied receipt says its detail.
+ */
+export function deliveryEffectsStatement(receipt: {
+  applied: boolean;
+  appliedPaths?: readonly string[] | undefined;
+  treeMutated?: boolean | undefined;
+  detail?: string | undefined;
+  refusal?: { code: string; paths: readonly string[] } | undefined;
+}): string | undefined {
+  if (receipt.applied) return receipt.detail;
+  const stopped = receipt.refusal?.paths ?? [];
+  const completed = receipt.appliedPaths ?? [];
+  const parts = [
+    receipt.detail,
+    receipt.refusal
+      ? `Refusal: ${receipt.refusal.code}${stopped.length > 0 ? ` at ${listedPaths(stopped)}` : ""}.`
+      : undefined,
+    completed.length > 0 ? `Completed before it stopped: ${listedPaths(completed)}.` : undefined,
+    receipt.treeMutated
+      ? completed.length > 0
+        ? stopped.length > 0
+          ? "Where it stopped, the target may already be changed."
+          : undefined
+        : `No path completed, but the target changed${stopped.length > 0 ? ` at ${listedPaths(stopped)}` : ""}: inspect it.`
+      : receipt.refusal
+        ? "Nothing was written."
+        : undefined,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}

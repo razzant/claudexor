@@ -155,6 +155,7 @@ export interface RunApplyRouteContext {
     record: DaemonRunRecord,
     paths: string[],
     manifest: WorkspaceFilesManifest,
+    manifestSha256?: string,
   ): void;
   /** The run's effective MUTABLE delivery/apply state (delivery_state overlay →
    * work_product snapshot) — the same authority that projects

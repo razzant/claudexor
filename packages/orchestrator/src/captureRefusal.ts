@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import {
   captureInventoryLines,
   makeOutcomeFacts,
@@ -10,6 +11,7 @@ import {
 import {
   captureFailureEvidence,
   envelopeBaseOf,
+  FileSpaceError,
   readEnvelopeCustody,
   retainForInspection,
   retainForContinuation,
@@ -94,9 +96,11 @@ function captureCause(failure: WorkspaceCaptureFailure): string {
     case "capture_preview_truncated":
       return "only a clipped preview of the changes could be read";
     case "capture_space_insufficient":
-      return failure.requiredBytes !== undefined && failure.availableBytes !== undefined
+      if (failure.requiredBytes === undefined)
+        return "there was not enough free disk space to keep the exact result";
+      return failure.availableBytes !== undefined
         ? `there was not enough free disk space to keep the exact result (${failure.requiredBytes} bytes needed, ${failure.availableBytes} free)`
-        : "there was not enough free disk space to keep the exact result";
+        : `free disk space for the exact result could not be confirmed (${failure.requiredBytes} bytes needed)`;
     case "capture_git_stalled":
       return `Git stopped making progress while recording the result${failure.stallMs !== undefined ? ` (no progress for ${failure.stallMs} ms)` : ""}`;
     case "capture_git_signal":
@@ -106,6 +110,8 @@ function captureCause(failure: WorkspaceCaptureFailure): string {
     case "capture_object_missing":
       return "a Git object the result needs was missing";
     case "capture_failed":
+      if (failure.causeCode === "EFBIG")
+        return "a file is larger than the destination filesystem accepts (EFBIG)";
       // The class names only a code-shaped cause; the diagnostic follows it.
       return failure.causeCode !== failure.code && /^[\w.-]{1,64}$/.test(failure.causeCode ?? "")
         ? `the capture failed (${failure.causeCode})`
@@ -170,6 +176,86 @@ export function directoryCaptureRefusal(
     sourceRoot: root,
     failure,
     ...(retentionFailure ? { retentionFailure } : {}),
+  };
+}
+
+/** The post-review comparison could not read or contain the result. That is its
+ * own typed cause, never a result that changed under review. */
+export class DirectoryStabilityError extends Error {
+  constructor(readonly refusal: CaptureRefusal) {
+    const failure = refusal.failure!;
+    super(
+      `The post-review stability check could not verify the result: ${captureCause(failure)}.` +
+        captureDiagnostic(failure),
+    );
+  }
+}
+
+/** The typed capture cause an error thrown around a captured result carries. */
+export function captureCauseOf(error: unknown): WorkspaceCaptureFailure | undefined {
+  if (error instanceof DirectoryStabilityError) return error.refusal.failure;
+  return error instanceof FileSpaceError ? captureFailureEvidence(error) : undefined;
+}
+
+/** A workspace that could not be made for want of room is a typed capture refusal
+ * of its attempt, not an anonymous harness failure that never started. */
+export function unpreparedWorkspaceRefusal(
+  error: unknown,
+  message: string,
+): { captureRefusal?: CaptureRefusal } {
+  const failure = captureCauseOf(error);
+  return failure
+    ? {
+        captureRefusal: {
+          disposition: "discarded",
+          phase: "workspace",
+          failure,
+          detail: `The attempt's workspace could not be prepared: ${message}`,
+        },
+      }
+    : {};
+}
+
+/** A strategy that stopped because its workspace could not be made for want of
+ * room (convergence prepares its one workspace before its loop) ends as that
+ * typed workspace refusal, as a race attempt's unprepared workspace does. */
+export function unpreparedRunFailure(error: unknown) {
+  if (!(error instanceof FileSpaceError)) return null;
+  return {
+    phase: "workspace",
+    meta: {
+      captureFailure: captureFailureEvidence(error),
+      category: "project" as const,
+      reason: CAPTURE_REFUSED_REASON,
+    },
+  };
+}
+
+/** A captured directory result whose final files could not be written: no final
+ * file result exists, while the attempt's complete capture and any delivery
+ * receipt stay. */
+export function directoryPublicationRefusal(
+  error: unknown,
+  /** `readiness`: the manifest whose ready line the run's event file kept when
+   * only the journal after it failed; it and the files it names stay. */
+  input: { artifactRoot: string; delivered: boolean; readiness?: string },
+): CaptureRefusal {
+  const failure = captureFailureEvidence(error instanceof Error ? error : new Error(String(error)));
+  const kept = join(input.artifactRoot, "final/files");
+  return {
+    disposition: "retained",
+    phase: "workspace",
+    sourceRoot: kept,
+    failure,
+    detail:
+      (input.readiness
+        ? `The run's final files were written and their ready event reached the run's event log, but the daemon journal did not accept it: ${captureCause(failure)}.` +
+          `${captureDiagnostic(failure)} No work product was recorded; the manifest ${input.readiness} and the files it names stay as the event log states. Kept: the captured copy at ${kept}.`
+        : `The captured result could not be published as the run's final files: ${captureCause(failure)}.` +
+          `${captureDiagnostic(failure)} No final file result was recorded. Kept: the captured copy at ${kept}.`) +
+      (input.delivered
+        ? " What was already delivered stays recorded in final/delivery_receipt.yaml."
+        : ""),
   };
 }
 

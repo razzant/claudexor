@@ -109,7 +109,7 @@ export const ControlApplyCheckResponse = z
       .describe("True when the clean check is an already-applied idempotent no-op."),
     /** #535: the delivery owner's typed reason, as a delivery of this result would refuse. */
     refusal: GitResultRefusal.optional().describe(
-      "Typed reason an object result's dry run refused (code, message, bounded paths); absent otherwise.",
+      "Typed reason an object result's dry run refused (code, message, bounded paths), or space_insufficient when a directory result's verification copy ran out of room; absent otherwise.",
     ),
   })
   .strict()

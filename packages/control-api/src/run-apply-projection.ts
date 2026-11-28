@@ -37,10 +37,11 @@ export function validRunOperatorDecision(
   maxBytes?: number,
 ) {
   if (!decision) return null;
-  return decision.patchSha256 ===
-    exactPatch.runPatchDigest(rec, runRepoRoot(rec, maxBytes), maxBytes)
-    ? decision
-    : null;
+  // A files result binds its manifest (as Apply's gate reads it); others their patch.
+  const bound =
+    readFilesWorkProduct(rec, maxBytes)?.manifestSha256 ??
+    exactPatch.runPatchDigest(rec, runRepoRoot(rec, maxBytes), maxBytes);
+  return decision.patchSha256 === bound ? decision : null;
 }
 export function runRepoRoot(rec: DaemonRunRecord, maxBytes?: number): string | null {
   return projectionRead(rec.runDir ?? rec.id, `repo-root:${maxBytes ?? "all"}`, () =>

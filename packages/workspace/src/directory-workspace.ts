@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   WorkspaceFilesManifest,
@@ -10,6 +10,13 @@ import {
 } from "@claudexor/schema";
 import { nowIso, sha256 } from "@claudexor/util";
 import { envelopeBaseOf } from "./envelope-custody.js";
+import type { RunContentIndex } from "./content-index.js";
+import {
+  adoptImmutableFile,
+  fileSpaceFailure,
+  hasImmutableFile,
+  ImmutableFileMismatch,
+} from "./file-copy.js";
 import { throwIfCancelled } from "./git-run.js";
 import {
   directoryInventory,
@@ -38,6 +45,8 @@ export async function createDirectoryEnvelope(input: {
   inPlace?: boolean;
   accessProfile?: AccessProfile;
   signal?: AbortSignal;
+  /** The run's immutable bytes: a baseline shares what another attempt's already holds. */
+  contentIndex?: RunContentIndex;
 }): Promise<WorkspaceEnvelope> {
   const executionRoot = input.inPlace ? input.sourceRoot : join(input.envelopeRoot, "tree");
   const scopePaths = input.scopePaths ?? [];
@@ -70,8 +79,19 @@ export async function createDirectoryEnvelope(input: {
   });
 }
 
-/** Uses the existing envelope's baseline/tree directories, never another store. */
-export async function prepareDirectoryWorkspace(input: {
+/** Uses the existing envelope's baseline/tree directories, never another store.
+ * A copy that runs out of room is the typed space refusal, metadata writes included. */
+export async function prepareDirectoryWorkspace(
+  input: Parameters<typeof prepareDirectory>[0],
+): Promise<void> {
+  try {
+    await prepareDirectory(input);
+  } catch (error) {
+    throw fileSpaceFailure(error, "directory preparation");
+  }
+}
+
+async function prepareDirectory(input: {
   sourceRoot: string;
   executionRoot: string;
   envelopeRoot: string;
@@ -79,6 +99,7 @@ export async function prepareDirectoryWorkspace(input: {
   inPlace: boolean;
   /** Preparation's stop, checked before and inside both scans and between copied entries. */
   signal?: AbortSignal;
+  contentIndex?: RunContentIndex;
 }): Promise<void> {
   const { sourceRoot, executionRoot, envelopeRoot, scopePaths, inPlace, signal } = input;
   const content = join(envelopeRoot, "baseline", "content");
@@ -89,6 +110,7 @@ export async function prepareDirectoryWorkspace(input: {
     inPlace ? undefined : content,
     [],
     signal,
+    input.contentIndex,
   );
   if (!inPlace) {
     await mkdir(executionRoot, { recursive: true });
@@ -140,6 +162,14 @@ export async function directoryPreparation(
   };
 }
 
+async function sameInode(a: string, b: string): Promise<boolean> {
+  const [first, second] = await Promise.all([
+    lstat(a).catch(() => null),
+    lstat(b).catch(() => null),
+  ]);
+  return first !== null && second !== null && first.dev === second.dev && first.ino === second.ino;
+}
+
 export interface CapturedWorkspaceFiles {
   manifest: WorkspaceFilesManifest;
   manifestPath: string;
@@ -148,27 +178,54 @@ export interface CapturedWorkspaceFiles {
   noChanges: boolean | null;
 }
 
-/** Complete bytes live under the run artifact tree; a preview is never apply input.
- * The manifest's source is the tree its baseline was read from (a delegated
- * run's bound execution root), never a caller-supplied identity. */
-export async function captureDirectoryWorkspace(input: {
+interface DirectoryCaptureInput {
   executionRoot: string;
   envelopeRoot: string;
   runRoot: string;
   observedPaths?: string[];
   excludedPaths?: string[];
-}): Promise<CapturedWorkspaceFiles> {
+  /** `false` hashes everything and writes nothing: the same manifest digest, for
+   * comparison with a retained capture. */
+  retainContent?: boolean;
+  /** The run's immutable bytes: a blob another of its names holds is linked, not written again. */
+  contentIndex?: RunContentIndex;
+}
+
+/** Complete bytes live under the run artifact tree; a preview is never apply input.
+ * The manifest's source is the tree its baseline was read from (a delegated
+ * run's bound execution root), never a caller-supplied identity. */
+export async function captureDirectoryWorkspace(
+  input: DirectoryCaptureInput,
+): Promise<CapturedWorkspaceFiles> {
+  try {
+    return await captureDirectory(input);
+  } catch (error) {
+    throw fileSpaceFailure(error, "directory capture");
+  }
+}
+
+async function captureDirectory(input: DirectoryCaptureInput): Promise<CapturedWorkspaceFiles> {
   const baseline = JSON.parse(
     await readFile(join(input.envelopeRoot, "directory-baseline.json"), "utf8"),
   ) as DirectoryBaseline;
   const before = new Map(baseline.entries.map(({ path, state }) => [path, state]));
   const contentPrefix = "final/files/content";
-  const content = join(input.runRoot, contentPrefix);
+  const retain = input.retainContent !== false;
+  const content = retain ? join(input.runRoot, contentPrefix) : undefined;
   const paths =
     baseline.isolation === "envelope"
       ? ["."]
       : [...baseline.scopePaths, ...(input.observedPaths ?? [])];
-  const after = await directoryInventory(input.executionRoot, paths, content, input.excludedPaths);
+  const baselineContent = join(input.envelopeRoot, "baseline", "content");
+  const index = input.contentIndex;
+  const after = await directoryInventory(
+    input.executionRoot,
+    paths,
+    content,
+    input.excludedPaths,
+    undefined,
+    index,
+  );
   const entries: WorkspaceFileChange[] = [];
   const excluded = (path: string) =>
     (input.excludedPaths ?? []).some((prefix) => path === prefix || path.startsWith(prefix + "/"));
@@ -177,16 +234,25 @@ export async function captureDirectoryWorkspace(input: {
     if (excluded(path)) continue;
     const old = before.get(path);
     if (old?.kind === "file" && baseline.isolation === "envelope") {
-      const saved = await readWorkspaceFile(
-        join(input.envelopeRoot, "baseline", "content", old.sha256.slice(7)),
-        content,
-      );
-      if (
-        saved?.kind !== "file" ||
-        saved.sha256 !== old.sha256 ||
-        saved.sizeBytes !== old.sizeBytes
-      )
-        throw new Error(`Baseline bytes no longer match: ${path}`);
+      // An unchanged file's output already holds these bytes: verify, write nothing.
+      const name = old.sha256.slice(7);
+      const saved = join(baselineContent, name);
+      const target = content ? join(content, name) : undefined;
+      let intact: boolean;
+      try {
+        if (target && !(await hasImmutableFile(target, old, index)))
+          intact = await adoptImmutableFile(saved, target, old, index);
+        // The output holds the bytes; the saved baseline must too. One inode with
+        // the verified output is that proof, without reading a large file again.
+        else if (target && (await sameInode(saved, target))) intact = true;
+        else intact = await hasImmutableFile(saved, old, index);
+      } catch (error) {
+        // Only bytes that differ break the baseline; a read or a copy that failed
+        // (no room included) keeps its own typed cause.
+        if (!(error instanceof ImmutableFileMismatch)) throw error;
+        intact = false;
+      }
+      if (!intact) throw new Error(`Baseline bytes no longer match: ${path}`);
     }
     const withRef = (
       state: WorkspaceFileState | null,
@@ -224,11 +290,13 @@ export async function captureDirectoryWorkspace(input: {
     entries,
   });
   const manifestPath = "final/files/manifest.json";
-  await mkdir(join(input.runRoot, "final/files"), { recursive: true });
   const text = JSON.stringify(manifest) + "\n";
-  const path = join(input.runRoot, manifestPath);
-  await writeFile(`${path}.pending`, text);
-  await rename(`${path}.pending`, path);
+  if (retain) {
+    await mkdir(join(input.runRoot, "final/files"), { recursive: true });
+    const path = join(input.runRoot, manifestPath);
+    await writeFile(`${path}.pending`, text);
+    await rename(`${path}.pending`, path);
+  }
   const changedPaths = entries
     .filter((entry) => !sameWorkspaceFile(entry.before, entry.after))
     .map((entry) => entry.path);

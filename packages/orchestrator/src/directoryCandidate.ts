@@ -8,23 +8,38 @@ import {
   WorkProduct,
   WorkspacePreparedPayload,
   workspacePreparationSummary,
+  workStateVetoes,
+  deliveryEffectsStatement,
 } from "@claudexor/schema";
 import {
   type WorkspaceManager,
   type CapturedWorkspaceFiles,
+  type RunContentIndex,
   directoryPreparation,
+  fileSpaceFailure,
   materializeWorkspaceFile,
-  readWorkspaceFile,
   sameWorkspaceFile,
+  shareImmutableFile,
   workspaceFilePath,
 } from "@claudexor/workspace";
 import { type ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import { type EventLog } from "@claudexor/event-log";
+import { filesDeliveryHeldPaths } from "@claudexor/delivery";
 import { newId, sha256 } from "@claudexor/util";
-import { directoryCaptureRefusal, type CaptureRefusal } from "./captureRefusal.js";
+import {
+  CAPTURE_REFUSED_REASON,
+  directoryCaptureRefusal,
+  directoryPublicationRefusal,
+  DirectoryStabilityError,
+  type CaptureRefusal,
+} from "./captureRefusal.js";
+import { terminalOutcomeFacts } from "./terminalOutcome.js";
+import type { CandidateRun } from "./candidateEvidence.js";
 
 export interface DirectoryCandidate extends CapturedWorkspaceFiles {
   artifactRoot: string;
+  /** The run's immutable bytes (its manager's): publication and review link them. */
+  contentIndex?: RunContentIndex;
 }
 
 /** A rejected recursive fs.rm can leave sibling deletes in flight. These paths
@@ -99,6 +114,8 @@ export async function captureDirectoryCandidate(input: {
   artifactRoot: string;
   observedPaths: string[];
   holder?: { runId: string; runDir: string };
+  /** `false` hashes without keeping bytes (a comparison, never a result). */
+  retainContent?: boolean;
 }): Promise<{ files?: DirectoryCandidate; refusal?: CaptureRefusal }> {
   if (
     input.envelope.policy_profile === "readonly" &&
@@ -108,13 +125,17 @@ export async function captureDirectoryCandidate(input: {
   try {
     const files = await input.manager.captureFiles(input.envelope, input.artifactRoot, {
       observedPaths: input.observedPaths,
+      retainContent: input.retainContent,
     });
-    return { files: { ...files, artifactRoot: input.artifactRoot } };
+    const { contentIndex } = input.manager;
+    return { files: { ...files, artifactRoot: input.artifactRoot, contentIndex } };
   } catch (error) {
-    // The partial payload is no result and goes. One that cannot be removed stays,
-    // never in place of the capture's own cause: the refusal names it beside that.
+    // The partial payload is no result and goes (a comparison wrote none). One
+    // that cannot be removed stays, never in place of the capture's own cause:
+    // the refusal names it beside that.
     try {
-      await removeCaptureTree(join(input.artifactRoot, "final/files"));
+      if (input.retainContent !== false)
+        await removeCaptureTree(join(input.artifactRoot, "final/files"));
     } catch (cleanupError) {
       if (error instanceof Error && Object.isExtensible(error) && !("cleanupError" in error))
         Object.defineProperty(error, "cleanupError", { value: cleanupError, enumerable: false });
@@ -152,67 +173,106 @@ export function directoryPreview(files: DirectoryCandidate): string {
   );
 }
 
-/** A requested review sees a frozen selected candidate, never a later live edit. */
+/** A requested review sees a frozen selected candidate, never a later live edit.
+ * The evidence packet is the engine's own immutable record, so it shares the
+ * captured blobs; the candidate tree gets independent (disposable) copies. A
+ * preparation that cannot hold them throws its typed cause (no room included),
+ * and leaves no partial candidate tree. */
 export async function prepareDirectoryReview(
   files: DirectoryCandidate,
   evidenceDir: string,
 ): Promise<{ cwd: string; paths: string[]; dispose(): Promise<void> }> {
   const cwd = join(files.artifactRoot, "directory-review");
-  await mkdir(cwd, { recursive: true });
-  await removeCaptureTree(join(evidenceDir, "final/files"));
-  const copied = new Set<string>();
+  const dispose = () => removeCaptureTree(cwd);
   const paths: string[] = [];
-  for (const entry of files.manifest.entries) {
-    for (const state of [entry.before, entry.after]) {
-      if (
-        state === "unknown" ||
-        state?.kind !== "file" ||
-        !state.artifactPath ||
-        copied.has(state.artifactPath)
-      )
-        continue;
+  try {
+    await mkdir(cwd, { recursive: true });
+    await removeCaptureTree(join(evidenceDir, "final/files"));
+    const shared = new Set<string>();
+    for (const entry of files.manifest.entries) {
+      for (const state of [entry.before, entry.after]) {
+        if (
+          state === "unknown" ||
+          state?.kind !== "file" ||
+          !state.artifactPath ||
+          shared.has(state.artifactPath)
+        )
+          continue;
+        await shareImmutableFile(
+          await workspaceFilePath(files.artifactRoot, state.artifactPath),
+          await workspaceFilePath(evidenceDir, state.artifactPath),
+          state,
+          files.contentIndex,
+        );
+        shared.add(state.artifactPath);
+      }
+      if (!entry.after) continue;
       await materializeWorkspaceFile(
-        await workspaceFilePath(evidenceDir, state.artifactPath),
-        state,
-        await workspaceFilePath(files.artifactRoot, state.artifactPath),
+        await workspaceFilePath(cwd, entry.path),
+        entry.after,
+        entry.after.kind === "file"
+          ? await workspaceFilePath(files.artifactRoot, entry.after.artifactPath!)
+          : undefined,
+        false,
       );
-      copied.add(state.artifactPath);
+      paths.push(entry.path);
     }
-    if (!entry.after) continue;
-    await materializeWorkspaceFile(
-      await workspaceFilePath(cwd, entry.path),
-      entry.after,
-      entry.after.kind === "file"
-        ? await workspaceFilePath(files.artifactRoot, entry.after.artifactPath!)
-        : undefined,
-    );
-    paths.push(entry.path);
+    await writeFile(join(evidenceDir, "FILES.json"), JSON.stringify(files.manifest) + "\n");
+  } catch (error) {
+    // Never in place of the preparation's own cause.
+    await dispose().catch(() => undefined);
+    throw fileSpaceFailure(error, "review preparation");
   }
-  await writeFile(join(evidenceDir, "FILES.json"), JSON.stringify(files.manifest) + "\n");
-  return { cwd, paths, dispose: () => removeCaptureTree(cwd) };
+  return { cwd, paths, dispose };
 }
 
-/** Recheck the same captured footprint after review, keeping its sealed bytes intact. */
+/** Recheck the same captured footprint after review by hashing it, writing
+ * nothing. False means the result changed, including a file that changed while
+ * it was being read; a check that could not read it throws
+ * `DirectoryStabilityError`. */
 export async function directoryCandidateStable(
   manager: WorkspaceManager,
   envelope: WorkspaceEnvelope,
   files: DirectoryCandidate,
 ): Promise<boolean> {
-  const artifactRoot = join(files.artifactRoot, "review-verification");
-  try {
-    const current = await captureDirectoryCandidate({
-      manager,
-      envelope,
-      artifactRoot,
-      observedPaths: files.manifest.entries.map((entry) => entry.path),
-    });
-    return current.files?.manifestSha256 === files.manifestSha256;
-  } finally {
-    await removeCaptureTree(artifactRoot);
-  }
+  const current = await captureDirectoryCandidate({
+    manager,
+    envelope,
+    artifactRoot: join(files.artifactRoot, "review-verification"),
+    observedPaths: files.manifest.entries.map((entry) => entry.path),
+    retainContent: false,
+  });
+  if (current.refusal?.failure?.causeCode === "file_changed") return false;
+  if (current.refusal) throw new DirectoryStabilityError(current.refusal);
+  return current.files?.manifestSha256 === files.manifestSha256;
 }
 
-export async function publishDirectoryCandidate(input: {
+/** Whether a delivery of this manifest left every change of it on the target: it
+ * applied, and no change with an unknown preimage stayed behind in custody. */
+const deliveredWhole = (manifest: WorkspaceFilesManifest, delivery: { applied: boolean }) =>
+  delivery.applied &&
+  !manifest.entries.some((entry) => entry.before === "unknown" && entry.after !== null);
+
+/**
+ * The run's automatic directory delivery receipt as it is saved
+ * (`final/delivery_receipt.yaml`): the receipt and, beside it, its coverage of this
+ * exact manifest. A run whose result is never published reads what the target
+ * holds from that coverage alone: `complete` only when the whole manifest is on it.
+ */
+export function savedDirectoryDelivery<T extends { applied: boolean }>(
+  files: Pick<DirectoryCandidate, "manifest" | "manifestSha256">,
+  delivered: T,
+): T & { manifestCoverage: { manifestSha256: string; complete: boolean } } {
+  return {
+    ...delivered,
+    manifestCoverage: {
+      manifestSha256: files.manifestSha256,
+      complete: deliveredWhole(files.manifest, delivered),
+    },
+  };
+}
+
+interface DirectoryPublication {
   files: DirectoryCandidate;
   store: ArtifactStore;
   paths: RunPaths;
@@ -221,34 +281,131 @@ export async function publishDirectoryCandidate(input: {
   harnessId: string;
   facts: RunOutcomeFacts;
   log: EventLog;
-  delivery?: { applied: boolean; appliedPaths: string[]; alreadyApplied?: boolean };
-}): Promise<void> {
+  /** The run's automatic delivery receipt, when it made one. */
+  delivery?: Parameters<typeof deliveryEffectsStatement>[0] & {
+    appliedPaths: string[];
+    alreadyApplied?: boolean;
+  };
+}
+
+/**
+ * Publish a captured result as the run's final files, naming the captured blobs
+ * a second time instead of writing them again. A publication that cannot be
+ * completed never throws over the terminal's own cause: it takes back what this
+ * call created, records no work product, and returns the typed refusal.
+ */
+export async function publishDirectoryCandidate(
+  input: DirectoryPublication,
+): Promise<CaptureRefusal | null> {
+  const created: string[] = [];
+  const productPath = join(input.paths.finalDir, "work_product.yaml");
+  // Set by the ready event's own write, before its durable sink accepts it.
+  const ready = { written: false };
+  try {
+    await writeDirectoryResult(input, created, ready);
+    return null;
+  } catch (error) {
+    // The ready line reached the run's event file and only the journal after it
+    // failed: that file still replays it, so the manifest and the bytes it names
+    // stay; the work product alone is taken back. Otherwise every leftover is.
+    const readinessWritten = ready.written;
+    for (const path of created.reverse())
+      if (!readinessWritten || path === productPath)
+        await rm(path, { force: true }).catch(() => undefined);
+    return directoryPublicationRefusal(fileSpaceFailure(error, "file publication"), {
+      artifactRoot: input.files.artifactRoot,
+      delivered: input.delivery !== undefined,
+      ...(readinessWritten ? { readiness: join(input.paths.root, input.files.manifestPath) } : {}),
+    });
+  }
+}
+
+/**
+ * Publish a candidate run's result. A refused publication is recorded on the run
+ * as its capture refusal, and a clean success it would have claimed becomes a
+ * failed `capture_refused`; a failed, cancelled or blocked terminal keeps its own
+ * cause. Answers the facts the run's terminal states.
+ */
+export async function publishRunDirectoryCandidate(
+  run: CandidateRun,
+  input: Omit<DirectoryPublication, "files" | "attemptId" | "harnessId">,
+): Promise<RunOutcomeFacts> {
+  const refusal = await publishDirectoryCandidate({
+    ...input,
+    files: run.files!,
+    attemptId: run.attemptId,
+    harnessId: run.harnessId,
+  });
+  if (!refusal) return input.facts;
+  run.captureRefusal = refusal;
+  // INV-116: only a CLEAN success fails over a refused publication. A cancelled or
+  // failed terminal, and a succeeded one awaiting a decision (review blocked,
+  // checks failed, work state vetoing), keep their own cause with the refusal beside.
+  const { facts: prior } = input;
+  const decided =
+    prior.lifecycle === "succeeded" && prior.review !== "blocked" && prior.checks !== "failed";
+  if (decided && workStateVetoes(prior)) {
+    // The run's own report stays its cause; its written decision stops recommending apply.
+    await demoteWrittenDecision(input.store, input.paths, prior, refusal.detail).catch(
+      () => undefined,
+    );
+    return prior;
+  }
+  if (!decided) return prior;
+  const facts = terminalOutcomeFacts(input.facts, "failed", CAPTURE_REFUSED_REASON);
+  await demoteWrittenDecision(input.store, input.paths, facts, refusal.detail).catch(
+    () => undefined,
+  );
+  return facts;
+}
+
+/** A decision already written for this result must not keep claiming success. */
+async function demoteWrittenDecision(
+  store: ArtifactStore,
+  paths: RunPaths,
+  facts: RunOutcomeFacts,
+  detail: string,
+): Promise<void> {
+  const path = join(paths.arbitrationDir, "decision.yaml");
+  const current = store.readYaml<{ evidence_facts?: string[] }>(path);
+  if (!current) return;
+  await store.writeYamlAsync(path, {
+    ...current,
+    facts,
+    apply_recommendation: "inspect",
+    evidence_facts: [...(current.evidence_facts ?? []), detail],
+  });
+}
+
+async function writeDirectoryResult(
+  input: DirectoryPublication,
+  created: string[],
+  ready: { written: boolean },
+): Promise<void> {
   const { files, paths, store } = input;
+  const published = new Set<string>();
   for (const entry of files.manifest.entries)
     for (const state of [entry.before, entry.after]) {
       if (state === "unknown" || state?.kind !== "file" || !state.artifactPath) continue;
+      if (published.has(state.artifactPath)) continue;
       const source = await workspaceFilePath(files.artifactRoot, state.artifactPath);
       const target = await workspaceFilePath(paths.root, state.artifactPath);
-      await mkdir(join(paths.finalDir, "files/content"), { recursive: true });
-      // Identical hashes share bytes between baseline and postimage.
-      try {
-        await materializeWorkspaceFile(target, state, source);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const existing = await readWorkspaceFile(target);
-        if (
-          existing?.kind !== "file" ||
-          existing.sha256 !== state.sha256 ||
-          existing.sizeBytes !== state.sizeBytes
-        )
-          throw new Error("Existing result bytes do not match their immutable file reference");
-      }
+      if (await shareImmutableFile(source, target, state, files.contentIndex)) created.push(target);
+      published.add(state.artifactPath);
     }
   const text = await readFile(join(files.artifactRoot, files.manifestPath), "utf8");
   if (sha256(text) !== files.manifestSha256)
     throw new Error("Captured directory manifest changed before publication");
-  await store.writeTextAsync(join(paths.root, files.manifestPath), text);
-  await store.writeTextAsync(join(paths.finalDir, "files/preview.txt"), directoryPreview(files));
+  const write = async (path: string, content: string) => {
+    const existed = await lstat(path).then(
+      () => true,
+      () => false,
+    );
+    await store.writeTextAsync(path, content);
+    if (!existed) created.push(path);
+  };
+  await write(join(paths.root, files.manifestPath), text);
+  await write(join(paths.finalDir, "files/preview.txt"), directoryPreview(files));
   const direct = files.manifest.isolation === "live";
   const listing = directoryChangedEntries(files.manifest).map((entry) => {
     const label = entry.path.replace(/[\\\[\]]/g, "\\$&");
@@ -256,9 +413,9 @@ export async function publishDirectoryCandidate(input: {
       ? `- [${label}](${entry.after.artifactPath}) (${entry.after.sizeBytes} bytes)`
       : `- ${label}${entry.after === null ? " (removed)" : ""}`;
   });
-  await store.writeTextAsync(
+  await write(
     join(paths.finalDir, "files/result.md"),
-    `${direct ? (files.changedPaths.length > 0 ? `${files.noChanges === false ? "Files updated" : "Files observed"} in ${files.manifest.executionRoot}.` : files.noChanges === null ? `Operation finished in ${files.manifest.executionRoot}. A complete file comparison was not recorded.` : "No file changes were found in the selected scope.") : "Files captured from a separate copy. Inspect the captured files; application is subject to the run's outcome and a delivery check."}\n\n${listing.join("\n")}\n`,
+    `${direct ? (files.changedPaths.length > 0 ? `${files.noChanges === false ? "Files updated" : "Files observed"} in ${files.manifest.executionRoot}.` : files.noChanges === null ? `Operation finished in ${files.manifest.executionRoot}. A complete file comparison was not recorded.` : "No file changes were found in the selected scope.") : "Files captured from a separate copy. Inspect the captured files; application is subject to the run's outcome and a delivery check."}${input.delivery && !input.delivery.applied ? `\n\nAutomatic delivery did not apply: ${deliveryEffectsStatement(input.delivery) ?? "refused"}` : ""}\n\n${listing.join("\n")}\n`,
   );
   const product = WorkProduct.parse({
     id: newId("wp"),
@@ -278,7 +435,13 @@ export async function publishDirectoryCandidate(input: {
       source_root: files.manifest.sourceRoot,
       execution_root: files.manifest.executionRoot,
       no_changes: files.noChanges,
-      applied_paths: input.delivery?.appliedPaths ?? (direct ? files.changedPaths : []),
+      // An automatic delivery's coverage of this manifest: its writes and the changes
+      // it found the target already holding (its receipt keeps only the writes).
+      applied_paths: input.delivery
+        ? [...input.delivery.appliedPaths, ...filesDeliveryHeldPaths(input.delivery)]
+        : direct
+          ? files.changedPaths
+          : [],
       adopted:
         (direct ||
           !files.manifest.entries.some(
@@ -295,6 +458,20 @@ export async function publishDirectoryCandidate(input: {
           : "not_applied",
     },
   });
-  await store.writeYamlAsync(join(paths.finalDir, "work_product.yaml"), product);
-  input.log.emit("output.ready", { kind: "artifact", path: files.manifestPath });
+  // The commit point: the work product and the ready event come last, and a
+  // failure of either (the event not durably landed included) takes the
+  // product back with the files it names.
+  const productPath = join(paths.finalDir, "work_product.yaml");
+  const productExisted = await lstat(productPath).then(
+    () => true,
+    () => false,
+  );
+  await store.writeYamlAsync(productPath, product);
+  if (!productExisted) created.push(productPath);
+  await input.log.emitLanded(
+    "output.ready",
+    { kind: "artifact", path: files.manifestPath },
+    true,
+    () => (ready.written = true),
+  );
 }

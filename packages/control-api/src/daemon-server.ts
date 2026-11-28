@@ -37,7 +37,7 @@ import { TERMINAL_STATES } from "./sse-shared.js";
 import { readFilesWorkProduct } from "./files-work-product.js";
 import { appendRunAuditEvent } from "./run-audit.js";
 import { handleRunDisposition } from "./run-taken-route.js";
-import { applyFilesResult } from "./files-apply-route.js";
+import { applyFilesResult, filesDecisionMessage } from "./files-apply-route.js";
 import { streamRunEvents } from "./run-events-stream.js";
 import {
   projectTurnRunCards,
@@ -1274,7 +1274,7 @@ export class DaemonControlApiServer {
               ControlRunDecisionResponse.parse({
                 accepted: delivered.applied,
                 status: delivered.applied ? "applied" : "rejected",
-                message: delivered.detail,
+                message: filesDecisionMessage(delivered),
               }),
             );
           } catch (error) {
@@ -2278,6 +2278,8 @@ function writeOperatorDecisionProjection(
       finding_ids: record.findingIds,
       accepted_risks: record.acceptedRisks,
       patch_sha256: record.patchSha256,
+      // A files result's decision binds its manifest, as the run facts read it.
+      ...(readFilesWorkProduct(rec) ? { manifest_sha256: record.patchSha256 } : {}),
       decided_at: record.decidedAt,
     }),
     "utf8",

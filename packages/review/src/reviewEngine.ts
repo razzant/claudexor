@@ -71,7 +71,7 @@ import { reviewerAuthMode, reviewerAuthSwitchFromEvent } from "./reviewRuntimeTy
 import { reportedUsageCostUsd } from "@claudexor/budget";
 import { ReviewerCostKnowledge } from "./reviewerCostKnowledge.js";
 import { ReviewerSpendAccumulator, type PartialReviewerSpend } from "./reviewerSpendAccumulator.js";
-import { WorkspaceManager } from "@claudexor/workspace";
+import { WorkspaceManager, type RunContentIndex } from "@claudexor/workspace";
 import {
   appendTranscript,
   cleanupReviewerWorkspace,
@@ -93,9 +93,10 @@ export interface ReviewCandidateInput {
   diff: string;
   /** Exactly the changed paths a reviewer copy holds, where no patch shows the change. */
   candidatePaths?: string[];
-  /** Those paths come with a FILES.json the caller wrote to the evidence packet (a
-   * directory result). Without it, the review writes the list as CHANGED_PATHS.json. */
+  /** Those paths come with a FILES.json the caller wrote to the evidence packet (a directory
+   * result; else the review writes CHANGED_PATHS.json); `contentIndex`: the run's verified bytes. */
   candidatePathsHaveManifest?: boolean;
+  contentIndex?: RunContentIndex;
   /** `cwd` is a copy of a result's saved files; one that failed is never read (see
    * prepareReviewerWorkspace). What it names is a review fact whatever each reviewer does. */
   savedCopy?: { unavailable: readonly { path: string; reason: string }[]; failed?: boolean };
@@ -310,6 +311,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     input.evidenceDir,
     persistentEvidenceDir,
     input.evidenceReadOnly === true,
+    input.candidatePathsHaveManifest && (input.contentIndex ?? true),
   );
   const persistentPatch = input.evidenceReadOnly
     ? readExistingDiffEvidence(persistentEvidenceDir, input.diff)
@@ -366,6 +368,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         candidatePaths: input.candidatePaths,
         savedCopy: input.savedCopy,
         preserveEvidenceBytes: input.evidenceReadOnly === true,
+        directoryPayload: input.candidatePathsHaveManifest,
       });
       const reviewerPatch = input.evidenceReadOnly
         ? readExistingDiffEvidence(reviewerWorkspace.evidenceDir, input.diff)

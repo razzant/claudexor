@@ -32,7 +32,7 @@ export interface ObjectEndpoint {
 }
 
 /** Margin kept free on the destination filesystem beyond what a copy needs. */
-const SPACE_MARGIN_BYTES = 64 * 1024 * 1024;
+export const SPACE_MARGIN_BYTES = 64 * 1024 * 1024;
 
 /** Copies of big blobs stream in bounded memory: Git treats every blob above this as "big". */
 const STREAMING_THRESHOLD = ["-c", "core.bigFileThreshold=1m"];
@@ -101,7 +101,14 @@ function sameDevice(a: string, b: string): boolean {
 }
 
 /** Hard-link errors meaning "this filesystem cannot link here": the caller streams instead. */
-const LINK_UNAVAILABLE = new Set(["EXDEV", "EPERM", "ENOTSUP", "EOPNOTSUPP", "EMLINK", "ENOSYS"]);
+export const LINK_UNAVAILABLE = new Set([
+  "EXDEV",
+  "EPERM",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "EMLINK",
+  "ENOSYS",
+]);
 
 /** Publish `source` at `target` by hard link, never overwriting; false when the
  * filesystem refuses hard links (FAT/exFAT, some network mounts), so the

@@ -55,6 +55,18 @@ import Testing
         #expect(receipt.targetPreimageSha == "target")
     }
 
+    @Test func refusedDeliveryStatesItsStoppedPathAndCompletedWrites() throws {
+        let verify = #""finalVerify":{"attempted":true,"base_sha":null,"applied_cleanly":true,"gates_passed":null,"gates":[],"duration_ms":3,"reason":null},"targetPreimageSha":"t""#
+        let partial = #"{"mode":"apply","applied":false,"appliedPaths":["a.txt"],"treeMutated":true,"refused":true,"detail":"file apply ran out of space","refusal":{"code":"space_insufficient","message":"no room","paths":["big.bin"],"pathCount":1},"#
+        let receipt = try JSONDecoder().decode(ApplyResultInfo.self, from: Data((partial + verify + "}").utf8))
+        #expect(receipt.appliedPaths == ["a.txt"])
+        #expect(receipt.refusal?.paths == ["big.bin"])
+        #expect(receipt.effectsStatement == "file apply ran out of space Refusal: space_insufficient at big.bin. Completed before it stopped: a.txt. Where it stopped, the target may already be changed.")
+        let changed = #"{"mode":"apply","applied":false,"appliedPaths":[],"treeMutated":true,"refusal":{"code":"space_insufficient","message":"no room","paths":["dir"],"pathCount":1},"#
+        let none = try JSONDecoder().decode(ApplyResultInfo.self, from: Data((changed + verify + "}").utf8))
+        #expect(none.effectsStatement == "Refusal: space_insufficient at dir. No path completed, but the target changed at dir: inspect it.")
+    }
+
     @Test func startRunRequestEncodesPromptAndMode() throws {
         let req = StartRunRequest(
             prompt: "fix bug",

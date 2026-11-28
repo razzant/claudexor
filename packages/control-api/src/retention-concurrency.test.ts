@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -16,6 +24,25 @@ vi.mock("./retention-removal.js", async (original) => {
     },
   };
 });
+
+/** What an n-byte file reclaims. POSIX `st_blocks` is its allocation in 512-byte
+ * units. Windows libuv reports `AllocationSize >> 9`, zero for small data resident
+ * in the MFT: there a zero for a non-empty file measures nothing and its length
+ * counts, as it does with no block count at all. */
+const held = (size: number): number => {
+  const dir = mkdtempSync(join(tmpdir(), "retention-held-"));
+  try {
+    writeFileSync(join(dir, "f"), "x".repeat(size));
+    const info = statSync(join(dir, "f"));
+    const unmeasured =
+      info.blocks === undefined ||
+      (process.platform === "win32" && info.blocks === 0 && info.size > 0);
+    return unmeasured ? info.size : info.blocks * 512;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
 const roots: string[] = [];
 afterEach(() => {
   beforeCommit = () => {};
@@ -108,7 +135,7 @@ it("keeps an honest partial run receipt when SQL ownership changes during the ne
     },
   );
   expect(receipt.deleted_runs).toHaveLength(1);
-  expect(receipt.freed_bytes).toBe(8);
+  expect(receipt.freed_bytes).toBe(held(8));
   expect(receipt.errors.join()).toContain("references changed");
   expect(retry).toBe(true);
   expect(paths.filter((path) => existsSync(join(path, "final")))).toHaveLength(1);

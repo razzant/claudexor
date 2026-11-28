@@ -52,6 +52,7 @@ export type {
 
 /** Who awaits an event's landing: resolved with the event, or given its failure. */
 type Landing = { resolve(event: RunEvent): void; reject(error: unknown): void };
+type Written = (event: RunEvent) => void;
 type TerminalHook<T> = (type: TerminalRunEventType, payload: Record<string, unknown>) => T;
 type RefreshFinalMessages = () => FinalMessagesOutcome | undefined;
 
@@ -78,8 +79,7 @@ export class EventLog {
   private refreshFinalMessages?: RefreshFinalMessages;
   private eventLoss = false;
   private finalMessagesCurrent = false;
-  /** Queued mode: stamped events whose lines have not landed, in seq order.
-   * Null when lines are written inline. */
+  /** Queued mode: stamped events whose lines have not landed, in seq order (else null). */
   private readonly unlanded: RunEvent[] | null;
   /** Queued mode: the highest seq whose line has landed. */
   private landedSeq: number;
@@ -97,9 +97,8 @@ export class EventLog {
      */
     private readonly onPersist?: (event: RunEvent) => void,
     /**
-     * Thread this run is a turn of, when any. Stamped on every event so the
-     * global event multiplex can route live progress to a chat surface without
-     * a reverse job lookup.
+     * Thread this run is a turn of, when any. Stamped on every event so the global event
+     * multiplex routes live progress to a chat surface without a reverse job lookup.
      */
     private readonly threadId?: string,
     /** Best-effort live observer, invoked only after terminal finalization. */
@@ -155,9 +154,8 @@ export class EventLog {
   }
 
   /**
-   * Register the engine's once-only terminal preparation hook. It builds the
-   * canonical receipt in memory before the durable authority accepts the
-   * terminal; commit runs afterward and before file-tail/live observers.
+   * Register the engine's once-only terminal preparation hook: it builds the canonical receipt
+   * in memory before the durable authority accepts the terminal; commit follows, before file-tail/live observers.
    */
   setBeforeTerminal(
     hook: TerminalHook<PreparedTerminalEvent | void>,
@@ -196,19 +194,19 @@ export class EventLog {
   }
 
   /**
-   * `emit`, settled once the event's line has landed and its `onPersist`
-   * accepted it. A queued log's write or `onPersist` failure rejects this
-   * await alone: it is not held for the log's next emit, and the log stays
-   * usable. An inline log has settled by the time this returns.
+   * `emit`, settled once the event's line has landed and its `onPersist` accepted it. A queued
+   * log's failure rejects this await alone, never held for the next emit. `written` hears the
+   * line reach the run's file, which replays it even if the sink then fails.
    */
   emitLanded(
     type: Exclude<RunEventType, TerminalRunEventType>,
     payload: Record<string, unknown> = {},
     publish = true,
+    written?: Written,
   ): Promise<RunEvent> {
     return new Promise((resolve, reject) => {
-      if (this.unlanded) this.emitEvent(type, payload, publish, { resolve, reject });
-      else resolve(this.emitEvent(type, payload, publish));
+      if (this.unlanded) this.emitEvent(type, payload, publish, { resolve, reject }, written);
+      else resolve(this.emitEvent(type, payload, publish, undefined, written));
     });
   }
 
@@ -230,6 +228,7 @@ export class EventLog {
     payload: Record<string, unknown>,
     publish: boolean,
     landing?: Landing & { aside?: boolean },
+    written?: Written,
   ): RunEvent {
     return measureWork("journal.append", () => {
       this.assertEmittable();
@@ -256,7 +255,8 @@ export class EventLog {
       if (this.unlanded) {
         try {
           orderedAppender.append(this.path, `${JSON.stringify(event)}\n`, {
-            landed: () => measureWork("journal.append", () => this.persistEvent(event, publish)),
+            landed: () =>
+              measureWork("journal.append", () => this.persistEvent(event, publish, written)),
             lost: () => this.lost(),
             aside: landing?.aside === true,
             waiter: landing && { resolve: () => landing.resolve(event), reject: landing.reject },
@@ -269,13 +269,13 @@ export class EventLog {
         this.unlanded.push(event);
         return event;
       }
-      this.persistEvent(event, publish);
+      this.persistEvent(event, publish, written);
       return event;
     });
   }
 
   /** The file and its durable sink establish a landing; live observers are best effort. */
-  private persistEvent(event: RunEvent, publish: boolean): void {
+  private persistEvent(event: RunEvent, publish: boolean, written?: Written): void {
     try {
       if (this.unlanded) {
         this.unlanded.shift();
@@ -284,6 +284,7 @@ export class EventLog {
         appendLine(this.path, JSON.stringify(event));
         this.nextSeq += 1;
       }
+      written?.(event);
       if (this.finalMessagesCurrent && isFinalMessage(event)) this.finalMessagesCurrent = false;
       this.onPersist?.(event);
       this.publish(event, publish);
@@ -308,9 +309,8 @@ export class EventLog {
     this.finalMessagesCurrent = false;
   }
 
-  /** A queued line did not reach the file whole: its write failed first, and
-   * every later line fails with it. The counter continues after the last line
-   * that landed, so a seq on disk is never reused, and these consume none. */
+  /** A queued line did not reach the file whole (its write failed; later ones fail too); the
+   * counter continues after the last landed line, so no seq is reused. */
   private lost(): void {
     this.recordEventLoss();
     this.unlanded!.shift();

@@ -1,19 +1,8 @@
-import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import {
-  chmod,
-  lstat,
-  mkdir,
-  open,
-  readlink,
-  readdir,
-  rename,
-  rm,
-  symlink,
-} from "node:fs/promises";
+import { chmod, lstat, mkdir, readlink, readdir, symlink } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { WorkspaceScopePath, type WorkspaceFileState } from "@claudexor/schema";
-import { newId } from "@claudexor/util";
+import { keepFileContent, type RunContentIndex } from "./content-index.js";
+import { writeIndependentCopy } from "./file-copy.js";
 import { throwIfCancelled } from "./git-run.js";
 
 /** Resolve relative entries without following an ancestor link into another tree. */
@@ -39,10 +28,14 @@ export async function workspaceFilePath(
   return path;
 }
 
-/** One streaming reader supplies both the digest and optional immutable bytes. */
+/** One reader supplies both the digest and, with `contentDir`, the immutable
+ * bytes under their content name: the digest is of the bytes kept. Bytes the
+ * run's `index` already holds are linked, not written a second time. A file
+ * that changed while it was read is `FileChangedError`. */
 export async function readWorkspaceFile(
   path: string,
   contentDir?: string,
+  index?: RunContentIndex,
 ): Promise<WorkspaceFileState | null> {
   const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
@@ -52,40 +45,8 @@ export async function readWorkspaceFile(
   if (stat.isSymbolicLink()) return { kind: "symlink", target: await readlink(path) };
   if (stat.isDirectory()) return { kind: "directory", mode: stat.mode & 0o777 };
   if (!stat.isFile()) throw new Error(`Unsupported filesystem entry: ${path}`);
-  if (contentDir) await mkdir(contentDir, { recursive: true });
-  const input = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  const temp = contentDir ? join(contentDir, newId("pending")) : null;
-  let output: Awaited<ReturnType<typeof open>> | null = null;
-  const hash = createHash("sha256");
-  let sizeBytes = 0;
-  try {
-    output = temp ? await open(temp, "wx", 0o600) : null;
-    for await (const chunk of input.createReadStream({ autoClose: false })) {
-      hash.update(chunk);
-      sizeBytes += chunk.length;
-      if (output) await output.writeFile(chunk);
-    }
-    const after = await lstat(path);
-    if (
-      stat.dev !== after.dev ||
-      stat.ino !== after.ino ||
-      stat.size !== sizeBytes ||
-      stat.mtimeMs !== after.mtimeMs ||
-      stat.ctimeMs !== after.ctimeMs
-    )
-      throw new Error(`File changed while being captured: ${path}`);
-    const digest = hash.digest("hex");
-    if (output && temp && contentDir) {
-      await output.sync();
-      await output.close();
-      await rename(temp, join(contentDir, digest));
-    }
-    return { kind: "file", sha256: `sha256:${digest}`, sizeBytes, mode: stat.mode & 0o777 };
-  } finally {
-    await input.close();
-    await output?.close().catch(() => undefined);
-    if (temp) await rm(temp, { force: true });
-  }
+  const digest = await keepFileContent(path, stat, contentDir, index);
+  return { kind: "file", ...digest, mode: stat.mode & 0o777 };
 }
 
 export function sameWorkspaceFile(
@@ -102,13 +63,15 @@ export function sameWorkspaceFile(
 }
 
 /** `signal`: a preparation's stop, checked before every entry and listing; an entry
- * already being read finishes first (no IO is abandoned). Capture passes none. */
+ * already being read finishes first (no IO is abandoned). Capture passes none.
+ * `index`: the run's engine-owned immutable bytes (see `RunContentIndex`). */
 export async function directoryInventory(
   root: string,
   paths: readonly string[],
   contentDir?: string,
   excluded: readonly string[] = [],
   signal?: AbortSignal,
+  index?: RunContentIndex,
 ): Promise<Map<string, WorkspaceFileState>> {
   const entries = new Map<string, WorkspaceFileState>();
   const visited = new Set<string>();
@@ -121,7 +84,7 @@ export async function directoryInventory(
     visited.add(relative);
     throwIfCancelled(signal);
     const path = await workspaceFilePath(root, relative);
-    const state = await readWorkspaceFile(path, contentDir);
+    const state = await readWorkspaceFile(path, contentDir, index);
     if (!state) return;
     if (relative !== ".") entries.set(relative, state);
     if (state.kind === "directory") {
@@ -144,11 +107,13 @@ export async function directoryInventory(
   return entries;
 }
 
-/** Materialize exactly one immutable state; callers own target preimage checks. */
+/** Materialize exactly one immutable state; callers own target preimage checks.
+ * `durable: false` for a disposable tree (a copy for review or verification). */
 export async function materializeWorkspaceFile(
   path: string,
   state: WorkspaceFileState,
   contentPath?: string,
+  durable = true,
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   if (state.kind === "directory") {
@@ -158,24 +123,12 @@ export async function materializeWorkspaceFile(
     await symlink(state.target, path);
   } else {
     if (!contentPath) throw new Error("File state has no immutable content");
-    const source = await open(contentPath, constants.O_RDONLY | constants.O_NOFOLLOW);
-    let target: Awaited<ReturnType<typeof open>> | null = null;
-    const hash = createHash("sha256");
-    let bytes = 0;
-    try {
-      target = await open(path, "wx", state.mode);
-      for await (const chunk of source.createReadStream({ autoClose: false })) {
-        hash.update(chunk);
-        bytes += chunk.length;
-        await target.writeFile(chunk);
-      }
-      if (`sha256:${hash.digest("hex")}` !== state.sha256 || bytes !== state.sizeBytes)
-        throw new Error("File artifact does not match its recorded hash and size");
-      await target.chmod(state.mode);
-      await target.sync();
-    } finally {
-      await source.close();
-      await target?.close();
-    }
+    // Always an independent file: what receives it may be edited.
+    await writeIndependentCopy(contentPath, path, {
+      expected: state,
+      mode: state.mode,
+      durable,
+      immutableSource: true,
+    });
   }
 }

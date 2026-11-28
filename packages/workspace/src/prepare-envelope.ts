@@ -15,6 +15,8 @@ import { repositoryObjectFormat } from "./git-result.js";
 import { assertProjectObjectFormat } from "./object-store.js";
 import { ensureHarnessHomeAsync } from "./harness-home.js";
 import { createDirectoryEnvelope } from "./directory-workspace.js";
+import type { RunContentIndex } from "./content-index.js";
+import { fileSpaceFailure } from "./file-copy.js";
 import { processStartTime } from "./envelope-recovery.js";
 import { liveEnvelopeCustody, writeEnvelopeCustodyAsync } from "./envelope-custody.js";
 import { snapshotLegacyDirectoryBaseline } from "./plain-diff.js";
@@ -61,6 +63,8 @@ export interface CreateEnvelopeOptions {
    * Git child is stopped (`PreparationStopped`); its Git children join the scope the
    * signal carries (`withScopeMarker`). */
   signal?: AbortSignal;
+  /** Set by the run's manager: a directory baseline shares the run's immutable bytes. */
+  contentIndex?: RunContentIndex;
 }
 
 /**
@@ -85,9 +89,11 @@ export async function prepareEnvelope(input: {
   const madeHere = (await stat(base).catch(() => null)) === null;
   // A sibling's dispose prunes the task folder only while it is empty, also
   // while this makes it: a parent gone under the mkdir is made again (#704).
-  await ensureDirAsync(base).catch((error: { code?: string }) =>
-    error?.code === "ENOENT" ? ensureDirAsync(base) : Promise.reject(error),
-  );
+  await ensureDirAsync(base)
+    .catch((error: { code?: string }) =>
+      error?.code === "ENOENT" ? ensureDirAsync(base) : Promise.reject(error),
+    )
+    .catch((error: unknown) => Promise.reject(directorySpaceFailure(opts, error)));
   // Under way until this call returns: an operator's confirmation never takes it.
   const done = preparationUnderWay(base);
   try {
@@ -109,7 +115,9 @@ async function prepareOrKeep(
       facts ? { ...facts, preparing: false } : null,
     );
     return prepared;
-  } catch (error) {
+  } catch (thrown) {
+    // Before the removal below, so its cleanup facts join the typed refusal.
+    const error = directorySpaceFailure(opts, thrown);
     if (!madeHere) throw error;
     const isolated = !opts.inPlace && opts.workspaceKind !== "directory";
     // An isolated base whose stopped Git (or what it started) may still run is
@@ -143,6 +151,15 @@ async function prepareOrKeep(
       throw await releaseFailedScopedBase(base, opts.signal, error);
     throw await discardUnstartedEnvelope(base, error);
   }
+}
+
+/** A directory workspace's preparation that ran out of room, at any step (its
+ * base, owner.json, the scoped home, the copies), is the typed space refusal; its
+ * cause keeps the system's code. Git preparations keep their own errors. */
+function directorySpaceFailure(opts: CreateEnvelopeOptions, error: unknown): unknown {
+  return opts.workspaceKind === "directory"
+    ? fileSpaceFailure(error, "directory preparation")
+    : error;
 }
 
 /**
