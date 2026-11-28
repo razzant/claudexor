@@ -24,12 +24,18 @@ export function recordedExecutionRoot(rec: DaemonRunRecord, maxBytes?: number): 
   return typeof wp?.meta["execution_root"] === "string" ? wp.meta["execution_root"] : null;
 }
 
-/** The one field of the run's own automatic delivery receipt a result reads. */
+/** What a result reads of the run's own automatic directory delivery receipt: its
+ * producer's statement that the whole manifest it delivered is on the target. A
+ * receipt without it (a partial or unknown coverage, an older receipt) is no
+ * evidence of an applied result. */
 const AutomaticDelivery = {
-  parse(value: unknown): { applied: boolean } {
-    const applied = (value as { applied?: unknown } | null)?.applied;
-    if (typeof applied !== "boolean") throw new Error("not a delivery receipt");
-    return { applied };
+  parse(value: unknown): { complete: boolean } {
+    const coverage = (
+      value as { manifestCoverage?: { complete?: unknown; manifestSha256?: unknown } }
+    )?.manifestCoverage;
+    if (typeof coverage?.complete !== "boolean" || typeof coverage.manifestSha256 !== "string")
+      throw new Error("not a manifest-bound delivery receipt");
+    return { complete: coverage.complete };
   },
 };
 
@@ -61,12 +67,13 @@ export function controlRunResult(rec: DaemonRunRecord, maxBytes?: number): Contr
   // else fall back to the initial snapshot the orchestrator stamped.
   const delivery = readDeliveryState(rec, maxBytes);
   // A run whose automatic delivery reached the target but whose result could not be
-  // published has no work product: its own receipt states what the target holds.
+  // published has no work product: its own receipt's manifest coverage states
+  // whether the target holds the whole result.
   const automatic = wp
     ? null
     : safeReadStructuredArtifact(rec, "final/delivery_receipt.yaml", AutomaticDelivery, maxBytes);
   const applyStateRaw =
-    delivery?.applyState ?? meta["apply_state"] ?? (automatic?.applied ? "applied" : undefined);
+    delivery?.applyState ?? meta["apply_state"] ?? (automatic?.complete ? "applied" : undefined);
   const applyState =
     applyStateRaw === "applied" ||
     applyStateRaw === "applied_review_blocked" ||
@@ -92,7 +99,7 @@ export function controlRunResult(rec: DaemonRunRecord, maxBytes?: number): Contr
     kind,
     diffStat,
     blockers: typeof meta["blockers"] === "number" ? meta["blockers"] : 0,
-    adopted: typeof meta["adopted"] === "boolean" ? meta["adopted"] : (automatic?.applied ?? null),
+    adopted: typeof meta["adopted"] === "boolean" ? meta["adopted"] : (automatic?.complete ?? null),
     applyState,
     preTurnSha,
     postTurnSha,
@@ -224,12 +231,21 @@ export function markFilesAppliedState(
     Array.isArray(wp.meta["applied_paths"])
       ? (wp.meta["applied_paths"] as unknown[]).filter((path) => typeof path === "string")
       : [];
-  const earlier = readDeliveryState(record)?.appliedPaths ?? (automatic as string[]);
+  const prev = readDeliveryState(record);
+  const earlier = prev?.appliedPaths ?? (automatic as string[]);
   const deliverable = new Set(deliverableWorkspaceChanges(manifest).map((entry) => entry.path));
   // Only this manifest's deliverable changes count: unknown or unlisted paths never do.
   const applied = [...new Set([...earlier, ...paths])].filter((path) => deliverable.has(path));
   const complete =
     deliverableWorkspaceChanges(manifest).every((entry) => applied.includes(entry.path)) &&
     !manifest.entries.some((entry) => entry.before === "unknown" && entry.after !== null);
-  markRunApplyState(record, complete ? "applied" : "not_applied", applied, true);
+  const state = complete ? "applied" : "not_applied";
+  // An overlay that already says this is not rewritten: its delivery time stays.
+  if (
+    prev?.applyState === state &&
+    prev.appliedPaths?.length === applied.length &&
+    applied.every((path) => prev.appliedPaths?.includes(path))
+  )
+    return;
+  markRunApplyState(record, state, applied, true);
 }

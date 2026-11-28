@@ -30,7 +30,12 @@ it("counts a sparse file by the bytes it holds, not its logical length", async (
     writeFileSync(image, "A".repeat(4096));
     truncateSync(image, 1024 * 1024);
     const info = statSync(image);
-    const expected = info.blocks === undefined ? info.size : info.blocks * 512;
+    // Its allocation in 512-byte units; on Windows a zero block count of a
+    // non-empty file (data resident in the MFT) measures nothing, so its length counts.
+    const unmeasured =
+      info.blocks === undefined ||
+      (process.platform === "win32" && info.blocks === 0 && info.size > 0);
+    const expected = unmeasured ? info.size : info.blocks * 512;
     expect(await treeReclaimableBytes(join(root, "run"), new Map())).toBe(expected);
   } finally {
     rmSync(root, { recursive: true, force: true });

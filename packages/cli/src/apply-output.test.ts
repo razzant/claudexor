@@ -26,8 +26,13 @@ describe("claudexor apply's human output", () => {
         refusal: { code: "space_insufficient", paths: [] },
       }),
     ).toBe("not confirmed (space_insufficient): final verification ran out of space");
-    expect(applyCheckRefusal({ ok: false, code: 1, stderr: "conflict" })).toBe(
-      "patch does not apply",
+  });
+
+  it("shows the daemon's stated cause, and keeps the plain line when it gave none", () => {
+    expect(applyCheckRefusal({ ok: false, code: 1, stderr: "Target changed: notes.txt\n" })).toBe(
+      "does not apply: Target changed: notes.txt",
     );
+    expect(applyCheckRefusal({ ok: false, code: 1, stderr: "  " })).toBe("patch does not apply");
+    expect(applyCheckRefusal({ ok: false, code: 1 })).toBe("patch does not apply");
   });
 });

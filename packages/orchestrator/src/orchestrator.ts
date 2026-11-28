@@ -84,6 +84,7 @@ import {
   directoryCandidateStable,
   observeDirectoryPaths,
   publishRunDirectoryCandidate,
+  savedDirectoryDelivery,
 } from "./directoryCandidate.js";
 import {
   appliedAttemptFacts,
@@ -4151,7 +4152,10 @@ export class Orchestrator {
                 : null,
             log,
           );
-          await store.writeYamlAsync(join(paths.finalDir, "delivery_receipt.yaml"), delivered);
+          await store.writeYamlAsync(
+            join(paths.finalDir, "delivery_receipt.yaml"),
+            savedDirectoryDelivery(winnerRun.files, delivered),
+          );
           directoryDeliveryReceipt = true;
           directoryDelivery = delivered;
           finalVerify = delivered.finalVerify;

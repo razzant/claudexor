@@ -18,13 +18,19 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { prepareRetirement, RETIRING } from "./retention-removal.js";
 import { readRunTombstone, runRetentionPass } from "./retention.js";
 
-/** What an n-byte file reclaims: its allocated bytes where the platform reports them, else its length. */
+/** What an n-byte file reclaims. POSIX `st_blocks` is its allocation in 512-byte
+ * units. Windows libuv reports `AllocationSize >> 9`, zero for small data resident
+ * in the MFT: there a zero for a non-empty file measures nothing and its length
+ * counts, as it does with no block count at all. */
 const held = (size: number): number => {
   const dir = mkdtempSync(join(tmpdir(), "retention-held-"));
   try {
     writeFileSync(join(dir, "f"), "x".repeat(size));
     const info = statSync(join(dir, "f"));
-    return info.blocks === undefined ? info.size : info.blocks * 512;
+    const unmeasured =
+      info.blocks === undefined ||
+      (process.platform === "win32" && info.blocks === 0 && info.size > 0);
+    return unmeasured ? info.size : info.blocks * 512;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

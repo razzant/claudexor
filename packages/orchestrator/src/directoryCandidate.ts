@@ -247,6 +247,31 @@ export async function directoryCandidateStable(
   return current.files?.manifestSha256 === files.manifestSha256;
 }
 
+/** Whether a delivery of this manifest left every change of it on the target: it
+ * applied, and no change with an unknown preimage stayed behind in custody. */
+const deliveredWhole = (manifest: WorkspaceFilesManifest, delivery: { applied: boolean }) =>
+  delivery.applied &&
+  !manifest.entries.some((entry) => entry.before === "unknown" && entry.after !== null);
+
+/**
+ * The run's automatic directory delivery receipt as it is saved
+ * (`final/delivery_receipt.yaml`): the receipt and, beside it, its coverage of this
+ * exact manifest. A run whose result is never published reads what the target
+ * holds from that coverage alone: `complete` only when the whole manifest is on it.
+ */
+export function savedDirectoryDelivery<T extends { applied: boolean }>(
+  files: Pick<DirectoryCandidate, "manifest" | "manifestSha256">,
+  delivered: T,
+): T & { manifestCoverage: { manifestSha256: string; complete: boolean } } {
+  return {
+    ...delivered,
+    manifestCoverage: {
+      manifestSha256: files.manifestSha256,
+      complete: deliveredWhole(files.manifest, delivered),
+    },
+  };
+}
+
 interface DirectoryPublication {
   files: DirectoryCandidate;
   store: ArtifactStore;

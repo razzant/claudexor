@@ -31,11 +31,12 @@ export function deliveryEffects(answer: Answer): string | undefined {
 }
 
 /** A dry run that was refused: a typed refusal (a verification copy without room
- * proves nothing either way) is never reported as a conflict. */
+ * proves nothing either way) is never reported as a conflict, and a cause the
+ * daemon stated is shown as it said it. */
 export function applyCheckRefusal(answer: Answer): string {
   const refusal = refusalOf(answer);
   const stderr = typeof answer["stderr"] === "string" ? answer["stderr"].trim() : "";
-  if (!refusal) return "patch does not apply";
+  if (!refusal) return stderr ? `does not apply: ${stderr}` : "patch does not apply";
   const at = refusal.paths.length > 0 ? ` at ${refusal.paths.join(", ")}` : "";
   return `not confirmed (${refusal.code}${at})${stderr ? `: ${stderr}` : ""}`;
 }

@@ -27,7 +27,11 @@ import {
   type HarnessRunSpec,
 } from "@claudexor/schema";
 import { fileCopyHost, WorkspaceManager } from "@claudexor/workspace";
-import { captureDirectoryCandidate, prepareDirectoryReview } from "./directoryCandidate.js";
+import {
+  captureDirectoryCandidate,
+  prepareDirectoryReview,
+  savedDirectoryDelivery,
+} from "./directoryCandidate.js";
 import { Orchestrator, type RunInput } from "./orchestrator.js";
 
 // #783: the run's final files name the attempt's captured blobs a second time
@@ -470,6 +474,12 @@ describe("a directory race that already delivered", () => {
     expect(failure!.safeMessage).toContain("already delivered stays recorded");
     expect(existsSync(join(result.runDir, "final/delivery_receipt.yaml"))).toBe(true);
     expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(false);
+    // The saved receipt states, bound to its manifest, that the whole result is on the target.
+    const saved = new ArtifactStore(result.runDir).readYaml<{
+      manifestCoverage: { manifestSha256: string };
+    }>(join(result.runDir, "final/delivery_receipt.yaml"))!;
+    expect(saved).toMatchObject({ applied: true, manifestCoverage: { complete: true } });
+    expect(saved.manifestCoverage.manifestSha256).toMatch(/^sha256:/);
   });
 });
 
@@ -943,5 +953,32 @@ describe.each([
     expect(actions).not.toMatch(/accept the risk|accept_risk/i);
     expect(actions).toMatch(/attempts[\\/]a0\d[\\/]final[\\/]files/);
     expect(actions).toContain("Decide on those changes yourself");
+  });
+});
+
+describe("the saved receipt of an automatic directory delivery", () => {
+  const state = { kind: "file" as const, sha256: "sha256:a", sizeBytes: 1, mode: 0o644 };
+  const manifest = (unknown: boolean) =>
+    ({
+      entries: [
+        { path: "a.txt", before: null, after: state },
+        ...(unknown ? [{ path: "b.txt", before: "unknown", after: state }] : []),
+      ],
+    }) as never;
+  it("states complete only for an applied delivery that left nothing in custody", () => {
+    const delivered = { mode: "apply", applied: true, appliedPaths: ["a.txt"] };
+    expect(
+      savedDirectoryDelivery({ manifest: manifest(false), manifestSha256: "sha256:m" }, delivered),
+    ).toEqual({ ...delivered, manifestCoverage: { manifestSha256: "sha256:m", complete: true } });
+    expect(
+      savedDirectoryDelivery({ manifest: manifest(true), manifestSha256: "sha256:m" }, delivered)
+        .manifestCoverage.complete,
+    ).toBe(false);
+    expect(
+      savedDirectoryDelivery(
+        { manifest: manifest(false), manifestSha256: "sha256:m" },
+        { ...delivered, applied: false },
+      ).manifestCoverage.complete,
+    ).toBe(false);
   });
 });

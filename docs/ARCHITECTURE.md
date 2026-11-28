@@ -2752,17 +2752,24 @@ A directory delivery that runs out of room answers the public receipt's typed
 completed) and `treeMutated` (the target changed, possibly with none completed). A
 verification copy without room is `applied_cleanly: null`, never a conflict, and
 Apply and `apply/check` refuse it by one rule: an accepted risk authorizes only a
-copy that was materialized, and never means the verification succeeded.
-`accept_clean_patch`, the CLI and the macOS client state the same facts in prose
-(`deliveryEffectsStatement`); the typed receipt is Apply's. The delivery state and
-its audit are written with the delivery, inside its idempotent command, so a
-same-key replay changes nothing. It counts the delivery's writes and the selected
-changes it found the target already holding against this manifest, after the run's
-own automatic delivery (the work product's `applied_paths`, bound by
-`manifest_sha256`), so a delivery that completes an earlier partial one reads
-applied; a refusal that wrote nothing marks nothing. A run whose automatic delivery
-reached the target but whose result could not be published reads its applied state
-from that delivery's receipt.
+copy that was materialized, and never means the verification succeeded (the run's
+view reads `verify_pending`). `accept_clean_patch`, the CLI and the macOS client
+state the same facts in prose (`deliveryEffectsStatement`); the typed receipt is
+Apply's. Apply journals the receipt in its idempotent command first, with the
+delivery's coverage of this manifest beside it (never on the wire); the delivery
+state and audit follow. A state that could not be written answers
+`delivery_state_unavailable`, stating the delivery's own writes, refusal, detail
+and `treeMutated` first; a same-key replay records it from that coverage
+without writing a file, auditing again or rewriting an unchanged state; a replay
+never records over a later decision. A receipt that could not be journaled answers
+`delivery_receipt_unavailable` and leaves the command open. The state counts the
+delivery's writes and the selected changes it found the target already holding
+against this manifest, after the run's own automatic delivery (the work product's
+`applied_paths`, bound by `manifest_sha256`), so a delivery that completes an
+earlier partial one reads applied; a refusal that wrote nothing marks nothing. A run
+whose automatic delivery reached the target but whose result could not be published
+reads applied only from that receipt's `manifestCoverage.complete`: a change kept
+in custody for its unknown preimage leaves it not applied.
 
 Writable directory work produces a `files` WorkProduct. Its `files.manifest` and
 `meta.manifest_sha256` address a complete file manifest in the existing run
