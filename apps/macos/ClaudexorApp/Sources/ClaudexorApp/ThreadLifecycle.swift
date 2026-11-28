@@ -123,11 +123,15 @@ extension AppModel {
                 return Self.turnStartConnectionChangedMessage
             }
             mutateTask(runId, at: locationID) { $0.deliveryReceipt = result }
-            guard result.applied else { return result.detail ?? "Apply was refused." }
+            // A delivery that did not apply says what it did; one that changed the
+            // target before it stopped still refreshes the views of that target.
+            let refusal = result.applied
+                ? nil : (result.effectsStatement ?? "Apply was refused.")
+            if !result.applied, result.treeMutated != true { return refusal }
             guard selectionWasAtTarget,
                   selectedExecutionLocation == locationID,
                   selectedThreadId == targetThreadID
-            else { return nil }
+            else { return refusal }
             if locationID == .local {
                 await loadRunDetail(runId, locationID: locationID)
             } else {
@@ -139,12 +143,13 @@ extension AppModel {
                     await openThread(locationID: locationID, id: targetThreadID)
                 }
             }
-            if isCurrentGateway(requestClient, at: locationID),
+            if result.applied,
+               isCurrentGateway(requestClient, at: locationID),
                selectedExecutionLocation == locationID,
                selectedThreadId == targetThreadID {
                 route = .task(runId)
             }
-            return nil
+            return refusal
         } catch { return "Apply failed: \(error)" }
     }
 

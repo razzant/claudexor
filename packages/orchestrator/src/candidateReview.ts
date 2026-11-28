@@ -250,7 +250,11 @@ export async function reviewCandidateRuns(
             candidateLabel: run.label,
             diff: run.patchViewUnavailable ? unrenderedResultNotice(run) : run.diff,
             ...(directoryReview
-              ? { candidatePaths: directoryReview.paths, candidatePathsHaveManifest: true }
+              ? {
+                  candidatePaths: directoryReview.paths,
+                  candidatePathsHaveManifest: true,
+                  ...(run.files?.contentIndex ? { contentIndex: run.files.contentIndex } : {}),
+                }
               : run.patchViewUnavailable
                 ? {
                     candidatePaths: run.changedPaths ?? [],

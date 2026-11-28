@@ -40,6 +40,7 @@ import {
   acceptedReceiptMetadata,
   CONTROL_STORE_IDENTITY_HEADER,
 } from "@claudexor/schema";
+import { applyCheckRefusal, deliveryEffects } from "./apply-output.js";
 import { projectObjectResultDisclosure } from "./mcp-run-projections.js";
 import { accessRouteLines, webRouteLines } from "./inspect-route-lines.js";
 import {
@@ -1316,7 +1317,7 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
             ? "already applied; nothing would change"
             : result["ok"] === true
               ? "patch applies cleanly"
-              : "patch does not apply",
+              : applyCheckRefusal(result),
         );
       else
         print(
@@ -1326,7 +1327,12 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
               ? ` commit=${result["commit"].slice(0, 8)}`
               : "") +
             (typeof result["branch"] === "string" ? ` branch=${result["branch"]}` : "") +
-            (typeof result["detail"] === "string" ? ` (${result["detail"]})` : ""),
+            // A delivery that did not apply says what it did: refusal, stopped path, writes.
+            (result["applied"] !== true && deliveryEffects(result)
+              ? ` (${deliveryEffects(result)})`
+              : typeof result["detail"] === "string"
+                ? ` (${result["detail"]})`
+                : ""),
         );
       return response.ok && (dryRun ? result["ok"] === true : result["applied"] === true) ? 0 : 1;
     }

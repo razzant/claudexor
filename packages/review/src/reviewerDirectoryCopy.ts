@@ -1,6 +1,10 @@
 import { cp } from "node:fs/promises";
 import { relative, sep } from "node:path";
-import { shareImmutableFile, writeIndependentCopy } from "@claudexor/workspace";
+import {
+  shareImmutableFile,
+  writeIndependentCopy,
+  type RunContentIndex,
+} from "@claudexor/workspace";
 
 /**
  * One file of a directory result's persistent evidence record. A captured blob
@@ -14,7 +18,10 @@ export async function copyDirectoryEvidenceFile(
   sourcePath: string,
   targetPath: string,
   info: { size: number; mode: number; isFile(): boolean },
+  /** The run's index (or none): a blob it verified, unchanged since, is linked unread. */
+  payload?: boolean | RunContentIndex,
 ): Promise<void> {
+  const index = typeof payload === "object" ? payload : undefined;
   if (!info.isFile())
     return cp(sourcePath, targetPath, {
       recursive: false,
@@ -24,9 +31,11 @@ export async function copyDirectoryEvidenceFile(
   const rel = relative(sourceEvidenceDir, sourcePath).split(sep).join("/");
   const blob = /^final\/files\/content\/([0-9a-f]{64})$/.exec(rel)?.[1];
   if (blob)
-    await shareImmutableFile(sourcePath, targetPath, {
-      sha256: `sha256:${blob}`,
-      sizeBytes: info.size,
-    });
+    await shareImmutableFile(
+      sourcePath,
+      targetPath,
+      { sha256: `sha256:${blob}`, sizeBytes: info.size },
+      index,
+    );
   else await writeIndependentCopy(sourcePath, targetPath, { mode: info.mode & 0o777 });
 }

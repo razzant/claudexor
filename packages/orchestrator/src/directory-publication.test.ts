@@ -836,6 +836,10 @@ describe.each([
       expect(lead).toContain(statement);
       expect(rest.join("\n")).toContain("could not be published as the run's final files");
       expect(failure!.nextActions[0]).toBe(remedy);
+      // The returned summary leads with the same report, the refusal after it.
+      const [summaryLead, ...summaryRest] = result.summary.split("\n");
+      expect(summaryLead).toContain(statement);
+      expect(summaryRest.join("\n")).toContain("could not be published");
       expect(failure!.nextActions).toContain(
         `Inspect the changed files at ${join(result.runDir, "attempts", "a01", "final/files")}`,
       );
@@ -855,4 +859,35 @@ describe.each([
       expect(decision.apply_recommendation).toBe("inspect");
     },
   );
+});
+
+describe.each([
+  ["race", {}],
+  ["convergence", { attempts: 1 }],
+] as const)("a %s run whose verification copy lacks room", (_lane, lane) => {
+  it("leads with the unproven verification and its remedy, never an accepted risk", async () => {
+    vi.spyOn(fileCopyHost, "clone").mockResolvedValue(false);
+    const real = fileCopyHost.availableBytes;
+    vi.spyOn(fileCopyHost, "availableBytes").mockImplementation((dir) =>
+      dir.includes("claudexor-verify-files-") ? 0 : real(dir),
+    );
+    const result = await start(
+      author((spec) => writeImage(join(spec.cwd, "disk.img"))),
+      lane,
+    );
+
+    const { facts, failure } = terminal(result.runDir);
+    expect(facts.outcome).toMatchObject({ lifecycle: "succeeded", checks: "failed" });
+    expect(failure).toMatchObject({ phase: "verification", category: "validation" });
+    expect(failure!.captureFailure).toMatchObject({ code: "capture_space_insufficient" });
+    expect(failure!.safeMessage).toContain("final verify ERRORED");
+    expect(failure!.nextActions.join("\n")).toContain("Free disk space for the verification copy");
+    expect(failure!.nextActions.join("\n")).not.toMatch(/accept_risk|Accept the risk/);
+    const blocked = readRunEvents(join(result.runDir, "events.jsonl")).events.find(
+      (event) => event.type === "run.blocked",
+    );
+    expect(blocked?.payload).toMatchObject({ phase: "verification" });
+    expect(result.summary.split("\n")[0]).toContain("final verify ERRORED");
+    expect(result.summary).not.toContain("converged");
+  });
 });

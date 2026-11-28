@@ -337,7 +337,7 @@ describe("a files verification's own cost", () => {
     expect(delivered.count).toBe(delivered.result.appliedPaths.length);
   });
 
-  it("reads each immutable blob once per check, however many states name it", async () => {
+  it("hashes each immutable blob once per check for integrity, however many states name it", async () => {
     const f = await fixture(true);
     const reads = vi.spyOn(fileCopyHost, "digest");
     const record = await finalVerifyFiles(f.candidate, undefined, [], { emit: () => undefined });
@@ -354,7 +354,8 @@ describe("a files verification's own cost", () => {
         ),
       ),
     );
-    // An unchanged file's before and after are one blob, read once.
+    // An unchanged file's before and after are one blob, hashed once; building the
+    // verification copy reads the bytes again, which this digest count does not see.
     expect(blobs.sort()).toEqual([...named].sort());
   });
 });

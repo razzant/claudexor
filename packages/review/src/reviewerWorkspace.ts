@@ -4,7 +4,7 @@ import { cp, mkdir, open, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import type { DiffEvidence } from "@claudexor/context";
-import { independentFileFilter } from "@claudexor/workspace";
+import { independentFileFilter, type RunContentIndex } from "@claudexor/workspace";
 import {
   newId,
   readTextSafe,
@@ -211,8 +211,8 @@ export async function copyReviewEvidencePacket(
   persistentEvidenceDir: string,
   preserveBytes = false,
   /** A directory result's packet (see `prepareReviewerWorkspace`). The persistent
-   * record is engine-owned, so it shares the packet's immutable blobs. */
-  directoryPayload = false,
+   * record is engine-owned and shares its blobs (unread when the run's index verified them). */
+  directoryPayload: boolean | RunContentIndex | undefined = false,
 ): Promise<void> {
   const source = resolve(sourceEvidenceDir);
   const target = resolve(persistentEvidenceDir);
@@ -250,7 +250,7 @@ async function copyReviewEvidenceEntry(
   sourcePath: string,
   targetPath: string,
   targetEvidenceDir: string,
-  directoryPayload: boolean,
+  payload: boolean | RunContentIndex | undefined,
 ): Promise<void> {
   const stat = lstatSync(sourcePath);
   if (stat.isDirectory()) {
@@ -273,14 +273,14 @@ async function copyReviewEvidenceEntry(
         childSource,
         join(targetPath, entry.name),
         targetEvidenceDir,
-        directoryPayload,
+        payload,
       );
     }
     return;
   }
   await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
-  if (!directoryPayload) await cp(sourcePath, targetPath, { recursive: false, dereference: false });
-  else await copyDirectoryEvidenceFile(sourceEvidenceDir, sourcePath, targetPath, stat);
+  if (!payload) await cp(sourcePath, targetPath, { recursive: false, dereference: false });
+  else await copyDirectoryEvidenceFile(sourceEvidenceDir, sourcePath, targetPath, stat, payload);
 }
 
 function shouldCopyEvidencePacketPath(

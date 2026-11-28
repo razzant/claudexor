@@ -15,7 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fileCopyHost } from "@claudexor/workspace";
+import { fileCopyHost, RunContentIndex } from "@claudexor/workspace";
 import { copyReviewEvidencePacket, prepareReviewerWorkspace } from "./reviewerWorkspace.js";
 
 // #783: a directory result's review copies keep a sparse file's holes; the
@@ -61,6 +61,19 @@ describe("directory review copies", () => {
     // A packet file the engine rewrites in place stays its own.
     writeFileSync(join(persistent, "DIFF.patch"), "rewritten\n");
     expect(readFileSync(join(f.evidence, "DIFF.patch"), "utf8")).toBe("preview\n");
+  });
+
+  it("names a blob the run's index verified without reading it; a standalone copy verifies", async () => {
+    const f = fixture();
+    const blob = join(f.evidence, f.blob);
+    const digest = { sha256: `sha256:${f.blob.split("/").at(-1)}`, sizeBytes: f.bytes.length };
+    const index = new RunContentIndex();
+    index.remember(blob, lstatSync(blob), digest);
+    const reads = vi.spyOn(fileCopyHost, "digest");
+    await copyReviewEvidencePacket(f.evidence, join(temp(), "evidence"), false, index);
+    expect(reads.mock.calls.map(([path]) => String(path))).not.toContain(blob);
+    await copyReviewEvidencePacket(f.evidence, join(temp(), "evidence"), false, true);
+    expect(reads.mock.calls.map(([path]) => String(path))).toContain(blob);
   });
 
   it("an ordinary packet is copied as before, never linked", async () => {

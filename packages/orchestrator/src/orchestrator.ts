@@ -350,6 +350,7 @@ import {
   throwIfCancelled,
   type EnsureGitRepositoryResult,
 } from "@claudexor/workspace";
+import { deliveryEffectsStatement } from "@claudexor/schema";
 import {
   blockedDecisionOverride,
   finalVerifyBlocks,
@@ -4157,7 +4158,9 @@ export class Orchestrator {
           if (finalVerifyBlocks(finalVerify)) finalVerifyFailed = true;
           deliverySpace = delegateFailure.deliveryCause(delivered);
           if (!delivered.applied) {
-            deliveryFailureReason = delivered.detail ?? "directory race adoption was refused";
+            // What it did: its refusal, the path it stopped at and the paths it wrote.
+            deliveryFailureReason =
+              deliveryEffectsStatement(delivered) ?? "directory race adoption was refused";
             facts = { ...facts, checks: "failed", reason: "checks_failed" };
           }
           writeRaceDeliveryDecision(store, decisionPath, {
@@ -4349,13 +4352,15 @@ export class Orchestrator {
     const veto = delegateFailure.workStatePublicationRefused(facts, winnerRun);
     const isFailureTerminal = facts.lifecycle !== "succeeded" || needsDecisionTerminal || veto;
     const decisionBlock = needsHuman || needsDecisionTerminal;
-    const statement = raceStatement(winnerRun, decisionBlock, result.decision.why_winner);
+    const statement =
+      delegateFailure.terminalLead(facts, winnerRun, finalVerify, deliveryFailureReason) ??
+      raceStatement(winnerRun, decisionBlock, result.decision.why_winner);
     const pool = racePool();
     // Beside whichever failure record leads, a source another attempt kept stays named.
     const keptSources = candidateCaptureRefusals(runs).flatMap(secretDiff.captureInspectionActions);
     const record = delegateFailure.recordFor(store, paths, winnerRun, finalVerify, deliverySpace);
     if (deliveryFailureReason && !finalVerifyFailed) {
-      const refused = deliveryRefusalFailure(deliveryFailureReason, paths.root);
+      const refused = deliveryRefusalFailure(deliveryFailureReason, paths.root, deliverySpace);
       record({
         ...refused,
         safeMessage: withPoolAttempts(refused.safeMessage, pool),
@@ -4363,32 +4368,8 @@ export class Orchestrator {
         nextActions: [...refused.nextActions, ...keptSources],
       });
     } else if (finalVerifyFailed) {
-      record({
-        phase: "verification",
-        // RunFailure.category is a closed enum; "validation" is the honest
-        // bucket (the winner failed re-validation on a fresh base).
-        category: "validation",
-        safeMessage: withPoolAttempts(
-          finalVerify?.applied_cleanly === null
-            ? `final verify ERRORED before proving the patch against a clean base: ${finalVerify?.reason ?? "verify infrastructure error"}`
-            : `final verify failed: ${finalVerify?.reason ?? (finalVerify?.gates_passed === false ? "deterministic gates failed on the fresh verify tree" : "unknown")}`,
-          pool,
-        ),
-        poolAttempts: pool,
-        runDir: paths.root,
-        nextActions: [
-          ...(finalVerify?.applied_cleanly === null
-            ? [
-                "Inspect arbitration/decision.yaml (final_verify) for the verifier error",
-                "Fix the verify infrastructure (git worktree/tmp) and re-run, or accept_risk to override",
-              ]
-            : [
-                "Inspect arbitration/decision.yaml (final_verify)",
-                "Re-run after fixing the base conflict or the failing gates",
-              ]),
-          ...keptSources,
-        ],
-      });
+      const files = Boolean(winnerRun?.files);
+      record(delegateFailure.verificationFailureRecord(finalVerify, files, pool, keptSources));
     } else if (veto) {
       record(delegateFailure.workStatePublicationRecord(facts, winnerRun!, pool, keptSources));
     } else if (isFailureTerminal) {
@@ -5511,12 +5492,16 @@ export class Orchestrator {
     // A needs-decision terminal (review blocked / checks failed) writes a
     // failure record + fires run.blocked even though the lifecycle succeeded.
     const convVeto = delegateFailure.workStatePublicationRefused(facts, lastRun);
+    const convVerifyBlocked = !convVeto && finalVerifyBlocks(convFinalVerify);
     const convIsFailureTerminal = facts.lifecycle !== "succeeded" || convNeedsDecision || convVeto;
     const nonSuccess = convIsFailureTerminal && !convVeto;
     const continuation = resumableTerminal(store, paths, lastRun ? [lastRun] : [], nonSuccess);
     const record = delegateFailure.recordFor(store, paths, lastRun, convFinalVerify);
     if (convVeto) record(delegateFailure.workStatePublicationRecord(facts, lastRun!, convPool));
-    else if (convIsFailureTerminal) {
+    else if (convVerifyBlocked) {
+      const files = Boolean(lastRun?.files);
+      record(delegateFailure.verificationFailureRecord(convFinalVerify, files, convPool));
+    } else if (convIsFailureTerminal) {
       // A5 last-result lift: the LAST attempt's typed mid-attempt refusal
       // survives onto the terminal; budget/cancel/needs-decision outrank it.
       const convDeclared =
@@ -5618,7 +5603,7 @@ export class Orchestrator {
         lifecycle: facts.lifecycle,
         facts,
         attempts: attempt,
-        phase: convVeto ? "workspace" : "review",
+        phase: convVeto ? "workspace" : convVerifyBlocked ? "verification" : "review",
         pool_attempts: convPool,
         failure_ref: "final/failure.yaml",
       });
@@ -5654,9 +5639,10 @@ export class Orchestrator {
         ? { cancelReason: convAbortReason }
         : {}),
       summary: withPoolAttempts(
-        converged && !(lastRun?.files && lastRun.captureRefusal)
-          ? `converged in ${attempt} attempt(s)`
-          : `${convCause ? `${convCause}\n` : ""}${facts.lifecycle} after ${attempt} attempt(s)`,
+        delegateFailure.terminalLead(facts, lastRun, convFinalVerify) ??
+          (converged && !(lastRun?.files && lastRun.captureRefusal)
+            ? `converged in ${attempt} attempt(s)`
+            : `${convCause ? `${convCause}\n` : ""}${facts.lifecycle} after ${attempt} attempt(s)`),
         convPool,
       ),
       candidates: lastRun

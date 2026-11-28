@@ -22,17 +22,57 @@ public struct DeliveryFinalVerify: Codable, Sendable, Equatable, Hashable {
     }
 }
 
+/// A delivery's typed refusal: its code and the paths it concerns (for a directory
+/// delivery out of room, the path it stopped at).
+public struct DeliveryRefusalInfo: Codable, Sendable, Equatable, Hashable {
+    public let code: String
+    public let message: String?
+    public let paths: [String]?
+}
+
 public struct ApplyResultInfo: Codable, Sendable, Equatable, Hashable {
     public let mode: String
     public let applied: Bool
+    /// Paths this delivery completed (written before it stopped when it did not apply).
+    public let appliedPaths: [String]?
     public let branch: String?
     public let commit: String?
     public let prUrl: String?
     public let detail: String?
     public let treeMutated: Bool?
     public let refused: Bool?
+    public let refusal: DeliveryRefusalInfo?
     public let finalVerify: DeliveryFinalVerify
     public let targetPreimageSha: String
+
+    /// What a delivery that did not apply did, worded as the engine's
+    /// `deliveryEffectsStatement`: its detail, typed refusal and stopped path, the
+    /// paths it completed and whether the target changed with none completed.
+    public var effectsStatement: String? {
+        if applied { return detail }
+        let stopped = refusal?.paths ?? []
+        let completed = appliedPaths ?? []
+        func listed(_ paths: [String]) -> String {
+            let head = paths.prefix(20).joined(separator: ", ")
+            return paths.count > 20 ? "\(head) and \(paths.count - 20) more" : head
+        }
+        var parts: [String] = []
+        if let detail { parts.append(detail) }
+        if let refusal {
+            parts.append("Refusal: \(refusal.code)\(stopped.isEmpty ? "" : " at \(listed(stopped))").")
+        }
+        if !completed.isEmpty { parts.append("Completed before it stopped: \(listed(completed)).") }
+        if treeMutated == true {
+            if completed.isEmpty {
+                parts.append("No path completed, but the target changed\(stopped.isEmpty ? "" : " at \(listed(stopped))"): inspect it.")
+            } else if !stopped.isEmpty {
+                parts.append("Where it stopped, the target may already be changed.")
+            }
+        } else if refusal != nil {
+            parts.append("Nothing was written.")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
 }
 
 /// Advisory service preference for the selected model (schema `ProcessingPreference`).

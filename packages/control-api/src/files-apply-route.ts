@@ -15,6 +15,7 @@ import {
 import {
   ControlApplyCheckResponse,
   ControlDeliveryResponse,
+  deliveryEffectsStatement,
   type ControlApplyRequest,
 } from "@claudexor/schema";
 import { runIdempotentDelivery, type RunApplyRouteContext } from "./run-apply-routes.js";
@@ -54,66 +55,42 @@ export async function applyFilesResult(
           throw Object.assign(new Error("Direct file effects are already in place"), {
             status: 409,
           });
-        return verifyAndDeliverFiles(
+        const delivered = await verifyAndDeliverFiles(
           root,
           candidate,
           { paths: body.paths },
           ctx.gateSpecs(record),
           (verify) => ctx.gateError(record, "", root, verify),
         );
+        // Recorded with the delivery, never by a replay of its receipt: the overlay
+        // counts this delivery's writes and the selected changes it found the target
+        // already holding against this manifest; a refusal that wrote nothing marks
+        // nothing. The receipt's appliedPaths stay its own writes.
+        if (delivered.applied || delivered.appliedPaths.length > 0)
+          ctx.markFilesApplied?.(
+            record,
+            [...delivered.appliedPaths, ...filesDeliveryHeldPaths(delivered)],
+            candidate.manifest,
+            candidate.manifestSha256,
+          );
+        ctx.appendAudit(record, delivered.applied ? "control.applied" : "control.rejected", {
+          control: "apply",
+          kind: "files",
+          manifest_sha256: candidate.manifestSha256,
+          applied: delivered.applied,
+          tree_mutated: delivered.treeMutated,
+          applied_paths: delivered.appliedPaths,
+        });
+        return delivered;
       },
-    });
-    // The overlay counts this delivery's writes and the changes it found the
-    // target already holding (an earlier partial delivery's, compared against
-    // this manifest); the receipt's own appliedPaths stay its writes.
-    const held = filesDeliveryHeldPaths(result);
-    if (
-      ctx.deliveredApplyState(record) !== "discarded" &&
-      (result.appliedPaths.length || held.length || result.applied)
-    )
-      ctx.markFilesApplied?.(record, [...result.appliedPaths, ...held], candidate.manifest);
-    ctx.appendAudit(record, result.applied ? "control.applied" : "control.rejected", {
-      control: "apply",
-      kind: "files",
-      manifest_sha256: candidate.manifestSha256,
-      applied: result.applied,
-      tree_mutated: result.treeMutated,
-      applied_paths: result.appliedPaths,
     });
     return ControlDeliveryResponse.parse(result);
   });
 }
 
-const listed = (paths: readonly string[]) =>
-  `${paths.slice(0, 20).join(", ")}${paths.length > 20 ? ` and ${paths.length - 20} more` : ""}`;
-
-/**
- * What `accept_clean_patch` says of a files delivery in its existing `message`
- * (its response has no receipt fields): the delivery's detail and, for one that
- * did not apply, its typed refusal with the path it stopped at and the paths it
- * had already written. The full typed DeliveryReceipt is the one Apply answers.
- */
-export function filesDecisionMessage(receipt: {
-  applied: boolean;
-  appliedPaths?: readonly string[] | undefined;
-  detail?: string | undefined;
-  refusal?: { code: string; paths: readonly string[] } | undefined;
-}): string | undefined {
-  if (receipt.applied) return receipt.detail;
-  const refusal = receipt.refusal;
-  const parts = [
-    receipt.detail,
-    refusal
-      ? `Refusal: ${refusal.code}${refusal.paths.length > 0 ? ` at ${listed(refusal.paths)}` : ""}.`
-      : undefined,
-    receipt.appliedPaths?.length
-      ? `Already written before it stopped: ${listed(receipt.appliedPaths)}.`
-      : refusal
-        ? "Nothing was written before it stopped."
-        : undefined,
-  ].filter((part): part is string => Boolean(part));
-  return parts.length > 0 ? parts.join(" ") : undefined;
-}
+/** What `accept_clean_patch` says of a files delivery in its existing `message`
+ * (its response has no receipt fields); the full typed DeliveryReceipt is Apply's. */
+export const filesDecisionMessage = deliveryEffectsStatement;
 
 export async function checkFilesResult(
   ctx: RunApplyRouteContext,

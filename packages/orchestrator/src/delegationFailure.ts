@@ -10,7 +10,7 @@ import {
   type WorkspaceCaptureFailure,
   type WorkspaceKind,
 } from "@claudexor/schema";
-import { newId } from "@claudexor/util";
+import { newId, redactSecrets } from "@claudexor/util";
 import { snapshotTree } from "@claudexor/workspace";
 import { publishUnverifiedGitCandidate } from "./candidateWorkProduct.js";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
@@ -30,7 +30,11 @@ import {
 import { CAPTURE_REFUSED_REASON, captureRefusedFacts } from "./captureRefusal.js";
 import { writeFailure } from "./runTerminalResults.js";
 import { withPoolAttempts } from "./pool-attempt-evidence.js";
-import { filesDeliverySpaceFailure, finalVerifySpaceFailure } from "@claudexor/delivery";
+import {
+  filesDeliverySpaceFailure,
+  finalVerifyBlocks,
+  finalVerifySpaceFailure,
+} from "@claudexor/delivery";
 export { unpreparedWorkspaceRefusal } from "./captureRefusal.js";
 
 export type DelegationFailureKind = "startup" | "runtime";
@@ -262,6 +266,75 @@ export function workStatePublicationRefused(
   );
 }
 
+const workStateStatement = (facts: RunOutcomeFacts) =>
+  facts.work_state?.state === "needs_input"
+    ? `The run needs input before its work can finish (${facts.reason ?? "input_required"}).`
+    : `The run reported its work incomplete (${facts.reason ?? "work_incomplete"}).`;
+
+type VerifyRecord = Parameters<typeof finalVerifySpaceFailure>[0];
+
+/** What a final verification that blocked a run proved, or could not. */
+export function verificationStatement(verify: VerifyRecord): string {
+  return verify?.applied_cleanly === null
+    ? `final verify ERRORED before proving the patch against a clean base: ${verify?.reason ?? "verify infrastructure error"}`
+    : `final verify failed: ${verify?.reason ?? (verify?.gates_passed === false ? "deterministic gates failed on the fresh verify tree" : "unknown")}`;
+}
+
+/**
+ * The record of a final verification that blocked a run, on every lane. A copy that
+ * could not be made proves nothing: a lack of room is remedied by room, and a files
+ * result's unproven copy is never authorized by an accepted risk (Apply refuses it).
+ */
+export function verificationFailureRecord(
+  verify: VerifyRecord,
+  files: boolean,
+  pool: readonly PoolAttemptFailure[],
+  followUps: readonly string[] = [],
+) {
+  const unproven = verify?.applied_cleanly === null;
+  return {
+    phase: "verification",
+    // RunFailure.category is a closed enum; "validation" is the honest bucket.
+    category: "validation" as const,
+    safeMessage: withPoolAttempts(verificationStatement(verify), pool),
+    poolAttempts: pool,
+    nextActions: [
+      unproven
+        ? "Inspect arbitration/decision.yaml (final_verify) for the verifier error"
+        : "Inspect arbitration/decision.yaml (final_verify)",
+      !unproven
+        ? "Re-run after fixing the base conflict or the failing gates"
+        : finalVerifySpaceFailure(verify)
+          ? "Free disk space for the verification copy, then check or apply again (Apply verifies afresh)"
+          : files
+            ? "Fix the verify infrastructure (temporary directory) and re-run"
+            : "Fix the verify infrastructure (git worktree/tmp) and re-run, or accept_risk to override",
+      ...followUps,
+    ],
+  };
+}
+
+/** The lead of a run's returned summary when its failure record has one of its own:
+ * a report that vetoes it beside a refused publication, a blocked verification, or a
+ * refused automatic delivery (with what it did); a refused publication of the run's
+ * files follows. Null otherwise. */
+export function terminalLead(
+  facts: RunOutcomeFacts,
+  run: CandidateRun | null | undefined,
+  verify: VerifyRecord,
+  deliveryRefusal?: string | null,
+): string | null {
+  const unpublished = run?.files ? run.captureRefusal?.detail : undefined;
+  const lead = workStatePublicationRefused(facts, run)
+    ? workStateStatement(facts)
+    : verify?.attempted && finalVerifyBlocks(verify)
+      ? verificationStatement(verify)
+      : deliveryRefusal
+        ? `delivery refused after fresh verification: ${redactSecrets(deliveryRefusal)}`
+        : null;
+  return lead && [lead, unpublished].filter(Boolean).join("\n");
+}
+
 /** That terminal's record: the report's own statement and remedy lead; `recordFor`
  * adds the refused publication second, with its typed cause and the kept copy. */
 export function workStatePublicationRecord(
@@ -276,12 +349,7 @@ export function workStatePublicationRecord(
     category: "project" as const,
     harnessId: run.harnessId,
     attemptId: run.attemptId,
-    safeMessage: withPoolAttempts(
-      needsInput
-        ? `The run needs input before its work can finish (${facts.reason ?? "input_required"}).`
-        : `The run reported its work incomplete (${facts.reason ?? "work_incomplete"}).`,
-      pool,
-    ),
+    safeMessage: withPoolAttempts(workStateStatement(facts), pool),
     poolAttempts: pool,
     nextActions: [
       needsInput

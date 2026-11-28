@@ -9,6 +9,7 @@ import {
   WorkspacePreparedPayload,
   workspacePreparationSummary,
   workStateVetoes,
+  deliveryEffectsStatement,
 } from "@claudexor/schema";
 import {
   type WorkspaceManager,
@@ -23,6 +24,7 @@ import {
 } from "@claudexor/workspace";
 import { type ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import { type EventLog } from "@claudexor/event-log";
+import { filesDeliveryHeldPaths } from "@claudexor/delivery";
 import { newId, sha256 } from "@claudexor/util";
 import {
   CAPTURE_REFUSED_REASON,
@@ -254,7 +256,11 @@ interface DirectoryPublication {
   harnessId: string;
   facts: RunOutcomeFacts;
   log: EventLog;
-  delivery?: { applied: boolean; appliedPaths: string[]; alreadyApplied?: boolean };
+  /** The run's automatic delivery receipt, when it made one. */
+  delivery?: Parameters<typeof deliveryEffectsStatement>[0] & {
+    appliedPaths: string[];
+    alreadyApplied?: boolean;
+  };
 }
 
 /**
@@ -384,7 +390,7 @@ async function writeDirectoryResult(
   });
   await write(
     join(paths.finalDir, "files/result.md"),
-    `${direct ? (files.changedPaths.length > 0 ? `${files.noChanges === false ? "Files updated" : "Files observed"} in ${files.manifest.executionRoot}.` : files.noChanges === null ? `Operation finished in ${files.manifest.executionRoot}. A complete file comparison was not recorded.` : "No file changes were found in the selected scope.") : "Files captured from a separate copy. Inspect the captured files; application is subject to the run's outcome and a delivery check."}\n\n${listing.join("\n")}\n`,
+    `${direct ? (files.changedPaths.length > 0 ? `${files.noChanges === false ? "Files updated" : "Files observed"} in ${files.manifest.executionRoot}.` : files.noChanges === null ? `Operation finished in ${files.manifest.executionRoot}. A complete file comparison was not recorded.` : "No file changes were found in the selected scope.") : "Files captured from a separate copy. Inspect the captured files; application is subject to the run's outcome and a delivery check."}${input.delivery && !input.delivery.applied ? `\n\nAutomatic delivery did not apply: ${deliveryEffectsStatement(input.delivery) ?? "refused"}` : ""}\n\n${listing.join("\n")}\n`,
   );
   const product = WorkProduct.parse({
     id: newId("wp"),
@@ -404,7 +410,13 @@ async function writeDirectoryResult(
       source_root: files.manifest.sourceRoot,
       execution_root: files.manifest.executionRoot,
       no_changes: files.noChanges,
-      applied_paths: input.delivery?.appliedPaths ?? (direct ? files.changedPaths : []),
+      // An automatic delivery's coverage of this manifest: its writes and the changes
+      // it found the target already holding (its receipt keeps only the writes).
+      applied_paths: input.delivery
+        ? [...input.delivery.appliedPaths, ...filesDeliveryHeldPaths(input.delivery)]
+        : direct
+          ? files.changedPaths
+          : [],
       adopted:
         (direct ||
           !files.manifest.entries.some(

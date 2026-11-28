@@ -2278,6 +2278,8 @@ function writeOperatorDecisionProjection(
       finding_ids: record.findingIds,
       accepted_risks: record.acceptedRisks,
       patch_sha256: record.patchSha256,
+      // A files result's decision binds its manifest, as the run facts read it.
+      ...(readFilesWorkProduct(rec) ? { manifest_sha256: record.patchSha256 } : {}),
       decided_at: record.decidedAt,
     }),
     "utf8",

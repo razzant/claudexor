@@ -154,9 +154,14 @@ async function fixture(
         commands.set(key, item);
         return { ...item, reused: false };
       },
+      // Stored as a durable command journal keeps it: a replay reads it back deserialized.
       completeDelivery: async (id, result) => {
-        Object.assign(commands.get(id)!, { state: "succeeded", result });
+        Object.assign(commands.get(id)!, {
+          state: "succeeded",
+          result: JSON.parse(JSON.stringify(result)),
+        });
       },
+      operatorDecision: () => fixtureOperator.current,
       failDelivery: async (id) => {
         Object.assign(commands.get(id)!, { state: "failed" });
       },
@@ -175,8 +180,28 @@ async function fixture(
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-  return { source, run, manifest, output, request };
+  const read = (path = "") =>
+    fetch(`http://${host}:${port}/v2/runs/run-files${path}`, {
+      headers: { Authorization: "Bearer fixture-token", "X-Claudexor-Protocol-Major": "3" },
+    });
+  return { source, run, manifest, manifestSha256, output, request, read };
 }
+
+/** The operator decision the fixture's journal answers (null: none recorded). */
+const fixtureOperator: {
+  current: {
+    action: "accept_risk";
+    findingIds: string[];
+    acceptedRisks: string[];
+    patchSha256: string;
+    decidedAt: string;
+  } | null;
+} = { current: null };
+
+const audits = async (run: string) =>
+  (await readFile(join(run, "events.jsonl"), "utf8").catch(() => ""))
+    .split("\n")
+    .filter((line) => /"type":"control\.(applied|rejected)"/.test(line)).length;
 
 describe("complete files result through the ordinary control API", () => {
   it("streams exact retained binary bytes above the preview cap", async () => {
@@ -360,7 +385,7 @@ describe("complete files result through the ordinary control API", () => {
         const first = await answer();
         expect(first).toMatchObject({ accepted: false, status: "rejected" });
         expect(first.message).toContain("Refusal: space_insufficient at document.bin.");
-        expect(first.message).toContain("Already written before it stopped: new.txt.");
+        expect(first.message).toContain("Completed before it stopped: new.txt.");
         expect(await answer()).toEqual(first);
         expect(await readFile(join(f.source, "new.txt"), "utf8")).toBe("new");
       } finally {
@@ -405,5 +430,78 @@ describe("complete files result through the ordinary control API", () => {
         vi.restoreAllMocks();
       }
     });
+  });
+});
+
+describe("one fact about a files delivery's effects", () => {
+  it("records the overlay and audit with the delivery; a same-key replay changes nothing", async () => {
+    const f = await fixture();
+    const first = await (await f.request("apply", { mode: "apply" }, "once")).json();
+    expect(first).toMatchObject({ applied: true });
+    const state = await readFile(join(f.run, "final/delivery_state.yaml"), "utf8");
+    const audited = await audits(f.run);
+    expect(audited).toBe(1);
+    // The replay answers the journaled receipt, read back deserialized.
+    expect(await (await f.request("apply", { mode: "apply" }, "once")).json()).toEqual(first);
+    expect(await readFile(join(f.run, "final/delivery_state.yaml"), "utf8")).toBe(state);
+    expect(await audits(f.run)).toBe(audited);
+  });
+
+  it("marks nothing for a refusal that wrote nothing, even where the target holds a change", async () => {
+    const f = await fixture();
+    await writeFile(join(f.source, "new.txt"), "new");
+    await writeFile(join(f.source, "document.bin"), "someone else's edit\n");
+    const receipt = await (await f.request("apply", { mode: "apply" }, "refused")).json();
+    expect(receipt).toMatchObject({ applied: false, appliedPaths: [], treeMutated: false });
+    await expect(stat(join(f.run, "final/delivery_state.yaml"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("combines an automatic delivery of this manifest with a later selected Apply", async () => {
+    const f = await fixture(true, "envelope", true);
+    // The run's automatic delivery wrote new.txt, then stopped on the document.
+    await writeFile(join(f.source, "new.txt"), "new");
+    const product = parse(await readFile(join(f.run, "final/work_product.yaml"), "utf8"));
+    product.meta.applied_paths = ["new.txt"];
+    await writeFile(join(f.run, "final/work_product.yaml"), stringify(product));
+    const done = await (
+      await f.request("apply", { mode: "apply", paths: ["document.bin"] }, "rest")
+    ).json();
+    expect(done).toMatchObject({ applied: true, appliedPaths: ["document.bin"] });
+    const state = parse(await readFile(join(f.run, "final/delivery_state.yaml"), "utf8"));
+    expect(state.applyState).toBe("applied");
+    expect([...state.appliedPaths].sort()).toEqual(["document.bin", "new.txt"]);
+  });
+
+  it("reads a run whose automatic delivery applied but whose result was not published", async () => {
+    const f = await fixture();
+    await rm(join(f.run, "final/work_product.yaml"));
+    await writeFile(
+      join(f.run, "final/delivery_receipt.yaml"),
+      stringify({ mode: "apply", applied: true, appliedPaths: ["document.bin", "new.txt"] }),
+    );
+    const detail = (await (await f.read()).json()) as Record<string, unknown>;
+    expect(JSON.stringify(detail)).toMatch(/"applyState":"applied"/);
+  });
+
+  it("shows an accepted risk on a files result in the run's own view", async () => {
+    const f = await fixture();
+    fixtureOperator.current = {
+      action: "accept_risk",
+      findingIds: [],
+      acceptedRisks: [],
+      patchSha256: f.manifestSha256,
+      decidedAt: "2026-11-28T00:00:00Z",
+    };
+    try {
+      const detail = (await (await f.read()).json()) as Record<string, unknown>;
+      expect(detail["operatorDecision"]).toMatchObject({ action: "accept_risk" });
+      fixtureOperator.current = { ...fixtureOperator.current, patchSha256: "sha256:other" };
+      const other = (await (await f.read()).json()) as Record<string, unknown>;
+      expect(other["operatorDecision"] ?? null).toBeNull();
+    } finally {
+      fixtureOperator.current = null;
+    }
   });
 });

@@ -24,6 +24,15 @@ export function recordedExecutionRoot(rec: DaemonRunRecord, maxBytes?: number): 
   return typeof wp?.meta["execution_root"] === "string" ? wp.meta["execution_root"] : null;
 }
 
+/** The one field of the run's own automatic delivery receipt a result reads. */
+const AutomaticDelivery = {
+  parse(value: unknown): { applied: boolean } {
+    const applied = (value as { applied?: unknown } | null)?.applied;
+    if (typeof applied !== "boolean") throw new Error("not a delivery receipt");
+    return { applied };
+  },
+};
+
 export function controlRunResult(rec: DaemonRunRecord, maxBytes?: number): ControlRunResult {
   const wp = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct, maxBytes);
   const meta = (wp?.meta ?? {}) as Record<string, unknown>;
@@ -51,7 +60,13 @@ export function controlRunResult(rec: DaemonRunRecord, maxBytes?: number): Contr
   // immutable run snapshot. Prefer the delivery-state overlay when present,
   // else fall back to the initial snapshot the orchestrator stamped.
   const delivery = readDeliveryState(rec, maxBytes);
-  const applyStateRaw = delivery?.applyState ?? meta["apply_state"];
+  // A run whose automatic delivery reached the target but whose result could not be
+  // published has no work product: its own receipt states what the target holds.
+  const automatic = wp
+    ? null
+    : safeReadStructuredArtifact(rec, "final/delivery_receipt.yaml", AutomaticDelivery, maxBytes);
+  const applyStateRaw =
+    delivery?.applyState ?? meta["apply_state"] ?? (automatic?.applied ? "applied" : undefined);
   const applyState =
     applyStateRaw === "applied" ||
     applyStateRaw === "applied_review_blocked" ||
@@ -77,7 +92,7 @@ export function controlRunResult(rec: DaemonRunRecord, maxBytes?: number): Contr
     kind,
     diffStat,
     blockers: typeof meta["blockers"] === "number" ? meta["blockers"] : 0,
-    adopted: typeof meta["adopted"] === "boolean" ? meta["adopted"] : null,
+    adopted: typeof meta["adopted"] === "boolean" ? meta["adopted"] : (automatic?.applied ?? null),
     applyState,
     preTurnSha,
     postTurnSha,
@@ -193,13 +208,26 @@ export function markRunTaken(rec: DaemonRunRecord, reason: RunTakenReason): void
   renameSync(tmp, dsPath);
 }
 
-/** A files result is applied once every deliverable change of its manifest is. */
+/** A files result is applied once every deliverable change of its manifest is.
+ * Before any overlay, the run's own automatic delivery of this exact manifest
+ * (the work product's `applied_paths`, bound by its `manifest_sha256`) counts. */
 export function markFilesAppliedState(
   record: DaemonRunRecord,
   paths: string[],
   manifest: WorkspaceFilesManifest,
+  manifestSha256?: string,
 ): void {
-  const applied = [...new Set([...(readDeliveryState(record)?.appliedPaths ?? []), ...paths])];
+  const wp = safeReadStructuredArtifact(record, "final/work_product.yaml", WorkProduct);
+  const automatic =
+    manifestSha256 !== undefined &&
+    wp?.meta["manifest_sha256"] === manifestSha256 &&
+    Array.isArray(wp.meta["applied_paths"])
+      ? (wp.meta["applied_paths"] as unknown[]).filter((path) => typeof path === "string")
+      : [];
+  const earlier = readDeliveryState(record)?.appliedPaths ?? (automatic as string[]);
+  const deliverable = new Set(deliverableWorkspaceChanges(manifest).map((entry) => entry.path));
+  // Only this manifest's deliverable changes count: unknown or unlisted paths never do.
+  const applied = [...new Set([...earlier, ...paths])].filter((path) => deliverable.has(path));
   const complete =
     deliverableWorkspaceChanges(manifest).every((entry) => applied.includes(entry.path)) &&
     !manifest.entries.some((entry) => entry.before === "unknown" && entry.after !== null);
