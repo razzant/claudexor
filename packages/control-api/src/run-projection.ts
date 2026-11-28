@@ -281,9 +281,11 @@ export function detailFor(
   {
     retentionProblem,
     includeFinalMessages,
+    includeEarlierAssistantOutput,
   }: {
     retentionProblem?: string | null;
     includeFinalMessages?: boolean | undefined;
+    includeEarlierAssistantOutput?: boolean | undefined;
   } = {},
 ): ControlRunDetail {
   // Capture the resume fence before projection. Events arriving during queued
@@ -343,7 +345,10 @@ export function detailFor(
     artifacts: rec.runDir ? listArtifacts(rec.runDir) : [],
     primaryOutput: retentionProblem
       ? { kind: "diagnostic", path: "events.jsonl", text: retentionProblem }
-      : primaryOutput(rec, summary.mode, failure, runFacts),
+      : primaryOutput(rec, summary.mode, failure, runFacts, {
+          includeEarlierAssistantOutput,
+          earlierAssistantOutputFact: facts.earlierAssistantOutputFact,
+        }),
     // #307: the terminal's recorded outcome; a pointer only while its document has that size.
     ...(includeFinalMessages ? { finalMessages: readRunFinalMessages(rec, facts) } : {}),
     timeline: timelineEvents(rec, facts.timeline, facts.integrity),

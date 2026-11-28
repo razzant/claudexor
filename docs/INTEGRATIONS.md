@@ -3170,10 +3170,14 @@ razzant/claudexor#546 reports one native run with its timeout and requested
 handoffs and `success` notifications. `error`, `aborted` and progress ids come
 only from reading that build's code. The repository holds no sanitized
 recording, so the shape remains a hypothesis until one exists.
-On successful terminal `result`, the
-adapter finalizes the LAST complete assistant flush
-(`final_source: assistant_message`) rather than Cursor's concatenated `result`
-string; it falls back to `result` only when no complete assistant frame exists.
+On successful terminal `result`, the adapter finalizes the LAST complete
+assistant flush (`final_source: assistant_message`), joining its frame's text
+blocks, or the result string when no complete assistant frame exists. A matched
+background notice can anchor earlier speech in the winning session (#756).
+Subsequent corrections remain ordered through other tool calls; an exact
+cumulative buffer is not new speech. `claudexor_run_result` presents the earlier
+preview before the accepted final in `summary`; its separate artifact path
+allows exact retrieval. Only the typed final supplies the verdict and WorkReport.
 Cursor emits no typed rate-limit frame on the wire; the adapter classifies
 the vendor's usage-limit PROSE (grounded in the recorded 2026-08-17 incident
 transcript: `ActionRequiredError: You've hit your usage limit … resets …

@@ -10,7 +10,7 @@ import {
   FINAL_MESSAGES_PATH,
   type ControlArtifactInfo,
 } from "@claudexor/schema";
-import { RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
+import { EARLIER_ASSISTANT_OUTPUT_PATH, RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
 import {
   artifactRelativePath,
   isVanishedErrno,
@@ -83,7 +83,9 @@ export function readArtifact(request: ArtifactReadRequest): ArtifactReadResult {
   }
   return readArtifactFile(
     target,
-    request.runArtifact === true && request.relative === RETAINED_OUTPUT_PATH,
+    request.runArtifact === true &&
+      (request.relative === RETAINED_OUTPUT_PATH ||
+        request.relative === EARLIER_ASSISTANT_OUTPUT_PATH),
   );
 }
 
@@ -115,13 +117,13 @@ function isFinalMessagesFile(root: string, target: string): boolean {
 
 /** Shared artifact-file body: path checks and size caps, then the exact bytes
  * (one funnel for run artifacts, outputs and produced). */
-function readArtifactFile(target: string | null, fullRetainedOutput = false): ArtifactReadResult {
+function readArtifactFile(target: string | null, fullGeneratedOutput = false): ArtifactReadResult {
   if (!target || !existsSync(target) || lstatSync(target).isDirectory())
     return { kind: "error", status: 404, body: { error: "no such artifact" } };
   const stats = lstatSync(target);
   // This generated document is a full-result transfer, not a log preview. It
   // still passes the same path checks below.
-  const cap = fullRetainedOutput
+  const cap = fullGeneratedOutput
     ? Infinity
     : isTextArtifact(target)
       ? MAX_ARTIFACT_FETCH_BYTES

@@ -4,12 +4,21 @@ import Foundation
 // satellites (candidates, live plan checklist). Split from Models.swift —
 // one coherent owner for the /runs/:id projection shapes.
 
+public struct EarlierAssistantOutput: Codable, Sendable, Equatable {
+    public let path: String
+    public let text: String
+    public let bytes: Int
+    public let truncated: Bool
+}
+
 public struct PrimaryOutput: Codable, Sendable, Equatable {
     public let kind: String
     public let path: String
     public let text: String?
     public let bytes: Int?
     public let truncated: Bool?
+    public let earlierAssistantOutput: EarlierAssistantOutput?
+    public let earlierAssistantOutputUnavailable: String?
 }
 
 /// One member of a plan council draft round (D31): who drafted or merged, and

@@ -46,6 +46,7 @@ export interface RunEventFacts {
   execution: ExecutionFold;
   /** #307: the final-messages outcome the run's first terminal recorded. */
   finalMessages: FinalMessagesFold;
+  earlierAssistantOutputFact?: "saved" | "source_gap" | "publication_failed";
 }
 
 const CHUNK_BYTES = 64 * 1024;
@@ -118,6 +119,9 @@ function copyFacts(facts: RunEventFacts): RunEventFacts {
     budget: { ...facts.budget },
     execution: copyExecutionFold(facts.execution),
     finalMessages: { ...facts.finalMessages },
+    ...(facts.earlierAssistantOutputFact
+      ? { earlierAssistantOutputFact: facts.earlierAssistantOutputFact }
+      : {}),
   };
 }
 
@@ -129,6 +133,20 @@ function addRunEvent(facts: RunEventFacts, ev: Record<string, unknown>, size: nu
   addBudgetEvent(facts.budget, ev);
   addExecutionEvent(facts.execution, ev);
   addFinalMessagesEvent(facts.finalMessages, ev);
+  const outer = ev["payload"] as Record<string, unknown> | undefined;
+  if (
+    ev["type"] === "harness.event" &&
+    outer?.["type"] === "status" &&
+    outer["harness_id"] === undefined
+  ) {
+    const detail = outer["payload"] as Record<string, unknown> | undefined;
+    if (detail?.["earlier_assistant_output_saved"] === true)
+      facts.earlierAssistantOutputFact = "saved";
+    else if (detail?.["earlier_assistant_output_gap"] === true)
+      facts.earlierAssistantOutputFact = "source_gap";
+    else if (detail?.["earlier_assistant_output_failed"] === true)
+      facts.earlierAssistantOutputFact = "publication_failed";
+  }
 }
 
 function foldRunEvents(rec: RunDirCarrier, reuse: boolean): RunEventFacts {

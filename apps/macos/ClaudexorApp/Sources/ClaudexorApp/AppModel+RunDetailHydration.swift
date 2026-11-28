@@ -22,6 +22,7 @@ extension AppModel {
             insertionThreadFence = nil
         }
         guard insertingIfMissing || liveTasks.contains(where: { $0.id == id }) else { return }
+        let includeEarlier = addressedRunDetails[id] != nil
         // Snapshot fence, write side: stream events arriving DURING this load
         // are deferred and re-applied after the snapshot lands. Without this,
         // the final `liveTasks[writeIdx] = task` write (built from a pre-await
@@ -48,7 +49,8 @@ extension AppModel {
             }
         }
         do {
-            let detail = try await requestClient.runDetail(runId: id)
+            let detail = try await requestClient.runDetail(
+                runId: id, includeEarlierAssistantOutput: includeEarlier)
             guard !Task.isCancelled,
                   connectionGeneration == requestGeneration,
                   client === requestClient,
@@ -196,6 +198,12 @@ extension AppModel {
                 task.activity.append(ActivityEvent(.message, "Final summary", detail: final))
             }
             task.adoptPrimaryOutput(detail)
+            // A plain read says nothing about earlier text: it keeps the last
+            // addressed view beside the same answer. An addressed read replaces it.
+            if includeEarlier || detail.primaryOutput?.kind != "answer" {
+                task.earlierAnswerText = Self.earlierAnswerText(for: detail.primaryOutput)
+                task.earlierAnswerNote = Self.earlierAnswerNote(for: detail.primaryOutput)
+            }
             task.answerText = await answerText(
                 for: detail, client: requestClient, runId: id)
             // The fallback artifact fetch above is the final suspension point
@@ -254,6 +262,8 @@ extension AppModel {
                 reconcileHistoryInteractions(&task, lastSeq: detail.lastSeq, at: .local)
                 liveTasks[writeIdx] = task
                 hydratedRunDetails.insert(id)
+                // Mark, never resurrect: a thread switch may have retired the address.
+                if includeEarlier, addressedRunDetails[id] != nil { addressedRunDetails[id] = true }
                 publishHistoryLive(task, locationID: .local)
             }
         } catch {

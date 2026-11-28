@@ -15,6 +15,7 @@ import {
 import { primaryOutputForCli } from "./primary-output.js";
 import { CliError } from "./cli-error.js";
 import type { ControlApiAddress } from "./live.js";
+import type { EngineIdentity } from "./engine-skew.js";
 import { projectImmediateRunDetail } from "./mcp-run-projections.js";
 
 /**
@@ -26,7 +27,9 @@ import { projectImmediateRunDetail } from "./mcp-run-projections.js";
 export async function projectLaunchHandle(
   addr: ControlApiAddress,
   out: DaemonRunOutcome,
-  opts: { deferred: boolean; mode?: ModeKind },
+  /** `engine` is the handshake identity of this call's connection, so a
+   * same-port upgrade since an earlier call rediscovers its capabilities. */
+  opts: { deferred: boolean; mode?: ModeKind; engine?: EngineIdentity },
 ): Promise<Record<string, unknown>> {
   const terminal = isTerminalLifecycle(out.status);
   // Only a deferred handle addresses an unbound job by its job id; the
@@ -39,7 +42,13 @@ export async function projectLaunchHandle(
     let detailProblem: ReturnType<typeof describeRunDetailProblem> | null = null;
     if (!opts.deferred || terminal) {
       try {
-        detail = await fetchRunDetail(addr, address);
+        detail = await fetchRunDetail(
+          addr,
+          address,
+          false,
+          opts.engine,
+          out.status === "succeeded",
+        );
         detailProjection = projectImmediateRunDetail(detail, {
           runId: address,
           ...(terminal ? { lifecycle: out.status as RunOutcomeFacts["lifecycle"] } : {}),

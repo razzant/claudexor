@@ -151,6 +151,7 @@ extension AppModel {
         snapshotLoadDepth.removeAll()
         snapshotReplayFences.removeAll()
         hydratedRunDetails.removeAll()
+        addressedRunDetails.removeAll()
         if cancelInFlight {
             for task in runDetailLoads.values { task.cancel() }
         }

@@ -179,7 +179,7 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       ? await connectDaemonIfRunning()
       : await ensureDaemon();
     if (!connection) throw daemonUnavailableError(beltContext, "no run was started");
-    const { client, addr } = connection;
+    const { client, addr, engine } = connection;
     const repoRoot =
       options.delegationRepoRoot ??
       (typeof p?.repoPath === "string" && p.repoPath.trim() ? p.repoPath : process.cwd());
@@ -270,7 +270,7 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       // The run is no longer observed here: close prompts it left open.
       interactionBridge?.close();
     }
-    return projectLaunchHandle(addr, out, { deferred: p?.deferred === true, mode });
+    return projectLaunchHandle(addr, out, { deferred: p?.deferred === true, mode, engine });
   };
 }
 
@@ -362,7 +362,13 @@ async function recoveryQuery(
     };
     try {
       const detail = await get(
-        await runDetailPath(addr, runId, read.includeFinalMessages, conn.engine),
+        await runDetailPath(
+          addr,
+          runId,
+          read.includeFinalMessages,
+          conn.engine,
+          mode === "__run_result",
+        ),
         true,
       );
       return projectRecoveryRunDetail(mode, runId, detail, parent, read);

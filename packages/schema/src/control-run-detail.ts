@@ -20,6 +20,17 @@ import { ControlPendingInteraction } from "./control-pending-interaction.js";
 import { RunFailure } from "./control-run-failure.js";
 import { DeferredMessageProjection } from "./deferred-message.js";
 
+export const EarlierAssistantOutput = z
+  .object({
+    path: z.string().describe("Run-relative artifact with the complete selected earlier text."),
+    text: z
+      .string()
+      .describe("Bounded view of the earlier assistant text and its event provenance."),
+    bytes: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+  })
+  .describe("Observed earlier speech, presented before the accepted answer but never part of it.");
+
 export const ControlPrimaryOutput = z
   .object({
     kind: z
@@ -43,6 +54,13 @@ export const ControlPrimaryOutput = z
       .boolean()
       .default(false)
       .describe("True when text is a bounded inline preview of the full artifact."),
+    earlierAssistantOutput: EarlierAssistantOutput.optional(),
+    earlierAssistantOutputUnavailable: z
+      .enum(["source_gap", "publication_failed", "artifact_unavailable"])
+      .optional()
+      .describe(
+        "Evidence that earlier text could not be established or read; absent is not proof of absence.",
+      ),
   })
   .describe("The run's primary user-facing output artifact.");
 export type ControlPrimaryOutput = z.infer<typeof ControlPrimaryOutput>;

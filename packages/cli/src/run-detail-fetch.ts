@@ -112,13 +112,14 @@ export async function fetchRunDetail(
   runId: string,
   includeFinalMessages = false,
   engine?: EngineIdentity,
+  includeEarlierAssistantOutput = false,
 ): Promise<Record<string, unknown> | null> {
   if (!runId) return null;
   let res: Awaited<ReturnType<typeof controlApiFetch>>;
   try {
     res = await controlApiFetch(
       addr,
-      await runDetailPath(addr, runId, includeFinalMessages, engine),
+      await runDetailPath(addr, runId, includeFinalMessages, engine, includeEarlierAssistantOutput),
     );
   } catch {
     return null;

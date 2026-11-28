@@ -1259,6 +1259,18 @@
           "description": "Include the recorded final-messages outcome. Omission or false keeps the original run detail."
         },
         {
+          "name": "includeEarlierAssistantOutput",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "Include the earlier assistant text preview and exact artifact path beside an eligible primary answer. Omission or false keeps the original primary output shape."
+        },
+        {
           "name": "x-claudexor-capabilities",
           "in": "header",
           "required": false,

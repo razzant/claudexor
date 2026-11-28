@@ -9,8 +9,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
-import { EventLog } from "@claudexor/event-log";
-import { FINAL_MESSAGES_PATH } from "@claudexor/schema";
+import { EARLIER_ASSISTANT_OUTPUT_PATH, EventLog } from "@claudexor/event-log";
+import {
+  COMMAND_OUTCOME_REFINED,
+  FINAL_MESSAGES_PATH,
+  RunTelemetry,
+  SCHEMA_VERSION,
+} from "@claudexor/schema";
 import { publishTerminalOutputs } from "./retainedOutput.js";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
 
@@ -102,4 +107,94 @@ describe("final-messages outcome at terminal preparation", () => {
       f.log.dispose();
     }
   });
+});
+
+it("publishes the accepted Cursor attempt's earlier text when both attempts are eligible (#756)", () => {
+  const { context, log } = fixture();
+  const { store, paths, runId, taskId, mode } = context;
+  const attempts = ["a01", "a02"].map((attempt_id) => ({
+    attempt_id,
+    harness_id: "cursor",
+    web: {},
+    outcome: { status: "success", deliverable_present: true },
+  }));
+  const speech = (attemptId: string) => {
+    const emit = (payload: Record<string, unknown>) =>
+      log.emit("harness.event", {
+        harness_id: "cursor",
+        attempt_id: attemptId,
+        session_id: `cursor-${attemptId}`,
+        ...payload,
+      });
+    const shell = { name: "Shell", kind: "command", use_id: "shell" };
+    emit({
+      type: "tool_result",
+      tool: { ...shell, command_outcome: { state: "backgrounded", shell_id: "shell" } },
+    });
+    emit({ type: "message", text: `Swatch report ${attemptId}.` });
+    emit({
+      type: "status",
+      payload: { code: COMMAND_OUTCOME_REFINED },
+      tool: {
+        ...shell,
+        command_outcome: {
+          state: "completion_reported",
+          completion_status: "success",
+          shell_id: "shell",
+        },
+      },
+    });
+    emit({ type: "message", text: `Follow-up ${attemptId}.` });
+    emit({
+      type: "message",
+      text: `Accepted candidate text ${attemptId}.`,
+      final: true,
+      payload: { final_source: "assistant_message" },
+    });
+    emit({ type: "completed" });
+  };
+  try {
+    const accepted = "Accepted candidate text a02.\n";
+    const answer = join(paths.finalDir, "answer.md");
+    store.writeText(answer, accepted);
+    store.writeYaml(
+      join(paths.finalDir, "telemetry.yaml"),
+      RunTelemetry.parse({
+        schema_version: SCHEMA_VERSION,
+        run_id: runId,
+        task_id: taskId,
+        mode,
+        requested_access: "readonly",
+        effective_access: "readonly",
+        external_context_policy: "off",
+        effective_web_mode: "off",
+        web: {},
+        attempts,
+        final_attempt_id: "a02",
+        generated_at: "2026-11-27T00:00:00.000Z",
+      }),
+    );
+    for (const { attempt_id } of attempts) {
+      log.emit("harness.event", {
+        harness_id: "cursor",
+        attempt_id,
+        session_id: `cursor-${attempt_id}`,
+        type: "started",
+      });
+    }
+    speech("a02");
+    speech("a01"); // The eligible loser speaks last; the settled strategy receipt wins.
+    log.emit("output.ready", { kind: "answer", path: "final/answer.md", state: "ready" });
+
+    publishTerminalOutputs(context, true, false);
+
+    const result = readFileSync(join(paths.root, EARLIER_ASSISTANT_OUTPUT_PATH), "utf8");
+    expect(result).toContain("Swatch report a02.");
+    expect(result).toContain("Follow-up a02.");
+    expect(result).not.toContain("a01");
+    expect(result).not.toContain("Accepted candidate text");
+    expect(readFileSync(answer, "utf8")).toBe(accepted);
+  } finally {
+    log.dispose();
+  }
 });

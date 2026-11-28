@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CONTROL_PROTOCOL_MAJOR,
   ControlPendingInteraction,
   ControlProblem,
   makeOutcomeFacts,
@@ -17,6 +18,17 @@ import { makeInteractionBridge } from "./mcp-runner.js";
 const addr = { baseUrl: "http://127.0.0.1:1", token: "t" } as never;
 const PUBLIC_RECOVERY_MODES = ["__run_inspect", "__run_status", "__run_result"] as const;
 const BELT_RECOVERY_MODES = ["__run_status", "__run_result"] as const;
+
+/** Keep operation lookup separate from the addressed detail reply under test. */
+function stubLegacyDetailFetch(runId: string, detail: () => Promise<unknown>) {
+  vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname === "/v2/operations")
+      return Response.json({ protocolMajor: CONTROL_PROTOCOL_MAJOR, operations: [] });
+    expect(url.pathname + url.search).toBe(`/v2/runs/${runId}`);
+    return detail();
+  });
+}
 
 function validPlanRunFacts(runId: string) {
   return validateRunFactsInvariants({
@@ -2089,6 +2101,10 @@ describe("mcp daemon body mapping", () => {
       expect(detailSpy).toHaveBeenCalledWith(
         expect.objectContaining({ baseUrl: "http://x", token: "t" }),
         "run-fast-failed",
+        false,
+        // The connection's handshake identity; earlier speech only beside a success.
+        { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
+        false,
       );
     } finally {
       ensureSpy.mockRestore();
@@ -2144,7 +2160,7 @@ describe("mcp daemon body mapping", () => {
         council: null,
       }),
     }));
-    vi.stubGlobal("fetch", fetchSpy);
+    stubLegacyDetailFetch("run-child", fetchSpy);
     try {
       const result = (await mcpSurfaceRunner()({ mode: "agent", prompt: "go" })) as Record<
         string,
@@ -2470,7 +2486,7 @@ describe("mcp daemon body mapping", () => {
         retryable,
       }),
     }));
-    vi.stubGlobal("fetch", fetchSpy);
+    stubLegacyDetailFetch("run-degraded", fetchSpy);
     try {
       const result = (await mcpSurfaceRunner()({
         mode,
@@ -2538,7 +2554,7 @@ describe("mcp daemon body mapping", () => {
       },
     ];
     const fetchSpy = vi.fn(async () => responses.shift() as never);
-    vi.stubGlobal("fetch", fetchSpy);
+    stubLegacyDetailFetch("run-degraded", fetchSpy);
     try {
       const runner = mcpSurfaceRunner();
       for (const expectedCode of ["invalid_service_response", "run_facts_invalid"]) {
@@ -2637,7 +2653,7 @@ describe("mcp daemon body mapping", () => {
           retryable: false,
         }),
       }));
-      vi.stubGlobal("fetch", fetchSpy);
+      stubLegacyDetailFetch("run-child", fetchSpy);
       try {
         await expect(
           mcpSurfaceRunner({

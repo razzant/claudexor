@@ -143,6 +143,18 @@ extension AppModel {
         }
     }
 
+    /// The parents a bounded page keeps at `locationID`, read when it answers:
+    /// the selected thread's loaded history rows and the one run its open
+    /// detail shows (which may come from the full turn list). Nothing for
+    /// another location's selection; no other history is loaded or kept.
+    func selectedFamilyParentIds(at locationID: ExecutionLocationID) -> Set<String> {
+        let history = selectedHistory?.locationID == locationID ? selectedHistory : nil
+        var ids = Set(history?.rows.compactMap(\.runId) ?? [])
+        if selectedExecutionLocation == locationID, case .task(let id) = route,
+           workspaceRunIDs.contains(id) { ids.insert(id) }
+        return ids
+    }
+
     /// A bounded global runs refresh must not immediately delete the older
     /// parent/child rows restored for the selected thread. Preserve only that
     /// selected family, in its existing order; unrelated off-page history is

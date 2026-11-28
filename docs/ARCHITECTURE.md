@@ -8378,8 +8378,30 @@ document. Captured media references are added from the existing attempt capture,
 attempt-scoped handles; the original text remains intact. The full retained
 Markdown fetch is exact like other text, but is not restricted by the log
 preview fetch ceiling. Inline/native rendering keeps its own preview limits.
+
 The direct observer delta cap does not truncate public event replay, whose
 existing backpressure and client display bounds remain in force.
+
+Cursor #756 preserves earlier speech alongside a successful Ask/Agent's
+selected text answer. The recorded handoff refined by the matched completion
+anchors the start; speech from that winning physical session stays ordered
+through intervening tools and notices, excluding the final and its linked echoes.
+Narration only before that handoff is not selected.
+On `GET /v2/runs/:id`, set the query parameter `includeEarlierAssistantOutput`
+to `true` to opt in. The `primaryOutput` object can then contain
+`earlierAssistantOutput` with the bounded `text` preview (16 KiB), its
+`truncated` flag, and the full artifact's `path` and `bytes`. The authenticated
+artifact at `final/earlier-assistant-output.md` serves exact bytes even above
+the ordinary preview ceiling. Omission or `false` keeps the legacy shape.
+On positive evidence, `primaryOutput` can instead contain
+`earlierAssistantOutputUnavailable`: `source_gap` or `publication_failed` (earlier
+text could not be determined; neither asserts that it existed), or
+`artifact_unavailable` (publication observed but the artifact no longer reads).
+Earlier text is evidence, not a second accepted answer or WorkReport. MCP,
+text inspect, addressed macOS details and ACP turns and replay present it
+before the accepted answer, or a one-line note for a recorded reason; history,
+lists, the chat bubble and strict finals stay unchanged. The projector uses
+one settled event read to publish, and the existing event fold to read status.
 
 Retained output is also a source of the in-run EVIDENCE INDEX: when an
 attempt continues on a fresh session (`packet` carrier), the successor's
@@ -9071,8 +9093,9 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   beyond it waits for another stream to end, and the request timeout and the
   stream's reconnect policy still apply to that wait. Opening or switching a
   thread reads its history at once; the global run-list reconciliation for the
-  previous selection runs beside that read, and when `/v2/runs` answers it
-  preserves the off-page family of the local thread selected at that moment.
+  previous selection runs beside that read. When a bounded local or remote
+  `/v2/runs` page answers, it keeps the off-page family of the thread selected
+  at that location then, and the run its open detail shows.
 - Delegate readiness comes from each harness row's engine-owned `delegation`
   projection. Run summaries carry the requested/effective/used/reason/remediation outcome
   and the narrow `delegatedFromRunId` child link. The exact composer and run-row
