@@ -97,9 +97,8 @@ export class EventLog {
      */
     private readonly onPersist?: (event: RunEvent) => void,
     /**
-     * Thread this run is a turn of, when any. Stamped on every event so the
-     * global event multiplex can route live progress to a chat surface without
-     * a reverse job lookup.
+     * Thread this run is a turn of, when any. Stamped on every event so the global event
+     * multiplex routes live progress to a chat surface without a reverse job lookup.
      */
     private readonly threadId?: string,
     /** Best-effort live observer, invoked only after terminal finalization. */
@@ -155,9 +154,8 @@ export class EventLog {
   }
 
   /**
-   * Register the engine's once-only terminal preparation hook. It builds the
-   * canonical receipt in memory before the durable authority accepts the
-   * terminal; commit runs afterward and before file-tail/live observers.
+   * Register the engine's once-only terminal preparation hook: it builds the canonical receipt
+   * in memory before the durable authority accepts the terminal; commit follows, before file-tail/live observers.
    */
   setBeforeTerminal(
     hook: TerminalHook<PreparedTerminalEvent | void>,
@@ -196,10 +194,9 @@ export class EventLog {
   }
 
   /**
-   * `emit`, settled once the event's line has landed and its `onPersist` accepted it.
-   * A queued log's failure rejects this await alone (never held for the next emit).
-   * `written` hears this event's own line reach the run's file, which then replays it
-   * even when its sink fails after. An inline log has settled by the time this returns.
+   * `emit`, settled once the event's line has landed and its `onPersist` accepted it. A queued
+   * log's failure rejects this await alone, never held for the next emit. `written` hears the
+   * line reach the run's file, which replays it even if the sink then fails.
    */
   emitLanded(
     type: Exclude<RunEventType, TerminalRunEventType>,
@@ -312,8 +309,8 @@ export class EventLog {
     this.finalMessagesCurrent = false;
   }
 
-  /** A queued line did not reach the file whole (its write failed first; every later line
-   * fails with it). The counter continues after the last landed line: no seq is reused. */
+  /** A queued line did not reach the file whole (its write failed; later ones fail too); the
+   * counter continues after the last landed line, so no seq is reused. */
   private lost(): void {
     this.recordEventLoss();
     this.unlanded!.shift();

@@ -540,19 +540,17 @@ async function daemonRun(
   try {
     ({ client, addr } = await ensureDaemon());
   } catch (err) {
-    // D-7 projector: one failure envelope with message/code (never a legacy
-    // partial {ok,exitCode,error}). --json-stream stays valid NDJSON via the
-    // compact-line stream option.
+    // D-7 projector: one failure envelope with message/code (never a legacy partial
+    // {ok,exitCode,error}); --json-stream stays valid NDJSON via the compact-line option.
     return renderCliFailure(json || jsonStream, err, {
       messagePrefix: "claudexor:",
       stream: jsonStream,
     });
   }
-  // Thread continuation (W13/D10): --thread <id> targets a thread explicitly;
-  // --resume picks the most recently updated one. When a threadId is present
-  // the run is enqueued through POST /threads/:id/turns (enqueueAndAwait routes
-  // it there) — the ONE turn-creation path that owns scope, lineage, and the
-  // continuation packet. POST /runs itself now refuses threadId.
+  // Thread continuation (W13/D10): --thread <id> targets a thread; --resume picks the most
+  // recently updated one. With a threadId the run goes through POST /threads/:id/turns
+  // (enqueueAndAwait routes it): the ONE turn-creation path owning scope, lineage and the
+  // continuation packet. POST /runs refuses threadId.
   let threadId = flagStr(args, "thread");
   if (threadId === undefined && flagBool(args, "resume")) {
     try {
@@ -575,9 +573,8 @@ async function daemonRun(
       }
       threadId = newest.id;
     } catch (err) {
-      // Flatten any cause (transport error, a malformed-threads Zod parse) into a
-      // single operational message so the exit code stays 1 and no raw Zod field
-      // dump leaks; the projector owns the envelope on every surface.
+      // Flatten any cause (transport error, malformed-threads Zod parse) into one operational
+      // message: exit code stays 1, no raw Zod dump leaks; the projector owns the envelope.
       return renderCliFailure(
         json || jsonStream,
         new Error(
@@ -647,12 +644,10 @@ async function daemonRun(
     ...(p.reviewerEfforts ? { reviewerEfforts: p.reviewerEfforts } : {}),
   };
 
-  // The last run id this command bound, threaded into the failure envelope as
-  // a per-command extra: a run that DID start (or finish) must keep its handle
-  // even when a post-terminal read raises (e.g. 500 run_facts_invalid).
+  // The last run id this command bound, a per-command extra on the failure envelope: a run
+  // that DID start (or finish) keeps its handle when a post-terminal read raises (500 run_facts_invalid).
   let terminalRunId = "";
-  // The same run's accepted job and receipt store (or group pair), kept beside
-  // it for the machine envelope: a failed later read must not lose them either.
+  // Its accepted job and receipt store (or group pair), kept so a failed later read loses neither.
   let acceptedRun: Record<string, unknown> = {};
   try {
     if (jsonStream) {
@@ -698,10 +693,9 @@ async function daemonRun(
       const out = await enqueueAndAwait(client, addr, body, { waitForTerminal: true });
       terminalRunId = out.runId;
       acceptedRun = acceptedRunFacts(out);
-      // ADD-ONLY key (bench contract keeps {runId,runDir,status}): the derived
-      // apply-gate verdict, so machine callers act on truth instead of
-      // re-implying eligibility from status. ONE GET /runs/:id feeds all three
-      // terminal projections (INV-120/122).
+      // ADD-ONLY key (bench contract keeps {runId,runDir,status}): the derived apply-gate
+      // verdict, so callers need not re-imply eligibility from status. ONE GET /runs/:id
+      // feeds all three terminal projections (INV-120/122).
       const detail = await fetchRunDetail(addr, out.runId);
       // Preserve bench keys while deriving the human summary from the same
       // canonical receipt that feeds the machine terminal fields.
@@ -712,9 +706,8 @@ async function daemonRun(
       printJson(projectTerminalRunOutput(out, p.mode, detail, { summary: reason }));
       return exitCodeForState(out.status, projectRunOutcomeFacts(detail));
     }
-    // Text mode: enqueue, then live-stream the run through the shared follow
-    // pipeline (replay + push + interactive TTY question answering), then print
-    // the honest terminal line + artifacts dir resolved from the daemon.
+    // Text mode: enqueue, live-stream through the shared follow pipeline (replay + push +
+    // interactive TTY question answering), then print the honest terminal line + artifacts dir.
     const started = await enqueueAndAwait(client, addr, body, { waitForTerminal: false });
     if (!started.runId) {
       print(`run did not start: ${started.status}${started.error ? ` — ${started.error}` : ""}`);
