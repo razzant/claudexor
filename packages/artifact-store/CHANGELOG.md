@@ -1,5 +1,11 @@
 # @claudexor/artifact-store
 
+## 6.5.0
+
+### Patch Changes
+
+- @claudexor/util@6.5.0
+
 ## 6.4.2
 
 ### Patch Changes
