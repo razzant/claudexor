@@ -300,6 +300,59 @@ import Testing
     }
 
     @MainActor
+    @Test func localReopenLoadsReportAfterHistoryRestoresOnlyTheChildSummary() async throws {
+        defer { RemoteRunDetailURLProtocol.handler = nil }
+        let source = try HistoryTestSource(count: 25) // parent run-0 is off the loaded page
+        let child = "run-child"
+        let (model, _) = makeModel(runId: child, local: true)
+        select(source, in: model, at: .local, open: child)
+        let history = try #require(model.selectedHistory)
+        source.transform = { json in
+            var turns = json["turns"] as! [[String: Any]]
+            if let index = turns.firstIndex(where: { $0["runId"] as? String == "mock-run-0" }),
+               var run = turns[index]["run"] as? [String: Any] {
+                run["delegatedChildRunIds"] = [child]
+                turns[index]["run"] = run
+                json["turns"] = turns
+            }
+        }
+        let reads = RemoteRunDetailRecorder()
+        RemoteRunDetailURLProtocol.handler = { request in
+            switch (request.url?.path, request.url?.query) {
+            case ("/v2/runs/mock-run-0", nil):
+                reads.append("parent")
+                let body = #"{"summary":{"runId":"mock-run-0","state":"succeeded","mode":"agent"},"children":[{"runId":"run-child","state":"succeeded","mode":"ask","delegatedFromRunId":"mock-run-0"}],"lastSeq":6}"#
+                return (response(for: request), Data(body.utf8), 0)
+            case ("/v2/runs/run-child", let query):
+                reads.append(query ?? "plain child")
+                return try familyFixture(request)
+            default:
+                return try familyFixture(request)
+            }
+        }
+        await model.ensureAddressedRunDetail(child, locationID: .local)
+        try #require(model.task(child)?.earlierAnswerText == "Initial swatch report.")
+        try #require(model.task(child)?.answerText == "Accepted text.")
+        model.route = .threads
+        await model.refreshRuns()
+        try #require(model.task(child) == nil)
+
+        let older = try source.page(.beforeTurnId(source.detail.turns[5].id))
+        history.install([older], ids: older.turns.map(\.id) + history.rows.map(\.id), reset: false, serial: 0)
+        await model.loadHistoryDelegates(history)
+        let summary = try #require(model.task(child))
+        try #require(model.workspaceRunIDs.contains(child) && summary.delegatedFromRunId == "mock-run-0")
+        try #require(summary.earlierAnswerText == nil && summary.answerText == nil)
+        try #require(reads.values == ["includeEarlierAssistantOutput=true", "parent"])
+
+        model.route = .task(child)
+        for _ in 0..<2 { await model.ensureAddressedRunDetail(child, locationID: .local) }
+        #expect(reads.values == ["includeEarlierAssistantOutput=true", "parent", "includeEarlierAssistantOutput=true"])
+        #expect(model.task(child)?.earlierAnswerText == "Initial swatch report.")
+        #expect(model.task(child)?.answerText == "Accepted text.")
+    }
+
+    @MainActor
     @Test func remoteLegacyDetailUsesTheSharedBoundedArtifactFallback() async throws {
         defer { RemoteRunDetailURLProtocol.handler = nil }
         let (model, locationID) = makeModel(runId: "run-legacy")

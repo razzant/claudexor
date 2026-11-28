@@ -529,12 +529,15 @@ final class AppModel {
             liveTasks = Self.preservingSelectedThreadFamily(
                 refreshed: refreshed, existing: existingTasks,
                 parentRunIds: selectedFamilyParentIds(at: .local))
+            let keptIds = Set(liveTasks.map(\.id))
+            for id in addressedRunDetails.keys where addressedRunDetails[id] == true && !keptIds.contains(id) {
+                addressedRunDetails[id] = false // A later summary can restore the ID, not the addressed detail.
+            }
             // A 202-queued row was keyed by jobId; once the daemon surfaces the
             // runId the open detail route must follow instead of dangling.
-            if case .task(let openId) = route, !liveTasks.contains(where: { $0.id == openId }) {
-                if let mapped = summaries.first(where: { $0.jobId == openId }) {
-                    route = .task(mapped.runId)
-                }
+            if case .task(let openId) = route, !keptIds.contains(openId),
+               let mapped = summaries.first(where: { $0.jobId == openId }) {
+                route = .task(mapped.runId)
             }
             // Live progress for EVERY active run — including CLI-started runs and
             // runs that were already active when the app (re)connected.
