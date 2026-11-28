@@ -2688,7 +2688,12 @@ check (60-second Git limit) and fails the preparation as a Git error. A reviewer
 copy that cannot fit names those files `space_insufficient`, so the review cannot
 pass clean. The destination decides which unwritten ranges stay holes (APFS fills
 gaps up to about 16 MiB; on Windows/NTFS the copy is not marked sparse), and an
-HTTP download is a plain byte stream.
+HTTP download is a plain byte stream. A block count is read as allocation only
+where it is evidence (`allocatedBytes`): POSIX `st_blocks` is the allocation, so a
+hole-only file holds nothing; Node 24's libuv (1.51, 1.52) reports
+`AllocationSize >> 9` on Windows, zero also for MFT-resident data, so there a zero
+for a non-empty file means unknown (no holes assumed, its length reclaimed). Native
+Windows is not tested; the rule is checked on modeled platforms.
 
 Within one run the engine's immutable names (envelope baseline blobs, attempt
 captures, `final/files/content`, the review evidence packet and its persistent
@@ -2730,9 +2735,12 @@ both `failure.yaml` and the returned summary; the refusal and the kept copy foll
 A finished run whose own report vetoes it (needs input, incomplete) keeps that
 reason, remedy and continuation, which lead its `failure.yaml` (phase `workspace`),
 its `run.blocked` `failure_ref` and its summary. A final verification that blocks
-a run leads with its own statement on both lanes (phase `verification`); a copy
-that ran out of room is remedied by room, and a files result's unproven copy is
-never offered an accepted risk. A strategy whose workspace could not be prepared
+a run leads with its own statement on both lanes (phase `verification`). Its
+typed cause is not kept on the decision, so a copy that ran out of room still
+blocks like failed checks: the advice is to free the room first, then accept the
+risk for that exact result, after which Apply rebuilds and rechecks the copy (it
+refuses while the copy still cannot be made, and an unproven copy is never
+authorized). A refused publication's record offers the kept copy, never an apply. A strategy whose workspace could not be prepared
 for want of room ends `capture_refused` in phase `workspace`; for a directory
 workspace every step counts (its base, `owner.json`, the scoped home, the copies),
 with the system's code as `causeCode` and the cleanup's facts.

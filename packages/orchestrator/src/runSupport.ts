@@ -76,7 +76,7 @@ export function deliveryRefusalFailure(reason: string, runDir: string, space?: o
     nextActions: [
       "Inspect final/delivery_receipt.yaml",
       space
-        ? "Free disk space at the target, then apply the result again (paths already written are kept)"
+        ? "Free disk space at the target first, then accept the risk for this exact result and apply it (Apply verifies it afresh; paths already written are kept)"
         : "Retry after the target tree stops changing",
     ],
   };

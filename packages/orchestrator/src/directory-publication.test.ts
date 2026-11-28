@@ -277,6 +277,7 @@ function reviewer(
   id: string,
   providerFamily: "openai" | "anthropic",
   inspect: (spec: HarnessRunSpec) => void,
+  findings: object[] = [],
 ): ReviewerSpec {
   const adapter: HarnessAdapter = {
     id,
@@ -303,7 +304,12 @@ function reviewer(
         observed_model: `${id}-model`,
         credential_route: "managed_api_key",
       };
-      yield { type: "message", session_id: spec.session_id, ts, text: "```json\n[]\n```" };
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts,
+        text: `\`\`\`json\n${JSON.stringify(findings)}\n\`\`\``,
+      };
       yield { type: "completed", session_id: spec.session_id, ts };
     },
   };
@@ -889,5 +895,53 @@ describe.each([
     expect(blocked?.payload).toMatchObject({ phase: "verification" });
     expect(result.summary.split("\n")[0]).toContain("final verify ERRORED");
     expect(result.summary).not.toContain("converged");
+  });
+});
+
+describe.each([
+  ["race", undefined],
+  ["convergence", 2],
+] as const)("a refused publication beside a review block: %s", (_lane, attempts) => {
+  it("states the block, then the refusal, and offers the kept files, not an apply", async () => {
+    refusePublication();
+    const escalation = {
+      severity: "NEEDS_HUMAN",
+      category: "spec_gap",
+      claim: "An operator must decide on this image.",
+      evidence: { files: [] },
+      proposed_fix: "Decide.",
+    };
+    const writer = author((spec) => writeImage(join(spec.cwd, "disk.img")));
+    const reviewers = [
+      reviewer("review-a", "openai", () => undefined, [escalation]),
+      reviewer("review-b", "anthropic", () => undefined, [escalation]),
+    ];
+    const registry = new Map(
+      [writer, ...reviewers.map((item) => item.adapter)].map((item) => [item.id, item]),
+    );
+    const result = await new Orchestrator({ registry, reviewers }).run({
+      repoRoot: project(),
+      prompt: "Create the image",
+      harnesses: [writer.id],
+      workspaceKind: "directory",
+      scopePaths: ["input.txt"],
+      review: true,
+      ...(attempts ? { attempts } : {}),
+    });
+
+    const { facts, failure } = terminal(result.runDir);
+    expect(facts.outcome).toMatchObject({ lifecycle: "succeeded", review: "blocked" });
+    expect(failure).toMatchObject({ phase: "review" });
+    for (const text of [failure!.safeMessage, result.summary]) {
+      const lines = text.split("\n");
+      expect(lines[0]).toContain("review escalated to a human decision");
+      expect(lines.slice(1).join("\n")).toContain(
+        "could not be published as the run's final files",
+      );
+    }
+    const actions = failure!.nextActions.join("\n");
+    expect(actions).not.toMatch(/accept the risk|accept_risk/i);
+    expect(actions).toMatch(/attempts[\\/]a0\d[\\/]final[\\/]files/);
+    expect(actions).toContain("Decide on those changes yourself");
   });
 });

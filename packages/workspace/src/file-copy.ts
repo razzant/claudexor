@@ -139,10 +139,28 @@ async function cloneFile(source: string, target: string): Promise<boolean> {
   }
 }
 
+/**
+ * The bytes a file holds on disk, when its block count is evidence of them; null
+ * when it is not. POSIX `st_blocks` is the allocation itself, so zero blocks of a
+ * non-empty file are a real hole-only (or inline) file. Node's libuv on Windows
+ * (1.51 in Node 24.15, 1.52 in later 24.x) reports `AllocationSize >> 9`, which is
+ * also zero for data resident in the MFT, a link read without a handle and the NUL
+ * device: there a zero for a non-empty file proves nothing. An absent count never does.
+ */
+export function allocatedBytes(info: Pick<Stats, "blocks" | "size">): number | null {
+  const blocks = info.blocks as number | undefined;
+  if (blocks === undefined || !Number.isFinite(blocks)) return null;
+  if (blocks === 0 && info.size > 0 && process.platform === "win32") return null;
+  return blocks * 512;
+}
+
 /** Fewer allocated bytes than length. Only such a source has zero ranges to
  * leave unwritten: an allocated file is not thinned by being copied, and a block
- * count the platform does not report is no evidence of holes. */
-const isSparse = (info: Stats) => info.blocks !== undefined && info.blocks * 512 < info.size;
+ * count that is no evidence (`allocatedBytes`) is no evidence of holes. */
+const isSparse = (info: Stats) => {
+  const allocated = allocatedBytes(info);
+  return allocated !== null && allocated < info.size;
+};
 
 /** The host facilities a copy depends on, in one place so a test can withhold or
  * observe them (`digest`: every whole-file hash this module and its index read). */

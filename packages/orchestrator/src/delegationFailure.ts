@@ -236,19 +236,22 @@ function withPublicationRefusal<
 >(run: CandidateRun | null | undefined, record: T): T {
   const refusal = run?.files ? run.captureRefusal : undefined;
   if (!refusal) return record;
-  const inspect = captureInspectionActions(refusal);
+  // No final result exists to apply: the leading cause's own advice to accept a
+  // risk and apply gives way to inspecting the kept copy and deciding on it.
+  const kept = captureRefusalNextActions(refusal);
+  const own = (record.nextActions ?? []).filter((action) => !OFFERS_APPLY.test(action));
   return {
     ...record,
     captureFailure: refusal.failure ?? record.captureFailure,
     safeMessage: record.safeMessage.includes(refusal.detail)
       ? record.safeMessage
       : `${record.safeMessage}\n${refusal.detail}`,
-    nextActions: [
-      ...(record.nextActions ?? []),
-      ...inspect.filter((action) => !record.nextActions?.includes(action)),
-    ],
+    nextActions: [...own, ...kept.filter((action) => !own.includes(action))],
   };
 }
+
+/** The leading causes' advice to apply the run's result under an accepted risk. */
+const OFFERS_APPLY = /accept the risk|accept_risk/i;
 
 /** A finished run whose own report vetoes it (needs input, incomplete) and whose
  * files could not be published. It ends as a failure terminal for the record
@@ -305,9 +308,11 @@ export function verificationFailureRecord(
       !unproven
         ? "Re-run after fixing the base conflict or the failing gates"
         : finalVerifySpaceFailure(verify)
-          ? "Free disk space for the verification copy, then check or apply again (Apply verifies afresh)"
+          ? // The block stands (checks failed): an ordinary Apply refuses until the
+            // operator accepts the risk, and that Apply then rebuilds the copy.
+            "Free disk space for the verification copy first, then accept the risk for this exact result and apply (Apply rebuilds and rechecks the copy, and refuses while it still cannot be made)"
           : files
-            ? "Fix the verify infrastructure (temporary directory) and re-run"
+            ? "Fix the verify infrastructure (temporary directory), then accept the risk for this exact result and apply (Apply rebuilds and rechecks the copy)"
             : "Fix the verify infrastructure (git worktree/tmp) and re-run, or accept_risk to override",
       ...followUps,
     ],
@@ -451,16 +456,19 @@ export function recordFor(
   verify: Parameters<typeof finalVerifySpaceFailure>[0],
   delivered?: SpaceCause,
 ) {
-  return (record: Parameters<typeof writeFailure>[2]) =>
-    writeFailure(
-      store,
-      paths,
-      withPublicationRefusal(run, {
-        ...record,
-        runDir: record.runDir ?? paths.root,
-        captureFailure: record.captureFailure ?? captureCause(verify, delivered, run),
-      }),
-    );
+  const write = (record: Parameters<typeof writeFailure>[2]) => {
+    const written = withPublicationRefusal(run, {
+      ...record,
+      runDir: record.runDir ?? paths.root,
+      captureFailure: record.captureFailure ?? captureCause(verify, delivered, run),
+    });
+    writeFailure(store, paths, written);
+    // A refused publication's terminal states its record in its summary too: the
+    // leading cause first, the refusal and kept copy after.
+    if (run?.files && run.captureRefusal) write.unpublished = written.safeMessage;
+  };
+  write.unpublished = undefined as string | undefined;
+  return write;
 }
 
 /** A directory delivery's own lack of room (its receipt states it as a typed refusal). */

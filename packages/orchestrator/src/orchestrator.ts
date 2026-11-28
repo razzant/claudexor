@@ -4484,7 +4484,7 @@ export class Orchestrator {
       facts,
       winner: result.decision.winner,
       runDir: paths.root,
-      summary: withPoolAttempts(statement, pool),
+      summary: record.unpublished ?? withPoolAttempts(statement, pool),
       candidates: candidateStatuses(runs),
       decisionPath,
       reviewVerified: actualReviewVerified,
@@ -5638,13 +5638,15 @@ export class Orchestrator {
       ...(facts.lifecycle === "cancelled" && convAbortReason
         ? { cancelReason: convAbortReason }
         : {}),
-      summary: withPoolAttempts(
-        delegateFailure.terminalLead(facts, lastRun, convFinalVerify) ??
-          (converged && !(lastRun?.files && lastRun.captureRefusal)
-            ? `converged in ${attempt} attempt(s)`
-            : `${convCause ? `${convCause}\n` : ""}${facts.lifecycle} after ${attempt} attempt(s)`),
-        convPool,
-      ),
+      summary:
+        record.unpublished ??
+        withPoolAttempts(
+          delegateFailure.terminalLead(facts, lastRun, convFinalVerify) ??
+            (converged && !(lastRun?.files && lastRun.captureRefusal)
+              ? `converged in ${attempt} attempt(s)`
+              : `${convCause ? `${convCause}\n` : ""}${facts.lifecycle} after ${attempt} attempt(s)`),
+          convPool,
+        ),
       candidates: lastRun
         ? [
             {

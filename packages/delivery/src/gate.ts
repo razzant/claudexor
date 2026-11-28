@@ -105,6 +105,14 @@ function applyHint(decision: DecisionRecord | null, lifecycle: string | null): s
     if (facts.lifecycle === "succeeded" && facts.work_state?.state === "incomplete") {
       return "Re-run until the run reports the work is complete.";
     }
+    // A final check that could not even build or prove its copy (a copy without
+    // room, a verifier error) blocks like a failed check; its typed cause is not
+    // kept on the decision, so the block stands and Apply still needs the
+    // override. Accepting before the cause is gone only meets the same refusal:
+    // Apply builds the copy afresh and refuses while it still cannot be made.
+    if (facts.checks === "failed" && decision?.final_verify?.applied_cleanly === null) {
+      return `Remove the final check's cause first (${decision.final_verify.reason ?? "verification error"}; for example free disk space), then accept the risk for this exact result and apply: Apply rebuilds and rechecks it, and accepting the risk also accepts checks that then fail.`;
+    }
     if (facts.review === "blocked" || facts.checks === "failed") {
       // A blocked run already completed its (verified) review — pointing back at
       // "run a review first" is a dead loop (QA-032B). The real next step is the

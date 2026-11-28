@@ -505,3 +505,98 @@ describe("one fact about a files delivery's effects", () => {
     }
   });
 });
+
+describe("a files result blocked by its final check", () => {
+  /** The run's saved decision: its checks failed through this final check. */
+  async function blocked(
+    f: Awaited<ReturnType<typeof fixture>>,
+    finalVerify: Record<string, unknown>,
+  ) {
+    await writeFile(
+      join(f.run, "arbitration/decision.yaml"),
+      stringify(
+        DecisionRecord.parse({
+          winner: "a01",
+          facts: makeOutcomeFacts("succeeded", {
+            review: "not_run",
+            review_requested: false,
+            checks: "failed",
+            reason: "checks_failed",
+          }),
+          final_verify: { attempted: true, duration_ms: 1, ...finalVerify },
+        }),
+      ),
+    );
+  }
+  const accepted = (f: { manifestSha256: string }) => ({
+    action: "accept_risk" as const,
+    findingIds: [],
+    acceptedRisks: [],
+    patchSha256: f.manifestSha256,
+    decidedAt: "2026-11-28T00:00:00Z",
+  });
+  const verifyCopy = (dir: string) => dir.includes("claudexor-verify-files-");
+
+  it("after a verification copy lacked room: the advice is what Apply then does", async () => {
+    const f = await fixture(true);
+    await blocked(f, {
+      applied_cleanly: null,
+      reason: "final verification ran out of space: ENOSPC",
+    });
+    // Room is back. The block stands: an ordinary check and Apply refuse, and say how.
+    const detail = (await (await f.read()).json()) as {
+      applyEligibility?: { requiredAction?: string | null };
+    };
+    expect(detail.applyEligibility?.requiredAction).toContain(
+      "Remove the final check's cause first",
+    );
+    const check = (await (await f.request("apply/check", { target: undefined })).json()) as {
+      stderr?: string;
+    };
+    expect(check).toMatchObject({ ok: false });
+    expect(check.stderr).toContain("Remove the final check's cause first");
+    const refused = (await (await f.request("apply", { mode: "apply" }, "plain")).json()) as {
+      detail?: string;
+    };
+    expect(refused).toMatchObject({ applied: false, appliedPaths: [], treeMutated: false });
+    expect(refused.detail).toContain("then accept the risk for this exact result and apply");
+    expect(await readFile(join(f.source, "document.bin"), "utf8")).toBe("baseline\n");
+    fixtureOperator.current = accepted(f);
+    try {
+      // Accepted while the copy still cannot be made: the same typed refusal, nothing written.
+      vi.spyOn(fileCopyHost, "clone").mockResolvedValue(false);
+      const real = fileCopyHost.availableBytes;
+      vi.spyOn(fileCopyHost, "availableBytes").mockImplementation((dir) =>
+        verifyCopy(dir) ? 0 : real(dir),
+      );
+      expect(
+        await (await f.request("apply", { mode: "apply" }, "still-full")).json(),
+      ).toMatchObject({ applied: false, refusal: { code: "space_insufficient" } });
+      vi.restoreAllMocks();
+      // With room: the check passes and an ordinary Apply rebuilds, rechecks and writes.
+      expect(await (await f.request("apply/check", { target: undefined })).json()).toMatchObject({
+        ok: true,
+      });
+      expect(await (await f.request("apply", { mode: "apply" }, "room")).json()).toMatchObject({
+        applied: true,
+      });
+      expect((await readFile(join(f.source, "document.bin"))).equals(f.output)).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      fixtureOperator.current = null;
+    }
+  });
+
+  it("after checks that really failed: an accepted risk stays the remedy, nothing applies without it", async () => {
+    const f = await fixture();
+    await blocked(f, { applied_cleanly: true, gates_passed: false });
+    const detail = (await (await f.read()).json()) as {
+      applyEligibility?: { requiredAction?: string | null };
+    };
+    expect(detail.applyEligibility?.requiredAction).toContain("Accept the risk");
+    expect(
+      await (await f.request("apply", { mode: "apply" }, "failed-gates")).json(),
+    ).toMatchObject({ applied: false, appliedPaths: [] });
+    expect(await readFile(join(f.source, "document.bin"), "utf8")).toBe("baseline\n");
+  });
+});

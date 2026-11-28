@@ -24,6 +24,7 @@ import {
   FileSpaceError,
   shareImmutableFile,
   writeIndependentCopy,
+  allocatedBytes,
 } from "./file-copy.js";
 import { captureFailureEvidence } from "./capture-failure.js";
 
@@ -207,6 +208,28 @@ describe("a copy that writes bytes", () => {
     expect(seen.chmod).toEqual(seen.write);
     expect(seen.sync).toEqual(seen.write);
     expect((await readFile(target)).equals(await readFile(source))).toBe(true);
+  });
+
+  it("reads a block count as allocation only where it is evidence (modeled platforms)", () => {
+    const on = <T>(platform: NodeJS.Platform, read: () => T): T => {
+      const real = Object.getOwnPropertyDescriptor(process, "platform")!;
+      Object.defineProperty(process, "platform", { ...real, value: platform });
+      try {
+        return read();
+      } finally {
+        Object.defineProperty(process, "platform", real);
+      }
+    };
+    const stats = (size: number, blocks?: number) => ({ size, blocks }) as unknown as Stats;
+    // POSIX st_blocks is the allocation: a hole-only file really holds nothing.
+    expect(on("linux", () => allocatedBytes(stats(MiB, 0)))).toBe(0);
+    expect(on("darwin", () => fileCopyHost.isSparse(stats(MiB, 0)))).toBe(true);
+    // libuv on Windows: AllocationSize >> 9, zero also for MFT-resident data.
+    expect(on("win32", () => allocatedBytes(stats(MiB, 0)))).toBeNull();
+    expect(on("win32", () => fileCopyHost.isSparse(stats(MiB, 0)))).toBe(false);
+    expect(on("win32", () => allocatedBytes(stats(MiB, 8)))).toBe(4096);
+    expect(on("win32", () => allocatedBytes(stats(0, 0)))).toBe(0);
+    expect(allocatedBytes(stats(MiB))).toBeNull();
   });
 
   it("treats a block count the platform does not report as no evidence of holes", () => {
