@@ -4,6 +4,22 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v6.5.0** (2026-11-28) — **Read-only second opinions in Hermes and Pi.**
+  When the Claudexor skill is enabled, its experimental default asks the host
+  model to request one read-only second opinion for an explicit code review,
+  using only material cleared for sharing. The host model decides whether to
+  follow the skill. Use a compatible Claudexor CLI and daemon, both 6.4.0 or
+  later. A zero paid budget limits the cash Claudexor accounts for; a vendor
+  may still charge paid add-on credits against its subscription. A configured
+  fallback in the same harness can answer for a named model, and the skill
+  reports what it can verify about the answering model. Explicit calls and
+  the OpenClaw skill are unchanged. See [the integration guide](docs/INTEGRATIONS.md#default-second-opinion-in-hermes-and-pi)
+  for the live trials and their limits.
+
+  The Playwright MCP update to 0.0.86 preserves both files when downloads offer
+  the same name. The ACP SDK moves to 2.9.1 for the stable-v1 client and server.
+  Development tooling also updates Knip and Turbo.
+
 - **v6.4.2** (2026-11-26) — **Antigravity `workspace_write` runs request
   agy's terminal sandbox instead of allowing every shell command.** In 6.4.1
   such a run allowed every shell command for its session (`command(*)`). On a

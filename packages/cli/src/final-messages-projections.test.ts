@@ -21,6 +21,7 @@ import {
 } from "./mcp-run-projections.js";
 import { projectTerminalDetailFields } from "./run-facts-projection.js";
 import { runDetailPath } from "./run-detail-path.js";
+import { presentRunPrimaryOutput, projectRunPrimaryOutput } from "./run-detail-projections.js";
 
 const pointer: FinalMessagesPointer = {
   path: FINAL_MESSAGES_PATH,
@@ -40,11 +41,55 @@ const malformed = [
 ];
 const addr = { baseUrl: "http://127.0.0.1:1", token: "t" } as never;
 
-function catalogResponse(supported: boolean): Response {
+const FINAL = "includeFinalMessages";
+const EARLIER = "includeEarlierAssistantOutput";
+
+/** The real run-detail descriptor, advertising all, some or none of its opt-in queries. */
+function catalogResponse(supported: boolean | readonly string[]): Response {
   const op = OPERATION_CATALOG.operations.find((entry) => entry.id === "get:runs.id")!;
+  const names = supported === true ? [FINAL, EARLIER] : supported === false ? [] : supported;
   return Response.json({
     ...OPERATION_CATALOG,
-    operations: [supported ? op : { ...op, parameters: [] }],
+    operations: [
+      {
+        ...op,
+        parameters: op.parameters.filter((p) => p.location !== "query" || names.includes(p.name)),
+      },
+    ],
+  });
+}
+
+const accepted = "Selected note.";
+const earlierOutput = {
+  path: "final/earlier-assistant-output.md",
+  text: "Earlier note.",
+  bytes: 13,
+  truncated: false,
+};
+const withEarlier = `Earlier note.\n\n---\n\n## Accepted final answer\n\n${accepted}`;
+
+/** A strict addressed detail: every query must be one the catalog advertised. */
+function runDetailFixture(
+  path: string,
+  supported: readonly string[],
+  earlier: Record<string, unknown> = { earlierAssistantOutput: earlierOutput },
+): Response {
+  const url = new URL(`http://fixture${path}`);
+  const keys = [...url.searchParams.keys()];
+  if (
+    url.pathname !== "/v2/runs/run-1" ||
+    keys.some((key) => !supported.includes(key) || url.searchParams.get(key) !== "true")
+  )
+    throw new Error(`Unexpected read ${path}`);
+  return Response.json({
+    summary: { ...summary, jobId: "job-1", delegatedFromRunId: "parent" },
+    primaryOutput: {
+      kind: "answer",
+      path: "final/answer.md",
+      text: accepted,
+      ...(url.searchParams.has(EARLIER) ? earlier : {}),
+    },
+    ...(url.searchParams.has(FINAL) ? { finalMessages: pointer } : {}),
   });
 }
 
@@ -107,103 +152,236 @@ describe("final-messages outcome on CLI-hosted result surfaces", () => {
     }
   });
 
-  it.each(["advertised", "older", "unavailable"])(
-    "uses a %s catalog for result recovery and ACP turns",
-    async (catalog) => {
-      const supported = catalog === "advertised";
-      const daemonRun = await import("./daemon-run.js");
-      const addr = { baseUrl: "http://notes.invalid", token: `fixture-${catalog}` };
-      const conn = {
-        client: { status: async () => ({ state: "succeeded", runId: "run-1" }) },
-        addr,
-        engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
-      };
-      const connection = async () => ({ ...conn, addr: { ...addr } }) as never;
-      const connect = vi.spyOn(daemonRun, "connectDaemonIfRunning").mockImplementation(connection);
-      const ensure = vi.spyOn(daemonRun, "ensureDaemon").mockImplementation(connection);
-      const paths: string[] = [];
-      vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
-        const path = url.slice(addr.baseUrl.length);
-        paths.push(path);
-        if (path === "/v2/operations") {
-          if (catalog === "unavailable") return new Response(null, { status: 503 });
-          return catalogResponse(supported);
-        }
-        if (path === "/v2/threads/notes")
-          return Response.json({
-            thread: { id: "notes", repoRoot: "/notes" },
-            turns: [
-              { prompt: "Read.", runId: "run-1" },
-              { prompt: "Read again.", runId: "run-1" },
-            ],
-          });
-        if (path === "/v2/threads/notes/turns") {
-          expect(JSON.parse(init.body as string)).toEqual({ prompt: "Read." });
-          return Response.json({ jobId: "job-1", runId: "run-1" });
-        }
-        const plain = "/v2/runs/run-1";
-        const enriched = path === plain + "?includeFinalMessages=true";
-        if (path !== plain && !(supported && enriched)) throw new Error(`Unexpected read ${path}`);
+  it.each([
+    ["both", [FINAL, EARLIER]],
+    ["final-only", [FINAL]],
+    ["earlier-only", [EARLIER]],
+    ["older", []],
+    ["unavailable", []],
+  ] as const)("uses a %s catalog for result recovery and ACP turns", async (catalog, names) => {
+    const advertised: readonly string[] = names;
+    const finalSupported = advertised.includes(FINAL);
+    const earlierSupported = advertised.includes(EARLIER);
+    const daemonRun = await import("./daemon-run.js");
+    const addr = { baseUrl: "http://notes.invalid", token: `fixture-${catalog}` };
+    const conn = {
+      client: { status: async () => ({ state: "succeeded", runId: "run-1" }) },
+      addr,
+      engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
+    };
+    const connection = async () => ({ ...conn, addr: { ...addr } }) as never;
+    const connect = vi.spyOn(daemonRun, "connectDaemonIfRunning").mockImplementation(connection);
+    const ensure = vi.spyOn(daemonRun, "ensureDaemon").mockImplementation(connection);
+    const paths: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      const path = url.slice(addr.baseUrl.length);
+      paths.push(path);
+      if (path === "/v2/operations") {
+        if (catalog === "unavailable") return new Response(null, { status: 503 });
+        return catalogResponse(names);
+      }
+      if (path === "/v2/threads/notes")
         return Response.json({
-          summary: { ...summary, jobId: "job-1", delegatedFromRunId: "parent" },
-          primaryOutput: { kind: "answer", path: "final/answer.md", text: "Selected note." },
-          ...(enriched ? { finalMessages: pointer } : {}),
-        });
-      });
-      try {
-        const recovery = mcpSurfaceRunner();
-        const args = { mode: "__run_result", runId: "run-1" };
-        expect(await recovery(args)).not.toHaveProperty("finalMessages");
-        expect(await recovery({ ...args, includeFinalMessages: false })).not.toHaveProperty(
-          "finalMessages",
-        );
-        expect(paths).toEqual(["/v2/runs/run-1", "/v2/runs/run-1"]);
-        const expected = supported ? pointer : null;
-        const selected = { ...args, includeFinalMessages: true };
-        expect(await recovery(selected)).toMatchObject({
-          summary: "Selected note.",
-          finalMessages: expected,
-        });
-        expect(await mcpSurfaceRunner({ delegationParentRunId: "parent" })(selected)).toMatchObject(
-          { finalMessages: expected },
-        );
-        await expect(
-          mcpSurfaceRunner({ delegationParentRunId: "another-parent" })(selected),
-        ).rejects.toMatchObject({
-          code: "delegation_child_scope_violation",
-        });
-
-        const session = { sessionId: "notes", repoPath: "/notes", includeFinalMessages: true };
-        const replay = await acpSessionQuery(
-          { ...session, mode: "__acp_session_load" },
-          undefined,
-          {} as never,
-        );
-        expect(replay).toMatchObject({
+          thread: { id: "notes", repoRoot: "/notes" },
           turns: [
-            { run: { runId: "run-1", finalMessages: expected } },
-            { run: { runId: "run-1", finalMessages: expected } },
+            { prompt: "Read.", runId: "run-1" },
+            { prompt: "Read again.", runId: "run-1" },
           ],
         });
-        const prompt = await acpSessionQuery(
+      if (path === "/v2/threads/notes/turns") {
+        expect(JSON.parse(init.body as string)).toEqual({ prompt: "Read." });
+        return Response.json({ jobId: "job-1", runId: "run-1" });
+      }
+      return runDetailFixture(path, names);
+    });
+    // Each addressed reader asks for earlier text; final messages stay the caller's choice.
+    const read = (final: boolean) => {
+      const query = new URLSearchParams();
+      if (final && finalSupported) query.set(FINAL, "true");
+      if (earlierSupported) query.set(EARLIER, "true");
+      return `/v2/runs/run-1${query.size ? `?${query}` : ""}`;
+    };
+    const text = earlierSupported ? withEarlier : accepted;
+    const runReads = () => paths.filter((p) => p.startsWith("/v2/runs/"));
+    try {
+      const recovery = mcpSurfaceRunner();
+      const args = { mode: "__run_result", runId: "run-1" };
+      expect(await recovery(args)).not.toHaveProperty("finalMessages");
+      expect(await recovery({ ...args, includeFinalMessages: false })).not.toHaveProperty(
+        "finalMessages",
+      );
+      expect(runReads()).toEqual([read(false), read(false)]);
+      const expected = finalSupported ? pointer : null;
+      const selected = { ...args, includeFinalMessages: true };
+      expect(await recovery(selected)).toMatchObject({
+        summary: text,
+        finalMessages: expected,
+      });
+      expect(await mcpSurfaceRunner({ delegationParentRunId: "parent" })(selected)).toMatchObject({
+        finalMessages: expected,
+      });
+      await expect(
+        mcpSurfaceRunner({ delegationParentRunId: "another-parent" })(selected),
+      ).rejects.toMatchObject({
+        code: "delegation_child_scope_violation",
+      });
+
+      const session = { sessionId: "notes", repoPath: "/notes", includeFinalMessages: true };
+      const replay = await acpSessionQuery(
+        { ...session, mode: "__acp_session_load" },
+        undefined,
+        {} as never,
+      );
+      expect(replay).toMatchObject({
+        turns: [
+          { output: { text }, run: { runId: "run-1", finalMessages: expected } },
+          { output: { text }, run: { runId: "run-1", finalMessages: expected } },
+        ],
+      });
+      const prompt = await acpSessionQuery(
+        { ...session, mode: "__acp_session_prompt", prompt: "Read." },
+        undefined,
+        {} as never,
+      );
+      expect(prompt).toMatchObject({ summary: text, finalMessages: expected });
+      expect(prompt).not.toHaveProperty("primaryOutput");
+      expect(paths.filter((p) => p === "/v2/operations")).toHaveLength(
+        catalog === "unavailable" ? 8 : 1,
+      );
+      expect(runReads().slice(2)).toEqual(Array(6).fill(read(true)));
+    } finally {
+      vi.unstubAllGlobals();
+      ensure.mockRestore();
+      connect.mockRestore();
+    }
+  });
+});
+
+describe("earlier assistant text on addressed human readers", () => {
+  const engine = (engineVersion: string) =>
+    ({ engineVersion, engineBuildSha: null, servingMode: "normal" }) as const;
+
+  it.each([
+    [
+      "source_gap",
+      "Earlier assistant text could not be determined: the run's event record is incomplete.",
+    ],
+    ["publication_failed", "Earlier assistant text could not be determined: preparing it failed."],
+    [
+      "artifact_unavailable",
+      "Earlier assistant text could not be read: its saved copy is unavailable.",
+    ],
+  ] as const)("notes a %s gap before the unchanged accepted answer", async (reason, note) => {
+    const daemonRun = await import("./daemon-run.js");
+    const addr = { baseUrl: "http://notes.invalid", token: `gap-${reason}` };
+    const conn = async () =>
+      ({
+        client: { status: async () => ({ state: "succeeded", runId: "run-1" }) },
+        addr: { ...addr },
+        engine: engine("6.3.0"),
+      }) as never;
+    const connect = vi.spyOn(daemonRun, "connectDaemonIfRunning").mockImplementation(conn);
+    const ensure = vi.spyOn(daemonRun, "ensureDaemon").mockImplementation(conn);
+    const reads: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = url.slice(addr.baseUrl.length);
+      if (path === "/v2/operations") return catalogResponse(true);
+      if (path === "/v2/threads/notes")
+        return Response.json({
+          thread: { id: "notes", repoRoot: "/notes" },
+          turns: [{ prompt: "Read.", runId: "run-1" }],
+        });
+      if (path === "/v2/threads/notes/turns")
+        return Response.json({ jobId: "job-1", runId: "run-1" });
+      reads.push(path);
+      return runDetailFixture(path, [FINAL, EARLIER], {
+        earlierAssistantOutputUnavailable: reason,
+      });
+    });
+    const noted = `[${note}]\n\n${accepted}`;
+    try {
+      expect(await mcpSurfaceRunner()({ mode: "__run_result", runId: "run-1" })).toMatchObject({
+        summary: noted,
+      });
+      const session = { sessionId: "notes", repoPath: "/notes" };
+      expect(
+        await acpSessionQuery({ ...session, mode: "__acp_session_load" }, undefined, {} as never),
+      ).toMatchObject({ turns: [{ output: { kind: "answer", text: noted } }] });
+      expect(
+        await acpSessionQuery(
           { ...session, mode: "__acp_session_prompt", prompt: "Read." },
           undefined,
           {} as never,
-        );
-        expect(prompt).toMatchObject({ summary: "Selected note.", finalMessages: expected });
-        expect(paths.filter((p) => p === "/v2/operations")).toHaveLength(
-          catalog === "unavailable" ? 6 : 1,
-        );
-        expect(paths.filter((p) => p.startsWith("/v2/runs/")).slice(2)).toEqual(
-          Array(6).fill(supported ? "/v2/runs/run-1?includeFinalMessages=true" : "/v2/runs/run-1"),
-        );
-      } finally {
-        vi.unstubAllGlobals();
-        ensure.mockRestore();
-        connect.mockRestore();
-      }
-    },
-  );
+        ),
+      ).toMatchObject({ summary: noted });
+      expect(reads).toEqual(Array(3).fill(`/v2/runs/run-1?${EARLIER}=true`));
+      // The typed primary itself still carries only the accepted answer text.
+      const typed = projectRunPrimaryOutput(
+        (await runDetailFixture(reads[0]!, [EARLIER], {
+          earlierAssistantOutputUnavailable: reason,
+        }).json()) as Record<string, unknown>,
+      );
+      expect(typed).toMatchObject({ text: accepted, earlierAssistantOutputUnavailable: reason });
+      expect(presentRunPrimaryOutput({ ...typed!, earlierAssistantOutput: earlierOutput })).toBe(
+        withEarlier,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      ensure.mockRestore();
+      connect.mockRestore();
+    }
+  });
+
+  it("rediscovers capability for waited launches and continuations after a same-port upgrade", async () => {
+    const daemonRun = await import("./daemon-run.js");
+    const addr = { baseUrl: "http://notes.invalid", token: "same-port-upgrade" };
+    // The daemon behind one address and token: an older engine, then a newer one.
+    let serving = engine("6.2.0");
+    const conn = async () =>
+      ({
+        client: { status: async () => ({ state: "succeeded", runId: "run-1" }) },
+        addr: { ...addr },
+        engine: { ...serving },
+      }) as never;
+    const connect = vi.spyOn(daemonRun, "connectDaemonIfRunning").mockImplementation(conn);
+    const ensure = vi.spyOn(daemonRun, "ensureDaemon").mockImplementation(conn);
+    const enqueue = vi
+      .spyOn(daemonRun, "enqueueAndAwait")
+      .mockResolvedValue({ runId: "run-1", runDir: "", jobId: "job-1", status: "succeeded" });
+    const paths: string[] = [];
+    const advertised = () => (serving.engineVersion === "6.2.0" ? [] : [EARLIER]);
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = url.slice(addr.baseUrl.length);
+      paths.push(path);
+      if (path === "/v2/operations") return catalogResponse(advertised());
+      if (path === "/v2/runs" && init?.method === "POST")
+        return Response.json({ jobId: "job-2", runId: "run-1", runDir: "/runs/run-1" });
+      return runDetailFixture(path, advertised());
+    });
+    try {
+      const launch = () => mcpSurfaceRunner()({ mode: "ask", prompt: "Read." });
+      expect(await launch()).toMatchObject({ runId: "run-1", summary: accepted });
+      serving = engine("6.3.0");
+      expect(await launch()).toMatchObject({ runId: "run-1", summary: withEarlier });
+      expect(
+        await mcpSurfaceRunner()({ mode: "__run_continue", runId: "run-1", prompt: "Again." }),
+      ).toMatchObject({ runId: "run-1", summary: withEarlier });
+      expect(paths).toEqual([
+        "/v2/operations",
+        "/v2/runs/run-1",
+        "/v2/operations",
+        `/v2/runs/run-1?${EARLIER}=true`,
+        "/v2/runs",
+        `/v2/runs/run-1?${EARLIER}=true`,
+      ]);
+      expect(enqueue).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+      enqueue.mockRestore();
+      ensure.mockRestore();
+      connect.mockRestore();
+    }
+  });
 });
 
 describe("final-message capability discovery", () => {

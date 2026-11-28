@@ -11,6 +11,19 @@ import { redactSecrets } from "@claudexor/util";
 
 export type PrimaryOutputPresentation = Pick<ControlPrimaryOutputType, "kind" | "path" | "text"> & {
   truncated?: boolean;
+  earlierAssistantOutput?: ControlPrimaryOutputType["earlierAssistantOutput"];
+  earlierAssistantOutputUnavailable?: ControlPrimaryOutputType["earlierAssistantOutputUnavailable"];
+};
+
+// A gap or failed preparation never asserts that earlier speech existed.
+const EARLIER_UNAVAILABLE_NOTE: Record<
+  NonNullable<ControlPrimaryOutputType["earlierAssistantOutputUnavailable"]>,
+  string
+> = {
+  source_gap:
+    "Earlier assistant text could not be determined: the run's event record is incomplete.",
+  publication_failed: "Earlier assistant text could not be determined: preparing it failed.",
+  artifact_unavailable: "Earlier assistant text could not be read: its saved copy is unavailable.",
 };
 
 /** Schema-validate the Control API's single primary-output owner. */
@@ -34,9 +47,19 @@ export function presentRunPrimaryOutput(output: PrimaryOutputPresentation | null
   if (!output || output.kind === "patch" || typeof output.text !== "string") return null;
   const text = output.text.trim();
   if (!text) return null;
-  return output.truncated === true
-    ? `${text}\n\n[Inline preview bounded; full artifact: ${output.path}]`
-    : text;
+  const accepted =
+    output.truncated === true
+      ? `${text}\n\n[Inline preview bounded; full artifact: ${output.path}]`
+      : text;
+  const earlier = output.earlierAssistantOutput;
+  const gap = output.earlierAssistantOutputUnavailable;
+  // Positive unavailability is a note; the accepted answer stays the text that follows.
+  if (!earlier && gap) return `[${EARLIER_UNAVAILABLE_NOTE[gap]}]\n\n${accepted}`;
+  if (!earlier) return accepted;
+  const preview = earlier.truncated
+    ? `${earlier.text}\n\n[Earlier text preview bounded; full artifact: ${earlier.path}]`
+    : earlier.text.trimEnd();
+  return `${preview}\n\n---\n\n## Accepted final answer\n\n${accepted}`;
 }
 
 export type ApplyEligibilityProjection = {

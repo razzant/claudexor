@@ -164,11 +164,9 @@ struct ThreadWorkspacePanel: View {
             .task(id: "\(model.selectedExecutionLocation.rawValue)|\(filterRunId ?? "")") {
                 let locationID = model.selectedExecutionLocation
                 if let id = filterRunId {
-                    if locationID == .local {
-                        await model.ensureRunDetail(id, insertingIfMissing: model.task(id, at: locationID) == nil)
-                    } else {
-                        await model.loadRunDetail(id, locationID: locationID)
-                    }
+                    await model.ensureAddressedRunDetail(
+                        id, locationID: locationID,
+                        insertingIfMissing: model.task(id, at: locationID) == nil)
                 }
             }
             .onChange(of: filterRunId) { _, _ in userSelectedTab = false; autoSelectDefaultTab() }

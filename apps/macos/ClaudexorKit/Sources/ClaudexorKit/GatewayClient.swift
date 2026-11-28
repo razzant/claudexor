@@ -133,16 +133,6 @@ public final class GatewayClient: Sendable {
         return !activeJobs.isEmpty
     }
 
-    public func runDetail(runId: String) async throws -> RunDetail {
-        let req = request("runs/\(runId)", method: "GET")
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
-        }
-        return try Self.decoder.decode(RunDetail.self, from: data)
-    }
-
     /// Refresh exactly one harness credential source. This route deliberately
     /// cannot fan out to unrelated adapters or overwrite aggregate catalog truth.
     public func refreshAuthReadiness(

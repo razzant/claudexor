@@ -64,6 +64,7 @@ export async function projectTerminalTurnDetail(
   lifecycle: RunOutcomeFacts["lifecycle"],
   includeFinalMessages = false,
   engine?: EngineIdentity,
+  includeEarlierAssistantOutput = false,
 ): Promise<{
   applyEligibility: unknown;
   planReadiness: unknown;
@@ -89,7 +90,13 @@ export async function projectTerminalTurnDetail(
   };
   if (!runId) return empty;
   try {
-    const detail = await fetchRunDetail(addr, runId, includeFinalMessages, engine);
+    const detail = await fetchRunDetail(
+      addr,
+      runId,
+      includeFinalMessages,
+      engine,
+      includeEarlierAssistantOutput,
+    );
     const runFacts = projectRunFacts(detail, { runId, lifecycle });
     return {
       applyEligibility: projectApplyEligibility(detail),
@@ -332,15 +339,25 @@ export async function acpSessionQuery(
       let finalMessages: FinalMessagesOutcome | null = null;
       if (runId) {
         try {
-          const run = await request(await runDetailPath(addr, runId, includeFinalMessages, engine));
+          const run = await request(
+            await runDetailPath(addr, runId, includeFinalMessages, engine, true),
+          );
           if (includeFinalMessages) finalMessages = projectRunFinalMessages(run);
           const primary = run["primaryOutput"] as Record<string, unknown> | null | undefined;
-          const text = typeof primary?.["text"] === "string" ? primary["text"].trim() : "";
+          const typed = projectRunPrimaryOutput(run);
+          const earlier = typed?.kind === "answer" ? typed.earlierAssistantOutput : undefined;
+          const addressed =
+            earlier || (typed?.kind === "answer" && typed.earlierAssistantOutputUnavailable);
+          const text = addressed
+            ? (presentRunPrimaryOutput(typed) ?? "")
+            : typeof primary?.["text"] === "string"
+              ? primary["text"].trim()
+              : "";
           if (text) {
             output = {
               kind: typeof primary?.["kind"] === "string" ? (primary["kind"] as string) : "answer",
               text,
-              truncated: primary?.["truncated"] === true,
+              truncated: primary?.["truncated"] === true || earlier?.truncated === true,
             };
           }
         } catch (error) {
@@ -409,6 +426,8 @@ export async function acpSessionQuery(
           record.state as RunOutcomeFacts["lifecycle"],
           includeFinalMessages,
           engine,
+          // Earlier speech is offered only beside a successful answer.
+          record.state === "succeeded",
         );
         const summary = acpTerminalSummary({ runId, runDir, record, detail });
         const { primaryOutput: _primaryOutput, ...terminalProjection } = detail;

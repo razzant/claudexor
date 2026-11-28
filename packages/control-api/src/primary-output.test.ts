@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RunFacts } from "@claudexor/schema";
-import { outputReadyState, primaryOutput, truncateUtf8 } from "./primary-output.js";
+import {
+  outputReadyState,
+  primaryOutput,
+  readRunEarlierAssistantOutputView,
+  truncateUtf8,
+} from "./primary-output.js";
+import { readRunEventFacts } from "./run-event-facts.js";
+import { eventsParseCountForTests } from "./run-timeline.js";
 import type { DaemonRunRecord } from "./run-record.js";
 import { inRunProjection } from "./projection-context.js";
 
@@ -18,6 +25,134 @@ function facts(path: string): RunFacts {
 }
 
 describe("canonical terminal presentation", () => {
+  it.each([11 * 1024, 24 * 1024])(
+    "reads earlier speech for addressed answers with an independent UTF-8 budget (%s bytes target)",
+    (targetBytes) => {
+      const runDir = mkdtempSync(join(tmpdir(), "claudexor-earlier-output-"));
+      const path = "final/answer.md";
+      const earlierPath = "final/earlier-assistant-output.md";
+      const earlier = "🟦".repeat(targetBytes / 4) + " end\n";
+      const answer = "Accepted answer\n";
+      mkdirSync(join(runDir, "final"));
+      writeFileSync(join(runDir, earlierPath), earlier);
+      writeFileSync(join(runDir, path), answer);
+      try {
+        const rec = record(runDir);
+        const truncated = targetBytes > 16 * 1024;
+        const canonical = {
+          kind: "answer",
+          path,
+          text: answer,
+          bytes: Buffer.byteLength(answer),
+          truncated: false,
+        };
+        expect(primaryOutput(rec, "ask", null, facts(path))).toEqual(canonical);
+        expect(
+          primaryOutput(rec, "ask", null, facts(path), { includeEarlierAssistantOutput: true }),
+        ).toEqual({
+          ...canonical,
+          earlierAssistantOutput: {
+            path: earlierPath,
+            text: truncated ? earlier.slice(0, ((16 * 1024) / 4) * 2) : earlier,
+            bytes: Buffer.byteLength(earlier),
+            truncated,
+          },
+        });
+        expect(
+          primaryOutput(rec, "ask", null, facts(path), {
+            maxBytes: 1024,
+            includeEarlierAssistantOutput: true,
+          }),
+        ).toEqual(canonical);
+        rmSync(join(runDir, earlierPath));
+        for (const [fact, reason] of [
+          ["saved", "artifact_unavailable"],
+          ["source_gap", "source_gap"],
+          ["publication_failed", "publication_failed"],
+        ] as const) {
+          expect(
+            primaryOutput(rec, "ask", null, facts(path), {
+              includeEarlierAssistantOutput: true,
+              earlierAssistantOutputFact: fact,
+            }),
+          ).toEqual({ ...canonical, earlierAssistantOutputUnavailable: reason });
+        }
+        expect(primaryOutput({ ...rec, state: "failed" }, "ask", null, facts(path))).toEqual(
+          canonical,
+        );
+        expect(
+          primaryOutput(rec, "ask", null, facts(path.replace("answer", "missing"))),
+        ).not.toHaveProperty("earlierAssistantOutput");
+      } finally {
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    ["the saved artifact", { earlier_assistant_output_saved: true }, true],
+    ["a saved artifact that no longer reads", { earlier_assistant_output_saved: true }, false],
+    ["a recorded event gap", { earlier_assistant_output_gap: true }, false],
+    ["a failed preparation", { earlier_assistant_output_failed: true }, false],
+    ["an unrelated status", { other: true }, false],
+    ["no status", null, false],
+  ] as const)(
+    "gives offline text inspect the earlier view an addressed detail serves for %s",
+    (_label, status, artifact) => {
+      const runDir = mkdtempSync(join(tmpdir(), "claudexor-earlier-view-"));
+      const path = "final/answer.md";
+      mkdirSync(join(runDir, "final"));
+      writeFileSync(join(runDir, path), "Accepted answer\n");
+      if (artifact) writeFileSync(join(runDir, "final/earlier-assistant-output.md"), "Report.\n");
+      // The orchestrator's own status shape, as events.jsonl stores it.
+      const event = (seq: number, payload: object) =>
+        JSON.stringify({
+          seq,
+          ts: "2026-11-28T00:00:00.000Z",
+          type: "harness.event",
+          payload: { type: "status", title: "Earlier assistant text", text: "", payload },
+        });
+      writeFileSync(
+        join(runDir, "events.jsonl"),
+        status ? `${event(1, { unrelated: true })}\n${event(2, status)}\n` : "",
+      );
+      try {
+        const served = primaryOutput(record(runDir), "ask", null, facts(path), {
+          includeEarlierAssistantOutput: true,
+          earlierAssistantOutputFact: readRunEventFacts({ runDir }).earlierAssistantOutputFact,
+        });
+        const offline = readRunEarlierAssistantOutputView(runDir);
+        expect(offline).toEqual({
+          ...(served?.earlierAssistantOutput
+            ? { earlierAssistantOutput: served.earlierAssistantOutput }
+            : {}),
+          ...(served?.earlierAssistantOutputUnavailable
+            ? { earlierAssistantOutputUnavailable: served.earlierAssistantOutputUnavailable }
+            : {}),
+        });
+        const expected =
+          artifact && status
+            ? { earlierAssistantOutput: expect.objectContaining({ text: "Report.\n" }) }
+            : status && "earlier_assistant_output_saved" in status
+              ? { earlierAssistantOutputUnavailable: "artifact_unavailable" }
+              : status && "earlier_assistant_output_gap" in status
+                ? { earlierAssistantOutputUnavailable: "source_gap" }
+                : status && "earlier_assistant_output_failed" in status
+                  ? { earlierAssistantOutputUnavailable: "publication_failed" }
+                  : {};
+        expect(offline).toEqual(expected);
+        expect(offline).not.toHaveProperty("text");
+        // Facts a caller already folded (inspect with final messages) are reused.
+        const folded = readRunEventFacts({ runDir });
+        const scans = eventsParseCountForTests();
+        expect(readRunEarlierAssistantOutputView(runDir, folded)).toEqual(expected);
+        expect(eventsParseCountForTests()).toBe(scans);
+      } finally {
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([true, false])(
     "keeps full, byte-bounded and patch-reference previews distinct (full first=%s)",
     (fullFirst) => {

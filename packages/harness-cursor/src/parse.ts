@@ -240,23 +240,23 @@ function parseCursorEventStateful(
     const buffered = Boolean(hasTimestamp && hasModelCall);
     const isDelta = hasTimestamp && !hasModelCall;
     const content: Json[] = obj.message?.content ?? [];
-    const out: HarnessEvent[] = [];
-    const completeText: string[] = [];
-    for (const block of content) {
-      if (typeof block?.text === "string" && block.text) {
-        if (!isDelta && !buffered) completeText.push(block.text);
-        out.push({
-          type: "message",
-          session_id: sessionId,
-          ts,
-          text: block.text,
-          ...(isDelta ? { payload: { delta: true } } : {}),
-          ...(buffered ? { payload: { buffered: true, model_call_id: obj.model_call_id } } : {}),
-        });
-      }
-    }
-    if (!isDelta && completeText.length > 0) state.lastCompleteAssistant = completeText.join("");
-    return out;
+    // Blocks in one frame belong to the same message. Preserve the frame
+    // boundary in the journal as well as in the existing final answer.
+    const text = content
+      .map((block) => (typeof block?.text === "string" ? block.text : ""))
+      .join("");
+    if (!text) return [];
+    if (!isDelta && !buffered) state.lastCompleteAssistant = text;
+    return [
+      {
+        type: "message",
+        session_id: sessionId,
+        ts,
+        text,
+        ...(isDelta ? { payload: { delta: true } } : {}),
+        ...(buffered ? { payload: { buffered: true, model_call_id: obj.model_call_id } } : {}),
+      },
+    ];
   }
 
   if (type === "thinking" || type === "reasoning") {

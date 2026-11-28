@@ -2345,9 +2345,11 @@ harness, and naming a model does not select its harness: a model-constrained
 Ask passes the matching `harness` too, and the host asks the user first when
 it does not know which harness runs the model. An Ask can still retry within
 that harness on its configured `fallback_model`. If that is unacceptable,
-the host does not send the default Ask. It identifies a different answering
-model from the Result and matching Wait evidence, or says when the model
-could not be confirmed. Reviews without a harness or model choice keep Auto.
+the host does not send the default Ask. It names the answering model only when
+Result metadata ties it to the delivered answer. In 6.5.0, Result does not expose
+that attribution. A Wait event can describe a failed try under the same attempt
+ID, so the host reports that the answering model is unconfirmed. Reviews without
+a harness or model choice keep Auto.
 An account is pinned only when
 the user named it, with an exact `harness_id` and `profile_id` that the user gave or an
 Accounts read already showed, never an id guessed from a name; with no account
@@ -2373,7 +2375,8 @@ CLI update they can differ; a same-major skew is only advisory. The serving
 daemon determines whether this guard exists: a 6.3 client forwarding
 `paidBudget` to a 6.4 daemon still gets daemon-side protection. A serving daemon
 older than 6.4.0 lacks that guard. The supported pairing still requires both
-CLI and daemon at 6.4.0 or later. The default makes no version check.
+CLI and daemon at 6.4.0 or later. The default makes no version check; a successful
+tool call can omit a version warning written to the MCP server's stderr.
 Missing version evidence alone does not establish skew; an ordinary Ask can
 proceed under the version requirement above. The path skips itself only when
 evidence already on the same path shows an engine older than 6.4.0 or a CLI and
@@ -3167,10 +3170,14 @@ razzant/claudexor#546 reports one native run with its timeout and requested
 handoffs and `success` notifications. `error`, `aborted` and progress ids come
 only from reading that build's code. The repository holds no sanitized
 recording, so the shape remains a hypothesis until one exists.
-On successful terminal `result`, the
-adapter finalizes the LAST complete assistant flush
-(`final_source: assistant_message`) rather than Cursor's concatenated `result`
-string; it falls back to `result` only when no complete assistant frame exists.
+On successful terminal `result`, the adapter finalizes the LAST complete
+assistant flush (`final_source: assistant_message`), joining its frame's text
+blocks, or the result string when no complete assistant frame exists. A matched
+background notice can anchor earlier speech in the winning session (#756).
+Subsequent corrections remain ordered through other tool calls; an exact
+cumulative buffer is not new speech. `claudexor_run_result` presents the earlier
+preview before the accepted final in `summary`; its separate artifact path
+allows exact retrieval. Only the typed final supplies the verdict and WorkReport.
 Cursor emits no typed rate-limit frame on the wire; the adapter classifies
 the vendor's usage-limit PROSE (grounded in the recorded 2026-08-17 incident
 transcript: `ActionRequiredError: You've hit your usage limit … resets …

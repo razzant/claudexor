@@ -8,7 +8,11 @@ import { releaseCommand } from "./release-command.js";
 import { serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
 import { dispatchAcpCommand } from "./acp-auth-command.js";
 import { initProjectConfig } from "@claudexor/config";
-import { readRunFinalMessages } from "@claudexor/control-api";
+import {
+  readRunEarlierAssistantOutputView,
+  readRunEventFacts,
+  readRunFinalMessages,
+} from "@claudexor/control-api";
 import {
   commandOutcomeLabel,
   DecisionRecord,
@@ -101,7 +105,7 @@ import {
   projectDelegation,
   terminalDelegationLines,
 } from "./delegation-output.js";
-import { inspectBudgetLine } from "./run-detail-projections.js";
+import { inspectBudgetLine, presentRunPrimaryOutput } from "./run-detail-projections.js";
 import { readRunFactsArtifact } from "./run-facts-projection.js";
 import { resolveRunStore, type ResolvedRunStore } from "./run-store-lookup.js";
 import { projectTerminalRunOutput, terminalRunRequiredActionLines } from "./terminal-run-output.js";
@@ -1100,9 +1104,10 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
           )
         : [];
       const artifacts = listCliArtifacts(paths.root).filter((p) => !p.endsWith("/"));
-      const finalMessages = flagBool(args, "include-final-messages")
-        ? readRunFinalMessages({ runDir: paths.root })
+      const eventFacts = flagBool(args, "include-final-messages")
+        ? readRunEventFacts({ runDir: paths.root })
         : undefined;
+      const finalMessages = eventFacts && readRunFinalMessages({ runDir: paths.root }, eventFacts);
       const outputReadyState =
         runFacts?.presentation?.state ??
         (primary?.kind === "diagnostic"
@@ -1261,7 +1266,18 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
       }
       if (primary?.text.trim()) {
         print("");
-        print(primary.text.trim());
+        // The addressed detail's earlier text, or its recorded reason as a note.
+        const earlier =
+          primary.kind === "answer" &&
+          runFacts?.outcome.lifecycle === "succeeded" &&
+          runFacts.presentation?.state === "ready"
+            ? readRunEarlierAssistantOutputView(paths.root, eventFacts)
+            : {};
+        const shown =
+          earlier.earlierAssistantOutput || earlier.earlierAssistantOutputUnavailable
+            ? presentRunPrimaryOutput({ ...primary, ...earlier })
+            : null;
+        print(shown || primary.text.trim());
       } else {
         print(summary ?? "(no summary or primary output in the run directory)");
       }

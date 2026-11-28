@@ -358,6 +358,7 @@ final class AppModel {
     /// uses this to avoid turning overlapping view tasks into serial duplicate
     /// GETs; event milestones continue to call `loadRunDetail` directly.
     @ObservationIgnored var hydratedRunDetails: Set<String> = []
+    @ObservationIgnored var addressedRunDetails: [String: Bool] = [:] // see ensureAddressedRunDetail
     /// Stream envelopes deferred while a snapshot load is in flight. Hard-capped
     /// (W23): runs whose buffer overflowed are flagged here and get a FRESH
     /// snapshot instead of a replay — dropped envelopes are never reconstructed.
@@ -525,18 +526,18 @@ final class AppModel {
             }
             // The family of the selection current at this response, never one
             // captured before it; remote run ids name another engine's runs.
-            let selected = selectedHistory?.locationID == .local ? selectedHistory : nil
-            let threadParents = Set(selected?.rows.compactMap(\.runId) ?? [])
             liveTasks = Self.preservingSelectedThreadFamily(
-                refreshed: refreshed,
-                existing: existingTasks,
-                parentRunIds: threadParents)
+                refreshed: refreshed, existing: existingTasks,
+                parentRunIds: selectedFamilyParentIds(at: .local))
+            let keptIds = Set(liveTasks.map(\.id))
+            for id in addressedRunDetails.keys where addressedRunDetails[id] == true && !keptIds.contains(id) {
+                addressedRunDetails[id] = false // A later summary can restore the ID, not the addressed detail.
+            }
             // A 202-queued row was keyed by jobId; once the daemon surfaces the
             // runId the open detail route must follow instead of dangling.
-            if case .task(let openId) = route, !liveTasks.contains(where: { $0.id == openId }) {
-                if let mapped = summaries.first(where: { $0.jobId == openId }) {
-                    route = .task(mapped.runId)
-                }
+            if case .task(let openId) = route, !keptIds.contains(openId),
+               let mapped = summaries.first(where: { $0.jobId == openId }) {
+                route = .task(mapped.runId)
             }
             // Live progress for EVERY active run — including CLI-started runs and
             // runs that were already active when the app (re)connected.

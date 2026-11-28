@@ -1,6 +1,11 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { OutputReadyPayload, type RunFacts, type RunPresentationPrimary } from "@claudexor/schema";
+import {
+  OutputReadyPayload,
+  type RunEvent,
+  type RunFacts,
+  type RunPresentationPrimary,
+} from "@claudexor/schema";
 import { readTextSafe } from "@claudexor/util";
 import type { AnnouncedRunContext } from "./runTerminals.js";
 
@@ -82,10 +87,12 @@ function standardPrimaryCandidates(mode: AnnouncedRunContext["mode"]): RunPresen
 }
 
 /** Build the immutable presentation receipt from the ordered output.ready log. */
-export function terminalPresentation(ctx: AnnouncedRunContext): RunFacts["presentation"] {
-  const receipts = ctx.log
-    .readAll()
-    .events.filter((event) => event.type === "output.ready")
+export function terminalPresentation(
+  ctx: AnnouncedRunContext,
+  events: readonly RunEvent[] = ctx.log.readAll().events,
+): RunFacts["presentation"] {
+  const receipts = events
+    .filter((event) => event.type === "output.ready")
     .map((event) => {
       const parsed = OutputReadyPayload.safeParse(event.payload);
       if (!parsed.success) throw new Error("output.ready payload is invalid");

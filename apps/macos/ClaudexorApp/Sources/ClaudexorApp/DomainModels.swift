@@ -525,6 +525,9 @@ struct TaskRun: Identifiable, Hashable {
     var diff: [DiffFile]
     var isLive: Bool = false
     var answerText: String?
+    var earlierAnswerText: String?
+    /// Positive evidence that earlier assistant text could not be shown.
+    var earlierAnswerNote: String?
     var primaryOutputPath: String?
     var primaryOutputTruncated = false
     var capturedArtifactPaths: [String] = []
@@ -608,20 +611,4 @@ struct TaskRun: Identifiable, Hashable {
     var planQuestions: [PlanQuestion] = []
     /// Council plan-strategy projection (D31); nil for non-council runs.
     var council: CouncilInfo?
-}
-
-// MARK: - Projects & specs
-
-struct Spec: Identifiable, Hashable {
-    let id: String
-    var title: String
-    var frozen: Bool
-    var version: Int
-    var runIds: [String]
-}
-
-struct Project: Identifiable, Hashable {
-    let id: String
-    var name: String
-    var specs: [Spec]
 }

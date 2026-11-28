@@ -1,5 +1,26 @@
 # @claudexor/orchestrator
 
+## 6.5.0
+
+### Patch Changes
+
+- Updated dependencies [69e2a62]
+  - @claudexor/core@6.5.0
+  - @claudexor/context@6.5.0
+  - @claudexor/delivery@6.5.0
+  - @claudexor/gateway@6.5.0
+  - @claudexor/review@6.5.0
+  - @claudexor/workspace@6.5.0
+  - @claudexor/policy@6.5.0
+  - @claudexor/arbitration@6.5.0
+  - @claudexor/artifact-store@6.5.0
+  - @claudexor/budget@6.5.0
+  - @claudexor/config@6.5.0
+  - @claudexor/event-log@6.5.0
+  - @claudexor/schema@6.5.0
+  - @claudexor/synthesis@6.5.0
+  - @claudexor/util@6.5.0
+
 ## 6.4.2
 
 ### Patch Changes

@@ -87,7 +87,11 @@ export function projectBulkJob(
             ...summaryOrDiagnostic(child),
             ...attention,
           })),
-          { retentionProblem: problem, includeFinalMessages: job.input.includeFinalMessages },
+          {
+            retentionProblem: problem,
+            includeFinalMessages: job.input.includeFinalMessages,
+            includeEarlierAssistantOutput: job.input.includeEarlierAssistantOutput,
+          },
         );
         return JSON.stringify({
           ...detailForReader(detail, job.input.runDeadlineFacts === true),

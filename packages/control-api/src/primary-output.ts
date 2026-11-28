@@ -1,13 +1,16 @@
 import { closeSync, lstatSync, openSync, readSync } from "node:fs";
 import { ControlPrimaryOutput, type RunFacts, type RunFailure } from "@claudexor/schema";
-import { RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
+import { EARLIER_ASSISTANT_OUTPUT_PATH, RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
 import { safeArtifactPath } from "./artifact-paths.js";
 import type { DaemonRunRecord } from "./daemon-server.js";
 import { readRunTombstone } from "./retention.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 import { projectionRead } from "./projection-context.js";
+import { readRunEventFacts, type RunEventFacts } from "./run-event-facts.js";
 
 const PRIMARY_OUTPUT_PREVIEW_BYTES = 256 * 1024;
+// Independent of the canonical answer cap; ordinary reports fit inline.
+const EARLIER_OUTPUT_PREVIEW_BYTES = 16 * 1024;
 /** Read past the cap so truncation always sees whether more text follows. */
 const READ_LOOKAHEAD_BYTES = 1024;
 
@@ -30,7 +33,7 @@ export function truncateUtf8(text: string, maxBytes: number): string {
 }
 
 function preview(
-  rec: DaemonRunRecord,
+  rec: Pick<DaemonRunRecord, "id" | "runDir">,
   relPath: string,
   maxBytes = PRIMARY_OUTPUT_PREVIEW_BYTES,
   metadataOnly = false,
@@ -43,7 +46,7 @@ function preview(
 }
 
 function previewUncached(
-  rec: DaemonRunRecord,
+  rec: Pick<DaemonRunRecord, "runDir">,
   relPath: string,
   maxBytes: number,
   metadataOnly: boolean,
@@ -85,12 +88,42 @@ export function boundedArtifactText(rec: DaemonRunRecord, relPath: string): stri
     : output.text;
 }
 
+/** Shared bounded view for the addressed detail and local text-mode inspect. */
+function readRunEarlierAssistantOutput(
+  runDir: string,
+): NonNullable<ControlPrimaryOutput["earlierAssistantOutput"]> | null {
+  const path = EARLIER_ASSISTANT_OUTPUT_PATH;
+  const earlier = preview({ id: runDir, runDir }, path, EARLIER_OUTPUT_PREVIEW_BYTES);
+  return earlier?.text.trim() ? { path, ...earlier } : null;
+}
+
+/** Offline text inspect's earlier view: that bounded artifact or, exactly as
+ * an addressed detail reports it, the run's recorded reason (a saved artifact
+ * that no longer reads is `artifact_unavailable`). Never the accepted answer.
+ * Facts the caller already folded are reused instead of reading events again. */
+export function readRunEarlierAssistantOutputView(
+  runDir: string,
+  facts?: RunEventFacts,
+): Pick<ControlPrimaryOutput, "earlierAssistantOutput" | "earlierAssistantOutputUnavailable"> {
+  const earlier = readRunEarlierAssistantOutput(runDir);
+  if (earlier) return { earlierAssistantOutput: earlier };
+  const fact = (facts ?? readRunEventFacts({ runDir })).earlierAssistantOutputFact;
+  if (!fact) return {};
+  return { earlierAssistantOutputUnavailable: fact === "saved" ? "artifact_unavailable" : fact };
+}
+
 export function primaryOutput(
   rec: DaemonRunRecord,
   mode: string | null | undefined,
   failure: RunFailure | null,
   runFacts: RunFacts | null = null,
-  options: { maxBytes?: number; patchReferenceOnly?: boolean; metadataMaxBytes?: number } = {},
+  options: {
+    maxBytes?: number;
+    patchReferenceOnly?: boolean;
+    metadataMaxBytes?: number;
+    includeEarlierAssistantOutput?: boolean | undefined;
+    earlierAssistantOutputFact?: "saved" | "source_gap" | "publication_failed" | undefined;
+  } = {},
 ): ControlPrimaryOutput | null {
   const selected = (path: string, kind?: string) =>
     preview(rec, path, options.maxBytes, options.patchReferenceOnly && kind === "patch");
@@ -118,7 +151,30 @@ export function primaryOutput(
     const primary = runFacts.presentation.primary;
     if (!primary) return null;
     const output = selected(primary.path, primary.kind);
-    if (usable(output, primary.kind)) return project(primary.kind, primary.path, output!);
+    if (usable(output, primary.kind)) {
+      const answer = project(primary.kind, primary.path, output!);
+      // Only the ordinary addressed detail carries the extra view, never a
+      // history-page/pointer read or a historical/diagnostic primary.
+      if (
+        options.includeEarlierAssistantOutput &&
+        rec.state === "succeeded" &&
+        runFacts.presentation.state === "ready" &&
+        primary.kind === "answer" &&
+        options.maxBytes === undefined &&
+        !options.patchReferenceOnly &&
+        rec.runDir
+      ) {
+        const earlier = readRunEarlierAssistantOutput(rec.runDir);
+        if (earlier) answer.earlierAssistantOutput = earlier;
+        else if (options.earlierAssistantOutputFact) {
+          answer.earlierAssistantOutputUnavailable =
+            options.earlierAssistantOutputFact === "saved"
+              ? "artifact_unavailable"
+              : options.earlierAssistantOutputFact;
+        }
+      }
+      return answer;
+    }
     const text = `The canonical primary output (${primary.path}) is unavailable; inspect run retention and artifacts.`;
     return ControlPrimaryOutput.parse({
       kind: "diagnostic",

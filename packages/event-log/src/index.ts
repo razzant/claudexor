@@ -27,6 +27,10 @@ import type {
   TerminalStagingHook,
 } from "./types.js";
 export { RETAINED_OUTPUT_PATH, retainedOutput, writeRetainedOutput } from "./retained-output.js";
+export {
+  EARLIER_ASSISTANT_OUTPUT_PATH,
+  writeEarlierAssistantOutput,
+} from "./earlier-assistant-output.js";
 export { writeFinalMessages } from "./final-messages.js";
 export { lastSeqInFile, terminalTypeOf } from "./event-file.js";
 export {
@@ -53,11 +57,9 @@ type TerminalHook<T> = (type: TerminalRunEventType, payload: Record<string, unkn
 type RefreshFinalMessages = () => FinalMessagesOutcome | undefined;
 
 /**
- * Append-only JSONL event log for a single run: the canonical event stream (terminal
- * output and human summaries are projections). Every event carries a monotonic per-run
- * `seq` stamped here, the durable cursor for SSE resume (Last-Event-ID) and snapshot
- * fencing (detail.lastSeq). It continues from the file's tail, so a re-opened log (or an
- * out-of-band appender like the control-api audit writer) never restarts the sequence.
+ * Canonical append-only JSONL stream for one run; answers and summaries are projections.
+ * Its monotonic `seq` fences SSE resume and detail snapshots. Reopening or an
+ * out-of-band append resumes from the durable file tail.
  */
 export class EventLog {
   /** Absolute, as the live-writer registry and the ordered appender key it. */

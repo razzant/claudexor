@@ -26,6 +26,7 @@ extension AppModel {
             threadLoadGeneration += 1
             selectedThreadDetail = nil
             hydratedRunDetails.removeAll()
+            addressedRunDetails.removeAll()
             selectedHistory = makeHistoryStore(locationID: locationID, id: id)
         }
         selectedExecutionLocation = locationID
@@ -69,6 +70,7 @@ extension AppModel {
         let previousRoot = currentThread?.repoRoot
         runListReconciliationNeeded = runListReconciliationNeeded || !liveTasks.isEmpty
         hydratedRunDetails.removeAll()
+        addressedRunDetails.removeAll()
         threadLoadGeneration += 1
         selectedThreadId = nil
         selectedThreadDetail = nil
