@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, constants } from "node:fs";
+import { appendFileSync, constants, type Stats } from "node:fs";
 import {
   chmod,
   copyFile,
@@ -188,6 +188,31 @@ describe("a copy that writes bytes", () => {
       { length: 4096, position: 0 },
       { length: 4096, position: MiB - 4096 },
     ]);
+  });
+
+  it("checks, sets the mode of and flushes the copy on the handle that wrote it", async () => {
+    stream();
+    const { source, target } = await oneMiB();
+    const prototype = await handlePrototype(source);
+    const seen = { write: new Set<unknown>(), chmod: new Set<unknown>(), sync: new Set<unknown>() };
+    for (const name of ["write", "chmod", "sync"] as const) {
+      const real = prototype[name] as (...args: unknown[]) => unknown;
+      vi.spyOn(prototype, name).mockImplementation(function (this: unknown, ...args: unknown[]) {
+        seen[name].add(this);
+        return real.apply(this, args);
+      } as never);
+    }
+    await writeIndependentCopy(source, target, { mode: 0o640 });
+    expect(seen.write.size).toBe(1);
+    expect(seen.chmod).toEqual(seen.write);
+    expect(seen.sync).toEqual(seen.write);
+    expect((await readFile(target)).equals(await readFile(source))).toBe(true);
+  });
+
+  it("treats a block count the platform does not report as no evidence of holes", () => {
+    const info = { size: MiB, blocks: undefined } as unknown as Stats;
+    expect(fileCopyHost.isSparse(info)).toBe(false);
+    expect(fileCopyHost.isSparse({ size: MiB, blocks: 8 } as unknown as Stats)).toBe(true);
   });
 
   it.skipIf(!posix)("does not thin a file whose zeros are allocated", async () => {

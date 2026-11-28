@@ -66,6 +66,7 @@ const ZERO_BLOCK = Buffer.alloc(HOLE_BYTES);
 /** From this size a copy is checked for room first; a smaller one costs at most its own length. */
 const COSTLY_BYTES = 1024 * 1024;
 const OPEN_READ = constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0);
+const OPEN_WRITE = constants.O_RDWR | constants.O_NOFOLLOW;
 
 const codeOf = (error: unknown) => (error as NodeJS.ErrnoException | null)?.code;
 
@@ -139,8 +140,9 @@ async function cloneFile(source: string, target: string): Promise<boolean> {
 }
 
 /** Fewer allocated bytes than length. Only such a source has zero ranges to
- * leave unwritten: an allocated file is not thinned by being copied. */
-const isSparse = (info: Stats) => (info.blocks ?? 0) * 512 < info.size;
+ * leave unwritten: an allocated file is not thinned by being copied, and a block
+ * count the platform does not report is no evidence of holes. */
+const isSparse = (info: Stats) => info.blocks !== undefined && info.blocks * 512 < info.size;
 
 /** The host facilities a copy depends on, in one place so a test can withhold or
  * observe them (`digest`: every whole-file hash this module and its index read). */
@@ -264,41 +266,52 @@ export async function writeIndependentCopy(
   try {
     const info = await input.stat();
     if (!info.isFile()) throw new WorkspaceError(`Not a regular file: ${source}`);
+    let output: FileHandle;
     let digest: FileDigest;
     if (options.immutableSource && (await fileCopyHost.clone(source, target))) {
       created = true;
-      digest = await fileCopyHost.digest(target);
+      // The clone is opened once, without following a link, and read through that handle.
+      output = await open(target, OPEN_WRITE);
+      try {
+        if (!(await output.stat()).isFile())
+          throw new WorkspaceError(`Not a regular file: ${target}`);
+        digest = await readChunks(output, () => undefined);
+      } catch (error) {
+        await output.close();
+        throw error;
+      }
     } else {
       assertCopySpace(dirname(target), info.size);
-      const output = await open(target, "wx", 0o600);
+      output = await open(target, "wx", 0o600);
       created = true;
       try {
         digest = await copyStream(input, output, fileCopyHost.isSparse(info), {
           limit: info.size,
           path: source,
         });
-      } finally {
+      } catch (error) {
         await output.close();
+        throw error;
       }
     }
-    // Room was checked for the length seen at the start (a clone is of the source
-    // as it is when cloned): a source of any other length changed meanwhile.
-    if (digest.sizeBytes !== info.size) throw changedDuringCapture(source);
-    if (options.expected && !matches(digest, options.expected))
-      throw new ImmutableFileMismatch(
-        "File artifact does not match its recorded hash and size",
-        source,
-      );
-    const written = await open(target, "r+");
     try {
-      // The digest is of the bytes read; the file must also hold that length.
-      if ((await written.stat()).size !== digest.sizeBytes)
+      // Room was checked for the length seen at the start (a clone is of the source
+      // as it is when cloned): a source of any other length changed meanwhile.
+      if (digest.sizeBytes !== info.size) throw changedDuringCapture(source);
+      if (options.expected && !matches(digest, options.expected))
+        throw new ImmutableFileMismatch(
+          "File artifact does not match its recorded hash and size",
+          source,
+        );
+      // On the handle that wrote (or read) the copy: the digest is of the bytes read,
+      // and the file must also hold that length.
+      if ((await output.stat()).size !== digest.sizeBytes)
         throw new WorkspaceError("File copy does not hold the source's exact length");
       // A clone took its source's mode: the copy is private unless told otherwise.
-      await written.chmod(options.mode ?? 0o600);
-      if (options.durable !== false) await written.sync();
+      await output.chmod(options.mode ?? 0o600);
+      if (options.durable !== false) await output.sync();
     } finally {
-      await written.close();
+      await output.close();
     }
     return digest;
   } catch (error) {

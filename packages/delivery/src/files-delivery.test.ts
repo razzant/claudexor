@@ -16,6 +16,7 @@ import { fileCopyHost, WorkspaceManager } from "@claudexor/workspace";
 import {
   ControlDeliveryResponse,
   DecisionRecord,
+  FinalVerifyRecord,
   WorkProduct,
   makeOutcomeFacts,
 } from "@claudexor/schema";
@@ -299,16 +300,18 @@ describe("one rule for a files verification's verdict", () => {
   });
 
   it("authorizes only a materialized copy", () => {
-    const base = { attempted: true, duration_ms: 1 };
+    // Complete records, as the verifier writes them.
+    const record = (fields: Partial<FinalVerifyRecord>) =>
+      FinalVerifyRecord.parse({ attempted: true, duration_ms: 1, ...fields });
     const authorize = () => null;
     expect(
-      filesVerifyRefusal({ ...base, applied_cleanly: null, reason: "no room" }, authorize),
+      filesVerifyRefusal(record({ applied_cleanly: null, reason: "no room" }), authorize),
     ).toBe("no room");
     expect(
-      filesVerifyRefusal({ ...base, applied_cleanly: false, reason: "conflict" }, authorize),
+      filesVerifyRefusal(record({ applied_cleanly: false, reason: "conflict" }), authorize),
     ).toBe("conflict");
-    expect(filesVerifyRefusal({ ...base, applied_cleanly: true }, authorize)).toBeNull();
-    expect(filesVerifyRefusal({ ...base, applied_cleanly: true }, () => "blocked")).toBe("blocked");
+    expect(filesVerifyRefusal(record({ applied_cleanly: true }), authorize)).toBeNull();
+    expect(filesVerifyRefusal(record({ applied_cleanly: true }), () => "blocked")).toBe("blocked");
   });
 });
 
