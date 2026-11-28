@@ -1,5 +1,35 @@
 # @claudexor/cli
 
+## 6.5.0
+
+### Patch Changes
+
+- Updated dependencies [69e2a62]
+  - @claudexor/core@6.5.0
+  - @claudexor/daemon@6.5.0
+  - @claudexor/delivery@6.5.0
+  - @claudexor/gateway@6.5.0
+  - @claudexor/harness-acp@6.5.0
+  - @claudexor/harness-agy@6.5.0
+  - @claudexor/harness-claude@6.5.0
+  - @claudexor/harness-codex@6.5.0
+  - @claudexor/harness-cursor@6.5.0
+  - @claudexor/harness-fake@6.5.0
+  - @claudexor/harness-grok@6.5.0
+  - @claudexor/harness-opencode@6.5.0
+  - @claudexor/harness-raw-api@6.5.0
+  - @claudexor/orchestrator@6.5.0
+  - @claudexor/review@6.5.0
+  - @claudexor/workspace@6.5.0
+  - @claudexor/control-api@6.5.0
+  - @claudexor/acp-server@6.5.0
+  - @claudexor/artifact-store@6.5.0
+  - @claudexor/config@6.5.0
+  - @claudexor/mcp-server@6.5.0
+  - @claudexor/schema@6.5.0
+  - @claudexor/secrets@6.5.0
+  - @claudexor/util@6.5.0
+
 ## 6.4.2
 
 ### Patch Changes
