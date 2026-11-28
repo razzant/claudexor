@@ -4,6 +4,13 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v6.6.0** (2026-11-28) — In successful Cursor Ask/Agent runs, readers can see the
+  report written after a command moves to the background and the sole final
+  reply to its completion notice. Directory runs preserve holes and share
+  immutable data where supported; writable copies stay independent. Streams of
+  1 MiB or more need the logical size plus 64 MiB free. If free space is
+  unknown, streams of 64 MiB or more are refused.
+
 - **v6.5.0** (2026-11-28) — **Read-only second opinions in Hermes and Pi.**
   When the Claudexor skill is enabled, its experimental default asks the host
   model to request one read-only second opinion for an explicit code review,
