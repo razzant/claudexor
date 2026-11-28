@@ -2345,9 +2345,11 @@ harness, and naming a model does not select its harness: a model-constrained
 Ask passes the matching `harness` too, and the host asks the user first when
 it does not know which harness runs the model. An Ask can still retry within
 that harness on its configured `fallback_model`. If that is unacceptable,
-the host does not send the default Ask. It identifies a different answering
-model from the Result and matching Wait evidence, or says when the model
-could not be confirmed. Reviews without a harness or model choice keep Auto.
+the host does not send the default Ask. It names the answering model only when
+Result metadata ties it to the delivered answer. In 6.5.0, Result does not expose
+that attribution. A Wait event can describe a failed try under the same attempt
+ID, so the host reports that the answering model is unconfirmed. Reviews without
+a harness or model choice keep Auto.
 An account is pinned only when
 the user named it, with an exact `harness_id` and `profile_id` that the user gave or an
 Accounts read already showed, never an id guessed from a name; with no account
@@ -2373,7 +2375,8 @@ CLI update they can differ; a same-major skew is only advisory. The serving
 daemon determines whether this guard exists: a 6.3 client forwarding
 `paidBudget` to a 6.4 daemon still gets daemon-side protection. A serving daemon
 older than 6.4.0 lacks that guard. The supported pairing still requires both
-CLI and daemon at 6.4.0 or later. The default makes no version check.
+CLI and daemon at 6.4.0 or later. The default makes no version check; a successful
+tool call can omit a version warning written to the MCP server's stderr.
 Missing version evidence alone does not establish skew; an ordinary Ask can
 proceed under the version requirement above. The path skips itself only when
 evidence already on the same path shows an engine older than 6.4.0 or a CLI and
