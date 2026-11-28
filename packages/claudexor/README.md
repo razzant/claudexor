@@ -96,6 +96,40 @@ overrides it even when disabled. Keep an intentional entry for a
 To use the packaged server instead, remove or rename the conflicting entry
 and `/reload`. [Check status and get your first answer](https://github.com/razzant/claudexor#first-delegation-from-any-host).
 
+For an explicit code-review request, the enabled Claudexor Skill asks the Pi
+model to get one independent read-only second opinion alongside its own review.
+This experimental default depends on the model loading and following the Skill.
+It uses only material you cleared for sharing, inline, with `noProject: true`,
+`web: "off"` and a zero paid budget. Use Claudexor 6.4.0 or later for both the
+CLI and its daemon. The Skill makes no version check and skips this path if it
+already sees an older engine or a CLI and daemon of different versions. A positive
+budget requires a separate explicit request naming the amount. The Skill index
+highlights reviews; you can still ask Pi to load the Skill and use Claudexor
+explicitly for planning, research or delegation.
+
+Naming a model selects the first Ask route; that harness's configured
+`fallback_model` can still answer. The Skill reports a different answering
+model when known, or says when it cannot confirm the model you asked for.
+
+**Warning: subscription and billable add-on credits.** A zero paid budget
+limits only the cash Claudexor itself accounts for. The second opinion runs on
+the answering account's subscription quota. If the vendor account behind a
+subscription route has paid add-on credits enabled, an automatic second opinion
+can spend them, and the vendor bills you. Claudexor can neither see nor stop
+that. The hard boundary is the vendor's own add-on credits setting; disabling
+the Skill removes only the review instruction, and its tools stay available
+through every active registration. Disabling the extension stops automatic
+calls only where the extension supplies the only registration: a manual
+`claudexor` entry in `~/.pi/agent/mcp.json` or the project's `.pi/mcp.json`
+stays effective while it exists, so disable that entry as well and confirm the
+connection is gone in `/mcp` after `/reload`.
+
+The extension lists four read-only tools directly. That neither forces a call
+nor changes any schema default. The harnesses named in Pi's server description
+are examples, not an exhaustive list. The default is experimental and
+model-mediated; it does not apply changes.
+[Details and limits](https://github.com/razzant/claudexor/blob/main/docs/INTEGRATIONS.md#default-second-opinion-in-hermes-and-pi)
+
 [Product overview](https://claudexor.ai/) ·
 [documentation and source](https://github.com/razzant/claudexor#readme) ·
 [releases](https://github.com/razzant/claudexor/releases/latest)

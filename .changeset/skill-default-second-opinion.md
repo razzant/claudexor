@@ -1,0 +1,13 @@
+---
+"claudexor": minor
+---
+
+Hermes and Pi ship an experimental default for explicit code-review requests. Their Skill asks the host model to send material the user cleared for sharing inline to one read-only `claudexor_ask` (`noProject: true`, `web: "off"`, `paidBudget` set to zero), wait, and report the result beside its own review. The host model decides whether to load and follow the Skill. The default makes no readiness or version probe and passes no `repoPath`. It keeps the user's harness and model separate from any named account and never guesses an account ID. A positive paid budget requires a separate explicit request. The Pi extension registration now lists `claudexor_ask`, `claudexor_run_wait`, `claudexor_run_status` and `claudexor_run_result` with direct tool exposure and registers the server with its own description; every other Pi tool keeps Pi's default exposure.
+
+Use Claudexor 6.4.0 or later for both the CLI and its daemon. The Skill skips the default when it already sees an older engine or a CLI and daemon of different versions; missing version evidence alone does not establish skew. The shorter Skill index entry highlights reviews. Explicit Ask, planning, research and delegation remain available by asking the host to use Claudexor.
+
+Warning: a zero paid budget limits only the cash Claudexor accounts for. Paid add-on credits that a vendor bills against a subscription account can still be spent by an automatic second opinion, and Claudexor cannot see or stop that.
+
+A named model selects the first Ask route within its harness. A configured same-harness `fallback_model` can still answer; the Skill discloses a different answering model when the evidence identifies it, or says when it cannot confirm the model. The Skill does not send the Ask if the user forbids using a different model.
+
+On earlier pre-release Skill bodies, a fresh Pi 1.5.2 session without `codemode` or write tools got a Codex answer, and clean Hermes 0.23.1 profiles got Codex answers through standard Tool Search (Ask, wait, result) and direct schemas (Ask, wait). In a later Pi trial, the host selected the default Ask but got `daemon_unavailable` before Codex accepted it, with no run ID. The bridges pinned Codex. These checks do not establish unmediated Auto routing, `codemode` behavior, or end-to-end operation on the final Skill text. Tool exposure does not make the model follow the Skill or change schema defaults. Cursor, Claude Code, Copilot and OpenClaw keep the shared Skill unchanged. Details and current validation status: `docs/INTEGRATIONS.md#default-second-opinion-in-hermes-and-pi`.

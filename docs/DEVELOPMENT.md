@@ -92,7 +92,11 @@ pnpm canary        # canary golden stories (offline fake harnesses; needs pnpm b
 ```
 
 To change the shared Skill or stdio descriptor, edit `plugins/copilot` and run
-`pnpm gen:version` to refresh the host copies, including `packages/claudexor/pi`.
+`pnpm gen:version` to refresh the host copies. The Hermes and Pi copies add
+the host default second opinion from
+`packages/claudexor/host-skills/default-second-opinion.md`; the generator
+composes them from the shared body and that source, so edit the source and
+re-run the generator instead of editing those copies by hand.
 
 Control-api tests load the built worker (`dist/bulk-worker.js`); run `pnpm --filter @claudexor/control-api build` before its focused tests.
 

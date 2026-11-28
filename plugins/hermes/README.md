@@ -3,16 +3,78 @@
 Ask a second model a question or delegate a file change from your Hermes session.
 The `claudexor:claudexor` skill uses the local Claudexor CLI over MCP.
 
+For an explicit code-review request, the enabled Claudexor Skill asks the
+Hermes model to get one independent read-only second opinion and report it
+beside its own review. The model has to find and follow the Skill. The default
+sends only material you cleared for sharing, inline, with `noProject: true`,
+`web: "off"` and a zero paid budget. It never applies changes. Use Claudexor
+6.4.0 or later for both the CLI and the daemon it attaches to. The Skill makes
+no version check and skips this path if it already sees an older engine or a
+CLI and daemon of different versions. The shorter index entry highlights code
+review. For other work, explicitly ask Hermes to load `claudexor:claudexor` and
+use it for Ask, planning, research or delegation.
+
+**Warning: subscription and billable add-on credits.** A zero paid budget
+limits only the cash Claudexor itself accounts for. The second opinion runs on
+the answering account's subscription quota. If the vendor account behind a
+subscription route has paid add-on credits enabled, an automatic second opinion
+can spend them, and the vendor bills you. Claudexor can neither see nor stop
+that. The hard boundary is the vendor's own add-on credits setting; disabling
+the Skill removes only the review instruction, and the Claudexor MCP connection
+stays available to the host, so block the connection itself to stop automatic
+calls.
+
+The default is experimental; see the Claudexor documentation for details, limits
+and the current validation status. An explicit Hermes Codex run was tested
+separately: native `claudexor_run` with approval, then `claudexor_apply_check`,
+then a separate CLI `claudexor apply` after approving the full change.
+
 ## Prerequisites
 
-On the machine running Hermes, use Claudexor 6.3.0 or later on macOS or Linux
-with Node.js 24.15+. If the CLI is missing, run `npm install -g claudexor`.
-Check `claudexor --version` and make sure the Hermes process has both `node`
-and `claudexor` on its PATH.
+On the machine running Hermes, use Claudexor 6.3.0 or later (6.4.0 or later
+for the automatic second opinion) on macOS or Linux with Node.js 24.15+. If the
+CLI is missing, run `npm install -g claudexor`. Check `claudexor --version` and
+make sure the Hermes process has both `node` and `claudexor` on its PATH.
+
+The CLI and the daemon it attaches to can differ in version. A daemon that was
+already running keeps the engine it started with after you update the CLI, and
+a same-major skew is only advisory. The zero-budget guard that lets the
+automatic second opinion skip billable readiness checks runs in the serving
+daemon — its request preflight and the worker that applies the readiness probe —
+and the stdio MCP client only forwards `paidBudget` to it; it ships from 6.4.0,
+and an older daemon does not stop the checks even with a zero budget. To
+compare, run `claudexor --version` and read the engine version in
+`claudexor store-identity --json`, an attach-only handshake with a running
+daemon that makes no model request and starts no daemon. On a mismatch,
+`claudexor daemon stop` applies only to a CLI-managed daemon; the next command
+that needs it starts one from the CLI's build. Reconcile an external daemon,
+including one owned by the macOS app, through its application or service manager.
+
+The plugin starts `claudexor` by its bare name, so the Hermes process PATH has
+to resolve it, or the server never starts. When the name cannot be resolved,
+give the profile an absolute command instead: see "Absolute command path".
 
 Use Hermes 0.23.1 or later; `hermes --version` shows yours. Both install routes
 below need it, and your Hermes version decides how tool prompts behave (see
 Access).
+
+Hermes also needs its own MCP client, the `mcp` extra. A source install made
+with a minimal sync (`uv sync --locked` without it) leaves it out and Hermes
+then lists no MCP tools. Use `uv sync --locked --extra mcp` for that minimal
+path, and check the tool list first: with no MCP tools there is no Claudexor
+server to reach.
+
+With the standard Hermes 0.23.1 settings, Tool Search can find `claudexor_ask`
+by name; the first model request does not carry its direct schema. To expose
+tool schemas directly, you can opt in with this setting in a dedicated Hermes
+profile. It applies to the whole profile; Hermes 0.23.1 has no per-plugin
+equivalent. Skill bodies still load on demand and tool approval is unchanged.
+
+```yaml
+tools:
+  tool_search:
+    enabled: 'off'
+```
 
 Use an existing Claudexor account, or install the vendor CLI and connect one
 with `claudexor auth login claude` or `claudexor auth login codex`. For Codex,
@@ -82,12 +144,37 @@ plugin's entry, so keep `trust: untrusted`:
 }
 ```
 
+### Absolute command path
+
+A portable plugin's `mcp.json` accepts only a bare executable or a `./`
+path inside the package: Hermes rejects an absolute path there, so do not
+edit the shipped `plugins/hermes/mcp.json`. Configure the server in the
+Hermes profile instead, under `mcp_servers` in that profile's
+`config.yaml`. A complete same-named entry replaces the package's entry, so
+keep `trust: untrusted` and add `env.CLAUDEXOR_CONFIG_DIR` only when you
+really use a custom store:
+
+```json
+{
+  "command": "/absolute/path/to/claudexor",
+  "args": ["mcp", "serve"],
+  "trust": "untrusted",
+  "env": { "PATH": "/absolute/path/to/node/bin:/absolute/path/to/npm/prefix/bin" }
+}
+```
+
+Use the absolute path of the `claudexor` binary from your npm prefix.
+The server is a Node program, so give the service itself an explicit
+`PATH` that holds `node` and that binary's directory instead of relying
+on the PATH the Hermes gateway happens to inherit.
+
 ## First request
 
 Start a new session in that profile and ask Hermes to load `claudexor:claudexor`.
-Before a first delegation the `claudexor:claudexor` skill asks Hermes to compare
+Before a first explicit delegation the `claudexor:claudexor` skill asks Hermes to compare
 `claudexor_status` with the harness reported by `claudexor doctor`, and it may
-also read `claudexor_accounts` and `claudexor_capabilities`. Even without a fresh
+also read `claudexor_accounts` and `claudexor_capabilities`. (The automatic second
+opinion skips these reads.) Even without a fresh
 or refresh option, a cold or missing cached observation can make these reads and
 `claudexor doctor` contact other configured harness providers, not only the one
 chosen for Ask. That can use subscription quota or cost money, and skipping the
@@ -99,7 +186,12 @@ With the daemon running, compare the `storeId` from
 the result from Hermes' `claudexor_store_identity`. Resolve any mismatch before
 delegating. If you selected a named account, find it in `claudexor_accounts`
 and use its `harness_id` and `profile_id` as `harness` and `credentialProfileId`
-on the Ask; leave Auto unpinned.
+on the Ask; leave Auto unpinned. A scalar `model` override applies only to
+the primary harness, and naming a model does not select its harness: pass the
+matching `harness` on a model-constrained Ask, and ask first when you do not
+know which harness runs the model. An Ask can still retry with that harness's
+configured `fallback_model`. The automatic second opinion reports a different
+answering model when the result identifies it, or says when it cannot confirm it.
 
 With no project selected, try:
 
@@ -109,8 +201,9 @@ With no project selected, try:
 Hermes should call `claudexor_ask` with `noProject: true`, follow the handle
 with `claudexor_run_status`, and read the answer from `claudexor_run_result`.
 If the tool only returns a queued `jobId`, use it as `runId` for those reads.
-Expect **17:00**. For work that needs a project's files, use its absolute
-`repoPath` instead.
+Expect **17:00**. For an explicit Ask that needs a project's files, pass its
+absolute `repoPath` instead. The default second opinion stays inline even
+when the diff came from a project.
 
 ## Access
 

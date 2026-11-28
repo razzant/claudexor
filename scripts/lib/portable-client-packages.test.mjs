@@ -68,9 +68,25 @@ test("Pi can load the packaged extension and skill with only its native registra
     const calls = [];
     const { default: register } = await import(pathToFileURL(entry).href);
     register({ registerMcpServer: (...args) => calls.push(args) });
-    expect(calls).toEqual(Object.entries(read(canonical, ".mcp.json").mcpServers));
+    expect(calls).toEqual([
+      [
+        "claudexor",
+        {
+          ...read(canonical, ".mcp.json").mcpServers.claudexor,
+          description:
+            "Local Claudexor control plane: runs, plans and answers on Claude Code, Codex, Cursor and OpenCode accounts.",
+          toolExposure: {
+            claudexor_ask: "direct",
+            claudexor_run_wait: "direct",
+            claudexor_run_status: "direct",
+            claudexor_run_result: "direct",
+          },
+        },
+      ],
+    ]);
+    // portable-plugins.test.mjs proves this Skill is composed from the shared one; packing keeps its bytes.
     expect(readFileSync(join(packed, pkg.pi.skills[0], "claudexor/SKILL.md"))).toEqual(
-      readFileSync(join(canonical, skill)),
+      readFileSync(join(repo, "packages/claudexor/pi", skill)),
     );
     expect(files(join(packed, "pi")).sort()).toEqual(["index.js", "mcp.json", skill]);
     expect(readFileSync(join(packed, pkg.bin.claudexor), "utf8")).toContain("@claudexor/cli/cli");
