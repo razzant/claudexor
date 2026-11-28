@@ -2165,9 +2165,10 @@ keep their existing exact-version skew check.
 ### Portable Agent Skill and host packages
 
 `plugins/copilot` owns the canonical portable `skills/claudexor/SKILL.md` and
-`.mcp.json` descriptor. `plugins/cursor`, `plugins/claude`, `plugins/hermes`,
-and `packages/claudexor/pi` carry the same Skill and the MCP descriptor in the
-format their host reads. Each invokes
+`.mcp.json` descriptor. `plugins/cursor` and `plugins/claude` carry that Skill
+byte for byte. `plugins/hermes` and `packages/claudexor/pi` carry its body below
+a host-specific [default second opinion](#default-second-opinion-in-hermes-and-pi)
+section. All four carry the MCP descriptor in the format their host reads. Each invokes
 the preinstalled `claudexor mcp serve` command. It intentionally carries no
 absolute runtime path, frozen config root, plugin-version environment marker,
 credential, hook, command alias, or host-local business logic.
@@ -2276,6 +2277,14 @@ harness and retains the run and its result. [Set up the CLI and account](../READ
   [Catalog entry](https://hermes-agent.nousresearch.com/marketplace/claudexor) ·
   [Hermes plugin catalog](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugin-catalog) ·
   [Hermes plugin management](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins).
+  Hermes needs its own MCP client, which ships as the `mcp` extra. A source
+  install made with a minimal sync (`uv sync --locked` without the extra)
+  leaves it out and Hermes then lists no MCP tools; sync with `--extra mcp`.
+  The plugin starts `claudexor` by its bare name, so the Hermes process PATH
+  must resolve both `node` and `claudexor`, or the server never starts. When
+  the name cannot be resolved, give the profile an absolute `command`: a
+  portable plugin's `mcp.json` accepts only a bare executable or a `./` path
+  inside the package.
 - **Pi** installs the `claudexor` npm package, whose published manifest lists
   the extension at `./pi/index.js` (6.3.0 or later), or loads `packages/claudexor`
   from a Git checkout containing it. The extension registers the server through
@@ -2288,14 +2297,139 @@ harness and retains the run and its result. [Set up the CLI and account](../READ
   embedded agent exposes tools as `claudexor__<tool>` if the Gateway and the
   agent's tool policy allow them. [Install in OpenClaw](../README.md#install-in-openclaw) · [OpenClaw install sources](https://docs.openclaw.ai/tools/plugin#choose-an-install-source) · [OpenClaw bundle MCP](https://docs.openclaw.ai/plugins/bundles).
 
-Use one Claudexor connection per host. Keep the selected project's absolute
-`repoPath` on the machine running MCP. The server's working directory can be
-the installed plugin directory. Use `noProject: true` only for a self-contained
-Ask with no project selected. In either scope, if the user chose a named account,
+Use one Claudexor connection per host. For an explicit project-scoped Ask, pass
+the project's absolute `repoPath` on the machine running MCP; the server's
+working directory can be the installed plugin directory. An explicit
+self-contained Ask can use `noProject: true` without `repoPath`. The default
+second opinion always uses the inline, no-project path, even when its diff came
+from a project. In either explicit scope, if the user chose a named account,
 pass its `harness_id` as `harness` and its `profile_id` as `credentialProfileId`
 on the first `claudexor_ask`. Use the values from its `claudexor_accounts` row.
 For Auto, omit the profile pin and pass a harness only if the user chose one.
 [First request and result](../README.md#first-delegation-from-any-host) · [Validation status](FEATURES.md).
+
+#### Default second opinion in Hermes and Pi
+
+**Warning: billable add-on credits.** A zero paid budget limits only the cash
+Claudexor itself accounts for. If the vendor account behind a subscription
+route has paid add-on credits enabled, an automatic second opinion that runs on
+it can spend them, and the vendor bills you. Claudexor can neither see nor stop
+that. The hard boundary is the vendor's own add-on credits setting: turn the
+credits off there if you do not accept them. Disabling the Skill removes only
+the review instruction; the Claudexor MCP connection and its tools stay
+available to the host, so block the connection itself to stop automatic calls.
+Hermes write approval never gates a read-only Ask, which can spend subscription
+quota without a prompt.
+
+The Hermes and Pi packages put a shorter, review-focused description in the
+Skill index and keep the shared Skill body below the host-specific instructions.
+For explicit code-review requests (a diff, patch, pull request, commit or source
+files), those instructions ask the host model to send only material the user
+cleared for sharing inline to one read-only `claudexor_ask` with `noProject: true`,
+`web: "off"` and `paidBudget` set to `{"kind":"finite","maxUsd":0}`. The model
+follows the handle with `claudexor_run_wait` and reports what
+`claudexor_run_result` returned beside its own assessment. This is a
+model-mediated default. The Skill excludes ordinary conversation, unrelated
+research or analysis, quick questions, the host's routine checks, delegated
+Claudexor workers and requests the user declines. Users can still ask the host
+to load the Skill explicitly for Ask, planning, research or delegation. The
+default attaches no project context, turns off the delegate's web tools and
+does not apply changes. Read-only Ask is not an OS sandbox.
+
+The path calls only `claudexor_ask`, `claudexor_run_wait` and
+`claudexor_run_result`: no readiness read (`claudexor_status`,
+`claudexor_accounts`, `claudexor_capabilities`, `claudexor doctor`), no version
+probe and no `repoPath`. The user's `harness` and `model` pass through apart
+from any account pin. A scalar `model` override applies only to the primary
+harness, and naming a model does not select its harness: a model-constrained
+Ask passes the matching `harness` too, and the host asks the user first when
+it does not know which harness runs the model. An Ask can still retry within
+that harness on its configured `fallback_model`. If that is unacceptable,
+the host does not send the default Ask. It identifies a different answering
+model from the Result and matching Wait evidence, or says when the model
+could not be confirmed. Reviews without a harness or model choice keep Auto.
+An account is pinned only when
+the user named it, with an exact `harness_id` and `profile_id` that the user gave or an
+Accounts read already showed, never an id guessed from a name; with no account
+named, the engine may rotate across its accounts. A refusal, a missing tool or a
+declined account is reported in one line, and the host finishes its own review
+without a retry, a fallback to another route or budget, or a looser pin. The
+budget stays zero: a positive amount is a separate explicit request that names
+the amount for the delegate, never a share of the host model's own budget.
+If Wait reports a terminal run, the host reads Result even if an event was
+omitted. For a running or queued run, an oversized or invalid event that
+leaves the cursor unchanged ends the host's wait, with the run ID and the
+omission reason reported to the user; it does not cancel the worker.
+
+**Compatibility and skew.** Use Claudexor 6.4.0 or later for both the CLI the
+host launches and the daemon it attaches to. From 6.4.0 an ordinary read-only
+Ask with a zero paid budget skips billable readiness checks (#760); the guard
+lives in the serving daemon, in its request preflight and in the worker that
+applies the readiness probe, and the host's stdio MCP client only forwards
+`paidBudget` to it. When the CLI
+manages the daemon, a command that needs one can start it from the CLI's build.
+A daemon that was already running keeps the engine it started with, so after a
+CLI update they can differ; a same-major skew is only advisory. The serving
+daemon determines whether this guard exists: a 6.3 client forwarding
+`paidBudget` to a 6.4 daemon still gets daemon-side protection. A serving daemon
+older than 6.4.0 lacks that guard. The supported pairing still requires both
+CLI and daemon at 6.4.0 or later. The default makes no version check.
+Missing version evidence alone does not establish skew; an ordinary Ask can
+proceed under the version requirement above. The path skips itself only when
+evidence already on the same path shows an engine older than 6.4.0 or a CLI and
+daemon of different versions, such as the engine version in an earlier
+`claudexor_store_identity` result for the same server. To check by hand,
+compare `claudexor --version` with the engine version in
+`claudexor store-identity --json`, an attach-only
+handshake that reads a running daemon, sends no model request and starts none.
+On a mismatch, use `claudexor daemon stop` only for a CLI-managed daemon; the
+next command that needs it starts one from the CLI's build. For an external
+daemon, including one owned by the macOS app, reconcile the versions through
+the application or service manager that owns it. The CLI only attaches there.
+
+**Limits.** The Pi package registration lists `claudexor_ask`,
+`claudexor_run_wait`, `claudexor_run_status` and `claudexor_run_result`
+directly, so the model needs no tool search to reach them. A file-based
+`.pi/mcp.json` entry of the same name replaces that registration and loses the
+direct exposure unless you set it yourself; see the override example below. That neither makes the model read the Skill nor
+changes any schema default: a call that skips the Skill and omits `paidBudget`
+still gets the engine's configured default. Every other Pi tool keeps Pi's own
+exposure. Harnesses named in Pi's server description are examples, not an
+exhaustive list. Cursor, Claude Code, Copilot and OpenClaw, which loads the
+Claude-format bundle, ship the shared Skill without this default.
+
+By default, Hermes 0.23.1 lets the model discover `claudexor_ask` through Tool
+Search instead of sending its direct schema in the first model request. Setting
+`tools.tool_search.enabled` to `'off'` in a dedicated Hermes profile immediately
+exposes the schemas of every allowed MCP server in that profile, including the
+Claudexor tools. There is no per-plugin setting for direct exposure in that
+version, and the profile setting does not change tool approval: it changes which
+schemas the first request carries, not what the host permits. Hermes loads Skill
+bodies on demand in both modes.
+
+**Status: experimental.** These checks used a synthetic arithmetic diff.
+
+- **Pi 1.5.2:** On an earlier pre-release body, DeepSeek V4.1 Flash in a fresh
+  session without context files, `codemode` or write tools sent the inline
+  zero-budget Ask. It reported a real Codex answer after Wait and Result.
+  A later pre-release body selected the same Ask but got `daemon_unavailable`
+  before Codex accepted it, with no run ID. Neither check establishes
+  unmediated Auto routing or `codemode` behavior.
+- **Hermes 0.23.1:** On a pre-release body, the same DeepSeek V4.1 Flash model
+  used standard Tool Search to complete Ask, Wait and Result in one clean
+  profile. A second profile with direct schemas got the answer in Wait. Both
+  allowed only the `skills` and `claudexor` toolsets. In earlier attempts on a
+  separate body, a guard stopped one Tool Search response before forwarding;
+  in direct mode one session started Codex but the guard stopped it before
+  Wait and one session answered locally. An earlier Qwen attempt stopped on SSE
+  framing before delegation.
+
+The live test bridges pinned Codex. These runs do not test the final Skill text
+or automatic routing without a bridge.
+
+An explicit Hermes Codex run was tested separately: native `claudexor_run`
+with its approval prompt, `claudexor_apply_check`, then a separate CLI
+`claudexor apply` after approval. See [Validation status](FEATURES.md).
 
 #### Hermes tool approval and access
 
@@ -2339,6 +2473,15 @@ and add only this directory to its environment.
 | Pi | Under `mcpServers` in the trusted project's `.pi/mcp.json` if you need an override. After `/reload`, `/mcp` shows that file as the source. [Pi MCP configuration](https://docs.pi.dev/latest/mcp#configure-servers) |
 | OpenClaw | Under `mcp` → `servers` in the intended OpenClaw configuration. Check any workspace settings that override the bundle's server. [OpenClaw embedded MCP](https://docs.openclaw.ai/plugins/bundles#mcp-for-embedded-openclaw) |
 
+The same Hermes profile entry is where an absolute command belongs. A
+portable plugin's `mcp.json` accepts only a bare executable or a `./`
+path inside the package, and Hermes rejects an absolute path there. So
+point `mcp_servers.claudexor.command` at the absolute path of the
+`claudexor` binary in the profile, give that service an explicit
+`env.PATH` holding `node` and that binary's directory instead of
+relying on the PATH the gateway inherits, and keep `trust: untrusted`
+and the optional store setting.
+
 The Hermes merge order was verified against the [0.23.1 release source](https://github.com/NousResearch/hermes-agent/blob/v0.23.1/tools/mcp_tool_config.py#L672-L736).
 
 Merge these fields into the `claudexor` entry, substituting your existing path.
@@ -2365,13 +2508,34 @@ default:
 }
 ```
 
+A Pi file-based entry replaces the package registration, which is also what
+provides the four tools' direct exposure. If you write one, list the read-only
+tools explicitly and leave every other tool at your own default:
+
+```json
+{
+  "command": "claudexor",
+  "args": ["mcp", "serve"],
+  "env": { "CLAUDEXOR_CONFIG_DIR": "/absolute/path/to/your/existing/store" },
+  "toolExposure": {
+    "claudexor_ask": "direct",
+    "claudexor_run_wait": "direct",
+    "claudexor_run_status": "direct",
+    "claudexor_run_result": "direct"
+  }
+}
+```
+
 Before delegating, compare the host's `claudexor_status` with `claudexor doctor`
 in the intended CLI configuration. For a named account, check the profile in
 `claudexor_accounts`. With the daemon running, compare the `storeId` from
 `claudexor store-identity --json` with the host's `claudexor_store_identity`.
+The same handshake names the daemon's engine version, which shows a daemon that
+differs from `claudexor --version`.
 If they differ or the expected profile is missing, correct the connection
 and check again. The shipped skill asks for this comparison before a first
-delegation and may also read `claudexor_accounts` and `claudexor_capabilities`.
+explicit delegation and may also read `claudexor_accounts` and `claudexor_capabilities`;
+the automatic second opinion in Hermes and Pi skips these reads.
 Even without a fresh or refresh option, a cold or missing cached observation can
 make these reads and doctor contact other configured harness providers, not only
 the one chosen for Ask. That can use subscription quota or cost money, and

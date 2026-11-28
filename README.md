@@ -986,14 +986,60 @@ MCP server that same absolute path. The default installation needs no override.
 
 Choose [Hermes](#install-in-hermes), [Pi](#install-in-pi), or [OpenClaw](#install-in-openclaw).
 
+When you explicitly ask Hermes or Pi to review code, the enabled Claudexor Skill
+asks the host model to get one independent read-only second opinion and report it
+separately. The model has to find and follow the Skill. The default sends only
+material you cleared for sharing, inline, with no project attached, web off and
+a zero paid budget. Use Claudexor 6.4.0 or later for both the CLI and its daemon.
+The Skill makes no version check of its own and skips this path if it already
+sees an older engine or a CLI and daemon of different versions. The shorter
+Skill index entry highlights reviews; you can still ask the host to load the
+Skill and use Claudexor explicitly for planning, research or delegation. Other
+hosts keep the shared Skill unchanged.
+
+**Warning: subscription and billable add-on credits.** A zero paid budget
+limits only the cash Claudexor itself accounts for. The second opinion runs on
+the answering account's subscription quota. If the vendor account behind a
+subscription route has paid add-on credits enabled, an automatic second opinion
+can spend them, and the vendor bills you. Claudexor can neither see nor stop
+that. The hard boundary is the vendor's own add-on credits setting; disabling
+the Skill removes only the review instruction, and the Claudexor MCP connection
+stays available to the host, so block the connection itself to stop automatic
+calls.
+
+Upgrading the Claudexor CLI or daemon does not upgrade the Hermes catalog
+plugin: a catalog install keeps the commit its entry pins until the catalog pin
+catches up. To recognize whether an installed Hermes Skill already carries this
+default, look for the `Default: one independent second opinion on a code
+review` heading in the `claudexor:claudexor` Skill. Until the catalog pin
+catches up, the Git install route below can pin the published release that
+contains it.
+
+The default is experimental; see
+[details and limits](docs/INTEGRATIONS.md#default-second-opinion-in-hermes-and-pi).
+
 #### Install in Hermes
 
 Claudexor is a Community plugin in the Hermes plugin catalog
 ([entry](https://hermes-agent.nousresearch.com/marketplace/claudexor)) for macOS
 and Linux. After [CLI and account setup](#set-up-the-cli-and-account), check that
 `hermes --version` in the profile you will use reports 0.23.1 or later, that
-`claudexor --version` reports 6.3.0 or later, and that the Hermes process can find
+`claudexor --version` reports 6.3.0 or later (6.4.0 or later for the automatic
+second opinion), and that the Hermes process can find
 `node` (24.15 or later) and `claudexor` on its PATH. Do this before you install.
+
+Hermes needs its own MCP client, the `mcp` extra. A source install made with a
+minimal sync (`uv sync --locked` without it) leaves it out and Hermes then lists
+no MCP tools: use `uv sync --locked --extra mcp`. If the Hermes process cannot
+resolve `claudexor` by name, [give the profile an absolute
+command](plugins/hermes/README.md#absolute-command-path).
+
+With the standard Hermes 0.23.1 settings, the model can find `claudexor_ask`
+through Tool Search rather than receiving its schema directly in the first
+request. To give the model direct tool schemas, you can opt in by setting
+`tools.tool_search.enabled` to `'off'` in a dedicated Hermes profile. This
+changes tool exposure for that profile, not just for Claudexor. Skill bodies
+still load on demand, and direct schemas do not guarantee a call.
 
 In that profile, run `hermes plugins info claudexor` and note the full Pinned SHA,
 Repo and Subdir. The pin covers only the Hermes package, not your separately
@@ -1130,9 +1176,10 @@ agent session. [Get your first answer](#first-delegation-from-any-host).
 
 #### First delegation from any host
 
-Before the first request, the shipped skill asks the host to compare the host's
+Before the first explicit request, the shipped skill asks the host to compare the host's
 `claudexor_status` with the harness reported by `claudexor doctor`, and it may
-also read `claudexor_accounts` and `claudexor_capabilities`. Even without a fresh
+also read `claudexor_accounts` and `claudexor_capabilities`. (The automatic second
+opinion in Hermes and Pi skips these reads.) Even without a fresh
 or refresh option, a cold or missing cached observation can make these reads and
 `claudexor doctor` contact other configured harness providers, not only the one
 chosen for Ask. That can use subscription quota or cost money, and skipping the
@@ -1142,7 +1189,12 @@ is separate and does not start another. If you chose a named account, find its p
 `claudexor_accounts`. On the first Ask, pass that profile's
 `harness_id` as `harness` and its `profile_id` as `credentialProfileId`.
 If the profile is missing, resolve that before asking. For Auto, omit the
-profile pin and pass a harness only if you chose one. For a custom store, also use
+profile pin and pass a harness only if you chose one. A scalar `model` override
+applies only to the primary harness, and naming a model does not select its
+harness: pass the matching `harness` on a model-constrained Ask, and ask first
+when you do not know which harness runs the model. An Ask can still retry
+with the harness's configured `fallback_model`.
+For a custom store, also use
 `claudexor_store_identity` to [match the store IDs](docs/INTEGRATIONS.md#custom-claudexor-configuration-directory).
 If your host filters tools, allow these additional reads for the checks you need,
 using the same host prefix as for `claudexor_status`.
@@ -1169,8 +1221,10 @@ and the account fields if you selected a profile. It follows the handle with
 for those reads. You should see **17:00** in the chat.
 
 When a repository is selected or the question depends on its files, pass its
-absolute `repoPath`. This route also works with an older CLI and a harness
-that can read the repository.
+absolute `repoPath` on an explicit project-scoped Ask. The experimental default
+second opinion takes review material inline and never sends `repoPath`. The
+explicit project route also works with an older CLI and a harness that can read
+the repository.
 For example, give the agent the repository's absolute path and ask “Use
 Claudexor's read-only Ask to summarize README.md in one sentence. Pass my
 path as `repoPath`. If I chose a named account, pass its `harness` and
