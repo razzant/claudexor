@@ -534,6 +534,18 @@ describe("bounded durable run observation", () => {
     expect(cancelled).toHaveBeenCalledOnce();
   });
 
+  it("keeps terminal status when the next frame is invalid and the cursor cannot advance", async () => {
+    const { cancelled } = fixture(["id: 7\ndata: nope\n\n" + frame(10)], snapshot("succeeded", 10));
+    expect(await runWaitQuery({ runId: "run-1", afterSeq: 5 })).toMatchObject({
+      status: "succeeded",
+      wakeReason: "terminal",
+      nextSeq: 5,
+      eventOmission: "invalid_event",
+      events: [],
+    });
+    expect(cancelled).toHaveBeenCalledOnce();
+  });
+
   it("counts UTF-8 bytes rather than characters", async () => {
     fixture([frame(7, "😀".repeat(17_000))]);
     expect(await runWaitQuery({ runId: "run-1" })).toMatchObject({

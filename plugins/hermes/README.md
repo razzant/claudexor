@@ -189,7 +189,9 @@ and use its `harness_id` and `profile_id` as `harness` and `credentialProfileId`
 on the Ask; leave Auto unpinned. A scalar `model` override applies only to
 the primary harness, and naming a model does not select its harness: pass the
 matching `harness` on a model-constrained Ask, and ask first when you do not
-know which harness runs the model.
+know which harness runs the model. An Ask can still retry with that harness's
+configured `fallback_model`. The automatic second opinion reports a different
+answering model when the result identifies it, or says when it cannot confirm it.
 
 With no project selected, try:
 

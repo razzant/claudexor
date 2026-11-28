@@ -52,9 +52,11 @@ readiness or version check, and pass no `repoPath`.
 4. Pass only the routing the user chose. A chosen harness or model goes in
    `harness` or `model` whether or not an account is named. When the user names
    a model, also select its known associated harness: the engine applies a
-   scalar `model` only to the primary harness, and Auto may otherwise pick
-   another provider. If you do not know which harness runs the named model,
-   ask the user before any Ask; do not guess and do not fall back to Auto.
+   scalar `model` only to the primary harness. A configured `fallback_model`
+   can still answer within that harness. If the user forbids another model,
+   skip the default and explain that ordinary Ask cannot guarantee this. If
+   you do not know which harness runs the named model, ask before any Ask;
+   do not guess or fall back to Auto.
    With no harness or model chosen, leave the route to Auto. Pin an account
    only if the user named one: its `profile_id` as `credentialProfileId` and
    its `harness_id` as `harness`, taken from ids the user gave or an Accounts
@@ -69,18 +71,23 @@ readiness or version check, and pass no `repoPath`.
 6. Do your own work meanwhile. Follow the handle with bounded
    `claudexor_run_wait` calls (a queued `jobId` serves as `runId`), passing each
    `nextSeq` back as `afterSeq`, then read `claudexor_run_result` once the run
-   is terminal. An ordinary timeout or disconnect ends only that read: call
-   wait again. A wait that reports an event omitted as oversized and returns
-   the same cursor takes the run's status first: on a terminal run, read
-   `claudexor_run_result`; the omitted event changes nothing. While the run
-   is not terminal, this path has no tool to read that event: report the
-   second opinion as unfinished with the id, and name the oversized event as
-   the reason. A run id is progress, not the answer: if you cannot keep waiting,
-   say the second opinion is unfinished and give the id. Never cancel it to
-   hurry.
+   is terminal. Check the reported run status first: a terminal run goes to
+   `claudexor_run_result` even if an event was omitted. For a non-terminal run,
+   if an oversized event or `invalid_event` leaves the cursor unchanged, stop
+   waiting and report the second opinion as unfinished with the id and the
+   omission reason; do not repeat that cursor or assume the run stopped. An
+   ordinary timeout or disconnect ends only that read: call wait again. If
+   you cannot keep waiting, say the second opinion is unfinished and give the
+   id. Never cancel it to hurry.
 7. Give your own assessment first, then "Second opinion via Claudexor": what
-   the run returned, where it agrees and disagrees. Name the harness the run
-   reports, and a model only if it reports one. Run or apply its suggestions
+   the run returned, where it agrees and disagrees. Name the answering harness
+   and model only from execution metadata, not the answer text. If Result
+   does not name the model, match its `runFacts.deliverable.producer_attempt_id`
+   to `observed_model` on the same `attempt_id` in `harness.event` rows already
+   returned by Wait.
+   If a different model answered, name both the requested and answering models.
+   For a named model, say when the answering model is unconfirmed; never infer
+   it from Ask arguments or a different attempt. Run or apply its suggestions
    only when the user asks; the second opinion never changes files.
 8. On a refusal, a missing or disabled tool or a declined account, give the
    typed reason and the way forward in one line, then finish your own review.

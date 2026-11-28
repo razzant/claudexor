@@ -1192,7 +1192,9 @@ If the profile is missing, resolve that before asking. For Auto, omit the
 profile pin and pass a harness only if you chose one. A scalar `model` override
 applies only to the primary harness, and naming a model does not select its
 harness: pass the matching `harness` on a model-constrained Ask, and ask first
-when you do not know which harness runs the model. For a custom store, also use
+when you do not know which harness runs the model. An Ask can still retry
+with the harness's configured `fallback_model`.
+For a custom store, also use
 `claudexor_store_identity` to [match the store IDs](docs/INTEGRATIONS.md#custom-claudexor-configuration-directory).
 If your host filters tools, allow these additional reads for the checks you need,
 using the same host prefix as for `claudexor_status`.

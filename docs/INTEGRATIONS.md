@@ -2343,8 +2343,12 @@ probe and no `repoPath`. The user's `harness` and `model` pass through apart
 from any account pin. A scalar `model` override applies only to the primary
 harness, and naming a model does not select its harness: a model-constrained
 Ask passes the matching `harness` too, and the host asks the user first when
-it does not know which harness runs the model. Reviews without a harness or
-model choice keep Auto. An account is pinned only when
+it does not know which harness runs the model. An Ask can still retry within
+that harness on its configured `fallback_model`. If that is unacceptable,
+the host does not send the default Ask. It identifies a different answering
+model from the Result and matching Wait evidence, or says when the model
+could not be confirmed. Reviews without a harness or model choice keep Auto.
+An account is pinned only when
 the user named it, with an exact `harness_id` and `profile_id` that the user gave or an
 Accounts read already showed, never an id guessed from a name; with no account
 named, the engine may rotate across its accounts. A refusal, a missing tool or a
@@ -2352,6 +2356,10 @@ declined account is reported in one line, and the host finishes its own review
 without a retry, a fallback to another route or budget, or a looser pin. The
 budget stays zero: a positive amount is a separate explicit request that names
 the amount for the delegate, never a share of the host model's own budget.
+If Wait reports a terminal run, the host reads Result even if an event was
+omitted. For a running or queued run, an oversized or invalid event that
+leaves the cursor unchanged ends the host's wait, with the run ID and the
+omission reason reported to the user; it does not cancel the worker.
 
 **Compatibility and skew.** Use Claudexor 6.4.0 or later for both the CLI the
 host launches and the daemon it attaches to. From 6.4.0 an ordinary read-only
@@ -2401,27 +2409,23 @@ bodies on demand in both modes.
 
 **Status: experimental.** These checks used a synthetic arithmetic diff.
 
-- **Pi 1.5.2:** In a fresh session without context files, with `codemode` and
-  write tools excluded, DeepSeek V4.1 Flash loaded the Skill and formed the
-  inline Ask with `noProject: true`, `web: "off"` and a zero paid budget. The
-  completed Ask → wait → result with a real Codex answer was the earlier run,
-  whose bridge pinned the Codex subscription route. In a later pre-release
-  trial before the terminal-wait clarification, the same phrase selected the
-  zero-budget Ask and got `daemon_unavailable` before Codex accepted it, with
-  no run ID. Neither check
-  establishes unmediated Auto routing or `codemode` behavior.
-- **Hermes 0.23.1:** Tested on the exact predecessor body of this changeset, in
-  clean profiles restricted to the `skills` and `claudexor` toolsets, the same
-  DeepSeek V4.1 Flash model with a locally pinned Codex bridge completed the
-  whole default path in one session with standard Tool Search — Ask, wait,
-  result (1/1), and an optional direct-schema profile completed Ask and wait
-  (1/1). On the prior revised body the default path completed 1/2 (one run was
-  stopped by a local guard before forwarding) and the direct profile 1/3 (one
-  guard fired after Codex had finished; one session made no call). A second
-  fresh session answered locally despite direct schemas, and the earlier draft's
-  0/2 stays historical. A Qwen attempt failed on SSE framing, a transport
-defect rather than a model choice. The two approved skill revisions in this
-  changeset are newer than the probed bytes and are not yet re-probed.
+- **Pi 1.5.2:** On an earlier pre-release body, DeepSeek V4.1 Flash in a fresh
+  session without context files, `codemode` or write tools sent the inline
+  zero-budget Ask. It reported a real Codex answer after Wait and Result.
+  A later pre-release body selected the same Ask but got `daemon_unavailable`
+  before Codex accepted it, with no run ID. Neither check establishes
+  unmediated Auto routing or `codemode` behavior.
+- **Hermes 0.23.1:** On a pre-release body, the same DeepSeek V4.1 Flash model
+  used standard Tool Search to complete Ask, Wait and Result in one clean
+  profile. A second profile with direct schemas got the answer in Wait. Both
+  allowed only the `skills` and `claudexor` toolsets. In earlier attempts on a
+  separate body, a guard stopped one Tool Search response before forwarding;
+  in direct mode one session started Codex but the guard stopped it before
+  Wait and one session answered locally. An earlier Qwen attempt stopped on SSE
+  framing before delegation.
+
+The live test bridges pinned Codex. These runs do not test the final Skill text
+or automatic routing without a bridge.
 
 An explicit Hermes Codex run was tested separately: native `claudexor_run`
 with its approval prompt, `claudexor_apply_check`, then a separate CLI

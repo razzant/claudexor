@@ -134,6 +134,25 @@ test("the default section calls only Ask, wait and result", () => {
   ]);
 });
 
+test("both host Skills use the terminal result at a blocked cursor and disclose model fallback", () => {
+  for (const target of SKILL_TARGETS.filter((entry) => entry.hostSkill)) {
+    const shipped = readFileSync(join(repo, target.root, skillPath), "utf8").replace(/\s+/g, " ");
+    expect(shipped).toContain(
+      "a terminal run goes to `claudexor_run_result` even if an event was omitted",
+    );
+    expect(shipped).toMatch(
+      /non-terminal run, if an oversized event or `invalid_event` leaves the cursor unchanged, stop waiting.*?do not repeat that cursor/,
+    );
+    expect(shipped).toMatch(
+      /`runFacts\.deliverable\.producer_attempt_id` to `observed_model` on the same `attempt_id`/,
+    );
+    expect(shipped).toContain(
+      "If a different model answered, name both the requested and answering models",
+    );
+    expect(shipped).toContain("say when the answering model is unconfirmed");
+  }
+});
+
 test("composition keeps every canonical field and quotes the description safely", () => {
   const canonical =
     "---\nname: claudexor\nlicense: MIT\ndescription: 'Use it: \"carefully\" # not a comment'\n---\n\n" +

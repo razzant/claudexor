@@ -107,6 +107,10 @@ budget requires a separate explicit request naming the amount. The Skill index
 highlights reviews; you can still ask Pi to load the Skill and use Claudexor
 explicitly for planning, research or delegation.
 
+Naming a model selects the first Ask route; that harness's configured
+`fallback_model` can still answer. The Skill reports a different answering
+model when known, or says when it cannot confirm the model you asked for.
+
 **Warning: subscription and billable add-on credits.** A zero paid budget
 limits only the cash Claudexor itself accounts for. The second opinion runs on
 the answering account's subscription quota. If the vendor account behind a
