@@ -239,6 +239,66 @@ import Testing
         #expect(model.task("run-remote", at: locationID)?.answerText == "Accepted text.")
     }
 
+    /// A bounded remote page (200 newer runs) keeps the open written detail, even
+    /// one chosen from the full turn list, and the loaded history rows; never
+    /// other turns, a closed detail, or another location's selection.
+    @MainActor
+    @Test func boundedRemotePageKeepsTheOpenDetailAndSelectedFamily() async throws {
+        defer { RemoteRunDetailURLProtocol.handler = nil }
+        let source = try HistoryTestSource(count: 25) // loaded rows: runs 5-24; turn list: 0-24
+        let (model, locationID) = makeModel(runId: "mock-run-0")
+        model.remoteTasks[locationID]? += source.runs.filter { ["mock-run-1", "mock-run-5"].contains($0.id) }
+        select(source, in: model, at: locationID, open: "mock-run-0")
+        RemoteRunDetailURLProtocol.handler = familyFixture
+        #expect(await model.loadRunDetail("mock-run-0", locationID: locationID))
+        await model.refreshRemoteRuns(locationID)
+        var kept = Set(model.remoteTasks[locationID]?.map(\.id) ?? [])
+        #expect(kept.count == 202 && kept.isSuperset(of: ["mock-run-0", "mock-run-5", "run-new-199"]))
+        #expect(model.task("mock-run-0", at: locationID)?.earlierAnswerText == "Initial swatch report.")
+        model.route = .threads // closed detail: only the loaded rows stay
+        await model.refreshRemoteRuns(locationID)
+        kept = Set(model.remoteTasks[locationID]?.map(\.id) ?? [])
+        #expect(kept.count == 201 && kept.contains("mock-run-5"))
+        // The same ids selected at another location keep nothing here.
+        select(source, in: model, at: .remote(UUID()), open: "mock-run-5")
+        await model.refreshRemoteRuns(locationID)
+        #expect(model.remoteTasks[locationID]?.count == 200)
+    }
+
+    /// After a list refresh evicted the row, re-opening the authorized local
+    /// detail loads and inserts it; its markers no longer stand in for a row.
+    @MainActor
+    @Test func localReopenAfterEvictionLoadsTheAuthorizedSelection() async throws {
+        defer { RemoteRunDetailURLProtocol.handler = nil }
+        let source = try HistoryTestSource(count: 25)
+        let (model, _) = makeModel(runId: "run-unrelated", local: true)
+        select(source, in: model, at: .local, open: "mock-run-0")
+        let reads = RemoteRunDetailRecorder()
+        RemoteRunDetailURLProtocol.handler = { request in
+            if request.url?.path == "/v2/runs/mock-run-0" { reads.append(request.url?.query ?? "") }
+            return try familyFixture(request)
+        }
+        let reopen = { await model.ensureAddressedRunDetail(
+            "mock-run-0", locationID: .local, insertingIfMissing: model.task("mock-run-0") == nil) }
+        await reopen()
+        await model.refreshRuns() // the open detail survives a bounded page
+        #expect(model.task("mock-run-0")?.earlierAnswerText == "Initial swatch report.")
+        model.route = .threads
+        await model.refreshRuns() // closed and off-page: evicted, markers remain
+        #expect(model.task("mock-run-0") == nil && model.hydratedRunDetails.contains("mock-run-0"))
+        model.route = .task("mock-run-0")
+        await reopen()
+        #expect(reads.values == Array(repeating: "includeEarlierAssistantOutput=true", count: 2))
+        #expect(model.task("mock-run-0")?.earlierAnswerText == "Initial swatch report.")
+        // Control: a selection that no longer names the run authorizes no insertion.
+        model.route = .threads
+        await model.refreshRuns()
+        let other = try distinctHistorySource(thread: "thread-other", runPrefix: "other", count: 2)
+        select(other, in: model, at: .local, open: "mock-run-0")
+        await reopen()
+        #expect(reads.values.count == 2 && model.task("mock-run-0") == nil)
+    }
+
     @MainActor
     @Test func remoteLegacyDetailUsesTheSharedBoundedArtifactFallback() async throws {
         defer { RemoteRunDetailURLProtocol.handler = nil }
@@ -383,6 +443,33 @@ private func insideCodeBlock(_ text: NSAttributedString, _ needle: String) -> Bo
     guard range.location != NSNotFound else { return nil }
     let style = text.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle
     return style?.textBlocks.contains { $0 is ProseCodeBlock } == true
+}
+
+/// Select `source`'s thread at `location`: loaded history rows, the full turn
+/// list the workspace panel shows, and an open detail route.
+@MainActor
+private func select(_ source: HistoryTestSource, in model: AppModel, at location: ExecutionLocationID, open id: String) {
+    model.selectedExecutionLocation = location
+    model.selectedThreadId = source.detail.thread.id
+    model.selectedHistory = try? source.store(location: location, loaded: true)
+    model.workspaceHistoryVisible = true
+    model.selectedThreadDetail = source.detail
+    model.route = .task(id)
+}
+
+/// A bounded runs page of 200 newer runs and an addressed detail for any run.
+private func familyFixture(_ request: URLRequest) throws -> (HTTPURLResponse, Data, TimeInterval) {
+    let path = request.url?.path ?? ""
+    if path == "/v2/runs", request.url?.query == nil {
+        let rows = (0..<200).map { #"{"runId":"run-new-\#($0)","state":"succeeded","mode":"ask"}"# }
+        return (response(for: request), Data(#"{"runs":[\#(rows.joined(separator: ","))]}"#.utf8), 0)
+    }
+    guard path.hasPrefix("/v2/runs/"), request.url?.query == "includeEarlierAssistantOutput=true" else {
+        throw RemoteRunDetailError.badRequest
+    }
+    let id = String(path.dropFirst("/v2/runs/".count))
+    let body = ###"{"summary":{"runId":"\###(id)","state":"succeeded","mode":"ask","outputReadyState":"ready"},"primaryOutput":{"kind":"answer","path":"final/answer.md","text":"Accepted text.","truncated":false,"earlierAssistantOutput":{"path":"final/earlier-assistant-output.md","text":"Initial swatch report.","bytes":22,"truncated":false}},"lastSeq":6}"###
+    return (response(for: request), Data(body.utf8), 0)
 }
 
 private enum RemoteRunDetailError: Error { case badRequest }

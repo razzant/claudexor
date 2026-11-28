@@ -1,6 +1,6 @@
 export * from "./daemon-server.js";
 export { appendRunAuditEvent } from "./run-audit.js";
-export { readRunFinalMessages } from "./run-event-facts.js";
+export { readRunEventFacts, readRunFinalMessages } from "./run-event-facts.js";
 export { readRunEarlierAssistantOutputView } from "./primary-output.js";
 export * from "./control-protocol.js";
 export * from "./operation-catalog.js";

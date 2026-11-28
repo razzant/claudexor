@@ -10,6 +10,7 @@ import {
   truncateUtf8,
 } from "./primary-output.js";
 import { readRunEventFacts } from "./run-event-facts.js";
+import { eventsParseCountForTests } from "./run-timeline.js";
 import type { DaemonRunRecord } from "./run-record.js";
 import { inRunProjection } from "./projection-context.js";
 
@@ -141,6 +142,11 @@ describe("canonical terminal presentation", () => {
                   : {};
         expect(offline).toEqual(expected);
         expect(offline).not.toHaveProperty("text");
+        // Facts a caller already folded (inspect with final messages) are reused.
+        const folded = readRunEventFacts({ runDir });
+        const scans = eventsParseCountForTests();
+        expect(readRunEarlierAssistantOutputView(runDir, folded)).toEqual(expected);
+        expect(eventsParseCountForTests()).toBe(scans);
       } finally {
         rmSync(runDir, { recursive: true, force: true });
       }

@@ -526,12 +526,9 @@ final class AppModel {
             }
             // The family of the selection current at this response, never one
             // captured before it; remote run ids name another engine's runs.
-            let selected = selectedHistory?.locationID == .local ? selectedHistory : nil
-            let threadParents = Set(selected?.rows.compactMap(\.runId) ?? [])
             liveTasks = Self.preservingSelectedThreadFamily(
-                refreshed: refreshed,
-                existing: existingTasks,
-                parentRunIds: threadParents)
+                refreshed: refreshed, existing: existingTasks,
+                parentRunIds: selectedFamilyParentIds(at: .local))
             // A 202-queued row was keyed by jobId; once the daemon surfaces the
             // runId the open detail route must follow instead of dangling.
             if case .task(let openId) = route, !liveTasks.contains(where: { $0.id == openId }) {

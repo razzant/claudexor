@@ -114,14 +114,18 @@ extension AppModel {
         do {
             let summaries = try await client.listRuns()
             guard remoteClients[locationID] === client else { return }
-            let existingByID = Dictionary(
-                uniqueKeysWithValues: (remoteTasks[locationID] ?? []).map { ($0.id, $0) })
-            remoteTasks[locationID] = summaries.map {
+            let existing = remoteTasks[locationID] ?? []
+            let existingByID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+            let refreshed = summaries.map {
                 Self.mergeRefreshedTask(
                     summary: $0,
                     existing: existingByID[$0.runId]
                         ?? $0.jobId.flatMap { existingByID[$0] })
             }
+            // The page is bounded: keep the selected family as the local list does.
+            remoteTasks[locationID] = Self.preservingSelectedThreadFamily(
+                refreshed: refreshed, existing: existing,
+                parentRunIds: selectedFamilyParentIds(at: locationID))
         } catch {
             // Run transcripts and artifacts are intentionally memory-only.
         }

@@ -6,7 +6,7 @@ import type { DaemonRunRecord } from "./daemon-server.js";
 import { readRunTombstone } from "./retention.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 import { projectionRead } from "./projection-context.js";
-import { readRunEventFacts } from "./run-event-facts.js";
+import { readRunEventFacts, type RunEventFacts } from "./run-event-facts.js";
 
 const PRIMARY_OUTPUT_PREVIEW_BYTES = 256 * 1024;
 // Independent of the canonical answer cap; ordinary reports fit inline.
@@ -99,13 +99,15 @@ function readRunEarlierAssistantOutput(
 
 /** Offline text inspect's earlier view: that bounded artifact or, exactly as
  * an addressed detail reports it, the run's recorded reason (a saved artifact
- * that no longer reads is `artifact_unavailable`). Never the accepted answer. */
+ * that no longer reads is `artifact_unavailable`). Never the accepted answer.
+ * Facts the caller already folded are reused instead of reading events again. */
 export function readRunEarlierAssistantOutputView(
   runDir: string,
+  facts?: RunEventFacts,
 ): Pick<ControlPrimaryOutput, "earlierAssistantOutput" | "earlierAssistantOutputUnavailable"> {
   const earlier = readRunEarlierAssistantOutput(runDir);
   if (earlier) return { earlierAssistantOutput: earlier };
-  const fact = readRunEventFacts({ runDir }).earlierAssistantOutputFact;
+  const fact = (facts ?? readRunEventFacts({ runDir })).earlierAssistantOutputFact;
   if (!fact) return {};
   return { earlierAssistantOutputUnavailable: fact === "saved" ? "artifact_unavailable" : fact };
 }

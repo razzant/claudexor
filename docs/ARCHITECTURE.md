@@ -9091,8 +9091,9 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   beyond it waits for another stream to end, and the request timeout and the
   stream's reconnect policy still apply to that wait. Opening or switching a
   thread reads its history at once; the global run-list reconciliation for the
-  previous selection runs beside that read, and when `/v2/runs` answers it
-  preserves the off-page family of the local thread selected at that moment.
+  previous selection runs beside that read. When a bounded local or remote
+  `/v2/runs` page answers, it keeps the off-page family of the thread selected
+  at that location then, and the run its open detail shows.
 - Delegate readiness comes from each harness row's engine-owned `delegation`
   projection. Run summaries carry the requested/effective/used/reason/remediation outcome
   and the narrow `delegatedFromRunId` child link. The exact composer and run-row

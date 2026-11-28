@@ -21,7 +21,8 @@ extension AppModel {
     /// assistant text. A local run is first addressed (`addressedRunDetails`
     /// key), so this and later milestone loads ask for it too; the value records
     /// that the last successful load carried it, so a cached plain hydration
-    /// never stands in. A load that started plain is joined, then followed.
+    /// never stands in; nor do markers for a row a list refresh has since
+    /// removed. A load that started plain is joined, then followed.
     func ensureAddressedRunDetail(
         _ id: String,
         locationID: ExecutionLocationID,
@@ -33,7 +34,8 @@ extension AppModel {
         }
         addressRunDetail(id)
         if runDetailLoads[id] != nil { await loadRunDetail(id, insertingIfMissing: insertingIfMissing) }
-        if hydratedRunDetails.contains(id), addressedRunDetails[id] == true { return }
+        if hydratedRunDetails.contains(id), addressedRunDetails[id] == true,
+           liveTasks.contains(where: { $0.id == id }) { return }
         await loadRunDetail(id, insertingIfMissing: insertingIfMissing)
     }
 
